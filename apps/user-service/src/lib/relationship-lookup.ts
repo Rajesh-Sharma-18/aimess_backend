@@ -7,6 +7,11 @@
  * The `RelationshipStatus` vocabulary mirrors `user-discovery.service.ts`.
  */
 
+import {
+  buildFriendshipView,
+  toSearchRelationship,
+} from "./friendship-view.js";
+
 export type RelationshipStatus = "FRIEND" | "PENDING" | "NONE";
 
 export type PeerRelationship = {
@@ -21,6 +26,11 @@ export type PeerRelationship = {
    * ("Agree" / "Cancel Request") apart under the single PENDING status.
    */
   requesterId: string | null;
+  /** OUTGOING/INCOMING for PENDING, else null — mirrors `buildFriendshipView`. */
+  direction: "OUTGOING" | "INCOMING" | null;
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
 };
 
 const NONE: PeerRelationship = {
@@ -28,6 +38,10 @@ const NONE: PeerRelationship = {
   relationshipStatus: "NONE",
   friendshipId: null,
   requesterId: null,
+  direction: null,
+  canAccept: false,
+  canReject: false,
+  canCancel: false,
 };
 
 type FriendshipRow = {
@@ -37,29 +51,44 @@ type FriendshipRow = {
   status: string;
 };
 
-/** Returns `(peerId) => PeerRelationship`, defaulting to NONE for strangers. */
+/**
+ * Returns `(peerId) => PeerRelationship`, defaulting to NONE for strangers.
+ * Direction/action flags are derived via the same `buildFriendshipView` +
+ * `toSearchRelationship` used by the realtime `friend:*` socket payloads, so
+ * the search REST response and the live update event never disagree.
+ */
 export function buildRelationshipLookup(
   viewerId: string,
   rows: FriendshipRow[]
 ): (peerId: string) => PeerRelationship {
   const byPeer = new Map<string, PeerRelationship>();
   for (const f of rows) {
+    if (f.status !== "ACCEPTED" && f.status !== "PENDING") continue;
     const peerId = f.requesterId === viewerId ? f.addresseeId : f.requesterId;
-    if (f.status === "ACCEPTED") {
-      byPeer.set(peerId, {
-        isFriend: true,
-        relationshipStatus: "FRIEND",
-        friendshipId: f.id,
-        requesterId: null,
-      });
-    } else if (f.status === "PENDING") {
-      byPeer.set(peerId, {
-        isFriend: false,
-        relationshipStatus: "PENDING",
-        friendshipId: f.id,
-        requesterId: f.requesterId,
-      });
-    }
+    const search = toSearchRelationship(buildFriendshipView(viewerId, f));
+    byPeer.set(peerId, {
+      isFriend: f.status === "ACCEPTED",
+      relationshipStatus: search.status,
+      friendshipId: f.id,
+      requesterId: f.status === "PENDING" ? f.requesterId : null,
+      direction: search.direction,
+      canAccept: search.canAccept,
+      canReject: search.canReject,
+      canCancel: search.canCancel,
+    });
   }
   return (peerId) => byPeer.get(peerId) ?? NONE;
+}
+
+/**
+ * Peer ids the viewer has an ACCEPTED friendship with — the sole source of
+ * truth for "is this user a friend", independent of any private room.
+ */
+export function getFriendPeerIds(
+  viewerId: string,
+  rows: FriendshipRow[]
+): string[] {
+  return rows
+    .filter((f) => f.status === "ACCEPTED")
+    .map((f) => (f.requesterId === viewerId ? f.addresseeId : f.requesterId));
 }
