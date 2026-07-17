@@ -679,6 +679,7 @@ export function createMessagingImpl(
               : "PRIVATE";
 
           let readToSeq = 0;
+          let unreadCount = 0;
           if (conversationType === "GROUP") {
             await deps.groupMemberService.markRead({
               roomId: req.conversationId,
@@ -689,17 +690,21 @@ export function createMessagingImpl(
               .getMessageSequence(req.upToMessageId)
               .catch(() => 0);
           } else {
-            await deps.privateMessageService.markRead({
+            const room = (await deps.privateMessageService.markRead({
               roomId: req.conversationId,
               userId: req.readerId,
               lastMessageId: req.upToMessageId,
-            });
+            })) as {
+              unreadCountByUser?: Record<string, number>;
+            } | null;
+            unreadCount = room?.unreadCountByUser?.[req.readerId] ?? 0;
             readToSeq = await deps.privateMessageService
               .getMessageSequence(req.upToMessageId)
               .catch(() => 0);
           }
 
-          // Read receipt to the conversation room (V1, unchanged).
+          // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
+          // or below the boundary to READ (watermark), not just the boundary message.
           await redis.publish(
             `conv:${req.conversationId}`,
             JSON.stringify({
@@ -708,6 +713,7 @@ export function createMessagingImpl(
                 conversationId: req.conversationId,
                 readerId: req.readerId,
                 upToMessageId: req.upToMessageId,
+                read_to_seq: readToSeq,
               },
             })
           );
@@ -724,7 +730,7 @@ export function createMessagingImpl(
                   conversationId: req.conversationId,
                   readerId: req.readerId,
                   read_to_seq: readToSeq,
-                  unreadCount: 0,
+                  unreadCount,
                   conversationType,
                 },
               })
