@@ -379,7 +379,7 @@ describe("GET /api/v1/users/search", () => {
     });
   });
 
-  it("reflects a pending outgoing request as PENDING_OUT", async () => {
+  it("reflects a pending outgoing request as PENDING with requesterId=self", async () => {
     pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
     friendRepo.findAllForUser.mockResolvedValue([
       {
@@ -397,8 +397,9 @@ describe("GET /api/v1/users/search", () => {
 
     expect(res.body.data.other[0]).toMatchObject({
       isFriend: false,
-      relationshipStatus: "PENDING_OUT",
+      relationshipStatus: "PENDING",
       friendshipId: "fr-2",
+      requesterId: TEST_USER_ID,
     });
   });
 

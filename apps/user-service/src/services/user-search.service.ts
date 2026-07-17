@@ -44,10 +44,12 @@ export type SearchUserItem = {
    * friendship from `roomId`.
    */
   isFriend: boolean;
-  /** Richer relationship: FRIEND | PENDING_IN | PENDING_OUT | NONE. */
+  /** Relationship: FRIEND | PENDING | NONE. */
   relationshipStatus: RelationshipStatus;
   /** Friendship row id when FRIEND/PENDING; null when NONE. */
   friendshipId: string | null;
+  /** Who sent the PENDING request; null when FRIEND/NONE. */
+  requesterId: string | null;
 };
 
 export type SearchGroupItem = {
@@ -108,6 +110,7 @@ async function toUserItem(
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
     friendshipId: relationship.friendshipId,
+    requesterId: relationship.requesterId,
   };
 }
 

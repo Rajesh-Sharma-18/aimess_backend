@@ -8,11 +8,7 @@ import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
 
-export type RelationshipStatus =
-  | "FRIEND"
-  | "PENDING_IN"
-  | "PENDING_OUT"
-  | "NONE";
+export type RelationshipStatus = "FRIEND" | "PENDING" | "NONE";
 
 export type UserDiscoveryResult = {
   userId: string;
@@ -30,6 +26,8 @@ export type UserDiscoveryResult = {
   isOnline: boolean;
   relationshipStatus?: RelationshipStatus;
   friendshipId?: string | null;
+  /** Who sent the PENDING request; null/absent when FRIEND/NONE. */
+  requesterId?: string | null;
 };
 
 async function resolveAvatarUrl(
@@ -142,6 +140,7 @@ export const userDiscoveryService = {
             isFriend: true,
             relationshipStatus: "FRIEND" as RelationshipStatus,
             friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
+            requesterId: null,
           };
         }
         const pending = pendingRelMap.get(p.userId);
@@ -149,11 +148,14 @@ export const userDiscoveryService = {
           ...base,
           isFriend: false,
           relationshipStatus: (pending
-            ? pending.isRequester
-              ? "PENDING_OUT"
-              : "PENDING_IN"
+            ? "PENDING"
             : "NONE") as RelationshipStatus,
           friendshipId: pending?.friendshipId ?? null,
+          requesterId: pending
+            ? pending.isRequester
+              ? viewerId
+              : p.userId
+            : null,
         };
       })
     );
@@ -217,6 +219,7 @@ export const userDiscoveryService = {
           isOnline: p.isOnline,
           relationshipStatus: "FRIEND" as RelationshipStatus,
           friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
+          requesterId: null,
         };
       })
     );
@@ -275,11 +278,11 @@ export const userDiscoveryService = {
         const pending = pendingRelMap.get(p.userId);
         let relationshipStatus: RelationshipStatus = "NONE";
         let friendshipId: string | null = null;
+        let requesterId: string | null = null;
         if (pending) {
-          relationshipStatus = pending.isRequester
-            ? "PENDING_OUT"
-            : "PENDING_IN";
+          relationshipStatus = "PENDING";
           friendshipId = pending.friendshipId;
+          requesterId = pending.isRequester ? viewerId : p.userId;
         }
         const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
         const avatar = await resolveAvatarMedia(p.avatarUrl);
@@ -295,6 +298,7 @@ export const userDiscoveryService = {
           isOnline: p.isOnline,
           relationshipStatus,
           friendshipId,
+          requesterId,
         };
       })
     );
