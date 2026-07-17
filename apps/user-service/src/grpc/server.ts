@@ -8,6 +8,10 @@ import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
+import {
+  buildFriendshipView,
+  toChatRelationship,
+} from "../lib/friendship-view.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -235,17 +239,45 @@ export function startUserGrpcServer(): grpc.Server {
             candidateIds?: string[];
           };
           const callerId = req.callerId ?? "";
-          const candidateIds = req.candidateIds ?? [];
+          const candidateIds = [...new Set(req.candidateIds ?? [])].slice(
+            0,
+            500
+          );
           if (!callerId || candidateIds.length === 0) {
-            callback(null, { friendIds: [] });
+            callback(null, { friendIds: [], relationships: [] });
             return;
           }
-          const friendIds =
-            await friendshipRepository.findAcceptedFriendIdsForUser(
+          const [friendIds, { rows, blockedIds }] = await Promise.all([
+            friendshipRepository.findAcceptedFriendIdsForUser(
               callerId,
-              candidateIds.slice(0, 500)
+              candidateIds
+            ),
+            friendshipRepository.findRelationshipsForUser(
+              callerId,
+              candidateIds
+            ),
+          ]);
+          const rowByPeer = new Map(
+            rows.map((r) => [
+              r.requesterId === callerId ? r.addresseeId : r.requesterId,
+              r,
+            ])
+          );
+          const relationships = candidateIds.map((userId) => {
+            const relationship = toChatRelationship(
+              buildFriendshipView(
+                callerId,
+                rowByPeer.get(userId) ?? null,
+                blockedIds.has(userId)
+              )
             );
-          callback(null, { friendIds });
+            return {
+              userId,
+              status: relationship.status,
+              direction: relationship.direction ?? "",
+            };
+          });
+          callback(null, { friendIds, relationships });
         } catch (err) {
           logger.error(`gRPC checkFriendships error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

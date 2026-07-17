@@ -28,6 +28,12 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
+import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
+
+const NONE_RELATIONSHIP: ChatFriendshipInfo = {
+  status: "NONE",
+  direction: null,
+};
 
 const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
 
@@ -82,6 +88,8 @@ export type EnrichedPrivateRoom = PrivateRoom & {
   lastActivity: PrivateConversationLastActivity;
   /** Caller's own unread count, resolved from unreadCountByUser (community-style single int). */
   unreadMessageCount: number;
+  /** Live friendship state from user-service — never the local send-gate read-model. */
+  friendship: ChatFriendshipInfo;
 };
 
 /**
@@ -113,6 +121,7 @@ export interface PrivateConversationListItem {
   lastActivityAt: number;
   lastActivity: PrivateConversationLastActivity;
   isMuted: boolean;
+  friendship: ChatFriendshipInfo;
 }
 
 function toConversationListItem(
@@ -134,6 +143,7 @@ function toConversationListItem(
     lastActivityAt: room.lastActivityAt,
     lastActivity: room.lastActivity,
     isMuted: room.isMuted,
+    friendship: room.friendship,
   };
 }
 
@@ -168,6 +178,7 @@ export interface PrivateRoomDetailsData {
   lastActivity: PrivateConversationLastActivity;
   createdAt: number;
   updatedAt: number;
+  friendship: ChatFriendshipInfo;
 }
 
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
@@ -193,7 +204,15 @@ export class PrivateRoomService {
     private readonly redis: Redis | Cluster,
     // ponytail: optional — omitted in existing unit tests; peer isOnline just
     // falls back to false (matches the pre-existing hardcoded-false behavior).
-    private readonly presenceService?: PresenceService
+    private readonly presenceService?: PresenceService,
+    // ponytail: optional — omitted in existing unit tests; friendship just
+    // falls back to NONE (fail-open on display metadata, same as presence).
+    private readonly friendshipGrpcClient?: {
+      checkFriendships(
+        callerId: string,
+        candidateIds: string[]
+      ): Promise<Map<string, ChatFriendshipInfo>>;
+    }
   ) {}
 
   /**
@@ -283,6 +302,7 @@ export class PrivateRoomService {
       lastActivity: enriched.lastActivity,
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
+      friendship: enriched.friendship,
     };
   }
 
@@ -369,6 +389,10 @@ export class PrivateRoomService {
       peerIds,
       this.cacheRepo
     );
+
+    const friendshipByPeer = this.friendshipGrpcClient
+      ? await this.friendshipGrpcClient.checkFriendships(userId, peerIds)
+      : new Map<string, ChatFriendshipInfo>();
 
     // Real-time presence — reuses PresenceService (same `presence:user:<id>`
     // Redis source conv:updated reads) rather than the user-snapshot's
@@ -507,6 +531,7 @@ export class PrivateRoomService {
         lastActivityAt,
         lastActivity,
         unreadMessageCount: unreadCountByUser[userId] ?? 0,
+        friendship: friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP,
       };
     });
   }

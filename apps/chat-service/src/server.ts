@@ -392,7 +392,8 @@ const startServer = async () => {
       userSnapshotService,
       userServiceClient,
       redis,
-      presenceService
+      presenceService,
+      userGrpcClient
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,

@@ -28,6 +28,24 @@ export interface CallPrivacy {
   allowedUserIds: string[];
 }
 
+export type ChatFriendshipStatus = "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
+
+export interface ChatFriendshipInfo {
+  status: ChatFriendshipStatus;
+  direction: "OUTGOING" | "INCOMING" | null;
+}
+
+interface FriendshipInfoRecord {
+  userId: string;
+  status: string;
+  direction: string;
+}
+
+interface CheckFriendshipsResult {
+  friendIds: string[];
+  relationships: FriendshipInfoRecord[];
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -59,6 +77,18 @@ const getCallPrivacyBreaker: Breaker<{ userId: string }, CallPrivacy> =
     call<{ userId: string }, CallPrivacy>("getCallPrivacy", args)
   );
 
+const checkFriendshipsBreaker: Breaker<
+  { callerId: string; candidateIds: string[] },
+  CheckFriendshipsResult
+> = makeBreaker(
+  "user.checkFriendships",
+  (args: { callerId: string; candidateIds: string[] }) =>
+    call<{ callerId: string; candidateIds: string[] }, CheckFriendshipsResult>(
+      "checkFriendships",
+      args
+    )
+);
+
 export const userGrpcClient = {
   async bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[]> {
     const result = await bulkGetUserSnapshotsBreaker.fire({ userIds });
@@ -71,5 +101,40 @@ export const userGrpcClient = {
       whoCanCallMe: r.whoCanCallMe ?? "FRIENDS",
       allowedUserIds: r.allowedUserIds ?? [],
     };
+  },
+
+  /**
+   * Batch friendship status/direction for private-chat responses (conversation
+   * list / room details). Source of truth is user-service, not chat-service's
+   * own eventually-consistent local read-model — see `friendship.repository.ts`
+   * for why that local copy is send-gate-only, never response data. On a
+   * transport failure, callers get an empty map and fall back to `NONE` per
+   * peer (fail-open on display metadata, same policy as presence).
+   */
+  async checkFriendships(
+    callerId: string,
+    candidateIds: string[]
+  ): Promise<Map<string, ChatFriendshipInfo>> {
+    if (candidateIds.length === 0) return new Map();
+    try {
+      const result = await checkFriendshipsBreaker.fire({
+        callerId,
+        candidateIds,
+      });
+      return new Map(
+        (result.relationships ?? []).map((r) => [
+          r.userId,
+          {
+            status: (r.status || "NONE") as ChatFriendshipStatus,
+            direction:
+              r.direction === "OUTGOING" || r.direction === "INCOMING"
+                ? r.direction
+                : null,
+          },
+        ])
+      );
+    } catch {
+      return new Map();
+    }
   },
 };

@@ -101,6 +101,16 @@ message CheckFriendshipsRequest {
 
 message CheckFriendshipsResponse {
   repeated string friend_ids = 1;
+  // Full relationship (status/direction) for every requested candidate_id,
+  // from caller_id's perspective — status is FRIEND|PENDING|NONE|BLOCKED.
+  // Additive alongside friend_ids (kept for existing ACCEPTED-only callers).
+  repeated FriendshipInfo relationships = 2;
+}
+
+message FriendshipInfo {
+  string user_id = 1;
+  string status = 2;    // FRIEND | PENDING | NONE | BLOCKED
+  string direction = 3; // OUTGOING | INCOMING | "" (none)
 }
 
 message GetCallPrivacyRequest {
