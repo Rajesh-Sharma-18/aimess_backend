@@ -11,7 +11,7 @@
  * contentJson, sentAt) so existing V1 clients keep working byte-for-byte.
  */
 
-export type ConversationKind = "PRIVATE" | "GROUP";
+export type ConversationKind = "PRIVATE" | "GROUP" | "COMMUNITY";
 
 /** Canonical message type is UPPER-CASE everywhere (§1 single casing). */
 export function normalizeMessageType(type: string | null | undefined): string {
@@ -528,7 +528,7 @@ export function buildChatMessageEvent(
     senderAvatar: input.senderAvatar ?? "",
     senderRole: input.senderRole ?? "",
     receiverId:
-      input.conversationType === "GROUP" ? "" : (input.receiverId ?? ""),
+      input.conversationType === "PRIVATE" ? (input.receiverId ?? "") : "",
     content,
     parentMessageId: input.parentMessageId ?? "",
     quoteData: buildCanonicalQuote(input.quoteData),

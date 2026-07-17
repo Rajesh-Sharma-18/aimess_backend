@@ -208,9 +208,16 @@ channels:
       friendCancelRequest: { $ref: "#/components/messages/FriendCancelRequest" }
       authRefresh: { $ref: "#/components/messages/AuthRefresh" }
       # friend + session (server -> client)
-      friendRequested: { $ref: "#/components/messages/FriendRequested" }
+      friendRequestSent: { $ref: "#/components/messages/FriendRequestSent" }
+      friendRequestReceived:
+        { $ref: "#/components/messages/FriendRequestReceived" }
       friendAccepted: { $ref: "#/components/messages/FriendAccepted" }
+      friendRejected: { $ref: "#/components/messages/FriendRejected" }
+      friendRequestCancelled:
+        { $ref: "#/components/messages/FriendRequestCancelled" }
       friendRemoved: { $ref: "#/components/messages/FriendRemoved" }
+      friendBlocked: { $ref: "#/components/messages/FriendBlocked" }
+      friendUnblocked: { $ref: "#/components/messages/FriendUnblocked" }
       sessionExpired: { $ref: "#/components/messages/SessionExpired" }
 
   # ----------------------------------------------------------- /community
@@ -809,9 +816,16 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "friend.request — send a friend request"
     description: |
-      Gateway forwards to user-service (`POST /friends/requests`) then publishes
-      `friend.requested` to the addressee's `user:<id>` channel. Ack `data` is
+      Gateway forwards to user-service (`POST /friends/requests`). Ack `data` is
       `{ requestId }`. Returns `CONFLICT` if a request already exists.
+      REALTIME NOTE (updated): user-service, not the gateway, now publishes the
+      realtime fan-out after the DB write — `friend:request:sent` to every one
+      of the requester's own devices and `friend:request:received` to every one
+      of the addressee's devices (see `chat.onFriendRequestSent` /
+      `chat.onFriendRequestReceived` below). This fires identically whether the
+      client used this RPC or called the REST endpoint directly. The old
+      gateway-published `friend.requested` event is retired — nothing publishes
+      it anymore.
     messages: [{ $ref: "#/channels/chat/messages/friendRequest" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -821,9 +835,11 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "friend.accept — accept a received friend request"
     description: |
-      Forwards to user-service then publishes `friend.accepted` to the original
-      requester's `user:<id>` channel. Ack `data` is empty. `NOT_FOUND` if the
-      request id is unknown.
+      Forwards to user-service. Ack `data` is empty. `NOT_FOUND` if the request
+      id is unknown. REALTIME NOTE (updated): user-service publishes
+      `friend:accepted` to every device of BOTH parties (see
+      `chat.onFriendAccepted` below) — the old gateway-published
+      `friend.accepted` (requester-only) is retired.
     messages: [{ $ref: "#/channels/chat/messages/friendAccept" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -832,7 +848,11 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "friend.reject — reject a received friend request"
-    description: "Forwards to user-service. Ack `data` is empty. `NOT_FOUND` if the request id is unknown. No realtime event is published to the requester."
+    description: |
+      Forwards to user-service. Ack `data` is empty. `NOT_FOUND` if the request
+      id is unknown. REALTIME NOTE (updated): user-service now publishes
+      `friend:rejected` to every device of BOTH parties — previously no
+      realtime event was published for reject at all.
     messages: [{ $ref: "#/channels/chat/messages/friendReject" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -842,9 +862,11 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "friend.remove — remove an existing friend"
     description: |
-      Forwards to user-service (`DELETE /friends/<id>`) then publishes
-      `friend.removed` to the removed user's `user:<id>` channel. Ack `data` is
-      empty. `NOT_FOUND` if no friendship exists.
+      Forwards to user-service (`DELETE /friends/<id>`). Ack `data` is empty.
+      `NOT_FOUND` if no friendship exists. REALTIME NOTE (updated):
+      user-service publishes `friend:removed` to every device of BOTH parties
+      (see `chat.onFriendRemoved` below) — the old gateway-published
+      `friend.removed` (removed-user-only) is retired.
     messages: [{ $ref: "#/channels/chat/messages/friendRemove" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -853,11 +875,21 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "friend.cancel_request — cancel an outgoing friend request"
-    description: "Forwards to user-service (`DELETE /friends/requests/<id>`). Ack `data` is empty. `NOT_FOUND` if the request id is unknown."
+    description: |
+      Forwards to user-service (`DELETE /friends/requests/<id>`). Ack `data` is
+      empty. `NOT_FOUND` if the request id is unknown. REALTIME NOTE (updated):
+      user-service now publishes `friend:request:cancelled` to every device of
+      BOTH parties — previously no realtime event was published for cancel.
     messages: [{ $ref: "#/channels/chat/messages/friendCancelRequest" }]
     reply:
       channel: { $ref: "#/channels/chat" }
       messages: [{ $ref: "#/components/messages/Ack" }]
+  # NOTE: block/unblock have no socket RPC — REST only:
+  #   POST/DELETE /api/v1/users/friends/block/:userId
+  # Both publish a realtime event to the ACTING user's own devices only
+  # (blocking is silent to the blocked party, matching this codebase's
+  # unfriend-is-silent policy) — see chat.onFriendBlocked/onFriendUnblocked
+  # below.
   chat.authRefresh:
     action: send
     channel: { $ref: "#/channels/chat" }
@@ -871,21 +903,57 @@ operations:
     reply:
       channel: { $ref: "#/channels/chat" }
       messages: [{ $ref: "#/components/messages/Ack" }]
-  chat.onFriendRequested:
+  chat.onFriendRequestSent:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "friend.requested — someone sent you a friend request"
-    messages: [{ $ref: "#/channels/chat/messages/friendRequested" }]
+    summary: "friend:request:sent — your own other devices sync after you sent a request"
+    description: |
+      Published by user-service to EVERY device of the requester (not just the
+      one that sent it) right after `POST /friends/requests` (or the
+      `friend.request` RPC) writes the row.
+    messages: [{ $ref: "#/channels/chat/messages/friendRequestSent" }]
+  chat.onFriendRequestReceived:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:request:received — someone sent you a friend request"
+    messages: [{ $ref: "#/channels/chat/messages/friendRequestReceived" }]
   chat.onFriendAccepted:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "friend.accepted — your friend request was accepted"
+    summary: "friend:accepted — a friend request was accepted (both parties)"
+    description: |
+      Published to EVERY device of BOTH the requester and the addressee.
     messages: [{ $ref: "#/channels/chat/messages/friendAccepted" }]
+  chat.onFriendRejected:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:rejected — a friend request was declined (both parties)"
+    messages: [{ $ref: "#/channels/chat/messages/friendRejected" }]
+  chat.onFriendRequestCancelled:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:request:cancelled — an outgoing request was cancelled (both parties)"
+    messages: [{ $ref: "#/channels/chat/messages/friendRequestCancelled" }]
   chat.onFriendRemoved:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "friend.removed — someone removed you as a friend"
+    summary: "friend:removed — a friendship ended (both parties)"
+    description: |
+      Published to EVERY device of BOTH parties.
     messages: [{ $ref: "#/channels/chat/messages/friendRemoved" }]
+  chat.onFriendBlocked:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:blocked — you blocked someone (your own other devices only)"
+    description: |
+      Silent to the blocked party — only the blocker's own devices receive
+      this, matching the existing unfriend-is-silent product policy.
+    messages: [{ $ref: "#/channels/chat/messages/friendBlocked" }]
+  chat.onFriendUnblocked:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend:unblocked — you unblocked someone (your own other devices only)"
+    messages: [{ $ref: "#/channels/chat/messages/friendUnblocked" }]
   chat.onSessionExpired:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -2826,38 +2894,104 @@ components:
             refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyX2FiYzEyMyJ9.s1gNaTuRe"
 
     # -------- /chat friend + session (server -> client) --------
-    FriendRequested:
-      name: "friend.requested"
-      title: "friend.requested"
-      summary: "Pushed to the addressee's user:<id> room when a request is sent."
-      payload: { $ref: "#/components/schemas/FriendRequestedPayload" }
+    FriendRequestSent:
+      name: "friend:request:sent"
+      title: "friend:request:sent"
+      summary: "Pushed to the REQUESTER's own devices (all of them) when a request is sent."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
       examples:
-        - name: You received a friend request
+        - name: You sent a friend request (sync your other devices)
           payload:
-            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
-            requesterId: "user_abc123"
-            addresseeId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            friendshipId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            peerId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            peer:
+              userId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+              username: "jane"
+              firstName: "Jane"
+              lastName: "Doe"
+            status: PENDING
+            direction: OUTGOING
+            canAccept: false
+            canReject: false
+            canCancel: true
+            createdAt: "2026-07-17T10:00:00.000Z"
+            updatedAt: "2026-07-17T10:00:00.000Z"
+    FriendRequestReceived:
+      name: "friend:request:received"
+      title: "friend:request:received"
+      summary: "Pushed to the ADDRESSEE's own devices (all of them) when a request is sent."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
+      examples:
+        - name: Someone sent you a friend request
+          payload:
+            friendshipId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            peerId: "user_abc123"
+            peer:
+              userId: "user_abc123"
+              username: "john"
+              firstName: "John"
+              lastName: "Smith"
+            status: PENDING
+            direction: INCOMING
+            canAccept: true
+            canReject: true
+            canCancel: false
+            createdAt: "2026-07-17T10:00:00.000Z"
+            updatedAt: "2026-07-17T10:00:00.000Z"
     FriendAccepted:
-      name: "friend.accepted"
-      title: "friend.accepted"
-      summary: "Pushed to the original requester's user:<id> room when accepted."
-      payload: { $ref: "#/components/schemas/FriendAcceptedPayload" }
+      name: "friend:accepted"
+      title: "friend:accepted"
+      summary: "Pushed to EVERY device of BOTH parties when a request is accepted."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
       examples:
         - name: Your friend request was accepted
           payload:
-            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
-            acceptedBy: "user_def456"
-            requesterId: "user_abc123"
+            friendshipId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            peerId: "user_def456"
+            status: ACCEPTED
+            direction: null
+            canAccept: false
+            canReject: false
+            canCancel: false
+            createdAt: "2026-07-17T10:00:00.000Z"
+            updatedAt: "2026-07-17T10:05:00.000Z"
+    FriendRejected:
+      name: "friend:rejected"
+      title: "friend:rejected"
+      summary: "Pushed to EVERY device of BOTH parties when a request is declined."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
+    FriendRequestCancelled:
+      name: "friend:request:cancelled"
+      title: "friend:request:cancelled"
+      summary: "Pushed to EVERY device of BOTH parties when an outgoing request is cancelled."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
     FriendRemoved:
-      name: "friend.removed"
-      title: "friend.removed"
-      summary: "Pushed to the removed user's user:<id> room."
-      payload: { $ref: "#/components/schemas/FriendRemovedPayload" }
+      name: "friend:removed"
+      title: "friend:removed"
+      summary: "Pushed to EVERY device of BOTH parties when a friendship ends."
+      payload: { $ref: "#/components/schemas/FriendshipEventPayload" }
       examples:
-        - name: Someone removed you as a friend
+        - name: A friendship ended
           payload:
-            removedBy: "user_abc123"
-            userId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            friendshipId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            peerId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+            status: NONE
+            direction: null
+            canAccept: false
+            canReject: false
+            canCancel: false
+            createdAt: "2026-07-17T10:00:00.000Z"
+            updatedAt: "2026-07-17T10:10:00.000Z"
+    FriendBlocked:
+      name: "friend:blocked"
+      title: "friend:blocked"
+      summary: "Pushed to the BLOCKER's own devices only — silent to the blocked party."
+      payload: { $ref: "#/components/schemas/FriendBlockedPayload" }
+    FriendUnblocked:
+      name: "friend:unblocked"
+      title: "friend:unblocked"
+      summary: "Pushed to the UNBLOCKER's own devices only."
+      payload: { $ref: "#/components/schemas/FriendUnblockedPayload" }
     SessionExpired:
       name: "session:expired"
       title: "session:expired"
@@ -6604,37 +6738,93 @@ components:
       properties:
         refreshToken: { type: string, minLength: 1 }
       required: [refreshToken]
-    FriendRequestedPayload:
+    FriendshipPeerBrief:
       type: object
-      description: "Server → client. Pushed to the addressee when a request is sent."
+      description: "Minimal peer profile — only attached on friend:request:sent/received, where the caller already has both profiles loaded."
       properties:
-        requestId: { type: string }
-        requesterId: { type: string }
-        addresseeId: { type: string }
-      required: [requestId, requesterId, addresseeId]
-    FriendAcceptedPayload:
+        userId: { type: string, format: uuid }
+        username: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+      required: [userId, username, firstName, lastName]
+    FriendshipEventPayload:
       type: object
-      description: "Server → client. Pushed to the original requester when the request is accepted."
+      description: |
+        Server → client. Shared shape for every `friend:*` realtime event —
+        published by user-service (`buildFriendshipView` +
+        `friendshipEventData`) after every friendship-mutating DB write, to
+        the affected user(s)' `user:<id>` room (every logged-in device).
+        `status`/`direction`/`canAccept`/`canReject`/`canCancel` are the same
+        fields returned by the REST friendship endpoints (send/accept/reject/
+        cancel/unfriend/status), always derived from the VIEWING user's
+        perspective — i.e. the payload delivered to each side of a pair
+        differs only in these derived fields, `peerId`/`peer`, and which
+        event name fires.
       properties:
-        requestId: { type: string }
-        acceptedBy: { type: string, description: "userId of the accepter." }
-        requesterId: { type: string }
-      required: [requestId, acceptedBy, requesterId]
-    FriendRemovedPayload:
-      type: object
-      description: "Server → client. Pushed to the user who was removed."
-      properties:
-        removedBy:
+        friendshipId: { type: string, format: uuid }
+        peerId:
           {
             type: string,
-            description: "userId of the actor who removed the friendship.",
+            format: uuid,
+            description: "The other party's userId.",
           }
-        userId:
+        peer: { $ref: "#/components/schemas/FriendshipPeerBrief" }
+        status:
           {
             type: string,
-            description: "userId of the removed user (the recipient).",
+            enum:
+              [
+                NONE,
+                PENDING,
+                ACCEPTED,
+                REJECTED,
+                CANCELLED,
+                UNFRIENDED,
+                BLOCKED,
+              ],
           }
-      required: [removedBy, userId]
+        direction: { type: [string, "null"], enum: [OUTGOING, INCOMING, null] }
+        canAccept: { type: boolean }
+        canReject: { type: boolean }
+        canCancel: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required:
+        [
+          friendshipId,
+          peerId,
+          status,
+          direction,
+          canAccept,
+          canReject,
+          canCancel,
+        ]
+    FriendBlockedPayload:
+      type: object
+      description: "Server → client. Pushed to the BLOCKER's own devices only — silent to the blocked party."
+      properties:
+        peerId: { type: string, format: uuid }
+        status: { type: string, enum: [BLOCKED] }
+        direction: { type: "null" }
+        canAccept: { type: boolean, enum: [false] }
+        canReject: { type: boolean, enum: [false] }
+        canCancel: { type: boolean, enum: [false] }
+      required: [peerId, status, direction, canAccept, canReject, canCancel]
+    FriendUnblockedPayload:
+      type: object
+      description: "Server → client. Pushed to the UNBLOCKER's own devices only."
+      properties:
+        peerId: { type: string, format: uuid }
+        status:
+          {
+            type: string,
+            enum: [NONE, PENDING, ACCEPTED, REJECTED, CANCELLED, UNFRIENDED],
+          }
+        direction: { type: [string, "null"], enum: [OUTGOING, INCOMING, null] }
+        canAccept: { type: boolean }
+        canReject: { type: boolean }
+        canCancel: { type: boolean }
+      required: [peerId, status, direction, canAccept, canReject, canCancel]
     SessionExpiredPayload:
       type: object
       description: |
