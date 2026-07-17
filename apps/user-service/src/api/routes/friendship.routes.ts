@@ -3,11 +3,14 @@ import { Router, type IRouter } from "express";
 import {
   acceptFriendRequest,
   autoDisconnectFriends,
+  blockUser,
   cancelFriendRequest,
+  getFriendshipStatus,
   listFriendRequests,
   makeUsersFriends,
   rejectFriendRequest,
   sendFriendRequest,
+  unblockUser,
   unfriend,
 } from "../controllers/friendship.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
@@ -68,6 +71,27 @@ friendshipRoutes.post(
   "/auto-disconnect",
   authenticateAccessToken,
   autoDisconnectFriends
+);
+
+friendshipRoutes.get(
+  "/status/:userId",
+  authenticateAccessToken,
+  validateParams(unfriendParamsSchema),
+  getFriendshipStatus
+);
+
+friendshipRoutes.post(
+  "/block/:userId",
+  authenticateAccessToken,
+  validateParams(unfriendParamsSchema),
+  blockUser
+);
+
+friendshipRoutes.delete(
+  "/block/:userId",
+  authenticateAccessToken,
+  validateParams(unfriendParamsSchema),
+  unblockUser
 );
 
 friendshipRoutes.delete(

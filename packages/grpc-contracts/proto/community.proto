@@ -209,6 +209,9 @@ message CommunityChatSummary {
   // activity, so the joiner sees "You joined the community" while everyone else
   // keeps the community-wide message. Absent when the viewer has no personal line.
   CommunityChatLastMessage personalLastMessage = 5;
+  // Oldest unread message id, so the client can jump to it. "" iff
+  // unreadMessageCount == 0. Additive (field 7, defaults "" for older callers).
+  string firstUnreadMessageId = 7;
 }
 message GetCommunityChatSummariesResponse {
   repeated CommunityChatSummary summaries = 1;

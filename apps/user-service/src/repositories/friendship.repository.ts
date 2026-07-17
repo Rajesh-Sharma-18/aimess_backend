@@ -288,6 +288,43 @@ export const friendshipRepository = {
   },
 
   /**
+   * Friendship rows between `callerId` and any of `candidateIds` (either
+   * direction), plus the block rows touching `callerId` — the two reads the
+   * gRPC `CheckFriendships` relationship contract needs. Bounded by caller
+   * (candidateIds is capped upstream, same as {@link findAcceptedFriendIdsForUser}).
+   */
+  async findRelationshipsForUser(
+    callerId: string,
+    candidateIds: string[]
+  ): Promise<{ rows: FriendshipRow[]; blockedIds: Set<string> }> {
+    if (candidateIds.length === 0) return { rows: [], blockedIds: new Set() };
+    const [rows, blocks] = await Promise.all([
+      prisma.friendship.findMany({
+        where: {
+          OR: [
+            { requesterId: callerId, addresseeId: { in: candidateIds } },
+            { addresseeId: callerId, requesterId: { in: candidateIds } },
+          ],
+        },
+        select: FRIENDSHIP_SELECT,
+      }),
+      prisma.block.findMany({
+        where: {
+          OR: [
+            { blockerId: callerId, blockedId: { in: candidateIds } },
+            { blockedId: callerId, blockerId: { in: candidateIds } },
+          ],
+        },
+        select: { blockerId: true, blockedId: true },
+      }),
+    ]);
+    const blockedIds = new Set(
+      blocks.map((b) => (b.blockerId === callerId ? b.blockedId : b.blockerId))
+    );
+    return { rows, blockedIds };
+  },
+
+  /**
    * Returns the subset of `candidateIds` that are ACCEPTED friends with `callerId`,
    * regardless of who sent the original request. Bounded by caller (≤500 ids).
    * Used by community-service for server-side friend validation on add-members.
@@ -352,6 +389,27 @@ export const friendshipRepository = {
         OR: [{ blockerId: userId }, { blockedId: userId }],
       },
       select: { blockerId: true, blockedId: true },
+    });
+  },
+
+  /** Directional lookup — did `blockerId` specifically block `blockedId`? */
+  findBlock(blockerId: string, blockedId: string) {
+    return prisma.block.findUnique({
+      where: { blockerId_blockedId: { blockerId, blockedId } },
+      select: { id: true, blockerId: true, blockedId: true, createdAt: true },
+    });
+  },
+
+  createBlock(blockerId: string, blockedId: string) {
+    return prisma.block.create({
+      data: { blockerId, blockedId },
+      select: { id: true, blockerId: true, blockedId: true, createdAt: true },
+    });
+  },
+
+  async deleteBlock(blockerId: string, blockedId: string): Promise<void> {
+    await prisma.block.delete({
+      where: { blockerId_blockedId: { blockerId, blockedId } },
     });
   },
 };

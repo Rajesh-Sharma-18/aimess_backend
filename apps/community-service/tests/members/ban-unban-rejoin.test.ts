@@ -122,20 +122,21 @@ describe("banMember — reuses the leave removal core (architecture requirement)
     );
   });
 
-  it("keeps the community in the target's list — pushes the distinct community:membership:banned (lock in place, never a list-drop)", async () => {
+  it("flips the target's own view to read-only via community:membership:restricted (community stays in their list — restricted-access model)", async () => {
     await communityService.banMember(CID, ADMIN, TARGET);
 
     expect(pubUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       TARGET,
-      "community:membership:banned",
+      "community:membership:restricted",
       expect.objectContaining({
         communityId: CID,
-        userId: TARGET,
-        actorId: ADMIN,
+        membershipStatus: "BANNED",
+        isBanned: true,
+        reason: "banned",
       })
     );
-    // The list-drop event (used by kick/leave) must NOT fire for a ban.
+    // Must NOT fire the list-eviction event — a banned community stays visible.
     expect(pubUserEvent).not.toHaveBeenCalledWith(
       expect.anything(),
       TARGET,
@@ -195,11 +196,17 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
   it("flips status to LEFT (not ACTIVE) and clears ban metadata", async () => {
     const result = await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    expect(repo.updateMemberStatus).toHaveBeenCalledWith(CID, TARGET, "LEFT", {
-      bannedAt: null,
-      bannedBy: null,
-      banReason: null,
-    });
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      "LEFT",
+      { bannedAt: null, bannedBy: null, banReason: null },
+      undefined,
+      undefined,
+      // clearDismissed — a dismissedAt from this ban cycle must not hide a
+      // future re-ban from the target's list.
+      true
+    );
     expect(result.status).toBe("LEFT");
   });
 
@@ -207,6 +214,21 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
     expect(pubSysMsg).not.toHaveBeenCalled();
+  });
+
+  it("drops the community from the target's list via community:membership:removed (LEFT — must rejoin to see it again)", async () => {
+    await communityService.unbanMember(CID, ADMIN, TARGET);
+
+    expect(pubUserEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.objectContaining({
+        communityId: CID,
+        membershipStatus: "REMOVED",
+        reason: "unbanned",
+      })
+    );
   });
 
   it("rejects unbanning a member who is not currently BANNED", async () => {

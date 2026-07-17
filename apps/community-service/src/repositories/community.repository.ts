@@ -47,7 +47,7 @@ function mineActivitySelect(userId: string) {
     status: true,
     members: {
       where: { userId },
-      select: { role: true, status: true },
+      select: { role: true, status: true, dismissedAt: true },
     },
   } satisfies Prisma.CommunitySelect;
 }
@@ -527,7 +527,7 @@ export const communityRepository = {
   findMembership(communityId: string, userId: string) {
     return prisma.communityMember.findFirst({
       where: { communityId, userId },
-      select: { role: true, status: true },
+      select: { role: true, status: true, removedAt: true },
     });
   },
 
@@ -621,6 +621,10 @@ export const communityRepository = {
         bannedAt: true,
         bannedBy: true,
         banReason: true,
+        removedAt: true,
+        removedBy: true,
+        removedReason: true,
+        dismissedAt: true,
       },
     });
   },
@@ -675,6 +679,13 @@ export const communityRepository = {
         // is @default(now()) which only applies on create, so reactivation must
         // set it explicitly.
         joinedAt: new Date(),
+        // Fresh membership also clears any stale kick/dismiss markers from the
+        // previous membership cycle (removedAt is audit metadata for the OLD
+        // cycle; dismissedAt only applies to a BANNED row).
+        removedAt: { unset: true },
+        removedBy: { unset: true },
+        removedReason: { unset: true },
+        dismissedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -726,6 +737,10 @@ export const communityRepository = {
         status: CommunityMemberStatus.ACTIVE,
         role: CommunityMemberRole.ADMIN,
         joinedAt: new Date(),
+        removedAt: { unset: true },
+        removedBy: { unset: true },
+        removedReason: { unset: true },
+        dismissedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -821,7 +836,15 @@ export const communityRepository = {
       bannedBy: string | null;
       banReason: string | null;
     },
-    resetRole?: CommunityMemberRole
+    resetRole?: CommunityMemberRole,
+    removedMeta?: {
+      removedAt: Date | null;
+      removedBy: string | null;
+      removedReason: string | null;
+    },
+    // Unban passes true so a future re-ban shows up in the target's list again
+    // (dismissedAt only ever applies to the ban cycle that set it).
+    clearDismissed?: boolean
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
@@ -829,6 +852,8 @@ export const communityRepository = {
         status,
         ...(banMeta ?? {}),
         ...(resetRole ? { role: resetRole } : {}),
+        ...(removedMeta ?? {}),
+        ...(clearDismissed ? { dismissedAt: { unset: true } } : {}),
       },
       select: {
         id: true,
@@ -842,6 +867,9 @@ export const communityRepository = {
         bannedAt: true,
         bannedBy: true,
         banReason: true,
+        removedAt: true,
+        removedBy: true,
+        removedReason: true,
       },
     });
     publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
@@ -850,6 +878,20 @@ export const communityRepository = {
 
   // ponytail: markRemovedFromList removed — removedAt not in generated client.
   // Re-add after `prisma generate` includes the field.
+
+  /**
+   * Hide a BANNED community from the member's own list (self-dismiss). Writes
+   * ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
+   * (business rule: dismissing never lifts a ban; only an admin unban does).
+   * No chat-sync publish: nothing membership-relevant changed for chat-service.
+   */
+  setMemberDismissed(communityId: string, userId: string) {
+    return prisma.communityMember.update({
+      where: { communityId_userId: { communityId, userId } },
+      data: { dismissedAt: new Date() },
+      select: { id: true },
+    });
+  },
 
   /**
    * Members of a community filtered by status — offset/page pagination on id.
@@ -1066,11 +1108,24 @@ export const communityRepository = {
     const bound =
       params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
 
+    // Include BANNED alongside ACTIVE: a banned member's communities stay
+    // visible in their sidebar list (zero access — every read/write is
+    // rejected with USER_BANNED) until the user dismisses the entry themselves
+    // (dismissedAt set — see resolveSelfRemoval). LEFT and kicked members
+    // (status LEFT, removedAt is audit-only) are excluded — they must rejoin
+    // through the normal flow to see the community again.
+    const memberVisibilityFilter = {
+      OR: [
+        { status: CommunityMemberStatus.ACTIVE },
+        {
+          status: CommunityMemberStatus.BANNED,
+          dismissedAt: { isSet: false },
+        },
+      ],
+    };
     const membershipSome = {
       userId: params.userId,
-      status: {
-        in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
-      },
+      ...memberVisibilityFilter,
     };
     const where = {
       deletedAt: { isSet: false },
@@ -1114,12 +1169,21 @@ export const communityRepository = {
     cursor: { ts: Date; id: string } | null;
     limit: number;
   }) {
+    // Same visibility rule as {@link listMineByActivity} — ACTIVE plus
+    // non-dismissed BANNED (see the doc comment there for why).
+    const memberVisibilityFilter = {
+      OR: [
+        { status: CommunityMemberStatus.ACTIVE },
+        {
+          status: CommunityMemberStatus.BANNED,
+          dismissedAt: { isSet: false },
+        },
+      ],
+    };
     const membershipSome = {
       some: {
         userId: params.userId,
-        status: {
-          in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
-        },
+        ...memberVisibilityFilter,
       },
     };
 
@@ -1398,10 +1462,23 @@ export const communityRepository = {
     return rows.map((r) => r.communityId);
   },
 
-  /** Community ids where the user has an active ban. */
-  async findBannedCommunityIds(userId: string): Promise<string[]> {
+  /**
+   * Community ids where the user has an active ban. `excludeDismissed` narrows
+   * to bans the user hasn't hidden from their own list yet — used by the
+   * mine-search widening so a dismissed banned community stays hidden there,
+   * matching `listMineByActivity`. Default (all bans) backs the join-request /
+   * invite exclusion lists, where dismissedness is irrelevant (still banned).
+   */
+  async findBannedCommunityIds(
+    userId: string,
+    opts?: { excludeDismissed?: boolean }
+  ): Promise<string[]> {
     const rows = await prisma.communityMember.findMany({
-      where: { userId, status: CommunityMemberStatus.BANNED },
+      where: {
+        userId,
+        status: CommunityMemberStatus.BANNED,
+        ...(opts?.excludeDismissed ? { dismissedAt: { isSet: false } } : {}),
+      },
       select: { communityId: true },
     });
     return rows.map((r) => r.communityId);

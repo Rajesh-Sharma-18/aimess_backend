@@ -143,6 +143,25 @@ export async function resolveContentFiles<T extends MediaFileLike>(
 }
 
 /**
+ * Resolve-on-read for a single sticker/GIF-style attachment object that lives
+ * OUTSIDE `content.files[]` (e.g. `content.sticker`) and is therefore never
+ * touched by {@link applyUrlMapToFiles}/{@link resolveContentFiles}. Same
+ * contract as those: an external http(s) `objectKey` (e.g. a Giphy/Tenor URL)
+ * resolves to itself via {@link urlFromMap}'s `isHttpUrl` fallback; a real
+ * object key resolves via the page's batched `urlMap`. Add the sticker's key
+ * to the same `resolveMediaUrlMap`/`resolveMediaUrl` call other fields use —
+ * no extra round trip.
+ */
+export function resolveStickerField<T extends MediaFileLike | null | undefined>(
+  sticker: T,
+  urlMap: Map<string, string>
+): T {
+  if (!sticker || typeof sticker !== "object") return sticker;
+  const url = urlFromMap(urlMap, fileMediaKey(sticker));
+  return url ? ({ ...sticker, url } as T) : sticker;
+}
+
+/**
  * Resolve-on-read for a reply's `quoteData.thumbnail` — same contract as every
  * other stored media field: the persisted snapshot keeps the raw objectKey (or
  * `null`), and this stamps a fresh full URL from the page's already-resolved

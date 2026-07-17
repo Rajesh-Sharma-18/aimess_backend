@@ -177,11 +177,23 @@ model CommunityMember {
   bannedAt    DateTime?
   bannedBy    String?
   banReason   String?
-  // Set when the viewer manually removes this community from their own list
-  // while not ACTIVE (BANNED or LEFT) — Telegram-style "delete for me" on the
-  // roster row. Never cleared automatically; only a fresh join (new ACTIVE
-  // row via rejoin/admin re-add) restores visibility. Excluded from `mine`.
+  // Admin/moderator kick marker — status stays LEFT (same as a voluntary leave,
+  // so every existing rejoin-flow "reactivate a LEFT row" check keeps working
+  // unmodified), but a non-null removedAt distinguishes an admin kick from a
+  // genuine voluntary leave. AUDIT METADATA ONLY — a kicked member is treated
+  // exactly like a voluntary leave everywhere (not visible in their list, no
+  // access, normal rejoin flow). Mirrors the bannedAt/bannedBy pair. Cleared
+  // on rejoin.
   removedAt   DateTime?
+  removedBy   String?
+  removedReason String?
+  // "User hid this BANNED community from their own list" flag. A ban keeps the
+  // community visible in the target's list until THEY dismiss it; dismissing
+  // sets this WITHOUT touching status/ban metadata (the ban must survive —
+  // only an admin unban lifts it, which also unsets this so a future re-ban is
+  // visible again). Follows the deletedAt idiom: set a Date, `unset` to clear,
+  // filter with `{ isSet: false }` (never explicit null).
+  dismissedAt DateTime?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -196,6 +208,8 @@ model CommunityMember {
   // also backs the admin member list's username (display name) sort.
   @@index([communityId, status, bannedAt])
   @@index([communityId, status, snapshotDisplayName])
+  // "My list" query: status=ACTIVE OR (status=BANNED AND dismissedAt unset).
+  @@index([userId, status, dismissedAt])
   @@map("community_members")
 }
 

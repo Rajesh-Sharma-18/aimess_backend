@@ -26,8 +26,13 @@ jest.mock("../../src/messaging/publish-friendship.js", () => ({
   publishFriendRequestedSafe: jest.fn(),
   publishFriendAcceptedSafe: jest.fn(),
   publishFriendUnfriendedSafe: jest.fn(),
+  publishFriendshipBlockedSafe: jest.fn(),
   publishFriendshipCreatedSafe: jest.fn(),
   publishFriendshipDeletedSafe: jest.fn(),
+}));
+jest.mock("../../src/lib/friend-socket.js", () => ({
+  emitFriendEventSafe: jest.fn(),
+  emitFriendEventToPairSafe: jest.fn(),
 }));
 jest.mock("../../src/grpc/messaging.client.js", () => ({
   messagingGrpcClient: {

@@ -500,11 +500,22 @@ export class LivestreamService {
   /**
    * SRS on_unpublish hook: the publisher dropped.
    *
-   * LIVE → RECONNECTING: gives the publisher a short grace window
-   * (`STREAM_RECONNECT_GRACE_MS`) to come back before the stream is finalized.
-   * Handles legitimate blips (mobile signal drop, browser refresh) without
-   * ending the stream. The sweeper finalizes any RECONNECTING stream whose
-   * grace window expires without a republish.
+   * Source-type-aware behaviour on LIVE → …:
+   *   - PHONE_CAMERA (WHIP): LIVE → RECONNECTING. Browser-refresh / mobile-blip
+   *     is the exact case the grace window (`STREAM_RECONNECT_GRACE_MS`) was
+   *     designed for — the tab remounts and republishes with the same
+   *     streamKey within seconds, and viewers see "Reconnecting…" instead of
+   *     a dead stream. The sweeper finalizes RECONNECTING streams whose grace
+   *     window expires without a republish.
+   *   - OBS_RTMP: LIVE → ENDED immediately. OBS Stop and OBS network drops
+   *     both look identical to SRS (RTMP close), and OBS users predominantly
+   *     mean it when they stop — the 45s "waiting to reconnect" limbo is
+   *     confusing UX for an OBS session that was clearly stopped on purpose.
+   *     If an OBS streamer with a genuine network blip loses their stream,
+   *     they can restart it (rarely mid-broadcast anyway; OBS is typically
+   *     wired ethernet at a desk).
+   *   - URL / YOUTUBE: LIVE → ENDED. Neither carries a browser-side
+   *     reconnect concept; the source is either publishable or it isn't.
    *
    * RECONNECTING/ENDED → no-op: idempotent against a duplicate or
    * retried on_unpublish. Critically, a second unpublish while already
@@ -531,18 +542,19 @@ export class LivestreamService {
       return;
     }
 
-    if (stream.status === "LIVE") {
+    if (stream.status === "LIVE" && stream.sourceType === "PHONE_CAMERA") {
       const updated = await this.streamRepo.updateById(stream.id, {
         status: "RECONNECTING",
         disconnectedAt: new Date(),
       });
       await this.publishStatus(updated.id, "RECONNECTING", updated.communityId);
       logger.info(
-        `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window`
+        `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window (source=PHONE_CAMERA)`
       );
       return;
     }
 
+    // OBS_RTMP / URL / YOUTUBE / PENDING → straight to ENDED.
     await this.finalizeAsEnded(stream);
   }
 
@@ -784,6 +796,45 @@ export class LivestreamService {
     return { endedCount };
   }
 
+  /**
+   * Best-effort bulk force-end of every non-terminal stream in one community.
+   * Called (via gRPC) when the community is deleted or closed/suspended — a
+   * stream cannot legitimately keep running once its home community disallows
+   * activity. Same `finalizeAsEnded` tail as {@link forceEndStreamsByCreator} —
+   * one failure never blocks the rest; never throws to the caller.
+   */
+  async forceEndStreamsByCommunity(
+    communityId: string,
+    reason: string
+  ): Promise<{ endedCount: number }> {
+    let streams: Livestream[];
+    try {
+      streams = await this.streamRepo.findActiveByCommunity(communityId);
+    } catch (err) {
+      logger.warn(
+        `forceEndStreamsByCommunity: query failed for community=${communityId}: ${String(err)}`
+      );
+      return { endedCount: 0 };
+    }
+    if (!streams.length) return { endedCount: 0 };
+
+    let endedCount = 0;
+    for (const stream of streams) {
+      try {
+        await this.finalizeAsEnded(stream);
+        endedCount++;
+        logger.info(
+          `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`
+        );
+      } catch (err) {
+        logger.warn(
+          `forceEndStreamsByCommunity: failed to end stream=${stream.id}: ${String(err)}`
+        );
+      }
+    }
+    return { endedCount };
+  }
+
   /** Owner updates editable stream metadata (title, description, thumbnail). */
   async updateStream(
     id: string,
@@ -894,7 +945,7 @@ export class LivestreamService {
     const view = toView(stream);
 
     try {
-      view.viewerCount = await this.redis.scard(sessionKey(id));
+      view.viewerCount = await this.redis.hlen(sessionKey(id));
     } catch (error) {
       logger.warn(
         `live viewer count read failed for stream=${id}: ${String(error)}`
@@ -1154,7 +1205,7 @@ export class LivestreamService {
     const row = toAdminRow(s);
     if (s.status === "LIVE" || s.status === "RECONNECTING") {
       try {
-        row.viewerCount = await this.redis.scard(sessionKey(s.id));
+        row.viewerCount = await this.redis.hlen(sessionKey(s.id));
       } catch (error) {
         logger.warn(
           `admin live viewer count read failed for stream=${s.id}: ${String(error)}`
@@ -1183,8 +1234,8 @@ export class LivestreamService {
    * username/display-name/avatar (best-effort, via user-service) and each
    * viewer's join time (best-effort, from Redis — null if unavailable). The
    * userId set and join-time hash are both maintained by api-gateway:
-   * `stream:session:users:<streamId>` (Set) and
-   * `stream:session:joined:<streamId>` (Hash, userId -> epoch ms).
+   * `stream:session:users:<streamId>` (Hash, userId -> open-socket refcount)
+   * and `stream:session:joined:<streamId>` (Hash, userId -> epoch ms).
    */
   async getViewers(
     id: string,
@@ -1198,7 +1249,7 @@ export class LivestreamService {
 
     let userIds: string[];
     try {
-      userIds = await this.redis.smembers(sessionKey(id));
+      userIds = await this.redis.hkeys(sessionKey(id));
     } catch (error) {
       logger.warn(
         `getViewers Redis read failed for stream=${id}: ${String(error)}`
@@ -1790,7 +1841,7 @@ export class LivestreamService {
       if (!isPresent) {
         try {
           isPresent =
-            (await this.redis.sismember(sessionKey(stream.id), userId)) === 1;
+            (await this.redis.hexists(sessionKey(stream.id), userId)) === 1;
         } catch {
           isPresent = false;
         }
@@ -1912,7 +1963,7 @@ export class LivestreamService {
       if (!isPresent) {
         try {
           isPresent =
-            (await this.redis.sismember(sessionKey(stream.id), userId)) === 1;
+            (await this.redis.hexists(sessionKey(stream.id), userId)) === 1;
         } catch {
           isPresent = false;
         }
@@ -1989,7 +2040,7 @@ export class LivestreamService {
 
     let viewerCount = stream.viewerCount;
     try {
-      viewerCount = await this.redis.scard(sessionKey(streamId));
+      viewerCount = await this.redis.hlen(sessionKey(streamId));
     } catch {
       // best-effort
     }

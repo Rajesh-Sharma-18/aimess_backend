@@ -27,6 +27,8 @@ export interface CommunityChatLastMessage {
 export interface CommunityChatSummary {
   communityId: string;
   unreadMessageCount: number;
+  /** Oldest unread message id, so the client can jump to it. Null iff unreadMessageCount === 0. */
+  firstUnreadMessageId: string | null;
   /** false => lastMessageActivity must be rendered as null. */
   hasLastMessage: boolean;
   /**
@@ -504,6 +506,9 @@ export function createChatClient(): ChatClient {
         return (res.summaries ?? []).map((s) => ({
           communityId: s.communityId,
           unreadMessageCount: Number(s.unreadMessageCount ?? 0),
+          // proto3 defaults an unset string to "" — normalize to null (also
+          // covers the pre-fix upstream, which sends "" for every summary).
+          firstUnreadMessageId: s.firstUnreadMessageId || null,
           hasLastMessage: Boolean(s.hasLastMessage),
           perUserResolved: Boolean(s.perUserResolved),
           lastMessage:

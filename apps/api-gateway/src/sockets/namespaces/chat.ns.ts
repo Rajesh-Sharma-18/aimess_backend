@@ -1148,6 +1148,12 @@ export function registerChatNamespace(
       }
     };
 
+    // Realtime friend:* fan-out (all logged-in devices, both parties) is
+    // published centrally by user-service after every DB mutation — see
+    // `apps/user-service/src/lib/friend-socket.ts` — so it fires identically
+    // whether the client called this RPC or the REST API directly. These
+    // handlers are thin proxies only; they must NOT also publish, or every
+    // socket-originated action would double-emit.
     socket.on(
       "friend.request",
       (payload: unknown, callback?: (res: unknown) => void) => {
@@ -1169,17 +1175,6 @@ export function registerChatNamespace(
             return;
           }
           const reqData = result.data as { id?: string } | null;
-          void redisPub.publish(
-            `user:${r.data.addresseeId}`,
-            JSON.stringify({
-              event: "friend.requested",
-              data: {
-                requestId: reqData?.id ?? "",
-                requesterId: userId,
-                addresseeId: r.data.addresseeId,
-              },
-            })
-          );
           ackOk(callback, "SOCKET_FRIEND_REQUEST_SENT", locale, {
             requestId: reqData?.id,
           });
@@ -1207,20 +1202,6 @@ export function registerChatNamespace(
               locale
             );
             return;
-          }
-          const reqData = result.data as { requesterId?: string } | null;
-          if (reqData?.requesterId) {
-            void redisPub.publish(
-              `user:${reqData.requesterId}`,
-              JSON.stringify({
-                event: "friend.accepted",
-                data: {
-                  requestId: r.data.requestId,
-                  acceptedBy: userId,
-                  requesterId: reqData.requesterId,
-                },
-              })
-            );
           }
           ackOk(callback, "SOCKET_FRIEND_REQUEST_ACCEPTED", locale);
         })();
@@ -1271,13 +1252,6 @@ export function registerChatNamespace(
             );
             return;
           }
-          void redisPub.publish(
-            `user:${r.data.targetUserId}`,
-            JSON.stringify({
-              event: "friend.removed",
-              data: { removedBy: userId, userId: r.data.targetUserId },
-            })
-          );
           ackOk(callback, "SOCKET_FRIEND_REMOVED", locale);
         })();
       }

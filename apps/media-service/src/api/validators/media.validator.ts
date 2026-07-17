@@ -21,7 +21,11 @@ export const uploadUrlSchema = z.object({
 });
 
 export const downloadUrlSchema = z.object({
-  objectKey: z.string().min(1).max(500),
+  // Normally an internal storage key; also accepts an external http(s) URL
+  // (e.g. a Giphy/Tenor GIF/sticker a client forwards as objectKey) — the
+  // service passes that straight through as the downloadUrl instead of
+  // trying to sign it. See media.service.ts#generateDownloadUrl.
+  objectKey: z.string().min(1).max(2000),
   category: z.enum(VALID_CATEGORIES),
 });
 

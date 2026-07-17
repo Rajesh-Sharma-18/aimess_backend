@@ -5,6 +5,7 @@ import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import {
   buildRelationshipLookup,
+  getFriendPeerIds,
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
@@ -44,10 +45,24 @@ export type SearchUserItem = {
    * friendship from `roomId`.
    */
   isFriend: boolean;
-  /** Richer relationship: FRIEND | PENDING_IN | PENDING_OUT | NONE. */
+  /** Relationship: FRIEND | PENDING | NONE. */
   relationshipStatus: RelationshipStatus;
   /** Friendship row id when FRIEND/PENDING; null when NONE. */
   friendshipId: string | null;
+  /** Who sent the PENDING request; null when FRIEND/NONE. */
+  requesterId: string | null;
+  /**
+   * Normalized relationship the FE merges live `friend:*` socket updates
+   * into by `userId` — status/direction/action flags, never re-derived
+   * client-side. Additive alongside the legacy flat fields above.
+   */
+  relationship: {
+    status: RelationshipStatus;
+    direction: "OUTGOING" | "INCOMING" | null;
+    canAccept: boolean;
+    canReject: boolean;
+    canCancel: boolean;
+  };
 };
 
 export type SearchGroupItem = {
@@ -108,6 +123,14 @@ async function toUserItem(
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
     friendshipId: relationship.friendshipId,
+    requesterId: relationship.requesterId,
+    relationship: {
+      status: relationship.relationshipStatus,
+      direction: relationship.direction,
+      canAccept: relationship.canAccept,
+      canReject: relationship.canReject,
+      canCancel: relationship.canCancel,
+    },
   };
 }
 
@@ -230,30 +253,35 @@ export const userSearchService = {
       blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
     );
     const relationshipOf = buildRelationshipLookup(viewerId, relationships);
-    // `peers` arrives ordered by lastMessageAt desc from chat-service.
+    // `peers` arrives ordered by lastMessageAt desc from chat-service; used
+    // only to attach `roomId` metadata and to order friends by recency —
+    // never to decide bucket membership.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
     );
-    const chatPeerIds = [...peerRoomByUserId.keys()].filter(
+    const roomOrderIndex = new Map(peers.map((p, idx) => [p.peerUserId, idx]));
+    const friendIds = getFriendPeerIds(viewerId, relationships).filter(
       (id) => !blockedIds.has(id)
     );
 
     // ---------------------------------------------------------------------
-    // Chat — max 10: private peers with a room + groups the viewer actively
+    // Chat — max 10: accepted friends (isFriend === true), regardless of
+    // whether a private room exists yet, + groups the viewer actively
     // belongs to.
     // ---------------------------------------------------------------------
     const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
-      chatPeerIds.length
-        ? userProfileRepository.findUsersInList(chatPeerIds, q, 0, CHAT_LIMIT)
+      friendIds.length
+        ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
     ]);
 
-    const chatOrderIndex = new Map(chatPeerIds.map((id, idx) => [id, idx]));
+    // Friends with an existing room sort by recency first; roomless friends
+    // fall to the end in query order.
     chatUserProfiles.sort(
       (a, b) =>
-        (chatOrderIndex.get(a.userId) ?? 0) -
-        (chatOrderIndex.get(b.userId) ?? 0)
+        (roomOrderIndex.get(a.userId) ?? Infinity) -
+        (roomOrderIndex.get(b.userId) ?? Infinity)
     );
 
     const chat: SearchResultItem[] = [];
@@ -278,13 +306,15 @@ export const userSearchService = {
     );
 
     // ---------------------------------------------------------------------
-    // Other — max `limit` (default 10, paginated): users without a room,
-    // groups the viewer isn't an active member of. Excludes Chat.
+    // Other — max `limit` (default 10, paginated): non-friends (isFriend
+    // === false), groups the viewer isn't an active member of. A user here
+    // may still carry a `roomId` (e.g. unfriended peers) — that's fine,
+    // roomId is conversation metadata only and plays no role in bucketing.
     // ---------------------------------------------------------------------
     const excludeUserIds = [
       viewerId,
       ...blockedIds,
-      ...chatPeerIds, // anyone with an existing room is never "other"
+      ...friendIds, // only accepted friends are excluded from "other"
     ];
     const excludeGroupIds = [...chatGroupIdSet];
 
@@ -306,7 +336,13 @@ export const userSearchService = {
     const other: SearchResultItem[] = [];
     for (const p of otherUserProfiles) {
       if (other.length >= otherTake) break;
-      other.push(await toUserItem(p, null, relationshipOf(p.userId)));
+      other.push(
+        await toUserItem(
+          p,
+          peerRoomByUserId.get(p.userId) ?? null,
+          relationshipOf(p.userId)
+        )
+      );
     }
     for (const g of otherGroupSummaries) {
       if (other.length >= otherTake) break;

@@ -962,12 +962,15 @@ export class GeneralRoomMessageRepository {
   }
 
   /**
-   * Bulk unread counts for many rooms in ONE aggregateRaw: for each room, count
-   * visible messages (not deleted-for-all, not deleted-for-me) created strictly
-   * after that room's per-user read threshold. A `$switch` selects the right
-   * threshold per roomId (default epoch 0 for never-read rooms). Returns a
-   * Record<roomId(hex), number>; rooms with no matching docs are absent (treat
-   * as 0 by the caller).
+   * Bulk unread counts (+ oldest unread message id) for many rooms in ONE
+   * aggregateRaw: for each room, count visible messages (not deleted-for-all,
+   * not deleted-for-me) created strictly after that room's per-user read
+   * threshold, and capture the id of the OLDEST such message (`$sort` by
+   * createdAt immediately before `$group` makes `$first` deterministic — Mongo
+   * honors sort order into an immediately-following $group accumulator). A
+   * `$switch` selects the right threshold per roomId (default epoch 0 for
+   * never-read rooms). Returns a Record<roomId(hex), {count, firstUnreadMessageId}>;
+   * rooms with no matching docs are absent (treat as 0/null by the caller).
    *
    * `roomId` is an ObjectId column, so thresholds are matched via `{ $oid }` and
    * the grouped `_id` comes back as extended JSON `{ $oid: "<hex>" }`.
@@ -975,7 +978,7 @@ export class GeneralRoomMessageRepository {
   async countUnreadBulk(params: {
     userId: string;
     thresholds: Array<{ roomId: string; afterDate: Date }>;
-  }): Promise<Record<string, number>> {
+  }): Promise<Record<string, { count: number; firstUnreadMessageId: string }>> {
     if (!params.thresholds.length) return {};
 
     const oids = params.thresholds.map((t) => ({ $oid: t.roomId }));
@@ -1014,17 +1017,33 @@ export class GeneralRoomMessageRepository {
           },
         },
         { $match: { $expr: { $gt: ["$createdAt", "$_thr"] } } },
-        { $group: { _id: "$roomId", total: { $sum: 1 } } },
+        { $sort: { createdAt: 1 } },
+        {
+          $group: {
+            _id: "$roomId",
+            total: { $sum: 1 },
+            firstUnreadId: { $first: "$_id" },
+          },
+        },
       ] as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{
       _id: { $oid?: string } | string;
       total: number;
+      firstUnreadId: { $oid?: string } | string;
     }>;
 
-    const counts: Record<string, number> = {};
+    const counts: Record<
+      string,
+      { count: number; firstUnreadMessageId: string }
+    > = {};
     for (const row of result) {
       const hex = typeof row._id === "string" ? row._id : row._id?.$oid;
-      if (hex) counts[hex] = row.total;
+      const firstId =
+        typeof row.firstUnreadId === "string"
+          ? row.firstUnreadId
+          : row.firstUnreadId?.$oid;
+      if (hex && firstId)
+        counts[hex] = { count: row.total, firstUnreadMessageId: firstId };
     }
     return counts;
   }
@@ -1320,6 +1339,8 @@ export class GeneralRoomMessageRepository {
     type?: string;
     cursor?: string | null;
     limit: number;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
     // Community enum is lowercase (e.g. "image"); GIF/VIDEO/DOCUMENT are carried
     // as "custom" today. Map the incoming upper-case filter to its community
@@ -1340,8 +1361,13 @@ export class GeneralRoomMessageRepository {
             // instead of silently returning everything.
             (mappedType ?? "__none__")
           : { in: mediaTypes },
-        ...(params.cursor
-          ? { createdAt: { lt: new Date(params.cursor) } }
+        ...(params.cursor || params.readCutoff
+          ? {
+              createdAt: {
+                ...(params.cursor ? { lt: new Date(params.cursor) } : {}),
+                ...(params.readCutoff ? { lte: params.readCutoff } : {}),
+              },
+            }
           : {}),
       },
       orderBy: { createdAt: "desc" },

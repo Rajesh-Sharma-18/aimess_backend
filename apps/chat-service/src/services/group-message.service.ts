@@ -48,6 +48,7 @@ import {
   applyUrlMapToFiles,
   fileMediaKey,
   resolveQuoteThumbnail,
+  resolveStickerField,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
@@ -1154,6 +1155,12 @@ export class GroupMessageService {
           if (key) mediaKeys.push(key);
         }
       }
+      const sticker = (message.content as Record<string, unknown> | null)
+        ?.sticker;
+      if (sticker && typeof sticker === "object") {
+        const key = fileMediaKey(sticker as MediaFileLike);
+        if (key) mediaKeys.push(key);
+      }
       // Reaction-user avatars live inside the stored `{ emoji: [{ avatar }] }`
       // map; collect them so they can be stamped in place (shape preserved).
       const reactions = message.reactions as Record<string, unknown> | null;
@@ -1190,12 +1197,29 @@ export class GroupMessageService {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }
 
-      // Stamp resolved download URLs onto attachment files (content.files[]).
+      // Stamp resolved download URLs onto attachment files (content.files[])
+      // and the sticker sub-object (content.sticker) — the latter lives
+      // outside `files[]` and is otherwise never resolve-on-read.
       const content = wire.content as Record<string, unknown> | null;
-      if (content && Array.isArray(content.files)) {
+      if (content) {
         wire.content = {
           ...content,
-          files: applyUrlMapToFiles(content.files as MediaFileLike[], urlMap),
+          ...(Array.isArray(content.files)
+            ? {
+                files: applyUrlMapToFiles(
+                  content.files as MediaFileLike[],
+                  urlMap
+                ),
+              }
+            : {}),
+          ...(content.sticker && typeof content.sticker === "object"
+            ? {
+                sticker: resolveStickerField(
+                  content.sticker as MediaFileLike,
+                  urlMap
+                ),
+              }
+            : {}),
         };
       }
 

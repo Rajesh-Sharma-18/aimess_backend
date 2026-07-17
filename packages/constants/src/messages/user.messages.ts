@@ -138,6 +138,26 @@ export const USER_MESSAGES = {
     vi: "Không thể gửi lời mời kết bạn cho người dùng này",
     en: "Unable to send a friend request to this user.",
   },
+  FRIEND_USER_BLOCKED: {
+    vi: "Đã chặn người dùng",
+    en: "User blocked.",
+  },
+  FRIEND_USER_UNBLOCKED: {
+    vi: "Đã bỏ chặn người dùng",
+    en: "User unblocked.",
+  },
+  FRIEND_ALREADY_BLOCKED: {
+    vi: "Bạn đã chặn người dùng này",
+    en: "You have already blocked this user.",
+  },
+  FRIEND_NOT_BLOCKED: {
+    vi: "Bạn chưa chặn người dùng này",
+    en: "You have not blocked this user.",
+  },
+  USER_FRIENDSHIP_STATUS_FETCHED: {
+    vi: "Lấy trạng thái kết bạn thành công",
+    en: "Friendship status retrieved successfully.",
+  },
   USERS_FETCHED: {
     vi: "Lấy danh sách người dùng thành công",
     en: "Users retrieved successfully.",

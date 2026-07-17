@@ -5,9 +5,11 @@
  * Scenarios:
  *  1. Active member  → removed via the shared leave workflow; other members
  *     untouched (no repo call touches any other userId).
- *  2. Banned member  → persists a per-user list-hide (removedAt) via
- *     markRemovedFromList — a BANNED membership now STAYS in "my communities"
- *     (ban only revokes access), so removal is a real, persisted action.
+ *  2. Banned member  → the community was still visible in "my communities",
+ *     so this call HIDES it (dismissedAt) — the ban itself survives (status
+ *     stays BANNED, ban metadata untouched); only an admin unban lifts it.
+ *  2b. Kicked member (LEFT + removedAt audit marker) → already gone from the
+ *     list; idempotent no-op success.
  *  3. Admin/owner    → rejected with COMMUNITY_OWNER_CANNOT_DELETE, no writes.
  *  4. Validation     → community not found / never a member → 404-mapped errors.
  *  5. Regression     → leaveCommunity's own admin-restriction error uses the
@@ -105,31 +107,33 @@ describe("deleteCommunityForSelf — active member", () => {
   });
 });
 
-describe("deleteCommunityForSelf — banned member", () => {
+describe("deleteCommunityForSelf — banned member (community was still in their list; this hides it, the ban survives)", () => {
   beforeEach(() => {
     repo.findById.mockResolvedValue(mockCommunity);
     repo.findMemberByUserId.mockResolvedValue({
       ...mockActiveMembership,
       status: "BANNED",
+      bannedAt: new Date(),
+      dismissedAt: null,
     });
+    repo.setMemberDismissed.mockResolvedValue({ id: "member-row-1" });
   });
 
-  it("resolves without throwing (no error surfaced for a banned caller)", async () => {
+  it("resolves without throwing", async () => {
     await expect(
       communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID)
     ).resolves.toBeUndefined();
   });
 
-  it("persists removedAt via markRemovedFromList and broadcasts the list-drop to every device — never touches status/role", async () => {
+  it("sets dismissedAt WITHOUT touching status/ban metadata, and publishes the personal removal event so it drops from the caller's list", async () => {
     await communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID);
 
-    expect(repo.markRemovedFromList).toHaveBeenCalledWith(
+    expect(repo.setMemberDismissed).toHaveBeenCalledWith(
       COMMUNITY_ID,
       CALLER_ID
     );
-    // The BANNED status/role itself is never mutated by a list-removal.
+    // The ban must remain: no status flip, no ban-metadata clear.
     expect(repo.updateMemberStatus).not.toHaveBeenCalled();
-    expect(publishRoomEvent).not.toHaveBeenCalled();
     expect(publishUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       CALLER_ID,
@@ -140,14 +144,47 @@ describe("deleteCommunityForSelf — banned member", () => {
       })
     );
   });
+
+  it("already dismissed → idempotent no-op success", async () => {
+    repo.findMemberByUserId.mockResolvedValue({
+      ...mockActiveMembership,
+      status: "BANNED",
+      bannedAt: new Date(),
+      dismissedAt: new Date(),
+    });
+
+    await expect(
+      communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID)
+    ).resolves.toBeUndefined();
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
 });
 
-describe("deleteCommunityForSelf — already left (idempotent re-delete)", () => {
+describe("deleteCommunityForSelf — kicked member (LEFT + removedAt audit marker)", () => {
+  it("is already gone from the list → idempotent no-op success, marker untouched", async () => {
+    repo.findById.mockResolvedValue(mockCommunity);
+    repo.findMemberByUserId.mockResolvedValue({
+      ...mockActiveMembership,
+      status: "LEFT",
+      removedAt: new Date(),
+    });
+
+    await expect(
+      communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID)
+    ).resolves.toBeUndefined();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteCommunityForSelf — already left (genuine voluntary leave, idempotent re-delete)", () => {
   it("resolves without throwing and performs no mutation", async () => {
     repo.findById.mockResolvedValue(mockCommunity);
     repo.findMemberByUserId.mockResolvedValue({
       ...mockActiveMembership,
       status: "LEFT",
+      removedAt: null,
     });
 
     await expect(

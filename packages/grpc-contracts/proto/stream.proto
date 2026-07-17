@@ -45,6 +45,12 @@ service StreamService {
   // still be legitimately live in a different community). Never fails the
   // caller — same contract as NotifyMemberBanStatus above.
   rpc ForceEndStreamsByCreator (ForceEndStreamsByCreatorRequest) returns (ForceEndStreamsByCreatorResponse);
+  // Best-effort bulk force-end: every non-terminal (PENDING/LIVE/RECONNECTING)
+  // stream in a community, regardless of creator. Called when a community is
+  // deleted or closed/suspended — a broadcast whose home community no longer
+  // allows activity cannot legitimately keep running. Never fails the caller —
+  // same contract as ForceEndStreamsByCreator above.
+  rpc ForceEndStreamsByCommunity (ForceEndStreamsByCommunityRequest) returns (ForceEndStreamsByCommunityResponse);
 
   // Check whether a user already has a LIVE or RECONNECTING stream in any
   // community. community-service calls this to populate `currentUserIsStreaming`
@@ -305,6 +311,15 @@ message ForceEndStreamsByCreatorRequest {
   string reason       = 3; // free-text, logged only (e.g. "ACCOUNT_BANNED")
 }
 message ForceEndStreamsByCreatorResponse {
+  bool  ok          = 1; // always true — best-effort, never fails the caller
+  int64 ended_count = 2;
+}
+
+message ForceEndStreamsByCommunityRequest {
+  string community_id = 1;
+  string reason       = 2; // free-text, logged only (e.g. "COMMUNITY_DELETED")
+}
+message ForceEndStreamsByCommunityResponse {
   bool  ok          = 1; // always true — best-effort, never fails the caller
   int64 ended_count = 2;
 }

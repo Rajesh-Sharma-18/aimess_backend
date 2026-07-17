@@ -28,6 +28,7 @@ import {
   urlFromMap,
   resolveContentFiles,
   resolveQuoteThumbnail,
+  fileMediaKey,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -510,11 +511,13 @@ export class ChatMessageOrchestrator {
     const location = this.firstAttachmentOfType(params.attachments, "location");
     const contact = this.firstAttachmentOfType(params.attachments, "contact");
     const sticker = this.firstAttachmentOfType(params.attachments, "sticker");
-    const [bcastSenderAvatar, bcastFiles, bcastQuote] = await Promise.all([
-      resolveMediaUrl(senderAvatar || ""),
-      resolveContentFiles(files as MediaFileLike[]),
-      this.resolveBroadcastQuote(saved.quoteData),
-    ]);
+    const [bcastSenderAvatar, bcastFiles, bcastQuote, bcastSticker] =
+      await Promise.all([
+        resolveMediaUrl(senderAvatar || ""),
+        resolveContentFiles(files as MediaFileLike[]),
+        this.resolveBroadcastQuote(saved.quoteData),
+        this.resolveStickerAttachment(sticker),
+      ]);
 
     const wireEvent: Record<string, unknown> = {
       // V2 canonical fields (mirror grpc sendCommunityMessage).
@@ -532,7 +535,7 @@ export class ChatMessageOrchestrator {
         files: bcastFiles,
         ...(location ? { location } : {}),
         ...(contact ? { contact } : {}),
-        ...(sticker ? { sticker } : {}),
+        ...(bcastSticker ? { sticker: bcastSticker } : {}),
       },
       reactions: [],
       message: saved.message ?? "",
@@ -571,10 +574,12 @@ export class ChatMessageOrchestrator {
           rowAttachments as Array<Record<string, unknown>>,
           "sticker"
         );
-        const [rowBcastFiles, rowBcastQuote] = await Promise.all([
-          resolveContentFiles(rowAttachments),
-          this.resolveBroadcastQuote(row.quoteData),
-        ]);
+        const [rowBcastFiles, rowBcastQuote, rowBcastSticker] =
+          await Promise.all([
+            resolveContentFiles(rowAttachments),
+            this.resolveBroadcastQuote(row.quoteData),
+            this.resolveStickerAttachment(rowSticker),
+          ]);
         const rowWire: Record<string, unknown> = {
           id: row.id,
           messageId: row.id,
@@ -590,7 +595,7 @@ export class ChatMessageOrchestrator {
             files: rowBcastFiles,
             ...(rowLocation ? { location: rowLocation } : {}),
             ...(rowContact ? { contact: rowContact } : {}),
-            ...(rowSticker ? { sticker: rowSticker } : {}),
+            ...(rowBcastSticker ? { sticker: rowBcastSticker } : {}),
           },
           reactions: [],
           message: row.message ?? "",
@@ -740,11 +745,13 @@ export class ChatMessageOrchestrator {
     const location = this.firstAttachmentOfType(attachments, "location");
     const contact = this.firstAttachmentOfType(attachments, "contact");
     const sticker = this.firstAttachmentOfType(attachments, "sticker");
-    const [bcastSenderAvatar, bcastFiles, bcastQuote] = await Promise.all([
-      resolveMediaUrl(saved.senderAvatar || senderAvatar || ""),
-      resolveContentFiles(attachments as MediaFileLike[]),
-      this.resolveBroadcastQuote(saved.quoteData),
-    ]);
+    const [bcastSenderAvatar, bcastFiles, bcastQuote, bcastSticker] =
+      await Promise.all([
+        resolveMediaUrl(saved.senderAvatar || senderAvatar || ""),
+        resolveContentFiles(attachments as MediaFileLike[]),
+        this.resolveBroadcastQuote(saved.quoteData),
+        this.resolveStickerAttachment(sticker),
+      ]);
 
     const wireEvent: Record<string, unknown> = {
       id: saved.id,
@@ -761,7 +768,7 @@ export class ChatMessageOrchestrator {
         files: bcastFiles,
         ...(location ? { location } : {}),
         ...(contact ? { contact } : {}),
-        ...(sticker ? { sticker } : {}),
+        ...(bcastSticker ? { sticker: bcastSticker } : {}),
       },
       reactions: [],
       message: saved.message ?? "",
@@ -1387,6 +1394,22 @@ export class ChatMessageOrchestrator {
     if (!quote.thumbnail) return quote;
     const urlMap = await resolveMediaUrlMap([quote.thumbnail]);
     return resolveQuoteThumbnail(quote, urlMap);
+  }
+
+  /**
+   * Resolve-on-read for a `sticker` attachment pulled out via
+   * {@link firstAttachmentOfType}: it lives outside `content.files[]`, so
+   * unlike files it is never touched by `resolveContentFiles`. Without this,
+   * the live broadcast would echo the sticker's raw stored value (an
+   * internal objectKey OR, for GIF/Sticker providers like Giphy/Tenor, a
+   * full external URL) with no `url` ever stamped.
+   */
+  private async resolveStickerAttachment(
+    sticker: Record<string, unknown> | undefined
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!sticker) return sticker;
+    const url = await resolveMediaUrl(fileMediaKey(sticker as MediaFileLike));
+    return url ? { ...sticker, url } : sticker;
   }
 
   /**

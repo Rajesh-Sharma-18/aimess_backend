@@ -139,7 +139,7 @@ describe("GET /api/v1/users — split mode (no type)", () => {
     );
   });
 
-  it("labels PENDING_OUT in otherPeople (split mode)", async () => {
+  it("labels an outgoing request as PENDING with requesterId=self (split mode)", async () => {
     fRepo.findAllForUser.mockResolvedValue([
       {
         id: "f9",
@@ -154,11 +154,12 @@ describe("GET /api/v1/users — split mode (no type)", () => {
     const res = await request(app).get("/api/v1/users").set(auth());
 
     expect(res.body.data.friends).toHaveLength(0);
-    expect(res.body.data.otherPeople[0].relationshipStatus).toBe("PENDING_OUT");
+    expect(res.body.data.otherPeople[0].relationshipStatus).toBe("PENDING");
+    expect(res.body.data.otherPeople[0].requesterId).toBe(TEST_USER_ID);
     expect(res.body.data.otherPeople[0].friendshipId).toBe("f9");
   });
 
-  it("labels PENDING_IN in otherPeople (split mode)", async () => {
+  it("labels an incoming request as PENDING with requesterId=peer (split mode)", async () => {
     fRepo.findAllForUser.mockResolvedValue([
       {
         id: "f2",
@@ -172,7 +173,8 @@ describe("GET /api/v1/users — split mode (no type)", () => {
 
     const res = await request(app).get("/api/v1/users").set(auth());
 
-    expect(res.body.data.otherPeople[0].relationshipStatus).toBe("PENDING_IN");
+    expect(res.body.data.otherPeople[0].relationshipStatus).toBe("PENDING");
+    expect(res.body.data.otherPeople[0].requesterId).toBe(PEER_A);
   });
 
   it("returns both arrays empty when no matches", async () => {
@@ -328,7 +330,7 @@ describe("GET /api/v1/users?type=others", () => {
     expect(res.body.data.otherPeople).toBeUndefined();
   });
 
-  it("labels PENDING_OUT correctly in type=others results", async () => {
+  it("labels an outgoing request as PENDING with requesterId=self in type=others results", async () => {
     fRepo.findAllForUser.mockResolvedValue([
       {
         id: "f9",
@@ -342,7 +344,8 @@ describe("GET /api/v1/users?type=others", () => {
 
     const res = await request(app).get("/api/v1/users?type=others").set(auth());
 
-    expect(res.body.data.users[0].relationshipStatus).toBe("PENDING_OUT");
+    expect(res.body.data.users[0].relationshipStatus).toBe("PENDING");
+    expect(res.body.data.users[0].requesterId).toBe(TEST_USER_ID);
     expect(res.body.data.users[0].friendshipId).toBe("f9");
   });
 
