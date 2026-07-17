@@ -61,19 +61,26 @@ export type CommunityData = {
   isJoined: boolean;
   /**
    * True when the caller is BANNED from this community. The community stays
-   * visible/openable and historical messages remain readable, but every write
-   * action (send/react/pin/invite/settings/join/livestream) is blocked
-   * server-side — clients use this to render a read-only banner and hide
-   * write affordances (Join button included, since re-joining is also blocked).
+   * visible in the caller's list (until they delete/hide it themselves), but
+   * EVERY other action — reading messages, sending, reacting, editing, media,
+   * socket room — is rejected server-side with USER_BANNED. Clients use this
+   * to render the banned state and hide all affordances (Join included, since
+   * re-joining is also blocked until an admin unban).
    */
   isBanned: boolean;
   /**
-   * True when the caller was KICKED (admin/moderator removal, not a ban) and
-   * hasn't dismissed it yet. Same restricted-access treatment as `isBanned`
-   * (community stays visible/read-only) except the caller CAN rejoin normally
-   * (no unban needed) and can self-dismiss it from their list at any time.
+   * @deprecated Always false. Kicked members are plain non-members now (the
+   * community disappears from their list; they rejoin via the normal flow).
+   * Kept on the wire for backward compatibility only.
    */
   isKicked: boolean;
+  /**
+   * Caller's membership status — the single field clients should branch on.
+   * ACTIVE = full member; BANNED = visible-but-blocked (see isBanned);
+   * NONE = not a member (incl. left/kicked — both rejoin via the normal
+   * join flow; a pending join request is signalled by joinRequestStatus).
+   */
+  membershipStatus: "ACTIVE" | "BANNED" | "NONE";
   /**
    * Present when the caller has a PENDING join request for this community.
    * Null if the caller is already a member, never requested, or their request
@@ -294,10 +301,12 @@ export type CommunityListItem = {
   role: CommunityMemberRole;
   /** True when the caller is an active member of this community. Always true for listMine results. */
   isJoined: boolean;
-  /** True when the caller is BANNED from this community — read-only, no write affordances. */
+  /** True when the caller is BANNED from this community — it stays in the list until they delete it themselves, but every read/write/socket action returns USER_BANNED. */
   isBanned: boolean;
-  /** True when the caller was KICKED (not banned) and hasn't dismissed it yet — same read-only treatment, but rejoin is allowed and self-dismiss is always available. */
+  /** @deprecated Always false — kicked members no longer appear in this list. Wire compat only. */
   isKicked: boolean;
+  /** Caller's membership status for this list entry. Only ACTIVE and BANNED rows are ever listed (LEFT/kicked/dismissed-banned are excluded). */
+  membershipStatus: "ACTIVE" | "BANNED";
   /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
   lastActivityAt: number;
   /** Unread community-chat messages for the caller (member-only); 0 otherwise. */
@@ -380,10 +389,12 @@ export type CommunityDiscoverItem = {
   lastActivity?: CommunityLastActivity;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
-  /** True when the caller is BANNED from this community — read-only, no write affordances. Only ever true in the /communities/mine search mode (includeJoined); always false on public discover/browse. */
+  /** True when the caller is BANNED from this community — visible but every action returns USER_BANNED. Only ever true in the /communities/mine search mode (includeJoined); always false on public discover/browse. */
   isBanned: boolean;
-  /** True when the caller was KICKED (not banned) and hasn't dismissed it yet. Only ever true in the /communities/mine search mode (includeJoined); always false on public discover/browse. */
+  /** @deprecated Always false — kicked members are plain non-members now. Wire compat only. */
   isKicked: boolean;
+  /** Caller's membership status. BANNED only ever appears in the /communities/mine search mode. */
+  membershipStatus: "ACTIVE" | "BANNED" | "NONE";
   /** True when the caller has a PENDING join request for this community. */
   hasRequested: boolean;
   isMuted: boolean;

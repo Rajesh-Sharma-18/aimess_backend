@@ -788,8 +788,7 @@ async function toCommunityData(
   liveStreams: LiveStreamSummary[] = [],
   callerModerationMute: { mutedUntil: Date | null } | null = null,
   currentUserIsStreaming = false,
-  isBanned = false,
-  isKicked = false
+  isBanned = false
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -817,7 +816,10 @@ async function toCommunityData(
     role: myRole,
     isJoined: myRole !== null,
     isBanned,
-    isKicked,
+    // Kicked members are plain non-members now (no restricted-access read
+    // view) — the field survives on the wire for backward compat only.
+    isKicked: false,
+    membershipStatus: isBanned ? "BANNED" : myRole !== null ? "ACTIVE" : "NONE",
     joinRequestId:
       joinRequest?.status === CommunityJoinReqStatus.PENDING
         ? joinRequest.id
@@ -933,8 +935,7 @@ async function toDiscoverItem(
   liveCount = 0,
   viewerId?: string,
   currentUserIsStreaming = false,
-  isBanned = false,
-  isKicked = false
+  isBanned = false
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -955,7 +956,9 @@ async function toDiscoverItem(
     avatar,
     isJoined,
     isBanned,
-    isKicked,
+    // Backward-compat only — kicked members are plain non-members now.
+    isKicked: false,
+    membershipStatus: isBanned ? "BANNED" : isJoined ? "ACTIVE" : "NONE",
     hasRequested,
     ...muteFields(muteRow),
     ...livestreamFields(liveCount),
@@ -1691,18 +1694,14 @@ export const communityService = {
     }
 
     const membership = await communityRepository.findMembership(id, callerId);
-    // A BANNED member keeps read-only access to the community-details view —
-    // it stays visible/openable (restricted-access model). Every write path
-    // (send/react/pin/invite/settings/join/livestream) independently rejects
-    // BANNED via assertCommunityMember/assertCommunityRole, so no permission
-    // leak here even though this no longer throws.
+    // A BANNED member can still fetch the details view — the community stays
+    // visible in their list (visibility axis) and the FE renders the banned
+    // state from `membershipStatus`/`isBanned`. Every OTHER surface (messages,
+    // media, send, react, socket room) rejects BANNED with USER_BANNED
+    // (permission axis — see chat-service access-guard). A kicked member
+    // (LEFT + removedAt audit marker) is a plain non-member here: normal
+    // public preview + join flow.
     const isBanned = membership?.status === CommunityMemberStatus.BANNED;
-    // Kicked = status LEFT with removedAt set (see kickMember) — same
-    // restricted-access read-only treatment as isBanned, except rejoin is
-    // allowed and the caller can self-dismiss it from their list.
-    const isKicked =
-      membership?.status === CommunityMemberStatus.LEFT &&
-      membership.removedAt != null;
     // Only an ACTIVE membership confers a role; LEFT/BANNED are treated as
     // non-members for role purposes (myRole = null).
     const myRole =
@@ -1720,9 +1719,10 @@ export const communityService = {
       currentUserIsStreaming,
     ] = await Promise.all([
       communityRepository.findMuteByUserAndCommunity(callerId, id),
-      // A BANNED/KICKED user can't have a live join request (both supersede
-      // it); skip the lookup rather than surface a stale pre-removal request row.
-      myRole === null && !isBanned && !isKicked
+      // A BANNED user can't have a live join request (the ban supersedes it);
+      // skip the lookup rather than surface a stale pre-ban request row. A
+      // kicked/left caller CAN have one — they rejoin via the normal flow.
+      myRole === null && !isBanned
         ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
         : Promise.resolve(null),
       fetchCommunityLiveStreams(id),
@@ -1740,8 +1740,7 @@ export const communityService = {
       liveStreams,
       callerModerationMute,
       currentUserIsStreaming,
-      isBanned,
-      isKicked
+      isBanned
     );
   },
 
@@ -2471,9 +2470,13 @@ export const communityService = {
           role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
           isJoined: true,
           isBanned: row.members[0]?.status === CommunityMemberStatus.BANNED,
-          isKicked:
-            row.members[0]?.status === CommunityMemberStatus.LEFT &&
-            row.members[0]?.removedAt != null,
+          // Backward-compat only — kicked members no longer appear in this list.
+          isKicked: false,
+          // The visibility filter admits only ACTIVE and (non-dismissed) BANNED.
+          membershipStatus:
+            row.members[0]?.status === CommunityMemberStatus.BANNED
+              ? ("BANNED" as const)
+              : ("ACTIVE" as const),
           lastActivityAt,
           unreadMessageCount: chat.unreadMessageCount,
           firstUnreadMessageId: chat.firstUnreadMessageId,
@@ -2554,33 +2557,33 @@ export const communityService = {
     }
 
     // Visibility strategy differs by caller: search mode (`includeJoined`) widens
-    // to PUBLIC + the caller's ACTIVE and BANNED memberships (restricted-access
-    // model — a banned community must still surface in the caller's OWN "mine"
-    // view, same as `listMine`); the discover/browse alias narrows to PUBLIC and
-    // excludes every community the caller already relates to (ACTIVE + PENDING +
-    // BANNED) — a banned caller shouldn't re-discover/re-request-join a community
-    // they're banned from via public browse.
+    // to PUBLIC + the caller's ACTIVE and (non-dismissed) BANNED memberships —
+    // a banned community stays visible in the caller's OWN "mine" view, same as
+    // `listMine`; the discover/browse alias narrows to PUBLIC and excludes every
+    // community the caller already relates to (ACTIVE + PENDING + BANNED) — a
+    // banned caller shouldn't re-discover/re-request-join a community they're
+    // banned from via public browse. A kicked member (LEFT + removedAt audit
+    // marker) is a plain non-member everywhere: hidden from "mine", free to
+    // re-discover and rejoin via the normal flow.
     let includeMemberCommunityIds: string[] | undefined;
     let excludeCommunityIds: string[] | undefined;
     let activeMemberIds: string[] = [];
     let bannedIds: string[] = [];
-    let kickedIds: string[] = [];
 
     if (params.includeJoined) {
-      const [memberIds, banned, kicked] = await Promise.all([
+      const [memberIds, banned] = await Promise.all([
         communityRepository.listActiveMemberCommunityIds(userId),
-        communityRepository.findBannedCommunityIds(userId),
-        communityRepository.findKickedCommunityIds(userId),
+        communityRepository.findBannedCommunityIds(userId, {
+          excludeDismissed: true,
+        }),
       ]);
       activeMemberIds = memberIds;
       bannedIds = banned;
-      kickedIds = kicked;
-      // Union with banned/kicked ids so a restricted-access PRIVATE community
-      // still passes the repo's visibility OR (PUBLIC OR
-      // id-in-includeMemberCommunityIds) — `isJoined`/`isBanned`/`isKicked`
-      // below are derived from the separate, non-merged sets so they aren't
-      // conflated.
-      includeMemberCommunityIds = [...memberIds, ...bannedIds, ...kickedIds];
+      // Union with banned ids so a banned PRIVATE community still passes the
+      // repo's visibility OR (PUBLIC OR id-in-includeMemberCommunityIds) —
+      // `isJoined`/`isBanned` below are derived from the separate, non-merged
+      // sets so they aren't conflated.
+      includeMemberCommunityIds = [...memberIds, ...bannedIds];
     } else {
       // listExcludedCommunityIds already covers ACTIVE + PENDING + BANNED.
       excludeCommunityIds =
@@ -2616,10 +2619,9 @@ export const communityService = {
     ]);
 
     // Build fast lookups for membership: used by the mine-search alias
-    // (includeJoined=true). Public discover always has isJoined/isBanned/isKicked=false.
+    // (includeJoined=true). Public discover always has isJoined/isBanned=false.
     const memberSet = new Set(activeMemberIds);
     const bannedSet = new Set(bannedIds);
-    const kickedSet = new Set(kickedIds);
 
     const communities: CommunityDiscoverItem[] = await Promise.all(
       rows.map((row) =>
@@ -2631,8 +2633,7 @@ export const communityService = {
           liveCountMap.get(row.id) ?? 0,
           userId,
           currentUserIsStreaming,
-          bannedSet.has(row.id),
-          kickedSet.has(row.id)
+          bannedSet.has(row.id)
         )
       )
     );
@@ -2929,10 +2930,10 @@ export const communityService = {
     // (standalone Mongo). Recounting ACTIVE members is robust against drift.
     // Status stays LEFT (identical to a voluntary leave — every existing
     // rejoin-flow "reactivate a LEFT row" check keeps working unmodified);
-    // removedAt/removedBy mark this specifically as an admin kick so the
-    // community stays visible (read-only) in the target's list — restricted-
-    // access model — until they dismiss it themselves via the self-remove
-    // endpoint (which clears removedAt) or rejoin (which also clears it).
+    // removedAt/removedBy are AUDIT metadata distinguishing an admin kick from
+    // a voluntary leave. Behaviorally a kicked member is a plain non-member:
+    // the community disappears from their list and they rejoin via the normal
+    // flow (which clears the marker).
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       targetUserId,
@@ -3005,19 +3006,18 @@ export const communityService = {
           } satisfies CommunityStatsUpdatedPayload
         ),
         // Personal channel — reaches ALL of the kicked user's devices. A kick
-        // (like a ban) must NOT evict the community from the target's own
-        // list — restricted-access model: it stays visible, read-only, until
-        // they dismiss it themselves. Fires the SAME personal event ban uses.
+        // removes the community from the target's own list (unlike a ban,
+        // which keeps it visible via community:membership:restricted) — the
+        // documented FE contract for this event is "remove from local store".
         publishChatUserEvent(
           redis,
           targetUserId,
-          "community:membership:restricted",
+          "community:membership:removed",
           {
             communityId,
-            membershipStatus: "KICKED",
-            isBanned: false,
+            membershipStatus: "REMOVED",
             reason: "kicked",
-            restrictedAt: now,
+            removedAt: now,
           }
         ),
       ]);
@@ -3940,7 +3940,7 @@ export const communityService = {
       | {
           status: CommunityMemberStatus;
           role: CommunityMemberRole;
-          removedAt?: Date | null;
+          dismissedAt?: Date | null;
         }
       | null
       | undefined,
@@ -3960,46 +3960,20 @@ export const communityService = {
       return "MEMBER_NOT_FOUND";
     }
 
-    // KICKED is status=LEFT with removedAt set (restricted-access model — see
-    // kickMember): still visible in the caller's list, so self-dismiss must
-    // actually clear the marker. A genuine prior voluntary leave (removedAt
-    // null) has nothing left to do.
+    // LEFT (voluntary leave OR admin kick — removedAt is audit-only) is
+    // already gone from the caller's list: idempotent success, nothing to do.
     if (membership.status === CommunityMemberStatus.LEFT) {
-      if (!membership.removedAt) {
-        return "ALREADY_REMOVED";
-      }
-      await communityRepository.updateMemberStatus(
-        community.id,
-        callerId,
-        CommunityMemberStatus.LEFT,
-        undefined,
-        undefined,
-        { removedAt: null, removedBy: null, removedReason: null }
-      );
-      void publishChatUserEvent(
-        redis,
-        callerId,
-        "community:membership:removed",
-        {
-          communityId: community.id,
-          membershipStatus: "REMOVED",
-          reason: "dismissed",
-          removedAt: Date.now(),
-        }
-      );
-      return "REMOVED";
+      return "ALREADY_REMOVED";
     }
 
     if (membership.status === CommunityMemberStatus.BANNED) {
-      // Restricted-access model — a banned community stays in the caller's
-      // list until THEY dismiss it. Self-dismiss lifts the row to LEFT (same
-      // terminal state unbanMember produces), clearing the ban marker.
-      await communityRepository.updateMemberStatus(
-        community.id,
-        callerId,
-        CommunityMemberStatus.LEFT,
-        { bannedAt: null, bannedBy: null, banReason: null }
-      );
+      // A banned community stays in the caller's list until THEY dismiss it.
+      // Dismissing only HIDES the entry (dismissedAt) — status stays BANNED
+      // and the ban metadata survives; only an admin unban lifts the ban.
+      if (membership.dismissedAt) {
+        return "ALREADY_REMOVED";
+      }
+      await communityRepository.setMemberDismissed(community.id, callerId);
       void publishChatUserEvent(
         redis,
         callerId,
@@ -4032,10 +4006,11 @@ export const communityService = {
   /**
    * Delete a single community from the CALLER's own account/list only — never
    * touches other members. Active member → same removal as leaveCommunity.
-   * Banned/kicked member → restricted-access model: the community was still
-   * visible (read-only) in their list, so this actually dismisses it (lifts
-   * to LEFT / clears the removal marker). Admin/owner → rejected; they must
-   * transfer ownership or use the admin delete flow.
+   * Banned member → the community was still visible in their list, so this
+   * HIDES it (dismissedAt) while the ban itself survives — only an admin
+   * unban lifts it. Left/kicked member → already gone, idempotent success.
+   * Admin/owner → rejected; they must transfer ownership or use the admin
+   * delete flow.
    */
   async deleteCommunityForSelf(
     communityId: string,
@@ -4244,10 +4219,11 @@ export const communityService = {
    *  - Caller is the community admin → FAILED / OWNER_CANNOT_DELETE (never
    *    auto-deletes, unlike leaveCommunity — admins must transfer ownership
    *    or delete the community from the admin panel)
-   *  - No membership / genuine prior LEFT → SKIPPED (already gone, nothing to do)
-   *  - BANNED / KICKED membership    → REMOVED — restricted-access model: these
-   *    are still visible (read-only) in "My Communities", so this call is what
-   *    actually dismisses them (lift to LEFT / clear the removal marker)
+   *  - No membership / prior LEFT (incl. kicked) → SKIPPED (already gone)
+   *  - BANNED membership             → REMOVED — banned communities are still
+   *    visible in "My Communities", so this call is what hides them
+   *    (dismissedAt); the ban itself survives until an admin unban
+   *  - BANNED already dismissed      → SKIPPED (idempotent)
    *  - PENDING (or any other status) → SKIPPED — never surfaced in the list
    *  - ACTIVE non-admin membership   → REMOVED via the shared leave path
    *    (removeActiveMember) — same cleanup, socket events, and notification
@@ -4371,12 +4347,17 @@ export const communityService = {
 
     // Unban lifts the ban to LEFT — the user is not auto-re-added; an admin or
     // moderator must add them back (or they re-join) to become ACTIVE again.
+    // Also clears dismissedAt (it belonged to this ban cycle) so a future
+    // re-ban shows up in the target's list again.
     // Single-document update + recompute of memberCount — no $transaction.
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       targetUserId,
       CommunityMemberStatus.LEFT,
-      { bannedAt: null, bannedBy: null, banReason: null }
+      { bannedAt: null, bannedBy: null, banReason: null },
+      undefined,
+      undefined,
+      true
     );
 
     const count = await communityRepository.countActiveMembers(communityId);

@@ -196,11 +196,17 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
   it("flips status to LEFT (not ACTIVE) and clears ban metadata", async () => {
     const result = await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    expect(repo.updateMemberStatus).toHaveBeenCalledWith(CID, TARGET, "LEFT", {
-      bannedAt: null,
-      bannedBy: null,
-      banReason: null,
-    });
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      "LEFT",
+      { bannedAt: null, bannedBy: null, banReason: null },
+      undefined,
+      undefined,
+      // clearDismissed — a dismissedAt from this ban cycle must not hide a
+      // future re-ban from the target's list.
+      true
+    );
     expect(result.status).toBe("LEFT");
   });
 

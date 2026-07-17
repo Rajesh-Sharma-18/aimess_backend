@@ -57,6 +57,7 @@ import {
   assertCommunityMemberNotMuted,
   assertCommunityReadAccess,
   assertCommunityRoomWritable,
+  assertRoomMemberActive,
   getCommunityLiveRole,
 } from "../lib/access-guard.js";
 import {
@@ -1581,10 +1582,13 @@ export class CommunityMessageService {
       userId
     );
     // Membership check FIRST so non-members get NotFound (no foreign-message
-    // existence leak), THEN the write-ability gate so only real members learn a
-    // room is closed/suspended.
-    if (!member || member.status !== "active")
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // existence leak; a BANNED member gets USER_BANNED — their ban is not a
+    // secret to them), THEN the write-ability gate so only real members learn
+    // a room is closed/suspended.
+    assertRoomMemberActive(
+      member,
+      () => new NotFoundError("CHAT_MESSAGE_NOT_FOUND")
+    );
     assertCommunityRoomWritable(
       await this.roomRepo.findRoomById(message.roomId)
     );
@@ -1712,14 +1716,12 @@ export class CommunityMessageService {
     if (normalizeMessageType(message.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
-    // Guard: only active members may react.
+    // Guard: only active members may react (banned → USER_BANNED).
     const member = await this.memberRepo.findByRoomAndUser(
       message.roomId,
       params.userId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
+    assertRoomMemberActive(member);
     // A muted member can neither add NOR remove a reaction (this path toggles).
     assertCommunityMemberNotMuted(member);
     // ...and only when the community room is open (closed/suspended → read-only).
@@ -2096,8 +2098,10 @@ export class CommunityMessageService {
       message.roomId,
       params.reporterId
     );
-    if (!member || member.status !== "active")
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertRoomMemberActive(
+      member,
+      () => new NotFoundError("CHAT_MESSAGE_NOT_FOUND")
+    );
     return this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
       userReportReason: params.reportReason,
@@ -2114,8 +2118,7 @@ export class CommunityMessageService {
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active")
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    assertRoomMemberActive(member);
     if (!["admin", "moderator"].includes(member.role))
       throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
 
@@ -2177,9 +2180,7 @@ export class CommunityMessageService {
       params.roomId,
       params.readerId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
+    assertRoomMemberActive(member);
 
     // Fetch the message to get its createdAt (advanceReadPointer is forward-only).
     const message = await this.messageRepo.findById(params.upToMessageId);
@@ -2261,9 +2262,7 @@ export class CommunityMessageService {
       params.roomId,
       params.recipientId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
+    assertRoomMemberActive(member);
 
     const deliveredAt = Date.now();
 
@@ -2314,9 +2313,7 @@ export class CommunityMessageService {
       message.roomId,
       params.requesterId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
+    assertRoomMemberActive(member);
 
     const raw = (message.reactions ?? {}) as Record<string, unknown>;
     const allAvatarKeys: string[] = [];
@@ -2418,9 +2415,7 @@ export class CommunityMessageService {
       params.targetRoomId,
       params.senderId
     );
-    if (!targetMember || targetMember.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
+    assertRoomMemberActive(targetMember);
 
     // Fetch sender snapshot for display name + avatar.
     const snaps = await this.userSnapshotService.getUserSnapshotsMap(
@@ -2467,8 +2462,7 @@ export class CommunityMessageService {
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active")
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    assertRoomMemberActive(member);
     if (!["admin", "moderator"].includes(member.role))
       throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
 

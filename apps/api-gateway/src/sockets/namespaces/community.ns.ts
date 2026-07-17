@@ -866,7 +866,7 @@ export function registerCommunityNamespace(
               userId,
             });
             if (m.isBanned) {
-              ackError(callback, "FORBIDDEN", locale);
+              ackError(callback, "USER_BANNED", locale);
               return;
             }
             // Self-heal the local closed-community cache — covers a gateway
@@ -1047,7 +1047,10 @@ export function registerCommunityNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/community messages:fetch gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            // Preserve the specific denial (USER_BANNED for a banned member,
+            // not-a-member, etc.) instead of a generic retryable SERVICE_ERROR.
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1067,7 +1070,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:react gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1161,7 +1165,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:edit gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );

@@ -5525,7 +5525,13 @@ export const openApiSchemas = {
       isBanned: {
         type: "boolean",
         description:
-          "True when the caller is BANNED from this community. The community stays visible/openable and historical messages remain readable, but every write action (send/react/pin/invite/settings/join/livestream) is blocked server-side — clients render a read-only banner and hide write affordances, including the Join button.",
+          "True when the caller is BANNED from this community. The community stays visible in the caller's list until they delete/hide it themselves, but EVERY action — reading messages, sending, reacting, editing, media, socket room — is rejected server-side with USER_BANNED. Clients render the banned state and hide all affordances, including the Join button (re-joining requires an admin unban).",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE", "BANNED", "NONE"],
+        description:
+          "Caller's membership status — the single field clients should branch on. ACTIVE = full member; BANNED = visible-but-blocked (every action returns USER_BANNED); NONE = not a member, including users who left or were removed by an admin (both rejoin via the normal join flow).",
       },
       moderationStatus: {
         type: "string",
@@ -5852,7 +5858,13 @@ export const openApiSchemas = {
       isBanned: {
         type: "boolean",
         description:
-          "True when the caller is BANNED from this community — read-only, no write affordances. The community stays in this list rather than being removed.",
+          "True when the caller is BANNED from this community. The community stays in this list (until the caller deletes/hides it), but every read/write/socket action on it is rejected with USER_BANNED.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE", "BANNED"],
+        description:
+          "Caller's membership status for this list entry. Only ACTIVE and BANNED entries are ever listed — users who left or were removed do not see the community here.",
       },
       isMuted: {
         type: "boolean",

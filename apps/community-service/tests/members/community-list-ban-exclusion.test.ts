@@ -1,11 +1,13 @@
 /**
- * "My Communities" list must exclude a genuine voluntary LEFT but KEEP a
- * BANNED or KICKED member's community visible (restricted-access model:
- * both stay read-only/isolated, not removed from the list, until the caller
- * dismisses them). listMineByActivity matches ACTIVE/BANNED directly, or
- * LEFT rows that carry a `removedAt` kick marker (kickMember sets status=LEFT
- * + removedAt so every existing rejoin-flow "reactivate a LEFT row" check
- * keeps working unmodified) — a plain LEFT row (removedAt null) still drops out.
+ * "My Communities" list visibility (business rules):
+ *  - ACTIVE  → visible.
+ *  - BANNED  → visible UNTIL the caller dismisses it (dismissedAt set) — the
+ *    community stays in the list even though every action on it is denied
+ *    with USER_BANNED.
+ *  - LEFT    → never visible, whether voluntary or an admin kick (removedAt
+ *    is an audit-only marker) — both rejoin via the normal flow.
+ * listMineByActivity encodes this as:
+ *   status=ACTIVE OR (status=BANNED AND dismissedAt unset)
  */
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
@@ -25,14 +27,24 @@ const db = prisma.community as unknown as {
   count: jest.Mock;
 };
 
-describe("communityRepository.listMineByActivity — restricted-access list inclusion", () => {
+const EXPECTED_MEMBER_FILTER = {
+  some: {
+    userId: "user-1",
+    OR: [
+      { status: "ACTIVE" },
+      { status: "BANNED", dismissedAt: { isSet: false } },
+    ],
+  },
+};
+
+describe("communityRepository.listMineByActivity — visibility filter", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     db.findMany.mockResolvedValue([]);
     db.count.mockResolvedValue(0);
   });
 
-  it("matches ACTIVE/BANNED directly, OR a LEFT row with removedAt set (kicked, not yet dismissed) — a plain LEFT (removedAt null) never matches", async () => {
+  it("matches ACTIVE, or BANNED not yet dismissed — LEFT (voluntary OR kicked) and dismissed-BANNED never match", async () => {
     await communityRepository.listMineByActivity({
       userId: "user-1",
       direction: "before",
@@ -43,21 +55,13 @@ describe("communityRepository.listMineByActivity — restricted-access list incl
     expect(db.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          members: {
-            some: {
-              userId: "user-1",
-              OR: [
-                { status: { in: ["ACTIVE", "BANNED"] } },
-                { status: "LEFT", removedAt: { not: null } },
-              ],
-            },
-          },
+          members: EXPECTED_MEMBER_FILTER,
         }),
       })
     );
   });
 
-  it("also applies the same OR filter to the total count query", async () => {
+  it("also applies the same filter to the total count query", async () => {
     await communityRepository.listMineByActivity({
       userId: "user-1",
       direction: "before",
@@ -68,15 +72,7 @@ describe("communityRepository.listMineByActivity — restricted-access list incl
     expect(db.count).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          members: {
-            some: {
-              userId: "user-1",
-              OR: [
-                { status: { in: ["ACTIVE", "BANNED"] } },
-                { status: "LEFT", removedAt: { not: null } },
-              ],
-            },
-          },
+          members: EXPECTED_MEMBER_FILTER,
         }),
       })
     );

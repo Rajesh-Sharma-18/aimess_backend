@@ -124,24 +124,23 @@ describe("kickMember — silent-chat policy", () => {
     expect(publishSystemMsg).not.toHaveBeenCalled();
   });
 
-  it("publishes community:membership:restricted (not :removed) to the kicked user's personal channel — the community stays in their list, read-only, until THEY dismiss it", async () => {
+  it("publishes community:membership:removed (not :restricted) to the kicked user's personal channel — the community disappears from their list; they rejoin via the normal flow", async () => {
     await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
     expect(publishUserEvent).toHaveBeenCalledWith(
       expect.anything(), // redis instance
       TARGET_ID,
-      "community:membership:restricted",
+      "community:membership:removed",
       expect.objectContaining({
         communityId: COMMUNITY_ID,
-        membershipStatus: "KICKED",
-        isBanned: false,
+        membershipStatus: "REMOVED",
         reason: "kicked",
       })
     );
     expect(publishUserEvent).not.toHaveBeenCalledWith(
       expect.anything(),
       TARGET_ID,
-      "community:membership:removed",
+      "community:membership:restricted",
       expect.anything()
     );
   });
@@ -207,7 +206,7 @@ describe("banMember — silent-chat policy", () => {
     });
   });
 
-  it("publishes community:membership:restricted (not :removed) to the banned user's personal channel — the community stays in their list, read-only", async () => {
+  it("publishes community:membership:restricted (not :removed) to the banned user's personal channel — the community stays in their list, fully blocked (USER_BANNED)", async () => {
     await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
     expect(publishUserEvent).toHaveBeenCalledWith(

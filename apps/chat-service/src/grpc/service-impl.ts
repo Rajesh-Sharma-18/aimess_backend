@@ -426,7 +426,7 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -1770,8 +1770,15 @@ export function createMessagingImpl(
                 resourceId,
                 userId
               );
-              if (member) break;
-              // No membership row at all (never joined) — mirror
+              // BANNED blocks ALL media access — even media a non-member of a
+              // PUBLIC community could fetch (same rule as
+              // assertCommunityReadAccess: the ban outranks the PUBLIC
+              // fallback).
+              if (member?.status === "banned") {
+                throw new ForbiddenError("USER_BANNED");
+              }
+              if (member?.status === "active") break;
+              // No active membership (never joined, or left/removed) — mirror
               // assertCommunityReadAccess: a PUBLIC community's media is as
               // fetchable as its message history, which non-members can
               // already read. Only a PRIVATE (or unsynced/null) community
@@ -2140,34 +2147,37 @@ export function createCommunityImpl(
                 "community:" + req.communityId,
                 "community:message:new",
                 {
-                  id: row.id,
-                  messageId: row.id,
+                  // Canonical shape shared with private/group message:new — see
+                  // buildChatMessageEvent. Community-specific extras appended below.
+                  ...buildChatMessageEvent({
+                    id: row.id,
+                    clientMessageId: req.clientMessageId ?? "",
+                    roomId: row.roomId,
+                    conversationType: "COMMUNITY",
+                    senderId: row.sentBy,
+                    senderName,
+                    senderAvatar: bcastSenderAvatar,
+                    messageType: row.messageType,
+                    content: {
+                      text: row.message ?? "",
+                      files: rowBcastFiles,
+                      ...(rowLocation ? { location: rowLocation } : {}),
+                      ...(rowContact ? { contact: rowContact } : {}),
+                      ...(rowSticker ? { sticker: rowSticker } : {}),
+                    },
+                    parentMessageId: row.parentMessageId ?? "",
+                    quoteData: resolveQuoteThumbnail(rowQuote, rowQuoteUrlMap),
+                    reactions: [],
+                    serverTs: rowSentAt,
+                    sequenceNumber: row.sequenceNumber,
+                    countInUnread:
+                      (row as unknown as { countInUnread?: boolean | null })
+                        .countInUnread ?? true,
+                  }),
                   communityId: req.communityId,
-                  roomId: row.roomId,
-                  senderId: row.sentBy,
-                  senderName,
-                  senderAvatar: bcastSenderAvatar,
-                  parentMessageId: row.parentMessageId ?? "",
-                  quoteData: resolveQuoteThumbnail(rowQuote, rowQuoteUrlMap),
-                  content: {
-                    text: row.message ?? "",
-                    files: rowBcastFiles,
-                    ...(rowLocation ? { location: rowLocation } : {}),
-                    ...(rowContact ? { contact: rowContact } : {}),
-                    ...(rowSticker ? { sticker: rowSticker } : {}),
-                  },
-                  reactions: [],
+                  // Back-compat alias for existing FE consumers that read
+                  // top-level `message` instead of `content.text`.
                   message: row.message ?? "",
-                  contentType: normalizeMessageType(row.messageType),
-                  countInUnread:
-                    (row as unknown as { countInUnread?: boolean | null })
-                      .countInUnread ?? true,
-                  isEdited: false,
-                  editedAt: 0,
-                  clientMessageId: req.clientMessageId ?? "",
-                  serverTs: rowSentAt,
-                  sentAt: rowSentAt,
-                  sequenceNumber: row.sequenceNumber,
                 },
                 `communityId=${req.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );

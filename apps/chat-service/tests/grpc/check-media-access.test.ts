@@ -66,13 +66,22 @@ describe("checkMediaAccess — historical membership", () => {
     expect(findByRoomAndUser).toHaveBeenCalledWith("g1", "u2");
   });
 
-  it("COMMUNITY_CHAT: a BANNED member is still allowed (historical access survives a ban)", async () => {
+  it("COMMUNITY_CHAT: a BANNED member is denied — a ban blocks ALL media access, even in a PUBLIC community", async () => {
     const findByRoomAndUser = jest.fn().mockResolvedValue({
       roomId: "c1",
       userId: "u2",
       status: "banned",
     });
-    const deps = makeDeps({ roomMemberRepo: { findByRoomAndUser } });
+    // PUBLIC room: proves the ban check outranks the public-read fallback
+    // (the room lookup must never even be consulted for a banned member).
+    const findRoomById = jest.fn().mockResolvedValue({
+      id: "c1",
+      communityType: "PUBLIC",
+    });
+    const deps = makeDeps({
+      roomMemberRepo: { findByRoomAndUser },
+      generalRoomRepo: { findRoomById },
+    });
     const { checkMediaAccess } = createMessagingImpl(deps);
 
     const res = await invoke(checkMediaAccess as unknown as Handler, {
@@ -81,7 +90,8 @@ describe("checkMediaAccess — historical membership", () => {
       resourceId: "c1",
     });
 
-    expect(res).toEqual({ allowed: true });
+    expect(res).toEqual({ allowed: false });
+    expect(findRoomById).not.toHaveBeenCalled();
   });
 
   it("COMMUNITY_CHAT: a user who was NEVER a member is allowed when the community is PUBLIC", async () => {

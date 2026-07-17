@@ -58,3 +58,49 @@ export function assertNotBanned(
     throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
   }
 }
+
+/**
+ * Central membership-status → capability policy (the "permission service").
+ * Two independent axes:
+ *
+ *  - VISIBILITY (`canAppearInCommunityList`): whether the community shows up
+ *    in the member's own list. ACTIVE and non-dismissed BANNED are visible;
+ *    LEFT (voluntary or kicked) and dismissed-BANNED are not. The Prisma
+ *    `memberVisibilityFilter` in community.repository.ts#listMineByActivity
+ *    is the query-side mirror of this predicate — change them together.
+ *
+ *  - PERMISSION (everything else): whether the member may act. ONLY ACTIVE
+ *    may read/send/react/edit/upload/join the socket room. LEFT/REMOVED are
+ *    denied as non-members; BANNED is denied with USER_BANNED (enforced in
+ *    chat-service's access-guard.ts, which owns every message/media path —
+ *    see assertRoomMemberActive / assertCommunityReadAccess there).
+ */
+export const communityPermission = {
+  canAppearInCommunityList(
+    m: { status: CommunityMemberStatus; dismissedAt?: Date | null } | null
+  ): boolean {
+    if (!m) return false;
+    if (m.status === CommunityMemberStatus.ACTIVE) return true;
+    return m.status === CommunityMemberStatus.BANNED && !m.dismissedAt;
+  },
+  canAccessCommunity(m: { status: CommunityMemberStatus } | null): boolean {
+    return m?.status === CommunityMemberStatus.ACTIVE;
+  },
+  // All action capabilities collapse to "is an ACTIVE member" — kept as named
+  // methods so call sites read as intent, not as a status comparison.
+  canReadMessages(m: { status: CommunityMemberStatus } | null): boolean {
+    return this.canAccessCommunity(m);
+  },
+  canSendMessages(m: { status: CommunityMemberStatus } | null): boolean {
+    return this.canAccessCommunity(m);
+  },
+  canReact(m: { status: CommunityMemberStatus } | null): boolean {
+    return this.canAccessCommunity(m);
+  },
+  canUploadMedia(m: { status: CommunityMemberStatus } | null): boolean {
+    return this.canAccessCommunity(m);
+  },
+  canJoinSocket(m: { status: CommunityMemberStatus } | null): boolean {
+    return this.canAccessCommunity(m);
+  },
+};
