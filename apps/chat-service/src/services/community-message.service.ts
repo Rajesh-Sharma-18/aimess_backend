@@ -1058,12 +1058,15 @@ export class CommunityMessageService {
   }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
-    // 2. The community is PUBLIC (non-members can read history)
+    // 2. The community is PUBLIC (non-members can read history), OR
+    // 3. The caller is banned — capped to messages created at/before their ban
+    //    (read cutoff, not a hard block; see `assertCommunityReadAccess`).
     const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
     const viewerIsActiveMember = isActiveMember(member);
     const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
@@ -1190,14 +1193,17 @@ export class CommunityMessageService {
   }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
-    // 2. The community is PUBLIC (non-members can read history)
+    // 2. The community is PUBLIC (non-members can read history), OR
+    // 3. The caller is banned — capped to messages at/before their ban (read
+    //    cutoff, not a hard block; same policy as `getMessagesTimeline`).
     // Note: sync path is typically members-only (offline-first mobile), but we enforce
     // the same rules for consistency.
     const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
 
     if (Number.isNaN(params.fromTs.getTime())) {
@@ -1356,7 +1362,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
     const viewerIsActiveMember = isActiveMember(member);
     const anchor = await this.messageRepo.findById(params.messageId);

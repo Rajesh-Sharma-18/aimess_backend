@@ -810,6 +810,44 @@ describe("assertCommunityReadAccess", () => {
       )
     ).rejects.toMatchObject({ message: "USER_BANNED" });
   });
+
+  // -------------------------------------------------------------------------
+  // `allowBannedReadCutoff` — the message-history endpoint's opt-in: a ban
+  // becomes a read cutoff instead of a hard block. Every OTHER caller (media
+  // list, message search, the legacy gRPC getMessages, and this same function
+  // called without the option) is unaffected — verified above and in
+  // CommunityMessageService.getConversation/listMedia tests below.
+  // -------------------------------------------------------------------------
+  it("allowBannedReadCutoff: a BANNED member gets canRead=true + bannedAtCutoff instead of throwing", async () => {
+    const bannedAt = new Date("2026-07-01T00:00:00.000Z");
+    const memberRepo = {
+      findByRoomAndUser: jest
+        .fn()
+        .mockResolvedValue({ status: "banned", role: "member", bannedAt }),
+    };
+    const res = await assertCommunityReadAccess(
+      makeRoomRepo("PUBLIC") as never,
+      memberRepo as never,
+      ROOM_ID,
+      USER_ID,
+      { allowBannedReadCutoff: true }
+    );
+    expect(res.canRead).toBe(true);
+    expect(res.member?.status).toBe("banned");
+    expect(res.bannedAtCutoff).toEqual(bannedAt);
+  });
+
+  it("allowBannedReadCutoff: still rejects a non-member of a PRIVATE community (the option only changes BANNED handling)", async () => {
+    await expect(
+      assertCommunityReadAccess(
+        makeRoomRepo("PRIVATE") as never,
+        makeMemberRepo(null) as never,
+        ROOM_ID,
+        USER_ID,
+        { allowBannedReadCutoff: true }
+      )
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
 });
 
 // ---------------------------------------------------------------------------

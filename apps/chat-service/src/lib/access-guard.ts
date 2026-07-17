@@ -252,16 +252,21 @@ export function assertCommunityMemberNotMuted(
  * community is PUBLIC (non-members can read PUBLIC community chat history).
  * For PRIVATE communities, active membership is required.
  *
- * A BANNED member is rejected with `USER_BANNED` — checked BEFORE the PUBLIC
- * fallback, so a banned member of a PUBLIC community is also denied (business
- * rule: a ban blocks ALL access, including reads a stranger would be allowed;
- * the community stays visible in their list, nothing more).
+ * A BANNED member is rejected with `USER_BANNED` by default — checked BEFORE
+ * the PUBLIC fallback, so a banned member of a PUBLIC community is also
+ * denied by default too.
+ *
+ * `options.allowBannedReadCutoff` flips that default for the ONE caller that
+ * wants it (the message-history endpoint's `getMessagesTimeline`/
+ * `getMessagesSince`/`getMessagesAround`): instead of throwing, a banned
+ * member gets `canRead: true` and `bannedAtCutoff` set to their `bannedAt` —
+ * the ban becomes a read cutoff (messages created at/before the ban stay
+ * visible, nothing after) instead of a hard block. Every write path and every
+ * other read call site (media list, message search, the legacy gRPC
+ * `getMessages`) keeps calling this without the option and is unaffected.
  *
  * Returns `{ member: RoomMember | null, canRead: boolean, bannedAtCutoff? }`
  * so callers know if they're a member without a separate query.
- * `bannedAtCutoff` is ALWAYS undefined now (banned throws instead of getting
- * a capped read) — the field and its downstream cap plumbing are retained
- * only so historical call sites compile unchanged; the caps are dormant.
  *
  * The community visibility (PUBLIC/PRIVATE) is persisted on the GeneralRoom
  * (`communityType`, synced from community-service by the room provisioner, the
@@ -270,7 +275,8 @@ export function assertCommunityMemberNotMuted(
  * never leaks a PRIVATE community's history to a non-member. The room is only
  * loaded for non-members; ACTIVE members short-circuit first.
  *
- * @throws ForbiddenError `USER_BANNED` when the caller is banned from the community.
+ * @throws ForbiddenError `USER_BANNED` when the caller is banned from the
+ *   community and `options.allowBannedReadCutoff` is not set.
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller is a non-member of
  *   a PRIVATE (or not-yet-synced) community.
  */
@@ -278,7 +284,8 @@ export async function assertCommunityReadAccess(
   roomRepo: Pick<GeneralRoomRepository, "findRoomById">,
   memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
   roomId: string,
-  userId: string
+  userId: string,
+  options?: { allowBannedReadCutoff?: boolean }
 ): Promise<{
   member: RoomMember | null;
   canRead: boolean;
@@ -286,9 +293,16 @@ export async function assertCommunityReadAccess(
 }> {
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
 
-  // Banned members have NO read access — not even the PUBLIC-community
-  // fallback below. Same central rule as assertRoomMemberActive.
   if (member?.status === "banned") {
+    if (options?.allowBannedReadCutoff) {
+      return {
+        member,
+        canRead: true,
+        bannedAtCutoff: member.bannedAt ?? new Date(0),
+      };
+    }
+    // Banned members have NO read access — not even the PUBLIC-community
+    // fallback below. Same central rule as assertRoomMemberActive.
     throw new ForbiddenError("USER_BANNED");
   }
 

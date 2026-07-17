@@ -317,6 +317,95 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     ).not.toHaveBeenCalled();
   });
 
+  // ---------------------------------------------------------------------
+  // BAN-AS-READ-CUTOFF: a banned member no longer gets 403 on this endpoint
+  // (history/scroll, sync, and jump-to-message modes) — the ban instead caps
+  // the readable window at `bannedAt`. Every WRITE path (send/react/edit/
+  // delete/pin/etc.) still throws USER_BANNED unconditionally — see the
+  // "USER_BANNED" tests elsewhere in this file and in community-read-access.
+  // ---------------------------------------------------------------------
+  it("BAN-CUTOFF: a banned member gets 200 (not 403) on history/scroll, and the repo is called with readCutoff=bannedAt", async () => {
+    const bannedAt = new Date("2026-07-01T10:11:00.000Z");
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "banned",
+      bannedAt,
+    });
+    // The emulator/mock stands in for the DB filter; here we just assert the
+    // service passes the cutoff through — the actual `createdAt <= readCutoff`
+    // filtering is exercised against the real repo in community-read-access.test.ts.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "before the ban",
+          messageType: "text",
+          createdAt: new Date("2026-07-01T10:10:00.000Z"),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(1);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    const call =
+      mocks.generalRoomMessageRepo.findByRoomIdTimeline.mock.calls[0][0];
+    expect(call.readCutoff).toEqual(bannedAt);
+    expect(call.viewerIsActiveMember).toBe(false);
+  });
+
+  it("BAN-CUTOFF: a banned member's incremental sync (after_ts) also gets 200 with readCutoff passed through", async () => {
+    const bannedAt = new Date("2026-07-01T10:11:00.000Z");
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "banned",
+      bannedAt,
+    });
+    mocks.generalRoomMessageRepo.findUpdatedAtSince.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages?after_ts=1`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const call =
+      mocks.generalRoomMessageRepo.findUpdatedAtSince.mock.calls[0][0];
+    expect(call.readCutoff).toEqual(bannedAt);
+  });
+
+  it("BAN-CUTOFF: a banned member's jump-to-message (around) also gets 200 with readCutoff passed through", async () => {
+    const bannedAt = new Date("2026-07-01T10:11:00.000Z");
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "banned",
+      bannedAt,
+    });
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "anchor",
+      roomId: ROOM,
+      createdAt: new Date("2026-07-01T10:05:00.000Z"),
+    });
+    mocks.generalRoomMessageRepo.findAroundDate.mockResolvedValue([]);
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(0);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages?around=anchor`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const call = mocks.generalRoomMessageRepo.findAroundDate.mock.calls[0][0];
+    expect(call.readCutoff).toEqual(bannedAt);
+  });
+
   it("POSITIVE: after_ts triggers incremental sync mode", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
