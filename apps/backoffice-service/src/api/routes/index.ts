@@ -12,6 +12,7 @@ import { communityRoutes } from "./community.routes.js";
 import { groupRoutes } from "./groups.routes.js";
 import { moderationRoutes } from "./moderation.routes.js";
 import { systemHealthRoutes } from "./system-health.routes.js";
+import { systemMaintenanceRoutes } from "./system-maintenance.routes.js";
 import { usersRoutes } from "./users.routes.js";
 
 /** API v1 routes — mounted at `/v1` (gateway proxies /admin/* → :3010/v1/*). */
@@ -72,4 +73,9 @@ serviceRoutes.use(systemHealthRoutes);
 // `/admin/v1/admin-accounts` (the gateway strips `/admin` and forwards `/v1/*`
 // verbatim). Self-prefixed, NOT nested under a base path — same as audit-logs.
 serviceRoutes.use(adminAccountRoutes);
+// System Maintenance is self-prefixed with `/system` so it resolves at
+// `/v1/system/*` — matching the gateway convention (the gateway strips
+// `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT nested under a
+// base path — same as audit-logs/system-health.
+serviceRoutes.use(systemMaintenanceRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);

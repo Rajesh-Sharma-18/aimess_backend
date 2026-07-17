@@ -84,6 +84,7 @@ export const AUDIT_ACTIONS = {
   ADMIN_PERMISSIONS_UPDATED: "admin.permissions_updated",
   ADMIN_PROFILE_UPDATED: "admin.profile_updated",
   ADMIN_PASSWORD_CHANGED: "admin.password_changed",
+  SYSTEM_ALL_FRIENDSHIPS_DISCONNECTED: "system.all_friendships_disconnected",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

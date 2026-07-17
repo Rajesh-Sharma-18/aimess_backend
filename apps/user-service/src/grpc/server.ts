@@ -3,10 +3,12 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { isAppError } from "@aimess/errors";
 import { env } from "../config/env.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
+import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
 import {
   buildFriendshipView,
@@ -280,6 +282,38 @@ export function startUserGrpcServer(): grpc.Server {
           callback(null, { friendIds, relationships });
         } catch (err) {
           logger.error(`gRPC checkFriendships error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Panel ONLY (see the .proto doc) — platform-wide unfriend sweep.
+    // Access control is backoffice-service's RBAC + audit log around this
+    // call, NOT this handler; `confirm` here is only a blast-radius trip-wire.
+    adminDisconnectAllFriendships: (
+      call: grpc.ServerUnaryCall<{ confirm: boolean }, unknown>,
+      callback: grpc.sendUnaryData<{
+        friendshipsDisconnected: number;
+        usersAffected: number;
+      }>
+    ) => {
+      void (async () => {
+        try {
+          const result = await friendshipService.disconnectAllPlatform({
+            confirm: Boolean(call.request.confirm),
+          });
+          callback(null, result);
+        } catch (err) {
+          if (isAppError(err) && err.statusCode === 400) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: err.messageKey ?? err.message,
+            });
+            return;
+          }
+          logger.error(
+            `gRPC adminDisconnectAllFriendships error: ${String(err)}`
+          );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

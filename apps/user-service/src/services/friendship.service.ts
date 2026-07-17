@@ -72,6 +72,12 @@ type AutoDisconnectResult = {
   friends: string[];
 };
 
+/** Result of a platform-wide {@link friendshipService.disconnectAllPlatform} sweep. */
+export type PlatformDisconnectResult = {
+  friendshipsDisconnected: number;
+  usersAffected: number;
+};
+
 const BATCH_CHUNK_SIZE = 500;
 
 type PeerBrief = {
@@ -725,6 +731,83 @@ export const friendshipService = {
       totalFriends: friendships.length,
       friendsDisconnected,
       friends: pairs.map((p) => p.peerId),
+    };
+  },
+
+  /**
+   * PLATFORM-WIDE maintenance sweep: force-unfriends EVERY ACCEPTED
+   * friendship on the platform, not just one caller's. Gated on `confirm:
+   * true` so it can never fire by accident — this is only ever reached via
+   * `UserService.AdminDisconnectAllFriendships` gRPC, itself only callable
+   * from backoffice-service's SUPER_ADMIN-only `settings.manage` admin
+   * action, which is what supplies real accountability (actor + audit log),
+   * not this flag — the flag is just a blast-radius trip-wire.
+   *
+   * Drains {@link friendshipRepository.disconnectAllAcceptedBatch} in
+   * `BATCH_CHUNK_SIZE` batches until none remain, publishing the identical
+   * per-friendship event pair as {@link autoDisconnectAll} (so every
+   * downstream consumer sees this exactly like N manual unfriends) and
+   * invalidating the profile cache for every affected user exactly once.
+   */
+  async disconnectAllPlatform(params: {
+    confirm: boolean;
+  }): Promise<PlatformDisconnectResult> {
+    if (!params.confirm) {
+      throw new BadRequestError("FRIEND_DISCONNECT_ALL_CONFIRMATION_REQUIRED");
+    }
+
+    let friendshipsDisconnected = 0;
+    const affectedUserIds = new Set<string>();
+
+    for (;;) {
+      const batch =
+        await friendshipRepository.disconnectAllAcceptedBatch(BATCH_CHUNK_SIZE);
+      if (batch.length === 0) break;
+
+      friendshipsDisconnected += batch.length;
+      const unfriendedAt = new Date().toISOString();
+      const unfriendedAtDate = new Date(unfriendedAt);
+      for (const { id, requesterId, addresseeId } of batch) {
+        affectedUserIds.add(requesterId);
+        affectedUserIds.add(addresseeId);
+        // No single initiating user for a system sweep — requesterId is a
+        // defensible placeholder for the event payload's required actor id;
+        // no consumer branches on it (notifications is a silent no-op on
+        // unfriend per product policy, chat-service reads the symmetric
+        // publishFriendshipDeletedSafe pair below instead).
+        publishFriendUnfriendedSafe({
+          friendshipId: id,
+          unfriendedById: requesterId,
+          otherUserId: addresseeId,
+          unfriendedAt,
+        });
+        publishFriendshipDeletedSafe(requesterId, addresseeId);
+        emitToPair(
+          {
+            id,
+            requesterId,
+            addresseeId,
+            status: "UNFRIENDED",
+            acceptedAt: null,
+            rejectedAt: null,
+            cancelledAt: null,
+            unfriendedAt: unfriendedAtDate,
+            unfriendedBy: null,
+            createdAt: unfriendedAtDate,
+            updatedAt: unfriendedAtDate,
+          },
+          FriendSocketEvents.REMOVED
+        );
+      }
+    }
+
+    await Promise.all(
+      [...affectedUserIds].map((id) => userCache.invalidateProfile(id))
+    );
+
+    return {
+      friendshipsDisconnected,
+      usersAffected: affectedUserIds.size,
     };
   },
 

@@ -5930,11 +5930,6 @@ export const openApiSchemas = {
           "Typed summary of the latest community activity (message, reaction, join, etc.). " +
           "Always present; type='created' when no chat activity has occurred.",
       },
-      isBanned: {
-        type: "boolean",
-        description:
-          "True when the caller's membership is BANNED. The community stays in `mine` (membership is kept, never deleted) but the client must lock the row read-only — no open, no send, no live updates — until unbanned and rejoined.",
-      },
     },
     required: [
       "id",
@@ -11204,5 +11199,39 @@ export const openApiSchemas = {
       createdAt: { type: "string", format: "date-time" },
     },
     required: ["reportId", "reportType", "status", "createdAt"],
+  },
+
+  AdminDisconnectAllFriendshipsRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/system/friendships/disconnect-all. `confirm` must be the literal boolean `true` — omitting it, or sending `false`, fails validation (400) before the sweep ever runs.",
+    required: ["confirm"],
+    properties: {
+      confirm: {
+        type: "boolean",
+        enum: [true],
+        description:
+          "Must be exactly `true`. A blast-radius trip-wire for this platform-wide destructive action, not the access control (that's settings.manage on the route).",
+      },
+    },
+  },
+  AdminDisconnectAllFriendshipsResult: {
+    type: "object",
+    description:
+      "Result of the platform-wide unfriend sweep — every accepted friendship on the platform was force-unfriended.",
+    properties: {
+      friendshipsDisconnected: {
+        type: "integer",
+        example: 1284,
+        description: "Total friendship rows flipped to UNFRIENDED.",
+      },
+      usersAffected: {
+        type: "integer",
+        example: 940,
+        description:
+          "Count of distinct users who had at least one friendship disconnected.",
+      },
+    },
+    required: ["friendshipsDisconnected", "usersAffected"],
   },
 } as const;

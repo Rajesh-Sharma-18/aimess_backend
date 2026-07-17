@@ -86,6 +86,28 @@ export const adminSearchProfileIdsBreaker: Breaker<
   call<{ search: string }, { userIds: string[] }>("adminSearchProfileIds", args)
 );
 
+interface AdminDisconnectAllFriendshipsResponse {
+  friendshipsDisconnected: number;
+  usersAffected: number;
+}
+
+// Platform-wide unfriend sweep — rare, admin-triggered, and potentially
+// draining a very large table in batches server-side, so it gets its own
+// generous timeout instead of the default 2s BREAKER_OPTS (which would trip
+// on every real invocation, not just genuine outages).
+export const adminDisconnectAllFriendshipsBreaker: Breaker<
+  { confirm: boolean },
+  AdminDisconnectAllFriendshipsResponse
+> = makeBreaker(
+  "user.adminDisconnectAllFriendships",
+  (args: { confirm: boolean }) =>
+    call<{ confirm: boolean }, AdminDisconnectAllFriendshipsResponse>(
+      "adminDisconnectAllFriendships",
+      args
+    ),
+  { timeout: 10 * 60 * 1000 }
+);
+
 export const userClient = {
   // Empty input → no gRPC call (avoids a needless round-trip).
   async adminGetProfilesByIds(
@@ -111,5 +133,12 @@ export const userClient = {
     if (!search.trim()) return [];
     const r = await adminSearchProfileIdsBreaker.fire({ search });
     return r.userIds ?? [];
+  },
+  // Platform-wide unfriend sweep. `confirm` must be true — see the .proto doc;
+  // the real access control is the SUPER_ADMIN route calling this, not this flag.
+  async adminDisconnectAllFriendships(
+    confirm: boolean
+  ): Promise<AdminDisconnectAllFriendshipsResponse> {
+    return adminDisconnectAllFriendshipsBreaker.fire({ confirm });
   },
 };
