@@ -177,6 +177,14 @@ model CommunityMember {
   bannedAt    DateTime?
   bannedBy    String?
   banReason   String?
+  // Admin/moderator kick marker — status stays LEFT (same as a voluntary leave,
+  // so every existing rejoin-flow "reactivate a LEFT row" check keeps working
+  // unmodified), but a non-null removedAt distinguishes "kicked, still shown
+  // read-only in my list until I dismiss it" from a genuine voluntary leave.
+  // Mirrors the bannedAt/bannedBy pair. Cleared on self-dismiss or rejoin.
+  removedAt   DateTime?
+  removedBy   String?
+  removedReason String?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -191,6 +199,8 @@ model CommunityMember {
   // also backs the admin member list's username (display name) sort.
   @@index([communityId, status, bannedAt])
   @@index([communityId, status, snapshotDisplayName])
+  // "My list" query: status IN [ACTIVE,BANNED] OR (status=LEFT AND removedAt set).
+  @@index([userId, status, removedAt])
   @@map("community_members")
 }
 

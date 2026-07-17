@@ -395,12 +395,15 @@ channels:
       connects/joins `/stream` `stream:<streamId>` only when the user
       actually opens the livestream screen.
 
-      **Presence accounting.** Viewer count is the `SCARD` of a Redis session
-      set (`stream:session:users:<streamId>`), keyed by unique `userId` — a
-      rejoin (reconnect) never double-counts. `stream:heartbeat` (client
-      emits every ~30s while visible) refreshes the set's TTL (2h) so a
-      silent reconnect isn't evicted; `stream:viewer_count` broadcasts are
-      debounced to ≤ 1/sec per stream.
+      **Presence accounting.** Viewer count is the `HLEN` of a Redis presence
+      hash (`stream:session:users:<streamId>`) mapping `userId` to an
+      open-socket refcount. Every socket join `HINCRBY`s +1; every
+      leave/disconnect `HINCRBY`s -1 and `HDEL`s at zero. Same user in
+      multiple tabs / devices counts once, and closing one tab only drops the
+      user from the count when it was the LAST open socket.
+      `stream:heartbeat` (client emits every ~30s while visible) refreshes
+      the hash's TTL (2h) so a silent reconnect isn't evicted;
+      `stream:viewer_count` broadcasts are debounced to ≤ 1/sec per stream.
 
       **Comment history.** `stream:join`'s ack backfills the most recent 20
       comments oldest-first; `stream:load_more` paginates further with

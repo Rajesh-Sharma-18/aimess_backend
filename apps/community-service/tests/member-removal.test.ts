@@ -124,18 +124,38 @@ describe("kickMember — silent-chat policy", () => {
     expect(publishSystemMsg).not.toHaveBeenCalled();
   });
 
-  it("publishes community:membership:removed to the removed user's personal channel", async () => {
+  it("publishes community:membership:restricted (not :removed) to the kicked user's personal channel — the community stays in their list, read-only, until THEY dismiss it", async () => {
     await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
     expect(publishUserEvent).toHaveBeenCalledWith(
       expect.anything(), // redis instance
       TARGET_ID,
-      "community:membership:removed",
+      "community:membership:restricted",
       expect.objectContaining({
         communityId: COMMUNITY_ID,
-        membershipStatus: "REMOVED",
+        membershipStatus: "KICKED",
+        isBanned: false,
         reason: "kicked",
       })
+    );
+    expect(publishUserEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET_ID,
+      "community:membership:removed",
+      expect.anything()
+    );
+  });
+
+  it("marks the row LEFT with a removedAt/removedBy kick marker (status unchanged from a voluntary leave, so rejoin flows keep working)", async () => {
+    await communityService.kickMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
+
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+      COMMUNITY_ID,
+      TARGET_ID,
+      "LEFT",
+      undefined,
+      undefined,
+      expect.objectContaining({ removedBy: CALLER_ID })
     );
   });
 
@@ -187,18 +207,25 @@ describe("banMember — silent-chat policy", () => {
     });
   });
 
-  it("publishes community:membership:removed to the banned user's personal channel", async () => {
+  it("publishes community:membership:restricted (not :removed) to the banned user's personal channel — the community stays in their list, read-only", async () => {
     await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
     expect(publishUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       TARGET_ID,
-      "community:membership:removed",
+      "community:membership:restricted",
       expect.objectContaining({
         communityId: COMMUNITY_ID,
-        membershipStatus: "REMOVED",
+        membershipStatus: "BANNED",
+        isBanned: true,
         reason: "banned",
       })
+    );
+    expect(publishUserEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET_ID,
+      "community:membership:removed",
+      expect.anything()
     );
   });
 

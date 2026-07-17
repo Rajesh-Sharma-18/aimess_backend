@@ -51,6 +51,7 @@ import {
   applyUrlMapToFiles,
   fileMediaKey,
   resolveQuoteThumbnail,
+  resolveStickerField,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
@@ -1136,6 +1137,12 @@ export class PrivateMessageService {
           if (key) mediaKeys.push(key);
         }
       }
+      const sticker = (message.content as Record<string, unknown> | null)
+        ?.sticker;
+      if (sticker && typeof sticker === "object") {
+        const key = fileMediaKey(sticker as MediaFileLike);
+        if (key) mediaKeys.push(key);
+      }
       const quote = message.quoteData as Record<string, unknown> | null;
       if (typeof quote?.thumbnail === "string" && quote.thumbnail) {
         mediaKeys.push(quote.thumbnail);
@@ -1246,18 +1253,31 @@ export class PrivateMessageService {
       const displayName = (snapshot.displayName as string) || "";
       const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
 
-      // Stamp resolved download URLs onto attachment files (content.files[]).
+      // Stamp resolved download URLs onto attachment files (content.files[])
+      // and the sticker sub-object (content.sticker) — the latter lives
+      // outside `files[]` and is otherwise never resolve-on-read.
       const content = wire.content as Record<string, unknown> | null;
-      const resolvedContent =
-        content && Array.isArray(content.files)
-          ? {
-              ...content,
-              files: applyUrlMapToFiles(
-                content.files as MediaFileLike[],
-                urlMap
-              ),
-            }
-          : content;
+      const resolvedContent = content
+        ? {
+            ...content,
+            ...(Array.isArray(content.files)
+              ? {
+                  files: applyUrlMapToFiles(
+                    content.files as MediaFileLike[],
+                    urlMap
+                  ),
+                }
+              : {}),
+            ...(content.sticker && typeof content.sticker === "object"
+              ? {
+                  sticker: resolveStickerField(
+                    content.sticker as MediaFileLike,
+                    urlMap
+                  ),
+                }
+              : {}),
+          }
+        : content;
 
       // Canonical client-facing reaction shape (FE reads `reactionGroups[]`; the
       // legacy `reactions` map carried by `...wire` is deprecated).

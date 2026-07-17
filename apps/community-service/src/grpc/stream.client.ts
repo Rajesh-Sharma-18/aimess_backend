@@ -58,6 +58,16 @@ export interface StreamClient {
     userId: string,
     reason: string
   ): Promise<void>;
+  /**
+   * Best-effort: force-ends every non-terminal stream in a community,
+   * regardless of creator. Called when the community is deleted or closed —
+   * no stream in that community is legitimately allowed to keep running.
+   * Never throws — a stream-service outage must not fail the delete/close.
+   */
+  forceEndStreamsByCommunity(
+    communityId: string,
+    reason: string
+  ): Promise<void>;
 }
 
 export function createStreamClient(): StreamClient {
@@ -180,6 +190,18 @@ export function createStreamClient(): StreamClient {
   // Fail-open: a stream-service outage must not fail (or even delay) the ban/kick.
   forceEndBreaker.fallback(() => ({ ok: false, endedCount: 0 }));
 
+  const forceEndByCommunityBreaker = makeBreaker(
+    "stream.forceEndStreamsByCommunity",
+    (args: { communityId: string; reason: string }) =>
+      makeGrpcCall<unknown, { ok?: boolean; endedCount?: number }>(
+        client,
+        "forceEndStreamsByCommunity",
+        args
+      )
+  );
+  // Fail-open: a stream-service outage must not fail (or even delay) the delete/close.
+  forceEndByCommunityBreaker.fallback(() => ({ ok: false, endedCount: 0 }));
+
   return {
     getActiveCommunityIds: async (communityIds) => {
       if (!communityIds.length) return new Set();
@@ -281,6 +303,16 @@ export function createStreamClient(): StreamClient {
       } catch (err) {
         logger.warn(
           `stream.forceEndStreamsByCreator failed for community=${communityId} user=${userId}: ${String(err)}`
+        );
+      }
+    },
+
+    forceEndStreamsByCommunity: async (communityId, reason) => {
+      try {
+        await forceEndByCommunityBreaker.fire({ communityId, reason });
+      } catch (err) {
+        logger.warn(
+          `stream.forceEndStreamsByCommunity failed for community=${communityId}: ${String(err)}`
         );
       }
     },
