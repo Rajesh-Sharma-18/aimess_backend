@@ -146,16 +146,23 @@ export class RoomMemberRepository {
   }
 
   /**
-   * Bulk: a user's ACTIVE member rows across many rooms — the basis for
-   * member-only community-chat summaries. One query, no N+1.
+   * Bulk: a user's ACTIVE + BANNED member rows across many rooms — the basis for
+   * member-only community-chat summaries. BANNED rows are included (with
+   * `bannedAt`) so the caller can clamp a banned member's summary to a read
+   * CUTOFF instead of dropping it — same READ/WRITE split as
+   * {@link assertCommunityReadAccess}'s `allowBannedReadCutoff`. One query, no N+1.
    */
-  async findActiveByUserAndRooms(
+  async findVisibleByUserAndRooms(
     userId: string,
     roomIds: string[]
   ): Promise<RoomMember[]> {
     if (!roomIds.length) return [];
     return this.prisma.roomMember.findMany({
-      where: { userId, status: "active", roomId: { in: roomIds } },
+      where: {
+        userId,
+        status: { in: ["active", "banned"] },
+        roomId: { in: roomIds },
+      },
     });
   }
 

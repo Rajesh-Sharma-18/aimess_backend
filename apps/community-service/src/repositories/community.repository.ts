@@ -47,7 +47,7 @@ function mineActivitySelect(userId: string) {
     status: true,
     members: {
       where: { userId },
-      select: { role: true, status: true, dismissedAt: true },
+      select: { role: true, status: true, dismissedAt: true, bannedAt: true },
     },
   } satisfies Prisma.CommunitySelect;
 }

@@ -18,7 +18,12 @@ const COMM_JOINED = "c-joined";
 const COMM_OTHER = "c-other";
 
 function buildService(overrides: {
-  members: Array<{ roomId: string; lastReadAt: Date | null }>;
+  members: Array<{
+    roomId: string;
+    lastReadAt: Date | null;
+    status?: "active" | "banned";
+    bannedAt?: Date | null;
+  }>;
   rooms: Array<{
     id: string;
     lastMessage: unknown;
@@ -36,14 +41,17 @@ function buildService(overrides: {
       createdAt: Date;
       sentBy?: string;
       senderName?: string;
+      systemMessageType?: string | null;
     } | null
   >;
 }) {
   const memberRepo = {
-    findActiveByUserAndRooms: jest.fn().mockResolvedValue(
+    findVisibleByUserAndRooms: jest.fn().mockResolvedValue(
       overrides.members.map((m) => ({
         roomId: m.roomId,
         lastReadAt: m.lastReadAt,
+        status: m.status ?? "active",
+        bannedAt: m.bannedAt ?? null,
       }))
     ),
   };
@@ -286,5 +294,191 @@ describe("getChatSummaries — personalLastMessage overlay", () => {
     });
     // No per-user fallback needed — never called.
     expect(messageRepo.findPreviousVisibleForUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("getChatSummaries — BANNED viewer read cutoff", () => {
+  it("re-resolves lastMessage as of bannedAt, bypassing the shared/hidden-set path entirely", async () => {
+    const bannedAt = new Date(1_700_000_100_000);
+    const afterBanAt = new Date(1_700_000_200_000); // newer than bannedAt
+    const { service, messageRepo } = buildService({
+      members: [
+        { roomId: COMM_JOINED, lastReadAt: null, status: "banned", bannedAt },
+      ],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          lastMessageId: "m-after-ban",
+          lastMessageAt: afterBanAt,
+          // The shared snapshot is a message sent AFTER the ban — must never leak.
+          lastMessage: {
+            content: "sent after I was banned",
+            senderId: "carol",
+            senderName: "Carol",
+            messageType: "TEXT",
+            createdAt: afterBanAt,
+          },
+        },
+      ],
+      personal: new Map(),
+      previousVisibleByRoom: new Map([
+        [
+          COMM_JOINED,
+          {
+            id: "m-before-ban",
+            sentBy: "bob",
+            senderName: "Bob",
+            messageType: "TEXT",
+            message: "sent before the ban",
+            createdAt: new Date(1_700_000_000_000),
+          },
+        ],
+      ]),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    const s = summaries[0]!;
+    expect(s.perUserResolved).toBe(true);
+    expect(s.hasLastMessage).toBe(true);
+    expect(s.lastMessage).toEqual({
+      username: "Bob",
+      message: "sent before the ban",
+      dateTime: new Date(1_700_000_000_000).getTime(),
+      isSystem: false,
+      userId: "bob",
+    });
+    // Cutoff-clamped resolution, not the shared/hidden-set overrides path.
+    expect(messageRepo.findPreviousVisibleForUser).toHaveBeenCalledWith(
+      COMM_JOINED,
+      USER,
+      bannedAt
+    );
+  });
+
+  it("clears the preview (hasLastMessage: false) when nothing visible remains before the ban", async () => {
+    const bannedAt = new Date(1_700_000_100_000);
+    const { service } = buildService({
+      members: [
+        { roomId: COMM_JOINED, lastReadAt: null, status: "banned", bannedAt },
+      ],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          lastMessage: {
+            content: "only ever message, sent after ban",
+            senderId: "carol",
+            senderName: "Carol",
+            messageType: "TEXT",
+            createdAt: new Date(1_700_000_200_000),
+          },
+        },
+      ],
+      personal: new Map(),
+      previousVisibleByRoom: new Map([[COMM_JOINED, null]]),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    expect(summaries[0]!.hasLastMessage).toBe(false);
+    expect(summaries[0]!.lastMessage).toBeUndefined();
+    // Still authoritative → community-service must clear its stale column, not
+    // fall back to the unfiltered denormalized last activity.
+    expect(summaries[0]!.perUserResolved).toBe(true);
+  });
+
+  it("drops a personal line created after the ban", async () => {
+    const bannedAt = new Date(1_700_000_100_000);
+    const { service } = buildService({
+      members: [
+        { roomId: COMM_JOINED, lastReadAt: null, status: "banned", bannedAt },
+      ],
+      rooms: [{ id: COMM_JOINED, lastMessage: null }],
+      personal: new Map([
+        [
+          COMM_JOINED,
+          {
+            message: "You were promoted",
+            createdAt: new Date(1_700_000_200_000), // after the ban
+          },
+        ],
+      ]),
+      previousVisibleByRoom: new Map([[COMM_JOINED, null]]),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    expect(summaries[0]!.personalLastMessage).toBeUndefined();
+  });
+
+  it("caps countUnreadBulk with the ban as the upper bound", async () => {
+    const bannedAt = new Date(1_700_000_100_000);
+    const { service, messageRepo } = buildService({
+      members: [
+        { roomId: COMM_JOINED, lastReadAt: null, status: "banned", bannedAt },
+      ],
+      rooms: [{ id: COMM_JOINED, lastMessage: null }],
+      personal: new Map(),
+      previousVisibleByRoom: new Map([[COMM_JOINED, null]]),
+    });
+
+    await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    expect(messageRepo.countUnreadBulk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thresholds: [
+          expect.objectContaining({
+            roomId: COMM_JOINED,
+            beforeDate: bannedAt,
+          }),
+        ],
+      })
+    );
+  });
+
+  it("an ACTIVE member's summary is unaffected (no cutoff applied)", async () => {
+    const { service, messageRepo } = buildService({
+      members: [{ roomId: COMM_JOINED, lastReadAt: null, status: "active" }],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          lastMessage: {
+            content: "latest",
+            senderId: "carol",
+            senderName: "Carol",
+            messageType: "TEXT",
+            createdAt: new Date(1_700_000_200_000),
+          },
+        },
+      ],
+      personal: new Map(),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    expect(summaries[0]!.lastMessage?.message).toBe("latest");
+    expect(summaries[0]!.perUserResolved).toBeFalsy();
+    expect(messageRepo.countUnreadBulk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thresholds: [
+          expect.objectContaining({ roomId: COMM_JOINED, beforeDate: null }),
+        ],
+      })
+    );
   });
 });

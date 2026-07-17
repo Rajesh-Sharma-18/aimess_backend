@@ -78,7 +78,7 @@ function buildService(
     advanceReadPointer: jest.fn().mockResolvedValue(undefined),
     findReadStatusByRoom: jest.fn().mockResolvedValue([]),
     findActiveByRoom: jest.fn().mockResolvedValue([]),
-    findActiveByUserAndRooms: jest.fn().mockResolvedValue([]),
+    findVisibleByUserAndRooms: jest.fn().mockResolvedValue([]),
     bulkAdvanceReadToNow: jest.fn().mockResolvedValue(0),
     ...overrides.memberRepo,
   };

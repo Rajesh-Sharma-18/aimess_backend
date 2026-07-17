@@ -1563,6 +1563,16 @@ async function enrichMineCommunities(
       );
       const avatar = await buildCommunityImageMedia(row.avatarUrl);
       const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
+      // A BANNED viewer's mine-list activity is capped at their ban — chat-service
+      // already enforces this for lastActivity/lastMessage/unread (perUserResolved
+      // forces the reconciledBase below to use its cutoff-clamped chat.lastMessage
+      // instead of the unfiltered denormalized column). The reaction overlay and
+      // livestream fields are sourced OUTSIDE chat-service though, so they need
+      // their own cutoff guard here.
+      const bannedAt =
+        row.members[0]?.status === CommunityMemberStatus.BANNED
+          ? (row.members[0].bannedAt ?? new Date(0))
+          : null;
 
       // Per-viewer lastActivity (display-only; the pagination cursor still uses
       // the stored row.lastActivityAt so community-wide ordering is unchanged).
@@ -1606,12 +1616,15 @@ async function enrichMineCommunities(
       // Reaction overlay: visible ONLY to the reaction's own actor/target,
       // and ONLY while it is genuinely newer than everything else above —
       // see applyReactionOverlay's doc for why this fully replaces the old
-      // "reaction via selectListPreview" mechanism.
-      const reactionOverlaid = applyReactionOverlay(
-        reconciledBase,
-        row,
-        userId
-      );
+      // "reaction via selectListPreview" mechanism. A reaction recorded AFTER
+      // the viewer's ban is never shown to them (read cutoff applies here too).
+      const reactionAfterBan =
+        bannedAt != null &&
+        row.lastActivityReactionAt != null &&
+        row.lastActivityReactionAt.getTime() > bannedAt.getTime();
+      const reactionOverlaid = reactionAfterBan
+        ? reconciledBase
+        : applyReactionOverlay(reconciledBase, row, userId);
       // The viewer's own "You joined the community" personal line still wins
       // when it is genuinely the newest visible thing (compared against the
       // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
@@ -1637,7 +1650,10 @@ async function enrichMineCommunities(
         firstUnreadMessageId: chat.firstUnreadMessageId,
         lastActivity,
         ...muteFields(muteMap.get(row.id) ?? null),
-        ...livestreamFields(liveCountMap.get(row.id) ?? 0),
+        // A banned member no longer has realtime standing in the community —
+        // livestream state (inherently "right now", not historical) is hidden
+        // outright rather than reconstructed as of the ban.
+        ...livestreamFields(bannedAt ? 0 : (liveCountMap.get(row.id) ?? 0)),
         currentUserIsStreaming,
         moderationStatus: row.moderationStatus,
         status: communityAccessPolicy.deriveStatus(row),
