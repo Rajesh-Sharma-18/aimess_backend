@@ -39,6 +39,9 @@ demo-frontend/*.tsx
 .claude
 .serena
 docs/
+# ponytail: this is source, not generated docs — the broad docs/ rule above swallows new files here
+!apps/api-gateway/src/docs/
+!apps/api-gateway/src/docs/**
 
 CLAUDE.md
 COMMUNITY_CHAT_INTEGRATION_GUIDE.md
