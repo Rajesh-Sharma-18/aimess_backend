@@ -93,6 +93,11 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     deepLink,
     collapseKey: `conv:${data.conversationId}`,
     showPreviewOverride,
+    // Chat messages must never create a Notification Center entry — see
+    // PushInput.skipInbox. Push (this call) and per-conversation unread
+    // badges (chat-service, unrelated to the Notification collection)
+    // continue to work unchanged.
+    skipInbox: true,
     // FCM data map — all values MUST be strings.
     data: {
       type: "MESSAGE",
