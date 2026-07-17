@@ -179,6 +179,37 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
     const res = await request(app).post("/api/chat/private/rooms/peer-1");
     expect(res.status).toBe(401);
   });
+
+  // Regression: a client that POSTs the room's OWN id here (rather than a
+  // peer's userId) must NOT hit the friendship gate — a bogus id is never a
+  // real friend, so the old code 403'd CHAT_FRIENDSHIP_REQUIRED on every such
+  // call. Room details are friendship-independent; return them instead.
+  it("REGRESSION: POSTing a room id (prv_...) here returns room details, not 403 CHAT_FRIENDSHIP_REQUIRED", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_hMuOXhNTTZ0KXyHx",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: {},
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([["peer-1", { displayName: "Peer One", memberId: "peer1" }]])
+    );
+
+    const res = await request(app)
+      .post("/api/chat/private/rooms/prv_hMuOXhNTTZ0KXyHx")
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBe("prv_hMuOXhNTTZ0KXyHx");
+    expect(res.body.data.friendship).toBeDefined();
+    expect(mocks.userServiceClient.checkFriendship).not.toHaveBeenCalled();
+    expect(mocks.privateRoomRepo.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
@@ -285,6 +316,174 @@ describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
 
   it("SECURITY: 401 without a token", async () => {
     const res = await request(app).get("/api/chat/private/rooms/peer-1");
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /rooms/:roomId — by the room's OWN id (`prv_...`), as opposed to the
+// by-peer-id get-or-create above. Private room and friendship are independent
+// concepts: an existing room + its history must survive unfriend/reject/
+// cancel/block — this path never creates a room and never friendship-gates.
+// ---------------------------------------------------------------------------
+describe("GET /api/chat/private/rooms/:roomId (room details by room id — friendship-independent)", () => {
+  function mockRoom(friendship: "FRIEND" | "PENDING" | "NONE" | "BLOCKED") {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: {},
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([["peer-1", { displayName: "Peer One", memberId: "peer1" }]])
+    );
+    mocks.friendshipGrpcClient.checkFriendships.mockResolvedValue(
+      new Map([
+        [
+          "peer-1",
+          {
+            status: friendship,
+            direction: friendship === "PENDING" ? "OUTGOING" : null,
+          },
+        ],
+      ])
+    );
+  }
+
+  it("✓ FRIEND: room accessible, friendship.status = FRIEND", async () => {
+    mockRoom("FRIEND");
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBe("prv_1");
+    expect(res.body.data.friendship).toEqual({
+      status: "FRIEND",
+      direction: null,
+    });
+    // Read-only lookup — never attempts get-or-create.
+    expect(mocks.privateRoomRepo.findByParticipantsKey).not.toHaveBeenCalled();
+    expect(mocks.userServiceClient.checkFriendship).not.toHaveBeenCalled();
+  });
+
+  it("✓ PENDING (outgoing): room accessible, history visible, friendship.status = PENDING", async () => {
+    mockRoom("PENDING");
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.friendship).toEqual({
+      status: "PENDING",
+      direction: "OUTGOING",
+    });
+  });
+
+  it("✓ PENDING (incoming): friendship.direction = INCOMING", async () => {
+    mockRoom("PENDING");
+    mocks.friendshipGrpcClient.checkFriendships.mockResolvedValue(
+      new Map([["peer-1", { status: "PENDING", direction: "INCOMING" }]])
+    );
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.friendship).toEqual({
+      status: "PENDING",
+      direction: "INCOMING",
+    });
+  });
+
+  it("✓ UNFRIEND: room still accessible, history visible, friendship.status = NONE", async () => {
+    mockRoom("NONE");
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBe("prv_1");
+    expect(res.body.data.friendship).toEqual({
+      status: "NONE",
+      direction: null,
+    });
+  });
+
+  it("✓ BLOCK: room remains accessible, history remains visible, friendship.status = BLOCKED", async () => {
+    mockRoom("BLOCKED");
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBe("prv_1");
+    expect(res.body.data.friendship.status).toBe("BLOCKED");
+  });
+
+  it("✓ UNBLOCK: friendship.status reflects the CURRENT (unblocked) state, not a cached one", async () => {
+    mockRoom("NONE");
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.friendship.status).toBe("NONE");
+  });
+
+  it("✓ ROOM WITHOUT FRIENDSHIP: the room existed via some other path (e.g. auto-connect) with no friendship ever recorded — still 200", async () => {
+    mockRoom("NONE");
+    mocks.friendshipGrpcClient.checkFriendships.mockResolvedValue(new Map());
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.friendship).toEqual({
+      status: "NONE",
+      direction: null,
+    });
+  });
+
+  it("✓ MULTIPLE DEVICES: two independent requests for the same room return byte-identical friendship state", async () => {
+    mockRoom("FRIEND");
+    const res1 = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+    const res2 = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(res1.body.data).toEqual(res2.body.data);
+  });
+
+  it("NEGATIVE: 404 when the room does not exist", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(null);
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_ghost")
+      .set(bearer(makeAccessToken()));
+    expect(res.status).toBe(404);
+  });
+
+  it("SECURITY: IDOR — 404 when the caller is not a participant of the room", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: ["other-a", "other-b"],
+    });
+    const res = await request(app)
+      .get("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+    expect(res.status).toBe(404);
+  });
+
+  it("SECURITY: 401 without a token", async () => {
+    const res = await request(app).get("/api/chat/private/rooms/prv_1");
     expect(res.status).toBe(401);
   });
 });

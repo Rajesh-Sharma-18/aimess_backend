@@ -711,7 +711,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
     const viewerIsActiveMember = isActiveMember(member);
     const changes = await this.resolveChanges({
@@ -784,9 +785,16 @@ export class CommunityMessageService {
   /**
    * Bulk community-chat summaries for GET /communities/mine. For each requested
    * communityId (roomId === communityId): unread count + last-message preview,
-   * but ONLY for communities the user is an ACTIVE member of (member-only
-   * previews). Non-member communities get `unreadMessageCount: 0` +
-   * `hasLastMessage: false`. Single bulk query per concern — no N+1.
+   * but ONLY for communities the user is an ACTIVE or BANNED member of
+   * (member-only previews). Non-member communities get `unreadMessageCount: 0` +
+   * `hasLastMessage: false`. A BANNED member gets the same READ CUTOFF as every
+   * other read path (see {@link assertCommunityReadAccess}'s
+   * `allowBannedReadCutoff`): unread count and last-message are clamped to
+   * `createdAt <= bannedAt`, so nothing that happened after the ban leaks into
+   * the community-service list (which otherwise falls back to its unfiltered
+   * denormalized column whenever this returns `hasLastMessage: false`). Single
+   * bulk query per concern — no N+1 (banned rooms' cutoff resolution is the one
+   * per-room exception, batched concurrently).
    */
   async getChatSummaries(params: {
     userId: string;
@@ -795,41 +803,83 @@ export class CommunityMessageService {
     const ids = [...new Set(params.communityIds.filter(Boolean))];
     if (!ids.length) return [];
 
-    // 1. Active membership rows → member roomIds + per-room read threshold.
-    const members = await this.memberRepo.findActiveByUserAndRooms(
+    // 1. Active + banned membership rows → member roomIds + per-room read
+    // threshold + (banned only) read cutoff.
+    const members = await this.memberRepo.findVisibleByUserAndRooms(
       params.userId,
       ids
     );
     const readMap = new Map<string, Date | null>(
       members.map((m) => [m.roomId, m.lastReadAt])
     );
+    const cutoffMap = new Map<string, Date | null>(
+      members.map((m) => [
+        m.roomId,
+        m.status === "banned" ? (m.bannedAt ?? new Date(0)) : null,
+      ])
+    );
     const memberRoomIds = members.map((m) => m.roomId);
+    const bannedRoomIds = memberRoomIds.filter((roomId) =>
+      cutoffMap.get(roomId)
+    );
 
-    // 2/3/4. In parallel: member rooms (lastMessage JSON) + bulk unread counts +
-    // the viewer's latest PERSONAL line per room (e.g. "You joined the community").
-    const [rooms, unreadMap, personalMap] = await Promise.all([
-      this.roomRepo.findManyByIds(memberRoomIds),
-      memberRoomIds.length
-        ? this.messageRepo.countUnreadBulk({
-            userId: params.userId,
-            thresholds: memberRoomIds.map((roomId) => ({
-              roomId,
-              afterDate: readMap.get(roomId) ?? new Date(0),
-            })),
-          })
-        : Promise.resolve<
-            Record<string, { count: number; firstUnreadMessageId: string }>
-          >({}),
-      memberRoomIds.length
-        ? this.messageRepo.findLatestPersonalByRooms({
-            userId: params.userId,
-            roomIds: memberRoomIds,
-          })
-        : Promise.resolve(
-            new Map<string, { message: string; createdAt: Date }>()
-          ),
-    ]);
+    // 2/3/4/5. In parallel: member rooms (lastMessage JSON) + bulk unread counts
+    // (banned rooms capped at their cutoff) + the viewer's latest PERSONAL line
+    // per room (e.g. "You joined the community") + banned rooms' as-of-ban last
+    // visible message (bypasses the shared/overrides path below entirely).
+    const [rooms, unreadMap, personalMap, bannedLastEntries] =
+      await Promise.all([
+        this.roomRepo.findManyByIds(memberRoomIds),
+        memberRoomIds.length
+          ? this.messageRepo.countUnreadBulk({
+              userId: params.userId,
+              thresholds: memberRoomIds.map((roomId) => ({
+                roomId,
+                afterDate: readMap.get(roomId) ?? new Date(0),
+                beforeDate: cutoffMap.get(roomId),
+              })),
+            })
+          : Promise.resolve<
+              Record<string, { count: number; firstUnreadMessageId: string }>
+            >({}),
+        memberRoomIds.length
+          ? this.messageRepo.findLatestPersonalByRooms({
+              userId: params.userId,
+              roomIds: memberRoomIds,
+            })
+          : Promise.resolve(
+              new Map<string, { message: string; createdAt: Date }>()
+            ),
+        Promise.all(
+          bannedRoomIds.map(
+            async (roomId) =>
+              [
+                roomId,
+                await this.messageRepo.findPreviousVisibleForUser(
+                  roomId,
+                  params.userId,
+                  cutoffMap.get(roomId)
+                ),
+              ] as const
+          )
+        ),
+      ]);
     const roomById = new Map(rooms.map((r) => [r.id, r]));
+    const bannedLastMap = new Map(bannedLastEntries);
+
+    // A personal line created AFTER the ban (e.g. a role change that landed
+    // post-ban) is not visible to a banned viewer either — drop it.
+    for (const roomId of bannedRoomIds) {
+      const cutoff = cutoffMap.get(roomId);
+      const personal = personalMap.get(roomId);
+      if (
+        cutoff &&
+        personal &&
+        personal.createdAt.getTime() > cutoff.getTime()
+      ) {
+        personalMap.delete(roomId);
+      }
+    }
 
     // Per-user lastMessage visibility pass (shared LastVisibleResolver):
     // For each room whose shared lastMessageId is hidden from this viewer
@@ -880,9 +930,29 @@ export class CommunityMessageService {
 
       let lastMessage: CommunityChatSummary["lastMessage"] | undefined;
       let hasLastMessage = false;
-      const perUserResolved = room ? overrides.has(communityId) : false;
+      const cutoff = cutoffMap.get(communityId);
+      let perUserResolved = room ? overrides.has(communityId) : false;
 
-      if (perUserResolved) {
+      if (cutoff) {
+        // BANNED viewer: the shared last / hidden-set overrides are IRRELEVANT —
+        // re-resolve straight from the as-of-ban query (findPreviousVisibleForUser
+        // already excludes deletedForAll/deletedBy, so delete-for-me still applies).
+        // perUserResolved forces TRUE so community-service treats this as
+        // AUTHORITATIVE and never falls back to its unfiltered denormalized column.
+        perUserResolved = true;
+        const prev = bannedLastMap.get(communityId) ?? null;
+        if (prev) {
+          const isSystem = prev.systemMessageType != null;
+          lastMessage = {
+            username: isSystem ? "" : (prev.senderName ?? ""),
+            message: convertMessageToPreview(prev.messageType, prev.message),
+            dateTime: prev.createdAt.getTime(),
+            isSystem,
+            userId: isSystem ? "" : (prev.sentBy ?? ""),
+          };
+          hasLastMessage = true;
+        }
+      } else if (perUserResolved) {
         // Shared last is HIDDEN for this viewer → AUTHORITATIVE per-viewer
         // resolution: substitute their previous-visible (with its REAL timestamp,
         // no +1ms hack — community-service treats perUserResolved as authoritative,
@@ -1197,7 +1267,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
     const viewerIsActiveMember = isActiveMember(member);
     const beforeTimestamp = params.cursor || new Date().toISOString();
@@ -1752,7 +1823,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
 
     const requestedBeforeMs = params.timestamp ?? Date.now();
@@ -1821,7 +1893,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
     const rows = await this.messageRepo.searchByText(
       params.roomId,
@@ -1851,7 +1924,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       roomId,
-      userId
+      userId,
+      { allowBannedReadCutoff: true }
     );
     return this.messageRepo.countSearchResults(
       roomId,
@@ -1873,7 +1947,8 @@ export class CommunityMessageService {
       this.roomRepo,
       this.memberRepo,
       params.roomId,
-      params.userId
+      params.userId,
+      { allowBannedReadCutoff: true }
     );
 
     const rows = await this.messageRepo.listMedia({

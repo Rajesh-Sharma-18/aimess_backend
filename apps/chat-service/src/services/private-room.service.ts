@@ -262,6 +262,14 @@ export class PrivateRoomService {
    * `GET /chat/private/rooms/{peerId}` — room details, community-`getById`-aligned.
    * Reuses `getOrCreateRoom` (get-or-create + friendship gate) and `enrichConversations`
    * (peer snapshot, avatar, presence) rather than duplicating either.
+   *
+   * NOTE: this get-or-CREATES. Friendship is only ever checked here, at
+   * first-contact room creation — see {@link getOrCreateRoom}. Once a room
+   * exists, {@link toRoomDetailsData}/{@link enrichConversations} never
+   * re-check it: private room and friendship are independent concepts, so an
+   * existing room + its history survive unfriend/reject/cancel/block. Use
+   * {@link getRoomDetailsById} for a pure, non-creating lookup by the room's
+   * own id.
    */
   async getRoomDetails(
     userId: string,
@@ -269,8 +277,50 @@ export class PrivateRoomService {
   ): Promise<PrivateRoomDetailsData> {
     const room = await this.getOrCreateRoom(userId, peerId);
     const [enriched] = await this.enrichConversations([room], userId);
+    return this.toRoomDetailsData(enriched, userId);
+  }
 
-    const mutedBy = (room.mutedBy ?? {}) as Record<
+  /**
+   * `GET /chat/private/rooms/{roomId}` — room details by the room's OWN id
+   * (format `prv_<id>`, see `lib/room-id.ts`), as opposed to {@link
+   * getRoomDetails}'s by-peer-id get-or-create. Pure read: never creates a
+   * room, and — critically — never gates on friendship. A private room
+   * outlives the friendship that (maybe) started it, so this is the correct
+   * entry point for "does this room still exist / what's the room + current
+   * friendship state" once a roomId is already known to the caller (e.g. from
+   * the conversation list or a deep link) — friendship changes (unfriend,
+   * reject, cancel, block) never hide the room or its history, only the
+   * returned `friendship` field reflects the current state.
+   *
+   * @throws NotFoundError `CHAT_ROOM_NOT_FOUND` when the room doesn't exist,
+   *   OR the caller isn't one of its participants (anti-enumeration — same
+   *   404, not 403, as {@link deleteForMe}/{@link muteRoom}).
+   */
+  async getRoomDetailsById(
+    userId: string,
+    roomId: string
+  ): Promise<PrivateRoomDetailsData> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room || !room.participants?.includes(userId)) {
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    }
+    const [enriched] = await this.enrichConversations([room], userId);
+    return this.toRoomDetailsData(enriched, userId);
+  }
+
+  /**
+   * The SINGLE builder for the `PrivateRoomDetailsData` wire shape — shared by
+   * {@link getRoomDetails} (by-peer, get-or-create) and {@link
+   * getRoomDetailsById} (by-room-id, read-only) so both entry points return a
+   * byte-identical response built from the same `enrichConversations` output,
+   * including the live `friendship` (and, folded into its `status`, current
+   * block) state — never computed independently per call site.
+   */
+  private toRoomDetailsData(
+    enriched: EnrichedPrivateRoom,
+    userId: string
+  ): PrivateRoomDetailsData {
+    const mutedBy = (enriched.mutedBy ?? {}) as Record<
       string,
       { muteUntil?: string | null }
     >;

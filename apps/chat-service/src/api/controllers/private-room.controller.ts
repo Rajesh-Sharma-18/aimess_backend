@@ -8,17 +8,36 @@ import type { PrivateRoomService } from "../../services/private-room.service.js"
 export class PrivateRoomController {
   constructor(private readonly service: PrivateRoomService) {}
 
+  // Same id-shape disambiguation as getRoomDetails below: a caller that POSTs
+  // the room's OWN id here (rather than a peer's userId) almost certainly
+  // wants that room's details, not "create a room with peer <roomId>" (which
+  // would 403 CHAT_FRIENDSHIP_REQUIRED — a bogus id is never a real friend).
+  // Routes to the same read-only, friendship-independent lookup as the GET
+  // handler so this endpoint can never misfire a friendship gate off a room id.
   getOrCreateRoom = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const peerId = req.params.peerId as string;
-    const room = await this.service.getOrCreateRoom(userId, peerId);
+    const idOrPeerId = req.params.peerId as string;
+    if (idOrPeerId.startsWith("prv_")) {
+      const details = await this.service.getRoomDetailsById(userId, idOrPeerId);
+      res.status(HTTP_STATUS.OK).json(new ApiResponse(details));
+      return;
+    }
+    const room = await this.service.getOrCreateRoom(userId, idOrPeerId);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(room));
   });
 
+  // Accepts EITHER the room's own id (`prv_<id>` — see lib/room-id.ts, a pure
+  // read, never creates, never friendship-gated) OR a peer's userId (get-or-
+  // create + friendship-gated on first contact) — same URL shape, disambiguated
+  // by the id's own format so existing peerId-based clients keep working
+  // unchanged. See PrivateRoomService.getRoomDetailsById's doc for why a room
+  // must be reachable by its own id independently of friendship state.
   getRoomDetails = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const peerId = req.params.peerId as string;
-    const details = await this.service.getRoomDetails(userId, peerId);
+    const idOrPeerId = req.params.peerId as string;
+    const details = idOrPeerId.startsWith("prv_")
+      ? await this.service.getRoomDetailsById(userId, idOrPeerId)
+      : await this.service.getRoomDetails(userId, idOrPeerId);
     res
       .status(HTTP_STATUS.OK)
       .json(

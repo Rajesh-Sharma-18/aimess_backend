@@ -250,17 +250,26 @@ export function assertCommunityMemberNotMuted(
 /**
  * Community read access: the caller is either an ACTIVE member, or the
  * community is PUBLIC (non-members can read PUBLIC community chat history).
- * For PRIVATE communities, active membership is required. A BANNED member is
- * denied outright with `USER_BANNED` — checked BEFORE the PUBLIC fallback, so
- * a banned member of a PUBLIC community is denied too; a ban revokes ALL
- * access (open/read/catchup/sync/search/media), not just writes — the
- * membership row is kept only so the community stays visible (locked) in
- * their own community list.
+ * For PRIVATE communities, active membership is required.
  *
- * `options.allowBannedReadCutoff` and the returned `bannedAtCutoff` are kept
- * for call-site compatibility but are now DORMANT — no status grants a banned
- * member capped-history read anymore, a ban always throws (see the
- * membership-visibility/permission-split note on this function).
+ * A BANNED member is a READ/WRITE split, not a hard block: the ban is a
+ * PERMISSION-axis rule (enforced by {@link assertRoomMemberActive} /
+ * {@link assertCommunityMember} on every write/react/pin/upload/socket-join
+ * path), but on the READ axis a ban acts as a read CUTOFF — the member may
+ * still open the community, scroll/search history, and view media that
+ * existed strictly before their ban, just never anything created after it.
+ * `options.allowBannedReadCutoff` opts a read call site into that cutoff
+ * instead of throwing; every write path must keep calling
+ * {@link assertRoomMemberActive} directly (or omit the option here) so writes
+ * stay hard-blocked with `USER_BANNED` regardless of this function's default.
+ *
+ * When the option is set, a banned member gets `canRead: true` and
+ * `bannedAtCutoff` set to their `bannedAt` — callers MUST clamp their query to
+ * `createdAt <= bannedAtCutoff` (or the equivalent `sequenceNumber`/`revision`
+ * bound) so nothing created after the ban is ever returned. Without the
+ * option (the default), a ban still throws `USER_BANNED` outright — checked
+ * BEFORE the PUBLIC fallback, so a banned member of a PUBLIC community is
+ * denied too, same as a PRIVATE one.
  *
  * Returns `{ member: RoomMember | null, canRead: boolean, bannedAtCutoff? }`
  * so callers know if they're a member without a separate query.
@@ -272,7 +281,8 @@ export function assertCommunityMemberNotMuted(
  * never leaks a PRIVATE community's history to a non-member. The room is only
  * loaded for non-members; ACTIVE members short-circuit first.
  *
- * @throws ForbiddenError `USER_BANNED` when the caller is banned from the community.
+ * @throws ForbiddenError `USER_BANNED` when the caller is banned from the
+ *   community and `options.allowBannedReadCutoff` is not set.
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller is a non-member of
  *   a PRIVATE (or not-yet-synced) community.
  */
@@ -281,9 +291,7 @@ export async function assertCommunityReadAccess(
   memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
   roomId: string,
   userId: string,
-  // Dormant — kept only so call sites passing `{ allowBannedReadCutoff }`
-  // keep compiling; a ban always throws USER_BANNED now (see doc above).
-  _options?: { allowBannedReadCutoff?: boolean }
+  options?: { allowBannedReadCutoff?: boolean }
 ): Promise<{
   member: RoomMember | null;
   canRead: boolean;
@@ -292,11 +300,18 @@ export async function assertCommunityReadAccess(
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
 
   // Banned: denied outright, even for a PUBLIC community — a ban revokes all
-  // access, so this must NOT fall through to the "PUBLIC non-member" branch
-  // below (an existing-but-banned member is not a "non-member"). Same central
-  // rule as assertRoomMemberActive. `options.allowBannedReadCutoff` is
-  // dormant (kept only for call-site compat) — a ban always throws.
+  // WRITE/realtime access, so this must NOT fall through to the "PUBLIC
+  // non-member" branch below (an existing-but-banned member is not a
+  // "non-member"). READ call sites opt into a capped history read instead via
+  // allowBannedReadCutoff — see the doc above.
   if (member?.status === "banned") {
+    if (options?.allowBannedReadCutoff) {
+      return {
+        member,
+        canRead: true,
+        bannedAtCutoff: member.bannedAt ?? new Date(0),
+      };
+    }
     throw new ForbiddenError("USER_BANNED");
   }
 

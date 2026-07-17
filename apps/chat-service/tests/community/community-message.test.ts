@@ -719,23 +719,40 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("USER_BANNED: 403 for a banned (non-active) member — a ban blocks ALL reads, no history page and no read-pointer write", async () => {
+  it("BANNED (non-active) member: 200, page capped at bannedAt — no read-pointer write", async () => {
     const bannedAt = new Date(5);
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "banned",
       bannedAt,
     });
+    mocks.generalRoomMessageRepo.listConversationMessages.mockResolvedValue([
+      {
+        id: "m1",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "x",
+        messageType: "text",
+        createdAt: new Date(5),
+      },
+    ]);
+    mocks.generalRoomMessageRepo.countConversation.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/conversation`)
       .set(bearer(makeAccessToken()));
 
-    // The community stays visible in the banned member's LIST, but every
-    // read on it is rejected with USER_BANNED (visibility ≠ permission).
-    expect(res.status).toBe(403);
+    // A ban is a READ CUTOFF, not a hard block: the community stays visible in
+    // the banned member's LIST, and history up to (and including) their
+    // bannedAt is still readable — a ban only revokes WRITE/realtime access.
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
     expect(
       mocks.generalRoomMessageRepo.listConversationMessages
-    ).not.toHaveBeenCalled();
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ beforeMs: bannedAt.getTime() })
+    );
+    // Read state is a member-only concept — a banned viewer never advances
+    // the read pointer, even on a successful capped read.
     expect(mocks.roomMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 });

@@ -58,7 +58,9 @@ export function createPrivateMessageRoutes(
     roomCtrl.getOrCreateRoom
   );
 
-  // Room details — community-getById-aligned response (peer info, avatar, presence).
+  // Room details — community-getById-aligned response (peer info, avatar,
+  // presence, friendship). Accepts either the room's own id (`prv_...`) or a
+  // peer's userId — see PrivateRoomController.getRoomDetails.
   router.get("/rooms/:peerId", authenticate, roomCtrl.getRoomDetails);
 
   // Delete conversation for me
