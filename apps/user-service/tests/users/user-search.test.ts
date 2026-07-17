@@ -282,9 +282,17 @@ describe("GET /api/v1/users/search", () => {
     expect(res.body.data.recent).toEqual([]);
   });
 
-  it("puts users with an existing room into Chat, and groups actively joined into Chat", async () => {
+  it("puts an accepted friend with an existing room into Chat, and groups actively joined into Chat", async () => {
     grpc.listPrivateRoomPeers.mockResolvedValue([
       { peerUserId: PEER_ID, roomId: "room_abc" },
+    ]);
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-1",
+        requesterId: TEST_USER_ID,
+        addresseeId: PEER_ID,
+        status: "ACCEPTED",
+      },
     ]);
     pRepo.findUsersInList.mockResolvedValue([profile(PEER_ID)]);
     grpc.listActiveGroups.mockResolvedValue([
@@ -302,6 +310,7 @@ describe("GET /api/v1/users/search", () => {
           type: "USER",
           userId: PEER_ID,
           roomId: "room_abc",
+          isFriend: true,
         }),
         expect.objectContaining({
           type: "GROUP",
@@ -312,7 +321,61 @@ describe("GET /api/v1/users/search", () => {
     );
   });
 
-  it("puts users without a room into Other, and non-member groups into Other", async () => {
+  it("puts an accepted friend without a room into Chat (isFriend, not roomId, drives Chat)", async () => {
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-1",
+        requesterId: TEST_USER_ID,
+        addresseeId: PEER_ID,
+        status: "ACCEPTED",
+      },
+    ]);
+    pRepo.findUsersInList.mockResolvedValue([profile(PEER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.chat).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "USER",
+          userId: PEER_ID,
+          roomId: null,
+          isFriend: true,
+        }),
+      ])
+    );
+  });
+
+  it("puts a non-friend with an existing room into Other, carrying the roomId (unfriended peer)", async () => {
+    grpc.listPrivateRoomPeers.mockResolvedValue([
+      { peerUserId: PEER_ID, roomId: "room_abc" },
+    ]);
+    pRepo.findUsersNotInList.mockResolvedValue([profile(PEER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "USER",
+          userId: PEER_ID,
+          roomId: "room_abc",
+          isFriend: false,
+        }),
+      ])
+    );
+    expect(res.body.data.chat).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ userId: PEER_ID })])
+    );
+  });
+
+  it("puts a non-friend without a room into Other, and non-member groups into Other", async () => {
     pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
     grpc.listOtherGroups.mockResolvedValue([groupSummary()]);
 
@@ -334,6 +397,74 @@ describe("GET /api/v1/users/search", () => {
           isActiveMember: false,
         }),
       ])
+    );
+  });
+
+  it("puts a pending (outgoing) request with a room into Other, not Chat", async () => {
+    grpc.listPrivateRoomPeers.mockResolvedValue([
+      { peerUserId: PEER_ID, roomId: "room_abc" },
+    ]);
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-2",
+        requesterId: TEST_USER_ID,
+        addresseeId: PEER_ID,
+        status: "PENDING",
+      },
+    ]);
+    pRepo.findUsersNotInList.mockResolvedValue([profile(PEER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: PEER_ID,
+          roomId: "room_abc",
+          isFriend: false,
+          relationshipStatus: "PENDING",
+        }),
+      ])
+    );
+    expect(res.body.data.chat).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ userId: PEER_ID })])
+    );
+  });
+
+  it("puts a rejected friend request with a room into Other, not Chat", async () => {
+    grpc.listPrivateRoomPeers.mockResolvedValue([
+      { peerUserId: PEER_ID, roomId: "room_abc" },
+    ]);
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-3",
+        requesterId: PEER_ID,
+        addresseeId: TEST_USER_ID,
+        status: "REJECTED",
+      },
+    ]);
+    pRepo.findUsersNotInList.mockResolvedValue([profile(PEER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: PEER_ID,
+          roomId: "room_abc",
+          isFriend: false,
+          relationshipStatus: "NONE",
+        }),
+      ])
+    );
+    expect(res.body.data.chat).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ userId: PEER_ID })])
     );
   });
 
@@ -379,7 +510,7 @@ describe("GET /api/v1/users/search", () => {
     });
   });
 
-  it("reflects a pending outgoing request as PENDING_OUT", async () => {
+  it("reflects a pending outgoing request as PENDING with requesterId=self", async () => {
     pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
     friendRepo.findAllForUser.mockResolvedValue([
       {
@@ -397,12 +528,32 @@ describe("GET /api/v1/users/search", () => {
 
     expect(res.body.data.other[0]).toMatchObject({
       isFriend: false,
-      relationshipStatus: "PENDING_OUT",
+      relationshipStatus: "PENDING",
       friendshipId: "fr-2",
+      requesterId: TEST_USER_ID,
     });
   });
 
-  it("excludes users that already have a room from the Other user query", async () => {
+  it("excludes accepted friends (not room peers) from the Other user query", async () => {
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-1",
+        requesterId: TEST_USER_ID,
+        addresseeId: PEER_ID,
+        status: "ACCEPTED",
+      },
+    ]);
+
+    await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    const excludeArg = pRepo.findUsersNotInList.mock.calls[0][0];
+    expect(excludeArg).toEqual(expect.arrayContaining([TEST_USER_ID, PEER_ID]));
+  });
+
+  it("does NOT exclude a non-friend room peer from the Other user query", async () => {
     grpc.listPrivateRoomPeers.mockResolvedValue([
       { peerUserId: PEER_ID, roomId: "room_abc" },
     ]);
@@ -413,7 +564,7 @@ describe("GET /api/v1/users/search", () => {
       .set(auth());
 
     const excludeArg = pRepo.findUsersNotInList.mock.calls[0][0];
-    expect(excludeArg).toEqual(expect.arrayContaining([TEST_USER_ID, PEER_ID]));
+    expect(excludeArg).not.toEqual(expect.arrayContaining([PEER_ID]));
   });
 
   it("passes q through to every section's search", async () => {

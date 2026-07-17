@@ -38,6 +38,7 @@ const adminTags = {
   auditLogs: "Admin — Audit Logs",
   systemHealth: "Admin — System Health",
   adminAccounts: "Admin — Admin Accounts",
+  systemMaintenance: "Admin — System Maintenance",
 } as const;
 
 const adminSecurity = [{ adminBearerAuth: [] }];
@@ -3613,6 +3614,35 @@ export const adminPaths = {
             },
           },
         },
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+
+  // ===========================================================================
+  // System Maintenance (IMPLEMENTED) — requires `settings.manage`
+  // (SUPER_ADMIN-only, per role-matrix.ts). Not in BACKOFFICE-API-SPEC.md §4 —
+  // added for rare, platform-wide, admin-triggered maintenance actions.
+  // ===========================================================================
+  "/admin/v1/system/friendships/disconnect-all": {
+    post: {
+      tags: [adminTags.systemMaintenance],
+      operationId: "adminDisconnectAllFriendships",
+      summary: "Platform-wide unfriend sweep",
+      description:
+        "DESTRUCTIVE, platform-wide: force-unfriends EVERY accepted friendship on the platform (flips each to UNFRIENDED via the same per-pair events a manual unfriend fires — friend.unfriended, friend.deleted, socket REMOVED). `confirm: true` is a required blast-radius trip-wire, not the access control; the real gate is SUPER_ADMIN's settings.manage. Can take a while on a large platform (batched server-side, generous timeout) — there is no undo. Always writes an AuditLog row (system.all_friendships_disconnected) with the actor and resulting counts before returning. Requires settings.manage.",
+      security: adminSecurity,
+      requestBody: jsonBody(
+        "#/components/schemas/AdminDisconnectAllFriendshipsRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Sweep result",
+          "#/components/schemas/AdminDisconnectAllFriendshipsResult"
+        ),
+        "400": errRes("confirm must be true"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing settings.manage"),
       },
       "x-implementation-status": "implemented",
     },

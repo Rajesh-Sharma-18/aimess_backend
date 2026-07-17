@@ -46,10 +46,12 @@ export class FriendshipRepository {
   }
 
   async deleteFriendship(userId: string, friendId: string): Promise<void> {
-    await prisma.friendship.delete({
-      where: {
-        userId_friendId: { userId, friendId },
-      },
+    // deleteMany, not delete: the pair's row may already be gone (e.g. a
+    // block's "friendship.deleted" publish firing after an unfriend already
+    // removed it) — a bare delete() throws P2025 on a missing unique key,
+    // which the queue consumer then nacks-without-requeue and drops.
+    await prisma.friendship.deleteMany({
+      where: { userId, friendId },
     });
   }
 
@@ -58,11 +60,16 @@ export class FriendshipRepository {
     friendId: string,
     status: string
   ): Promise<void> {
-    await prisma.friendship.update({
+    // upsert, not update: "friendship.blocked" always fires right after
+    // "friendship.deleted" has removed the row (blockUser unfriends first),
+    // so an update() would throw P2025 and this local read-model would never
+    // record BLOCKED at all — see deleteFriendship's comment above.
+    await prisma.friendship.upsert({
       where: {
         userId_friendId: { userId, friendId },
       },
-      data: { status },
+      update: { status },
+      create: { userId, friendId, status },
     });
   }
 

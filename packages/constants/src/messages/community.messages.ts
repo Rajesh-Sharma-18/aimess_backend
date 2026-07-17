@@ -190,6 +190,14 @@ export const COMMUNITY_MESSAGES = {
     vi: "Bạn đã bị cấm khỏi cộng đồng này",
     en: "You are banned from this community",
   },
+  // Uniform denial for EVERY action a banned member attempts on a community
+  // (read messages, send, react, edit, media, socket join). Thrown by
+  // chat-service's access-guard and surfaced verbatim as the ack/HTTP error
+  // code so clients can branch on it.
+  USER_BANNED: {
+    vi: "Bạn đã bị cấm khỏi cộng đồng này",
+    en: "You are banned from this community",
+  },
   COMMUNITY_ADMIN_TRANSFERRED: {
     vi: "Đã chuyển quyền quản trị viên",
     en: "Community admin transferred",

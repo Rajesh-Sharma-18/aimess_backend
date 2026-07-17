@@ -42,6 +42,7 @@ jest.mock("../../src/generated/prisma/index.js", () => {
     }
   );
 });
+jest.unmock("../../src/repositories/community.repository.js");
 
 import { prisma } from "../../src/config/prisma.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";

@@ -15,6 +15,13 @@ service UserService {
   // Internal: chat-service reads the callee's call-privacy setting to gate 1-to-1
   // calls (whoCanCallMe + allow-list). Callee-scoped, not per-caller.
   rpc GetCallPrivacy (GetCallPrivacyRequest) returns (GetCallPrivacyResponse);
+  // Admin Panel (SUPER_ADMIN, `settings.manage`) ONLY: platform-wide maintenance
+  // sweep that force-unfriends EVERY accepted friendship on the platform, not
+  // just one caller's. `confirm` must be true or this returns INVALID_ARGUMENT —
+  // it is a blast-radius trip-wire, not the access control (that lives in
+  // backoffice-service's RBAC + audit log around this call). Never expose this
+  // RPC, or a wrapper around it, without an equivalent admin gate.
+  rpc AdminDisconnectAllFriendships (AdminDisconnectAllFriendshipsRequest) returns (AdminDisconnectAllFriendshipsResponse);
 }
 
 message CheckFriendshipRequest {
@@ -101,6 +108,16 @@ message CheckFriendshipsRequest {
 
 message CheckFriendshipsResponse {
   repeated string friend_ids = 1;
+  // Full relationship (status/direction) for every requested candidate_id,
+  // from caller_id's perspective — status is FRIEND|PENDING|NONE|BLOCKED.
+  // Additive alongside friend_ids (kept for existing ACCEPTED-only callers).
+  repeated FriendshipInfo relationships = 2;
+}
+
+message FriendshipInfo {
+  string user_id = 1;
+  string status = 2;    // FRIEND | PENDING | NONE | BLOCKED
+  string direction = 3; // OUTGOING | INCOMING | "" (none)
 }
 
 message GetCallPrivacyRequest {
@@ -112,4 +129,13 @@ message GetCallPrivacyRequest {
 message GetCallPrivacyResponse {
   string          who_can_call_me  = 1;
   repeated string allowed_user_ids = 2;
+}
+
+message AdminDisconnectAllFriendshipsRequest {
+  bool confirm = 1;
+}
+
+message AdminDisconnectAllFriendshipsResponse {
+  int32 friendships_disconnected = 1;
+  int32 users_affected           = 2;
 }

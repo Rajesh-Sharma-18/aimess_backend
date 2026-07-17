@@ -27,6 +27,7 @@ jest.mock("../../src/config/prisma.js", () => ({
     communityMemberMute: { findUnique },
   },
 }));
+jest.unmock("../../src/repositories/community.repository.js");
 
 import { communityRepository } from "../../src/repositories/community.repository.js";
 

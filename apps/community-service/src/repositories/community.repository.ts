@@ -14,6 +14,44 @@ import {
 import type { CommunityAuditAction } from "../types/community.types.js";
 import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
 
+/**
+ * The `select` shared by the V1 timestamp `listMineByActivity` and the V2
+ * compound-keyset `listMineByActivityKeyset`. Both MUST return an identical row
+ * shape so the single `enrichMineCommunities` serializer works for either
+ * pagination axis. The caller's own membership role is pulled via the filtered
+ * `members` include (dynamic on `userId`), which is why this is a factory.
+ */
+function mineActivitySelect(userId: string) {
+  return {
+    id: true,
+    name: true,
+    handle: true,
+    type: true,
+    memberCount: true,
+    avatarUrl: true,
+    lastActivityAt: true,
+    lastActivityType: true,
+    lastActivityPreview: true,
+    lastActivityUsername: true,
+    lastActivityUserId: true,
+    lastActivitySelfPreview: true,
+    lastActivityTargetUserId: true,
+    lastActivityTargetPreview: true,
+    lastActivityReactionAt: true,
+    lastActivityReactionActorId: true,
+    lastActivityReactionActorPreview: true,
+    lastActivityReactionTargetId: true,
+    lastActivityReactionTargetPreview: true,
+    createdAt: true,
+    moderationStatus: true,
+    status: true,
+    members: {
+      where: { userId },
+      select: { role: true, status: true, dismissedAt: true, bannedAt: true },
+    },
+  } satisfies Prisma.CommunitySelect;
+}
+
 export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Categories
@@ -586,6 +624,7 @@ export const communityRepository = {
         removedAt: true,
         removedBy: true,
         removedReason: true,
+        dismissedAt: true,
       },
     });
   },
@@ -640,6 +679,13 @@ export const communityRepository = {
         // is @default(now()) which only applies on create, so reactivation must
         // set it explicitly.
         joinedAt: new Date(),
+        // Fresh membership also clears any stale kick/dismiss markers from the
+        // previous membership cycle (removedAt is audit metadata for the OLD
+        // cycle; dismissedAt only applies to a BANNED row).
+        removedAt: { unset: true },
+        removedBy: { unset: true },
+        removedReason: { unset: true },
+        dismissedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -691,6 +737,10 @@ export const communityRepository = {
         status: CommunityMemberStatus.ACTIVE,
         role: CommunityMemberRole.ADMIN,
         joinedAt: new Date(),
+        removedAt: { unset: true },
+        removedBy: { unset: true },
+        removedReason: { unset: true },
+        dismissedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -791,7 +841,10 @@ export const communityRepository = {
       removedAt: Date | null;
       removedBy: string | null;
       removedReason: string | null;
-    }
+    },
+    // Unban passes true so a future re-ban shows up in the target's list again
+    // (dismissedAt only ever applies to the ban cycle that set it).
+    clearDismissed?: boolean
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
@@ -800,6 +853,7 @@ export const communityRepository = {
         ...(banMeta ?? {}),
         ...(resetRole ? { role: resetRole } : {}),
         ...(removedMeta ?? {}),
+        ...(clearDismissed ? { dismissedAt: { unset: true } } : {}),
       },
       select: {
         id: true,
@@ -820,6 +874,23 @@ export const communityRepository = {
     });
     publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
     return row;
+  },
+
+  // ponytail: markRemovedFromList removed — removedAt not in generated client.
+  // Re-add after `prisma generate` includes the field.
+
+  /**
+   * Hide a BANNED community from the member's own list (self-dismiss). Writes
+   * ONLY `dismissedAt` — status stays BANNED and the ban metadata survives
+   * (business rule: dismissing never lifts a ban; only an admin unban does).
+   * No chat-sync publish: nothing membership-relevant changed for chat-service.
+   */
+  setMemberDismissed(communityId: string, userId: string) {
+    return prisma.communityMember.update({
+      where: { communityId_userId: { communityId, userId } },
+      data: { dismissedAt: new Date() },
+      select: { id: true },
+    });
   },
 
   /**
@@ -1037,31 +1108,29 @@ export const communityRepository = {
     const bound =
       params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
 
-    // Include BANNED alongside ACTIVE: a banned member's communities must stay
-    // visible in their sidebar list (restricted-access model — read-only, not
-    // removed). A KICKED member is status=LEFT with removedAt set (see
-    // kickMember) — same restricted-access treatment, so it's included too via
-    // the second OR branch. A genuine voluntary LEFT (removedAt null) and any
-    // other non-membership status are still excluded.
+    // Include BANNED alongside ACTIVE: a banned member's communities stay
+    // visible in their sidebar list (zero access — every read/write is
+    // rejected with USER_BANNED) until the user dismisses the entry themselves
+    // (dismissedAt set — see resolveSelfRemoval). LEFT and kicked members
+    // (status LEFT, removedAt is audit-only) are excluded — they must rejoin
+    // through the normal flow to see the community again.
     const memberVisibilityFilter = {
       OR: [
+        { status: CommunityMemberStatus.ACTIVE },
         {
-          status: {
-            in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
-          },
+          status: CommunityMemberStatus.BANNED,
+          dismissedAt: { isSet: false },
         },
-        { status: CommunityMemberStatus.LEFT, removedAt: { not: null } },
       ],
+    };
+    const membershipSome = {
+      userId: params.userId,
+      ...memberVisibilityFilter,
     };
     const where = {
       deletedAt: { isSet: false },
       lastActivityAt: bound,
-      members: {
-        some: {
-          userId: params.userId,
-          ...memberVisibilityFilter,
-        },
-      },
+      members: { some: membershipSome },
     };
 
     const [rows, total] = await Promise.all([
@@ -1069,51 +1138,87 @@ export const communityRepository = {
         where,
         orderBy: [{ lastActivityAt: dir }, { id: dir }],
         take: params.limit,
-        select: {
-          id: true,
-          name: true,
-          handle: true,
-          type: true,
-          memberCount: true,
-          avatarUrl: true,
-          lastActivityAt: true,
-          lastActivityType: true,
-          lastActivityPreview: true,
-          lastActivityUsername: true,
-          lastActivityUserId: true,
-          lastActivitySelfPreview: true,
-          // NOTE: previously missing from this select — selectListPreview's
-          // target-branch (role-change/join second viewer) was silently dead
-          // in `listMine` because these were always undefined here. Fixed
-          // alongside adding the reaction-overlay columns below.
-          lastActivityTargetUserId: true,
-          lastActivityTargetPreview: true,
-          lastActivityReactionAt: true,
-          lastActivityReactionActorId: true,
-          lastActivityReactionActorPreview: true,
-          lastActivityReactionTargetId: true,
-          lastActivityReactionTargetPreview: true,
-          createdAt: true,
-          moderationStatus: true,
-          status: true,
-          // At most one row per (communityId, userId) by unique constraint, so
-          // no take needed (Prisma's mongodb provider doesn't support take on a
-          // nested relation read anyway).
-          members: {
-            where: { userId: params.userId },
-            select: { role: true, status: true, removedAt: true },
-          },
-        },
+        select: mineActivitySelect(params.userId),
       }),
       prisma.community.count({
         where: {
           deletedAt: { isSet: false },
-          members: {
-            some: {
-              userId: params.userId,
-              ...memberVisibilityFilter,
+          members: { some: membershipSome },
+        },
+      }),
+    ]);
+
+    return { rows, total };
+  },
+
+  /**
+   * V2 counterpart of {@link listMineByActivity}: the caller's ACTIVE
+   * communities, newest-activity first, paged by a gap-safe COMPOUND
+   * `(lastActivityAt, id)` keyset instead of the V1 bare-timestamp bound.
+   *
+   * The V1 method tie-breaks on `id` only in `orderBy`, not in the `where`, so
+   * communities sharing one `lastActivityAt` millisecond can skip/duplicate at a
+   * page edge. Here the `id` tiebreaker is IN the boundary (`$or`), giving a true
+   * total order — every community reachable exactly once. `cursor === null` →
+   * newest page. Same `select`/`total` as V1, so `enrichMineCommunities` serves
+   * both.
+   */
+  async listMineByActivityKeyset(params: {
+    userId: string;
+    /** Compound keyset boundary; null for the newest (first) page. */
+    cursor: { ts: Date; id: string } | null;
+    limit: number;
+  }) {
+    // Same visibility rule as {@link listMineByActivity} — ACTIVE plus
+    // non-dismissed BANNED (see the doc comment there for why).
+    const memberVisibilityFilter = {
+      OR: [
+        { status: CommunityMemberStatus.ACTIVE },
+        {
+          status: CommunityMemberStatus.BANNED,
+          dismissedAt: { isSet: false },
+        },
+      ],
+    };
+    const membershipSome = {
+      some: {
+        userId: params.userId,
+        ...memberVisibilityFilter,
+      },
+    };
+
+    // Exclusive compound boundary: strictly-older activity, OR same activity ms
+    // with a strictly-smaller id. Mirrors the (createdAt,_id) keyset used across
+    // the chat/stream services. Newest-first (desc) to match V1's "before" scroll.
+    const boundary: Prisma.CommunityWhereInput = params.cursor
+      ? {
+          OR: [
+            { lastActivityAt: { lt: params.cursor.ts } },
+            {
+              lastActivityAt: params.cursor.ts,
+              id: { lt: params.cursor.id },
             },
-          },
+          ],
+        }
+      : {};
+
+    const where: Prisma.CommunityWhereInput = {
+      deletedAt: { isSet: false },
+      members: membershipSome,
+      ...boundary,
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.community.findMany({
+        where,
+        orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
+        take: params.limit,
+        select: mineActivitySelect(params.userId),
+      }),
+      prisma.community.count({
+        where: {
+          deletedAt: { isSet: false },
+          members: membershipSome,
         },
       }),
     ]);
@@ -1357,26 +1462,22 @@ export const communityRepository = {
     return rows.map((r) => r.communityId);
   },
 
-  /** Community ids where the user has an active ban. */
-  async findBannedCommunityIds(userId: string): Promise<string[]> {
-    const rows = await prisma.communityMember.findMany({
-      where: { userId, status: CommunityMemberStatus.BANNED },
-      select: { communityId: true },
-    });
-    return rows.map((r) => r.communityId);
-  },
-
   /**
-   * Community ids where the user was KICKED and hasn't dismissed it yet.
-   * Status is LEFT (same as a voluntary leave — see kickMember); `removedAt`
-   * set is what distinguishes an admin kick from a genuine voluntary leave.
+   * Community ids where the user has an active ban. `excludeDismissed` narrows
+   * to bans the user hasn't hidden from their own list yet — used by the
+   * mine-search widening so a dismissed banned community stays hidden there,
+   * matching `listMineByActivity`. Default (all bans) backs the join-request /
+   * invite exclusion lists, where dismissedness is irrelevant (still banned).
    */
-  async findKickedCommunityIds(userId: string): Promise<string[]> {
+  async findBannedCommunityIds(
+    userId: string,
+    opts?: { excludeDismissed?: boolean }
+  ): Promise<string[]> {
     const rows = await prisma.communityMember.findMany({
       where: {
         userId,
-        status: CommunityMemberStatus.LEFT,
-        removedAt: { not: null },
+        status: CommunityMemberStatus.BANNED,
+        ...(opts?.excludeDismissed ? { dismissedAt: { isSet: false } } : {}),
       },
       select: { communityId: true },
     });

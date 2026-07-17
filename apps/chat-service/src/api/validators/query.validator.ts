@@ -83,9 +83,11 @@ export const mediaListQuerySchema = z.object({
 });
 
 /**
- * Query schema for the timestamp-paginated community message-list endpoint.
- * Mirrors messageTimelineQuerySchema but omits seq cursors (community messages
- * have no sequenceNumber column). Timestamps are epoch milliseconds.
+ * Query schema for the timestamp-paginated community message-list endpoint (V1).
+ * Community messages DO carry a real per-room monotonic `sequenceNumber`
+ * (allocateSequence → generalRoom.lastSequence); the V1 endpoint simply paginates
+ * on the `(createdAt, _id)` timestamp keyset instead. The gap-safe seq cursors
+ * (`before_seq`/`after_seq`) live on the V2 schema below. Timestamps are epoch ms.
  *
  * The two timestamp params are mutually exclusive:
  *
@@ -123,6 +125,53 @@ export const communityTimelineQuerySchema = z
     message: "Provide either before_ts or after_ts, not both",
     path: ["before_ts"],
   });
+
+/**
+ * V2 query schema for the community message timeline
+ * (`GET /api/v2/chat/community/rooms/:roomId/messages`).
+ *
+ * PRIMARY axis = an OPAQUE `cursor` on the gap-safe compound `(createdAt, id)`
+ * keyset (the same keyset V1 computes). The client treats `cursor` as opaque:
+ * omit it for the newest page, then echo `pagination.nextCursor` (a
+ * `"<ms>_<id>"` token) back verbatim to page OLDER. This works on ALL existing
+ * data with no backfill and always returns a real token (never `"0"`).
+ *
+ * - `cursor`     : older page — messages strictly older than the token, newest-first.
+ * - `before_ts`  : migration alias for `cursor` (accepts the same compound token).
+ * - `after_ts`   : newer placement page (forward paging).
+ * - `around`     : jump-to-message window (returns `<ms>_<id>` continuation cursors).
+ * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset. Ignored
+ *   until a seq backfill has run (`sequenceNumber > 0`); clients should prefer
+ *   the opaque `cursor` unless they know the room is backfilled.
+ *
+ * Omit everything for the newest page.
+ */
+export const communityTimelineV2QuerySchema = z
+  .object({
+    cursor: compoundTsCursor.optional(),
+    before_ts: compoundTsCursor.optional(),
+    after_ts: compoundTsCursor.optional(),
+    before_seq: z.coerce.number().int().min(0).optional(),
+    after_seq: z.coerce.number().int().min(0).optional(),
+    around: z.string().min(1).max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(40),
+  })
+  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
+    message: "Provide either before_seq or after_seq, not both",
+    path: ["before_seq"],
+  });
+
+/**
+ * Query schema for the ZERO-LOSS changes feed
+ * (`GET /api/v2/chat/community/rooms/:roomId/changes`). `since_revision` is the
+ * client's per-room CHANGE high-water; `0` = cold start (drains from the
+ * beginning within the retention horizon). Returns inserts AND mutations whose
+ * `revision > since_revision`.
+ */
+export const communityChangesV2QuerySchema = z.object({
+  since_revision: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
 
 /**
  * Query schema for the community incremental-sync REST endpoint.

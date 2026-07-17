@@ -5,11 +5,11 @@
  * Scenarios:
  *  1. Active member  → removed via the shared leave workflow; other members
  *     untouched (no repo call touches any other userId).
- *  2. Banned member  → restricted-access model: the community was still
- *     visible (read-only) in "my communities", so this call actually
- *     dismisses it (lifts to LEFT, clears the ban marker).
- *  2b. Kicked member (LEFT + removedAt set, not yet dismissed) → same
- *     dismissal, clearing just the removedAt/removedBy/removedReason marker.
+ *  2. Banned member  → the community was still visible in "my communities",
+ *     so this call HIDES it (dismissedAt) — the ban itself survives (status
+ *     stays BANNED, ban metadata untouched); only an admin unban lifts it.
+ *  2b. Kicked member (LEFT + removedAt audit marker) → already gone from the
+ *     list; idempotent no-op success.
  *  3. Admin/owner    → rejected with COMMUNITY_OWNER_CANNOT_DELETE, no writes.
  *  4. Validation     → community not found / never a member → 404-mapped errors.
  *  5. Regression     → leaveCommunity's own admin-restriction error uses the
@@ -107,17 +107,16 @@ describe("deleteCommunityForSelf — active member", () => {
   });
 });
 
-describe("deleteCommunityForSelf — banned member (restricted-access model: community was still in their list, this dismisses it)", () => {
+describe("deleteCommunityForSelf — banned member (community was still in their list; this hides it, the ban survives)", () => {
   beforeEach(() => {
     repo.findById.mockResolvedValue(mockCommunity);
     repo.findMemberByUserId.mockResolvedValue({
       ...mockActiveMembership,
       status: "BANNED",
+      bannedAt: new Date(),
+      dismissedAt: null,
     });
-    repo.updateMemberStatus.mockResolvedValue({
-      ...mockActiveMembership,
-      status: "LEFT",
-    });
+    repo.setMemberDismissed.mockResolvedValue({ id: "member-row-1" });
   });
 
   it("resolves without throwing", async () => {
@@ -126,15 +125,15 @@ describe("deleteCommunityForSelf — banned member (restricted-access model: com
     ).resolves.toBeUndefined();
   });
 
-  it("lifts the row to LEFT, clearing the ban marker, and publishes the personal removal event so it drops from the caller's list", async () => {
+  it("sets dismissedAt WITHOUT touching status/ban metadata, and publishes the personal removal event so it drops from the caller's list", async () => {
     await communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID);
 
-    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+    expect(repo.setMemberDismissed).toHaveBeenCalledWith(
       COMMUNITY_ID,
-      CALLER_ID,
-      "LEFT",
-      { bannedAt: null, bannedBy: null, banReason: null }
+      CALLER_ID
     );
+    // The ban must remain: no status flip, no ban-metadata clear.
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
     expect(publishUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       CALLER_ID,
@@ -145,42 +144,37 @@ describe("deleteCommunityForSelf — banned member (restricted-access model: com
       })
     );
   });
+
+  it("already dismissed → idempotent no-op success", async () => {
+    repo.findMemberByUserId.mockResolvedValue({
+      ...mockActiveMembership,
+      status: "BANNED",
+      bannedAt: new Date(),
+      dismissedAt: new Date(),
+    });
+
+    await expect(
+      communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID)
+    ).resolves.toBeUndefined();
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
 });
 
-describe("deleteCommunityForSelf — kicked member, not yet dismissed (LEFT + removedAt set)", () => {
-  beforeEach(() => {
+describe("deleteCommunityForSelf — kicked member (LEFT + removedAt audit marker)", () => {
+  it("is already gone from the list → idempotent no-op success, marker untouched", async () => {
     repo.findById.mockResolvedValue(mockCommunity);
     repo.findMemberByUserId.mockResolvedValue({
       ...mockActiveMembership,
       status: "LEFT",
       removedAt: new Date(),
     });
-    repo.updateMemberStatus.mockResolvedValue({
-      ...mockActiveMembership,
-      status: "LEFT",
-    });
-  });
 
-  it("clears the removedAt marker (self-dismiss) and publishes the personal removal event", async () => {
-    await communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID);
-
-    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
-      COMMUNITY_ID,
-      CALLER_ID,
-      "LEFT",
-      undefined,
-      undefined,
-      { removedAt: null, removedBy: null, removedReason: null }
-    );
-    expect(publishUserEvent).toHaveBeenCalledWith(
-      expect.anything(),
-      CALLER_ID,
-      "community:membership:removed",
-      expect.objectContaining({
-        communityId: COMMUNITY_ID,
-        membershipStatus: "REMOVED",
-      })
-    );
+    await expect(
+      communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID)
+    ).resolves.toBeUndefined();
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
   });
 });
 

@@ -158,6 +158,41 @@ export const myCommunitiesQuerySchema = z
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 
 /**
+ * V2 query schema for `GET /api/v2/communities/mine`. Replaces V1's bare
+ * epoch-ms `before_ts`/`after_ts` cursor with a single opaque compound `cursor`
+ * (`"<lastActivityAtMs>_<communityId>"`), so same-millisecond communities can no
+ * longer skip/duplicate at a page boundary (the V1 leak). Treat `cursor` as
+ * OPAQUE: feed the returned `nextCursor` back verbatim; a bare epoch-ms is also
+ * accepted (first page / coarse jump, no `_id` tiebreaker).
+ *
+ *   joined mode (default — no q/categoryId): the caller's ACTIVE communities,
+ *     newest-activity first, compound-keyset cursor pagination.
+ *   search mode (q and/or categoryId): PUBLIC + own PRIVATE communities, offset
+ *     pagination — identical to V1's search mode.
+ */
+export const myCommunitiesV2QuerySchema = z.object({
+  // EITHER a plain epoch-ms ("1784104753870") OR the opaque compound cursor
+  // "<ms>_<communityId>" handed back as `nextCursor`. Kept as a string so the
+  // id tiebreaker survives (coercing to a number would drop it).
+  cursor: z
+    .string()
+    .regex(
+      /^\d+(_[a-fA-F0-9]{24})?$/,
+      "cursor must be epoch-ms or the compound cursor '<ms>_<communityId>'"
+    )
+    .optional(),
+  // search-mode filters + offset pagination (unchanged from V1)
+  q: discoverSearchSchema.optional(),
+  categoryId: categoryIdSchema.optional(),
+  filter: z.enum(["all", "live", "upcoming"]).default("all"),
+  page: pageSchema,
+  // shared
+  limit: limitSchema,
+});
+
+export type MyCommunitiesV2Query = z.infer<typeof myCommunitiesV2QuerySchema>;
+
+/**
  * Public discovery / browse / search query — backs the deprecated
  * `GET /communities/discover` alias. New clients should call
  * `GET /communities/mine` with `q`/`categoryId` instead.

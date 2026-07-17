@@ -20,6 +20,7 @@ export type AckErrorCode =
   | "INVALID_PAYLOAD"
   | "SERVICE_ERROR"
   | "FORBIDDEN"
+  | "USER_BANNED"
   | "NOT_FOUND"
   | "RATE_LIMITED"
   | "CONFLICT";
@@ -47,6 +48,7 @@ export interface AckSuccess {
 const ACK_RETRYABLE: Record<AckErrorCode, boolean> = {
   INVALID_PAYLOAD: false,
   FORBIDDEN: false,
+  USER_BANNED: false,
   NOT_FOUND: false,
   CONFLICT: false,
   SERVICE_ERROR: true,
@@ -58,6 +60,7 @@ const ACK_ERROR_MESSAGE: Record<AckErrorCode, MessageKey> = {
   INVALID_PAYLOAD: "SOCKET_ERR_INVALID_PAYLOAD",
   SERVICE_ERROR: "SOCKET_ERR_SERVICE",
   FORBIDDEN: "SOCKET_ERR_FORBIDDEN",
+  USER_BANNED: "USER_BANNED",
   NOT_FOUND: "SOCKET_ERR_NOT_FOUND",
   RATE_LIMITED: "SOCKET_ERR_RATE_LIMITED",
   CONFLICT: "SOCKET_ERR_CONFLICT",
@@ -170,5 +173,10 @@ export function resolveGrpcAckError(err: unknown): {
     typeof candidate === "string" && MESSAGE_KEY_PATTERN.test(candidate)
       ? candidate
       : undefined;
+  // Surface a ban as its own first-class ack code (not a generic FORBIDDEN):
+  // clients branch on `error === "USER_BANNED"` to render the banned state.
+  if (detailKey === "USER_BANNED") {
+    return { code: "USER_BANNED", detailKey };
+  }
   return { code: mappedCode, detailKey };
 }

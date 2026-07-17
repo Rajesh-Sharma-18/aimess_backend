@@ -426,7 +426,7 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -677,6 +677,7 @@ export function createMessagingImpl(
               : "PRIVATE";
 
           let readToSeq = 0;
+          let unreadCount = 0;
           if (conversationType === "GROUP") {
             await deps.groupMemberService.markRead({
               roomId: req.conversationId,
@@ -687,17 +688,21 @@ export function createMessagingImpl(
               .getMessageSequence(req.upToMessageId)
               .catch(() => 0);
           } else {
-            await deps.privateMessageService.markRead({
+            const room = (await deps.privateMessageService.markRead({
               roomId: req.conversationId,
               userId: req.readerId,
               lastMessageId: req.upToMessageId,
-            });
+            })) as {
+              unreadCountByUser?: Record<string, number>;
+            } | null;
+            unreadCount = room?.unreadCountByUser?.[req.readerId] ?? 0;
             readToSeq = await deps.privateMessageService
               .getMessageSequence(req.upToMessageId)
               .catch(() => 0);
           }
 
-          // Read receipt to the conversation room (V1, unchanged).
+          // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
+          // or below the boundary to READ (watermark), not just the boundary message.
           await redis.publish(
             `conv:${req.conversationId}`,
             JSON.stringify({
@@ -706,6 +711,7 @@ export function createMessagingImpl(
                 conversationId: req.conversationId,
                 readerId: req.readerId,
                 upToMessageId: req.upToMessageId,
+                read_to_seq: readToSeq,
               },
             })
           );
@@ -722,7 +728,7 @@ export function createMessagingImpl(
                   conversationId: req.conversationId,
                   readerId: req.readerId,
                   read_to_seq: readToSeq,
-                  unreadCount: 0,
+                  unreadCount,
                   conversationType,
                 },
               })
@@ -1770,8 +1776,15 @@ export function createMessagingImpl(
                 resourceId,
                 userId
               );
-              if (member) break;
-              // No membership row at all (never joined) — mirror
+              // BANNED blocks ALL media access — even media a non-member of a
+              // PUBLIC community could fetch (same rule as
+              // assertCommunityReadAccess: the ban outranks the PUBLIC
+              // fallback).
+              if (member?.status === "banned") {
+                throw new ForbiddenError("USER_BANNED");
+              }
+              if (member?.status === "active") break;
+              // No active membership (never joined, or left/removed) — mirror
               // assertCommunityReadAccess: a PUBLIC community's media is as
               // fetchable as its message history, which non-members can
               // already read. Only a PRIVATE (or unsynced/null) community
@@ -2140,34 +2153,40 @@ export function createCommunityImpl(
                 "community:" + req.communityId,
                 "community:message:new",
                 {
-                  id: row.id,
-                  messageId: row.id,
+                  // Canonical shape shared with private/group message:new — see
+                  // buildChatMessageEvent. Community-specific extras appended below.
+                  ...buildChatMessageEvent({
+                    id: row.id,
+                    clientMessageId: req.clientMessageId ?? "",
+                    roomId: row.roomId,
+                    conversationType: "COMMUNITY",
+                    senderId: row.sentBy,
+                    senderName,
+                    senderAvatar: bcastSenderAvatar,
+                    messageType: row.messageType,
+                    content: {
+                      text: row.message ?? "",
+                      files: rowBcastFiles,
+                      ...(rowLocation ? { location: rowLocation } : {}),
+                      ...(rowContact ? { contact: rowContact } : {}),
+                      ...(rowSticker ? { sticker: rowSticker } : {}),
+                    },
+                    parentMessageId: row.parentMessageId ?? "",
+                    quoteData: resolveQuoteThumbnail(rowQuote, rowQuoteUrlMap),
+                    reactions: [],
+                    serverTs: rowSentAt,
+                    sequenceNumber: row.sequenceNumber,
+                    countInUnread:
+                      (row as unknown as { countInUnread?: boolean | null })
+                        .countInUnread ?? true,
+                  }),
                   communityId: req.communityId,
-                  roomId: row.roomId,
-                  senderId: row.sentBy,
-                  senderName,
-                  senderAvatar: bcastSenderAvatar,
-                  parentMessageId: row.parentMessageId ?? "",
-                  quoteData: resolveQuoteThumbnail(rowQuote, rowQuoteUrlMap),
-                  content: {
-                    text: row.message ?? "",
-                    files: rowBcastFiles,
-                    ...(rowLocation ? { location: rowLocation } : {}),
-                    ...(rowContact ? { contact: rowContact } : {}),
-                    ...(rowSticker ? { sticker: rowSticker } : {}),
-                  },
-                  reactions: [],
+                  // Back-compat alias for existing FE consumers that read
+                  // top-level `message` instead of `content.text`.
                   message: row.message ?? "",
-                  contentType: normalizeMessageType(row.messageType),
-                  countInUnread:
-                    (row as unknown as { countInUnread?: boolean | null })
-                      .countInUnread ?? true,
-                  isEdited: false,
-                  editedAt: 0,
-                  clientMessageId: req.clientMessageId ?? "",
-                  serverTs: rowSentAt,
-                  sentAt: rowSentAt,
-                  sequenceNumber: row.sequenceNumber,
+                  // Zero-Loss Revision Axis: per-room change cursor (Telegram
+                  // pts) — not produced by buildChatMessageEvent, community-only.
+                  revision: (row as { revision?: number }).revision ?? 0,
                 },
                 `communityId=${req.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
@@ -2467,6 +2486,7 @@ export function createCommunityImpl(
             sinceId: string;
             limit: number;
             sinceTs: number; // epoch-ms; 0 or absent → use sinceId mode
+            sinceRevision: number | string; // int64 (string at runtime); -1 = not revision mode
           };
 
           // sinceTs is an int64 (a string at runtime via proto-loader) — coerce
@@ -2478,11 +2498,23 @@ export function createCommunityImpl(
               ? new Date(sinceTsMs)
               : undefined;
 
+          // ZERO-LOSS revision cursor (highest precedence). proto-loader delivers
+          // int64 as a string. The gateway sends -1 when the client did NOT opt
+          // into revision mode (0 is a VALID cold-start cursor), so only >= 0
+          // enables revision mode. A raw request that omits the field (int64
+          // default 0) is treated as legacy id/ts to preserve back-compat.
+          const sinceRevisionRaw = Number(req.sinceRevision);
+          const sinceRevision =
+            Number.isFinite(sinceRevisionRaw) && sinceRevisionRaw >= 0
+              ? sinceRevisionRaw
+              : undefined;
+
           const result = await deps.communityMessageService.catchup({
             roomId: req.roomId,
             userId: req.requesterId,
             sinceId: req.sinceId || "",
             sinceTs,
+            sinceRevision,
             limit: req.limit || 100,
           });
 
@@ -2526,6 +2558,8 @@ export function createCommunityImpl(
                 reactions: groupStoredReactions(
                   m.reactions as Record<string, unknown> | null | undefined
                 ),
+                // Zero-loss CHANGE cursor per message.
+                revision: (m as { revision?: number }).revision ?? 0,
                 systemMessageType:
                   (m as Record<string, unknown>).systemMessageType ?? null,
                 systemMetadata:
@@ -2536,6 +2570,10 @@ export function createCommunityImpl(
             lastId: result.lastId,
             authorized: result.authorized,
             nextTs: result.nextTs,
+            // Zero-loss revision-mode fields (0/false in id/ts modes).
+            roomRevision: result.roomRevision,
+            lastRevision: result.lastRevision,
+            resetRequired: result.resetRequired,
           });
         } catch (err) {
           logger.error(`gRPC communityCatchup error: ${String(err)}`);
@@ -2573,6 +2611,7 @@ export function createCommunityImpl(
                 messageId: result.messageId,
                 communityId: result.roomId,
                 reactions: result.reactions,
+                revision: result.revision,
               },
             })
           );
@@ -2795,6 +2834,7 @@ export function createCommunityImpl(
                 contentType: normalizeMessageType(result.messageType),
                 isEdited: true,
                 editedAt: editedAtMs,
+                revision: (result as { revision?: number }).revision ?? 0,
               },
             })
           );
@@ -2856,6 +2896,12 @@ export function createCommunityImpl(
                 roomId: result?.roomId ?? "",
                 deleteType: req.deleteType,
                 deletedBy: req.userId,
+                // Only delete-for-everyone bumps the room revision (§8).
+                ...(req.deleteType === "forEveryone"
+                  ? {
+                      revision: (result as { revision?: number }).revision ?? 0,
+                    }
+                  : {}),
               },
             })
           );

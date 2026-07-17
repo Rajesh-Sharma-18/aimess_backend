@@ -193,3 +193,8 @@ export {
   type ListAdminAccountsQueryInput,
   type AdminAccountIdParam,
 } from "./admin-account.validator.js";
+
+export {
+  disconnectAllFriendshipsSchema,
+  type DisconnectAllFriendshipsInput,
+} from "./system-maintenance.validator.js";

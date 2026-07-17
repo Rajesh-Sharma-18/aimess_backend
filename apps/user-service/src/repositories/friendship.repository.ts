@@ -261,6 +261,70 @@ export const friendshipRepository = {
     });
   },
 
+  /**
+   * One batch of a PLATFORM-WIDE disconnect sweep (admin-triggered, see
+   * `friendshipService.disconnectAllPlatform`): flips up to `batchSize`
+   * ACCEPTED friendships anywhere on the platform to UNFRIENDED
+   * (`unfriendedBy: null` — no single initiating user, this is a system
+   * sweep) and decrements BOTH sides' `friendsCount` by 1 each. Unlike
+   * {@link autoDisconnectBatch}, there is no shared `userId` here — every row
+   * has two independent users, so a user appearing in more than one row this
+   * batch gets decremented once per row.
+   *
+   * No cursor needed: since matched rows leave the ACCEPTED set immediately,
+   * repeatedly calling this with `status: "ACCEPTED"` naturally drains the
+   * whole table without ever revisiting a row. Returns `[]` once nothing is
+   * left — the caller's loop condition.
+   */
+  async disconnectAllAcceptedBatch(
+    batchSize: number
+  ): Promise<Array<{ id: string; requesterId: string; addresseeId: string }>> {
+    const rows = await prisma.friendship.findMany({
+      where: { status: "ACCEPTED" },
+      take: batchSize,
+      select: { id: true, requesterId: true, addresseeId: true },
+    });
+    if (rows.length === 0) return [];
+
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const ids = rows.map((r) => r.id);
+
+      await tx.friendship.updateMany({
+        where: { id: { in: ids }, status: "ACCEPTED" },
+        data: { status: "UNFRIENDED", unfriendedAt: now, unfriendedBy: null },
+      });
+      // A concurrent unfriend/block on one of these ids between the read and
+      // this updateMany is the same rare race autoDisconnectBatch accepts for
+      // its peer-side decrement (unconditional -1 per requested peer, not
+      // per row actually flipped) — mirrored here rather than re-querying
+      // which exact ids landed, since `friendsCount` is a display counter,
+      // not a source of truth.
+      const decrementByUser = new Map<string, number>();
+      for (const r of rows) {
+        decrementByUser.set(
+          r.requesterId,
+          (decrementByUser.get(r.requesterId) ?? 0) + 1
+        );
+        decrementByUser.set(
+          r.addresseeId,
+          (decrementByUser.get(r.addresseeId) ?? 0) + 1
+        );
+      }
+      await Promise.all(
+        [...decrementByUser.entries()].map(([userId, dec]) =>
+          tx.userProfile.update({
+            where: { userId },
+            data: { friendsCount: { decrement: dec } },
+            select: { userId: true },
+          })
+        )
+      );
+
+      return rows;
+    });
+  },
+
   /** All ACCEPTED friendships for a user — returns peer userId + friendship id. */
   findAcceptedFriends(userId: string) {
     return prisma.friendship.findMany({
@@ -285,6 +349,43 @@ export const friendshipRepository = {
       },
       select: { id: true, requesterId: true, addresseeId: true, status: true },
     });
+  },
+
+  /**
+   * Friendship rows between `callerId` and any of `candidateIds` (either
+   * direction), plus the block rows touching `callerId` — the two reads the
+   * gRPC `CheckFriendships` relationship contract needs. Bounded by caller
+   * (candidateIds is capped upstream, same as {@link findAcceptedFriendIdsForUser}).
+   */
+  async findRelationshipsForUser(
+    callerId: string,
+    candidateIds: string[]
+  ): Promise<{ rows: FriendshipRow[]; blockedIds: Set<string> }> {
+    if (candidateIds.length === 0) return { rows: [], blockedIds: new Set() };
+    const [rows, blocks] = await Promise.all([
+      prisma.friendship.findMany({
+        where: {
+          OR: [
+            { requesterId: callerId, addresseeId: { in: candidateIds } },
+            { addresseeId: callerId, requesterId: { in: candidateIds } },
+          ],
+        },
+        select: FRIENDSHIP_SELECT,
+      }),
+      prisma.block.findMany({
+        where: {
+          OR: [
+            { blockerId: callerId, blockedId: { in: candidateIds } },
+            { blockedId: callerId, blockerId: { in: candidateIds } },
+          ],
+        },
+        select: { blockerId: true, blockedId: true },
+      }),
+    ]);
+    const blockedIds = new Set(
+      blocks.map((b) => (b.blockerId === callerId ? b.blockedId : b.blockerId))
+    );
+    return { rows, blockedIds };
   },
 
   /**
@@ -352,6 +453,27 @@ export const friendshipRepository = {
         OR: [{ blockerId: userId }, { blockedId: userId }],
       },
       select: { blockerId: true, blockedId: true },
+    });
+  },
+
+  /** Directional lookup — did `blockerId` specifically block `blockedId`? */
+  findBlock(blockerId: string, blockedId: string) {
+    return prisma.block.findUnique({
+      where: { blockerId_blockedId: { blockerId, blockedId } },
+      select: { id: true, blockerId: true, blockedId: true, createdAt: true },
+    });
+  },
+
+  createBlock(blockerId: string, blockedId: string) {
+    return prisma.block.create({
+      data: { blockerId, blockedId },
+      select: { id: true, blockerId: true, blockedId: true, createdAt: true },
+    });
+  },
+
+  async deleteBlock(blockerId: string, blockedId: string): Promise<void> {
+    await prisma.block.delete({
+      where: { blockerId_blockedId: { blockerId, blockedId } },
     });
   },
 };

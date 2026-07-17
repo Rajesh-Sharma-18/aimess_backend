@@ -13,17 +13,18 @@ import {
 const chatNotificationClient = createChatNotificationClient();
 
 /**
- * Notification types that must never reach the `notify` socket (or the inbox):
- * currently-fired community events explicitly excluded from real-time push.
- * Checked first in `pushToUser` so no DB row, FCM send, or socket event is
- * ever produced for these types.
+ * Notification types that must never reach the `notify` socket (or the
+ * inbox), nor FCM. Checked first in `pushToUser` so no DB row, FCM send, or
+ * socket event is ever produced for these types.
+ *
+ * Join Rejected / Unban / Stream Started are deliberately NOT here — the
+ * Notification Center business requirement lists them as required entries
+ * (see `friend.consumer.ts` / `community.consumer.ts`), so they must reach
+ * the inbox + push like any other business event.
  */
 const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_KICKED,
-  CommunityEvents.MEMBER_UNBANNED,
-  CommunityEvents.JOIN_REQUEST_REJECTED,
   CommunityEvents.DELETED,
-  CommunityEvents.LIVESTREAM_STARTED,
 ]);
 
 export interface PushInput {
@@ -59,6 +60,17 @@ export interface PushInput {
    * The title is never modified.
    */
   showPreviewOverride?: string;
+  /**
+   * When true, skip the `CreateNotification` inbox write (and the
+   * `notification:new`/`notification:count_update` `/notify` socket events
+   * chat-service's gRPC handler fires from it) — FCM push and unread-badge
+   * flows for the underlying feature (e.g. per-conversation unread counts)
+   * are untouched, since those never read the Notification collection.
+   * The Notification Center is business-events-only; chat activity
+   * (messages, reactions, replies, typing, read receipts, edits, deletes)
+   * must never appear there. Use for any chat-activity push.
+   */
+  skipInbox?: boolean;
 }
 
 /**
@@ -88,6 +100,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     priority,
     bypassSettings = false,
     showPreviewOverride,
+    skipInbox = false,
   } = input;
 
   let body = input.body;
@@ -121,19 +134,23 @@ export async function pushToUser(input: PushInput): Promise<void> {
     body = showPreviewOverride ?? "New message";
   }
 
-  // Persist the inbox row (best-effort; circuit-breaker-wrapped).
-  try {
-    await chatNotificationClient.createNotification({
-      userId,
-      actorId,
-      type,
-      title,
-      body,
-      data,
-    });
-  } catch (error) {
-    logger.warn(`CreateNotification inbox write failed for ${userId}`);
-    logger.warn(error);
+  // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
+  // entirely for chat-activity pushes — the Notification Center is
+  // business-events-only.
+  if (!skipInbox) {
+    try {
+      await chatNotificationClient.createNotification({
+        userId,
+        actorId,
+        type,
+        title,
+        body,
+        data,
+      });
+    } catch (error) {
+      logger.warn(`CreateNotification inbox write failed for ${userId}`);
+      logger.warn(error);
+    }
   }
 
   // Load all device tokens for this user.

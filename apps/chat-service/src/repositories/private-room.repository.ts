@@ -298,11 +298,47 @@ export class PrivateRoomRepository {
     });
     if (!existing) return null;
 
+    const lastReadMessageIdByUser = (existing.lastReadMessageIdByUser ??
+      {}) as Record<string, string>;
+
+    // Forward-only: a read pointer must never move backward (multi-device — a second device that
+    // read to an OLDER message would otherwise regress the pointer and wrongly re-zero unread).
+    const upToSeq = (
+      await this.prisma.privateMessage.findUnique({
+        where: { id: upToMessageId },
+        select: { sequenceNumber: true },
+      })
+    )?.sequenceNumber;
+    const currentReadId = lastReadMessageIdByUser[userId];
+    if (upToSeq != null && currentReadId) {
+      const currentSeq = (
+        await this.prisma.privateMessage.findUnique({
+          where: { id: currentReadId },
+          select: { sequenceNumber: true },
+        })
+      )?.sequenceNumber;
+      if (currentSeq != null && upToSeq <= currentSeq) return existing;
+    }
+
+    // Accurate remaining unread = inbound messages strictly newer than the boundary (reading to a
+    // non-latest message must leave unread > 0, not hard-zero).
+    const remainingUnread =
+      upToSeq != null
+        ? await this.prisma.privateMessage.count({
+            where: {
+              roomId,
+              senderId: { not: userId },
+              isDeleted: false,
+              sequenceNumber: { gt: upToSeq },
+            },
+          })
+        : 0;
+
     const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
       string,
       number
     >;
-    unreadCountByUser[userId] = 0;
+    unreadCountByUser[userId] = remainingUnread;
 
     const lastReadAtByUser = (existing.lastReadAtByUser ?? {}) as Record<
       string,
@@ -310,27 +346,27 @@ export class PrivateRoomRepository {
     >;
     lastReadAtByUser[userId] = now.toISOString();
 
-    const lastReadMessageIdByUser = (existing.lastReadMessageIdByUser ??
-      {}) as Record<string, string>;
     lastReadMessageIdByUser[userId] = upToMessageId;
 
+    const hasUnread = remainingUnread > 0;
     const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
       string,
       boolean
     >;
-    hasUnreadByUser[userId] = false;
+    hasUnreadByUser[userId] = hasUnread;
 
+    // Preview hints are only meaningful while unread remains; clear them once fully caught up.
     const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
       {}) as Record<string, string | null>;
-    firstUnreadMessageIdByUser[userId] = null;
-
     const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
       {}) as Record<string, string | null>;
-    lastUnreadMessageIdByUser[userId] = null;
-
     const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
       {}) as Record<string, unknown>;
-    lastUnreadPreviewByUser[userId] = null;
+    if (!hasUnread) {
+      firstUnreadMessageIdByUser[userId] = null;
+      lastUnreadMessageIdByUser[userId] = null;
+      lastUnreadPreviewByUser[userId] = null;
+    }
 
     return this.prisma.privateRoom.update({
       where: { roomId },

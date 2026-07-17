@@ -3,7 +3,12 @@
  *
  * Covers two requirements:
  *  1. PUBLIC communities let non-members read message history; PRIVATE communities
- *     block non-members (and banned users in either case) with CHAT_NOT_A_MEMBER.
+ *     block non-members with CHAT_NOT_A_MEMBER. BANNED members hit a READ CUTOFF on
+ *     every read call site (message history, search, media, changes feed): history
+ *     up to their `bannedAt` stays fully readable, nothing after it is ever
+ *     returned — a ban is a WRITE/realtime block, not a read hard-block. Only a
+ *     caller that omits `allowBannedReadCutoff` (none of the current read paths do)
+ *     would see USER_BANNED instead.
  *  2. The "You joined the community" SYSTEM message is PERSONAL: persisted with a
  *     `visibleToUserId`, published to `user:<id>` (not the community room), and never
  *     surfaced to other members.
@@ -799,16 +804,56 @@ describe("assertCommunityReadAccess", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("allows a BANNED user to read, capped to their ban timestamp (Telegram parity), even when the community is PUBLIC", async () => {
+  it("rejects a BANNED user with USER_BANNED — even when the community is PUBLIC (the ban outranks the public-read fallback)", async () => {
+    const roomRepo = makeRoomRepo("PUBLIC");
+    await expect(
+      assertCommunityReadAccess(
+        roomRepo as never,
+        makeMemberRepo("banned") as never,
+        ROOM_ID,
+        USER_ID
+      )
+    ).rejects.toMatchObject({ message: "USER_BANNED" });
+    // Denied on the membership row alone — never falls through to the
+    // PUBLIC non-member branch (an existing-but-banned member isn't one).
+    expect(roomRepo.findRoomById).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // `allowBannedReadCutoff` — the read-cutoff opt-in. Every current READ call
+  // site sets it; a banned member gets canRead=true + bannedAtCutoff instead
+  // of throwing, so history up to their ban stays readable (a ban is a
+  // WRITE/realtime block, not a read hard-block — see the doc on this function).
+  // -------------------------------------------------------------------------
+  it("allowBannedReadCutoff: a BANNED member gets canRead=true + bannedAtCutoff instead of throwing", async () => {
+    const bannedAt = new Date("2026-07-01T00:00:00.000Z");
+    const memberRepo = {
+      findByRoomAndUser: jest
+        .fn()
+        .mockResolvedValue({ status: "banned", role: "member", bannedAt }),
+    };
     const res = await assertCommunityReadAccess(
       makeRoomRepo("PUBLIC") as never,
-      makeMemberRepo("banned") as never,
+      memberRepo as never,
       ROOM_ID,
-      USER_ID
+      USER_ID,
+      { allowBannedReadCutoff: true }
     );
     expect(res.canRead).toBe(true);
     expect(res.member?.status).toBe("banned");
-    expect(res.bannedAtCutoff).toBeInstanceOf(Date);
+    expect(res.bannedAtCutoff).toEqual(bannedAt);
+  });
+
+  it("allowBannedReadCutoff: still rejects a non-member of a PRIVATE community (the option only changes BANNED handling)", async () => {
+    await expect(
+      assertCommunityReadAccess(
+        makeRoomRepo("PRIVATE") as never,
+        makeMemberRepo(null) as never,
+        ROOM_ID,
+        USER_ID,
+        { allowBannedReadCutoff: true }
+      )
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
 
@@ -865,12 +910,12 @@ describe("CommunityMessageService.getMessages access", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Restricted-access model: getConversation / listMedia allow a BANNED member
-// to keep reading their pre-ban history (capped at bannedAt), matching the
-// other read endpoints (getMessages/searchMessages/etc). A LEFT/non-member of
-// a PRIVATE community is still blocked.
+// Read axis: getConversation / listMedia apply the BANNED read cutoff — the
+// page/media list is capped at bannedAt instead of throwing. A LEFT/non-member
+// of a PRIVATE community is still blocked with CHAT_NOT_A_MEMBER (unaffected —
+// that's the non-member branch, not the banned one).
 // ---------------------------------------------------------------------------
-describe("CommunityMessageService.getConversation / listMedia — banned read access", () => {
+describe("CommunityMessageService.getConversation / listMedia — banned read cutoff", () => {
   const BANNED_AT = new Date("2026-07-01T00:00:00.000Z");
 
   function build(memberStatus: string | null, communityType: string | null) {
@@ -908,7 +953,7 @@ describe("CommunityMessageService.getConversation / listMedia — banned read ac
     return { service, messageRepo, memberRepo };
   }
 
-  it("getConversation allows a BANNED member, capping the page at their ban timestamp and skipping mark-as-read", async () => {
+  it("getConversation caps a BANNED member's page at bannedAt instead of throwing — no read-pointer write", async () => {
     const { service, messageRepo, memberRepo } = build("banned", "PRIVATE");
 
     await expect(
@@ -917,19 +962,19 @@ describe("CommunityMessageService.getConversation / listMedia — banned read ac
         userId: USER_ID,
         pageNumber: 1,
         limit: 30,
-        timestamp: BANNED_AT.getTime() + 60_000, // requested page is AFTER the ban
+        timestamp: BANNED_AT.getTime() + 60_000, // request a window PAST the ban
       })
     ).resolves.toEqual({ messages: [], total: 0 });
 
-    // The effective beforeMs is clamped down to the ban timestamp, not the
-    // later requested one — nothing sent after the ban is ever returned.
+    // beforeMs must be clamped to bannedAt, never the later requested timestamp.
     expect(messageRepo.listConversationMessages).toHaveBeenCalledWith(
       expect.objectContaining({ beforeMs: BANNED_AT.getTime() })
     );
     expect(messageRepo.countConversation).toHaveBeenCalledWith(
       expect.objectContaining({ beforeMs: BANNED_AT.getTime() })
     );
-    // No read-state write for a non-active viewer.
+    // Read state is a member-only concept — a banned (non-active) viewer never
+    // advances the read pointer, even on a successful capped read.
     expect(memberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 
@@ -961,7 +1006,7 @@ describe("CommunityMessageService.getConversation / listMedia — banned read ac
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("listMedia allows a BANNED member, passing their ban timestamp through as the read cutoff", async () => {
+  it("listMedia allows a BANNED member, capped to media sent at/before bannedAt — even in a PUBLIC community", async () => {
     const { service, messageRepo } = build("banned", "PUBLIC");
 
     await expect(

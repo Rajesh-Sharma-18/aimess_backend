@@ -76,6 +76,7 @@ export {
 } from "./category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
+export { disconnectAllFriendships } from "./system-maintenance.controller.js";
 export {
   listAdminAccounts,
   createAdminAccount,

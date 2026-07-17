@@ -251,6 +251,8 @@ export class CommunitySystemMessageService {
       }
 
       const seq = await this.roomRepo.allocateSequence(communityId);
+      // System-message insert bumps the room CHANGE revision too (zero-loss feed).
+      const revision = await this.roomRepo.allocateRevision(communityId);
 
       const message = await this.messageRepo
         .createSystemMessage({
@@ -263,6 +265,7 @@ export class CommunitySystemMessageService {
           triggeredByUserId,
           triggeredByName: wireSenderName,
           sequenceNumber: seq,
+          revision,
           fallbackText,
           visibleToUserId,
           clientMessageId: dedupeKey,
@@ -361,6 +364,7 @@ export class CommunitySystemMessageService {
               serverTs,
               sentAt: serverTs,
               sequenceNumber: seq,
+              revision,
               systemMessageType,
               isPersonal,
               systemMetadata: wireMetadata,
@@ -478,15 +482,23 @@ export class CommunitySystemMessageService {
   }): Promise<void> {
     const { communityId, messageId } = params;
     try {
-      const hidden = await this.messageRepo.deleteForAll(messageId);
-      if (!hidden) return;
-      const tombstone = buildDeletePayload({
-        conversationType: "COMMUNITY",
-        messageId,
-        roomId: communityId,
-        scope: "forEveryone",
-        deletedBy: "",
+      // Retraction is a tombstone → bump the room CHANGE revision so the changes
+      // feed replays the pin-line removal to offline clients.
+      const revision = await this.roomRepo.allocateRevision(communityId);
+      const hidden = await this.messageRepo.deleteForAll(messageId, {
+        revision,
       });
+      if (!hidden) return;
+      const tombstone = {
+        ...buildDeletePayload({
+          conversationType: "COMMUNITY",
+          messageId,
+          roomId: communityId,
+          scope: "forEveryone",
+          deletedBy: "",
+        }),
+        revision,
+      };
       await this.redis.publish(
         `community:${communityId}`,
         JSON.stringify({ event: "community:message:deleted", data: tombstone })

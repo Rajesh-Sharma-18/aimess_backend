@@ -231,13 +231,20 @@ export class CommunityMessageController {
       inclusive: !hasBefore,
       limit,
     });
-    const paginated = buildTimelineResponse(
-      result.items as unknown as Record<string, unknown>[],
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation (hasMoreOlder/hasMoreNewer/olderCursor/newerCursor) is
+    // ADDITIVE on every page so a client can page BOTH ways from any window.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
@@ -245,6 +252,182 @@ export class CommunityMessageController {
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
+  });
+
+  /**
+   * V2 — `GET /api/v2/chat/community/rooms/:roomId/messages`.
+   *
+   * PRIMARY history axis = an OPAQUE `cursor` on the compound `(createdAt, id)`
+   * keyset (same keyset V1 computes). It works on ALL existing data with no
+   * backfill and always hands back a real `<ms>_<id>` `nextCursor` (never `"0"`)
+   * — fixing the "cursor ignored / infinite newest-page loop" the FE reported.
+   * The `sequenceNumber` keyset (`before_seq`/`after_seq`) stays as an OPT-IN
+   * gap-safe path for rooms whose seq has been backfilled.
+   *
+   * Precedence: `around` (jump-to-message, ts-anchored) → `before_seq`/`after_seq`
+   * (explicit seq opt-in) → opaque `cursor` / `before_ts` / `after_ts` (ts keyset,
+   * DEFAULT) → newest page. Response adds `pinnedMessage` + `roomRevision`.
+   */
+  getMessagesV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || 40;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const {
+        items,
+        total,
+        hasMoreOlder,
+        hasMoreNewer,
+        olderCursor,
+        newerCursor,
+      } = await this.service.getMessagesAround({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const paginated = buildAroundResponse(
+        items as unknown as Record<string, unknown>[],
+        total,
+        limit,
+        { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
+      );
+      const [pinnedMessage, roomRevision] = await Promise.all([
+        this.pinService.getActivePinSummary(roomId),
+        this.service.getRoomRevision(roomId),
+      ]);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { ...paginated, pinnedMessage, roomRevision },
+            items.length
+              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    // OPT-IN seq keyset — only when the client explicitly sends a seq cursor
+    // (requires a seq backfill; unbackfilled rooms have sequenceNumber 0 and
+    // should use the opaque `cursor` below instead).
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+
+    let result: Awaited<ReturnType<typeof this.service.getMessagesSeqV2>>;
+
+    if (beforeSeq != null || afterSeq != null) {
+      const direction = afterSeq != null ? "after" : "before";
+      const seq = afterSeq ?? beforeSeq ?? null;
+      result = await this.service.getMessagesSeqV2({
+        roomId,
+        userId,
+        direction,
+        seq,
+        limit,
+      });
+    } else {
+      // DEFAULT: opaque compound `(createdAt, id)` cursor. `cursor`/`before_ts`
+      // page OLDER (scroll-up); `after_ts` pages newer. Both carry the opaque
+      // `<ms>_<id>` token (a bare epoch-ms is also accepted for a coarse jump).
+      const rawOlder =
+        req.query.cursor != null
+          ? String(req.query.cursor)
+          : req.query.before_ts != null
+            ? String(req.query.before_ts)
+            : undefined;
+      const rawNewer =
+        req.query.after_ts != null ? String(req.query.after_ts) : undefined;
+      const raw = rawNewer ?? rawOlder;
+      const direction = rawNewer != null ? "after" : "before";
+
+      let ts: number | undefined;
+      let boundaryId: string | null = null;
+      if (raw != null && raw !== "") {
+        const sep = raw.indexOf("_");
+        ts = Number(sep === -1 ? raw : raw.slice(0, sep));
+        boundaryId = sep === -1 ? null : raw.slice(sep + 1);
+      }
+      const hasCursor = ts != null;
+
+      result = await this.service.getMessagesTimeline({
+        roomId,
+        userId,
+        direction,
+        ts: new Date(hasCursor ? ts! : Date.now()),
+        boundaryId,
+        // First page (no cursor) includes the newest message; a cursor page is
+        // exclusive so it never re-returns its own boundary row.
+        inclusive: !hasCursor,
+        limit,
+      });
+    }
+
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
+    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursors are plain seq
+    // strings: olderCursor → before_seq, newerCursor → after_seq. Both the
+    // seq-keyset and opaque-cursor branches share the same core (see
+    // `getTimelinePageShared`), so `cursors`/`roomRevision` are always present.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
+    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+    const msg = paginated.data.length
+      ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+      : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
+  });
+
+  /**
+   * V2 — `GET /api/v2/chat/community/rooms/:roomId/changes` — the ZERO-LOSS
+   * changes feed. Returns every message whose room CHANGE `revision >
+   * since_revision` (inserts AND edits/deletes/reactions), current state, ordered
+   * revision ASC, plus `roomRevision` (new high-water), `resetRequired` (deep-gap
+   * re-baseline), `pinnedMessage`, and a `nextRevisionCursor` to drain. This is
+   * what closes mutation-loss that V2 `after_seq` (inserts only) can't.
+   */
+  getChanges = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceRevision = Number(req.query.since_revision) || 0;
+    const limit = Number(req.query.limit) || 100;
+
+    const [result, pinnedMessage] = await Promise.all([
+      this.service.getChanges({ roomId, userId, sinceRevision, limit }),
+      this.pinService.getActivePinSummary(roomId),
+    ]);
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          roomRevision: result.roomRevision,
+          resetRequired: result.resetRequired,
+          pinnedMessage,
+          hasMore: result.hasMore,
+          nextRevisionCursor: result.nextRevisionCursor,
+          data: result.items,
+        },
+        result.items.length
+          ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+          : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+      )
+    );
   });
 
   getConversation = asyncHandler(async (req: Request, res: Response) => {
@@ -329,6 +512,8 @@ export class CommunityMessageController {
         result.editedAt instanceof Date
           ? result.editedAt.getTime()
           : Date.now(),
+      // Zero-loss CHANGE cursor for live gap detection.
+      revision: (result as unknown as { revision?: number }).revision ?? 0,
     };
     await this.redis.publish(
       `community:${result.roomId}`,
@@ -396,6 +581,8 @@ export class CommunityMessageController {
             messageId: result.messageId,
             communityId: result.roomId,
             reactions: result.reactions,
+            // Zero-loss CHANGE cursor for live gap detection.
+            revision: result.revision,
           },
         })
       )
@@ -623,10 +810,22 @@ export class CommunityMessageController {
           }
         : {}),
     });
+    // delete-for-everyone bumps the room CHANGE revision (delete-for-me is a
+    // per-user view state and MUST NOT — §8). Carry revision only in that case.
+    const deletedEvent =
+      type === "forEveryone"
+        ? {
+            ...tombstone,
+            revision: (result as { revision?: number }).revision ?? 0,
+          }
+        : tombstone;
     if (result?.roomId) {
       await this.redis.publish(
         `community:${result.roomId}`,
-        JSON.stringify({ event: "community:message:deleted", data: tombstone })
+        JSON.stringify({
+          event: "community:message:deleted",
+          data: deletedEvent,
+        })
       );
     }
 

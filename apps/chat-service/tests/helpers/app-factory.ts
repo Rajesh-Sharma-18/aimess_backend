@@ -127,6 +127,7 @@ export interface BuiltMocks {
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
+  friendshipGrpcClient: any;
   communityClient: any;
   streamCountsClient: any;
   redis: any;
@@ -188,6 +189,14 @@ export function buildApp(): BuiltApp {
   const userServiceClient: any = {
     checkFriendship: jest.fn(async () => true),
   };
+  // Live gRPC friendship lookup for private-room list/details responses (the
+  // `friendship` field) — distinct from userServiceClient's local send-gate
+  // check above. Defaults to an empty map so every existing test (none of
+  // which assert on `friendship`) keeps getting NONE_RELATIONSHIP unchanged;
+  // a spec exercising a specific friendship state overrides the resolved map.
+  const friendshipGrpcClient: any = {
+    checkFriendships: jest.fn(async () => new Map()),
+  };
   const communityClient: any = {
     getCommunityInviteContexts: jest.fn(async () => []),
   };
@@ -209,7 +218,8 @@ export function buildApp(): BuiltApp {
     userSnapshotService,
     userServiceClient,
     redis,
-    presenceService
+    presenceService,
+    friendshipGrpcClient
   );
   const privateMessageService = new PrivateMessageService(
     privateMessageRepo,
@@ -406,6 +416,7 @@ export function buildApp(): BuiltApp {
       callRepo,
       cacheRepo,
       userServiceClient,
+      friendshipGrpcClient,
       communityClient,
       streamCountsClient,
       redis,

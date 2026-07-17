@@ -60,6 +60,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findActiveMembershipsWithRoleByCommunityIds: jest.fn(),
     findCommunitiesByIds: jest.fn(),
     deleteCommunityHard: jest.fn(),
+    setMemberDismissed: jest.fn(),
   },
 }));
 
