@@ -288,23 +288,39 @@ const startServer = async () => {
       }
     }
 
-    // Backs the community history (createdAt, _id) keyset page + countTimeline.
-    // Declared on the schema too; created here so existing deployments pick it up
+    // Backs the community history (createdAt, _id) keyset page + countTimeline,
+    // the V2 seq history page, and the zero-loss revision changes feed. Declared
+    // on the schema too; created here so existing deployments pick them up
     // without a `prisma db push`. _id is the implicit trailing sort key in Mongo.
-    try {
-      await ensureIndex(
-        "general_room_messages",
-        {
-          key: { roomId: 1, createdAt: -1 },
-          name: "general_room_messages_room_createdAt_idx",
-        },
-        "general_room_messages_room_createdAt_idx"
-      );
-    } catch (err) {
-      logger.warn(
-        "Failed to create general_room_messages timeline index — continuing"
-      );
-      logger.warn(err);
+    const timelineIndexes = [
+      {
+        key: { roomId: 1, createdAt: -1 },
+        name: "general_room_messages_room_createdAt_idx",
+      },
+      // V2 seq keyset (findByRoomIdSeq / findAroundSeq): equality roomId +
+      // deletedForAll, range+sort sequenceNumber.
+      {
+        key: { roomId: 1, deletedForAll: 1, sequenceNumber: 1 },
+        name: "general_room_messages_room_deleted_seq_idx",
+      },
+      // Zero-loss changes feed + community:catchup(sinceRevision):
+      // WHERE roomId=? AND revision > ? ORDER BY revision ASC (tombstones kept).
+      {
+        key: { roomId: 1, revision: 1 },
+        name: "general_room_messages_room_revision_idx",
+      },
+    ];
+    for (const idx of timelineIndexes) {
+      try {
+        await ensureIndex(
+          "general_room_messages",
+          { key: idx.key, name: idx.name },
+          idx.name
+        );
+      } catch (err) {
+        logger.warn(`Failed to create ${idx.name} — continuing`);
+        logger.warn(err);
+      }
     }
 
     // Old name for the general_room_messages timeline index; renamed to

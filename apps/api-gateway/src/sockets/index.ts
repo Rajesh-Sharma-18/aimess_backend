@@ -2,7 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { logger } from "@aimess/logger";
-import { getCorsAllowedOrigins } from "../config/env.js";
+import { isCorsOriginAllowed } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
 import { registerAuthNamespace } from "./namespaces/auth.ns.js";
 import { registerSessionRevokeListener } from "./session-revoke.js";
@@ -29,7 +29,9 @@ export async function setupSockets(
   const io = new SocketIOServer(httpServer, {
     path: "/socket.io/",
     cors: {
-      origin: getCorsAllowedOrigins(),
+      origin: (origin, callback) => {
+        callback(null, isCorsOriginAllowed(origin));
+      },
       methods: ["GET", "POST"],
       credentials: true,
     },

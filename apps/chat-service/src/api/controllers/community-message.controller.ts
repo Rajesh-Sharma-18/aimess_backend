@@ -231,13 +231,20 @@ export class CommunityMessageController {
       inclusive: !hasBefore,
       limit,
     });
-    const paginated = buildTimelineResponse(
-      result.items as unknown as Record<string, unknown>[],
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation (hasMoreOlder/hasMoreNewer/olderCursor/newerCursor) is
+    // ADDITIVE on every page so a client can page BOTH ways from any window.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
@@ -312,12 +319,7 @@ export class CommunityMessageController {
     const afterSeq =
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
 
-    let result: {
-      items: unknown[];
-      hasMore: boolean;
-      nextCursor: string | null;
-      total: number;
-    };
+    let result: Awaited<ReturnType<typeof this.service.getMessagesSeqV2>>;
 
     if (beforeSeq != null || afterSeq != null) {
       const direction = afterSeq != null ? "after" : "before";
@@ -366,25 +368,30 @@ export class CommunityMessageController {
       });
     }
 
-    const paginated = buildTimelineResponse(
-      result.items as unknown as Record<string, unknown>[],
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
-    const [pinnedMessage, roomRevision] = await Promise.all([
-      this.pinService.getActivePinSummary(roomId),
-      this.service.getRoomRevision(roomId),
-    ]);
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
+    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursors are plain seq
+    // strings: olderCursor → before_seq, newerCursor → after_seq. Both the
+    // seq-keyset and opaque-cursor branches share the same core (see
+    // `getTimelinePageShared`), so `cursors`/`roomRevision` are always present.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
+    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse({ ...paginated, pinnedMessage, roomRevision }, msg)
-      );
+      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
   });
 
   /**

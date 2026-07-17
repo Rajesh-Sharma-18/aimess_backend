@@ -1233,6 +1233,8 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     return this.getTimelinePageShared({
       roomId: params.roomId,
@@ -1268,6 +1270,8 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     return this.getTimelinePageShared({
       roomId: params.roomId,
@@ -1299,6 +1303,8 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
@@ -1311,8 +1317,8 @@ export class CommunityMessageService {
     );
     const viewerIsActiveMember = isActiveMember(member);
     const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
-    const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
-      [
+    const [{ messages: pageRows, hasMore }, members, total, roomRevision] =
+      await Promise.all([
         adapter.timeline({
           roomId: params.roomId,
           userId: params.userId,
@@ -1328,8 +1334,10 @@ export class CommunityMessageService {
           viewerIsActiveMember,
           readCutoff: bannedAtCutoff,
         }),
-      ]
-    );
+        // Room change high-water on EVERY page — the client seeds its
+        // localMaxRevision from this on cold start (frontend guide §3).
+        this.messageRepo.getRoomRevision(params.roomId),
+      ]);
 
     // Boundary = last DB-order row; the adapter stringifies the axis-correct
     // nextCursor (compound "<ms>_<id>" for TIMESTAMP, plain seq for SEQUENCE).
@@ -1342,12 +1350,22 @@ export class CommunityMessageService {
     const orderedItems =
       params.direction === "before" ? [...pageRows].reverse() : pageRows;
 
-    const items = await this.enrichTimelinePage(
-      orderedItems,
-      members,
-      params.userId
-    );
-    return { items, hasMore, nextCursor, total };
+    // Bidirectional continuation on EVERY page (not just ?around=): probes one
+    // row beyond each edge so the client always knows whether a newer seam
+    // exists and how to page it — the jump-to-message scroll-down fix (Gap B).
+    const [cursors, items] = await Promise.all([
+      adapter.cursors(
+        {
+          roomId: params.roomId,
+          userId: params.userId,
+          viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
+        },
+        orderedItems
+      ),
+      this.enrichTimelinePage(orderedItems, members, params.userId),
+    ]);
+    return { items, hasMore, nextCursor, total, cursors, roomRevision };
   }
 
   /**

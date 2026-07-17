@@ -118,7 +118,7 @@ const data = parsed.data;
  */
 function resolveMongoUrl(): string {
   // Optional pre-built override (not part of the validated schema).
-  const url = `mongodb://${data.MONGO_ROOT_USERNAME}:${data.MONGO_ROOT_PASSWORD}@${data.MONGO_HOST}:${data.MONGODB_PORT}/${data.MONGO_DB_NAME}?authSource=${data.MONGO_DATABASE}&directConnection=true`;
+  const url = process.env.MONGO_DATABASE_URL;
   // A usable URL must have a host after the optional credentials (e.g. not the
   // truncated "mongodb://user:pass@").
   const looksComplete =

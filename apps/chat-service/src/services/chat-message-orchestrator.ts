@@ -1117,6 +1117,7 @@ export class ChatMessageOrchestrator {
 
     // Assigned in both branches below before it's read — no initializer needed.
     let readToSeq: number;
+    let unreadCount = 0;
     if (conversationType === "GROUP") {
       await this.groupMemberService.markRead({
         roomId: params.roomId,
@@ -1127,17 +1128,19 @@ export class ChatMessageOrchestrator {
         .getMessageSequence(params.upToMessageId)
         .catch(() => 0);
     } else {
-      await this.privateMessageService.markRead({
+      const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
         userId: params.readerId,
         lastMessageId: params.upToMessageId,
-      });
+      })) as { unreadCountByUser?: Record<string, number> } | null;
+      unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
       readToSeq = await this.privateMessageService
         .getMessageSequence(params.upToMessageId)
         .catch(() => 0);
     }
 
-    // Read receipt to the conversation room (the other participant(s)).
+    // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
+    // below the boundary to READ (watermark), not just the boundary message.
     await this.redis.publish(
       `conv:${params.roomId}`,
       JSON.stringify({
@@ -1146,6 +1149,7 @@ export class ChatMessageOrchestrator {
           conversationId: params.roomId,
           readerId: params.readerId,
           upToMessageId: params.upToMessageId,
+          read_to_seq: readToSeq,
         },
       })
     );
@@ -1162,7 +1166,7 @@ export class ChatMessageOrchestrator {
             conversationId: params.roomId,
             readerId: params.readerId,
             read_to_seq: readToSeq,
-            unreadCount: 0,
+            unreadCount,
             conversationType,
           },
         })

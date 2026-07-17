@@ -168,6 +168,19 @@ export function getCorsAllowedOrigins(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * CORS origin validator shared by the REST `cors` middleware and the
+ * Socket.IO server. In development, any origin is allowed — dev tunnels
+ * (VS Code Dev Tunnels, ngrok) mint a new hostname per session, so pinning
+ * CORS to a static CORS_ALLOWED_ORIGINS list breaks every time the tunnel
+ * rotates. Production still enforces the configured allowlist.
+ */
+export function isCorsOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true; // native apps, curl, server-to-server
+  if (env.NODE_ENV === "development") return true;
+  return getCorsAllowedOrigins().includes(origin);
+}
+
 /** Request headers allowed in the CORS preflight — comma-separated list from env. */
 export function getCorsAllowedHeaders(): string[] {
   return env.CORS_ALLOWED_HEADERS.split(",")
@@ -240,12 +253,20 @@ export function getConfiguredSwaggerServerUrls(): string[] {
 }
 
 /**
- * Swagger "Servers" list: env-configured URLs first (dev tunnel, etc.), then
- * the current browser host. https://localhost is skipped — it is a dev-proxy
- * artifact and not a real reachable server.
+ * Swagger "Servers" list: the current browser host first (so it's the
+ * default-selected, actually-reachable server — index 0 is labeled
+ * "current host" downstream in openapi-document.ts), then env-configured
+ * URLs (dev tunnel, etc.) as fallbacks. https://localhost is skipped — it
+ * is a dev-proxy artifact and not a real reachable server.
  */
 export function resolveSwaggerServerUrls(req: Request): string[] {
-  const host = req.get("host");
+  // Reverse proxies (VS Code Dev Tunnels, ngrok, etc.) forward the real
+  // public host via X-Forwarded-Host while the raw Host header stays
+  // "localhost:PORT" — req.get("host") ignores trust-proxy settings, so
+  // read the forwarded header explicitly (trust proxy already gates this
+  // via TRUST_PROXY_HOPS / app.set("trust proxy", ...) in app.ts, same as
+  // req.protocol below).
+  const host = req.get("x-forwarded-host") ?? req.get("host");
   const currentBase =
     host != null && host.length > 0
       ? normalizeGatewayBaseUrl(`${req.protocol}://${host}`)
@@ -255,5 +276,5 @@ export function resolveSwaggerServerUrls(req: Request): string[] {
   const configured = getConfiguredSwaggerServerUrls();
   return isHttpsLocalhost
     ? configured
-    : [...new Set([...configured, currentBase])];
+    : [...new Set([currentBase, ...configured])];
 }
