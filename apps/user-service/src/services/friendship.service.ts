@@ -1,13 +1,25 @@
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+import { FriendSocketEvents } from "@aimess/shared-types";
 
 import {
   publishFriendAcceptedSafe,
+  publishFriendCancelledSafe,
+  publishFriendRejectedSafe,
   publishFriendRequestedSafe,
   publishFriendUnfriendedSafe,
+  publishFriendshipBlockedSafe,
   publishFriendshipCreatedSafe,
   publishFriendshipDeletedSafe,
 } from "../messaging/publish-friendship.js";
+import {
+  emitFriendEventSafe,
+  emitFriendEventToPairSafe,
+} from "../lib/friend-socket.js";
+import {
+  buildFriendshipView,
+  toSearchRelationship,
+} from "../lib/friendship-view.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userCache } from "../lib/user-cache.js";
@@ -17,6 +29,7 @@ import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
 import type { ListFriendRequestsQuery } from "../api/validators/friendship.validator.js";
 import type {
+  FriendRequestDirection,
   FriendRequestItem,
   FriendRequestsListResult,
 } from "../types/friends.types.js";
@@ -60,6 +73,121 @@ type AutoDisconnectResult = {
 };
 
 const BATCH_CHUNK_SIZE = 500;
+
+type PeerBrief = {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+};
+
+function toPeerBrief(p: PeerBrief): PeerBrief {
+  return {
+    userId: p.userId,
+    username: p.username,
+    firstName: p.firstName,
+    lastName: p.lastName,
+  };
+}
+
+/** "First Last" (trimmed), falling back to username — used in push/notification copy. */
+function displayName(p: PeerBrief): string {
+  return `${p.firstName} ${p.lastName}`.trim() || p.username;
+}
+
+/**
+ * Loads both parties' display names for a friendship notification payload.
+ * `acceptRequest`/`rejectRequest`/`cancelRequest` don't otherwise touch
+ * profiles, so this is the one extra query those paths pay — `sendRequest`
+ * already has both profiles loaded and computes names inline instead.
+ */
+async function loadFriendshipNames(
+  requesterId: string,
+  addresseeId: string
+): Promise<{ requesterName: string; addresseeName: string }> {
+  const profiles = await userProfileRepository.findManyByUserIds([
+    requesterId,
+    addresseeId,
+  ]);
+  const byId = new Map(profiles.map((p) => [p.userId, p]));
+  const nameFor = (userId: string): string => {
+    const p = byId.get(userId);
+    return p ? displayName(toPeerBrief(p)) : "Someone";
+  };
+  return {
+    requesterName: nameFor(requesterId),
+    addresseeName: nameFor(addresseeId),
+  };
+}
+
+/**
+ * Shared realtime payload shape for every `friend:*` socket event: the
+ * friendship id, the *viewer's* derived {@link buildFriendshipView} (status/
+ * direction/canAccept/canReject/canCancel — never re-derived ad hoc per
+ * event), and the other party's id. `peer` (full brief) is only attached
+ * where the caller already has the profile loaded (new-request events) —
+ * elsewhere just `peerId`, since the FE already holds that peer's profile
+ * from the list the event is updating.
+ */
+function friendshipEventData(
+  row: FriendshipRow,
+  viewerId: string,
+  peerId: string,
+  peer?: PeerBrief
+) {
+  const view = buildFriendshipView(viewerId, row);
+  return {
+    friendshipId: row.id,
+    peerId,
+    // Alias for the User Search screen's merge-by-id contract (same value
+    // as `peerId` — the affected user id from this recipient's viewpoint).
+    targetUserId: peerId,
+    ...(peer ? { peer: toPeerBrief(peer) } : {}),
+    ...view,
+    // Normalized FRIEND/PENDING/NONE shape the search screen merges by
+    // `targetUserId` — see `toSearchRelationship` for why this differs from
+    // the ACCEPTED/BLOCKED vocabulary above (kept for the request screens).
+    relationship: toSearchRelationship(view),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Emit the new-request pair: distinct event name per side, same friendship row. */
+function emitRequestCreated(
+  row: FriendshipRow,
+  requesterProfile: PeerBrief,
+  addresseeProfile: PeerBrief
+): void {
+  emitFriendEventSafe(
+    row.requesterId,
+    FriendSocketEvents.REQUEST_SENT,
+    friendshipEventData(row, row.requesterId, row.addresseeId, addresseeProfile)
+  );
+  emitFriendEventSafe(
+    row.addresseeId,
+    FriendSocketEvents.REQUEST_RECEIVED,
+    friendshipEventData(row, row.addresseeId, row.requesterId, requesterProfile)
+  );
+}
+
+/** Emit the same event name to both sides of a friendship row. */
+function emitToPair(
+  row: FriendshipRow,
+  event: (typeof FriendSocketEvents)[keyof typeof FriendSocketEvents]
+): void {
+  emitFriendEventToPairSafe(
+    row.requesterId,
+    row.addresseeId,
+    event,
+    (targetUserId) =>
+      friendshipEventData(
+        row,
+        targetUserId,
+        targetUserId === row.requesterId ? row.addresseeId : row.requesterId
+      )
+  );
+}
 
 export const friendshipService = {
   async listRequests(
@@ -106,9 +234,16 @@ export const friendshipService = {
           strategy: mediaUrlStrategy,
         });
 
+        // findPendingRequests only ever returns PENDING rows — safe to
+        // hardcode the status when deriving the view.
+        const view = buildFriendshipView(me, { ...r, status: "PENDING" });
+
         return {
           friendshipId: r.id,
-          direction: r.requesterId === me ? "OUTGOING" : "INCOMING",
+          direction: view.direction as FriendRequestDirection,
+          canAccept: view.canAccept,
+          canReject: view.canReject,
+          canCancel: view.canCancel,
           user: {
             userId: profile.userId,
             username: profile.username,
@@ -189,12 +324,15 @@ export const friendshipService = {
           friendshipId: friendship.id,
           requesterId: friendship.requesterId,
           addresseeId: friendship.addresseeId,
+          requesterName: displayName(toPeerBrief(requesterProfile)),
+          addresseeName: displayName(toPeerBrief(addresseeProfile)),
           acceptedAt: friendship.acceptedAt!.toISOString(),
         });
         publishFriendshipCreatedSafe(
           friendship.requesterId,
           friendship.addresseeId
         );
+        emitToPair(friendship, FriendSocketEvents.ACCEPTED);
         return friendship;
       }
 
@@ -208,8 +346,10 @@ export const friendshipService = {
         friendshipId: updated.id,
         requesterId,
         addresseeId,
+        requesterName: displayName(toPeerBrief(requesterProfile)),
         createdAt: updated.createdAt.toISOString(),
       });
+      emitRequestCreated(updated, requesterProfile, addresseeProfile);
       return updated;
     }
 
@@ -221,8 +361,10 @@ export const friendshipService = {
       friendshipId: friendship.id,
       requesterId,
       addresseeId,
+      requesterName: displayName(toPeerBrief(requesterProfile)),
       createdAt: friendship.createdAt.toISOString(),
     });
+    emitRequestCreated(friendship, requesterProfile, addresseeProfile);
     return friendship;
   },
 
@@ -250,16 +392,23 @@ export const friendshipService = {
       userCache.invalidateProfile(friendship.addresseeId),
     ]);
 
+    const { requesterName, addresseeName } = await loadFriendshipNames(
+      friendship.requesterId,
+      friendship.addresseeId
+    );
     publishFriendAcceptedSafe({
       friendshipId: updated.id,
       requesterId: friendship.requesterId,
       addresseeId: friendship.addresseeId,
+      requesterName,
+      addresseeName,
       acceptedAt: updated.acceptedAt!.toISOString(),
     });
     publishFriendshipCreatedSafe(
       friendship.requesterId,
       friendship.addresseeId
     );
+    emitToPair(updated, FriendSocketEvents.ACCEPTED);
 
     return updated;
   },
@@ -277,7 +426,20 @@ export const friendshipService = {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
-    return friendshipRepository.reject(friendshipId);
+    const updated = await friendshipRepository.reject(friendshipId);
+    const { addresseeName } = await loadFriendshipNames(
+      friendship.requesterId,
+      friendship.addresseeId
+    );
+    publishFriendRejectedSafe({
+      friendshipId: updated.id,
+      requesterId: friendship.requesterId,
+      addresseeId: friendship.addresseeId,
+      addresseeName,
+      rejectedAt: updated.rejectedAt!.toISOString(),
+    });
+    emitToPair(updated, FriendSocketEvents.REJECTED);
+    return updated;
   },
 
   async cancelRequest(
@@ -293,7 +455,20 @@ export const friendshipService = {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
-    return friendshipRepository.cancel(friendshipId);
+    const updated = await friendshipRepository.cancel(friendshipId);
+    const { requesterName } = await loadFriendshipNames(
+      friendship.requesterId,
+      friendship.addresseeId
+    );
+    publishFriendCancelledSafe({
+      friendshipId: updated.id,
+      requesterId: friendship.requesterId,
+      addresseeId: friendship.addresseeId,
+      requesterName,
+      cancelledAt: updated.cancelledAt!.toISOString(),
+    });
+    emitToPair(updated, FriendSocketEvents.REQUEST_CANCELLED);
+    return updated;
   },
 
   async autoConnectAll(callerId: string): Promise<AutoConnectResult> {
@@ -378,6 +553,7 @@ export const friendshipService = {
         acceptedAt: (f.acceptedAt ?? new Date()).toISOString(),
       });
       publishFriendshipCreatedSafe(f.requesterId, f.addresseeId);
+      emitToPair(f, FriendSocketEvents.ACCEPTED);
     }
 
     // Collect all friend peer IDs (created + already existing ACCEPTED friends)
@@ -434,7 +610,7 @@ export const friendshipService = {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");
     }
 
-    await friendshipRepository.unfriendWithCounters(
+    const [updated] = await friendshipRepository.unfriendWithCounters(
       friendship.id,
       viewerId,
       friendship.requesterId,
@@ -461,6 +637,7 @@ export const friendshipService = {
       friendship.requesterId,
       friendship.addresseeId
     );
+    emitToPair(updated as FriendshipRow, FriendSocketEvents.REMOVED);
   },
 
   /**
@@ -517,6 +694,7 @@ export const friendshipService = {
     );
 
     const unfriendedAt = new Date().toISOString();
+    const unfriendedAtDate = new Date(unfriendedAt);
     for (const { friendshipId, peerId } of pairs) {
       publishFriendUnfriendedSafe({
         friendshipId,
@@ -525,6 +703,22 @@ export const friendshipService = {
         unfriendedAt,
       });
       publishFriendshipDeletedSafe(callerId, peerId);
+      emitToPair(
+        {
+          id: friendshipId,
+          requesterId: callerId,
+          addresseeId: peerId,
+          status: "UNFRIENDED",
+          acceptedAt: null,
+          rejectedAt: null,
+          cancelledAt: null,
+          unfriendedAt: unfriendedAtDate,
+          unfriendedBy: callerId,
+          createdAt: unfriendedAtDate,
+          updatedAt: unfriendedAtDate,
+        },
+        FriendSocketEvents.REMOVED
+      );
     }
 
     return {
@@ -532,5 +726,125 @@ export const friendshipService = {
       friendsDisconnected,
       friends: pairs.map((p) => p.peerId),
     };
+  },
+
+  /**
+   * Blocking always wins over any existing relationship: an ACCEPTED
+   * friendship is unfriended and a PENDING request is terminated (reused via
+   * the exact same repo calls + publishers as {@link unfriend}/
+   * {@link rejectRequest}/{@link cancelRequest} — no duplicated transition
+   * logic), before the `Block` row is created.
+   */
+  async blockUser(blockerId: string, blockedId: string): Promise<void> {
+    if (blockerId === blockedId) {
+      throw new BadRequestError("FRIEND_CANNOT_ADD_SELF");
+    }
+
+    const blockedProfile = await userProfileRepository.findByUserId(blockedId);
+    if (!blockedProfile || blockedProfile.deletedAt) {
+      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+    }
+
+    const existingBlock = await friendshipRepository.findBlock(
+      blockerId,
+      blockedId
+    );
+    if (existingBlock) {
+      throw new ConflictError("FRIEND_ALREADY_BLOCKED");
+    }
+
+    const friendship = await friendshipRepository.findByPair(
+      blockerId,
+      blockedId
+    );
+
+    if (friendship?.status === "ACCEPTED") {
+      const [updated] = await friendshipRepository.unfriendWithCounters(
+        friendship.id,
+        blockerId,
+        friendship.requesterId,
+        friendship.addresseeId
+      );
+      publishFriendUnfriendedSafe({
+        friendshipId: friendship.id,
+        unfriendedById: blockerId,
+        otherUserId: blockedId,
+        unfriendedAt: new Date().toISOString(),
+      });
+      publishFriendshipDeletedSafe(
+        friendship.requesterId,
+        friendship.addresseeId
+      );
+      emitToPair(updated as FriendshipRow, FriendSocketEvents.REMOVED);
+      await Promise.all([
+        userCache.invalidateProfile(blockerId),
+        userCache.invalidateProfile(blockedId),
+      ]);
+    } else if (friendship?.status === "PENDING") {
+      const isRequester = friendship.requesterId === blockerId;
+      const updated = isRequester
+        ? await friendshipRepository.cancel(friendship.id)
+        : await friendshipRepository.reject(friendship.id);
+      emitToPair(
+        updated,
+        isRequester
+          ? FriendSocketEvents.REQUEST_CANCELLED
+          : FriendSocketEvents.REJECTED
+      );
+    }
+
+    await friendshipRepository.createBlock(blockerId, blockedId);
+
+    // Symmetric — activates chat-service's `friendship.blocked` consumer
+    // branch for both directions so neither side can message the other.
+    publishFriendshipBlockedSafe(blockerId, blockedId);
+    publishFriendshipBlockedSafe(blockedId, blockerId);
+
+    // Blocking is silent to the blocked party — same product policy this
+    // codebase already applies to FRIEND_UNFRIENDED (notifications-service
+    // no-ops it). Only the blocker's own other devices need to sync.
+    const blockedView = buildFriendshipView(blockerId, null, true);
+    emitFriendEventSafe(blockerId, FriendSocketEvents.BLOCKED, {
+      peerId: blockedId,
+      targetUserId: blockedId,
+      ...blockedView,
+      relationship: toSearchRelationship(blockedView),
+    });
+  },
+
+  async unblockUser(blockerId: string, blockedId: string): Promise<void> {
+    const existingBlock = await friendshipRepository.findBlock(
+      blockerId,
+      blockedId
+    );
+    if (!existingBlock) {
+      throw new NotFoundError("FRIEND_NOT_BLOCKED");
+    }
+
+    await friendshipRepository.deleteBlock(blockerId, blockedId);
+
+    // Restore chat-service's read-model to match the real relationship —
+    // usually cleared (block already unfriended on the way in); ACTIVE only
+    // covers the rare case where they re-friended while still blocked.
+    const friendship = await friendshipRepository.findByPair(
+      blockerId,
+      blockedId
+    );
+    if (friendship?.status === "ACCEPTED") {
+      publishFriendshipCreatedSafe(
+        friendship.requesterId,
+        friendship.addresseeId
+      );
+    } else {
+      publishFriendshipDeletedSafe(blockerId, blockedId);
+    }
+
+    const unblockedView = buildFriendshipView(blockerId, friendship ?? null);
+    emitFriendEventSafe(blockerId, FriendSocketEvents.UNBLOCKED, {
+      peerId: blockedId,
+      targetUserId: blockedId,
+      ...unblockedView,
+      relationship: toSearchRelationship(unblockedView),
+    });
   },
 };

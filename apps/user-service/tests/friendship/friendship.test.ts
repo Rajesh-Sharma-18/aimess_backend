@@ -10,6 +10,9 @@ jest.mock("../../src/repositories/friendship.repository.js", () => ({
     findById: jest.fn(),
     findActivePair: jest.fn(),
     findAllBlocks: jest.fn(async () => []),
+    findBlock: jest.fn(async () => null),
+    createBlock: jest.fn(),
+    deleteBlock: jest.fn(),
     create: jest.fn(),
     resetToPending: jest.fn(),
     acceptWithCounters: jest.fn(),
@@ -21,6 +24,7 @@ jest.mock("../../src/repositories/friendship.repository.js", () => ({
 jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
     findByUserId: jest.fn(),
+    findManyByUserIds: jest.fn(async () => []),
   },
 }));
 jest.mock("../../src/lib/user-cache.js", () => ({
@@ -31,9 +35,16 @@ jest.mock("../../src/lib/user-cache.js", () => ({
 jest.mock("../../src/messaging/publish-friendship.js", () => ({
   publishFriendRequestedSafe: jest.fn(),
   publishFriendAcceptedSafe: jest.fn(),
+  publishFriendRejectedSafe: jest.fn(),
+  publishFriendCancelledSafe: jest.fn(),
   publishFriendUnfriendedSafe: jest.fn(),
+  publishFriendshipBlockedSafe: jest.fn(),
   publishFriendshipCreatedSafe: jest.fn(),
   publishFriendshipDeletedSafe: jest.fn(),
+}));
+jest.mock("../../src/lib/friend-socket.js", () => ({
+  emitFriendEventSafe: jest.fn(),
+  emitFriendEventToPairSafe: jest.fn(),
 }));
 
 import request from "supertest";
@@ -66,7 +77,13 @@ const FRIENDSHIP_ID = "44444444-4444-4444-8444-444444444444";
 const auth = () => bearer(makeAccessToken());
 
 function liveProfile(userId: string) {
-  return { userId, username: `u_${userId.slice(0, 4)}`, deletedAt: null };
+  return {
+    userId,
+    username: `u_${userId.slice(0, 4)}`,
+    firstName: userId === ME ? "John" : "Alex",
+    lastName: "Doe",
+    deletedAt: null,
+  };
 }
 
 function friendshipRow(overrides: Record<string, unknown> = {}) {
@@ -108,6 +125,11 @@ describe("POST /api/v1/users/friends/requests", () => {
     expect(res.body.data.status).toBe("PENDING");
     expect(fRepo.create).toHaveBeenCalledWith(ME, OTHER);
     expect(requested).toHaveBeenCalledTimes(1);
+    // Display name is resolved inline from the already-loaded profile —
+    // notifications-service uses it for "{name} sent you a friend request."
+    expect(requested).toHaveBeenCalledWith(
+      expect.objectContaining({ requesterName: "John Doe" })
+    );
   });
 
   it("auto-accepts a mutual pending request (they already requested me)", async () => {
@@ -234,7 +256,7 @@ describe("POST /api/v1/users/friends/requests", () => {
 });
 
 describe("POST /api/v1/users/friends/requests/:id/accept", () => {
-  it("accepts an incoming pending request → 200", async () => {
+  it("accepts an incoming pending request → 200, publishing both display names", async () => {
     fRepo.findById.mockResolvedValue(
       friendshipRow({ requesterId: OTHER, addresseeId: ME, status: "PENDING" })
     );
@@ -246,6 +268,12 @@ describe("POST /api/v1/users/friends/requests/:id/accept", () => {
         acceptedAt: new Date("2026-02-01T00:00:00.000Z"),
       }),
     ]);
+    (
+      userProfileRepository.findManyByUserIds as jest.Mock
+    ).mockResolvedValueOnce([
+      { userId: OTHER, username: "alex", firstName: "Alex", lastName: "Doe" },
+      { userId: ME, username: "john", firstName: "John", lastName: "Doe" },
+    ]);
 
     const res = await request(app)
       .post(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}/accept`)
@@ -254,6 +282,12 @@ describe("POST /api/v1/users/friends/requests/:id/accept", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe("ACCEPTED");
     expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requesterName: "Alex Doe",
+        addresseeName: "John Doe",
+      })
+    );
   });
 
   it("returns 404 when the request is not addressed to me (IDOR guard)", async () => {
@@ -298,7 +332,9 @@ describe("POST /api/v1/users/friends/requests/:id/reject", () => {
     fRepo.findById.mockResolvedValue(
       friendshipRow({ requesterId: OTHER, addresseeId: ME, status: "PENDING" })
     );
-    fRepo.reject.mockResolvedValue(friendshipRow({ status: "REJECTED" }));
+    fRepo.reject.mockResolvedValue(
+      friendshipRow({ status: "REJECTED", rejectedAt: new Date() })
+    );
 
     const res = await request(app)
       .post(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}/reject`)
@@ -326,7 +362,9 @@ describe("DELETE /api/v1/users/friends/requests/:id (cancel)", () => {
     fRepo.findById.mockResolvedValue(
       friendshipRow({ requesterId: ME, addresseeId: OTHER, status: "PENDING" })
     );
-    fRepo.cancel.mockResolvedValue(friendshipRow({ status: "CANCELLED" }));
+    fRepo.cancel.mockResolvedValue(
+      friendshipRow({ status: "CANCELLED", cancelledAt: new Date() })
+    );
 
     const res = await request(app)
       .delete(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}`)
@@ -355,7 +393,9 @@ describe("DELETE /api/v1/users/friends/:userId (unfriend)", () => {
     fRepo.findActivePair.mockResolvedValue(
       friendshipRow({ status: "ACCEPTED" })
     );
-    fRepo.unfriendWithCounters.mockResolvedValue([]);
+    fRepo.unfriendWithCounters.mockResolvedValue([
+      friendshipRow({ status: "UNFRIENDED" }),
+    ]);
 
     const res = await request(app)
       .delete(`/api/v1/users/friends/${OTHER}`)
@@ -398,5 +438,164 @@ describe("DELETE /api/v1/users/friends/:userId (unfriend)", () => {
       .set(bearer(makeForgedAccessToken()));
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /api/v1/users/friends/block/:userId", () => {
+  beforeEach(() => {
+    pRepo.findByUserId.mockImplementation(async (id: string) =>
+      liveProfile(id)
+    );
+    fRepo.findBlock.mockResolvedValue(null);
+    fRepo.findByPair.mockResolvedValue(null);
+  });
+
+  it("blocks a stranger (no existing friendship row) → 200", async () => {
+    const res = await request(app)
+      .post(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.createBlock).toHaveBeenCalledWith(ME, OTHER);
+    expect(fRepo.unfriendWithCounters).not.toHaveBeenCalled();
+  });
+
+  it("unfriends first when blocking an ACCEPTED friend", async () => {
+    fRepo.findByPair.mockResolvedValue(friendshipRow({ status: "ACCEPTED" }));
+    fRepo.unfriendWithCounters.mockResolvedValue([
+      friendshipRow({ status: "UNFRIENDED" }),
+    ]);
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.unfriendWithCounters).toHaveBeenCalledTimes(1);
+    expect(fRepo.createBlock).toHaveBeenCalledWith(ME, OTHER);
+  });
+
+  it("cancels a PENDING request I sent before blocking", async () => {
+    fRepo.findByPair.mockResolvedValue(
+      friendshipRow({ requesterId: ME, addresseeId: OTHER, status: "PENDING" })
+    );
+    fRepo.cancel.mockResolvedValue(friendshipRow({ status: "CANCELLED" }));
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.cancel).toHaveBeenCalledWith(FRIENDSHIP_ID);
+    expect(fRepo.reject).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when already blocked", async () => {
+    fRepo.findBlock.mockResolvedValue({
+      id: "block-1",
+      blockerId: ME,
+      blockedId: OTHER,
+      createdAt: new Date(),
+    });
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(409);
+    expect(fRepo.createBlock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when blocking yourself", async () => {
+    const res = await request(app)
+      .post(`/api/v1/users/friends/block/${ME}`)
+      .set(auth());
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /api/v1/users/friends/block/:userId", () => {
+  it("unblocks → 200", async () => {
+    fRepo.findBlock.mockResolvedValue({
+      id: "block-1",
+      blockerId: ME,
+      blockedId: OTHER,
+      createdAt: new Date(),
+    });
+    fRepo.findByPair.mockResolvedValue(null);
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.deleteBlock).toHaveBeenCalledWith(ME, OTHER);
+  });
+
+  it("returns 404 when not blocked", async () => {
+    fRepo.findBlock.mockResolvedValue(null);
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(404);
+    expect(fRepo.deleteBlock).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/v1/users/friends/status/:userId", () => {
+  it("returns NONE for a stranger", async () => {
+    fRepo.findByPair.mockResolvedValue(null);
+    fRepo.findBlock.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`/api/v1/users/friends/status/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      friendshipId: null,
+      status: "NONE",
+      direction: null,
+      canAccept: false,
+      canReject: false,
+      canCancel: false,
+    });
+  });
+
+  it("returns PENDING/OUTGOING when I sent the request", async () => {
+    fRepo.findByPair.mockResolvedValue(
+      friendshipRow({ requesterId: ME, addresseeId: OTHER, status: "PENDING" })
+    );
+    fRepo.findBlock.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`/api/v1/users/friends/status/${OTHER}`)
+      .set(auth());
+
+    expect(res.body.data).toMatchObject({
+      status: "PENDING",
+      direction: "OUTGOING",
+      canCancel: true,
+      canAccept: false,
+    });
+  });
+
+  it("returns BLOCKED when I have blocked them, regardless of the friendship row", async () => {
+    fRepo.findByPair.mockResolvedValue(friendshipRow({ status: "ACCEPTED" }));
+    fRepo.findBlock.mockResolvedValue({
+      id: "block-1",
+      blockerId: ME,
+      blockedId: OTHER,
+      createdAt: new Date(),
+    });
+
+    const res = await request(app)
+      .get(`/api/v1/users/friends/status/${OTHER}`)
+      .set(auth());
+
+    expect(res.body.data.status).toBe("BLOCKED");
   });
 });

@@ -10,6 +10,19 @@ import type {
   UnfriendParams,
 } from "../validators/friendship.validator.js";
 import { friendshipService } from "../../services/friendship.service.js";
+import { friendshipRepository } from "../../repositories/friendship.repository.js";
+import { buildFriendshipView } from "../../lib/friendship-view.js";
+
+type FriendshipRow = Parameters<typeof buildFriendshipView>[1];
+
+/**
+ * Every friendship-mutating endpoint returns the same shape: the raw
+ * persisted row PLUS the viewer-derived view (status/direction/canAccept/
+ * canReject/canCancel) — one helper, so no endpoint hand-rolls this.
+ */
+function withView(row: FriendshipRow, viewerId: string) {
+  return { ...row, ...buildFriendshipView(viewerId, row) };
+}
 
 export const listFriendRequests = asyncHandler(
   async (req: Request, res: Response) => {
@@ -35,7 +48,12 @@ export const sendFriendRequest = asyncHandler(
     );
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(friendship, t("FRIEND_REQUEST_SENT", req.locale)));
+      .json(
+        new ApiResponse(
+          withView(friendship, req.auth.userId),
+          t("FRIEND_REQUEST_SENT", req.locale)
+        )
+      );
   }
 );
 
@@ -51,7 +69,10 @@ export const acceptFriendRequest = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(friendship, t("FRIEND_REQUEST_ACCEPTED", req.locale))
+        new ApiResponse(
+          withView(friendship, req.auth.userId),
+          t("FRIEND_REQUEST_ACCEPTED", req.locale)
+        )
       );
   }
 );
@@ -68,7 +89,10 @@ export const rejectFriendRequest = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(friendship, t("FRIEND_REQUEST_REJECTED", req.locale))
+        new ApiResponse(
+          withView(friendship, req.auth.userId),
+          t("FRIEND_REQUEST_REJECTED", req.locale)
+        )
       );
   }
 );
@@ -85,7 +109,53 @@ export const cancelFriendRequest = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(friendship, t("FRIEND_REQUEST_CANCELLED", req.locale))
+        new ApiResponse(
+          withView(friendship, req.auth.userId),
+          t("FRIEND_REQUEST_CANCELLED", req.locale)
+        )
+      );
+  }
+);
+
+export const blockUser = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.params as unknown as UnfriendParams;
+
+  await friendshipService.blockUser(req.auth.userId, userId);
+
+  return res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(undefined, t("FRIEND_USER_BLOCKED", req.locale)));
+});
+
+export const unblockUser = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.params as unknown as UnfriendParams;
+
+  await friendshipService.unblockUser(req.auth.userId, userId);
+
+  return res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(undefined, t("FRIEND_USER_UNBLOCKED", req.locale)));
+});
+
+export const getFriendshipStatus = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { userId } = req.params as unknown as UnfriendParams;
+    const viewerId = req.auth.userId;
+
+    const [row, block] = await Promise.all([
+      friendshipRepository.findByPair(viewerId, userId),
+      friendshipRepository.findBlock(viewerId, userId),
+    ]);
+
+    const view = buildFriendshipView(viewerId, row, block !== null);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { friendshipId: row?.id ?? null, ...view },
+          t("USER_FRIENDSHIP_STATUS_FETCHED", req.locale)
+        )
       );
   }
 );

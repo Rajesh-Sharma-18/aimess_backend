@@ -42,6 +42,10 @@ export type FriendRequestItem = {
   friendshipId: string;
   /** INCOMING = they sent it to you; OUTGOING = you sent it to them. */
   direction: FriendRequestDirection;
+  /** Always true for INCOMING, false for OUTGOING — mirrors buildFriendshipView. */
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
   user: FriendRequestUser;
   /** ISO-8601 timestamp of when the request was created. */
   createdAt: string;

@@ -7,6 +7,8 @@ import {
   FriendshipReadModelEvents,
   type FriendRequestedPayload,
   type FriendAcceptedPayload,
+  type FriendRejectedPayload,
+  type FriendCancelledPayload,
   type FriendUnfriendedPayload,
   type FriendshipReadModelEventType,
   type FriendshipReadModelPayload,
@@ -54,6 +56,14 @@ export function publishFriendRequestedSafe(data: FriendRequestedPayload): void {
 
 export function publishFriendAcceptedSafe(data: FriendAcceptedPayload): void {
   publishSafe(FriendshipEvents.FRIEND_ACCEPTED, data, "friend.accepted");
+}
+
+export function publishFriendRejectedSafe(data: FriendRejectedPayload): void {
+  publishSafe(FriendshipEvents.FRIEND_REJECTED, data, "friend.rejected");
+}
+
+export function publishFriendCancelledSafe(data: FriendCancelledPayload): void {
+  publishSafe(FriendshipEvents.FRIEND_CANCELLED, data, "friend.cancelled");
 }
 
 export function publishFriendUnfriendedSafe(
@@ -109,6 +119,26 @@ export function publishFriendshipDeletedSafe(
     userB,
   }).catch((error) => {
     logger.error("Failed to publish friendship.deleted");
+    logger.error(error);
+  });
+}
+
+/**
+ * `userA` blocked `userB`. Activates chat-service's existing (previously
+ * unused) `friendship.blocked` consumer branch, which flags the local
+ * read-model row so the private-room friendship gate rejects `userA`
+ * messaging `userB` — no chat-service changes needed.
+ */
+export function publishFriendshipBlockedSafe(
+  userA: string,
+  userB: string
+): void {
+  void publishToUserEvents(FriendshipReadModelEvents.FRIENDSHIP_BLOCKED, {
+    userA,
+    userB,
+    status: "BLOCKED",
+  }).catch((error) => {
+    logger.error("Failed to publish friendship.blocked");
     logger.error(error);
   });
 }
