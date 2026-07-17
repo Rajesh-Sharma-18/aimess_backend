@@ -977,7 +977,13 @@ export class GeneralRoomMessageRepository {
    */
   async countUnreadBulk(params: {
     userId: string;
-    thresholds: Array<{ roomId: string; afterDate: Date }>;
+    /** `beforeDate` (a BANNED viewer's `readCutoff`) caps unread at their ban —
+     *  see {@link timelineMatch}. Omit for an unbounded (ACTIVE member) count. */
+    thresholds: Array<{
+      roomId: string;
+      afterDate: Date;
+      beforeDate?: Date | null;
+    }>;
   }): Promise<Record<string, { count: number; firstUnreadMessageId: string }>> {
     if (!params.thresholds.length) return {};
 
@@ -986,6 +992,12 @@ export class GeneralRoomMessageRepository {
       case: { $eq: ["$roomId", { $oid: t.roomId }] },
       then: { $date: t.afterDate.toISOString() },
     }));
+    const upperBranches = params.thresholds
+      .filter((t) => t.beforeDate)
+      .map((t) => ({
+        case: { $eq: ["$roomId", { $oid: t.roomId }] },
+        then: { $date: t.beforeDate!.toISOString() },
+      }));
 
     const result = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
@@ -1014,9 +1026,26 @@ export class GeneralRoomMessageRepository {
                 default: { $date: "1970-01-01T00:00:00.000Z" },
               },
             },
+            _upper: upperBranches.length
+              ? {
+                  $switch: {
+                    branches: upperBranches,
+                    default: { $date: "9999-12-31T23:59:59.999Z" },
+                  },
+                }
+              : { $date: "9999-12-31T23:59:59.999Z" },
           },
         },
-        { $match: { $expr: { $gt: ["$createdAt", "$_thr"] } } },
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $gt: ["$createdAt", "$_thr"] },
+                { $lte: ["$createdAt", "$_upper"] },
+              ],
+            },
+          },
+        },
         { $sort: { createdAt: 1 } },
         {
           $group: {
@@ -1703,7 +1732,9 @@ export class GeneralRoomMessageRepository {
    */
   async findPreviousVisibleForUser(
     roomId: string,
-    userId: string
+    userId: string,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<GeneralRoomMessage | null> {
     const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
@@ -1714,6 +1745,9 @@ export class GeneralRoomMessageRepository {
             deletedBy: { $nin: [userId] },
             visibleToUserId: { $in: [null] },
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            ...(readCutoff
+              ? { createdAt: { $lte: { $date: readCutoff.toISOString() } } }
+              : {}),
           },
         },
         { $sort: { createdAt: -1 } },
