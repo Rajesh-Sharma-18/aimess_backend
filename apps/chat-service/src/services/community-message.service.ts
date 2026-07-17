@@ -111,6 +111,8 @@ type CommunityMessageWire = Omit<
 export interface CommunityChatSummary {
   communityId: string;
   unreadMessageCount: number;
+  /** Oldest unread message id, so the client can jump to it. Null iff unreadMessageCount === 0. */
+  firstUnreadMessageId: string | null;
   /** false => the caller should render lastMessageActivity as null. */
   hasLastMessage: boolean;
   /**
@@ -631,7 +633,9 @@ export class CommunityMessageService {
               afterDate: readMap.get(roomId) ?? new Date(0),
             })),
           })
-        : Promise.resolve<Record<string, number>>({}),
+        : Promise.resolve<
+            Record<string, { count: number; firstUnreadMessageId: string }>
+          >({}),
       memberRoomIds.length
         ? this.messageRepo.findLatestPersonalByRooms({
             userId: params.userId,
@@ -666,13 +670,17 @@ export class CommunityMessageService {
         return {
           communityId,
           unreadMessageCount: 0,
+          firstUnreadMessageId: null,
           hasLastMessage: false,
           perUserResolved: false,
         };
       }
 
       const room = roomById.get(communityId);
-      const unreadMessageCount = unreadMap[communityId] ?? 0;
+      const unread = unreadMap[communityId];
+      const unreadMessageCount = unread?.count ?? 0;
+      const firstUnreadMessageId =
+        unreadMessageCount > 0 ? (unread?.firstUnreadMessageId ?? null) : null;
 
       // The viewer's own personal line (e.g. "You joined the community"). Carried
       // SEPARATELY from lastMessage so community-service can pick the newer of the
@@ -739,6 +747,7 @@ export class CommunityMessageService {
       return {
         communityId,
         unreadMessageCount,
+        firstUnreadMessageId,
         hasLastMessage,
         perUserResolved,
         ...(lastMessage ? { lastMessage } : {}),
@@ -1403,9 +1412,11 @@ export class CommunityMessageService {
 
   /**
    * Paginated conversation page for a community room + mark-as-read side effect.
-   * Enforces active membership first (same check as listMedia), fetches the
-   * offset page (createdAt < timestamp, newest first), then advances the
-   * caller's read pointer to the newest returned message (forward-only).
+   * Enforces read access (active member, banned member capped at their ban
+   * timestamp, or PUBLIC non-member — see `assertCommunityReadAccess`), fetches
+   * the offset page (createdAt < timestamp, newest first), then advances the
+   * caller's read pointer to the newest returned message (forward-only, ACTIVE
+   * members only — a banned member has nothing new to mark read).
    */
   async getConversation(params: {
     roomId: string;
@@ -1414,15 +1425,19 @@ export class CommunityMessageService {
     limit: number;
     timestamp?: number;
   }): Promise<{ messages: CommunityMessageWire[]; total: number }> {
-    // Enforce active membership first (banned/left members can't read).
-    const member = await this.memberRepo.findByRoomAndUser(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active")
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 
-    const beforeMs = params.timestamp ?? Date.now();
+    const requestedBeforeMs = params.timestamp ?? Date.now();
+    // A banned member's page is capped at their ban timestamp so nothing sent
+    // after the ban is ever returned (Telegram-parity read-only history).
+    const beforeMs = bannedAtCutoff
+      ? Math.min(requestedBeforeMs, bannedAtCutoff.getTime())
+      : requestedBeforeMs;
     const skip = (params.pageNumber - 1) * params.limit;
 
     const [messages, total] = await Promise.all([
@@ -1445,8 +1460,10 @@ export class CommunityMessageService {
     // Mark-as-read: advance to the newest message in the page (index 0, since
     // the page is createdAt DESC). Forward-only; skip when the page is empty.
     // Runs on the RAW rows (needs id/createdAt) before we map to the wire shape.
+    // Skipped entirely for a non-active viewer (banned/PUBLIC-non-member) — read
+    // state is a member-only concept.
     const newest = messages[0];
-    if (newest) {
+    if (newest && isActiveMember(member)) {
       await this.memberRepo
         .advanceReadPointer(
           params.roomId,
@@ -1529,13 +1546,12 @@ export class CommunityMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    // Enforce active membership first (banned/left members can't list media).
-    const member = await this.memberRepo.findByRoomAndUser(
+    const { bannedAtCutoff } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active")
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 
     const rows = await this.messageRepo.listMedia({
       roomId: params.roomId,
@@ -1543,6 +1559,7 @@ export class CommunityMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      readCutoff: bannedAtCutoff,
     });
     const urlMap = await this.resolveRowsMedia(rows);
     return rows.map((m) =>

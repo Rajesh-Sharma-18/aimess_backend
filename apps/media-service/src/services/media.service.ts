@@ -326,13 +326,52 @@ export const mediaService = {
   async generateDownloadUrl(
     params: GenerateDownloadUrlParams
   ): Promise<GenerateDownloadUrlResult> {
+    // A client occasionally forwards an already-external URL as `objectKey`
+    // (e.g. a GIF/Sticker picked from Giphy/Tenor, which has no MinIO object
+    // behind it at all). There is nothing to sign or authorize — the value
+    // IS the download URL — so short-circuit before any bucket/category/auth
+    // lookup, which would otherwise misinterpret the URL as a storage key and
+    // either 404 (no matching object) or throw on an unrecognized category.
+    if (/^https?:\/\//i.test(params.objectKey)) {
+      return {
+        downloadUrl: params.objectKey,
+        downloadUrlExpiresIn: null,
+        media: {
+          mediaId: null,
+          fileId: null,
+          objectKey: null,
+          fileName: null,
+          contentType: null,
+          size: null,
+          downloadUrl: params.objectKey,
+          downloadUrlExpiresIn: null,
+          uploadUrl: null,
+          uploadUrlExpiresIn: null,
+        },
+      };
+    }
+
     // The objectKey is the ground truth for where the file physically lives
     // (bucket + keyPrefix). Trust the key's own prefix over the client-supplied
     // category when they disagree (e.g. a `community-chat-uploads/…` key sent
     // with `category: "CHAT_ATTACHMENT"`) — otherwise the wrong keyPrefix makes
     // toMediaObject fail to resolve the key and return an all-null MediaObject.
-    const effectiveCategory =
-      resolveCategoryFromObjectKey(params.objectKey) ?? params.category;
+    const matchedCategory = resolveCategoryFromObjectKey(params.objectKey);
+
+    // Every real objectKey minted by this service (createUploadUrl) is written
+    // under one of the known keyPrefix folders — a value that matches none of
+    // them (and isn't an external URL, already handled above) was never a
+    // valid key at all: a bare provider id (e.g. a raw Giphy/Tenor id instead
+    // of its full media URL), a stickerId/mediaId sent in the wrong field, or
+    // similar client-side mistake. Fail fast with a diagnosable error instead
+    // of falling through to a MinIO HEAD lookup that can only ever produce a
+    // misleading MEDIA_NOT_FOUND ("file was deleted") for input that was
+    // never a storage key to begin with.
+    if (matchedCategory === null) {
+      throw new BadRequestError("MEDIA_INVALID_OBJECT_KEY");
+    }
+
+    const effectiveCategory = matchedCategory;
     const def = UPLOAD_CATEGORIES[effectiveCategory];
     if (!def) {
       throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");

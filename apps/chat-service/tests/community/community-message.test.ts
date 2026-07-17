@@ -630,16 +630,40 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("SECURITY: 403 for a banned (non-active) member", async () => {
+  it("RESTRICTED-ACCESS: 200 for a banned (non-active) member — read-only history capped at their ban timestamp", async () => {
+    const bannedAt = new Date(5);
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "banned",
+      bannedAt,
     });
+    mocks.generalRoomMessageRepo.listConversationMessages.mockResolvedValue([
+      {
+        id: "m1",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "pre-ban history",
+        messageType: "text",
+        createdAt: new Date(4),
+      },
+    ]);
+    mocks.generalRoomMessageRepo.countConversation.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/conversation`)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(403);
+    // Banned members keep read-only access (restricted-access model) — the
+    // community stays openable and pre-ban history remains readable.
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    // The page is capped at the ban timestamp — never the caller-supplied one.
+    expect(
+      mocks.generalRoomMessageRepo.listConversationMessages
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ beforeMs: bannedAt.getTime() })
+    );
+    // No read-pointer write for a banned (non-active) viewer.
+    expect(mocks.roomMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 });
 
