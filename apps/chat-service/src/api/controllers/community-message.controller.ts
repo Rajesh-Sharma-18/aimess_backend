@@ -231,13 +231,20 @@ export class CommunityMessageController {
       inclusive: !hasBefore,
       limit,
     });
-    const paginated = buildTimelineResponse(
-      result.items as unknown as Record<string, unknown>[],
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation (hasMoreOlder/hasMoreNewer/olderCursor/newerCursor) is
+    // ADDITIVE on every page so a client can page BOTH ways from any window.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
@@ -311,13 +318,21 @@ export class CommunityMessageController {
       seq,
       limit,
     });
-    const paginated = buildTimelineResponse(
-      result.items as unknown as Record<string, unknown>[],
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
+    // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
+    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursors are plain seq
+    // strings: olderCursor → before_seq, newerCursor → after_seq.
+    const paginated = {
+      ...buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)

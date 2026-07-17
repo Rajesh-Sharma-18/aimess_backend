@@ -51,6 +51,14 @@ interface AroundFetchContext {
   readCutoff?: Date | null;
 }
 
+/** Boundary-probe context — what the bidirectional cursor probes need (no anchor/limit). */
+export interface CursorProbeContext {
+  roomId: string;
+  userId: string;
+  viewerIsActiveMember: boolean;
+  readCutoff?: Date | null;
+}
+
 /**
  * Pluggable pagination strategy for the shared community timeline service core.
  * One instance per request, closed over the repository + the request's parsed
@@ -72,6 +80,19 @@ export interface TimelinePaginationAdapter {
   around(
     ctx: AroundFetchContext
   ): Promise<{ rows: GeneralRoomMessage[]; cursors: AroundCursors }>;
+
+  /**
+   * Bidirectional continuation for ANY page window (rows oldest→newest): probes
+   * one visible row strictly beyond each edge and returns
+   * `hasMoreOlder`/`hasMoreNewer`/`olderCursor`/`newerCursor`. This is what lets
+   * every ordinary `/messages` page — not just `?around=` — tell the client
+   * whether a newer seam exists and how to page it (the jump-to-message
+   * scroll-down fix; see BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B).
+   */
+  cursors(
+    ctx: CursorProbeContext,
+    orderedRows: GeneralRoomMessage[]
+  ): Promise<AroundCursors>;
 
   /** Stringify the `nextCursor` from the boundary (last DB-order) row of a page. */
   nextCursor(boundaryRow: GeneralRoomMessage): string;
@@ -110,9 +131,14 @@ class TimestampTimelineAdapter implements TimelinePaginationAdapter {
       viewerIsActiveMember: ctx.viewerIsActiveMember,
       readCutoff: ctx.readCutoff,
     });
-    // Probe one visible row strictly beyond each window edge (reuse the keyset
-    // history query so the exact same visibility/ban filter applies).
-    const cursors = await computeDateAroundCursors(rows, (direction, ts, id) =>
+    const cursors = await this.cursors(ctx, rows);
+    return { rows, cursors };
+  }
+
+  // Probe one visible row strictly beyond each window edge (reuse the keyset
+  // history query so the exact same visibility/ban filter applies).
+  cursors(ctx: CursorProbeContext, orderedRows: GeneralRoomMessage[]) {
+    return computeDateAroundCursors(orderedRows, (direction, ts, id) =>
       this.repo
         .findByRoomIdTimeline({
           roomId: ctx.roomId,
@@ -127,7 +153,6 @@ class TimestampTimelineAdapter implements TimelinePaginationAdapter {
         })
         .then((r) => r.messages)
     );
-    return { rows, cursors };
   }
 
   nextCursor(boundaryRow: GeneralRoomMessage): string {
@@ -163,7 +188,12 @@ class SequenceTimelineAdapter implements TimelinePaginationAdapter {
       viewerIsActiveMember: ctx.viewerIsActiveMember,
       readCutoff: ctx.readCutoff,
     });
-    const cursors = await computeSeqAroundCursors(rows, (direction, seq) =>
+    const cursors = await this.cursors(ctx, rows);
+    return { rows, cursors };
+  }
+
+  cursors(ctx: CursorProbeContext, orderedRows: GeneralRoomMessage[]) {
+    return computeSeqAroundCursors(orderedRows, (direction, seq) =>
       this.repo
         .findByRoomIdSeq({
           roomId: ctx.roomId,
@@ -176,7 +206,6 @@ class SequenceTimelineAdapter implements TimelinePaginationAdapter {
         })
         .then((r) => r.messages)
     );
-    return { rows, cursors };
   }
 
   nextCursor(boundaryRow: GeneralRoomMessage): string {

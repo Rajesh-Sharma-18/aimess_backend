@@ -35,6 +35,13 @@ const SEQ_RESULT = {
   hasMore: false,
   nextCursor: null as string | null,
   total: 0,
+  cursors: {
+    hasMoreOlder: true,
+    hasMoreNewer: false,
+    olderCursor: "41" as string | null,
+    newerCursor: null as string | null,
+  },
+  roomRevision: 261,
 };
 const AROUND_RESULT = {
   items: [] as unknown[],
@@ -134,5 +141,19 @@ describe("getMessagesV2 — param routing", () => {
     expect(res.status).toHaveBeenCalledWith(200);
     const body = res.json.mock.calls[0]![0];
     expect(body.data.pinnedMessage).toEqual({ id: "pin-1" });
+  });
+
+  it("ordinary page carries bidirectional continuation + roomRevision (Gap B)", async () => {
+    const { controller } = makeController();
+    const res = await invoke(controller, { limit: "30" });
+    const body = res.json.mock.calls[0]![0];
+    expect(body.data.hasMoreOlder).toBe(true);
+    expect(body.data.hasMoreNewer).toBe(false);
+    expect(body.data.olderCursor).toBe("41");
+    expect(body.data.newerCursor).toBeNull();
+    expect(body.data.roomRevision).toBe(261);
+    // Legacy single-direction pair is untouched (direction-correct).
+    expect(body.data.hasMore).toBe(false);
+    expect(body.data.nextCursor).toBeNull();
   });
 });

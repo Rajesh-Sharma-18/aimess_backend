@@ -2,7 +2,7 @@
 import express, { type Express } from "express";
 import helmet from "helmet";
 
-import { env, getCorsAllowedOrigins } from "./config/env.js";
+import { env, isCorsOriginAllowed } from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
 import { setupSwagger } from "./docs/swagger.js";
 import { errorHandler } from "./middleware/error-handler.js";
@@ -17,24 +17,12 @@ import { createLiveKitWebhookRouter } from "./routes/livekit-webhook.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
 import type { MediaClient } from "./grpc/clients/media.client.js";
 
-const allowedOrigins = getCorsAllowedOrigins();
-// const allowedHeaders = getCorsAllowedHeaders();
-
 const corsOptions = {
   origin: (
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void
   ) => {
-    // Allow requests with no origin (like mobile apps, curl requests, etc.)
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    if (env.NODE_ENV === "development") {
-      // In development, allow any origin
-      callback(null, true);
-    } else if (allowedOrigins.includes(origin)) {
-      // In production, only allow configured origins
+    if (isCorsOriginAllowed(origin)) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
