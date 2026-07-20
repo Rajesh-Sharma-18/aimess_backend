@@ -5,9 +5,11 @@ import { validateQuery } from "../middleware/validate-query.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   privateTimelineV2QuerySchema,
+  groupTimelineV2QuerySchema,
   inboxV2QuerySchema,
 } from "../validators/query.validator.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
+import type { GroupMessageController } from "../controllers/group-message.controller.js";
 import type { InboxController } from "../controllers/inbox.controller.js";
 
 /**
@@ -34,6 +36,21 @@ export function createPrivateV2Routes(
     "/rooms/:roomId/messages",
     authenticate,
     validateQuery(privateTimelineV2QuerySchema),
+    messageCtrl.getMessagesV2
+  );
+
+  return router;
+}
+
+export function createGroupV2Routes(
+  messageCtrl: GroupMessageController
+): Router {
+  const router = Router();
+
+  router.get(
+    "/rooms/:roomId/messages",
+    authenticate,
+    validateQuery(groupTimelineV2QuerySchema),
     messageCtrl.getMessagesV2
   );
 

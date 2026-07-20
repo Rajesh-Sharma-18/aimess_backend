@@ -94,6 +94,14 @@ export const privateTimelineV2QuerySchema = z
   });
 
 /**
+ * V2 query schema for the GROUP message timeline
+ * (`GET /api/v2/chat/group/rooms/:roomId/messages`). Byte-identical contract to
+ * {@link privateTimelineV2QuerySchema} — group and private share one client
+ * paging path, so they must not drift.
+ */
+export const groupTimelineV2QuerySchema = privateTimelineV2QuerySchema;
+
+/**
  * V2 §3.3: query schema for the per-conversation incremental sync endpoint.
  * `conv_id` is required (seq is per-room); whole-account discovery uses /inbox.
  */

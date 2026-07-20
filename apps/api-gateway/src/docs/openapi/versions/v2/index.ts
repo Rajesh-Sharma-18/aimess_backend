@@ -372,7 +372,12 @@ const privateMessagesV2 = {
       "`around=<messageId>` behave exactly as on v1.",
     security: [{ bearerAuth: [] }],
     parameters: [
-      { name: "roomId", in: "path", required: true, schema: { type: "string" } },
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
       {
         name: "before_cursor",
         in: "query",
@@ -387,7 +392,8 @@ const privateMessagesV2 = {
         in: "query",
         required: false,
         schema: messageCursorSchema,
-        description: "Newer page (forward paging), oldest-first. Same token format.",
+        description:
+          "Newer page (forward paging), oldest-first. Same token format.",
       },
       {
         name: "before_seq",
@@ -455,7 +461,7 @@ const inboxV2 = {
       "v1 paged on a bare, **inclusive** epoch-ms bound, so consecutive pages " +
       "shared the boundary row whenever two conversations tied on " +
       "`lastMessageAt` — clients had to de-duplicate by `roomId`. V2 pages on the " +
-      'strict compound `(lastMessageAt, roomId)` keyset: `pagination.nextCursor` ' +
+      "strict compound `(lastMessageAt, roomId)` keyset: `pagination.nextCursor` " +
       'is a `"<lastMessageAtMs>_<roomId>"` token you echo back verbatim as ' +
       "`before_cursor` (or `after_cursor`). Boundaries are EXCLUSIVE — no skip, " +
       "no duplicate, no client de-dupe.\n\n" +
@@ -512,11 +518,28 @@ const inboxV2 = {
   },
 };
 
+// Group shares the private V2 timeline contract byte-for-byte (same params, same
+// envelope) — derived rather than duplicated so the two can never drift.
+const groupMessagesV2 = {
+  get: {
+    ...privateMessagesV2.get,
+    tags: ["Chat — Group"],
+    operationId: "getGroupMessagesV2",
+    summary: "Get group messages — Cursor V2",
+    description:
+      "V2 of `GET /api/v1/chat/group/rooms/{roomId}/messages`. Identical " +
+      "contract to the private V2 timeline: same `before_cursor`/`after_cursor` " +
+      "compound cursor, same opt-in `before_seq`/`after_seq`, same `around` " +
+      "window, same `ChatMessagePage` response envelope. Only the room kind differs.",
+  },
+};
+
 export const v2Paths = {
   "/communities/mine": myCommunitiesV2,
   "/chat/community/rooms/{roomId}/messages": communityMessagesV2,
   "/chat/community/rooms/{roomId}/changes": communityChangesV2,
   "/chat/private/rooms/{roomId}/messages": privateMessagesV2,
+  "/chat/group/rooms/{roomId}/messages": groupMessagesV2,
   "/chat/inbox": inboxV2,
 };
 
@@ -532,6 +555,10 @@ export const v2Tags = [
   {
     name: "Chat — Private",
     description: "1-to-1 private messaging — Cursor V2 (chat-service)",
+  },
+  {
+    name: "Chat — Group",
+    description: "Group room messaging — Cursor V2 (chat-service)",
   },
   {
     name: "Chat — Inbox",
