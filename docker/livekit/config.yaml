@@ -8,6 +8,13 @@ rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50100
+  # ⚠️ LiveKit reads this file ONCE AT STARTUP. After changing anything here you
+  # MUST `docker compose restart livekit` — otherwise the container keeps
+  # advertising the OLD node_ip and every call dies with "could not establish
+  # pc connection" while signaling still works (so it looks like a code bug).
+  # Verify what's actually live:
+  #   docker logs aimess-livekit | grep "starting LiveKit server"   → "nodeIP"
+  #
   # advertise the media (ICE) address the peers must send UDP/TCP media to.
   # This MUST be an address every participant's machine can reach:
   #  - same-machine two-tab testing only  → 127.0.0.1
@@ -18,7 +25,7 @@ rtc:
   # Docker publishes UDP 50000-50100 + TCP 7881 to the host; Windows Firewall
   # must allow inbound UDP 50000-50100 for other machines to reach media.
   use_external_ip: false
-  node_ip: 13.203.130.146
+  node_ip: 10.0.127.212
 
 redis:
   address: redis:6379

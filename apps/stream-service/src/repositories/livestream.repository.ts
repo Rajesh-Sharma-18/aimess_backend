@@ -60,6 +60,18 @@ export class LivestreamRepository {
     return this.prisma.livestream.findUnique({ where: { streamKey } });
   }
 
+  /**
+   * Batch counterpart of {@link findByStreamKey}. Backs the SRS reconciler,
+   * which resolves a whole page of currently-publishing SRS stream keys in one
+   * indexed query instead of one round trip per publisher.
+   */
+  async findByStreamKeys(streamKeys: string[]): Promise<Livestream[]> {
+    if (!streamKeys.length) return [];
+    return this.prisma.livestream.findMany({
+      where: { streamKey: { in: streamKeys } },
+    });
+  }
+
   async updateById(
     id: string,
     // Accept any extra fields (e.g. dashUrl) before `prisma generate` adds them to the generated type.
