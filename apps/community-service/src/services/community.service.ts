@@ -36,6 +36,7 @@ import { communityCache } from "../lib/community-cache.js";
 import {
   assertCommunityRole,
   assertNotBanned,
+  deriveMembershipState,
   COMMUNITY_ROLE_RANK,
 } from "../lib/community-authz.js";
 import { communityAccessPolicy } from "../lib/community-access-policy.js";
@@ -814,12 +815,19 @@ async function toCommunityData(
     coverUrlExpiresIn: null,
     cover,
     role: myRole,
-    isJoined: myRole !== null,
-    isBanned,
     // Kicked members are plain non-members now (no restricted-access read
     // view) — the field survives on the wire for backward compat only.
     isKicked: false,
-    membershipStatus: isBanned ? "BANNED" : myRole !== null ? "ACTIVE" : "NONE",
+    // Same shared derivation as the list API and the personal socket events —
+    // see deriveMembershipState. `myRole` is non-null only for ACTIVE, so
+    // this reproduces the previous inline expressions exactly.
+    ...deriveMembershipState(
+      isBanned
+        ? { status: CommunityMemberStatus.BANNED }
+        : myRole !== null
+          ? { status: CommunityMemberStatus.ACTIVE }
+          : null
+    ),
     joinRequestId:
       joinRequest?.status === CommunityJoinReqStatus.PENDING
         ? joinRequest.id
@@ -1568,11 +1576,17 @@ async function enrichMineCommunities(
       // forces the reconciledBase below to use its cutoff-clamped chat.lastMessage
       // instead of the unfiltered denormalized column). The reaction overlay and
       // livestream fields are sourced OUTSIDE chat-service though, so they need
-      // their own cutoff guard here.
+      // their own cutoff guard here. A just-unbanned (LEFT, unbannedAt set)
+      // viewer gets the same treatment capped at `unbannedAt`: the ban itself
+      // is lifted, but they still have zero access until they rejoin, so they
+      // must not see anything that happened after the unban either.
       const bannedAt =
         row.members[0]?.status === CommunityMemberStatus.BANNED
           ? (row.members[0].bannedAt ?? new Date(0))
-          : null;
+          : row.members[0]?.status === CommunityMemberStatus.LEFT &&
+              row.members[0]?.unbannedAt
+            ? row.members[0].unbannedAt
+            : null;
 
       // Per-viewer lastActivity (display-only; the pagination cursor still uses
       // the stored row.lastActivityAt so community-wide ordering is unchanged).
@@ -1644,7 +1658,6 @@ async function enrichMineCommunities(
         avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
         avatar,
         role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
-        isJoined: true,
         lastActivityAt,
         unreadMessageCount: chat.unreadMessageCount,
         firstUnreadMessageId: chat.firstUnreadMessageId,
@@ -1660,14 +1673,13 @@ async function enrichMineCommunities(
         isMemberMuted: modMuteMap.has(row.id),
         memberMutedUntil:
           modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
-        isBanned: row.members[0]?.status === CommunityMemberStatus.BANNED,
         // Backward-compat only — kicked members no longer appear in this list.
         isKicked: false,
-        // The visibility filter admits only ACTIVE and (non-dismissed) BANNED.
-        membershipStatus:
-          row.members[0]?.status === CommunityMemberStatus.BANNED
-            ? ("BANNED" as const)
-            : ("ACTIVE" as const),
+        // isJoined / isBanned / membershipStatus all come from the ONE shared
+        // derivation the detail API and the personal socket events also use,
+        // so a listed row can never disagree with a fresh GET or with the
+        // realtime event that announced the transition.
+        ...deriveMembershipState(row.members[0]),
       };
     })
   );
@@ -3982,8 +3994,10 @@ export const communityService = {
               "community:membership:restricted",
               {
                 communityId,
-                membershipStatus: "BANNED",
-                isBanned: true,
+                // Shared derivation — identical field set to the unban event
+                // and to a fresh GET, so the client applies one state model
+                // for every membership transition.
+                ...deriveMembershipState(updated),
                 reason: removedReason,
                 restrictedAt: now,
               }
@@ -4026,6 +4040,7 @@ export const communityService = {
           status: CommunityMemberStatus;
           role: CommunityMemberRole;
           dismissedAt?: Date | null;
+          unbannedAt?: Date | null;
         }
       | null
       | undefined,
@@ -4045,9 +4060,29 @@ export const communityService = {
       return "MEMBER_NOT_FOUND";
     }
 
-    // LEFT (voluntary leave OR admin kick — removedAt is audit-only) is
-    // already gone from the caller's list: idempotent success, nothing to do.
     if (membership.status === CommunityMemberStatus.LEFT) {
+      // A just-unbanned member (unbannedAt set) is still visible in the
+      // caller's list — same restricted-access-until-dismissed model as a
+      // ban — so dismiss it the same way: hide the entry, nothing else to
+      // touch (status/ban metadata already cleared by unbanMember).
+      if (membership.unbannedAt && !membership.dismissedAt) {
+        await communityRepository.setMemberDismissed(community.id, callerId);
+        void publishChatUserEvent(
+          redis,
+          callerId,
+          "community:membership:removed",
+          {
+            communityId: community.id,
+            membershipStatus: "REMOVED",
+            reason: "dismissed",
+            removedAt: Date.now(),
+          }
+        );
+        return "REMOVED";
+      }
+      // An ordinary voluntary leave, admin kick, or an already-dismissed
+      // unbanned membership is already gone from the caller's list:
+      // idempotent success, nothing to do.
       return "ALREADY_REMOVED";
     }
 
@@ -4433,8 +4468,13 @@ export const communityService = {
     // Unban lifts the ban to LEFT — the user is not auto-re-added; an admin or
     // moderator must add them back (or they re-join) to become ACTIVE again.
     // Also clears dismissedAt (it belonged to this ban cycle) so a future
-    // re-ban shows up in the target's list again.
+    // re-ban shows up in the target's list again. Sets unbannedAt so THIS
+    // specific LEFT stays visible in the target's `/communities/mine` list —
+    // an unban must never make the community disappear, only an explicit
+    // self-dismiss (or the target simply never seeing it again once they
+    // rejoin/get re-added, at which point status moves off LEFT anyway) does.
     // Single-document update + recompute of memberCount — no $transaction.
+    const unbannedAt = new Date();
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       targetUserId,
@@ -4442,7 +4482,8 @@ export const communityService = {
       { bannedAt: null, bannedBy: null, banReason: null },
       undefined,
       undefined,
-      true
+      true,
+      unbannedAt
     );
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -4487,19 +4528,28 @@ export const communityService = {
     // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
 
     // Personal channel — reaches ALL of the unbanned user's devices. Unban
-    // lifts BANNED→LEFT (not auto-re-added), so a live client that was showing
-    // the community read-only (via `community:membership:restricted` at ban
-    // time) needs to drop it from the list now, same as a normal leave — they
-    // must rejoin to see it again. Mirrors removeActiveMember's personal event.
+    // lifts BANNED→LEFT (not auto-re-added) but must NOT evict the community
+    // from the target's list — it stays visible (read-only, no access) until
+    // THEY explicitly remove it, exactly like the ban-time restricted-access
+    // model. So this flips the SAME `community:membership:restricted` event
+    // used at ban time to the post-unban state. Must NOT fire
+    // `community:membership:removed` — that would wrongly drop the row.
+    //
+    // The membership block comes from the SHARED deriveMembershipState, so the
+    // payload is field-for-field what `GET /communities/:id` would now return
+    // (isJoined:false, isBanned:false, membershipStatus:"NONE"). That is what
+    // lets a client sitting on the open community screen transition straight to
+    // the join state — drop the banned banner, hide the composer, show Join
+    // Community — without a refetch, and matches a hard reload exactly.
     void publishChatUserEvent(
       redis,
       targetUserId,
-      "community:membership:removed",
+      "community:membership:restricted",
       {
         communityId,
-        membershipStatus: "REMOVED",
-        reason: "unbanned",
-        removedAt: Date.now(),
+        ...deriveMembershipState(updated),
+        reason: null,
+        restrictedAt: unbannedAt.getTime(),
       }
     );
 

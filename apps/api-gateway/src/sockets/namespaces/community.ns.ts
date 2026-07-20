@@ -802,12 +802,18 @@ export function registerCommunityNamespace(
         }
         const communityId = r.data.communityId;
         void (async () => {
-          // Ban gate: a BANNED user must not enter the broadcast room (and thus
-          // must not receive messages / member events / typing). Only an explicit
-          // BANNED verdict rejects — on a gRPC/breaker failure we fail OPEN (join
-          // allowed) because the act-vector (send/edit/react) is independently
-          // hard-blocked at chat-service, so the only risk of a transient failure
-          // is a brief receive-side leak, not an integrity breach.
+          // Membership gate: only a current ACTIVE member may enter the
+          // broadcast room. A BANNED user is rejected with the explicit
+          // USER_BANNED code; anyone else who isn't ACTIVE (LEFT — including a
+          // just-unbanned user who hasn't rejoined — PENDING, or never a
+          // member at all) is rejected as FORBIDDEN. Unban never re-admits: it
+          // only lifts the ban to LEFT, so this gate is what actually stops a
+          // stale/unbanned client from receiving room broadcasts until they go
+          // through the normal join flow again. Only an explicit verdict
+          // rejects — on a gRPC/breaker failure we fail OPEN (join allowed)
+          // because the act-vector (send/edit/react) is independently
+          // hard-blocked at chat-service, so the only risk of a transient
+          // failure is a brief receive-side leak, not an integrity breach.
           try {
             const m = await communityClient.checkCommunityMembership({
               communityId,
@@ -815,6 +821,10 @@ export function registerCommunityNamespace(
             });
             if (m.isBanned) {
               ackError(callback, "USER_BANNED", locale);
+              return;
+            }
+            if (!m.isMember) {
+              ackError(callback, "FORBIDDEN", locale);
               return;
             }
             // Self-heal the local closed-community cache — covers a gateway

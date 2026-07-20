@@ -2013,7 +2013,7 @@ export const communityPaths = {
       operationId: "unbanCommunityMember",
       summary: "Unban a member",
       description:
-        "Admin only. Lifts a ban: a BANNED member's status is set to LEFT (they are not auto-re-added — add them back or let them re-join) and memberCount is recomputed. Fails if the member is not currently banned.",
+        "Admin only. Lifts a ban: a BANNED member's status is set to LEFT (they are not auto-re-added — add them back or let them re-join to become ACTIVE again). The community is NOT removed from the target's `/communities/mine` list — it stays visible (read-only, zero access) exactly as it was while banned, until the target explicitly removes it themselves. memberCount is recomputed. Fails if the member is not currently banned.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -2263,7 +2263,7 @@ export const communityPaths = {
       operationId: "unbanFromBannedList",
       summary: "Unban a member (banned-members section)",
       description:
-        "Admin only. Dedicated unban action for the banned-members section — functionally identical to DELETE /communities/{id}/members/{userId}/ban. Lifts a ban (BANNED → LEFT; not auto-re-added), records a MEMBER_UNBANNED audit entry, emits the `community:member:unbanned` socket event, and notifies the unbanned user. Fails if the member is not currently banned.",
+        "Admin only. Dedicated unban action for the banned-members section — functionally identical to DELETE /communities/{id}/members/{userId}/ban. Lifts a ban (BANNED → LEFT; not auto-re-added — the target stays a non-member until they rejoin) without removing the community from the target's `/communities/mine` list, records a MEMBER_UNBANNED audit entry, emits the `community:member:unbanned` socket event, and notifies the unbanned user. Fails if the member is not currently banned.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

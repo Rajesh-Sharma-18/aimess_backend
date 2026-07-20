@@ -194,6 +194,15 @@ model CommunityMember {
   // visible again). Follows the deletedAt idiom: set a Date, `unset` to clear,
   // filter with `{ isSet: false }` (never explicit null).
   dismissedAt DateTime?
+  // Set when an admin unbans this member (status flips BANNED -> LEFT, same as
+  // any other non-member — no access, must rejoin through the normal flow).
+  // Distinguishes THIS specific LEFT (unban, community stays in the target's
+  // list until they dismiss it) from an ordinary voluntary leave or kick
+  // (LEFT, never visible — normal preview + join flow, no special-casing).
+  // Cleared on rejoin (reactivateMemberWithSnapshot) and on a future re-ban
+  // (updateMemberStatus's resetRole/ban write), so it never leaks into an
+  // unrelated later LEFT transition.
+  unbannedAt DateTime?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -208,8 +217,10 @@ model CommunityMember {
   // also backs the admin member list's username (display name) sort.
   @@index([communityId, status, bannedAt])
   @@index([communityId, status, snapshotDisplayName])
-  // "My list" query: status=ACTIVE OR (status=BANNED AND dismissedAt unset).
+  // "My list" query: status=ACTIVE OR (status=BANNED AND dismissedAt unset)
+  // OR (status=LEFT AND unbannedAt set AND dismissedAt unset).
   @@index([userId, status, dismissedAt])
+  @@index([userId, status, unbannedAt, dismissedAt])
   @@map("community_members")
 }
 
