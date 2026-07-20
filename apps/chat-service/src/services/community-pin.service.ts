@@ -190,7 +190,10 @@ export class CommunityPinService {
     // 6. Create PINNED_MESSAGE system line (best-effort, outside the
     //    transaction — a failure here must not roll back the pin switch).
     //    "eventAt" is scoped to this pin's ID so a retry doesn't duplicate the line.
-    //    communityName drives the text: "{CommunityName} pinned a message".
+    //    The text is "{pinner} pinned a message" — the ACTOR is the user, resolved
+    //    from `triggeredByUserId` by CommunitySystemMessageService (which stamps
+    //    metadata.actorUserId/actorName). `communityName` is kept in metadata for
+    //    clients that show community context; it is NOT the actor.
     const eventAt = `pin:${pin.id}`;
     const sysMessageId = await this.systemMessageService
       ?.postReturnId({

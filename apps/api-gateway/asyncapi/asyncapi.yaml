@@ -1165,7 +1165,9 @@ operations:
       Throws ACTIVE_PIN_ALREADY_EXISTS if another pin is already active.
       Ack `data` on success: `{ pin: CommunityMessagePin, pinnedCount }`.
       Side-effect — broadcasts `community:message:pinned` to all members and posts a
-      "{CommunityName} pinned a message" SYSTEM line in the chat timeline.
+      "{actorName} pinned a message" SYSTEM line in the chat timeline ("You pinned
+      a message" for the pinner's own view). The actor is the USER who pinned,
+      never the community.
     messages: [{ $ref: "#/channels/community/messages/communityMessagePin" }]
     reply:
       channel: { $ref: "#/channels/community" }

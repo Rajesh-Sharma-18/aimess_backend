@@ -53,6 +53,33 @@ describe("system message text — display names and You personalization", () => 
     ).toBe("You pinned a message");
   });
 
+  // The actor is the USER who pinned — never the community. `communityName` is
+  // still carried in metadata for community context and must NOT leak into the
+  // actor slot (regression guard for "Developers Community pinned a message").
+  it("names the pinning USER, not the community, for bystanders", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "PINNED_MESSAGE",
+        { actorUserId: ACTOR, communityName: "Developers Community" },
+        "John Smith",
+        "",
+        TARGET
+      )
+    ).toBe("John Smith pinned a message");
+  });
+
+  it("shows You for the pinner even when communityName is present", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "PINNED_MESSAGE",
+        { actorUserId: ACTOR, communityName: "Developers Community" },
+        "John Smith",
+        "",
+        ACTOR
+      )
+    ).toBe("You pinned a message");
+  });
+
   it("shows You for moderation targets", () => {
     expect(
       buildCommunitySystemFallbackText(
