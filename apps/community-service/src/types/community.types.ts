@@ -299,15 +299,7 @@ export type CommunityListItem = {
   /** Nested media object for the avatar (additive; mirrors avatarUrl). */
   avatar: MediaObject;
   role: CommunityMemberRole;
-  /**
-   * True ONLY when the caller is an ACTIVE member — "may I act as a member
-   * right now?". False for a BANNED row (access revoked; `isBanned` drives the
-   * banner) and for the post-unban non-member row (`membershipStatus: "NONE"`,
-   * ban lifted but membership NOT restored → render Join Community). Matches
-   * the community DETAIL API field-for-field via the shared
-   * `deriveMembershipState`. Note this is the VISIBILITY-independent axis: a
-   * row can be listed here with `isJoined: false`.
-   */
+  /** True when the caller is an active member of this community. Always true for listMine results. */
   isJoined: boolean;
   /**
    * True when the caller's membership is BANNED. The community stays visible
@@ -318,16 +310,8 @@ export type CommunityListItem = {
   isBanned: boolean;
   /** @deprecated Always false — kicked members no longer appear in this list. Wire compat only. */
   isKicked: boolean;
-  /**
-   * Caller's membership status for this list entry. ACTIVE, non-dismissed
-   * BANNED, and non-dismissed post-unban non-member rows are listed (an
-   * ordinary voluntary leave, an admin kick, or a dismissed row are all
-   * excluded). "NONE" — the same non-member value the detail API emits — means
-   * "was BANNED, an admin lifted the ban, but the caller has NOT rejoined":
-   * zero access, must go through the normal join flow. Only ACTIVE is an
-   * active membership.
-   */
-  membershipStatus: "ACTIVE" | "BANNED" | "NONE";
+  /** Caller's membership status for this list entry. Only ACTIVE and BANNED rows are ever listed (LEFT/kicked/dismissed-banned are excluded). */
+  membershipStatus: "ACTIVE" | "BANNED";
   /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
   lastActivityAt: number;
   /** Unread community-chat messages for the caller (member-only); 0 otherwise. */

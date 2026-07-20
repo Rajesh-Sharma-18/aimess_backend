@@ -47,13 +47,7 @@ function mineActivitySelect(userId: string) {
     status: true,
     members: {
       where: { userId },
-      select: {
-        role: true,
-        status: true,
-        dismissedAt: true,
-        bannedAt: true,
-        unbannedAt: true,
-      },
+      select: { role: true, status: true, dismissedAt: true, bannedAt: true },
     },
   } satisfies Prisma.CommunitySelect;
 }
@@ -631,7 +625,6 @@ export const communityRepository = {
         removedBy: true,
         removedReason: true,
         dismissedAt: true,
-        unbannedAt: true,
       },
     });
   },
@@ -686,16 +679,13 @@ export const communityRepository = {
         // is @default(now()) which only applies on create, so reactivation must
         // set it explicitly.
         joinedAt: new Date(),
-        // Fresh membership also clears any stale kick/dismiss/unban markers
-        // from the previous membership cycle (removedAt is audit metadata for
-        // the OLD cycle; dismissedAt only applies to a BANNED row; unbannedAt
-        // only applies to a post-unban LEFT row — none of them should leak
-        // into a later, unrelated leave in THIS fresh cycle).
+        // Fresh membership also clears any stale kick/dismiss markers from the
+        // previous membership cycle (removedAt is audit metadata for the OLD
+        // cycle; dismissedAt only applies to a BANNED row).
         removedAt: { unset: true },
         removedBy: { unset: true },
         removedReason: { unset: true },
         dismissedAt: { unset: true },
-        unbannedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -751,7 +741,6 @@ export const communityRepository = {
         removedBy: { unset: true },
         removedReason: { unset: true },
         dismissedAt: { unset: true },
-        unbannedAt: { unset: true },
         ...snapshot,
       },
       select: {
@@ -837,10 +826,6 @@ export const communityRepository = {
    * used by banMember so a banned MODERATOR/ADMIN can never have their rank
    * silently restored on a later reactivation (reactivateMemberWithSnapshot
    * reads its priorRole off this row).
-   * `setUnbannedAt`, when passed, sets/clears `unbannedAt` in the same write —
-   * used by unbanMember (set to now, so the mine-list query keeps this specific
-   * LEFT row visible) and by banMember/reactivateMemberWithSnapshot (clear, so
-   * a later unrelated leave/kick or a fresh ban cycle never inherits it).
    */
   async updateMemberStatus(
     communityId: string,
@@ -859,8 +844,7 @@ export const communityRepository = {
     },
     // Unban passes true so a future re-ban shows up in the target's list again
     // (dismissedAt only ever applies to the ban cycle that set it).
-    clearDismissed?: boolean,
-    setUnbannedAt?: Date | null
+    clearDismissed?: boolean
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
@@ -870,12 +854,6 @@ export const communityRepository = {
         ...(resetRole ? { role: resetRole } : {}),
         ...(removedMeta ?? {}),
         ...(clearDismissed ? { dismissedAt: { unset: true } } : {}),
-        ...(setUnbannedAt !== undefined
-          ? {
-              unbannedAt:
-                setUnbannedAt === null ? { unset: true } : setUnbannedAt,
-            }
-          : {}),
       },
       select: {
         id: true,
@@ -1133,24 +1111,14 @@ export const communityRepository = {
     // Include BANNED alongside ACTIVE: a banned member's communities stay
     // visible in their sidebar list (zero access — every read/write is
     // rejected with USER_BANNED) until the user dismisses the entry themselves
-    // (dismissedAt set — see resolveSelfRemoval). Also include the specific
-    // LEFT rows produced by an admin UNBAN (unbannedAt set): unban must not
-    // evict the community either — same restricted-access-until-dismissed
-    // model as a ban, just with the ban lifted (still zero access; the user
-    // must go through the normal join flow to become an ACTIVE member again).
-    // An ordinary voluntary leave or admin kick (status LEFT, unbannedAt unset,
-    // removedAt is audit-only) stays excluded — those go back to a plain
-    // non-member preview + join flow with no special visibility carry-over.
+    // (dismissedAt set — see resolveSelfRemoval). LEFT and kicked members
+    // (status LEFT, removedAt is audit-only) are excluded — they must rejoin
+    // through the normal flow to see the community again.
     const memberVisibilityFilter = {
       OR: [
         { status: CommunityMemberStatus.ACTIVE },
         {
           status: CommunityMemberStatus.BANNED,
-          dismissedAt: { isSet: false },
-        },
-        {
-          status: CommunityMemberStatus.LEFT,
-          unbannedAt: { isSet: true },
           dismissedAt: { isSet: false },
         },
       ],
@@ -1202,18 +1170,12 @@ export const communityRepository = {
     limit: number;
   }) {
     // Same visibility rule as {@link listMineByActivity} — ACTIVE plus
-    // non-dismissed BANNED plus non-dismissed post-unban LEFT (see the doc
-    // comment there for why).
+    // non-dismissed BANNED (see the doc comment there for why).
     const memberVisibilityFilter = {
       OR: [
         { status: CommunityMemberStatus.ACTIVE },
         {
           status: CommunityMemberStatus.BANNED,
-          dismissedAt: { isSet: false },
-        },
-        {
-          status: CommunityMemberStatus.LEFT,
-          unbannedAt: { isSet: true },
           dismissedAt: { isSet: false },
         },
       ],
