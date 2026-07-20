@@ -472,10 +472,11 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_BANNED: {
       const p = data as CommunityMemberBannedPayload;
+      const communityLabel = p.communityName || "a community";
       await pushToUser({
         userId: p.targetUserId,
         title: "Banned from community",
-        body: "You were banned from a community.",
+        body: `You were banned from ${communityLabel}.`,
         bypassSettings: true,
         ...base(
           type,
@@ -483,6 +484,8 @@ async function handleCommunityEvent(
           p.actorId,
           {
             reason: p.reason ?? "",
+            communityName: p.communityName ?? "",
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
           buildDeepLink("communities")
         ),

@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "../config/env.js";
 
 /**
@@ -41,7 +41,8 @@ export const qrScanRateLimiter = rateLimit({
   standardHeaders: "draft-7",
   legacyHeaders: false,
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
-  keyGenerator: (req: Request) => req.auth?.userId ?? req.ip ?? "unknown",
+  keyGenerator: (req: Request) =>
+    req.auth?.userId ?? (req.ip ? ipKeyGenerator(req.ip) : "unknown"),
   message: {
     success: false,
     message: "Too many QR scan attempts, please try again later.",

@@ -3204,12 +3204,16 @@ export const communityService = {
       `Community member banned: community=${communityId} by=${callerId} target=${targetUserId} reason=${reason ?? "(none)"}`
     );
 
+    const bannedCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
     publishCommunityMemberBannedSafe({
       communityId,
       eventAt: new Date().toISOString(),
       actorId: callerId,
       targetUserId,
       reason: reason ?? null,
+      communityName: community.name,
+      communityAvatarUrl: bannedCommunityAvatar?.url ?? null,
     });
     // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
     // members — MEMBER_BANNED is PERSONAL visibility), but the banned user

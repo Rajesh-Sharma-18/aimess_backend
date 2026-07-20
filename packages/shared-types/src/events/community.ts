@@ -71,6 +71,9 @@ export type CommunityMemberBannedPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
   reason: string | null;
+  /** Community display name — the ban notification must name the community, not say "You were banned." generically. */
+  communityName: string;
+  communityAvatarUrl: string | null;
 };
 
 /**
