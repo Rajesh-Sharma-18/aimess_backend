@@ -1530,6 +1530,67 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Room-independent typing fan-out roster for private/group — the exact
+     * mirror of community-service's GetCommunityActiveMemberIds.
+     *
+     * The returned list does double duty for the gateway, identically to the
+     * community implementation: (1) membership validation for the sender — a
+     * non-participant / non-ACTIVE member never appears, so
+     * `userIds.includes(senderId)` replaces a second round trip — and (2) the
+     * recipient roster for direct `user:<id>` delivery.
+     *
+     * Reuses the EXISTING lookups (PrivateRoom.participants,
+     * GroupMessageService.getActiveMemberIds) — no new repository method.
+     * Never throws: an unknown room is an empty roster, which the gateway
+     * treats as "not authorized, broadcast nothing" (fail-closed).
+     */
+    getRoomParticipantIds: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId?: string;
+            conversationType?: string;
+          };
+          const conversationId = req.conversationId ?? "";
+          if (!conversationId) {
+            callback(null, { userIds: [] });
+            return;
+          }
+
+          if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
+            const userIds =
+              await deps.groupMessageService.getActiveMemberIds(conversationId);
+            callback(null, { userIds });
+            return;
+          }
+
+          // PRIVATE (explicit or defaulted). `conversationType` is an ADDITIVE
+          // socket field, so already-shipped clients typing in a GROUP room
+          // send no hint at all and land here. Falling back to the group
+          // roster when the room is not a private one keeps those clients
+          // working — without it, group typing would silently resolve to an
+          // empty roster and stop being delivered. The fallback costs one
+          // extra indexed lookup only in that legacy-group case.
+          const room = await deps.privateRoomRepo.findByRoomId(conversationId);
+          const userIds = room
+            ? (room.participants ?? [])
+            : await deps.groupMessageService.getActiveMemberIds(conversationId);
+
+          callback(null, { userIds });
+        } catch (err) {
+          // Fail-closed: an empty roster suppresses the indicator rather than
+          // leaking it. Typing is presence-only, so a dropped event is
+          // strictly better than an unauthorized broadcast or a socket error.
+          logger.warn(`gRPC getRoomParticipantIds error: ${String(err)}`);
+          callback(null, { userIds: [] });
+        }
+      })();
+    },
+
     catchupRoom: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

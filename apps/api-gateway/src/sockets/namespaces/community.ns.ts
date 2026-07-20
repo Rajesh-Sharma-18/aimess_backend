@@ -11,6 +11,11 @@ import {
   resolveSocketUserDetails,
   buildTypingBroadcast,
 } from "../user-details.js";
+import {
+  createPresenceIndicator,
+  createDirectRosterBroadcast,
+  createRoomBroadcast,
+} from "../presence-indicator.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
@@ -620,16 +625,9 @@ export function registerCommunityNamespace(
     // unchanged and still room-based): typing no longer relies on
     // community:<id> or community-typing:<id> room membership at all — a
     // member receives typing events whether or not their socket has ever
-    // joined either room. See getActiveCommunityMemberIds/emitDirectToUsers.
-    const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const clearTyping = (communityId: string): void => {
-      const t = typingTimers.get(communityId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        typingTimers.delete(communityId);
-      }
-    };
-
+    // joined either room. See getActiveCommunityMemberIds below; the direct
+    // per-recipient delivery itself now lives in the shared
+    // createDirectRosterBroadcast, which /chat typing uses too.
     // ── Room-independent recipient resolution (typing only) ────────────────
     // Reuses communityClient.getCommunityActiveMemberIds, which is itself a
     // thin gRPC wrapper around community-service's existing
@@ -659,29 +657,6 @@ export function registerCommunityNamespace(
         );
         return [];
       }
-    };
-
-    // Direct, per-recipient delivery: resolves every recipient's already-
-    // connected sockets via their `user:<id>` room — the project's existing
-    // per-user socket registry (every socket auto-joins it at connect for
-    // unrelated reasons: DM/notification relay, community:added, etc.) — NOT a
-    // community-scoped room. `community.in(rooms)` + per-socket `.emit()`
-    // mirrors the same fetchSockets()-then-emit pattern already used above for
-    // personalized community:message:new delivery — no new tracking
-    // introduced. A user with multiple open devices/tabs has multiple sockets
-    // in that same room and all of them receive the event in this one pass;
-    // an offline recipient simply isn't in the fetched set (skipped for free).
-    const emitDirectToUsers = async (
-      userIds: string[],
-      event: string,
-      payload: unknown
-    ): Promise<number> => {
-      if (userIds.length === 0) return 0;
-      const sockets = await community
-        .in(userIds.map((id) => `user:${id}`))
-        .fetchSockets();
-      for (const s of sockets) s.emit(event, payload);
-      return sockets.length;
     };
 
     // Authorization gate for the recording indicator (typing no longer uses
@@ -727,61 +702,35 @@ export function registerCommunityNamespace(
         { communityId }
       );
 
+    // Room-independent typing, now driven by the SHARED presence engine that
+    // /chat also uses (timers, 6 s TTL, disconnect flush live there). The
+    // behaviour is unchanged: the active-member roster both validates the
+    // sender and supplies the recipient set, the sender is excluded by never
+    // appearing in that set, and the TTL re-resolves membership at fire time
+    // because it runs outside the request context.
+    const typing = createPresenceIndicator({
+      startEvent: "typing:start",
+      stopEvent: "typing:stop",
+      broadcast: createDirectRosterBroadcast({
+        namespace: community,
+        senderId: userId,
+        resolveRoster: getActiveCommunityMemberIds,
+        buildPayload: communityTypingPayload,
+        isSuppressed: (communityId) => closedCommunityIds.has(communityId),
+      }),
+    });
+
     // Shared handler for both the new canonical name and the legacy alias.
-    // Room-independent: validates + resolves recipients from the active
-    // member list (see getActiveCommunityMemberIds) and delivers directly to
-    // each recipient's socket(s) (see emitDirectToUsers) — the sender is
-    // excluded by never including their own userId in the recipient set.
     const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (closedCommunityIds.has(communityId)) return;
-        const memberIds = await getActiveCommunityMemberIds(communityId);
-        if (!memberIds.includes(userId)) return; // sender not an active member
-        clearTyping(communityId);
-        const recipientIds = memberIds.filter((id) => id !== userId);
-        await emitDirectToUsers(
-          recipientIds,
-          "typing:start",
-          communityTypingPayload(communityId)
-        );
-        typingTimers.set(
-          communityId,
-          setTimeout(() => {
-            typingTimers.delete(communityId);
-            // TTL expiry: re-resolve membership at fire time (fires outside
-            // the request context, and membership may have changed since).
-            void (async () => {
-              const ids = await getActiveCommunityMemberIds(communityId);
-              await emitDirectToUsers(
-                ids.filter((id) => id !== userId),
-                "typing:stop",
-                communityTypingPayload(communityId)
-              );
-            })();
-          }, 6000)
-        );
-      })();
+      typing.start(r.data.communityId);
     };
 
     const handleTypingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (closedCommunityIds.has(communityId)) return;
-        const memberIds = await getActiveCommunityMemberIds(communityId);
-        if (!memberIds.includes(userId)) return; // sender not an active member
-        clearTyping(communityId);
-        const recipientIds = memberIds.filter((id) => id !== userId);
-        await emitDirectToUsers(
-          recipientIds,
-          "typing:stop",
-          communityTypingPayload(communityId)
-        );
-      })();
+      typing.stop(r.data.communityId);
     };
 
     // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
@@ -798,16 +747,6 @@ export function registerCommunityNamespace(
     // Broadcasts to both community:<id> (open-chat) AND community-typing:<id>
     // (always-on membership) rooms so sidebar recording indicators work even when
     // chat is not open. Socket.IO de-duplicates recipients.
-    const recordingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-    const clearRecording = (communityId: string): void => {
-      const t = recordingTimers.get(communityId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        recordingTimers.delete(communityId);
-      }
-    };
-
     const communityRecordingPayload = (communityId: string) =>
       buildTypingBroadcast(
         userId,
@@ -817,45 +756,33 @@ export function registerCommunityNamespace(
         { communityId }
       );
 
+    const recording = createPresenceIndicator({
+      startEvent: "recording:start",
+      stopEvent: "recording:stop",
+      broadcast: createRoomBroadcast({
+        namespace: community,
+        socket,
+        // Both rooms — Socket.IO de-duplicates a member present in both.
+        rooms: (communityId) => [
+          `community:${communityId}`,
+          `community-typing:${communityId}`,
+        ],
+        buildPayload: communityRecordingPayload,
+        isAuthorized: isAuthorizedForCommunity,
+      }),
+    });
+
     // Shared handler for both canonical and legacy recording event names.
     const handleRecordingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
-        clearRecording(communityId);
-        // socket.to() excludes sender; chain both rooms — Socket.IO de-dupes.
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:start", communityRecordingPayload(communityId));
-        recordingTimers.set(
-          communityId,
-          setTimeout(() => {
-            recordingTimers.delete(communityId);
-            // TTL expiry: use community.to() — timer fires outside socket context.
-            community
-              .to(`community:${communityId}`)
-              .to(`community-typing:${communityId}`)
-              .emit("recording:stop", communityRecordingPayload(communityId));
-          }, 6000)
-        );
-      })();
+      recording.start(r.data.communityId);
     };
 
     const handleRecordingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
-        clearRecording(communityId);
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:stop", communityRecordingPayload(communityId));
-      })();
+      recording.stop(r.data.communityId);
     };
 
     // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
@@ -1636,33 +1563,13 @@ export function registerCommunityNamespace(
       // Clear session expiry timers.
       clearSessionTimers();
 
-      // Flush all pending typing-expiry timers and deliver stop directly to
-      // each active member (room-independent — see handleTypingStart/Stop
-      // above) so members are never stuck with a "typing…" indicator after
-      // the socket closes.
-      for (const [communityId, timer] of typingTimers) {
-        clearTimeout(timer);
-        void (async () => {
-          const ids = await getActiveCommunityMemberIds(communityId);
-          await emitDirectToUsers(
-            ids.filter((id) => id !== userId),
-            "typing:stop",
-            communityTypingPayload(communityId)
-          );
-        })();
-      }
-      typingTimers.clear();
-
-      // Flush all pending recording-expiry timers and broadcast stop so members are
-      // never stuck with a "recording…" indicator after the socket closes.
-      for (const [communityId, timer] of recordingTimers) {
-        clearTimeout(timer);
-        community
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:stop", communityRecordingPayload(communityId));
-      }
-      recordingTimers.clear();
+      // Flush every pending presence timer and broadcast the stop, so members
+      // are never stuck with a "typing…" / "recording…" indicator after the
+      // socket closes. Typing delivers directly to each active member
+      // (room-independent), recording broadcasts to the rooms — both handled
+      // by the shared engine, identically to /chat.
+      typing.flush();
+      recording.flush();
     });
   });
 }
