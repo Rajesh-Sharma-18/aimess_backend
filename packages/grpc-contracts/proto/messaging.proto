@@ -35,6 +35,14 @@ service MessagingService {
   // (idempotent for other states).
   rpc HandleLiveKitRoomFinished (HandleLiveKitRoomFinishedRequest) returns (HandleLiveKitRoomFinishedResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
+  // Room-independent typing indicator fan-out for private/group — the exact
+  // mirror of community's GetCommunityActiveMemberIds. Lets the gateway resolve
+  // BOTH "is the sender a participant/active member" (membership: sender in the
+  // returned list) AND the direct recipient roster in a single call, so
+  // typing:start/stop can be delivered straight to each participant's
+  // `user:<id>` socket room without requiring anyone to conv:join first.
+  // Read-only, single query (ids only) — no N+1.
+  rpc GetRoomParticipantIds   (GetRoomParticipantIdsRequest)   returns (GetRoomParticipantIdsResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
   // Admin Group Management: list/detail/members (owned by chat-service).
@@ -545,4 +553,14 @@ message AdminGetGroupResponse {
   AdminGroupRow             group         = 2;
   repeated AdminGroupMember members       = 3;
   int32                     members_total = 4;
+}
+
+// ---- GetRoomParticipantIds ----
+// Mirror of community.proto's GetCommunityActiveMemberIds, for private/group.
+message GetRoomParticipantIdsRequest {
+  string           conversation_id   = 1;
+  ConversationType conversation_type = 2;
+}
+message GetRoomParticipantIdsResponse {
+  repeated string user_ids = 1;
 }

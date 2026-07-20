@@ -16,6 +16,11 @@ import {
   resolveSocketUserDetails,
   buildTypingBroadcast,
 } from "../user-details.js";
+import {
+  createPresenceIndicator,
+  createDirectRosterBroadcast,
+  createRoomBroadcast,
+} from "../presence-indicator.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 
@@ -31,15 +36,76 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
 
+/**
+ * Cross-namespace request-DTO parity (/community is the reference contract).
+ *
+ * /community names the same concepts `roomId`, `message`, `parentMessageId`, and
+ * `content.text`; /chat has always named them `conversationId`, `contentText`,
+ * `repliedToId`, and `contentText`. Renaming the /chat fields would break every
+ * shipped Web/Android/iOS client, so instead this normalizes the /community
+ * spelling INTO the /chat spelling before validation: both are accepted on the
+ * wire, the legacy /chat name stays canonical downstream, and nothing existing
+ * changes meaning. The legacy name always wins when a client sends both.
+ *
+ * Applied to every /chat inbound schema — a schema that has no such field simply
+ * strips the injected key, so this is safe to apply uniformly.
+ */
+const withCommunityAliases = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return value;
+    }
+    const v = value as Record<string, unknown>;
+    const aliased = { ...v };
+    if (aliased.conversationId === undefined && v.roomId !== undefined) {
+      aliased.conversationId = v.roomId;
+    }
+    if (aliased.contentText === undefined && v.message !== undefined) {
+      aliased.contentText = v.message;
+    }
+    if (
+      aliased.contentText === undefined &&
+      v.content !== null &&
+      typeof v.content === "object" &&
+      !Array.isArray(v.content)
+    ) {
+      aliased.contentText = (v.content as Record<string, unknown>).text;
+    }
+    if (aliased.repliedToId === undefined && v.parentMessageId !== undefined) {
+      aliased.repliedToId = v.parentMessageId;
+    }
+    if (
+      aliased.targetConversationId === undefined &&
+      v.targetRoomId !== undefined
+    ) {
+      aliased.targetConversationId = v.targetRoomId;
+    }
+    return aliased;
+  }, schema);
+
 // ─── Inbound payload schemas ────────────────────────────────────────────────
-const ConvJoinSchema = z.object({ conversationId: z.string().min(1) });
-const ConvLeaveSchema = z.object({ conversationId: z.string().min(1) });
-const TypingSchema = z.object({
-  conversationId: z.string().min(1),
-  // V2 §2.8: client supplies its own display name so recipients can show
-  // "Alice is typing…" without an extra profile fetch.
-  senderName: z.string().max(100).optional(),
-});
+const ConvJoinSchema = withCommunityAliases(
+  z.object({ conversationId: z.string().min(1) })
+);
+const ConvLeaveSchema = withCommunityAliases(
+  z.object({ conversationId: z.string().min(1) })
+);
+const TypingSchema = withCommunityAliases(
+  z.object({
+    conversationId: z.string().min(1),
+    // V2 §2.8: client supplies its own display name so recipients can show
+    // "Alice is typing…" without an extra profile fetch.
+    senderName: z.string().max(100).optional(),
+    // Additive and optional: lets the gateway resolve the participant roster
+    // through the right branch (private participants vs. group members) for
+    // room-independent typing delivery. Legacy clients omit it and get the
+    // PRIVATE default, which is what /chat typing has always assumed.
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+  })
+);
 const FileAttachmentSchema = z.object({
   objectKey: z.string().min(1).max(500).optional(),
   url: z.string().min(1).max(3000).optional(),
@@ -66,7 +132,7 @@ const ContactSchema = z.object({
   avatar: z.string().max(3000).optional(),
   userId: z.string().max(100).optional(),
 });
-const MessageSendSchema = z.object({
+const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),
   contentType: z
@@ -93,11 +159,11 @@ const MessageSendSchema = z.object({
   // §5.1: client compose time (epoch ms) — display only, never overwrites serverTs.
   clientTs: z.number().int().nonnegative().optional(),
 });
-const MessageReadSchema = z.object({
+const MessageReadSchemaBase = z.object({
   conversationId: z.string().min(1),
   upToMessageId: z.string().min(1),
 });
-const MessageReactSchema = z.object({
+const MessageReactSchemaBase = z.object({
   messageId: z.string().min(1),
   conversationId: z.string().min(1),
   // §3: a single emoji grapheme — bounded length (handles multi-codepoint ZWJ
@@ -109,7 +175,7 @@ const MessageReactSchema = z.object({
     z.enum(["private", "group"]).default("private")
   ),
 });
-const MessagesFetchSchema = z.object({
+const MessagesFetchSchemaBase = z.object({
   conversationId: z.string().min(1),
   cursor: z.string().optional(),
   limit: z.number().int().positive().max(100).optional(),
@@ -119,6 +185,14 @@ const MessagesFetchSchema = z.object({
     z.enum(["private", "group"]).default("private")
   ),
 });
+
+// Each `*Base` above defines the canonical /chat field names; the exported
+// schema additionally accepts the equivalent /community spellings (roomId,
+// message, content.text, parentMessageId). See withCommunityAliases.
+const MessageSendSchema = withCommunityAliases(MessageSendSchemaBase);
+const MessageReadSchema = withCommunityAliases(MessageReadSchemaBase);
+const MessageReactSchema = withCommunityAliases(MessageReactSchemaBase);
+const MessagesFetchSchema = withCommunityAliases(MessagesFetchSchemaBase);
 
 const CatchupSchema = z.object({
   rooms: z
@@ -288,7 +362,7 @@ export function registerChatNamespace(
     }
   );
 
-  const MessageForwardSchema = z.object({
+  const MessageForwardSchemaBase = z.object({
     messageId: z.string().min(1),
     targetConversationId: z.string().min(1),
     clientMessageId: z.string().min(1),
@@ -300,7 +374,7 @@ export function registerChatNamespace(
     senderName: z.string().optional(),
     senderAvatar: z.string().optional(),
   });
-  const MessageReactionsGetSchema = z.object({
+  const MessageReactionsGetSchemaBase = z.object({
     messageId: z.string().min(1),
     conversationId: z.string().min(1),
     conversationType: z.preprocess(
@@ -308,7 +382,7 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
-  const MessageEditSchema = z.object({
+  const MessageEditSchemaBase = z.object({
     messageId: z.string().min(1),
     conversationId: z.string().min(1),
     contentText: z.string().max(MAX_TEXT_LEN).optional(),
@@ -318,13 +392,13 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
-  const MessageDeliveredSchema = z.object({
+  const MessageDeliveredSchemaBase = z.object({
     conversationId: z.string().min(1),
     upToMessageId: z.string().min(1),
   });
   // Parity with /community's community:message:delete / pin / unpin — private/
   // group previously had no socket RPC for these (REST-only).
-  const MessageDeleteSchema = z.object({
+  const MessageDeleteSchemaBase = z.object({
     conversationId: z.string().min(1),
     messageId: z.string().min(1),
     type: z.enum(["forMe", "forEveryone"]).default("forMe"),
@@ -333,7 +407,7 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
-  const MessagePinSchema = z.object({
+  const MessagePinSchemaBase = z.object({
     conversationId: z.string().min(1),
     messageId: z.string().min(1),
     conversationType: z.preprocess(
@@ -341,6 +415,17 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
+  const MessageForwardSchema = withCommunityAliases(MessageForwardSchemaBase);
+  const MessageReactionsGetSchema = withCommunityAliases(
+    MessageReactionsGetSchemaBase
+  );
+  const MessageEditSchema = withCommunityAliases(MessageEditSchemaBase);
+  const MessageDeliveredSchema = withCommunityAliases(
+    MessageDeliveredSchemaBase
+  );
+  const MessageDeleteSchema = withCommunityAliases(MessageDeleteSchemaBase);
+  const MessagePinSchema = withCommunityAliases(MessagePinSchemaBase);
+
   const PresenceSubscribeSchema = z.object({
     peerIds: z.array(z.string().min(1)).max(500),
   });
@@ -749,24 +834,22 @@ export function registerChatNamespace(
     }
     registerAuthRefreshHandler();
 
-    // Gap #7: per-socket typing-expiry timers.
-    // Fire-and-forget (no ack). Server holds a 6 s countdown per
-    // conversationId; if typing:stop is never received (e.g. app crash,
-    // network drop) the timer fires and broadcasts the stop automatically.
-    // On disconnect all pending timers are flushed and stops are broadcast.
-    const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-    const clearTyping = (conversationId: string): void => {
-      const t = typingTimers.get(conversationId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        typingTimers.delete(conversationId);
-      }
-    };
-
-    // Build the enriched typing broadcast body from the per-connection identity
-    // resolved at handshake (socket.data.userDetails). userId is always the
-    // authenticated socket user; legacy top-level userId/senderName are kept.
+    // ── Typing indicator ────────────────────────────────────────────────────
+    // Fire-and-forget (no ack). Timer/TTL/flush mechanics live in the shared
+    // presence-indicator engine — the same instance /community uses.
+    //
+    // ROOM-INDEPENDENT, matching /community: recipients are resolved from the
+    // room's participant roster and reached through their `user:<id>` sockets,
+    // so a peer receives the indicator whether or not they ever sent
+    // conv:join. This also closes the gap where /chat performed NO
+    // authorization at all — conv:join has no membership oracle, so any
+    // authenticated socket could previously join `conv:<anyRoomId>` and inject
+    // a fake typing indicator into a DM or group it was not part of. The
+    // roster now gates the sender, exactly as community's active-member list
+    // does. Fail-closed: an empty/failed roster suppresses the event.
+    //
+    // The wire event names (`typing:start` / `typing:stop`) and the payload
+    // (buildTypingBroadcast) are unchanged — shipped clients see no difference.
     const typingPayload = (conversationId: string, senderName?: string) =>
       buildTypingBroadcast(
         userId,
@@ -776,100 +859,105 @@ export function registerChatNamespace(
         { senderName }
       );
 
+    // Remembers what the client last told us about a room, so the TTL-expiry
+    // and disconnect-flush stops — which carry no client payload — resolve the
+    // roster through the same branch the start did and keep the same
+    // senderName fallback in the payload.
+    const typingHints = new Map<
+      string,
+      { kind: "private" | "group"; senderName?: string }
+    >();
+
+    const typing = createPresenceIndicator({
+      startEvent: "typing:start",
+      stopEvent: "typing:stop",
+      broadcast: createDirectRosterBroadcast({
+        namespace: chat,
+        senderId: userId,
+        resolveRoster: async (conversationId) => {
+          try {
+            const { userIds } = await messagingClient.getRoomParticipantIds({
+              conversationId,
+              conversationType:
+                typingHints.get(conversationId)?.kind ?? "private",
+            });
+            return userIds;
+          } catch (err) {
+            logger.warn(
+              `/chat typing: failed to resolve participants conversationId=${conversationId}: ${String(err)}`
+            );
+            return [];
+          }
+        },
+        buildPayload: (conversationId) =>
+          typingPayload(
+            conversationId,
+            typingHints.get(conversationId)?.senderName
+          ),
+      }),
+    });
+
+    const rememberTypingHint = (d: {
+      conversationId: string;
+      conversationType: "private" | "group";
+      senderName?: string;
+    }): void => {
+      typingHints.set(d.conversationId, {
+        kind: d.conversationType,
+        senderName: d.senderName,
+      });
+    };
+
     socket.on("typing:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { conversationId, senderName } = r.data;
-
-      // Reset the expiry window each time the client refreshes typing:start.
-      clearTyping(conversationId);
-
-      chat
-        .to(`conv:${conversationId}`)
-        .emit("typing:start", typingPayload(conversationId, senderName));
-
-      typingTimers.set(
-        conversationId,
-        setTimeout(() => {
-          typingTimers.delete(conversationId);
-          chat
-            .to(`conv:${conversationId}`)
-            .emit("typing:stop", typingPayload(conversationId));
-        }, 6000)
-      );
+      rememberTypingHint(r.data);
+      typing.start(r.data.conversationId);
     });
 
     socket.on("typing:stop", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { conversationId, senderName } = r.data;
-
-      clearTyping(conversationId);
-      chat
-        .to(`conv:${conversationId}`)
-        .emit("typing:stop", typingPayload(conversationId, senderName));
+      rememberTypingHint(r.data);
+      typing.stop(r.data.conversationId);
     });
 
-    // ── Voice recording presence ────────────────────────────────────────────────
-    // Fire-and-forget (no ack). Server holds a 6 s countdown per conversationId;
-    // if recording:stop is never received (app crash, network drop) the timer fires
-    // and broadcasts the stop automatically. On disconnect all pending timers are
-    // flushed and stops are broadcast. Identical to typing indicator architecture.
-    const recordingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    // ── Voice recording presence ────────────────────────────────────────────
+    // Same shared engine, room-based delivery — deliberately UNCHANGED in
+    // behaviour and identical to /community's recording indicator, which also
+    // stayed room-based when typing moved to direct delivery.
+    const recordingNames = new Map<string, string | undefined>();
 
-    const clearRecording = (conversationId: string): void => {
-      const t = recordingTimers.get(conversationId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        recordingTimers.delete(conversationId);
-      }
-    };
-
-    const recordingPayload = (conversationId: string, senderName?: string) =>
-      buildTypingBroadcast(
-        userId,
-        socket.data.userDetails,
-        conversationId,
-        Date.now(),
-        { senderName }
-      );
+    const recording = createPresenceIndicator({
+      startEvent: "recording:start",
+      stopEvent: "recording:stop",
+      broadcast: createRoomBroadcast({
+        namespace: chat,
+        socket,
+        rooms: (conversationId) => [`conv:${conversationId}`],
+        buildPayload: (conversationId) =>
+          buildTypingBroadcast(
+            userId,
+            socket.data.userDetails,
+            conversationId,
+            Date.now(),
+            { senderName: recordingNames.get(conversationId) }
+          ),
+      }),
+    });
 
     socket.on("recording:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { conversationId, senderName } = r.data;
-
-      // Reset the expiry window each time the client sends recording:start.
-      clearRecording(conversationId);
-
-      socket
-        .to(`conv:${conversationId}`)
-        .emit("recording:start", recordingPayload(conversationId, senderName));
-
-      recordingTimers.set(
-        conversationId,
-        setTimeout(() => {
-          recordingTimers.delete(conversationId);
-          // socket.to() (sender excluded) — matches the manual start/stop
-          // broadcasts above so the sender never receives its own recording
-          // indicator, regardless of whether the stop was auto-expired or
-          // client-initiated.
-          socket
-            .to(`conv:${conversationId}`)
-            .emit("recording:stop", recordingPayload(conversationId));
-        }, 6000)
-      );
+      recordingNames.set(r.data.conversationId, r.data.senderName);
+      recording.start(r.data.conversationId);
     });
 
     socket.on("recording:stop", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { conversationId, senderName } = r.data;
-
-      clearRecording(conversationId);
-      socket
-        .to(`conv:${conversationId}`)
-        .emit("recording:stop", recordingPayload(conversationId, senderName));
+      recordingNames.set(r.data.conversationId, r.data.senderName);
+      recording.stop(r.data.conversationId);
     });
 
     // Feature 1: Forward message
@@ -1041,7 +1129,8 @@ export function registerChatNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1064,7 +1153,8 @@ export function registerChatNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1084,7 +1174,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat call:decline gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1104,7 +1195,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat call:end gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1288,25 +1380,12 @@ export function registerChatNamespace(
 
       clearSessionTimers();
 
-      // Flush all pending typing-expiry timers and broadcast stop so peers are
-      // never stuck with a "typing…" indicator after the socket closes.
-      for (const [conversationId, timer] of typingTimers) {
-        clearTimeout(timer);
-        chat
-          .to(`conv:${conversationId}`)
-          .emit("typing:stop", typingPayload(conversationId));
-      }
-      typingTimers.clear();
-
-      // Flush all pending recording-expiry timers and broadcast stop so peers are
-      // never stuck with a "recording…" indicator after the socket closes.
-      for (const [conversationId, timer] of recordingTimers) {
-        clearTimeout(timer);
-        chat
-          .to(`conv:${conversationId}`)
-          .emit("recording:stop", recordingPayload(conversationId));
-      }
-      recordingTimers.clear();
+      // Flush every pending presence timer and broadcast the stop, so peers are
+      // never stuck with a "typing…" / "recording…" indicator after the socket
+      // closes. Both flushes route through the shared engine, so /chat and
+      // /community now clean up identically.
+      typing.flush();
+      recording.flush();
 
       if (userId) {
         void redisPub.del(`user:online:${userId}`);

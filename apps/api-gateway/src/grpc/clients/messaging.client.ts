@@ -211,6 +211,19 @@ export interface CatchupRoomResult {
   authorized: boolean;
 }
 
+/**
+ * Typing-indicator roster for private/group. Mirrors community's
+ * getCommunityActiveMemberIds — one call yields both the sender-membership
+ * check and the direct-delivery recipient list.
+ */
+export interface GetRoomParticipantIdsParams {
+  conversationId: string;
+  conversationType?: string;
+}
+export interface GetRoomParticipantIdsResult {
+  userIds: string[];
+}
+
 export interface GetMessageReactionsParams {
   messageId: string;
   conversationId: string;
@@ -317,6 +330,9 @@ export interface MessagingClient {
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
   handleLiveKitRoomFinished(p: { roomName: string }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
+  getRoomParticipantIds(
+    p: GetRoomParticipantIdsParams
+  ): Promise<GetRoomParticipantIdsResult>;
 }
 
 export function createMessagingClient(): MessagingClient {
@@ -671,6 +687,18 @@ export function createMessagingClient(): MessagingClient {
     }
   );
 
+  const getRoomParticipantIdsBreaker = makeBreaker(
+    "messaging.getRoomParticipantIds",
+    (p: GetRoomParticipantIdsParams) =>
+      call<unknown, GetRoomParticipantIdsResult>("getRoomParticipantIds", {
+        conversationId: p.conversationId,
+        conversationType:
+          String(p.conversationType ?? "private").toUpperCase() === "GROUP"
+            ? "GROUP"
+            : "PRIVATE",
+      })
+  );
+
   return {
     sendMessage: (p) => sendMessageBreaker.fire(p),
     getConversationMessages: (p) => getMessagesBreaker.fire(p),
@@ -693,5 +721,6 @@ export function createMessagingClient(): MessagingClient {
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
     handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
+    getRoomParticipantIds: (p) => getRoomParticipantIdsBreaker.fire(p),
   };
 }
