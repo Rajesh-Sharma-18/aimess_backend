@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -8,7 +7,10 @@ import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
-import { resolveSocketUserDetails } from "../user-details.js";
+import {
+  resolveSocketUserDetails,
+  buildTypingBroadcast,
+} from "../user-details.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
@@ -88,6 +90,8 @@ const CommunityMsgSendSchema = z.object({
     })
     .optional(),
   parentMessageId: z.string().optional(),
+  // Cross-namespace parity alias: /chat names the reply target `repliedToId`.
+  repliedToId: z.string().optional(),
 });
 const CommunityMsgsFetchSchema = z.object({
   roomId: z.string().min(1),
@@ -137,12 +141,20 @@ const CommunityCatchupSchema = z.object({
   rooms: z.array(CommunityCatchupRoomSchema).min(1).max(10),
 });
 
-const CommunityMsgEditSchema = z.object({
-  messageId: z.string().min(1),
-  communityId: z.string().min(1),
-  roomId: z.string().min(1).optional(),
-  content: z.object({ text: z.string().min(1).max(4000) }),
-});
+const CommunityMsgEditSchema = z
+  .object({
+    messageId: z.string().min(1),
+    communityId: z.string().min(1),
+    roomId: z.string().min(1).optional(),
+    content: z.object({ text: z.string().min(1).max(MAX_TEXT_LEN) }).optional(),
+    // Cross-namespace parity alias: /chat's message:edit sends a flat
+    // `contentText`. Exactly one of content.text / contentText is required.
+    contentText: z.string().min(1).max(MAX_TEXT_LEN).optional(),
+  })
+  .refine((v) => v.content !== undefined || v.contentText !== undefined, {
+    message: "content.text or contentText is required",
+    path: ["content"],
+  });
 
 const CommunityMsgDeleteSchema = z.object({
   messageId: z.string().min(1),
@@ -482,20 +494,21 @@ export function registerCommunityNamespace(
                 community
                   .to(`community:${removedCommunityId}`)
                   .to(typingRoom)
-                  .emit("typing:stop", {
-                    eventId: randomUUID(),
-                    communityId: removedCommunityId,
-                    roomId: removedCommunityId,
-                    userDetails: s.data.userDetails ?? {
-                      userId: removedUserId,
-                      username: "",
-                      displayName: "",
-                      avatarUrl: null,
-                    },
-                    userId: removedUserId,
-                    senderName: "",
-                    timestamp: Date.now(),
-                  });
+                  .emit(
+                    "typing:stop",
+                    buildTypingBroadcast(
+                      removedUserId,
+                      s.data.userDetails ?? {
+                        userId: removedUserId,
+                        username: "",
+                        displayName: "",
+                        avatarUrl: null,
+                      },
+                      removedCommunityId,
+                      Date.now(),
+                      { communityId: removedCommunityId }
+                    )
+                  );
               }
             } catch (evictErr) {
               logger.warn(
@@ -702,16 +715,17 @@ export function registerCommunityNamespace(
 
     // Build the canonical community typing payload for server→client broadcasts.
     // userId is always server-authoritative (from the verified JWT, not the payload).
-    const communityTypingPayload = (communityId: string) => ({
-      eventId: randomUUID(),
-      communityId,
-      roomId: communityId, // GeneralRoom id === communityId
-      userDetails: socket.data.userDetails,
-      // Legacy field kept for backward-compat (FE may still render senderName).
-      userId,
-      senderName: socket.data.userDetails.displayName || "",
-      timestamp: Date.now(),
-    });
+    // Shared with /chat via buildTypingBroadcast so private, group, and community
+    // presence events are byte-for-byte the same shape (roomId === communityId,
+    // because the community GeneralRoom id === communityId).
+    const communityTypingPayload = (communityId: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        communityId,
+        Date.now(),
+        { communityId }
+      );
 
     // Shared handler for both the new canonical name and the legacy alias.
     // Room-independent: validates + resolves recipients from the active
@@ -794,15 +808,14 @@ export function registerCommunityNamespace(
       }
     };
 
-    const communityRecordingPayload = (communityId: string) => ({
-      eventId: randomUUID(),
-      communityId,
-      roomId: communityId,
-      userDetails: socket.data.userDetails,
-      userId,
-      senderName: socket.data.userDetails.displayName || "",
-      timestamp: Date.now(),
-    });
+    const communityRecordingPayload = (communityId: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        communityId,
+        Date.now(),
+        { communityId }
+      );
 
     // Shared handler for both canonical and legacy recording event names.
     const handleRecordingStart = (payload: unknown): void => {
@@ -935,7 +948,8 @@ export function registerCommunityNamespace(
             location: r.data.location,
             contact: r.data.contact,
             sticker: r.data.sticker,
-            parentMessageId: r.data.parentMessageId,
+            // Cross-namespace parity: accept repliedToId as an alias.
+            parentMessageId: r.data.parentMessageId ?? r.data.repliedToId,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_SENT", locale, result)
@@ -1181,7 +1195,8 @@ export function registerCommunityNamespace(
             messageId: r.data.messageId,
             communityId: r.data.communityId,
             userId,
-            text: r.data.content.text,
+            // content.text is canonical; contentText is the /chat-parity alias.
+            text: r.data.content?.text ?? r.data.contentText ?? "",
           })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_EDITED", locale, result)
@@ -1302,7 +1317,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.kick gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1329,7 +1345,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.ban gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1356,7 +1373,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.unban gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1383,7 +1401,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community admin.transfer gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1407,7 +1426,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community member.role_change gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1434,7 +1454,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community report.create gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1465,7 +1486,8 @@ export function registerCommunityNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/community delete gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1491,7 +1513,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:read gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1519,7 +1542,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:reactions:get gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1554,7 +1578,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:forward gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1587,7 +1612,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:delivered gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );

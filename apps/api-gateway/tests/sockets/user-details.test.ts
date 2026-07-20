@@ -324,13 +324,18 @@ describe("buildTypingBroadcast", () => {
   it("includes legacy + enriched fields (chat shape, no communityId)", () => {
     const out = buildTypingBroadcast(USER_ID, details, "conv1", TS);
 
-    expect(out).toEqual({
-      conversationId: "conv1",
+    expect(out).toMatchObject({
+      // Canonical cross-namespace fields.
+      roomId: "conv1",
       userId: USER_ID,
       userDetails: details,
       timestamp: TS,
       senderName: "Alice", // == displayName
+      // Back-compat duplicate of roomId, kept for shipped /chat clients.
+      conversationId: "conv1",
     });
+    // eventId is a fresh dedupe key on every presence broadcast.
+    expect(typeof out.eventId).toBe("string");
     // No communityId key when not provided.
     expect("communityId" in out).toBe(false);
   });
@@ -360,7 +365,8 @@ describe("buildTypingBroadcast", () => {
     const out = buildTypingBroadcast(USER_ID, details, "comm1", TS, {
       communityId: "comm1",
     });
-    expect(out).toEqual({
+    expect(out).toMatchObject({
+      roomId: "comm1",
       conversationId: "comm1",
       communityId: "comm1",
       userId: USER_ID,

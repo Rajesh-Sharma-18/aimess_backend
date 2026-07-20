@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { UserClient } from "../grpc/clients/user.client.js";
 import type { MediaClient } from "../grpc/clients/media.client.js";
 import { logger } from "@aimess/logger";
@@ -61,15 +62,31 @@ export async function resolveSocketUserDetails(
   }
 }
 
-/** Pure builder for the typing broadcast body — shared by all chat + community sites. */
+/**
+ * Pure builder for the typing / recording presence broadcast body — the single
+ * shape emitted by BOTH /chat (private + group) and /community.
+ *
+ * Canonical fields (all namespaces): `eventId`, `roomId`, `userId`,
+ * `userDetails`, `timestamp`, `senderName`.
+ *
+ * Back-compat fields, deliberately kept and NOT removed:
+ *  - `conversationId` — /chat clients (Web/Android/iOS) key typing state off it.
+ *  - `communityId`    — /community clients key typing state off it; emitted only
+ *                       when the caller passes it (i.e. on /community).
+ * Both are duplicates of `roomId`; new clients should read `roomId` only.
+ */
 export function buildTypingBroadcast(
   userId: string,
   userDetails: SocketUserDetails,
   conversationId: string,
   timestamp: number,
-  opts?: { senderName?: string; communityId?: string }
+  opts?: { senderName?: string; communityId?: string; eventId?: string }
 ) {
   return {
+    // Idempotency/dedupe key — /community has always carried this; /chat now
+    // does too so clients can de-dup presence events identically everywhere.
+    eventId: opts?.eventId ?? randomUUID(),
+    roomId: conversationId,
     conversationId,
     ...(opts?.communityId ? { communityId: opts.communityId } : {}),
     userId,
