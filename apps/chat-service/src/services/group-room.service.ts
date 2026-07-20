@@ -305,6 +305,9 @@ export class GroupRoomService {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** V2 compound-cursor tiebreaker; omitted on V1 (inclusive bare-ts bound). */
+    boundaryId?: string | null;
+    inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedGroupRoom[]> {
     const memberships = await this.memberRepo.getActiveMemberships(
@@ -319,6 +322,8 @@ export class GroupRoomService {
       roomIds,
       direction: params.direction,
       ts: params.ts,
+      boundaryId: params.boundaryId,
+      inclusive: params.inclusive,
       limit: params.limit,
     });
     // Per-user visibility: swap in the viewer's previous-visible preview for any
