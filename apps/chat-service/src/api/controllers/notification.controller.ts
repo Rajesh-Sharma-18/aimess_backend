@@ -31,31 +31,43 @@ export class NotificationController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
   });
 
+  // Accepts either a single notificationId or a notificationIds array
+  // (validated by markReadSchema) so one endpoint covers mark-one and
+  // mark-many. Scoped to the caller so a user can't mark another user's
+  // notification read.
   markRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const { notificationId } = req.body;
-    // Scope to the caller so a user can't mark another user's notification read.
-    const result = await this.service.markRead(notificationId, userId);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    const body = req.body as
+      | { notificationId: string }
+      | { notificationIds: string[] };
+    const ids =
+      "notificationIds" in body ? body.notificationIds : [body.notificationId];
+    const result = await this.service.markManyRead(ids, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_NOTIFICATIONS_MARKED_READ", req.locale)));
   });
 
   markAllRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    await this.service.markAllRead(userId);
+    const result = await this.service.markAllRead(userId);
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(null, t("CHAT_NOTIFICATIONS_ALL_READ", req.locale))
+        new ApiResponse(result, t("CHAT_NOTIFICATIONS_ALL_READ", req.locale))
       );
   });
 
   getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const count = await this.service.getUnreadCount(userId);
+    const unreadCount = await this.service.getUnreadCount(userId);
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse({ count }, t("CHAT_UNREAD_COUNT_FETCHED", req.locale))
+        new ApiResponse(
+          { unreadCount },
+          t("CHAT_UNREAD_COUNT_FETCHED", req.locale)
+        )
       );
   });
 }

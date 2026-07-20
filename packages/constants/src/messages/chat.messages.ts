@@ -55,6 +55,10 @@ export const CHAT_MESSAGES = {
     vi: "Lấy số lượng chưa đọc thành công",
     en: "Unread count fetched successfully",
   },
+  CHAT_NOTIFICATIONS_MARKED_READ: {
+    vi: "Đánh dấu thông báo đã đọc thành công",
+    en: "Notifications marked as read",
+  },
   CHAT_COMMUNITY_ROOMS_FETCHED: {
     vi: "Lấy danh sách phòng cộng đồng thành công",
     en: "Community rooms fetched successfully",

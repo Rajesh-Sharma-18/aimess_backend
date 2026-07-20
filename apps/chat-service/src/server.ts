@@ -470,7 +470,7 @@ const startServer = async () => {
       userSnapshotService
     );
 
-    const notificationService = new NotificationService(notificationRepo);
+    const notificationService = new NotificationService(notificationRepo, redis);
     const liveKitService = new LiveKitService();
     const friendshipRepo = new FriendshipRepository();
     const resolveCallUserSnapshot = async (userId: string) => {
