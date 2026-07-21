@@ -8519,6 +8519,7 @@ export const communityService = {
       publishCommunityInviteLinkSharedForChatSafe({
         communityId,
         communityName: community.name,
+        communityHandle: community.handle,
         linkCode: linkRow.code,
         inviterId: callerId,
         recipientId,

@@ -342,6 +342,8 @@ export type CommunityReopenedNotifyPayload = CommunityEventBase & {
 export type CommunityInviteLinkSharedPayload = {
   communityId: string;
   communityName: string;
+  /** Community handle — lets chat render Join Now → /community/@handle. */
+  communityHandle?: string;
   /** The invite link code (used to build the deep-link URL on the client). */
   linkCode: string;
   /** User who clicked "Share Invite" — becomes the DM sender. */

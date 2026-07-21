@@ -496,6 +496,7 @@ export class CommunityRoomSyncConsumer {
     linkCode: string;
     communityId: string;
     communityName: string;
+    communityHandle?: string | null;
     communityAvatarUrl?: string | null;
     memberCount?: number;
     inviteUrl?: string;
@@ -510,6 +511,7 @@ export class CommunityRoomSyncConsumer {
       linkCode,
       communityId,
       communityName,
+      communityHandle = null,
       communityAvatarUrl = null,
       memberCount,
       inviteUrl,
@@ -559,6 +561,7 @@ export class CommunityRoomSyncConsumer {
     const systemData: Record<string, unknown> = {
       communityId,
       communityName,
+      communityHandle,
       communityAvatarUrl,
       memberCount,
       linkCode,
@@ -635,6 +638,7 @@ export class CommunityRoomSyncConsumer {
     const systemAction = buildCommunityInvitationAction({
       communityId,
       communityName,
+      communityHandle,
       inviteCode: linkCode,
       deepLink: inviteDeepLink ?? inviteUrl ?? "",
       alreadyJoined: false,

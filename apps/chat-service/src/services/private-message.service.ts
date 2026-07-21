@@ -1199,6 +1199,9 @@ export class PrivateMessageService {
         const sd = (m.systemData ?? {}) as Record<string, unknown>;
         const communityId = String(sd.communityId ?? "");
         const communityName = String(sd.communityName ?? "");
+        const storedHandle = sd.communityHandle
+          ? String(sd.communityHandle)
+          : null;
         const inviteCode = sd.linkCode ? String(sd.linkCode) : null;
         const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
         const ctx = communityId
@@ -1222,6 +1225,7 @@ export class PrivateMessageService {
               buildCommunityInvitationAction({
                 communityId,
                 communityName,
+                communityHandle: storedHandle,
                 inviteCode,
                 deepLink,
                 alreadyJoined: false,

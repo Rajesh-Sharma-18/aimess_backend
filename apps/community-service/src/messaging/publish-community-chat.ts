@@ -179,6 +179,8 @@ export interface CommunityInviteLinkSharedForChat {
   communityAvatarUrl?: string | null;
   /** Member-count snapshot at send time, for the invitation card. */
   memberCount?: number;
+  /** Community handle — lets chat-service route Join Now to /community/@handle. */
+  communityHandle?: string;
   /** Fully-built shareable URL (e.g. https://aimess.me/+CODE or a PUBLIC handle URL). */
   inviteUrl?: string;
   /** App deep link (aimess://join?code=CODE or aimess://resolve?handle=…). */
