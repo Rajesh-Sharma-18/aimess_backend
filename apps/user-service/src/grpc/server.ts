@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 import { isAppError } from "@aimess/errors";
 import { env } from "../config/env.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
@@ -377,7 +378,10 @@ export function startUserGrpcServer(): grpc.Server {
   };
 
   const server = new grpc.Server();
-  server.addService(UserService.service, userImpl);
+  server.addService(
+    UserService.service,
+    withServiceAuth("user-service", userImpl)
+  );
 
   server.bindAsync(
     `0.0.0.0:${env.USER_GRPC_PORT}`,

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 import {
   createMessagingImpl,
   createCommunityImpl,
@@ -68,11 +69,17 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
   )["NotificationService"] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(MessagingService.service, createMessagingImpl(deps));
-  server.addService(CommunityService.service, createCommunityImpl(deps));
+  server.addService(
+    MessagingService.service,
+    withServiceAuth("chat-service.Messaging", createMessagingImpl(deps))
+  );
+  server.addService(
+    CommunityService.service,
+    withServiceAuth("chat-service.Community", createCommunityImpl(deps))
+  );
   server.addService(
     NotificationGrpcService.service,
-    createNotificationImpl(deps)
+    withServiceAuth("chat-service.Notification", createNotificationImpl(deps))
   );
 
   server.bindAsync(

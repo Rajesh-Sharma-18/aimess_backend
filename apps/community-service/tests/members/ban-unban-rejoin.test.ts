@@ -1,10 +1,15 @@
 /**
- * Ban → Automatic Leave → Unban (no restore) → Rejoin, end-to-end service tests.
+ * Ban → Automatic Leave → Unban (no restore, but stays listed) → Rejoin,
+ * end-to-end service tests.
  *
  * Verifies the architecture requirement that banMember reuses the SAME removal
  * core as leaveCommunity (removeActiveMember) instead of duplicating cleanup
- * logic, and that the full lifecycle (ban → unban → rejoin) respects every
- * existing membership/join rule with no bypass.
+ * logic, that unbanMember lifts BANNED to LEFT WITHOUT restoring ACTIVE
+ * membership yet WITHOUT evicting the community from the target's list either
+ * (unbannedAt keeps it visible/read-only until the target explicitly
+ * dismisses it — see resolveSelfRemoval), and that the full lifecycle
+ * (ban → unban → rejoin) respects every existing membership/join rule with no
+ * bypass.
  *
  * Pattern: real communityService, only the I/O boundary mocked (global-mocks.ts
  * setupFilesAfterEnv already stubs the repository/publishers/redis/gRPC — this
@@ -131,8 +136,11 @@ describe("banMember — reuses the leave removal core (architecture requirement)
       "community:membership:restricted",
       expect.objectContaining({
         communityId: CID,
-        membershipStatus: "BANNED",
+        // Same shared membership block as the unban event and a fresh GET —
+        // BANNED is not "joined" (access revoked); isBanned drives the banner.
+        isJoined: false,
         isBanned: true,
+        membershipStatus: "BANNED",
         reason: "banned",
       })
     );
@@ -178,7 +186,7 @@ describe("banMember — reuses the leave removal core (architecture requirement)
   });
 });
 
-describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", () => {
+describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership, but keeps the community listed", () => {
   const bannedTarget = {
     ...activeTargetMember,
     status: "BANNED",
@@ -193,7 +201,7 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
     });
   });
 
-  it("flips status to LEFT (not ACTIVE) and clears ban metadata", async () => {
+  it("flips status to LEFT (not ACTIVE), clears ban metadata, and sets unbannedAt", async () => {
     const result = await communityService.unbanMember(CID, ADMIN, TARGET);
 
     expect(repo.updateMemberStatus).toHaveBeenCalledWith(
@@ -205,7 +213,8 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
       undefined,
       // clearDismissed — a dismissedAt from this ban cycle must not hide a
       // future re-ban from the target's list.
-      true
+      true,
+      expect.any(Date) // unbannedAt — keeps this specific LEFT row listed
     );
     expect(result.status).toBe("LEFT");
   });
@@ -216,17 +225,31 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
     expect(pubSysMsg).not.toHaveBeenCalled();
   });
 
-  it("drops the community from the target's list via community:membership:removed (LEFT — must rejoin to see it again)", async () => {
+  it("does NOT evict the community from the target's list — unban must never remove it, only an explicit self-dismiss does", async () => {
+    await communityService.unbanMember(CID, ADMIN, TARGET);
+
+    expect(pubUserEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.anything()
+    );
+  });
+
+  it("flips the target's view to the post-unban non-member state via community:membership:restricted — payload matches a fresh GET field-for-field so the open screen can switch to Join Community without a refetch", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
     expect(pubUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       TARGET,
-      "community:membership:removed",
+      "community:membership:restricted",
       expect.objectContaining({
         communityId: CID,
-        membershipStatus: "REMOVED",
-        reason: "unbanned",
+        // Exactly what deriveMembershipState/toCommunityData would return now:
+        // ban cleared, membership NOT restored → render the join flow.
+        isJoined: false,
+        isBanned: false,
+        membershipStatus: "NONE",
       })
     );
   });
@@ -237,6 +260,74 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
     await expect(
       communityService.unbanMember(CID, ADMIN, TARGET)
     ).rejects.toMatchObject({ message: "COMMUNITY_MEMBER_NOT_BANNED" });
+  });
+});
+
+describe("resolveSelfRemoval — dismissing a just-unbanned (LEFT, unbannedAt set) community", () => {
+  it("hides it via setMemberDismissed, same mechanism as dismissing a BANNED community", async () => {
+    repo.findById.mockResolvedValue(publicCommunity);
+    const unbannedNotDismissed = {
+      status: "LEFT",
+      role: "MEMBER",
+      unbannedAt: new Date("2026-01-06T00:00:00.000Z"),
+      dismissedAt: null,
+    };
+
+    const outcome = await communityService.resolveSelfRemoval(
+      TARGET,
+      publicCommunity,
+      unbannedNotDismissed,
+      new Date().toISOString()
+    );
+
+    expect(outcome).toBe("REMOVED");
+    expect(repo.setMemberDismissed).toHaveBeenCalledWith(CID, TARGET);
+    expect(pubUserEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.objectContaining({ communityId: CID, reason: "dismissed" })
+    );
+  });
+
+  it("is idempotent once already dismissed", async () => {
+    repo.findById.mockResolvedValue(publicCommunity);
+    const alreadyDismissed = {
+      status: "LEFT",
+      role: "MEMBER",
+      unbannedAt: new Date("2026-01-06T00:00:00.000Z"),
+      dismissedAt: new Date("2026-01-07T00:00:00.000Z"),
+    };
+
+    const outcome = await communityService.resolveSelfRemoval(
+      TARGET,
+      publicCommunity,
+      alreadyDismissed,
+      new Date().toISOString()
+    );
+
+    expect(outcome).toBe("ALREADY_REMOVED");
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
+  });
+
+  it("an ordinary LEFT (voluntary leave/kick, unbannedAt never set) is still idempotent ALREADY_REMOVED — no special-casing", async () => {
+    repo.findById.mockResolvedValue(publicCommunity);
+    const ordinaryLeft = {
+      status: "LEFT",
+      role: "MEMBER",
+      unbannedAt: null,
+      dismissedAt: null,
+    };
+
+    const outcome = await communityService.resolveSelfRemoval(
+      TARGET,
+      publicCommunity,
+      ordinaryLeft,
+      new Date().toISOString()
+    );
+
+    expect(outcome).toBe("ALREADY_REMOVED");
+    expect(repo.setMemberDismissed).not.toHaveBeenCalled();
   });
 });
 
