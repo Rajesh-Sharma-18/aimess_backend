@@ -823,7 +823,11 @@ export function registerCommunityNamespace(
               ackError(callback, "USER_BANNED", locale);
               return;
             }
-            if (!m.isMember) {
+            // PUBLIC communities let non-members READ history via REST — the
+            // socket ban gate mirrors that by also letting them subscribe to
+            // live broadcasts, so the FE doesn't render past messages but
+            // silently miss every new one. PRIVATE stays members-only.
+            if (!m.isMember && !m.isPublicCommunity) {
               ackError(callback, "FORBIDDEN", locale);
               return;
             }

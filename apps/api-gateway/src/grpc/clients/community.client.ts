@@ -349,6 +349,9 @@ export interface CheckCommunityMembershipResult {
   role: string;
   /** True when the community is owner-CLOSED or platform-SUSPENDED. */
   isCommunityClosed: boolean;
+  /** True when the community's visibility is PUBLIC (non-members may still
+   *  subscribe to live broadcasts, matching REST's PUBLIC-history read access). */
+  isPublicCommunity: boolean;
 }
 
 export interface GetUserActiveCommunityIdsResult {

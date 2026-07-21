@@ -176,12 +176,44 @@ export function assertRoomMemberActive<T extends Pick<RoomMember, "status">>(
  * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the live role is too low.
  */
 export async function assertCommunityMember(
-  memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
+  memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser" | "upsert">,
   roomId: string,
   userId: string,
   opts?: { roles?: readonly string[]; communityId?: string }
 ): Promise<RoomMember> {
-  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+  let member = await memberRepo.findByRoomAndUser(roomId, userId);
+  // ponytail: per-request lazy heal. Upgrade path if the async lag ever
+  // dominates: make the rejoin API strong-consistent by pushing the mirror
+  // synchronously (RPC into chat-service) instead of reconciling on read.
+  // Stale-mirror reconciliation. The local RoomMember is an eventually-consistent
+  // mirror of community-service's authoritative CommunityMember (fed by the
+  // `community.member.synced` RabbitMQ event). A user who just rejoined after an
+  // unban can hit this guard BEFORE the sync event lands, in which case the
+  // mirror still says "banned" or "left" and the write is wrongly rejected.
+  // On any non-active mirror state, do a single authoritative gRPC lookup: if
+  // community-service says ACTIVE, upsert the mirror in place and continue; if
+  // it confirms BANNED/non-member, fall through to the local assertion which
+  // reports the correct error. Fails CLOSED on gRPC error (member stays null).
+  if (!member || member.status !== "active") {
+    const live = await getCommunityReconcileClient()
+      .checkCommunityMembership({
+        communityId: opts?.communityId ?? roomId,
+        userId,
+      })
+      .catch(() => null);
+    if (live && live.isMember && !live.isBanned) {
+      const mapped = {
+        status: "active",
+        role: live.role ? live.role.toLowerCase() : "member",
+        bannedAt: null,
+        leftAt: null,
+      };
+      member = await memberRepo.upsert(roomId, userId, mapped);
+      logger.info(
+        `assertCommunityMember|reconciled stale mirror via gRPC roomId=${roomId} userId=${userId} status=active`
+      );
+    }
+  }
   assertRoomMemberActive(member);
   if (opts?.roles) {
     await assertCommunityRole(opts.communityId ?? roomId, userId, opts.roles);
