@@ -8763,6 +8763,7 @@ export const communityService = {
 
       return {
         communityId: communityByCode.id,
+        communityHandle: communityByCode.handle,
         communityName: communityByCode.name,
         description: communityByCode.description ?? null,
         avatarUrl: avatarViewPerm?.url ?? null,
@@ -8815,6 +8816,7 @@ export const communityService = {
 
     return {
       communityId: community.id,
+      communityHandle: community.handle,
       communityName: community.name,
       description: community.description ?? null,
       avatarUrl: avatarView?.url ?? null,
