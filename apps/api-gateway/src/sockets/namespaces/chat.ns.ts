@@ -205,6 +205,15 @@ const CatchupSchema = z.object({
           z.enum(["private", "group"]).default("private")
         ),
         limit: z.number().int().positive().max(200).optional(),
+        /**
+         * ZERO-LOSS revision cursor (takes precedence over sinceSeq). The client's
+         * per-room CHANGE high-water. When provided (including 0 for a cold start)
+         * the server returns every message whose revision > sinceRevision — inserts
+         * AND mutations (edits/reactions/deletes) — plus roomRevision/lastRevision/
+         * resetRequired. Preferred over sinceSeq for reconnect. Mirrors
+         * community:catchup and the REST /changes feed.
+         */
+        sinceRevision: z.number().int().min(0).optional(),
       })
     )
     .min(1)
@@ -277,6 +286,8 @@ export function normalizeCatchupEvent(
     content,
     reactions: [],
     sequenceNumber: Number(event.sequenceNumber),
+    // int64 arrives as a string via proto-loader (longs: String).
+    revision: Number(event.revision ?? 0),
     serverTs,
     sentAt: serverTs,
     createdAt: new Date(serverTs).toISOString(),
@@ -668,6 +679,9 @@ export function registerChatNamespace(
                 sinceSeq: room.sinceSeq,
                 limit: room.limit ?? 100,
                 conversationType: room.conversationType,
+                // Only forward when the client opted in (undefined ⇒ the client
+                // sends the -1 "not revision mode" sentinel; 0 IS a valid cold start).
+                sinceRevision: room.sinceRevision,
               })
             )
           );
@@ -677,6 +691,9 @@ export function registerChatNamespace(
             hasMore: boolean;
             lastSeq: number;
             authorized: boolean;
+            lastRevision: number;
+            roomRevision: number;
+            resetRequired: boolean;
           }> = [];
 
           results.forEach((res, idx) => {
@@ -694,12 +711,19 @@ export function registerChatNamespace(
                 ),
                 hasMore: r.hasMore,
                 lastSeq: Number(r.lastSeq),
+                // Zero-loss revision-mode fields (0/false in sinceSeq mode).
+                lastRevision: Number(r.lastRevision ?? 0),
+                roomRevision: Number(r.roomRevision ?? 0),
+                resetRequired: Boolean(r.resetRequired),
               });
               ackRooms.push({
                 roomId: room.roomId,
                 hasMore: r.hasMore,
                 lastSeq: Number(r.lastSeq),
                 authorized: r.authorized,
+                lastRevision: Number(r.lastRevision ?? 0),
+                roomRevision: Number(r.roomRevision ?? 0),
+                resetRequired: Boolean(r.resetRequired),
               });
             } else {
               logger.warn(

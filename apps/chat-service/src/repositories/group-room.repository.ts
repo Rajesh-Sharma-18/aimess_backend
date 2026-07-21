@@ -69,6 +69,32 @@ export class GroupRoomRepository {
     return r.lastSequence;
   }
 
+  /**
+   * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
+   * Same atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`, but on
+   * `lastRevision` and bumped on EVERY content change (insert, edit, delete-for-everyone,
+   * reaction) — not only on insert. Feeds the zero-loss `/changes` feed.
+   */
+  async allocateRevision(roomId: string): Promise<number> {
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.update({
+        where: { roomId },
+        data: { lastRevision: { increment: 1 } },
+        select: { lastRevision: true },
+      })
+    );
+    return r.lastRevision;
+  }
+
+  /** Current room CHANGE high-water — the client seeds/compares its cursor against this. */
+  async getRoomRevision(roomId: string): Promise<number> {
+    const room = await this.prisma.groupRoom.findUnique({
+      where: { roomId },
+      select: { lastRevision: true },
+    });
+    return room?.lastRevision ?? 0;
+  }
+
   async findByRoomId(roomId: string): Promise<GroupRoom | null> {
     return this.prisma.groupRoom.findUnique({ where: { roomId } });
   }

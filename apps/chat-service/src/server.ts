@@ -363,10 +363,13 @@ const startServer = async () => {
     // 2. Instantiate repositories (inject Prisma client)
     const cacheRepo = new CacheRepository(redis);
     const privateRoomRepo = new PrivateRoomRepository(prisma);
-    const privateMessageRepo = new PrivateMessageRepository(prisma);
+    const privateMessageRepo = new PrivateMessageRepository(
+      prisma,
+      privateRoomRepo
+    );
     const privateMessagePinRepo = new PrivateMessagePinRepository(prisma);
     const groupRoomRepo = new GroupRoomRepository(prisma);
-    const groupMessageRepo = new GroupMessageRepository(prisma);
+    const groupMessageRepo = new GroupMessageRepository(prisma, groupRoomRepo);
     const groupMemberRepo = new GroupMemberRepository(prisma);
     const groupInviteLinkRepo = new GroupInviteLinkRepository(prisma);
     const groupMessagePinRepo = new GroupMessagePinRepository(prisma);
@@ -470,7 +473,10 @@ const startServer = async () => {
       userSnapshotService
     );
 
-    const notificationService = new NotificationService(notificationRepo, redis);
+    const notificationService = new NotificationService(
+      notificationRepo,
+      redis
+    );
     const liveKitService = new LiveKitService();
     const friendshipRepo = new FriendshipRepository();
     const resolveCallUserSnapshot = async (userId: string) => {

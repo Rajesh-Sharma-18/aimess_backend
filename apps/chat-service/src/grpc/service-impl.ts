@@ -207,6 +207,33 @@ function publishRealtimeSafe(
     });
 }
 
+/**
+ * Fan `message:new` out on every participant's PERSONAL bus, in addition to the
+ * `conv:<roomId>` room broadcast.
+ *
+ * WHY BOTH. A socket joins `conv:<id>` only when the client opens that chat
+ * (`conversation:join`), but joins `user:<id>` on connect. So the room broadcast
+ * alone reaches a recipient ONLY while they are sitting in that exact chat — not
+ * when they are on the chat list, in a different chat, or backgrounded, which is
+ * the normal case. Those recipients therefore never ran the client's delivery-receipt
+ * path, and the sender's bubble stayed on a single tick forever.
+ *
+ * `conv:updated` already uses this personal-bus pattern, which is why the inbox row
+ * updated while the message event itself went missing.
+ *
+ * Clients dedupe by `serverMessageId` (and the delivery receipt is debounced per room),
+ * so a recipient who IS in the chat and receives both copies is a no-op.
+ */
+function publishMessageNewToParticipants(
+  recipientIds: string[],
+  payload: unknown,
+  context: string
+): void {
+  for (const userId of new Set(recipientIds.filter(Boolean))) {
+    publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
+  }
+}
+
 export function createMessagingImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
@@ -328,12 +355,37 @@ export function createMessagingImpl(
                   row as unknown as { countInUnread?: boolean | null }
                 ).countInUnread,
               });
+              const bcastContext = `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
               publishRealtimeSafe(
                 `conv:${req.conversationId}`,
                 "message:new",
                 rowPayload,
-                `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
+                bcastContext
               );
+              // Personal bus too — reaches recipients who don't have this chat open,
+              // which is what makes the delivered tick work. See the helper's KDoc.
+              if (conversationType === "GROUP") {
+                void deps.groupMessageService
+                  .getActiveMemberIds(req.conversationId)
+                  .then((ids) =>
+                    publishMessageNewToParticipants(
+                      ids,
+                      rowPayload,
+                      bcastContext
+                    )
+                  )
+                  .catch((err: unknown) => {
+                    logger.warn(
+                      `message:new personal fan-out failed ${bcastContext}: ${String(err)}`
+                    );
+                  });
+              } else {
+                publishMessageNewToParticipants(
+                  [req.senderId, req.receiverId],
+                  rowPayload,
+                  bcastContext
+                );
+              }
             }
           }
 
@@ -1603,6 +1655,7 @@ export function createMessagingImpl(
             sinceSeq: string | number;
             limit: number;
             conversationType: string;
+            sinceRevision: number | string; // int64 (string at runtime); -1 = not revision mode
           };
 
           const conversationType = String(
@@ -1612,18 +1665,30 @@ export function createMessagingImpl(
           const sinceSeq = Number(req.sinceSeq ?? 0);
           const limit = Math.min(Math.max(req.limit || 100, 1), 200);
 
+          // ZERO-LOSS revision cursor. The gateway sends -1 when the client did
+          // NOT opt in (0 is a VALID cold-start cursor), so only >= 0 enables
+          // revision mode — a raw request omitting the field (int64 default 0)
+          // stays on the legacy since_seq axis. Mirrors communityCatchup.
+          const sinceRevisionRaw = Number(req.sinceRevision);
+          const sinceRevision =
+            Number.isFinite(sinceRevisionRaw) && sinceRevisionRaw >= 0
+              ? sinceRevisionRaw
+              : undefined;
+
           const result =
             conversationType === "GROUP"
               ? await deps.groupMessageService.catchup({
                   roomId: req.conversationId,
                   userId: req.requesterId,
                   sinceSeq,
+                  sinceRevision,
                   limit,
                 })
               : await deps.privateMessageService.catchup({
                   roomId: req.conversationId,
                   userId: req.requesterId,
                   sinceSeq,
+                  sinceRevision,
                   limit,
                 });
 
@@ -1649,6 +1714,8 @@ export function createMessagingImpl(
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
               systemEvent: systemEvent ?? "",
               systemData: systemData ? JSON.stringify(systemData) : "",
+              // Zero-loss CHANGE cursor per message.
+              revision: (e as { revision?: number }).revision ?? 0,
             };
           });
 
@@ -1658,6 +1725,10 @@ export function createMessagingImpl(
             hasMore: result.hasMore,
             lastSeq: result.lastSeq,
             authorized: result.authorized,
+            // Zero-loss revision-mode fields (0/false in since_seq mode).
+            roomRevision: result.roomRevision,
+            lastRevision: result.lastRevision,
+            resetRequired: result.resetRequired,
           });
         } catch (err) {
           logger.error(`gRPC catchupRoom error: ${String(err)}`);

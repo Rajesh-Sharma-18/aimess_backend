@@ -139,7 +139,10 @@ export class CommunityRoomSyncConsumer {
   private memberRepo = new RoomMemberRepository(prisma);
   private messageRepo = new GeneralRoomMessageRepository(prisma);
   private privateRoomRepo = new PrivateRoomRepository(prisma);
-  private privateMessageRepo = new PrivateMessageRepository(prisma);
+  private privateMessageRepo = new PrivateMessageRepository(
+    prisma,
+    this.privateRoomRepo
+  );
   private communitySystemMessageService = new CommunitySystemMessageService(
     new GeneralRoomMessageRepository(prisma),
     new GeneralRoomRepository(prisma),

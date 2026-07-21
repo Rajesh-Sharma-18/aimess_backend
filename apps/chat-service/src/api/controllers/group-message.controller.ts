@@ -119,6 +119,39 @@ export class GroupMessageController {
   );
 
   /**
+   * V2 — `GET /api/v2/chat/group/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
+   * Identical envelope to the private and community equivalents.
+   */
+  getChanges = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceRevision = Number(req.query.since_revision) || 0;
+    const limit = Number(req.query.limit) || 100;
+
+    const result = await this.messageService.getChanges({
+      roomId,
+      userId,
+      sinceRevision,
+      limit,
+    });
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          roomRevision: result.roomRevision,
+          resetRequired: result.resetRequired,
+          hasMore: result.hasMore,
+          nextRevisionCursor: result.nextRevisionCursor,
+          data: result.items,
+        },
+        result.items.length
+          ? t("CHAT_MESSAGES_FETCHED", req.locale)
+          : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+      )
+    );
+  });
+
+  /**
    * Shared timeline core for V1 + V2. `olderKey`/`newerKey` name the query params
    * carrying the opaque compound cursor — the single axis that differs between the
    * two versions. Everything else is version-agnostic.

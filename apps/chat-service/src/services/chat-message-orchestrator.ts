@@ -392,13 +392,42 @@ export class ChatMessageOrchestrator {
           countInUnread: (row as unknown as { countInUnread?: boolean | null })
             .countInUnread,
         });
+        const bcastContext = `roomId=${params.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
         publishRealtimeSafe(
           this.redis,
           `conv:${params.roomId}`,
           "message:new",
           rowWire,
-          `roomId=${params.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
+          bcastContext
         );
+        // Personal bus too. `conv:<id>` only reaches sockets that have this chat OPEN
+        // (join happens on `conversation:join`), so a recipient on the chat list or in
+        // the background never saw the message and never sent a delivery receipt —
+        // leaving the sender stuck on a single tick. Mirrors the gRPC send path.
+        // Clients dedupe by serverMessageId, so a double-receive is a no-op.
+        const fanOut = (ids: string[]) => {
+          for (const userId of new Set(ids.filter(Boolean))) {
+            publishRealtimeSafe(
+              this.redis,
+              `user:${userId}`,
+              "message:new",
+              rowWire,
+              bcastContext
+            );
+          }
+        };
+        if (conversationType === "GROUP") {
+          void this.groupMessageService
+            .getActiveMemberIds(params.roomId)
+            .then(fanOut)
+            .catch((err: unknown) => {
+              logger.warn(
+                `ChatMessageOrchestrator|message:new personal fan-out failed ${bcastContext}: ${String(err)}`
+              );
+            });
+        } else {
+          fanOut([params.senderId, params.receiverId ?? ""]);
+        }
       }
 
       // ── 2. Bump-to-top: conv:updated fan-out (fire-and-forget) ───────────

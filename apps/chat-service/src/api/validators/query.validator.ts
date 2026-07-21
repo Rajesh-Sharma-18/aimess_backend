@@ -102,6 +102,18 @@ export const privateTimelineV2QuerySchema = z
 export const groupTimelineV2QuerySchema = privateTimelineV2QuerySchema;
 
 /**
+ * Query schema for the private + group ZERO-LOSS changes feeds
+ * (`GET /api/v2/chat/{private,group}/rooms/:roomId/changes`). `since_revision` is the
+ * client's per-room CHANGE high-water; `0` = cold start (drains from the beginning).
+ * Same contract as `communityChangesV2QuerySchema` so all three room kinds share one
+ * client drain loop.
+ */
+export const chatChangesV2QuerySchema = z.object({
+  since_revision: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+/**
  * V2 §3.3: query schema for the per-conversation incremental sync endpoint.
  * `conv_id` is required (seq is per-room); whole-account discovery uses /inbox.
  */

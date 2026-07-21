@@ -478,6 +478,14 @@ message CatchupRoomRequest {
   int64            since_seq         = 3;
   int32            limit             = 4;
   ConversationType conversation_type = 5;
+  // ZERO-LOSS revision cursor (takes precedence over since_seq). Exclusive lower
+  // bound on the per-room CHANGE revision: the server returns every message whose
+  // revision > since_revision — inserts AND mutations (edit/delete/reaction) — via
+  // the same core as the REST /changes feed. Feed back last_revision to continue.
+  // -1 = NOT revision mode. 0 is a valid cold-start cursor and so cannot be the
+  // sentinel; a raw request omitting the field defaults to 0, which must keep
+  // meaning legacy since_seq mode.
+  int64            since_revision    = 6;
 }
 message CatchupEventDto {
   string message_id      = 1;
@@ -495,6 +503,9 @@ message CatchupEventDto {
   // clients can localize/render them, matching the realtime message:new event.
   string system_event    = 12;
   string system_data     = 13; // JSON-encoded object ("" for non-system messages)
+  // ZERO-LOSS CHANGE cursor for this message (Telegram pts). Present in both
+  // catch-up modes; the client tracks the per-room max as its high-water.
+  int64  revision        = 14;
 }
 message CatchupRoomResponse {
   string conversation_id           = 1;
@@ -502,6 +513,10 @@ message CatchupRoomResponse {
   bool   has_more                  = 3;
   int64  last_seq                  = 4;
   bool   authorized                = 5;
+  // ZERO-LOSS revision-mode fields (0/false in since_seq mode):
+  int64  room_revision             = 6; // room's current CHANGE max
+  int64  last_revision             = 7; // client's new high-water; feed back as since_revision
+  bool   reset_required            = 8; // since_revision below retention → re-baseline
 }
 
 // ---- Admin group RPCs -------------------------------------------------------

@@ -187,6 +187,9 @@ export interface CatchupRoomParams {
   sinceSeq: number;
   limit: number;
   conversationType: string;
+  /** ZERO-LOSS revision cursor. Omit to stay on the legacy sinceSeq axis — the
+   *  client sends the -1 "not revision mode" sentinel, since 0 is a valid cold start. */
+  sinceRevision?: number;
 }
 export interface CatchupEventDto {
   messageId: string;
@@ -202,6 +205,8 @@ export interface CatchupEventDto {
   editedAt: number;
   systemEvent: string;
   systemData: string;
+  /** Per-message CHANGE cursor (Telegram pts). 0 when the row predates the backfill. */
+  revision?: number;
 }
 export interface CatchupRoomResult {
   conversationId: string;
@@ -209,6 +214,10 @@ export interface CatchupRoomResult {
   hasMore: boolean;
   lastSeq: number;
   authorized: boolean;
+  /** Revision-mode fields — 0/false in sinceSeq mode. */
+  roomRevision?: number;
+  lastRevision?: number;
+  resetRequired?: boolean;
 }
 
 /**
@@ -683,6 +692,8 @@ export function createMessagingClient(): MessagingClient {
         sinceSeq: p.sinceSeq,
         limit: p.limit,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        // -1 = client did not opt into revision mode (0 IS a valid cold start).
+        sinceRevision: p.sinceRevision ?? -1,
       });
     }
   );

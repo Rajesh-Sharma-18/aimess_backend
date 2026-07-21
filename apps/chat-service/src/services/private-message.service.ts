@@ -650,7 +650,11 @@ export class PrivateMessageService {
     if (message.senderId !== userId) {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
-    const deleted = await this.messageRepo.deleteForEveryone(messageId, userId);
+    const deleted = await this.messageRepo.deleteForEveryone(
+      messageId,
+      message.roomId,
+      userId
+    );
     if (
       shouldCountInUnread({
         messageType: message.messageType,
@@ -713,6 +717,7 @@ export class PrivateMessageService {
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
     const updated = await this.messageRepo.editMessage(
       params.messageId,
+      message.roomId,
       params.content
     );
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
@@ -805,8 +810,8 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage | null> {
     const raw = await this.messageRepo.getReactions(messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = toggleStoredReaction(raw, userId, emoji);
-    return this.messageRepo.addReactions(messageId, updated);
+    const updated = toggleStoredReaction(raw.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
 
   /**
@@ -817,6 +822,101 @@ export class PrivateMessageService {
    */
   async assertParticipant(roomId: string, userId: string): Promise<void> {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
+  /** Deep-gap horizon: a `since_revision` more than this far below the room's current
+   *  revision triggers a bounded re-baseline instead of replaying the full backlog.
+   *  Same value and rule as community (`CommunityMessageService`). */
+  private readonly REVISION_RESET_HORIZON = 10_000;
+
+  /**
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/private/rooms/:roomId/changes`.
+   *
+   * Every message whose room CHANGE `revision > sinceRevision`, current state, ordered
+   * revision ASC — inserts AND mutations (edit/delete-for-everyone/reaction), regardless
+   * of how old the message's `sequenceNumber` is. This is what `after_seq` cannot do.
+   *
+   * NOTE for clients: per-viewer filtering happens AFTER the page slice, so
+   * `items.length < limit` while `hasMore === true` is legal. Drain on `hasMore`, never
+   * on `items.length`.
+   */
+  async getChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevisionCursor: string | null;
+    items: Awaited<ReturnType<PrivateMessageService["enrichMessages"]>>;
+  }> {
+    await this.assertParticipant(params.roomId, params.userId);
+    const changes = await this.resolveChanges(params);
+    const items = await this.enrichMessages(changes.messages, params.userId);
+
+    return {
+      roomRevision: changes.roomRevision,
+      resetRequired: changes.resetRequired,
+      hasMore: changes.hasMore,
+      nextRevisionCursor:
+        changes.hasMore && changes.nextRevision != null
+          ? String(changes.nextRevision)
+          : null,
+      items,
+    };
+  }
+
+  /**
+   * Shared core for the zero-loss changes feed — used by BOTH the REST `/changes`
+   * endpoint and the socket `chat:catchup(sinceRevision)` path. Assumes access is
+   * already asserted by the caller.
+   */
+  private async resolveChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevision: number | null;
+    messages: PrivateMessage[];
+  }> {
+    const roomRevision = await this.roomRepo.getRoomRevision(params.roomId);
+
+    // Deep gap ⇒ tell the client to drop local state and re-baseline from the newest page.
+    // since=0 (cold start) is NEVER a reset — it drains from the beginning.
+    const resetRequired =
+      params.sinceRevision > 0 &&
+      roomRevision - params.sinceRevision > this.REVISION_RESET_HORIZON;
+    if (resetRequired) {
+      return {
+        roomRevision,
+        resetRequired: true,
+        hasMore: false,
+        nextRevision: null,
+        messages: [],
+      };
+    }
+
+    const { messages, hasMore, nextRevision } =
+      await this.messageRepo.findByRoomIdRevisionSince({
+        roomId: params.roomId,
+        userId: params.userId,
+        sinceRevision: params.sinceRevision,
+        limit: params.limit,
+      });
+
+    return {
+      roomRevision,
+      resetRequired: false,
+      hasMore,
+      nextRevision,
+      messages,
+    };
   }
 
   async getMessageContext(
@@ -1011,7 +1111,7 @@ export class PrivateMessageService {
 
     // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
     // grouped result carries the plain id string in users[].userId (not the object).
-    const reactions = reactionUserIdMap(raw);
+    const reactions = reactionUserIdMap(raw.reactions);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -1054,17 +1154,26 @@ export class PrivateMessageService {
    * Reconnect gap-fill: returns messages with sequenceNumber > sinceSeq for a
    * room the user participates in. Includes tombstones (no isDeleted filter) so
    * the client can reconcile deletes/edits it missed while offline.
+   *
+   * When `sinceRevision` is set the room switches to the ZERO-LOSS revision axis
+   * instead: every message whose `revision > sinceRevision`, inserts AND mutations,
+   * via the same core as the REST `/changes` feed. `lastSeq` then still reports the
+   * page's highest sequenceNumber so a client mixing both cursors stays consistent.
    */
   async catchup(p: {
     roomId: string;
     userId: string;
     sinceSeq: number;
+    sinceRevision?: number;
     limit: number;
   }): Promise<{
     authorized: boolean;
     events: PrivateMessage[];
     hasMore: boolean;
     lastSeq: number;
+    lastRevision: number;
+    roomRevision: number;
+    resetRequired: boolean;
   }> {
     const room = await this.roomRepo.findByRoomId(p.roomId, {
       projection: { roomId: 1, participants: 1 },
@@ -1075,6 +1184,29 @@ export class PrivateMessageService {
         events: [],
         hasMore: false,
         lastSeq: p.sinceSeq,
+        lastRevision: 0,
+        roomRevision: 0,
+        resetRequired: false,
+      };
+    }
+
+    if (p.sinceRevision != null) {
+      const changes = await this.resolveChanges({
+        roomId: p.roomId,
+        userId: p.userId,
+        sinceRevision: p.sinceRevision,
+        limit: p.limit,
+      });
+      return {
+        authorized: true,
+        events: changes.messages,
+        hasMore: changes.hasMore,
+        lastSeq: changes.messages.length
+          ? Math.max(...changes.messages.map((m) => m.sequenceNumber))
+          : p.sinceSeq,
+        lastRevision: changes.nextRevision ?? p.sinceRevision,
+        roomRevision: changes.roomRevision,
+        resetRequired: changes.resetRequired,
       };
     }
 
@@ -1097,7 +1229,15 @@ export class PrivateMessageService {
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
 
-    return { authorized: true, events, hasMore, lastSeq };
+    return {
+      authorized: true,
+      events,
+      hasMore,
+      lastSeq,
+      lastRevision: 0,
+      roomRevision: 0,
+      resetRequired: false,
+    };
   }
 
   async enrichMessages(

@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
+import type { GroupRoomRepository } from "./group-room.repository.js";
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
@@ -14,8 +15,18 @@ import {
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
 
+/**
+ * NOTE — zero-loss revision axis. Every CONTENT mutation in this file allocates a room
+ * revision and stamps it on the row, so `/changes` can replay it. Allocation lives HERE
+ * (not at the service layer, as community does) so a new caller cannot forget it.
+ * Deliberate exception, which must NOT bump: `deleteForMe` — per-user view state, and
+ * `revision` is a room-level axis with no per-viewer dimension.
+ */
 export class GroupMessageRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly roomRepo: GroupRoomRepository
+  ) {}
 
   /** Refresh `quoteData.preview`/`.isDeleted` on every reply to `parentMessageId`. */
   async refreshReplyQuotes(
@@ -34,10 +45,12 @@ export class GroupMessageRepository {
     roomId: string;
     [key: string]: unknown;
   }): Promise<GroupMessage> {
+    const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.groupMessage.create({
       data: {
         roomId: data.roomId,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
+        revision,
         clientMessageId: (data.clientMessageId as string) ?? null,
         clientInfo: (data.clientInfo as object) ?? null,
         senderId: (data.senderId as string) ?? null,
@@ -610,19 +623,26 @@ export class GroupMessageRepository {
 
   async addReactions(
     messageId: string,
+    roomId: string,
     reactions: Record<string, unknown[]>
   ): Promise<GroupMessage | null> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.groupMessage.update({
       where: { id: messageId },
-      data: { reactions: reactions as unknown as Prisma.InputJsonValue },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        revision,
+      },
     });
   }
 
   async deleteForEveryone(
     messageId: string,
+    roomId: string,
     userId: string,
     deletedType: string
   ): Promise<GroupMessage | null> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.groupMessage.update({
       where: { id: messageId },
       data: {
@@ -631,10 +651,13 @@ export class GroupMessageRepository {
         deletedBy: userId,
         deletedType,
         deletedPlaceholder: "This message was deleted",
+        revision,
       },
     });
   }
 
+  // NO revision bump: delete-for-me is per-user view state, and `revision` is a
+  // room-level axis the /changes payload cannot express per-viewer. See class KDoc.
   async deleteForMe(
     messageId: string,
     userId: string
@@ -698,10 +721,12 @@ export class GroupMessageRepository {
     clientMessageId?: string | null;
     sequenceNumber?: number;
   }): Promise<GroupMessage> {
+    const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.groupMessage.create({
       data: {
         roomId: data.roomId,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
+        revision,
         senderId: data.senderId,
         senderName: data.senderName,
         senderAvatar: data.senderAvatar,
@@ -721,18 +746,68 @@ export class GroupMessageRepository {
     });
   }
 
-  async getReactions(
-    messageId: string
-  ): Promise<Record<string, unknown> | null> {
-    const msg = await this.prisma.groupMessage.findUnique({
-      where: { id: messageId },
-      select: { reactions: true },
+  /**
+   * ZERO-LOSS CHANGES FEED — the mutation-aware catch-up query. See the private repo's
+   * equivalent for the full rationale; the ONLY difference here is that group's per-viewer
+   * hide is `deletedForUserIds` (a Json ARRAY) rather than private's `deletedFor` map.
+   *
+   * Tombstones (`isDeleted`) are INCLUDED so a delete replays. `nextRevision` is the MAX
+   * revision of the raw page, NOT the last VISIBLE row's, so a fully-filtered page still
+   * lets the client make progress.
+   */
+  async findByRoomIdRevisionSince(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    messages: GroupMessage[];
+    hasMore: boolean;
+    nextRevision: number | null;
+  }> {
+    const raw = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        revision: { gt: params.sinceRevision },
+      },
+      orderBy: { revision: "asc" },
+      take: params.limit + 1,
     });
-    if (!msg) return null;
-    return msg.reactions as Record<string, unknown>;
+
+    const hasMore = raw.length > params.limit;
+    const page = raw.slice(0, params.limit);
+    const nextRevision = page.length ? page[page.length - 1]!.revision : null;
+
+    const messages = page.filter((msg) => {
+      const hidden = ((msg as unknown as { deletedForUserIds?: unknown })
+        .deletedForUserIds ?? []) as string[];
+      return !hidden.includes(params.userId);
+    });
+
+    return { messages, hasMore, nextRevision };
   }
 
-  async editMessage(messageId: string, content: object): Promise<GroupMessage> {
+  /** Returns the stored reactor map plus the owning roomId — the caller needs the
+   *  latter to allocate a revision, and it rides along on this same read for free. */
+  async getReactions(
+    messageId: string
+  ): Promise<{ reactions: Record<string, unknown>; roomId: string } | null> {
+    const msg = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+      select: { reactions: true, roomId: true },
+    });
+    if (!msg) return null;
+    return {
+      reactions: msg.reactions as Record<string, unknown>,
+      roomId: msg.roomId,
+    };
+  }
+
+  async editMessage(
+    messageId: string,
+    roomId: string,
+    content: object
+  ): Promise<GroupMessage> {
     // Read-then-write so we can push the prior content snapshot into editHistory
     // (mirrors PrivateMessageRepository.editMessage).
     const existing = await this.prisma.groupMessage.findUnique({
@@ -749,12 +824,14 @@ export class GroupMessageRepository {
       { text: priorText, editedAt: now.toISOString() },
     ];
 
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.groupMessage.update({
       where: { id: messageId },
       data: {
         content: content as unknown as Prisma.InputJsonValue,
         editedAt: now,
         editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+        revision,
       },
     });
   }

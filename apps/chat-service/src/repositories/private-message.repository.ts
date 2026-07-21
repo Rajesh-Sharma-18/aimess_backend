@@ -10,9 +10,21 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import type { PrivateRoomRepository } from "./private-room.repository.js";
 
+/**
+ * NOTE — zero-loss revision axis. Every CONTENT mutation in this file allocates a room
+ * revision and stamps it on the row, so `/changes` can replay it. Allocation lives HERE
+ * (not at the service layer, as community does) so a new caller cannot forget it.
+ * Deliberate exceptions, which must NOT bump: `deleteForMe` and `markDeliveredUpTo` —
+ * both are per-user view state, and `revision` is a room-level axis with no per-viewer
+ * dimension.
+ */
 export class PrivateMessageRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly roomRepo: PrivateRoomRepository
+  ) {}
 
   async createMessage(data: {
     roomId: string;
@@ -37,10 +49,12 @@ export class PrivateMessageRepository {
     sequenceNumber?: number;
     [key: string]: unknown;
   }): Promise<PrivateMessage> {
+    const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
+        revision,
         senderId: data.senderId ?? null,
         receiverId: data.receiverId ?? null,
         content: (data.content as object) ?? { text: "", urls: [], files: [] },
@@ -495,16 +509,22 @@ export class PrivateMessageRepository {
 
   async addReactions(
     messageId: string,
+    roomId: string,
     reactions: Record<string, unknown[]>
   ): Promise<PrivateMessage | null> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.privateMessage.update({
       where: { id: messageId },
-      data: { reactions: reactions as unknown as Prisma.InputJsonValue },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        revision,
+      },
     });
   }
 
   async editMessage(
     messageId: string,
+    roomId: string,
     content: object
   ): Promise<PrivateMessage> {
     // Read-then-write so we can push the prior content snapshot into editHistory
@@ -523,12 +543,14 @@ export class PrivateMessageRepository {
       { text: priorText, editedAt: now.toISOString() },
     ];
 
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.privateMessage.update({
       where: { id: messageId },
       data: {
         content: content as unknown as Prisma.InputJsonValue,
         editedAt: now,
         editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+        revision,
       },
     });
   }
@@ -588,6 +610,8 @@ export class PrivateMessageRepository {
     return { count: updatedIds.length, messageIds: updatedIds };
   }
 
+  // NO revision bump: delete-for-me is per-user view state, and `revision` is a
+  // room-level axis the /changes payload cannot express per-viewer. See class KDoc.
   async deleteForMe(
     messageId: string,
     userId: string
@@ -611,8 +635,10 @@ export class PrivateMessageRepository {
 
   async deleteForEveryone(
     messageId: string,
+    roomId: string,
     userId: string
   ): Promise<PrivateMessage> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
     return this.prisma.privateMessage.update({
       where: { id: messageId },
       data: {
@@ -620,6 +646,7 @@ export class PrivateMessageRepository {
         deletedAt: new Date(),
         deletedBy: userId,
         deletedFor: { type: "forEveryone" } as unknown as Prisma.InputJsonValue,
+        revision,
       },
     });
   }
@@ -707,10 +734,12 @@ export class PrivateMessageRepository {
     clientMessageId?: string | null;
     sequenceNumber?: number;
   }): Promise<PrivateMessage> {
+    const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
+        revision,
         senderId: data.senderId,
         receiverId: data.receiverId,
         content: data.content as Prisma.InputJsonValue,
@@ -730,15 +759,67 @@ export class PrivateMessageRepository {
     });
   }
 
+  /**
+   * ZERO-LOSS CHANGES FEED — the mutation-aware catch-up query.
+   *
+   * Every message whose room CHANGE `revision > sinceRevision`, current state, ordered
+   * `revision ASC`. Unlike `after_seq` (inserts only) this returns an OLD message's current
+   * state after an edit/reaction/delete-for-everyone, because a mutation bumps that row's
+   * `revision` while its `sequenceNumber` never moves.
+   *
+   * Tombstones (`isDeleted`) are INCLUDED so a delete replays. Only the viewer's own
+   * delete-for-me is filtered, and in memory — `deletedFor` is a Json MAP keyed by userId
+   * (group's equivalent is an array), which Mongo can't index-filter here.
+   *
+   * `nextRevision` is the MAX revision of the raw page, NOT the last VISIBLE row's — so a
+   * page fully filtered by delete-for-me still lets the client make progress. Revision is
+   * monotonic, so advancing past a filtered row can never skip a visible change.
+   */
+  async findByRoomIdRevisionSince(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    messages: PrivateMessage[];
+    hasMore: boolean;
+    nextRevision: number | null;
+  }> {
+    const raw = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        revision: { gt: params.sinceRevision },
+      },
+      orderBy: { revision: "asc" },
+      take: params.limit + 1,
+    });
+
+    const hasMore = raw.length > params.limit;
+    const page = raw.slice(0, params.limit);
+    const nextRevision = page.length ? page[page.length - 1]!.revision : null;
+
+    const messages = page.filter((msg) => {
+      const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+      return !(params.userId in deletedFor);
+    });
+
+    return { messages, hasMore, nextRevision };
+  }
+
+  /** Returns the stored reactor map plus the owning roomId — the caller needs the
+   *  latter to allocate a revision, and it rides along on this same read for free. */
   async getReactions(
     messageId: string
-  ): Promise<Record<string, unknown> | null> {
+  ): Promise<{ reactions: Record<string, unknown>; roomId: string } | null> {
     const msg = await this.prisma.privateMessage.findUnique({
       where: { id: messageId },
-      select: { reactions: true },
+      select: { reactions: true, roomId: true },
     });
     if (!msg) return null;
-    return msg.reactions as Record<string, unknown>;
+    return {
+      reactions: msg.reactions as Record<string, unknown>,
+      roomId: msg.roomId,
+    };
   }
 
   /**
