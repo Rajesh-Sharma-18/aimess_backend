@@ -3561,7 +3561,7 @@ export const communityService = {
   async notifyJoinRequestDecided(args: {
     communityId: string;
     requestId: string;
-    status: "PENDING" | "APPROVED" | "REJECTED";
+    status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
     targetUserId: string;
     actorId: string;
     decidedAt: Date;
@@ -6592,6 +6592,17 @@ export const communityService = {
       eventAt: new Date().toISOString(),
     });
 
+    // Admin "Accept Requests" list realtime refresh — a pending request just
+    // vanished, so every open admin panel should drop the card without a reload.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId,
+      status: "CANCELLED",
+      targetUserId: callerId,
+      actorId: callerId,
+      decidedAt: new Date(),
+    });
+
     return toJoinRequestData(updated);
   },
 
@@ -6639,6 +6650,16 @@ export const communityService = {
       userId: callerId,
       cancelledAt: new Date().toISOString(),
       eventAt: new Date().toISOString(),
+    });
+
+    // Admin "Accept Requests" list realtime refresh — see cancelJoinRequest.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId: request.id,
+      status: "CANCELLED",
+      targetUserId: callerId,
+      actorId: callerId,
+      decidedAt: new Date(),
     });
 
     return toJoinRequestData(updated);
