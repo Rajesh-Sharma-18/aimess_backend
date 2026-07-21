@@ -53,8 +53,18 @@ function makeService(
   const messageRepo = { findOne, createSystemMessage };
 
   const allocateSequence = jest.fn(async () => 7);
+  const allocateRevision = jest.fn(async () => 1);
+  const allocateSequenceAndRevision = jest.fn(async () => ({
+    sequenceNumber: 7,
+    revision: 1,
+  }));
   const addLastestMessageToRoom = jest.fn(async () => undefined);
-  const roomRepo = { allocateSequence, addLastestMessageToRoom };
+  const roomRepo = {
+    allocateSequence,
+    allocateRevision,
+    allocateSequenceAndRevision,
+    addLastestMessageToRoom,
+  };
 
   const cacheRepo = {};
   const userSnapshotService = {

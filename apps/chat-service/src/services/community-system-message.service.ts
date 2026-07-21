@@ -250,9 +250,11 @@ export class CommunitySystemMessageService {
           });
       }
 
-      const seq = await this.roomRepo.allocateSequence(communityId);
+      // Single atomic $inc for BOTH counters — halves write-conflict footprint
+      // on the shared GeneralRoom doc under bursty concurrent sends.
       // System-message insert bumps the room CHANGE revision too (zero-loss feed).
-      const revision = await this.roomRepo.allocateRevision(communityId);
+      const { sequenceNumber: seq, revision } =
+        await this.roomRepo.allocateSequenceAndRevision(communityId);
 
       const message = await this.messageRepo
         .createSystemMessage({

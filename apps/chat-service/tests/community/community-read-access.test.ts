@@ -1048,6 +1048,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
     };
     const roomRepo = {
       allocateSequence: jest.fn().mockResolvedValue(1),
+      allocateRevision: jest.fn().mockResolvedValue(1),
+      allocateSequenceAndRevision: jest
+        .fn()
+        .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
       addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
     };
     const cacheRepo = {};

@@ -87,6 +87,10 @@ function buildService(
       .fn()
       .mockResolvedValue({ id: ROOM_ID, status: "active" }),
     allocateSequence: jest.fn().mockResolvedValue(1),
+    allocateRevision: jest.fn().mockResolvedValue(1),
+    allocateSequenceAndRevision: jest
+      .fn()
+      .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
     addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
     findManyByIds: jest.fn().mockResolvedValue([]),
     provisionForCommunity: jest.fn().mockResolvedValue(undefined),
@@ -582,6 +586,10 @@ describe("CommunityMessageService.forwardMessage", () => {
           .fn()
           .mockResolvedValue({ id: TARGET_ROOM_ID, status: "active" }),
         allocateSequence: jest.fn().mockResolvedValue(1),
+        allocateRevision: jest.fn().mockResolvedValue(1),
+        allocateSequenceAndRevision: jest
+          .fn()
+          .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
         addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
       },
     });
@@ -705,6 +713,10 @@ describe("CommunityMessageService.forwardMessage", () => {
           .fn()
           .mockResolvedValue({ id: TARGET_ROOM_ID, status: "active" }),
         allocateSequence: jest.fn().mockResolvedValue(1),
+        allocateRevision: jest.fn().mockResolvedValue(1),
+        allocateSequenceAndRevision: jest
+          .fn()
+          .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
         addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
       },
     });

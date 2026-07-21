@@ -65,6 +65,32 @@ export class GeneralRoomRepository {
     return r.lastRevision;
   }
 
+  /**
+   * Allocate BOTH the per-room monotonic sequence AND the CHANGE revision in a
+   * single atomic `$inc` update. Every community send bumps both counters on
+   * the same GeneralRoom doc; issuing two sequential updates doubled the
+   * write-conflict footprint under bursty concurrent sends and drove the
+   * intermittent SERVICE_ERROR ack (each contender collided TWICE and blew
+   * past the 5-retry budget). One update → one contention window → one round-
+   * trip. Callers should prefer this over calling allocateSequence +
+   * allocateRevision back-to-back.
+   */
+  async allocateSequenceAndRevision(
+    roomId: string
+  ): Promise<{ sequenceNumber: number; revision: number }> {
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.generalRoom.update({
+        where: { id: roomId },
+        data: {
+          lastSequence: { increment: 1 },
+          lastRevision: { increment: 1 },
+        },
+        select: { lastSequence: true, lastRevision: true },
+      })
+    );
+    return { sequenceNumber: r.lastSequence, revision: r.lastRevision };
+  }
+
   /** Bulk fetch rooms by id (community-chat summaries enrichment). */
   async findManyByIds(ids: string[]): Promise<GeneralRoom[]> {
     if (!ids.length) return [];
