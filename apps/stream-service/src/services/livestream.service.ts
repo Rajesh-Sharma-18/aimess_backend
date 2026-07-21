@@ -991,6 +991,75 @@ export class LivestreamService {
     await this.sweepStaleLiveStreams();
     await this.sweepStaleReconnectingStreams();
     await this.sweepStalePendingStreams();
+    await this.reconcileWithSrs();
+  }
+
+  /**
+   * Repairs DB↔SRS drift (edge cases 1.7 / 5.2).
+   *
+   * `kickStream` is best-effort and swallows its own errors — if the DELETE
+   * fails (SRS unhealthy, wrong instance, request timed out) the DB says ENDED
+   * while SRS happily keeps the publisher connected, burning bandwidth and
+   * leaving the streamer's encoder convinced it is still on air. Nothing
+   * previously retried that kick.
+   *
+   * This pass lists every publisher SRS actually has open, resolves them
+   * against the DB in one batch query, and re-kicks any whose stream is already
+   * terminal. It runs on the existing 30s sweeper tick, so a failed kick
+   * self-heals within one tick instead of never.
+   *
+   * ponytail: deliberately ONE-DIRECTIONAL — it only ends SRS sessions the DB
+   * says are already over. The mirror case (DB says LIVE, SRS has no publisher)
+   * is left to the heartbeat + reconnect-grace sweepers above, because acting on
+   * it here would mean ending live streams based on an *absence* in the SRS
+   * response — and a partial/degraded API reply is indistinguishable from a
+   * genuinely empty one. `listPublishers()` returning null on any instance
+   * failure is the guard that keeps this pass from acting on bad data at all.
+   * Upgrade path: if the webhook-loss case ever needs faster recovery than the
+   * 5-minute heartbeat timeout, require N consecutive absent observations
+   * before ending, rather than trusting a single scan.
+   */
+  private async reconcileWithSrs(): Promise<void> {
+    const publishers = await this.srsService.listPublishers();
+    // null = at least one SRS instance was unreachable; skip rather than act on
+    // an incomplete picture.
+    if (publishers === null || publishers.length === 0) return;
+
+    let streams: Livestream[];
+    try {
+      streams = await this.streamRepo.findByStreamKeys(
+        publishers.map((p) => p.streamKey)
+      );
+    } catch (err) {
+      logger.warn(`reconcileWithSrs: DB query failed — ${String(err)}`);
+      return;
+    }
+
+    const byKey = new Map(streams.map((s) => [s.streamKey, s]));
+
+    for (const publisher of publishers) {
+      const stream = byKey.get(publisher.streamKey);
+
+      if (!stream) {
+        // Unknown key still publishing. `handlePublish` denies unknown keys, so
+        // SRS should already have dropped it — log rather than kick, so a
+        // create/publish race can't have its publisher killed mid-handshake.
+        logger.warn(
+          `reconcileWithSrs: SRS publisher for unknown streamKey=${publisher.streamKey} on ${publisher.apiBase}`
+        );
+        continue;
+      }
+
+      if (stream.status !== "ENDED" && stream.status !== "CANCELLED") continue;
+
+      const kicked = await this.srsService.kickClientById(
+        publisher.apiBase,
+        publisher.clientId
+      );
+      logger.info(
+        `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} key=${publisher.streamKey} success=${String(kicked)}`
+      );
+    }
   }
 
   private async sweepStaleLiveStreams(): Promise<void> {

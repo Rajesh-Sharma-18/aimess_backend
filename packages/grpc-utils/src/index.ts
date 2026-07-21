@@ -1,6 +1,119 @@
+import { timingSafeEqual } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import CircuitBreaker from "opossum";
 import { logger } from "@aimess/logger";
+
+// ─── Service-to-service auth ────────────────────────────────────────────────
+// Internal gRPC previously trusted whatever `userId`/`requesterId` the caller
+// put in the request body, so anything that could reach a gRPC port could act
+// as any user (post comments, force-end streams, read private data). This is a
+// shared bearer token every service attaches on egress and validates on
+// ingress.
+//
+// ponytail: shared static token, not mTLS. mTLS means cert generation,
+// distribution, rotation and renewal across 8 services — a large standing cost
+// for a control that today only guards an internal network. Upgrade path: swap
+// `verifyServiceToken` for a cert check and issue per-service certs, if the
+// gRPC ports are ever exposed beyond the trusted network or per-caller
+// identity (not just "is an AIMess service") becomes required.
+//
+// Read straight from `process.env` rather than a zod-validated env module: this
+// is a shared package imported by every service, so it cannot depend on any one
+// service's env schema. Each service calls `dotenv.config()` in its own
+// `config/env.ts`, which is imported before any gRPC wiring runs.
+const SERVICE_TOKEN_METADATA_KEY = "x-aimess-service-token";
+
+const serviceToken = (): string => process.env.GRPC_SERVICE_TOKEN ?? "";
+
+/** Constant-time compare of two possibly-different-length strings. */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    // Still run a comparison so the branch takes comparable time either way.
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Outgoing call metadata carrying the service token. Omits the header entirely
+ * when no token is configured, so a token-less dev environment keeps working
+ * against a token-less callee (see {@link withServiceAuth} for the matching
+ * ingress rule).
+ */
+function serviceCallMetadata(): grpc.Metadata {
+  const metadata = new grpc.Metadata();
+  const token = serviceToken();
+  if (token) metadata.set(SERVICE_TOKEN_METADATA_KEY, token);
+  return metadata;
+}
+
+/**
+ * Wrap a gRPC service implementation so every handler rejects callers that
+ * don't present the shared service token.
+ *
+ * Enforcement rules:
+ *  - `GRPC_SERVICE_TOKEN` set → every call must carry a matching token.
+ *  - unset + `NODE_ENV=production` → **throws at startup**. Booting a
+ *    production gRPC server that silently accepts anonymous calls is the exact
+ *    failure this closes, so it fails fast and loud instead of pretending to
+ *    be protected.
+ *  - unset + any other NODE_ENV → logs a warning and passes calls through, so
+ *    local dev doesn't need the var set across all 8 services to run.
+ */
+export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
+  serviceName: string,
+  impl: T
+): T {
+  const expected = serviceToken();
+
+  if (!expected) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `${serviceName}: GRPC_SERVICE_TOKEN is required in production — refusing to start an unauthenticated gRPC server.`
+      );
+    }
+    logger.warn(
+      `${serviceName}: GRPC_SERVICE_TOKEN not set — internal gRPC auth is DISABLED (development only).`
+    );
+    return impl;
+  }
+
+  const wrapped: grpc.UntypedServiceImplementation = {};
+  for (const [methodName, handler] of Object.entries(impl)) {
+    wrapped[methodName] = (
+      call: {
+        metadata?: grpc.Metadata;
+        emit?: (e: string, a: unknown) => void;
+      },
+      callback?: grpc.sendUnaryData<unknown>
+    ) => {
+      const raw = call.metadata?.get(SERVICE_TOKEN_METADATA_KEY)[0];
+      const provided = typeof raw === "string" ? raw : (raw?.toString() ?? "");
+
+      if (!provided || !safeEqual(provided, expected)) {
+        logger.warn(
+          `${serviceName}.${methodName}: rejected gRPC call with missing/invalid service token`
+        );
+        const err = {
+          code: grpc.status.UNAUTHENTICATED,
+          details: "Invalid or missing service token",
+        };
+        // Unary / client-streaming handlers report via the callback; server-
+        // streaming and bidi handlers have no callback and must error on the
+        // call stream instead.
+        if (typeof callback === "function") callback(err as grpc.ServiceError);
+        else call.emit?.("error", err);
+        return;
+      }
+
+      (handler as (c: unknown, cb?: unknown) => void)(call, callback);
+    };
+  }
+  return wrapped as T;
+}
 
 /** Circuit breaker over a single-arg call: `fire(arg)` → `Promise<R>`. */
 export type Breaker<T, R> = CircuitBreaker<[T], R>;
@@ -102,9 +215,13 @@ export function makeGrpcCall<TReq, TRes>(
     (
       client as unknown as Record<
         string,
-        (r: TReq, cb: (e: grpc.ServiceError | null, res: TRes) => void) => void
+        (
+          r: TReq,
+          metadata: grpc.Metadata,
+          cb: (e: grpc.ServiceError | null, res: TRes) => void
+        ) => void
       >
-    )[method](req, (err, res) => {
+    )[method](req, serviceCallMetadata(), (err, res) => {
       if (err) reject(err);
       else resolve(res);
     });
@@ -129,11 +246,12 @@ export function makeGrpcCallWithDeadline<TReq, TRes>(
         string,
         (
           r: TReq,
+          metadata: grpc.Metadata,
           options: grpc.CallOptions,
           cb: (e: grpc.ServiceError | null, res: TRes) => void
         ) => void
       >
-    )[method](req, { deadline }, (err, res) => {
+    )[method](req, serviceCallMetadata(), { deadline }, (err, res) => {
       if (err) reject(err);
       else resolve(res);
     });

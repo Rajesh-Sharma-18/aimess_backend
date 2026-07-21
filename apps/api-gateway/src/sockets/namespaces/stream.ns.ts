@@ -383,6 +383,47 @@ export function registerStreamNamespace(
     }
   );
 
+  // PER-STREAM (not per-socket) debounce timers for viewer_count, keyed by
+  // streamId. Namespace-scoped deliberately: when this map lived inside the
+  // connection handler every socket had its OWN timer, so a join/leave burst in
+  // a large room fired one room-wide broadcast per participating socket instead
+  // of one per stream — N sockets reacting to the same burst produced N
+  // broadcasts, each fanned out to all N viewers (O(N²) messages). Shared here,
+  // a burst collapses to exactly one broadcast per stream per window no matter
+  // how many sockets triggered it.
+  //
+  // ponytail: per-gateway-instance, not cluster-global. With the redis-adapter
+  // each instance still emits its own coalesced broadcast, so the ceiling is
+  // (instances) emits/sec/stream rather than 1 — bounded by deploy size, not by
+  // audience size, which is what actually matters here. A cluster-wide lock
+  // (Redis SET NX PX) would flatten it to exactly 1 if instance count ever grows
+  // enough to matter.
+  const viewerCountTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Read the live viewer count and broadcast it to the room, debounced to
+  // ≤ 1 emit/sec per stream. The emit goes via the redis-adapter so every
+  // gateway instance's sockets in the room receive it.
+  const emitViewerCount = (streamId: string): void => {
+    if (viewerCountTimers.has(streamId)) return;
+    const timer = setTimeout(() => {
+      viewerCountTimers.delete(streamId);
+      redisPub
+        .hlen(sessionKey(streamId))
+        .then((count) => {
+          const viewerCount = Math.max(0, count);
+          streamNs
+            .to(roomKey(streamId))
+            .emit("stream:viewer_count", { streamId, viewerCount });
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `/stream viewer_count read error for ${streamId}: ${String(err)}`
+          );
+        });
+    }, VIEWER_COUNT_DEBOUNCE_MS);
+    viewerCountTimers.set(streamId, timer);
+  };
+
   streamNs.on("connection", (socket: Socket) => {
     const { userId, locale } = socket.data;
     logger.debug(
@@ -462,10 +503,6 @@ export function registerStreamNamespace(
       }
     }
 
-    // Per-socket debounce timers for viewer_count, keyed by streamId. A pending
-    // timer means "an emit is already scheduled within the window" — we coalesce.
-    const viewerCountTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
     // Per-socket cache of the `canComment` gate (membership + mute +
     // commentStatus), keyed by streamId. Reactions never round-trip to
     // stream-service, so this cache is what blocks a muted user from reacting;
@@ -478,30 +515,6 @@ export function registerStreamNamespace(
     (
       socket.data as { streamCommentPermissions?: Map<string, boolean> }
     ).streamCommentPermissions = streamCommentPermissions;
-
-    // Read the live viewer count and broadcast it to the room, debounced to
-    // ≤ 1 emit/sec per stream. The emit goes via the redis-adapter so every
-    // gateway instance's sockets in the room receive it.
-    const emitViewerCount = (streamId: string): void => {
-      if (viewerCountTimers.has(streamId)) return;
-      const timer = setTimeout(() => {
-        viewerCountTimers.delete(streamId);
-        redisPub
-          .hlen(sessionKey(streamId))
-          .then((count) => {
-            const viewerCount = Math.max(0, count);
-            streamNs
-              .to(roomKey(streamId))
-              .emit("stream:viewer_count", { streamId, viewerCount });
-          })
-          .catch((err: unknown) => {
-            logger.warn(
-              `/stream viewer_count read error for ${streamId}: ${String(err)}`
-            );
-          });
-      }, VIEWER_COUNT_DEBOUNCE_MS);
-      viewerCountTimers.set(streamId, timer);
-    };
 
     // Sliding-window rate limit on comments (INCR + EXPIRE on first hit).
     // Fails OPEN: a Redis outage must not silence livestream chat.
@@ -965,12 +978,12 @@ export function registerStreamNamespace(
       // stomp on it here).
       const streamIds = [...streamIncremented];
 
-      // Flush any pending debounce timers — the socket is gone, so a deferred
-      // emit would only leak a timer.
-      for (const timer of viewerCountTimers.values()) {
-        clearTimeout(timer);
-      }
-      viewerCountTimers.clear();
+      // NOTE: `viewerCountTimers` is namespace-scoped and deliberately NOT
+      // cleared here. A pending timer belongs to a STREAM, not to this socket —
+      // clearing it would cancel a broadcast the remaining viewers in that room
+      // are still waiting on. The timer's own callback is the only thing that
+      // removes its entry, and it reads live state from Redis at fire time, so
+      // it stays correct after this socket is gone.
       streamCommentPermissions.clear();
 
       for (const streamId of streamIds) {

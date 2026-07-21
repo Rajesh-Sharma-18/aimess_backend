@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
 import { mediaImpl } from "./handlers/media.handler.js";
@@ -29,7 +30,10 @@ export function startMediaGrpcServer(): grpc.Server {
   ] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(MediaService.service, mediaImpl);
+  server.addService(
+    MediaService.service,
+    withServiceAuth("media-service", mediaImpl)
+  );
 
   server.bindAsync(
     `0.0.0.0:${env.MEDIA_GRPC_PORT}`,

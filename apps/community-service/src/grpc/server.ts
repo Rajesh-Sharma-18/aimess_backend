@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 
 import { communityImpl } from "./community-impl.js";
 
@@ -25,7 +26,10 @@ export function startGrpcServer(port: number): grpc.Server {
   ] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(CommunityService.service, communityImpl);
+  server.addService(
+    CommunityService.service,
+    withServiceAuth("community-service", communityImpl)
+  );
 
   server.bindAsync(
     `0.0.0.0:${port}`,

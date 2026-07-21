@@ -347,9 +347,20 @@ export function registerChatNamespace(
           }
         }
 
+        // Call lifecycle events are published to `user:<id>`, but that room is
+        // also joined by every peer that `presence:subscribe`d to that user.
+        // Re-target them to `self:<id>` (own sockets only) — otherwise a DM
+        // peer receives `call:incoming` with the callee's LiveKit token, and
+        // the CALLER (subscribed to the callee's presence) receives their own
+        // outgoing call and auto-declines it via the busy branch.
+        const targetChannel =
+          pattern === "user:*" && parsed.event.startsWith("call:")
+            ? `self:${channel.slice("user:".length)}`
+            : channel;
+
         void emitPersonalizedSender(
           chat,
-          channel,
+          targetChannel,
           parsed.event,
           parsed.data,
           personalizeFn
@@ -442,6 +453,11 @@ export function registerChatNamespace(
     const { userId, sessionId, locale } = socket.data;
     const deviceId = sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
+    // Private per-user room. Unlike `user:<id>` — which `presence:subscribe`
+    // lets ANY peer join — only this user's own sockets are ever in `self:<id>`.
+    // Call lifecycle events are routed here so a DM peer can't receive (or act
+    // on) another user's call, including the LiveKit token in `call:incoming`.
+    void socket.join(`self:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/chat connected userId=${userId}`);
 

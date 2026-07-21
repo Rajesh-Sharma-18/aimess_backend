@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -42,7 +43,10 @@ export function startGrpcServer(port: number): grpc.Server {
   ] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(NotificationService.service, notificationImpl);
+  server.addService(
+    NotificationService.service,
+    withServiceAuth("notifications-service", notificationImpl)
+  );
 
   server.bindAsync(
     `0.0.0.0:${port}`,
