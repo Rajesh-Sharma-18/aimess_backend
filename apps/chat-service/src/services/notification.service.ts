@@ -3,7 +3,69 @@ import { publishUserSocketEvent } from "@aimess/redis";
 
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { Notification } from "../generated/prisma/index.js";
-import { resolveNotificationFriendship } from "../lib/notification-friendship.enricher.js";
+import {
+  categoryWhere,
+  categorize,
+  type NotificationCategory,
+} from "../lib/notification-category.js";
+import {
+  serializeNotification,
+  type NotificationDTO,
+  type AvatarRefreshMaps,
+} from "../lib/notification-serializer.js";
+import { userGrpcClient } from "../grpc/user-snapshot.client.js";
+import { getCommunityReconcileClient } from "../grpc/community.client.js";
+
+/**
+ * Batch-resolves fresh actor/community avatar URLs for a page of notification
+ * rows. Notifications persist `actorSnapshot`/`communityAvatarUrl` inside
+ * `payload.data` at publish time — those are presigned MinIO URLs that expire
+ * (see MINIO_*_EXPIRES_IN), so trusting the stored value shows a broken image
+ * once a row is old enough. Resolving here, at read time, via the same
+ * services that own the media (user-service, community-service) is the
+ * resolve-on-read pattern the rest of the app already follows.
+ */
+async function resolveAvatarRefresh(
+  rows: Notification[]
+): Promise<AvatarRefreshMaps> {
+  const actorIds = new Set<string>();
+  const communityIds = new Set<string>();
+
+  for (const n of rows) {
+    if (n.actorId) actorIds.add(n.actorId);
+    if (categorize(n.type) === "COMMUNITIES") {
+      const data = (n.payload as { data?: Record<string, string> })?.data;
+      if (data?.communityId) communityIds.add(data.communityId);
+    }
+  }
+
+  // Both calls are best-effort — a transport failure must degrade to the
+  // (possibly stale) stored snapshot, never fail the notification list.
+  const [actors, communities] = await Promise.all([
+    actorIds.size
+      ? userGrpcClient.bulkGetUserSnapshots([...actorIds]).catch(() => [])
+      : Promise.resolve([]),
+    communityIds.size
+      ? getCommunityReconcileClient().getCommunitiesByIds([...communityIds])
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    actorById: new Map(
+      actors
+        .filter((a) => a.avatarUrl)
+        .map((a) => [
+          a.userId,
+          { displayName: a.displayName, avatarUrl: a.avatarUrl },
+        ])
+    ),
+    communityById: new Map(
+      communities
+        .filter((c) => c.avatarUrl)
+        .map((c) => [c.communityId, { name: c.name, avatarUrl: c.avatarUrl }])
+    ),
+  };
+}
 
 export class NotificationService {
   constructor(
@@ -11,24 +73,41 @@ export class NotificationService {
     private readonly redis: Redis | Cluster
   ) {}
 
+  /**
+   * List notifications for the Notification Center. `category` restricts the
+   * page to one tab (FRIENDS / COMMUNITIES / MENTIONS / SYSTEM); omit or
+   * pass "ALL" for the mixed feed. Returns serialized DTOs with resolved
+   * `actor` / `community` avatar blocks — clients no longer need to reach
+   * into `payload.data`.
+   */
   async getNotifications(
     userId: string,
-    params: { limit: number; cursor?: string | null }
-  ): Promise<Notification[]> {
-    const rows = await this.notificationRepo.findByUserId(userId, params);
+    params: {
+      limit: number;
+      cursor?: string | null;
+      category?: NotificationCategory;
+    }
+  ): Promise<NotificationDTO[]> {
+    const rows = await this.notificationRepo.findByUserId(userId, {
+      limit: params.limit,
+      cursor: params.cursor,
+      where: categoryWhere(params.category ?? "ALL"),
+    });
+    const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
-      rows.map(async (n) => {
-        const data = (n.payload as { data?: Record<string, string> })?.data;
-        const friendship = await resolveNotificationFriendship(
-          userId,
-          n.type,
-          data?.friendshipId
-        );
-        return friendship
-          ? ({ ...n, friendship } as unknown as Notification)
-          : n;
-      })
+      rows.map((n) => serializeNotification(n, userId, refresh))
     );
+  }
+
+  /** Per-tab totals shown in the Notification Center header. */
+  async getCounts(userId: string): Promise<{
+    all: number;
+    friends: number;
+    communities: number;
+    mentions: number;
+    system: number;
+  }> {
+    return this.notificationRepo.countByCategories(userId);
   }
 
   // Marks one or more notifications read and relays the refreshed unread
@@ -57,10 +136,6 @@ export class NotificationService {
     return { unreadCount };
   }
 
-  async countNotifications(userId: string): Promise<number> {
-    return this.notificationRepo.countByUserId(userId);
-  }
-
   async getUnreadCount(userId: string): Promise<number> {
     return this.notificationRepo.getUnreadCount(userId);
   }
@@ -74,10 +149,15 @@ export class NotificationService {
   ): Promise<void> {
     try {
       await publishUserSocketEvent(this.redis, userId, event, { unreadCount });
-      await publishUserSocketEvent(this.redis, userId, "notification:count_update", {
-        count: unreadCount,
-        unreadCount,
-      });
+      await publishUserSocketEvent(
+        this.redis,
+        userId,
+        "notification:count_update",
+        {
+          count: unreadCount,
+          unreadCount,
+        }
+      );
     } catch {
       // never fail the mutation because the realtime relay failed
     }

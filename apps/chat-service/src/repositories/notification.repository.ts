@@ -27,7 +27,16 @@ export class NotificationRepository {
 
   async findByUserId(
     userId: string,
-    params: { limit: number; cursor?: string | null }
+    params: {
+      limit: number;
+      cursor?: string | null;
+      /**
+       * Extra Prisma `where` fragment (e.g. category filter). Merged into
+       * the base userId/isDeleted/cursor predicate — kept optional so
+       * existing callers (gRPC list, tests) are unaffected.
+       */
+      where?: Record<string, unknown>;
+    }
   ): Promise<Notification[]> {
     return this.prisma.notification.findMany({
       where: {
@@ -36,6 +45,7 @@ export class NotificationRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
+        ...(params.where ?? {}),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit,
@@ -76,6 +86,51 @@ export class NotificationRepository {
     return this.prisma.notification.count({
       where: { userId, isDeleted: false },
     });
+  }
+
+  /**
+   * Per-tab totals for the Notification Center header. Five parallel counts
+   * (one per tab) — cheaper than a groupBy round-trip on Mongo, and each
+   * predicate hits the `(userId, type)` index. Returned map is keyed by the
+   * lowercase tab id the frontend expects.
+   */
+  async countByCategories(userId: string): Promise<{
+    all: number;
+    friends: number;
+    communities: number;
+    mentions: number;
+    system: number;
+  }> {
+    const base = { userId, isDeleted: false } as const;
+    const [all, friends, communities, mentions, system] = await Promise.all([
+      this.prisma.notification.count({ where: base }),
+      this.prisma.notification.count({
+        where: { ...base, type: { startsWith: "friend." } },
+      }),
+      this.prisma.notification.count({
+        where: {
+          ...base,
+          AND: [
+            { type: { startsWith: "community." } },
+            { type: { notIn: ["chat.mention", "community.mention"] } },
+          ],
+        },
+      }),
+      this.prisma.notification.count({
+        where: { ...base, type: { in: ["chat.mention", "community.mention"] } },
+      }),
+      this.prisma.notification.count({
+        where: {
+          ...base,
+          NOT: [
+            { type: { startsWith: "friend." } },
+            { type: { startsWith: "community." } },
+            { type: { in: ["chat.mention", "community.mention"] } },
+          ],
+        },
+      }),
+    ]);
+    return { all, friends, communities, mentions, system };
   }
 
   async deleteById(

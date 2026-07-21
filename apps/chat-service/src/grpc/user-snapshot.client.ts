@@ -17,6 +17,8 @@ interface UserSnapshotRecord {
   username: string;
   displayName: string;
   avatarObjectKey: string;
+  /** Presigned GET URL, resolved server-side by user-service. "" when none. */
+  avatarUrl: string;
 }
 
 interface BulkSnapshotsResult {

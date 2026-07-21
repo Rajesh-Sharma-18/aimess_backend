@@ -153,6 +153,22 @@ export interface CommunityReconcileClient {
     userId: string,
     queries: CommunityInviteContextQuery[]
   ): Promise<CommunityInviteContext[]>;
+  /**
+   * Batch name + presigned avatar_url for a set of community ids, resolved
+   * fresh on every call (reuses the same admin-panel RPC backoffice-service
+   * uses for its Livestream Management list — never persist the returned
+   * URL, it's a MinIO presign that expires). Used to refresh notification-row
+   * community avatars at read time instead of trusting a stale URL baked
+   * into the notification's stored event payload. Never throws — a
+   * transport failure degrades to an empty array.
+   */
+  getCommunitiesByIds(communityIds: string[]): Promise<CommunityAvatarBrief[]>;
+}
+
+export interface CommunityAvatarBrief {
+  communityId: string;
+  name: string;
+  avatarUrl: string;
 }
 
 /**
@@ -271,6 +287,16 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
   );
   inviteContextsBreaker.fallback(() => []);
 
+  const communitiesByIdsBreaker = makeBreaker(
+    "community.adminGetCommunitiesByIds",
+    (p: { communityIds: string[] }) =>
+      call<unknown, { communities?: CommunityAvatarBrief[] }>(
+        "adminGetCommunitiesByIds",
+        { communityIds: p.communityIds }
+      ).then((r) => r.communities ?? [])
+  );
+  communitiesByIdsBreaker.fallback(() => []);
+
   return {
     listCommunities: (p) => listBreaker.fire(p),
     updateReactionActivity: async (p) => {
@@ -300,6 +326,14 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
       if (!userId || queries.length === 0) return [];
       try {
         return await inviteContextsBreaker.fire({ userId, queries });
+      } catch {
+        return [];
+      }
+    },
+    getCommunitiesByIds: async (communityIds) => {
+      if (communityIds.length === 0) return [];
+      try {
+        return await communitiesByIdsBreaker.fire({ communityIds });
       } catch {
         return [];
       }

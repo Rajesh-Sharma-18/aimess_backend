@@ -482,7 +482,13 @@ export function registerChatNamespace(
     // TTL = 300 s; refreshed on every presence:heartbeat so the key stays alive
     // as long as the socket is open. On clean disconnect the key is deleted
     // immediately; the TTL handles unclean disconnects (TCP drops etc.).
-    void redisPub.set(`user:online:${userId}`, "1", "EX", 300);
+    redisPub
+      .set(`user:online:${userId}`, "1", "EX", 300)
+      .catch((err: unknown) =>
+        logger.warn(
+          `/chat presence set failed userId=${userId}: ${String(err)}`
+        )
+      );
 
     // Mark the user online in chat-service presence (best-effort).
     if (userId) {
@@ -767,7 +773,13 @@ export function registerChatNamespace(
         (payload as { appState?: string } | undefined)?.appState ??
         "FOREGROUND";
       // Refresh the FCM-routing online key on every heartbeat.
-      void redisPub.set(`user:online:${userId}`, "1", "EX", 300);
+      redisPub
+        .set(`user:online:${userId}`, "1", "EX", 300)
+        .catch((err: unknown) =>
+          logger.warn(
+            `/chat presence heartbeat set failed userId=${userId}: ${String(err)}`
+          )
+        );
       messagingClient
         .presenceHeartbeat({ userId, deviceId, appState })
         .catch((err: unknown) =>
@@ -1404,7 +1416,13 @@ export function registerChatNamespace(
       recording.flush();
 
       if (userId) {
-        void redisPub.del(`user:online:${userId}`);
+        redisPub
+          .del(`user:online:${userId}`)
+          .catch((err: unknown) =>
+            logger.warn(
+              `/chat presence del failed userId=${userId}: ${String(err)}`
+            )
+          );
         messagingClient
           .presenceDisconnect({ userId, deviceId })
           .catch((err: unknown) =>

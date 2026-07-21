@@ -356,7 +356,8 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       systemEvent: "COMMUNITY_INVITE",
       sequenceNumber: 7,
       // deterministic dedupe key
-      clientMessageId: `cinv:${COMMUNITY}:${LINK_CODE}:${RECIPIENT}`,
+      // Per-share dedupe: key includes `eventAt` so N shares → N messages.
+      clientMessageId: `cinv:${COMMUNITY}:${LINK_CODE}:${RECIPIENT}:${EVENT_AT}`,
     });
     // content.text is a non-blank human fallback (drives the inbox preview).
     expect(arg.content.text).toBe("Invitation to join Developers");
@@ -452,6 +453,22 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
 
     expect(createRoom).toHaveBeenCalledTimes(1);
     expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("two distinct SHARES of the same community produce two distinct messages (per-share eventAt breaks the dedupe key)", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared({ eventAt: "2026-06-20T10:05:00.000Z" }));
+    await fake.deliver(inviteShared({ eventAt: "2026-06-20T10:06:00.000Z" }));
+
+    expect(createMessage).toHaveBeenCalledTimes(2);
+    const key1 = createMessage.mock.calls[0][0].clientMessageId;
+    const key2 = createMessage.mock.calls[1][0].clientMessageId;
+    expect(key1).not.toBe(key2);
+    // Both must reference the same community + link + recipient — only the
+    // per-share nonce differs. Guards the fix from regressing into
+    // communityId-based or linkCode-based dedupe.
+    expect(key1).toContain(`cinv:${COMMUNITY}:${LINK_CODE}:${RECIPIENT}:`);
+    expect(key2).toContain(`cinv:${COMMUNITY}:${LINK_CODE}:${RECIPIENT}:`);
   });
 
   it("is idempotent — a duplicate event is suppressed (no second message, no broadcast)", async () => {
