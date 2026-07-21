@@ -43,6 +43,7 @@ import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
+import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
@@ -276,9 +277,13 @@ export function createMessagingImpl(
           // after the call and used to suppress duplicate fan-out.
           let alreadySent = false;
 
-          const conversationType = String(
-            req.conversationType ?? ""
-          ).toUpperCase();
+          // Authoritative: derived from the room id, NOT req.conversationType.
+          // A client claiming "private" for a grp_ room was being sent through
+          // the friendship gate ("You must be friends to message this user").
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
           const content = parseMessageContent(req);
           if (conversationType === "GROUP") {
             msg = await deps.groupMessageService.sendMessage({

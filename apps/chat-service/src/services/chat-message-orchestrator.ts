@@ -41,6 +41,7 @@ import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
+import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { PresenceService } from "./presence.service.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
@@ -269,8 +270,10 @@ export class ChatMessageOrchestrator {
    * not duplicated here.
    */
   async sendDirect(params: SendDirectParams): Promise<SendDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
     const clientMessageId = params.clientMessageId || randomUUID();
     const clientTs = params.clientTs ?? 0;
 
@@ -889,8 +892,10 @@ export class ChatMessageOrchestrator {
    * called service — not duplicated here.
    */
   async deleteDirect(params: DeleteDirectParams): Promise<DeleteDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
 
     let result: {
       id: string;
@@ -1065,8 +1070,10 @@ export class ChatMessageOrchestrator {
    * community's `community:message:pin`/`unpin` socket RPCs.
    */
   async pinDirect(params: PinDirectParams): Promise<PinDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
     const pinArgs = {
       roomId: params.roomId,
       messageId: params.messageId,
@@ -1101,8 +1108,10 @@ export class ChatMessageOrchestrator {
   }
 
   async unpinDirect(params: PinDirectParams): Promise<UnpinDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
     const pinArgs = {
       roomId: params.roomId,
       messageId: params.messageId,
@@ -1148,8 +1157,10 @@ export class ChatMessageOrchestrator {
   async markReadDirect(
     params: MarkReadDirectParams
   ): Promise<MarkReadDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
 
     // Assigned in both branches below before it's read — no initializer needed.
     let readToSeq: number;
@@ -1244,8 +1255,10 @@ export class ChatMessageOrchestrator {
    * (out of scope here).
    */
   async reactDirect(params: ReactDirectParams): Promise<ReactDirectResult> {
-    const conversationType: "PRIVATE" | "GROUP" =
-      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const conversationType = resolveConversationType(
+      params.roomId,
+      params.conversationType
+    );
 
     // Authorize the caller at the REST boundary (same rule as the read paths).
     if (conversationType === "GROUP") {
