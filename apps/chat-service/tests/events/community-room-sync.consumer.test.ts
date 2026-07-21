@@ -311,6 +311,7 @@ const inviteShared = (over: Record<string, unknown> = {}) =>
     data: {
       communityId: COMMUNITY,
       communityName: "Developers",
+      communityHandle: "developers",
       linkCode: LINK_CODE,
       inviterId: INVITER,
       recipientId: RECIPIENT,
@@ -363,6 +364,7 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
     expect(arg.systemData).toMatchObject({
       communityId: COMMUNITY,
       communityName: "Developers",
+      communityHandle: "developers",
       communityAvatarUrl: "community/avatars/dev.jpg",
       memberCount: 256,
       linkCode: LINK_CODE,
@@ -400,6 +402,12 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       receiverId: RECIPIENT,
       contentType: "SYSTEM",
       systemEvent: "COMMUNITY_INVITE",
+      // The whole point of the fix: card must carry the handle so FE routes
+      // Join Now → /community/@handle instead of the invite landing.
+      systemAction: {
+        type: "COMMUNITY_INVITATION",
+        communityHandle: "developers",
+      },
     });
   });
 

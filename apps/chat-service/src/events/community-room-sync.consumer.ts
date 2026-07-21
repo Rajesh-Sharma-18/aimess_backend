@@ -112,6 +112,7 @@ interface CommunityRoomSyncEvent {
     communityStatus?: string;
     // community.invite_link_shared
     communityName?: string;
+    communityHandle?: string;
     linkCode?: string;
     inviterId?: string;
     recipientId?: string;
@@ -388,6 +389,7 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName,
+            communityHandle,
             communityAvatarUrl,
             memberCount,
             inviteUrl,
@@ -408,6 +410,7 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName: communityName ?? "",
+            communityHandle: communityHandle ?? null,
             communityAvatarUrl: communityAvatarUrl ?? null,
             memberCount,
             inviteUrl,
