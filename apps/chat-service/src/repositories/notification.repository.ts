@@ -69,9 +69,19 @@ export class NotificationRepository {
     });
   }
 
-  async markAllRead(userId: string): Promise<void> {
+  /**
+   * Bulk mark-read. `extraWhere` is an optional Prisma fragment (e.g. the
+   * `categoryWhere("COMMUNITIES")` output from `lib/notification-category`) so
+   * the Notification Center's per-tab "Read All" only flips rows belonging to
+   * the currently-open tab. Omit or pass `undefined` for the historical
+   * mark-everything behaviour.
+   */
+  async markAllRead(
+    userId: string,
+    extraWhere?: Record<string, unknown>
+  ): Promise<void> {
     await this.prisma.notification.updateMany({
-      where: { userId, isRead: false },
+      where: { userId, isRead: false, ...(extraWhere ?? {}) },
       data: { isRead: true, readAt: new Date() },
     });
   }
@@ -89,10 +99,11 @@ export class NotificationRepository {
   }
 
   /**
-   * Per-tab totals for the Notification Center header. Five parallel counts
-   * (one per tab) — cheaper than a groupBy round-trip on Mongo, and each
-   * predicate hits the `(userId, type)` index. Returned map is keyed by the
-   * lowercase tab id the frontend expects.
+   * Per-tab UNREAD counts for the Notification Center header badges. Five
+   * parallel counts (one per tab) — cheaper than a groupBy round-trip on
+   * Mongo, and each predicate hits the `(userId, type)` index. Unread-only
+   * so the badge decrements live as the user reads rows; the list-page
+   * invalidation on `markRead` / `markAllRead` triggers the refetch.
    */
   async countByCategories(userId: string): Promise<{
     all: number;
@@ -101,7 +112,7 @@ export class NotificationRepository {
     mentions: number;
     system: number;
   }> {
-    const base = { userId, isDeleted: false } as const;
+    const base = { userId, isDeleted: false, isRead: false } as const;
     const [all, friends, communities, mentions, system] = await Promise.all([
       this.prisma.notification.count({ where: base }),
       this.prisma.notification.count({

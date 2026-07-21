@@ -129,9 +129,21 @@ export class NotificationService {
     return { updatedCount, unreadCount };
   }
 
-  async markAllRead(userId: string): Promise<{ unreadCount: number }> {
-    await this.notificationRepo.markAllRead(userId);
-    const unreadCount = 0;
+  /**
+   * Bulk mark-read for the Notification Center. When `category` is ALL/omitted
+   * it flips every unread row; otherwise only rows in that tab. The returned
+   * `unreadCount` is the ACROSS-ALL-CATEGORIES total (drives the top-bar
+   * badge) — so a per-tab "Read All" correctly leaves other tabs' unreads
+   * counted. The realtime `notification:all-read` publish carries the same
+   * authoritative post-op total.
+   */
+  async markAllRead(
+    userId: string,
+    category: NotificationCategory = "ALL"
+  ): Promise<{ unreadCount: number }> {
+    const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
+    await this.notificationRepo.markAllRead(userId, extraWhere);
+    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
     await this.publishCountEvent(userId, "notification:all-read", unreadCount);
     return { unreadCount };
   }

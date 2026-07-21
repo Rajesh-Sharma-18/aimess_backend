@@ -68,11 +68,19 @@ export class NotificationController {
 
   markAllRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const result = await this.service.markAllRead(userId);
+    // Accept `type` from body OR querystring so existing callers (no body)
+    // stay on the mark-everything path (backward compatible).
+    const rawType =
+      (req.body as { type?: unknown } | undefined)?.type ?? req.query.type;
+    const category = parseCategory(rawType);
+    const result = await this.service.markAllRead(userId, category);
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(result, t("CHAT_NOTIFICATIONS_ALL_READ", req.locale))
+        new ApiResponse(
+          { ...result, type: category },
+          t("CHAT_NOTIFICATIONS_ALL_READ", req.locale)
+        )
       );
   });
 
