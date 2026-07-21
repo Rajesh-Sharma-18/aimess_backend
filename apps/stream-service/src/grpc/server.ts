@@ -4,6 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 import { ForbiddenError } from "@aimess/errors";
+import { withServiceAuth } from "@aimess/grpc-utils";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
 import type {
@@ -753,7 +754,10 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
   ] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(StreamService.service, createStreamImpl(deps));
+  server.addService(
+    StreamService.service,
+    withServiceAuth("stream-service", createStreamImpl(deps))
+  );
 
   server.bindAsync(
     `0.0.0.0:${port}`,

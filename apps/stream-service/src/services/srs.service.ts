@@ -104,6 +104,108 @@ export class SrsService {
   }
 
   /**
+   * Every distinct SRS HTTP API base this deployment talks to. One entry on
+   * local Docker SRS (single all-in-one instance); two on the hosted topology
+   * where OBS_RTMP lands on the ingest instance (SRS_INGEST_API_URL / I-01) and
+   * everything else on SRS_API_URL (I-02). Deduped so a local setup that leaves
+   * SRS_INGEST_API_URL unset (or equal) isn't scanned twice.
+   */
+  private apiBases(): string[] {
+    const bases = [env.SRS_API_URL];
+    if (env.SRS_INGEST_API_URL && env.SRS_INGEST_API_URL !== env.SRS_API_URL) {
+      bases.push(env.SRS_INGEST_API_URL);
+    }
+    return bases;
+  }
+
+  /**
+   * Every publisher SRS currently has open, across all API bases, as
+   * `{ apiBase, streamKey, clientId }`. Backs the reconciler that repairs
+   * DB↔SRS drift when a kick silently failed.
+   *
+   * Returns `null` — NOT an empty array — if ANY instance lookup fails. The
+   * caller cannot distinguish "SRS genuinely has no publishers" from "SRS is
+   * unreachable" otherwise, and acting on a false empty would mean treating
+   * every live stream as orphaned during a transient API blip.
+   */
+  async listPublishers(): Promise<
+    { apiBase: string; streamKey: string; clientId: string }[] | null
+  > {
+    const found: { apiBase: string; streamKey: string; clientId: string }[] =
+      [];
+
+    for (const apiBase of this.apiBases()) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const res = await fetch(`${apiBase}/api/v1/clients/`, {
+          method: "GET",
+          headers: this.apiAuthHeaders,
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          logger.warn(
+            `SRS listPublishers: ${apiBase} returned ${String(res.status)} — skipping reconcile pass`
+          );
+          return null;
+        }
+        const body = (await res.json()) as {
+          clients?: Array<{ id?: string; name?: string; publish?: boolean }>;
+        };
+        for (const client of body.clients ?? []) {
+          if (client.publish !== true || !client.name || !client.id) continue;
+          found.push({
+            apiBase,
+            streamKey: client.name,
+            clientId: client.id,
+          });
+        }
+      } catch (error) {
+        logger.warn(
+          `SRS listPublishers failed for ${apiBase}: ${String(error)} — skipping reconcile pass`
+        );
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    return found;
+  }
+
+  /**
+   * Close one already-resolved SRS connection by id. Used by the reconciler,
+   * which already knows the client id and its owning instance from
+   * {@link listPublishers} and so must not re-run the name lookup
+   * {@link kickStream} does. Best-effort; never throws.
+   */
+  async kickClientById(apiBase: string, clientId: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(`${apiBase}/api/v1/clients/${clientId}`, {
+        method: "DELETE",
+        headers: this.apiAuthHeaders,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        logger.warn(
+          `SRS kickClientById: delete returned ${String(res.status)} for client=${clientId}`
+        );
+        return false;
+      }
+      return true;
+    } catch (error) {
+      logger.warn(
+        `SRS kickClientById failed for client=${clientId}: ${String(error)}`
+      );
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
    * Best-effort: ask SRS to drop the publisher for `streamKey`. Resolves the
    * publisher's connection id by name via the clients API, then DELETEs it.
    * Swallows all errors (logs a warning) — bounded by a 5s AbortController.

@@ -64,8 +64,10 @@ export function assertNotBanned(
  * Two independent axes:
  *
  *  - VISIBILITY (`canAppearInCommunityList`): whether the community shows up
- *    in the member's own list. ACTIVE and non-dismissed BANNED are visible;
- *    LEFT (voluntary or kicked) and dismissed-BANNED are not. The Prisma
+ *    in the member's own list. ACTIVE, non-dismissed BANNED, and the
+ *    non-dismissed post-unban row (LEFT with `unbannedAt` set — an admin
+ *    lifted the ban but the user has NOT rejoined) are visible; an ordinary
+ *    LEFT (voluntary leave or kick) and any dismissed row are not. The Prisma
  *    `memberVisibilityFilter` in community.repository.ts#listMineByActivity
  *    is the query-side mirror of this predicate — change them together.
  *
@@ -77,11 +79,17 @@ export function assertNotBanned(
  */
 export const communityPermission = {
   canAppearInCommunityList(
-    m: { status: CommunityMemberStatus; dismissedAt?: Date | null } | null
+    m: {
+      status: CommunityMemberStatus;
+      dismissedAt?: Date | null;
+      unbannedAt?: Date | null;
+    } | null
   ): boolean {
     if (!m) return false;
     if (m.status === CommunityMemberStatus.ACTIVE) return true;
-    return m.status === CommunityMemberStatus.BANNED && !m.dismissedAt;
+    if (m.dismissedAt) return false;
+    if (m.status === CommunityMemberStatus.BANNED) return true;
+    return m.status === CommunityMemberStatus.LEFT && Boolean(m.unbannedAt);
   },
   canAccessCommunity(m: { status: CommunityMemberStatus } | null): boolean {
     return m?.status === CommunityMemberStatus.ACTIVE;
@@ -104,3 +112,55 @@ export const communityPermission = {
     return this.canAccessCommunity(m);
   },
 };
+
+/**
+ * The caller's membership state as it appears ON THE WIRE — the single shape
+ * every surface must agree on: the community detail API (toCommunityData), the
+ * community list API (enrichMineCommunities), AND the personal socket events
+ * that announce a membership transition (`community:membership:restricted`).
+ *
+ * Having one derivation is the point: a realtime event must leave the client in
+ * exactly the state a fresh GET would produce, so the UI after a socket update
+ * is identical to the UI after a hard refresh. Emitting these fields ad-hoc per
+ * call site is what previously let the socket payload disagree with the REST
+ * response (socket said `membershipStatus: "LEFT"`, REST said `"NONE"`, and the
+ * socket carried no `isJoined` at all — so a client that unbanned in place kept
+ * rendering the composer instead of the Join Community button).
+ */
+export type CommunityMembershipState = {
+  /**
+   * True ONLY for an ACTIVE membership — the single question "may this caller
+   * act as a member right now?". False for BANNED (access revoked) and for
+   * every non-member state, so a client can gate the composer / member-only
+   * UI on this one flag. This is the community DETAIL API's long-standing
+   * semantics (see tests/community/get-by-id-banned-access.test.ts); the list
+   * API previously hardcoded `true` for every listed row, which is exactly the
+   * disagreement this shared derivation removes. Visibility ("does the row
+   * appear in my list at all?") is a SEPARATE axis — see
+   * communityPermission.canAppearInCommunityList.
+   */
+  isJoined: boolean;
+  isBanned: boolean;
+  /** "NONE" is the canonical non-member value, shared with the detail API. */
+  membershipStatus: "ACTIVE" | "BANNED" | "NONE";
+};
+
+/**
+ * Derive the wire membership state from a membership row (or null for "no row
+ * at all"). A BANNED row is listed but not joined (read-only, `isBanned` drives
+ * the banner). The post-unban row (LEFT) reports as a plain non-member: the ban
+ * is cleared (`isBanned: false`) but membership was never restored, so the
+ * client must show the join flow, not member UI.
+ */
+export function deriveMembershipState(
+  m: { status: CommunityMemberStatus } | null | undefined
+): CommunityMembershipState {
+  const status = m?.status;
+  if (status === CommunityMemberStatus.BANNED) {
+    return { isJoined: false, isBanned: true, membershipStatus: "BANNED" };
+  }
+  if (status === CommunityMemberStatus.ACTIVE) {
+    return { isJoined: true, isBanned: false, membershipStatus: "ACTIVE" };
+  }
+  return { isJoined: false, isBanned: false, membershipStatus: "NONE" };
+}

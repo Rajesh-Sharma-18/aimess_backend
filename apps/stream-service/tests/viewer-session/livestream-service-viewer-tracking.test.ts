@@ -43,16 +43,25 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     // loop (triggered by every LIVE transition) exits immediately instead of
     // scheduling real setTimeout retries that would outlive the test.
     hasFrames: jest.fn().mockResolvedValue(true),
+    // `null` = "an SRS instance was unreachable, skip this reconcile pass".
+    // Inert default so sweepStaleStreams' reconcile leg is a no-op for every
+    // test that isn't specifically exercising DB↔SRS drift repair.
+    listPublishers: jest.fn().mockResolvedValue(null),
+    kickClientById: jest.fn().mockResolvedValue(true),
     ...(overrides.srsService as object),
   };
   const communityClient = {
     validateMembership: jest.fn(),
     ...(overrides.communityClient as object),
   };
+  // Presence is a HASH of userId -> open-socket refcount (HLEN = unique
+  // viewers), not the old SET of userIds — see stream.ns.ts's sessionKey.
   const redis = {
-    scard: jest.fn().mockResolvedValue(0),
-    smembers: jest.fn().mockResolvedValue([]),
-    sadd: jest.fn(),
+    hlen: jest.fn().mockResolvedValue(0),
+    hkeys: jest.fn().mockResolvedValue([]),
+    hincrby: jest.fn(),
+    hdel: jest.fn(),
+    hexists: jest.fn().mockResolvedValue(0),
     expire: jest.fn(),
     publish: jest.fn().mockResolvedValue(undefined),
     ...(overrides.redis as object),
@@ -270,13 +279,11 @@ describe("LivestreamService — host viewer session on go-live", () => {
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findByStreamKey: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "LIVE",
-            livedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          livedAt: new Date(),
+        }),
       },
     });
 
@@ -295,13 +302,11 @@ describe("LivestreamService — host viewer session on go-live", () => {
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findById: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "LIVE",
-            livedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          livedAt: new Date(),
+        }),
       },
     });
 
@@ -367,13 +372,11 @@ describe("LivestreamService — host viewer session on go-live", () => {
     const { service } = makeDeps({
       streamRepo: {
         findByStreamKey: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "LIVE",
-            livedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          livedAt: new Date(),
+        }),
       },
       viewerSessionRepo: {
         recordJoin: jest.fn().mockRejectedValue(new Error("db down")),
@@ -606,13 +609,13 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
     const stream = makeStream({ status: "LIVE", viewerCount: 999 });
     const { service, redis } = makeDeps({
       streamRepo: { findById: jest.fn().mockResolvedValue(stream) },
-      redis: { scard: jest.fn().mockResolvedValue(3) },
+      redis: { hlen: jest.fn().mockResolvedValue(3) },
     });
 
     const row = await service.adminGetStream("stream-1");
 
     expect(row?.viewerCount).toBe(3);
-    expect(redis.scard).toHaveBeenCalled();
+    expect(redis.hlen).toHaveBeenCalled();
   });
 
   it("adminListStreams ALSO overlays the LIVE Redis count (previously missing — the reported bug)", async () => {
@@ -622,7 +625,7 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
         adminList: jest.fn().mockResolvedValue([stream]),
         adminCount: jest.fn().mockResolvedValue(1),
       },
-      redis: { scard: jest.fn().mockResolvedValue(3) },
+      redis: { hlen: jest.fn().mockResolvedValue(3) },
     });
 
     const { items } = await service.adminListStreams({
@@ -652,7 +655,7 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
     });
 
     expect(items[0].viewerCount).toBe(42);
-    expect(redis.scard).not.toHaveBeenCalled();
+    expect(redis.hlen).not.toHaveBeenCalled();
   });
 
   it("adminGetStream.uniqueViewerCount is the distinct-viewer count, NOT the raw totalViews join-attempt counter (the reported mismatch)", async () => {

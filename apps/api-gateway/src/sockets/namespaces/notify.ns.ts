@@ -72,7 +72,10 @@ export function registerNotifyNamespace(
     notificationClient
       .getNotifications({ userId, limit: 1, cursor: "" })
       .then((res) =>
-        socket.emit("notification:count", { count: res.unreadCount })
+        socket.emit("notification:count", {
+          count: res.unreadCount,
+          unreadCount: res.unreadCount,
+        })
       )
       .catch((err: unknown) =>
         logger.warn(
@@ -117,22 +120,22 @@ export function registerNotifyNamespace(
           })
           .then((result) => {
             ackOk(callback, "SOCKET_NOTIFICATIONS_MARKED_READ", locale, result);
-            // Gap #5: push the updated unread count to ALL devices for this user
+            // Push the updated unread count to ALL devices for this user
             // immediately after a read action — notifications-service publishes
             // count_update for NEW notifications; read-side changes need this
-            // gateway-side push so multi-device count stays in sync.
-            notificationClient
-              .getNotifications({ userId, limit: 1, cursor: "" })
-              .then((res) =>
-                notify
-                  .to(`user:${userId}`)
-                  .emit("notification:count_update", { count: res.unreadCount })
-              )
-              .catch((err: unknown) =>
-                logger.warn(
-                  `/notify count_update after mark_read failed: ${String(err)}`
-                )
-              );
+            // gateway-side push so multi-device count stays in sync. The gRPC
+            // response already carries remainingUnread, so no extra round trip.
+            const unreadCount = result.remainingUnread;
+            const isMarkAll = r.data.notificationIds.length === 0;
+            notify
+              .to(`user:${userId}`)
+              .emit(isMarkAll ? "notification:all-read" : "notification:read", {
+                unreadCount,
+              });
+            notify.to(`user:${userId}`).emit("notification:count_update", {
+              count: unreadCount,
+              unreadCount,
+            });
           })
           .catch((err: unknown) => {
             logger.warn(
@@ -164,6 +167,7 @@ export function registerNotifyNamespace(
             // remainingUnread, so reuse it instead of a second round-trip.
             notify.to(`user:${userId}`).emit("notification:count_update", {
               count: result.remainingUnread,
+              unreadCount: result.remainingUnread,
             });
           })
           .catch((err: unknown) => {

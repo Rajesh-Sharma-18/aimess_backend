@@ -1,9 +1,15 @@
-﻿import type { NotificationRepository } from "../repositories/notification.repository.js";
+import type { Redis, Cluster } from "ioredis";
+import { publishUserSocketEvent } from "@aimess/redis";
+
+import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { Notification } from "../generated/prisma/index.js";
 import { resolveNotificationFriendship } from "../lib/notification-friendship.enricher.js";
 
 export class NotificationService {
-  constructor(private readonly notificationRepo: NotificationRepository) {}
+  constructor(
+    private readonly notificationRepo: NotificationRepository,
+    private readonly redis: Redis | Cluster
+  ) {}
 
   async getNotifications(
     userId: string,
@@ -25,15 +31,30 @@ export class NotificationService {
     );
   }
 
-  async markRead(
-    notificationId: string,
+  // Marks one or more notifications read and relays the refreshed unread
+  // count to every connected device (mirrors the socket-originated
+  // notifications:mark_read path so REST and socket clients stay in sync).
+  async markManyRead(
+    notificationIds: string[],
     userId: string
-  ): Promise<Notification | null> {
-    return this.notificationRepo.markRead(notificationId, userId);
+  ): Promise<{ updatedCount: number; unreadCount: number }> {
+    const results = await Promise.all(
+      notificationIds.map((id) => this.notificationRepo.markRead(id, userId))
+    );
+    const updatedCount = results.filter((r) => r !== null).length;
+    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
+
+    if (updatedCount > 0) {
+      await this.publishCountEvent(userId, "notification:read", unreadCount);
+    }
+    return { updatedCount, unreadCount };
   }
 
-  async markAllRead(userId: string): Promise<void> {
+  async markAllRead(userId: string): Promise<{ unreadCount: number }> {
     await this.notificationRepo.markAllRead(userId);
+    const unreadCount = 0;
+    await this.publishCountEvent(userId, "notification:all-read", unreadCount);
+    return { unreadCount };
   }
 
   async countNotifications(userId: string): Promise<number> {
@@ -42,5 +63,23 @@ export class NotificationService {
 
   async getUnreadCount(userId: string): Promise<number> {
     return this.notificationRepo.getUnreadCount(userId);
+  }
+
+  // Best-effort realtime relay: publishes the named event plus the legacy
+  // "notification:count_update" alias, both carrying the same unreadCount.
+  private async publishCountEvent(
+    userId: string,
+    event: string,
+    unreadCount: number
+  ): Promise<void> {
+    try {
+      await publishUserSocketEvent(this.redis, userId, event, { unreadCount });
+      await publishUserSocketEvent(this.redis, userId, "notification:count_update", {
+        count: unreadCount,
+        unreadCount,
+      });
+    } catch {
+      // never fail the mutation because the realtime relay failed
+    }
   }
 }

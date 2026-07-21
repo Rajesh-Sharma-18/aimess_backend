@@ -3446,6 +3446,7 @@ export function createNotificationImpl(
               referenceId: entityId,
               isRead: false,
               createdAt: created.createdAt.getTime(),
+              unreadCount,
             };
             if (parsedNavigation !== undefined)
               dto.navigation = parsedNavigation;
@@ -3461,7 +3462,7 @@ export function createNotificationImpl(
               redis,
               req.userId,
               "notification:count_update",
-              { count: unreadCount }
+              { count: unreadCount, unreadCount }
             );
           } catch (err) {
             logger.warn(
@@ -3661,6 +3662,7 @@ export function createNotificationImpl(
                 "notification:deleted",
                 {
                   notificationId: req.notificationId,
+                  unreadCount: remainingUnread,
                 }
               );
             } catch (err) {
