@@ -320,7 +320,7 @@ export function assertCommunityMemberNotMuted(
  */
 export async function assertCommunityReadAccess(
   roomRepo: Pick<GeneralRoomRepository, "findRoomById">,
-  memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
+  memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser" | "upsert">,
   roomId: string,
   userId: string,
   options?: { allowBannedReadCutoff?: boolean }
@@ -356,6 +356,42 @@ export async function assertCommunityReadAccess(
   const room = await roomRepo.findRoomById(roomId);
   if (room?.communityType === "PUBLIC") {
     return { member: null, canRead: true };
+  }
+
+  // Stale-mirror reconciliation — SAME lazy heal used by assertCommunityMember
+  // (see doc there for the full rationale). The local RoomMember is an
+  // eventually-consistent mirror of community-service's authoritative
+  // CommunityMember, fed by the `community.member.synced` RabbitMQ event. A
+  // user whose join-request was just APPROVED is instantly redirected to the
+  // community and hits this guard BEFORE the sync event lands — the mirror
+  // still says "not a member" and the read is wrongly rejected with a 403 the
+  // user only escapes via a hard refresh. On the private-community miss path
+  // (about to throw CHAT_NOT_A_MEMBER), do a single authoritative gRPC lookup:
+  // if community-service says ACTIVE, opportunistically upsert the mirror so
+  // subsequent reads short-circuit locally, and allow this read; if it
+  // confirms non-member (or a transport error occurs), fall through to the
+  // throw. Adds one gRPC call ONLY on the private + non-member miss — the hot
+  // ACTIVE-member and PUBLIC branches short-circuit above.
+  const live = await getCommunityReconcileClient()
+    .checkCommunityMembership({ communityId: roomId, userId })
+    .catch(() => null);
+  if (live && live.isMember && !live.isBanned) {
+    const mapped = {
+      status: "active",
+      role: live.role ? live.role.toLowerCase() : "member",
+      bannedAt: null,
+      leftAt: null,
+    };
+    // Best-effort mirror write — a repo without upsert (some tests) or a DB
+    // write failure must NOT block the read; the RMQ consumer will heal on
+    // its own shortly.
+    const healed = await memberRepo
+      .upsert?.(roomId, userId, mapped)
+      .catch(() => null);
+    logger.info(
+      `assertCommunityReadAccess|reconciled stale mirror via gRPC roomId=${roomId} userId=${userId} status=active healed=${Boolean(healed)}`
+    );
+    return { member: healed ?? null, canRead: true };
   }
 
   // Private (or unsynced) community and not a member — denied.
