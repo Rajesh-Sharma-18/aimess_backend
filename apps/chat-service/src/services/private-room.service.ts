@@ -444,6 +444,9 @@ export class PrivateRoomService {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** V2 compound-cursor tiebreaker; omitted on V1 (inclusive bare-ts bound). */
+    boundaryId?: string | null;
+    inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedPrivateRoom[]> {
     const rooms = await this.privateRoomRepo.getInboxConversations(params);

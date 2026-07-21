@@ -10,6 +10,11 @@ import { createGroupInviteLinkRoutes } from "./group-invite-link.routes.js";
 import { createNotificationRoutes } from "./notification.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
 import { createCommunityV2Routes } from "./community-v2.routes.js";
+import {
+  createPrivateV2Routes,
+  createGroupV2Routes,
+  createInboxV2Routes,
+} from "./chat-v2.routes.js";
 import { createCallRoutes } from "./call.routes.js";
 import { createMessageContextRoutes } from "./message-context.routes.js";
 import { healthRoutes } from "./health.routes.js";
@@ -96,6 +101,15 @@ export function createRoutes(controllers: Controllers): Router {
     "/api/v2/chat/community",
     createCommunityV2Routes(controllers.communityMessageCtrl)
   );
+  router.use(
+    "/api/v2/chat/private",
+    createPrivateV2Routes(controllers.privateMessageCtrl)
+  );
+  router.use(
+    "/api/v2/chat/group",
+    createGroupV2Routes(controllers.groupMessageCtrl)
+  );
+  router.use("/api/v2/chat/inbox", createInboxV2Routes(controllers.inboxCtrl));
   router.use(`${basePath}/calls`, createCallRoutes(controllers.callCtrl));
   router.use(
     `${basePath}/messages`,

@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -184,17 +185,17 @@ export class PrivateRoomRepository {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** V2 keyset tiebreaker parsed from a compound "<ms>_<roomId>" cursor. */
+    boundaryId?: string | null;
+    /** V1 inclusive bound (default); V2 passes false for a strict keyset. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<PrivateRoom[]> {
-    const bound =
-      params.direction === "before"
-        ? { lte: params.ts, not: null }
-        : { gte: params.ts, not: null };
     const dir = params.direction === "before" ? "desc" : "asc";
     return this.prisma.privateRoom.findMany({
       where: {
         participants: { has: params.userId },
-        lastMessageAt: bound,
+        ...buildRoomKeysetWhere(params),
       },
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
       take: params.limit,

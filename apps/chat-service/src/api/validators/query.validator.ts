@@ -57,6 +57,51 @@ export const messageTimelineQuerySchema = z
   });
 
 /**
+ * V2 query schema for the private message timeline
+ * (`GET /api/v2/chat/private/rooms/:roomId/messages`).
+ *
+ * Same Cursor V2 contract as {@link communityTimelineV2QuerySchema}: the opaque
+ * compound `(createdAt, id)` keyset token is the PRIMARY axis, only the param
+ * names change from V1's `before_ts`/`after_ts` to `before_cursor`/`after_cursor`
+ * so V2 carries no timestamp-shaped params at all. Treat the token as OPAQUE —
+ * echo `pagination.nextCursor` back verbatim (a bare epoch-ms is still accepted
+ * for a coarse first jump, exactly as in community V2).
+ *
+ * - `before_cursor`: older page (scroll-up), newest-first.
+ * - `after_cursor` : newer page, oldest-first.
+ * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset (unchanged
+ *   from V1 — private messages already carry a real per-room sequence).
+ * - `around`: jump-to-message window anchored on a messageId.
+ *
+ * Omit everything for the newest page.
+ */
+export const privateTimelineV2QuerySchema = z
+  .object({
+    before_cursor: compoundTsCursor.optional(),
+    after_cursor: compoundTsCursor.optional(),
+    before_seq: z.coerce.number().int().min(0).optional(),
+    after_seq: z.coerce.number().int().min(0).optional(),
+    around: z.string().min(1).max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(30),
+  })
+  .refine((q) => !(q.before_cursor != null && q.after_cursor != null), {
+    message: "Provide either before_cursor or after_cursor, not both",
+    path: ["before_cursor"],
+  })
+  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
+    message: "Provide either before_seq or after_seq, not both",
+    path: ["before_seq"],
+  });
+
+/**
+ * V2 query schema for the GROUP message timeline
+ * (`GET /api/v2/chat/group/rooms/:roomId/messages`). Byte-identical contract to
+ * {@link privateTimelineV2QuerySchema} — group and private share one client
+ * paging path, so they must not drift.
+ */
+export const groupTimelineV2QuerySchema = privateTimelineV2QuerySchema;
+
+/**
  * V2 §3.3: query schema for the per-conversation incremental sync endpoint.
  * `conv_id` is required (seq is per-room); whole-account discovery uses /inbox.
  */
@@ -229,6 +274,41 @@ export const inboxQuerySchema = z
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Please provide only one pagination parameter at a time",
     path: ["before_ts"],
+  });
+
+/**
+ * V2 query schema for the unified inbox (`GET /api/v2/chat/inbox`).
+ *
+ * Replaces V1's bare epoch-ms `before_ts`/`after_ts` with the same opaque
+ * compound keyset token community V2 uses — here `"<lastMessageAtMs>_<roomId>"`,
+ * since the inbox's tiebreaker is the `roomId` both repositories already sort on
+ * (`orderBy: [lastMessageAt, roomId]`), not an ObjectId. This closes V1's
+ * inclusive-boundary duplicate/skip on same-millisecond rows, so clients no
+ * longer have to de-dupe by `roomId`.
+ *
+ * - `before_cursor`: older page (newest-first).
+ * - `after_cursor` : newer page (oldest-first).
+ *
+ * The token is OPAQUE — echo `nextCursor` back verbatim. A bare epoch-ms is
+ * accepted as a coarse jump (exclusive, no tiebreaker). Omit both for the
+ * newest page.
+ */
+const compoundRoomCursor = z
+  .string()
+  .regex(
+    /^\d+(_[A-Za-z0-9_-]{1,64})?$/,
+    "must be epoch-ms or the compound cursor '<ms>_<roomId>'"
+  );
+
+export const inboxV2QuerySchema = z
+  .object({
+    before_cursor: compoundRoomCursor.optional(),
+    after_cursor: compoundRoomCursor.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .refine((q) => !(q.before_cursor != null && q.after_cursor != null), {
+    message: "Provide either before_cursor or after_cursor, not both",
+    path: ["before_cursor"],
   });
 
 /**

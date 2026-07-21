@@ -99,7 +99,36 @@ export class GroupMessageController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true, readToSeq }));
   });
 
-  getMessages = asyncHandler(async (req: Request, res: Response) => {
+  /**
+   * `GET /api/chat/group/rooms/:roomId/messages` — V1 timestamp cursor.
+   * Frozen: V2 clients use {@link getMessagesV2}.
+   */
+  getMessages = asyncHandler((req: Request, res: Response) =>
+    this.listMessages(req, res, "before_ts", "after_ts")
+  );
+
+  /**
+   * `GET /api/v2/chat/group/rooms/:roomId/messages` — Cursor V2. Identical
+   * handler, response and business logic to V1; the ONLY difference is that the
+   * opaque compound `(createdAt, id)` keyset token arrives on
+   * `before_cursor`/`after_cursor`, so V2 exposes no timestamp-shaped params.
+   * Mirrors the private V2 contract exactly (see `PrivateMessageController`).
+   */
+  getMessagesV2 = asyncHandler((req: Request, res: Response) =>
+    this.listMessages(req, res, "before_cursor", "after_cursor")
+  );
+
+  /**
+   * Shared timeline core for V1 + V2. `olderKey`/`newerKey` name the query params
+   * carrying the opaque compound cursor — the single axis that differs between the
+   * two versions. Everything else is version-agnostic.
+   */
+  private async listMessages(
+    req: Request,
+    res: Response,
+    olderKey: "before_ts" | "before_cursor",
+    newerKey: "after_ts" | "after_cursor"
+  ) {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 30;
@@ -183,8 +212,8 @@ export class GroupMessageController {
     // EITHER a plain epoch-ms OR the opaque COMPOUND keyset cursor "<ms>_<id>"
     // handed back as nextCursor. The _id tiebreaker is what keeps messages that
     // share a millisecond reachable instead of skipped at a page boundary.
-    const beforeCursor = parseTsCursor(req.query.before_ts);
-    const afterCursor = parseTsCursor(req.query.after_ts);
+    const beforeCursor = parseTsCursor(req.query[olderKey]);
+    const afterCursor = parseTsCursor(req.query[newerKey]);
     const cursor = afterCursor ?? beforeCursor;
     const direction = afterCursor != null ? "after" : "before";
 
@@ -211,7 +240,7 @@ export class GroupMessageController {
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
-  });
+  }
 
   getConversation = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

@@ -164,6 +164,43 @@ export function parseTsCursor(
 }
 
 /**
+ * Prisma `where` fragment for the inbox's `(lastMessageAt, roomId)` keyset —
+ * the SINGLE axis that differs between the V1 inbox (inclusive bare-timestamp
+ * bound) and the V2 inbox (exclusive compound cursor). Shared by the private-room
+ * and group-room repositories so both sides of the merge apply an identical
+ * boundary; both already `orderBy: [lastMessageAt, roomId]`.
+ *
+ * - `inclusive` (V1 default): `lastMessageAt <= ts` / `>= ts`, no tiebreaker.
+ * - exclusive, no `boundaryId` (V2 bare-ms coarse jump): `< ts` / `> ts`.
+ * - exclusive with `boundaryId` (V2 compound cursor): strict compound keyset, so
+ *   same-millisecond rows are returned exactly once across pages.
+ */
+export function buildRoomKeysetWhere(params: {
+  direction: "before" | "after";
+  ts: Date;
+  boundaryId?: string | null;
+  inclusive?: boolean;
+}): Record<string, unknown> {
+  const { direction, ts, boundaryId = null, inclusive = true } = params;
+  const before = direction === "before";
+
+  if (inclusive) {
+    return { lastMessageAt: before ? { lte: ts, not: null } : { gte: ts, not: null } };
+  }
+  const op = before ? "lt" : "gt";
+  if (!boundaryId) {
+    return { lastMessageAt: { [op]: ts, not: null } };
+  }
+  return {
+    lastMessageAt: { not: null },
+    OR: [
+      { lastMessageAt: { [op]: ts } },
+      { lastMessageAt: ts, roomId: { [op]: boundaryId } },
+    ],
+  };
+}
+
+/**
  * Build a cursor-based pagination filter for Mongoose queries.
  * Uses date-based cursors (ISO string of lastMessageAt or createdAt).
  */

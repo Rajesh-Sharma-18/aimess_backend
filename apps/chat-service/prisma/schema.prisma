@@ -44,6 +44,10 @@ model PrivateRoom {
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
+  // Zero-loss sync CHANGE cursor (Telegram `pts`). Per-room, strictly monotonic,
+  // bumped on EVERY content change (insert, edit, delete-for-everyone, reaction) —
+  // unlike `lastSequence`, bumped only on INSERT. Allocated via `allocateRevision`.
+  lastRevision              Int      @default(0)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -79,6 +83,11 @@ model PrivateMessage {
   deletedAt        DateTime?
   deletedBy        String?
   sequenceNumber   Int       @default(0)
+  // Zero-loss sync CHANGE cursor — the room's `lastRevision` at this message's most
+  // recent state change. Immutable `sequenceNumber` fixes PLACEMENT; mutable `revision`
+  // advances on every change so `/changes` can return an old message's current state
+  // after an edit/delete/reaction. 0 = pre-backfill row.
+  revision         Int       @default(0)
   createdAt        DateTime  @default(now())
   editedAt         DateTime?
   editHistory      Json      @default("[]")
@@ -92,6 +101,9 @@ model PrivateMessage {
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
+  // Backs the zero-loss CHANGES feed: WHERE roomId=? AND revision > ? ORDER BY revision ASC.
+  // Tombstones must replay, so isDeleted is intentionally excluded from this index.
+  @@index([roomId, revision])
   @@index([systemEvent])
   @@index([clientMessageId])
   @@map("private_messages")
@@ -140,6 +152,8 @@ model GroupRoom {
   pinnedCount        Int       @default(0)
   lastPinnedAt       DateTime?
   lastSequence       Int       @default(0)
+  // Zero-loss sync CHANGE cursor (Telegram `pts`) — see PrivateRoom.lastRevision.
+  lastRevision       Int       @default(0)
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
@@ -186,6 +200,8 @@ model GroupMessage {
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
   sequenceNumber     Int       @default(0)
+  // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
+  revision           Int       @default(0)
   createdAt          DateTime  @default(now())
   editedAt           DateTime?
   editHistory        Json      @default("[]")
@@ -197,6 +213,8 @@ model GroupMessage {
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
+  // Backs the zero-loss CHANGES feed — see PrivateMessage's equivalent index.
+  @@index([roomId, revision])
   @@index([clientMessageId])
   @@index([senderId])
   @@index([messageType])

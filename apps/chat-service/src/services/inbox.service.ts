@@ -80,9 +80,15 @@ export class InboxService {
     userId: string;
     direction: InboxDirection;
     ts: Date;
+    /** V2 keyset tiebreaker from a compound "<ms>_<roomId>" cursor. */
+    boundaryId?: string | null;
+    /** V1 inclusive bound (default); V2 passes false for a strict keyset. */
+    inclusive?: boolean;
+    /** V2 emits the compound "<ms>_<roomId>" token; V1 emits bare epoch-ms. */
+    compoundCursor?: boolean;
     limit: number;
   }): Promise<InboxResult> {
-    const { userId, direction, ts, limit } = params;
+    const { userId, direction, ts, boundaryId, inclusive, limit } = params;
 
     // Over-fetch one extra row per side so we can tell — after the in-memory
     // merge — whether a (limit+1)th item exists globally, giving an exact
@@ -95,12 +101,16 @@ export class InboxService {
           userId,
           direction,
           ts,
+          boundaryId,
+          inclusive,
           limit: fetchLimit,
         }),
         this.groupRoomService.getInboxGroups({
           userId,
           direction,
           ts,
+          boundaryId,
+          inclusive,
           limit: fetchLimit,
         }),
         this.privateRoomService.countConversations(userId),
@@ -132,7 +142,9 @@ export class InboxService {
     const lastItem = page[page.length - 1];
     const nextCursor =
       hasMore && lastItem?.lastMessageAt
-        ? String(lastItem.lastMessageAt.getTime())
+        ? params.compoundCursor
+          ? `${lastItem.lastMessageAt.getTime()}_${lastItem.roomId}`
+          : String(lastItem.lastMessageAt.getTime())
         : null;
 
     return {
