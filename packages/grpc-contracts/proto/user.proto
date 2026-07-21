@@ -123,6 +123,13 @@ message FriendshipInfo {
   string user_id = 1;
   string status = 2;    // FRIEND | PENDING | NONE | BLOCKED
   string direction = 3; // OUTGOING | INCOMING | "" (none)
+  // Additive fields for the user-search-shaped relationship contract reused
+  // by chat-service (private room details + inbox). "" when not applicable.
+  string friendship_id = 4; // Friendship row id when FRIEND/PENDING/BLOCKED; "" otherwise.
+  string requester_id  = 5; // Who sent the PENDING request; "" for FRIEND/NONE/BLOCKED.
+  bool   can_accept    = 6;
+  bool   can_reject    = 7;
+  bool   can_cancel    = 8;
 }
 
 message GetFriendshipViewRequest {

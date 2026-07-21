@@ -267,17 +267,23 @@ export function startUserGrpcServer(): grpc.Server {
             ])
           );
           const relationships = candidateIds.map((userId) => {
-            const relationship = toChatRelationship(
-              buildFriendshipView(
-                callerId,
-                rowByPeer.get(userId) ?? null,
-                blockedIds.has(userId)
-              )
+            const row = rowByPeer.get(userId) ?? null;
+            const view = buildFriendshipView(
+              callerId,
+              row,
+              blockedIds.has(userId)
             );
+            const relationship = toChatRelationship(view);
+            const isPending = view.status === "PENDING";
             return {
               userId,
               status: relationship.status,
               direction: relationship.direction ?? "",
+              friendshipId: row?.id ?? "",
+              requesterId: isPending && row ? row.requesterId : "",
+              canAccept: view.canAccept,
+              canReject: view.canReject,
+              canCancel: view.canCancel,
             };
           });
           callback(null, { friendIds, relationships });

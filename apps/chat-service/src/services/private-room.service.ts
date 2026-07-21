@@ -33,7 +33,77 @@ import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 const NONE_RELATIONSHIP: ChatFriendshipInfo = {
   status: "NONE",
   direction: null,
+  friendshipId: null,
+  requesterId: null,
+  canAccept: false,
+  canReject: false,
+  canCancel: false,
 };
+
+/**
+ * Wire shape of the top-level `friendship` field — preserved verbatim from the
+ * pre-existing contract ({status, direction}) so clients that already read it
+ * keep working.
+ */
+export type WireFriendship = {
+  status: "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
+  direction: "OUTGOING" | "INCOMING" | null;
+};
+
+function toWireFriendship(info: ChatFriendshipInfo): WireFriendship {
+  return { status: info.status, direction: info.direction };
+}
+
+/**
+ * User-search-shaped relationship contract (`GET /api/v1/users/search`) that
+ * private-chat responses reuse verbatim on the peer participant of a private
+ * room. Mirrors `SearchUserItem` / `PeerRelationship` in user-service. BLOCKED
+ * collapses to NONE here (search vocabulary) — the existing `friendship` field
+ * on the same response still surfaces the raw BLOCKED state for send-gate use.
+ */
+export type PeerFriendshipRelationship = {
+  isFriend: boolean;
+  relationshipStatus: "FRIEND" | "PENDING" | "NONE";
+  friendshipId: string | null;
+  requesterId: string | null;
+  relationship: {
+    status: "FRIEND" | "PENDING" | "NONE";
+    direction: "OUTGOING" | "INCOMING" | null;
+    canAccept: boolean;
+    canReject: boolean;
+    canCancel: boolean;
+  };
+};
+
+/**
+ * Turns the chat-service `ChatFriendshipInfo` (from user-service gRPC) into
+ * the flat user-search-shaped fields — same rules as user-service's
+ * `toSearchRelationship`, so search REST and private-chat REST agree on
+ * every peer's isFriend/relationshipStatus/friendshipId/requesterId/relationship.
+ */
+export function toPeerFriendshipRelationship(
+  info: ChatFriendshipInfo
+): PeerFriendshipRelationship {
+  const searchStatus: "FRIEND" | "PENDING" | "NONE" =
+    info.status === "FRIEND"
+      ? "FRIEND"
+      : info.status === "PENDING"
+        ? "PENDING"
+        : "NONE";
+  return {
+    isFriend: info.status === "FRIEND",
+    relationshipStatus: searchStatus,
+    friendshipId: info.friendshipId ?? null,
+    requesterId: info.requesterId ?? null,
+    relationship: {
+      status: searchStatus,
+      direction: info.direction,
+      canAccept: info.canAccept ?? false,
+      canReject: info.canReject ?? false,
+      canCancel: info.canCancel ?? false,
+    },
+  };
+}
 
 const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
 
@@ -104,7 +174,7 @@ export type EnrichedPrivateRoom = PrivateRoom & {
  * source of truth for "what happened last and when". The peer's fields are
  * flattened onto the item directly (no nested `peer` object).
  */
-export interface PrivateConversationListItem {
+export interface PrivateConversationListItem extends PeerFriendshipRelationship {
   roomId: string;
   participants: string[];
   peerId: string;
@@ -121,7 +191,7 @@ export interface PrivateConversationListItem {
   lastActivityAt: number;
   lastActivity: PrivateConversationLastActivity;
   isMuted: boolean;
-  friendship: ChatFriendshipInfo;
+  friendship: WireFriendship;
 }
 
 function toConversationListItem(
@@ -143,7 +213,8 @@ function toConversationListItem(
     lastActivityAt: room.lastActivityAt,
     lastActivity: room.lastActivity,
     isMuted: room.isMuted,
-    friendship: room.friendship,
+    friendship: toWireFriendship(room.friendship),
+    ...toPeerFriendshipRelationship(room.friendship),
   };
 }
 
@@ -178,7 +249,7 @@ export interface PrivateRoomDetailsData {
   lastActivity: PrivateConversationLastActivity;
   createdAt: number;
   updatedAt: number;
-  friendship: ChatFriendshipInfo;
+  friendship: WireFriendship;
 }
 
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
@@ -352,7 +423,7 @@ export class PrivateRoomService {
       lastActivity: enriched.lastActivity,
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
-      friendship: enriched.friendship,
+      friendship: toWireFriendship(enriched.friendship),
     };
   }
 

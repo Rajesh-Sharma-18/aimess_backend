@@ -33,12 +33,28 @@ export type ChatFriendshipStatus = "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
 export interface ChatFriendshipInfo {
   status: ChatFriendshipStatus;
   direction: "OUTGOING" | "INCOMING" | null;
+  /**
+   * Additive user-search-shaped fields — optional at the type level so existing
+   * test mocks that only supply {status, direction} keep compiling. The gRPC
+   * client always populates them (defaulting to null/false when missing); the
+   * consumer of `PeerFriendshipRelationship` derives its shape from these.
+   */
+  friendshipId?: string | null;
+  requesterId?: string | null;
+  canAccept?: boolean;
+  canReject?: boolean;
+  canCancel?: boolean;
 }
 
 interface FriendshipInfoRecord {
   userId: string;
   status: string;
   direction: string;
+  friendshipId?: string;
+  requesterId?: string;
+  canAccept?: boolean;
+  canReject?: boolean;
+  canCancel?: boolean;
 }
 
 interface CheckFriendshipsResult {
@@ -168,6 +184,11 @@ export const userGrpcClient = {
               r.direction === "OUTGOING" || r.direction === "INCOMING"
                 ? r.direction
                 : null,
+            friendshipId: r.friendshipId ? r.friendshipId : null,
+            requesterId: r.requesterId ? r.requesterId : null,
+            canAccept: r.canAccept ?? false,
+            canReject: r.canReject ?? false,
+            canCancel: r.canCancel ?? false,
           },
         ])
       );

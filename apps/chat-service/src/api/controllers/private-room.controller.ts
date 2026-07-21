@@ -17,13 +17,13 @@ export class PrivateRoomController {
   getOrCreateRoom = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const idOrPeerId = req.params.peerId as string;
-    if (idOrPeerId.startsWith("prv_")) {
-      const details = await this.service.getRoomDetailsById(userId, idOrPeerId);
-      res.status(HTTP_STATUS.OK).json(new ApiResponse(details));
-      return;
-    }
-    const room = await this.service.getOrCreateRoom(userId, idOrPeerId);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(room));
+    // Both branches return the enriched `PrivateRoomDetailsData` shape (peer
+    // snapshot, avatar, presence, unread, mute, friendship + user-search-shaped
+    // relationship metadata) so GET and POST on the same URL are consistent.
+    const details = idOrPeerId.startsWith("prv_")
+      ? await this.service.getRoomDetailsById(userId, idOrPeerId)
+      : await this.service.getRoomDetails(userId, idOrPeerId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(details));
   });
 
   // Accepts EITHER the room's own id (`prv_<id>` — see lib/room-id.ts, a pure

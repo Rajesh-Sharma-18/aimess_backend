@@ -2,7 +2,9 @@ import type {
   PrivateRoomService,
   EnrichedPrivateRoom,
   PrivateRoomPeer,
+  PeerFriendshipRelationship,
 } from "./private-room.service.js";
+import { toPeerFriendshipRelationship } from "./private-room.service.js";
 import type {
   GroupRoomService,
   EnrichedGroupRoom,
@@ -27,6 +29,17 @@ export interface InboxItem {
   pinnedCount: number;
   // PRIVATE-only
   peer: PrivateRoomPeer | null;
+  /**
+   * PRIVATE-only: user-search-shaped relationship metadata for the peer —
+   * identical fields as `GET /api/v1/users/search` (isFriend, relationshipStatus,
+   * friendshipId, requesterId, relationship{status,direction,can*}). All null
+   * on GROUP rows.
+   */
+  isFriend: boolean | null;
+  relationshipStatus: "FRIEND" | "PENDING" | "NONE" | null;
+  friendshipId: string | null;
+  requesterId: string | null;
+  relationship: PeerFriendshipRelationship["relationship"] | null;
   // GROUP-only
   name: string | null;
   avatar: string | null;
@@ -135,6 +148,7 @@ export class InboxService {
       string,
       number
     >;
+    const rel = toPeerFriendshipRelationship(room.friendship);
     return {
       type: "PRIVATE",
       roomId: room.roomId,
@@ -145,6 +159,11 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
+      isFriend: rel.isFriend,
+      relationshipStatus: rel.relationshipStatus,
+      friendshipId: rel.friendshipId,
+      requesterId: rel.requesterId,
+      relationship: rel.relationship,
       name: null,
       avatar: null,
       description: null,
@@ -172,6 +191,11 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,
+      isFriend: null,
+      relationshipStatus: null,
+      friendshipId: null,
+      requesterId: null,
+      relationship: null,
       name: room.name,
       avatar: room.avatar,
       description: room.description,
