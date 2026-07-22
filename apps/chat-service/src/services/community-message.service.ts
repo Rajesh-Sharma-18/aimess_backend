@@ -33,6 +33,7 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
+  // setStoredReaction,
   reactionUserIdMap,
   type StoredReactor,
   toWireMessage,
@@ -2097,6 +2098,10 @@ export class CommunityMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    /** "set" => caller ends up with exactly `emoji` (re-sending the same one clears it), so a
+     *  reaction CHANGE is ONE call instead of remove-then-add — no intermediate empty broadcast.
+     *  Default/absent keeps the legacy per-emoji toggle. */
+    mode?: string;
   }): Promise<{
     messageId: string;
     roomId: string;

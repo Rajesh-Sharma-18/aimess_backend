@@ -344,6 +344,41 @@ export function toggleStoredReaction(
 }
 
 /**
+ * SET `userId`'s reaction to exactly `emoji` — drops them from EVERY other bucket in one pass and
+ * returns a NEW map. Re-setting the emoji they already have clears it (toggle-off), so a single
+ * entry point covers add / replace / remove.
+ *
+ * Exists because a "change my reaction" is otherwise two toggles (remove old, add new): two writes,
+ * two `message:reaction` broadcasts, and an intermediate state where the user has NO reaction —
+ * which collapses the reaction row and visibly jumps the bubble height on clients. One call = one
+ * write = one broadcast = no intermediate.
+ */
+export function setStoredReaction(
+  raw: unknown,
+  userId: string,
+  emoji: string
+): Record<string, StoredReactor[]> {
+  const out: Record<string, StoredReactor[]> = {};
+  let alreadyHadEmoji = false;
+  if (raw && typeof raw === "object") {
+    for (const [e, list] of Object.entries(raw as Record<string, unknown>)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const entries = list.map(normalizeReactor).filter((r) => r.userId);
+      const kept = entries.filter((r) => r.userId !== userId);
+      if (e === emoji && kept.length !== entries.length) alreadyHadEmoji = true;
+      if (kept.length) out[e] = kept;
+    }
+  }
+  if (!alreadyHadEmoji) {
+    out[emoji] = [
+      ...(out[emoji] ?? []),
+      { userId, userName: "", avatar: "", memberId: "" },
+    ];
+  }
+  return out;
+}
+
+/**
  * Flatten the stored reactions map into the thin `[{ userId, emoji }]` shape used
  * by the gRPC MessageDto (history fetch). Distinct from the grouped broadcast
  * shape — this matches the legacy proto field.

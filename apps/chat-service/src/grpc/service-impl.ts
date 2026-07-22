@@ -934,6 +934,7 @@ export function createMessagingImpl(
             userId: string;
             emoji: string;
             conversationType?: string;
+            mode?: string;
           };
 
           // §2.4: route group reactions to the group collection. The two services

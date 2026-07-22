@@ -22,6 +22,7 @@ import {
   buildReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
+  setStoredReaction,
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
@@ -886,6 +887,22 @@ export class PrivateMessageService {
         message.content
       ),
     };
+  }
+
+  /**
+   * Single-reaction SET: `userId` ends up with exactly `emoji` (or none, if that was already their
+   * reaction). One write instead of the remove-then-add pair, so clients never observe the
+   * intermediate no-reaction state. Un-guarded like {@link react} — callers authorize.
+   */
+  async setReaction(
+    messageId: string,
+    userId: string,
+    emoji: string
+  ): Promise<PrivateMessage | null> {
+    const raw = await this.messageRepo.getReactions(messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const updated = setStoredReaction(raw.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
 
   /**
