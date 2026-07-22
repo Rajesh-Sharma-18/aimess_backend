@@ -376,6 +376,35 @@ export function registerChatNamespace(
           parsed.data,
           personalizeFn
         );
+
+        // Auto-join the conversation room when the user is added to a new
+        // group while their socket is connected, so they immediately receive
+        // message:new/typing for that group without a reconnect or conv:join.
+        // Mirrors community.ns.ts's community-typing auto-join on community:added.
+        if (parsed.event === "group:added") {
+          const addedData = parsed.data as
+            | { roomId?: string }
+            | null
+            | undefined;
+          const newRoomId = addedData?.roomId;
+          if (newRoomId) {
+            void (async () => {
+              try {
+                const sockets = await chat.in(channel).fetchSockets();
+                await Promise.all(
+                  sockets.map((s) => s.join(`conv:${newRoomId}`))
+                );
+                logger.debug(
+                  `/chat auto-joined conv:${newRoomId} for ${sockets.length} socket(s) of userId=${channel.slice("user:".length)}`
+                );
+              } catch (joinErr) {
+                logger.warn(
+                  `/chat auto-join conv room on group:added failed roomId=${newRoomId}: ${String(joinErr)}`
+                );
+              }
+            })();
+          }
+        }
       } catch (err) {
         logger.warn(
           `/chat Redis message parse error on ${channel}: ${String(err)}`
