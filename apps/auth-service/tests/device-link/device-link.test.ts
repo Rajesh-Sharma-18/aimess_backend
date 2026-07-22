@@ -29,6 +29,14 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),
 }));
+// Rate limiting is tested separately in device-link-rate-limit.test.ts; pass-through here.
+jest.mock("../../src/middleware/rate-limiters.js", () => ({
+  qrGenerationRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
+  qrScanRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+  sensitiveAuthRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
+}));
 
 import request from "supertest";
 
@@ -62,6 +70,7 @@ describe("POST /api/auth/devices/link/initiate", () => {
     create.mockResolvedValue({
       linkToken: "link-token-123",
       expiresAt: new Date("2026-01-01T00:05:00.000Z").toISOString(),
+      cancelledToken: null,
     });
   });
 
@@ -83,6 +92,37 @@ describe("POST /api/auth/devices/link/initiate", () => {
     );
   });
 
+  it("cancels a prior pending session when a new QR is generated from the same device", async () => {
+    create.mockResolvedValue({
+      linkToken: "new-token-456",
+      expiresAt: new Date("2026-01-01T00:05:00.000Z").toISOString(),
+      cancelledToken: "old-token-123",
+    });
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/initiate")
+      .send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.linkToken).toBe("new-token-456");
+    // The cancelled prior session must be audited
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_CANCELLED",
+        targetType: "qr_login_session",
+        targetId: "old-token-123",
+      })
+    );
+    // The new session must also be audited
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_CREATED",
+        targetType: "qr_login_session",
+        targetId: "new-token-456",
+      })
+    );
+  });
+
   it("accepts an empty body (all device fields optional) → 201", async () => {
     const res = await request(app)
       .post("/api/auth/devices/link/initiate")
@@ -98,12 +138,15 @@ describe("POST /api/auth/devices/link/initiate", () => {
       .set("CF-IPCountry", "IN")
       .send({});
 
+    // createLinkSession is now called with (deviceInfo, fingerprint) — match
+    // the first argument as an objectContaining and allow any string fingerprint.
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         userAgent: "test-browser-ua",
         countryCode: "IN",
         ipAddress: expect.any(String),
-      })
+      }),
+      expect.any(String)
     );
   });
 

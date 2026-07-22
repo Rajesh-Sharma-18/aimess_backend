@@ -57,6 +57,10 @@ const envSchema = z.object({
 
   /** QR device-link session lifetime (seconds) — spec: 60s. */
   QR_LINK_TTL_SECONDS: z.coerce.number().int().positive().default(60),
+  /** Max QR generation requests per minute per IP (spec: 5). */
+  QR_GENERATION_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
+  /** Max QR scan requests per minute per user/IP (spec: 10). */
+  QR_SCAN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   /**
    * Extra seconds the Redis key survives PAST `expiresAt` so the expiry
    * sweeper (which ticks every QR_LINK_SWEEPER_INTERVAL_MS) has a window to

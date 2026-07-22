@@ -6,8 +6,14 @@
  * returned by any public API. Terminal single-use state is "USED" ("CONSUMED"
  * was the prior name; `getLinkSession` normalizes any pre-existing "CONSUMED"
  * record on read so older in-flight sessions keep working).
+ *
+ * "CANCELLED" is a terminal state applied when the same device generates a new
+ * QR before the old one is scanned (WhatsApp-like session replacement). The
+ * cancelled session is immediately made un-claimable, its waiting browser tab
+ * receives an `auth:qr:cancelled` event, and it is excluded from the sweeper's
+ * expiry-publish flow so no duplicate `auth:qr:expired` is emitted for it.
  */
-export type DeviceLinkState = "PENDING" | "SCANNED" | "USED";
+export type DeviceLinkState = "PENDING" | "SCANNED" | "USED" | "CANCELLED";
 
 /**
  * Device descriptor captured when the new device (the browser showing the QR)
@@ -36,6 +42,8 @@ export type DeviceLinkRecord = {
   scannedAt?: string;
   scannedByUserId?: string;
   usedAt?: string;
+  /** Set when this session is superseded by a new QR from the same device. */
+  cancelledAt?: string;
 };
 
 export type InitiateDeviceLinkResult = {

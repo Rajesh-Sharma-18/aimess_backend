@@ -8,10 +8,13 @@ import { authAuditLogRepository } from "../repositories/auth-audit-log.repositor
  * new event string. Telegram-style instant login (scan IS login, no
  * approve/reject step): QR_LOGIN_ATTEMPT fires when a scan is claimed,
  * QR_LOGIN_SUCCESS when tokens are issued, QR_REUSED_ATTEMPT when a
- * second scan hits an already-claimed/used QR.
+ * second scan hits an already-claimed/used QR. QR_CANCELLED fires when a
+ * prior PENDING session is superseded by a new QR from the same device
+ * (WhatsApp-like one-active-session-per-device replacement).
  */
 export type AuthAuditEvent =
   | "QR_CREATED"
+  | "QR_CANCELLED"
   | "QR_LOGIN_ATTEMPT"
   | "QR_LOGIN_SUCCESS"
   | "QR_REUSED_ATTEMPT"
