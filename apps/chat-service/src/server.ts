@@ -249,9 +249,9 @@ const startServer = async () => {
     }
 
     // Old name for the general_room_messages timeline index; renamed to
-    // general_room_messages_room_createdAt_idx. Dropped only if actually
-    // present — dropMongoIndexIfExists checks listIndexes first, so on
-    // environments that never had it (or already dropped it) this is a no-op.
+    // general_room_messages_room_createdAt_idx. dropMongoIndexIfExists
+    // swallows IndexNotFound, so on environments that never had it (or
+    // already dropped it) this is a no-op.
     await dropMongoIndexIfExists(
       prisma,
       "general_room_messages",

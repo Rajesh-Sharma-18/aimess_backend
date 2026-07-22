@@ -18,16 +18,6 @@ export interface MongoIndexSpec {
   collation?: Record<string, unknown>;
 }
 
-interface RawIndexInfo {
-  name: string;
-  key: Record<string, unknown>;
-  unique?: boolean;
-  sparse?: boolean;
-  partialFilterExpression?: Record<string, unknown>;
-  expireAfterSeconds?: number;
-  collation?: Record<string, unknown>;
-}
-
 function rawCommandErrorMessage(error: unknown): string {
   if (!error || typeof error !== "object") return "";
   const meta = (error as { meta?: { message?: unknown } }).meta;
@@ -42,81 +32,43 @@ function isMongoNotPrimaryError(error: unknown): boolean {
   );
 }
 
-// MongoDB treats {a:1,b:1} and {b:1,a:1} as different indexes — key order
-// matters, so plain JSON.stringify (which preserves insertion order for
-// string keys) is a valid equality check here.
-function sameKeyPattern(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>
-): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+// MongoDB rejects a second index with an identical key pattern under a
+// different name (IndexOptionsConflict / error 85) — the conflicting index's
+// own name is embedded in the driver's error text, e.g. "Index already
+// exists with a different name: <name>". Extracting it lets us log a clean
+// "reusing X" message instead of a bare conflict warning.
+function extractConflictingIndexName(message: string): string | null {
+  const match = /different name:\s*([^\s,)]+)/i.exec(message);
+  return match?.[1] ?? null;
 }
 
-function sameOptions(existing: RawIndexInfo, spec: MongoIndexSpec): boolean {
-  return (
-    Boolean(existing.unique) === Boolean(spec.unique) &&
-    Boolean(existing.sparse) === Boolean(spec.sparse) &&
-    JSON.stringify(existing.partialFilterExpression ?? null) ===
-      JSON.stringify(spec.partialFilterExpression ?? null) &&
-    (existing.expireAfterSeconds ?? null) ===
-      (spec.expireAfterSeconds ?? null) &&
-    JSON.stringify(existing.collation ?? null) ===
-      JSON.stringify(spec.collation ?? null)
+function isIndexOptionsConflict(error: unknown): boolean {
+  return /IndexOptionsConflict|already exists with a different/i.test(
+    rawCommandErrorMessage(error)
   );
 }
 
-async function listIndexes(
-  prisma: RunCommandCapable,
-  collection: string
-): Promise<RawIndexInfo[]> {
-  try {
-    const result = (await prisma.$runCommandRaw({
-      listIndexes: collection,
-    })) as { cursor?: { firstBatch?: RawIndexInfo[] } };
-    return result.cursor?.firstBatch ?? [];
-  } catch (error) {
-    // A collection that doesn't exist yet has no indexes — createIndexes
-    // creates the collection implicitly, so this isn't an error condition.
-    if (/ns does not exist|ns not found/i.test(rawCommandErrorMessage(error))) {
-      return [];
-    }
-    throw error;
-  }
+function isIndexNotFoundError(error: unknown): boolean {
+  return /IndexNotFound|index not found/i.test(rawCommandErrorMessage(error));
 }
 
 /**
- * Idempotently ensures a MongoDB index exists, matched by KEY PATTERN rather
- * than name. MongoDB refuses to create a second index with an identical key
- * pattern under a different name (IndexOptionsConflict / error 85), so if any
- * existing index already covers this key pattern we reuse it silently instead
- * of attempting — and failing — a redundant create. This is also why Prisma's
- * MongoDB connector can't own index lifecycle itself: it only knows
- * create/drop by name, not "an equivalent index already exists elsewhere."
+ * Idempotently ensures a MongoDB index exists.
+ *
+ * Note: this deliberately never calls `listIndexes` to pre-check — that
+ * command returns a cursor-shaped response, and Prisma's `$runCommandRaw`
+ * cannot deserialize cursor responses over MongoDB (it throws "Unknown
+ * tagged value" trying to decode the tagged BSON in `cursor.firstBatch`).
+ * Instead this is purely reactive: attempt the create, and if MongoDB
+ * reports IndexOptionsConflict (error 85 — an equivalent index already
+ * exists under a different name), treat that as success and reuse the
+ * existing index rather than retrying or attempting to drop/recreate it.
  */
 export async function ensureMongoIndex(
   prisma: RunCommandCapable,
   collection: string,
   spec: MongoIndexSpec
 ): Promise<void> {
-  const existing = await listIndexes(prisma, collection);
-  const match = existing.find((idx) => sameKeyPattern(idx.key, spec.key));
-
-  if (match) {
-    if (match.name === spec.name) {
-      logger.info(`Index ready: ${spec.name}`);
-    } else {
-      logger.info(
-        `Index ready: ${spec.name} (reusing existing index "${match.name}" — same key pattern)`
-      );
-      if (!sameOptions(match, spec)) {
-        logger.warn(
-          `Index "${match.name}" shares the key pattern of "${spec.name}" but its options (unique/sparse/partialFilterExpression/TTL/collation) differ — review manually; not recreating.`
-        );
-      }
-    }
-    return;
-  }
-
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -138,9 +90,20 @@ export async function ensureMongoIndex(
           },
         ],
       });
-      logger.info(`Index created: ${spec.name}`);
+      logger.info(`Index ready: ${spec.name}`);
       return;
     } catch (error) {
+      if (isIndexOptionsConflict(error)) {
+        const existingName = extractConflictingIndexName(
+          rawCommandErrorMessage(error)
+        );
+        logger.info(
+          existingName
+            ? `Index ready: ${spec.name} (reusing existing index "${existingName}" — same key pattern)`
+            : `Index ready: ${spec.name} (equivalent index already exists under another name)`
+        );
+        return;
+      }
       if (isMongoNotPrimaryError(error) && attempt < maxAttempts) {
         const delay = 1000 * attempt;
         logger.warn(
@@ -155,21 +118,23 @@ export async function ensureMongoIndex(
 }
 
 /**
- * Drops an index only if it's actually present. Existence is checked via
- * listIndexes first, so a missing index never reaches MongoDB's dropIndexes
- * command and never produces an IndexNotFound (error 27) anywhere.
+ * Drops an index only if it's actually present. Reactive, same reasoning as
+ * `ensureMongoIndex` — no `listIndexes` pre-check. A missing index (error 27
+ * — IndexNotFound) is caught and swallowed silently instead of surfacing.
  */
 export async function dropMongoIndexIfExists(
   prisma: RunCommandCapable,
   collection: string,
   indexName: string
 ): Promise<void> {
-  const existing = await listIndexes(prisma, collection);
-  if (!existing.some((idx) => idx.name === indexName)) return;
-
-  await prisma.$runCommandRaw({
-    dropIndexes: collection,
-    index: indexName,
-  });
-  logger.info(`Stale index dropped: ${indexName}`);
+  try {
+    await prisma.$runCommandRaw({
+      dropIndexes: collection,
+      index: indexName,
+    });
+    logger.info(`Stale index dropped: ${indexName}`);
+  } catch (error) {
+    if (isIndexNotFoundError(error)) return;
+    throw error;
+  }
 }
