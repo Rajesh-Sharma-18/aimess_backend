@@ -738,6 +738,7 @@ export class GroupMessageService {
 
     const deleted = await this.messageRepo.deleteForEveryone(
       messageId,
+      message.roomId,
       userId,
       deletedType
     );
@@ -802,6 +803,7 @@ export class GroupMessageService {
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
     const updated = await this.messageRepo.editMessage(
       params.messageId,
+      message.roomId,
       params.content
     );
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
@@ -832,8 +834,8 @@ export class GroupMessageService {
   ): Promise<GroupMessage | null> {
     const raw = await this.messageRepo.getReactions(messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = toggleStoredReaction(raw, userId, emoji);
-    return this.messageRepo.addReactions(messageId, updated);
+    const updated = toggleStoredReaction(raw.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
 
   /**
@@ -844,6 +846,93 @@ export class GroupMessageService {
    */
   async assertMember(roomId: string, userId: string): Promise<void> {
     await assertGroupMember(this.memberRepo, roomId, userId);
+  }
+
+  /** Deep-gap horizon — same value and rule as community and private. */
+  private readonly REVISION_RESET_HORIZON = 10_000;
+
+  /**
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/group/rooms/:roomId/changes`.
+   * Identical contract to the private equivalent; see it for the full rationale.
+   *
+   * NOTE for clients: per-viewer filtering happens AFTER the page slice, so
+   * `items.length < limit` while `hasMore === true` is legal. Drain on `hasMore`.
+   */
+  async getChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevisionCursor: string | null;
+    items: Awaited<ReturnType<GroupMessageService["enrichForWire"]>>;
+  }> {
+    await this.assertMember(params.roomId, params.userId);
+    const changes = await this.resolveChanges(params);
+    const items = await this.enrichForWire(changes.messages, params.userId);
+
+    return {
+      roomRevision: changes.roomRevision,
+      resetRequired: changes.resetRequired,
+      hasMore: changes.hasMore,
+      nextRevisionCursor:
+        changes.hasMore && changes.nextRevision != null
+          ? String(changes.nextRevision)
+          : null,
+      items,
+    };
+  }
+
+  /**
+   * Shared core for the zero-loss changes feed — used by BOTH the REST `/changes`
+   * endpoint and the socket `chat:catchup(sinceRevision)` path. Assumes access is
+   * already asserted by the caller.
+   */
+  private async resolveChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevision: number | null;
+    messages: GroupMessage[];
+  }> {
+    const roomRevision = await this.roomRepo.getRoomRevision(params.roomId);
+
+    const resetRequired =
+      params.sinceRevision > 0 &&
+      roomRevision - params.sinceRevision > this.REVISION_RESET_HORIZON;
+    if (resetRequired) {
+      return {
+        roomRevision,
+        resetRequired: true,
+        hasMore: false,
+        nextRevision: null,
+        messages: [],
+      };
+    }
+
+    const { messages, hasMore, nextRevision } =
+      await this.messageRepo.findByRoomIdRevisionSince({
+        roomId: params.roomId,
+        userId: params.userId,
+        sinceRevision: params.sinceRevision,
+        limit: params.limit,
+      });
+
+    return {
+      roomRevision,
+      resetRequired: false,
+      hasMore,
+      nextRevision,
+      messages,
+    };
   }
 
   async getMessageContext(
@@ -1010,17 +1099,24 @@ export class GroupMessageService {
    * sequenceNumber > sinceSeq. Includes tombstones (no isDeleted filter) so the
    * client can reconcile deletes/edits missed while offline. Authorizes via the
    * same active-membership check used by sendMessage.
+   *
+   * When `sinceRevision` is set the room switches to the ZERO-LOSS revision axis
+   * instead — see the private equivalent for the full contract.
    */
   async catchup(p: {
     roomId: string;
     userId: string;
     sinceSeq: number;
+    sinceRevision?: number;
     limit: number;
   }): Promise<{
     authorized: boolean;
     events: GroupMessage[];
     hasMore: boolean;
     lastSeq: number;
+    lastRevision: number;
+    roomRevision: number;
+    resetRequired: boolean;
   }> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       p.roomId,
@@ -1032,6 +1128,29 @@ export class GroupMessageService {
         events: [],
         hasMore: false,
         lastSeq: p.sinceSeq,
+        lastRevision: 0,
+        roomRevision: 0,
+        resetRequired: false,
+      };
+    }
+
+    if (p.sinceRevision != null) {
+      const changes = await this.resolveChanges({
+        roomId: p.roomId,
+        userId: p.userId,
+        sinceRevision: p.sinceRevision,
+        limit: p.limit,
+      });
+      return {
+        authorized: true,
+        events: changes.messages,
+        hasMore: changes.hasMore,
+        lastSeq: changes.messages.length
+          ? Math.max(...changes.messages.map((m) => m.sequenceNumber))
+          : p.sinceSeq,
+        lastRevision: changes.nextRevision ?? p.sinceRevision,
+        roomRevision: changes.roomRevision,
+        resetRequired: changes.resetRequired,
       };
     }
 
@@ -1055,7 +1174,15 @@ export class GroupMessageService {
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
 
-    return { authorized: true, events, hasMore, lastSeq };
+    return {
+      authorized: true,
+      events,
+      hasMore,
+      lastSeq,
+      lastRevision: 0,
+      roomRevision: 0,
+      resetRequired: false,
+    };
   }
 
   /**
@@ -1088,7 +1215,7 @@ export class GroupMessageService {
 
     // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
     // grouped result carries the plain id string in users[].userId (not the object).
-    const reactions = reactionUserIdMap(raw);
+    const reactions = reactionUserIdMap(raw.reactions);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =

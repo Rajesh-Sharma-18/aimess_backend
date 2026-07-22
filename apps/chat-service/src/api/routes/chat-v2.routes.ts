@@ -6,6 +6,7 @@ import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   privateTimelineV2QuerySchema,
   groupTimelineV2QuerySchema,
+  chatChangesV2QuerySchema,
   inboxV2QuerySchema,
 } from "../validators/query.validator.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
@@ -39,6 +40,13 @@ export function createPrivateV2Routes(
     messageCtrl.getMessagesV2
   );
 
+  router.get(
+    "/rooms/:roomId/changes",
+    authenticate,
+    validateQuery(chatChangesV2QuerySchema),
+    messageCtrl.getChanges
+  );
+
   return router;
 }
 
@@ -52,6 +60,13 @@ export function createGroupV2Routes(
     authenticate,
     validateQuery(groupTimelineV2QuerySchema),
     messageCtrl.getMessagesV2
+  );
+
+  router.get(
+    "/rooms/:roomId/changes",
+    authenticate,
+    validateQuery(chatChangesV2QuerySchema),
+    messageCtrl.getChanges
   );
 
   return router;
