@@ -84,6 +84,10 @@ import {
   closeEventConsumers,
 } from "./events/index.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
+import {
+  ensureMongoIndex,
+  dropMongoIndexIfExists,
+} from "./lib/mongo-index-manager.js";
 
 let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
@@ -137,149 +141,68 @@ const startServer = async () => {
 
     await waitForMongoWritablePrimary();
 
-    function isMongoNotPrimaryError(error: unknown): boolean {
-      return (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof (error as { message?: string }).message === "string" &&
-        /not primary|not writable primary/i.test(
-          (error as { message: string }).message
-        )
-      );
-    }
-
-    function isMongoIndexNotFoundError(error: unknown): boolean {
-      if (!error || typeof error !== "object") return false;
-      const meta = (error as { meta?: { message?: unknown } }).meta;
-      const msg =
-        (typeof meta?.message === "string" ? meta.message : "") ||
-        (error instanceof Error ? error.message : "");
-      return /index not found|ns not found/i.test(msg);
-    }
-
-    /**
-     * Drops an index that should no longer exist. Used to clean up indexes
-     * that predate the current schema and were never removed via migration
-     * (Mongo indexes aren't reconciled by `prisma generate`/`db push` diffing
-     * the way relational migrations are). Best-effort and idempotent: a
-     * missing index (already dropped, or a fresh DB that never had it) is not
-     * an error.
-     */
-    async function dropStaleIndex(collection: string, indexName: string) {
-      try {
-        await prisma.$runCommandRaw({
-          dropIndexes: collection,
-          index: indexName,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        logger.info(`Stale index dropped: ${indexName}`);
-      } catch (err) {
-        if (isMongoIndexNotFoundError(err)) return;
-        logger.warn(`Failed to drop stale index ${indexName} — continuing`);
-        logger.warn(err);
-      }
-    }
-
-    async function ensureIndex(
-      collection: string,
-      indexBody: Record<string, unknown>,
-      indexName: string
-    ) {
-      const maxAttempts = 5;
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        try {
-          await prisma.$runCommandRaw({
-            createIndexes: collection,
-            indexes: [indexBody],
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any);
-          logger.info(`Index ensured: ${indexName}`);
-          return;
-        } catch (err) {
-          if (isMongoNotPrimaryError(err) && attempt < maxAttempts) {
-            const delay = 1000 * attempt;
-            logger.warn(
-              `MongoDB not primary yet for ${indexName}, retrying in ${delay}ms...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            continue;
-          }
-          throw err;
-        }
-      }
-    }
-
-    const textIndexes = [
+    const textIndexes: {
+      collection: string;
+      key: Record<string, 1 | -1 | "text">;
+      name: string;
+    }[] = [
       {
         collection: "private_messages",
-        body: {
-          key: { "content.text": "text" },
-          name: "private_messages_content_text_idx",
-        },
+        key: { "content.text": "text" },
         name: "private_messages_content_text_idx",
       },
       {
         collection: "group_messages",
-        body: {
-          key: { "content.text": "text" },
-          name: "group_messages_content_text_idx",
-        },
+        key: { "content.text": "text" },
         name: "group_messages_content_text_idx",
       },
       {
         collection: "general_room_messages",
-        body: {
-          key: { message: "text" },
-          name: "general_room_messages_message_idx",
-        },
+        key: { message: "text" },
         name: "general_room_messages_message_idx",
       },
     ];
     for (const idx of textIndexes) {
       try {
-        await ensureIndex(idx.collection, idx.body, idx.name);
+        await ensureMongoIndex(prisma, idx.collection, {
+          key: idx.key,
+          name: idx.name,
+        });
       } catch (err) {
         logger.warn(`Failed to create text index ${idx.name} — continuing`);
         logger.warn(err);
       }
     }
 
-    const idemIndexes = [
+    const idemIndexes: {
+      collection: string;
+      key: Record<string, 1 | -1 | "text">;
+      name: string;
+    }[] = [
       {
         collection: "private_messages",
-        body: {
-          key: { roomId: 1, senderId: 1, clientMessageId: 1 },
-          name: "private_messages_idempotency_idx",
-          unique: true,
-          partialFilterExpression: { clientMessageId: { $type: "string" } },
-        },
+        key: { roomId: 1, senderId: 1, clientMessageId: 1 },
         name: "private_messages_idempotency_idx",
       },
       {
         collection: "group_messages",
-        body: {
-          key: { roomId: 1, senderId: 1, clientMessageId: 1 },
-          name: "group_messages_idempotency_idx",
-          unique: true,
-          partialFilterExpression: { clientMessageId: { $type: "string" } },
-        },
+        key: { roomId: 1, senderId: 1, clientMessageId: 1 },
         name: "group_messages_idempotency_idx",
       },
       {
         collection: "general_room_messages",
-        body: {
-          key: { roomId: 1, sentBy: 1, clientMessageId: 1 },
-          name: "general_room_messages_idempotency_idx",
-          unique: true,
-          partialFilterExpression: { clientMessageId: { $type: "string" } },
-        },
+        key: { roomId: 1, sentBy: 1, clientMessageId: 1 },
         name: "general_room_messages_idempotency_idx",
       },
     ];
     for (const idx of idemIndexes) {
       try {
-        await ensureIndex(idx.collection, idx.body, idx.name);
+        await ensureMongoIndex(prisma, idx.collection, {
+          key: idx.key,
+          name: idx.name,
+          unique: true,
+          partialFilterExpression: { clientMessageId: { $type: "string" } },
+        });
       } catch (err) {
         logger.warn(
           `Failed to create idempotency index ${idx.name} — continuing`
@@ -292,7 +215,10 @@ const startServer = async () => {
     // the V2 seq history page, and the zero-loss revision changes feed. Declared
     // on the schema too; created here so existing deployments pick them up
     // without a `prisma db push`. _id is the implicit trailing sort key in Mongo.
-    const timelineIndexes = [
+    const timelineIndexes: {
+      key: Record<string, 1 | -1 | "text">;
+      name: string;
+    }[] = [
       {
         key: { roomId: 1, createdAt: -1 },
         name: "general_room_messages_room_createdAt_idx",
@@ -312,11 +238,10 @@ const startServer = async () => {
     ];
     for (const idx of timelineIndexes) {
       try {
-        await ensureIndex(
-          "general_room_messages",
-          { key: idx.key, name: idx.name },
-          idx.name
-        );
+        await ensureMongoIndex(prisma, "general_room_messages", {
+          key: idx.key,
+          name: idx.name,
+        });
       } catch (err) {
         logger.warn(`Failed to create ${idx.name} — continuing`);
         logger.warn(err);
@@ -324,8 +249,11 @@ const startServer = async () => {
     }
 
     // Old name for the general_room_messages timeline index; renamed to
-    // general_room_messages_room_createdAt_idx — drop so re-creation succeeds.
-    await dropStaleIndex(
+    // general_room_messages_room_createdAt_idx. Dropped only if actually
+    // present — dropMongoIndexIfExists checks listIndexes first, so on
+    // environments that never had it (or already dropped it) this is a no-op.
+    await dropMongoIndexIfExists(
+      prisma,
       "general_room_messages",
       "general_room_messages_roomId_createdAt_idx"
     );
@@ -336,7 +264,8 @@ const startServer = async () => {
     // It was never introduced via a tracked schema/migration, so it can't be
     // reconciled by `prisma generate`/`db push`; drop it explicitly on every
     // startup so any environment still carrying it self-heals.
-    await dropStaleIndex(
+    await dropMongoIndexIfExists(
+      prisma,
       "community_message_pins",
       "community_message_pins_roomId_messageId_key"
     );
@@ -470,7 +399,10 @@ const startServer = async () => {
       userSnapshotService
     );
 
-    const notificationService = new NotificationService(notificationRepo, redis);
+    const notificationService = new NotificationService(
+      notificationRepo,
+      redis
+    );
     const liveKitService = new LiveKitService();
     const friendshipRepo = new FriendshipRepository();
     const resolveCallUserSnapshot = async (userId: string) => {
