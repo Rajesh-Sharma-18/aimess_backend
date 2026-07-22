@@ -174,6 +174,12 @@ const MessageReactSchemaBase = z.object({
     (v) => (typeof v === "string" ? v.toLowerCase() : v),
     z.enum(["private", "group"]).default("private")
   ),
+  // "set" => the caller ends up with exactly `emoji` (re-sending the same one clears it), so a
+  // reaction CHANGE is one event instead of remove-then-add. Defaults to the legacy toggle.
+  mode: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["toggle", "set"]).default("toggle")
+  ),
 });
 const MessagesFetchSchemaBase = z.object({
   conversationId: z.string().min(1),

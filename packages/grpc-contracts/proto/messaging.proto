@@ -316,6 +316,9 @@ message SendReactionRequest {
   string           user_id            = 3;
   string           emoji              = 4;
   ConversationType conversation_type  = 5;
+  // "set" => caller ends up with exactly `emoji` (re-sending the same one clears it).
+  // Empty/"toggle" (default) keeps the legacy per-emoji toggle, so existing clients are unaffected.
+  string           mode               = 6;
 }
 message SendReactionResponse {
   string message_id        = 1;

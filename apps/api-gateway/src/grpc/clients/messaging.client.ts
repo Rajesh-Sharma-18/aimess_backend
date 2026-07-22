@@ -119,6 +119,8 @@ export interface SendReactionParams {
   emoji: string;
   /** §2.4: route group reactions to the group collection (default private). */
   conversationType?: string;
+  /** "set" => caller ends up with exactly `emoji`; default "toggle" is the legacy per-emoji flip. */
+  mode?: string;
 }
 export interface SendReactionResult {
   messageId: string;
@@ -519,6 +521,7 @@ export function createMessagingClient(): MessagingClient {
         userId: p.userId,
         emoji: p.emoji,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        mode: String(p.mode ?? "").toLowerCase() === "set" ? "set" : "toggle",
       });
     }
   );

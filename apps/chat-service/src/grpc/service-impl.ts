@@ -934,6 +934,7 @@ export function createMessagingImpl(
             userId: string;
             emoji: string;
             conversationType?: string;
+            mode?: string;
           };
 
           // §2.4: route group reactions to the group collection. The two services
@@ -981,11 +982,21 @@ export function createMessagingImpl(
           // adds the reactor on first react, removes it on a duplicate react
           // (toggle-off) — and persists the canonical reactor-object shape. The
           // getMessageReactions call below flattens it to the wire shape.
-          const msg = await reactionService.react(
-            req.messageId,
-            req.userId,
-            req.emoji
-          );
+          // mode="set" collapses a reaction CHANGE into one write + one broadcast. The legacy
+          // toggle needed two round-trips (remove old, add new), and the gap between them
+          // broadcast an empty reaction set — clients rendered it and the bubble height jumped.
+          const msg =
+            String(req.mode ?? "").toLowerCase() === "set"
+              ? await reactionService.setReaction(
+                  req.messageId,
+                  req.userId,
+                  req.emoji
+                )
+              : await reactionService.react(
+                  req.messageId,
+                  req.userId,
+                  req.emoji
+                );
 
           // Flatten stored reactions for the gRPC ack (V1 thin shape — the
           // ReactionDto proto carries {userId, emoji}; the gateway maps it).
