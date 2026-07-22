@@ -442,7 +442,8 @@ const startServer = async () => {
     const groupMemberService = new GroupMemberService(
       groupMemberRepo,
       groupRoomRepo,
-      groupSystemMessageService
+      groupSystemMessageService,
+      redis
     );
     const groupRoomService = new GroupRoomService(
       groupRoomRepo,

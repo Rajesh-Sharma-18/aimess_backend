@@ -5,6 +5,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 
+import { publishChatUserEvent } from "@aimess/redis";
+import { logger } from "@aimess/logger";
+import type { Redis, Cluster } from "ioredis";
+
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
@@ -17,7 +21,8 @@ export class GroupMemberService {
   constructor(
     private readonly memberRepo: GroupMemberRepository,
     private readonly roomRepo: GroupRoomRepository,
-    private readonly sysMsg: GroupSystemMessageService
+    private readonly sysMsg: GroupSystemMessageService,
+    private readonly redis: Redis | Cluster
   ) {}
 
   /**
@@ -117,7 +122,53 @@ export class GroupMemberService {
       });
     }
 
+    // The new member isn't in `conv:<roomId>` yet (that room is joined only by
+    // an explicit client `conv:join`), so no room broadcast can reach them.
+    // Their personal `user:<id>` channel can — same reason community fans out
+    // `community:added`. Payload is a full inbox row: the client upserts it
+    // directly and must NOT back-fill from REST.
+    this.emitGroupAdded(room, member, params.userId);
+
     return member;
+  }
+
+  /**
+   * `group:added` → `user:<addedUserId>`. Fire-and-forget: a socket failure must
+   * never fail the add. Re-reads the room so the row carries the preview/ts the
+   * MEMBER_ADDED system message just wrote (the caller's copy predates it).
+   */
+  private emitGroupAdded(
+    staleRoom: { roomId: string },
+    member: GroupMember,
+    addedUserId: string
+  ): void {
+    void (async () => {
+      const room =
+        (await this.roomRepo.findActiveByRoomId(staleRoom.roomId)) ?? null;
+      if (!room) return;
+      await publishChatUserEvent(this.redis, addedUserId, "group:added", {
+        type: "GROUP",
+        roomId: room.roomId,
+        lastMessageAt: room.lastMessageAt,
+        lastMessageId: room.lastMessageId,
+        lastMessage: room.lastMessagePreview ?? null,
+        unreadCount: 0,
+        isMuted: false,
+        pinnedCount: room.pinnedCount,
+        peer: null,
+        name: room.name,
+        avatar: room.avatar,
+        description: room.description,
+        memberCount: room.memberCount,
+        role: member.role,
+        isJoined: true,
+        addedAt: member.joinedAt,
+      });
+    })().catch((err: unknown) => {
+      logger.warn(
+        `GroupMemberService|group:added publish failed room=${staleRoom.roomId} user=${addedUserId}: ${String(err)}`
+      );
+    });
   }
 
   async leave(roomId: string, userId: string): Promise<GroupMember | null> {
