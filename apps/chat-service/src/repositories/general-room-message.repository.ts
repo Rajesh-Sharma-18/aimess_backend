@@ -1286,6 +1286,29 @@ export class GeneralRoomMessageRepository {
     });
   }
 
+  /**
+   * Compare-and-swap reaction write: only applies when the document's `revision`
+   * still matches what the caller last read (bumped on EVERY state change, so any
+   * concurrent mutation — another reaction, an edit, a delete — invalidates it).
+   * Returns false on a lost race so the caller can re-read and retry, closing the
+   * non-atomic read-modify-write gap without needing per-emoji Mongo array ops.
+   */
+  async updateReactionsCas(
+    messageId: string,
+    reactions: Record<string, unknown[]>,
+    expectedRevision: number,
+    newRevision: number
+  ): Promise<boolean> {
+    const result = await this.prisma.generalRoomMessage.updateMany({
+      where: { id: messageId, revision: expectedRevision },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        revision: newRevision,
+      },
+    });
+    return result.count > 0;
+  }
+
   async deleteForUser(messageId: string, userId: string): Promise<void> {
     await this.prisma.$runCommandRaw({
       update: "general_room_messages",

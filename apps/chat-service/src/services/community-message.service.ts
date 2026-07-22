@@ -1,6 +1,7 @@
 ﻿import { logger } from "@aimess/logger";
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GoneError,
   NotFoundError,
@@ -33,6 +34,7 @@ import {
   normalizeMessageType,
   toggleStoredReaction,
   reactionUserIdMap,
+  type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
   buildReplyQuoteSnapshot,
@@ -2114,84 +2116,103 @@ export class CommunityMessageService {
     /** The reacted-to message's own preview text (quoted text or media label). */
     targetMessagePreview: string;
   }> {
-    const message = await this.messageRepo.findById(params.messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    if (message.deletedForAll)
+    const first = await this.messageRepo.findById(params.messageId);
+    if (!first) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (first.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
-    if (normalizeMessageType(message.messageType) === "SYSTEM")
+    if (normalizeMessageType(first.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Guard: only active members may react (banned → USER_BANNED).
     const member = await this.memberRepo.findByRoomAndUser(
-      message.roomId,
+      first.roomId,
       params.userId
     );
     assertRoomMemberActive(member);
     // A muted member can neither add NOR remove a reaction (this path toggles).
     assertCommunityMemberNotMuted(member);
     // ...and only when the community room is open (closed/suspended → read-only).
-    assertCommunityRoomWritable(
-      await this.roomRepo.findRoomById(message.roomId)
-    );
+    assertCommunityRoomWritable(await this.roomRepo.findRoomById(first.roomId));
 
-    // Determine add vs remove BEFORE toggling — the lastActivity preview must
-    // only bump on add (Telegram never shows a "removed their reaction" line).
-    const wasReactedByUser = (
-      reactionUserIdMap(message.reactions)[params.emoji] ?? []
-    ).includes(params.userId);
-    const added = !wasReactedByUser;
+    // Compare-and-swap loop: two concurrent reacts on the same message would
+    // otherwise both read the same stale `reactions` map and each write back
+    // an independently-computed result, silently dropping one of them (lost
+    // update). `revision` is bumped on EVERY state change to this message, so
+    // matching it in the write's WHERE clause turns the write into a CAS —
+    // a losing racer's write affects 0 rows and retries against fresh state.
+    const MAX_ATTEMPTS = 5;
+    let message = first;
+    let added = false;
+    let enrichedReactions: Record<string, StoredReactor[]> = {};
+    let revision = message.revision;
+    let snaps = new Map<string, Record<string, unknown>>();
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const refetched = await this.messageRepo.findById(params.messageId);
+        if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+        message = refetched;
+      }
 
-    // Toggle the reactor in/out of the emoji bucket (shared with private/group);
-    // non-atomic read-modify-write, acceptable at current scale.
-    const updatedReactions = toggleStoredReaction(
-      message.reactions,
-      params.userId,
-      params.emoji
-    );
+      // Determine add vs remove BEFORE toggling — the lastActivity preview must
+      // only bump on add (Telegram never shows a "removed their reaction" line).
+      const wasReactedByUser = (
+        reactionUserIdMap(message.reactions)[params.emoji] ?? []
+      ).includes(params.userId);
+      added = !wasReactedByUser;
 
-    // Fetch snapshots BEFORE persisting so the stored document carries real
-    // userName / avatar / memberId (fixes the raw `reactions` field on read).
-    const allUserIds = [
-      ...new Set(
-        Object.values(updatedReactions)
-          .flat()
-          .map((e) => e.userId)
-          .filter(Boolean)
-      ),
-    ];
+      // Toggle the reactor in/out of the emoji bucket (shared with private/group).
+      const updatedReactions = toggleStoredReaction(
+        message.reactions,
+        params.userId,
+        params.emoji
+      );
 
-    const snaps =
-      allUserIds.length > 0
-        ? await this.userSnapshotService.getUserSnapshotsMap(
-            allUserIds,
-            this.cacheRepo
-          )
-        : new Map<string, Record<string, unknown>>();
+      // Fetch snapshots BEFORE persisting so the stored document carries real
+      // userName / avatar / memberId (fixes the raw `reactions` field on read).
+      const allUserIds = [
+        ...new Set(
+          Object.values(updatedReactions)
+            .flat()
+            .map((e) => e.userId)
+            .filter(Boolean)
+        ),
+      ];
 
-    // Enrich stored reactor objects with live profile data.
-    const enrichedReactions: Record<string, (typeof updatedReactions)[string]> =
-      {};
-    for (const [emoji, reactors] of Object.entries(updatedReactions)) {
-      enrichedReactions[emoji] = reactors.map((r) => {
-        const snap = snaps.get(r.userId);
-        return {
-          userId: r.userId,
-          userName: (snap?.displayName as string) || r.userName || "",
-          avatar: (snap?.avatar as string) || r.avatar || "",
-          memberId: (snap?.memberId as string) || r.memberId || "",
-        };
-      });
+      snaps =
+        allUserIds.length > 0
+          ? await this.userSnapshotService.getUserSnapshotsMap(
+              allUserIds,
+              this.cacheRepo
+            )
+          : new Map<string, Record<string, unknown>>();
+
+      // Enrich stored reactor objects with live profile data.
+      enrichedReactions = {};
+      for (const [emoji, reactors] of Object.entries(updatedReactions)) {
+        enrichedReactions[emoji] = reactors.map((r) => {
+          const snap = snaps.get(r.userId);
+          return {
+            userId: r.userId,
+            userName: (snap?.displayName as string) || r.userName || "",
+            avatar: (snap?.avatar as string) || r.avatar || "",
+            memberId: (snap?.memberId as string) || r.memberId || "",
+          };
+        });
+      }
+
+      // Reaction change bumps the room CHANGE revision so the changes feed
+      // replays the message's current aggregate to offline clients.
+      revision = await this.roomRepo.allocateRevision(message.roomId);
+      const applied = await this.messageRepo.updateReactionsCas(
+        params.messageId,
+        enrichedReactions,
+        message.revision,
+        revision
+      );
+      if (applied) break;
+      if (attempt === MAX_ATTEMPTS - 1)
+        throw new ConflictError("CHAT_REACTION_CONFLICT");
     }
-
-    // Reaction change bumps the room CHANGE revision so the changes feed replays
-    // the message's current aggregate to offline clients.
-    const revision = await this.roomRepo.allocateRevision(message.roomId);
-    await this.messageRepo.updateById(
-      message.roomId,
-      params.messageId,
-      enrichedReactions,
-      revision
-    );
 
     // Resolve the stored avatar object-keys to full presigned download URLs so
     // both the REST response and the socket broadcast carry real URLs.

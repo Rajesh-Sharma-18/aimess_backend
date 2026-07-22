@@ -309,10 +309,13 @@ export function reactionUserIdMap(raw: unknown): Record<string, string[]> {
 
 /**
  * Toggle `userId`'s `emoji` reaction in the stored map and return a NEW map (the
- * input is not mutated). Absent → append the canonical reactor object; present →
- * remove it, pruning the emoji bucket when it empties. Carried-over entries are
- * normalized to the canonical object shape, so the persisted result is always
- * well-formed regardless of how legacy rows were written.
+ * input is not mutated). One reaction per user (WhatsApp-style): the user is
+ * first removed from EVERY emoji bucket, then re-added to `emoji` UNLESS that
+ * was the bucket they were just removed from (same-emoji tap = toggle-off);
+ * reacting with a different emoji than before replaces it instead of stacking.
+ * Carried-over entries are normalized to the canonical object shape, so the
+ * persisted result is always well-formed regardless of how legacy rows were
+ * written.
  */
 export function toggleStoredReaction(
   raw: unknown,
@@ -320,19 +323,23 @@ export function toggleStoredReaction(
   emoji: string
 ): Record<string, StoredReactor[]> {
   const out: Record<string, StoredReactor[]> = {};
+  let hadSameEmoji = false;
   if (raw && typeof raw === "object") {
     for (const [e, list] of Object.entries(raw as Record<string, unknown>)) {
       if (!Array.isArray(list) || list.length === 0) continue;
-      const entries = list.map(normalizeReactor).filter((r) => r.userId);
+      const normalized = list.map(normalizeReactor).filter((r) => r.userId);
+      if (e === emoji && normalized.some((r) => r.userId === userId))
+        hadSameEmoji = true;
+      const entries = normalized.filter((r) => r.userId !== userId);
       if (entries.length) out[e] = entries;
     }
   }
-  const bucket = out[emoji] ?? [];
-  const idx = bucket.findIndex((r) => r.userId === userId);
-  if (idx !== -1) bucket.splice(idx, 1);
-  else bucket.push({ userId, userName: "", avatar: "", memberId: "" });
-  if (bucket.length === 0) delete out[emoji];
-  else out[emoji] = bucket;
+  if (!hadSameEmoji) {
+    out[emoji] = [
+      ...(out[emoji] ?? []),
+      { userId, userName: "", avatar: "", memberId: "" },
+    ];
+  }
   return out;
 }
 

@@ -360,7 +360,9 @@ export function buildReactionActivityText(params: {
   return {
     thirdPersonPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
     selfPreview: `You reacted ${emoji} to ${targetMessagePreview}`,
-    targetPreview: `${actorName} reacted ${emoji} to your message`,
+    // Target (message owner) sees WHAT was reacted to, same as everyone else —
+    // not a vague "your message" placeholder.
+    targetPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
   };
 }
 
