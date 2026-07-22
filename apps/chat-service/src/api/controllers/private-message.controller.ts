@@ -101,7 +101,74 @@ export class PrivateMessageController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true, readToSeq }));
   });
 
-  getMessages = asyncHandler(async (req: Request, res: Response) => {
+  /**
+   * `GET /private/rooms/:roomId/messages` (V1) — timestamp-named cursor params.
+   * Frozen: V2 clients use {@link getMessagesV2}.
+   */
+  getMessages = asyncHandler((req: Request, res: Response) =>
+    this.listMessages(req, res, "before_ts", "after_ts")
+  );
+
+  /**
+   * `GET /api/v2/chat/private/rooms/:roomId/messages` — Cursor V2. Identical
+   * handler, response and business logic to V1; the ONLY difference is that the
+   * opaque compound `(createdAt, id)` keyset token arrives on
+   * `before_cursor`/`after_cursor` instead of `before_ts`/`after_ts`, so V2
+   * exposes no timestamp-shaped pagination params. Matches the community V2
+   * contract (see `communityTimelineV2QuerySchema`).
+   */
+  getMessagesV2 = asyncHandler((req: Request, res: Response) =>
+    this.listMessages(req, res, "before_cursor", "after_cursor")
+  );
+
+  /**
+   * V2 — `GET /api/v2/chat/private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
+   * Returns every message whose room CHANGE `revision > since_revision` (inserts AND
+   * edits/deletes/reactions), current state, ordered revision ASC, plus `roomRevision`
+   * (new high-water), `resetRequired` (deep-gap re-baseline) and `nextRevisionCursor`.
+   * Mirrors the community `/changes` envelope exactly.
+   */
+  getChanges = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceRevision = Number(req.query.since_revision) || 0;
+    const limit = Number(req.query.limit) || 100;
+
+    const result = await this.messageService.getChanges({
+      roomId,
+      userId,
+      sinceRevision,
+      limit,
+    });
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          roomRevision: result.roomRevision,
+          resetRequired: result.resetRequired,
+          hasMore: result.hasMore,
+          nextRevisionCursor: result.nextRevisionCursor,
+          data: result.items,
+        },
+        result.items.length
+          ? t("CHAT_MESSAGES_FETCHED", req.locale)
+          : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+      )
+    );
+  });
+
+  /**
+   * Shared timeline core for V1 + V2. `olderKey`/`newerKey` name the query params
+   * that carry the opaque compound cursor — the single axis that differs between
+   * the two versions. Everything else (access guard, seq keyset, around window,
+   * enrichment, serialization, envelope) is version-agnostic.
+   */
+  private async listMessages(
+    req: Request,
+    res: Response,
+    olderKey: "before_ts" | "before_cursor",
+    newerKey: "after_ts" | "after_cursor"
+  ) {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 30;
@@ -182,12 +249,12 @@ export class PrivateMessageController {
       return;
     }
 
-    // Timestamp pagination (epoch ms) — V1 fallback. before_ts/after_ts are EITHER
-    // a plain epoch-ms OR the opaque COMPOUND keyset cursor "<ms>_<id>" handed back
-    // as nextCursor. The _id tiebreaker keeps messages that share a millisecond
-    // reachable instead of skipped at a page boundary.
-    const beforeCursor = parseTsCursor(req.query.before_ts);
-    const afterCursor = parseTsCursor(req.query.after_ts);
+    // Compound `(createdAt, _id)` keyset pagination. The cursor is EITHER a plain
+    // epoch-ms (first page / coarse jump) OR the opaque COMPOUND cursor
+    // "<ms>_<id>" handed back as nextCursor. The _id tiebreaker keeps messages
+    // that share a millisecond reachable instead of skipped at a page boundary.
+    const beforeCursor = parseTsCursor(req.query[olderKey]);
+    const afterCursor = parseTsCursor(req.query[newerKey]);
     const cursor = afterCursor ?? beforeCursor;
     const direction = afterCursor != null ? "after" : "before";
 
@@ -217,7 +284,7 @@ export class PrivateMessageController {
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
-  });
+  }
 
   getRoomMedia = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

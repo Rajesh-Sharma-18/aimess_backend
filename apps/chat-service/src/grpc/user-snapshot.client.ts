@@ -17,6 +17,8 @@ interface UserSnapshotRecord {
   username: string;
   displayName: string;
   avatarObjectKey: string;
+  /** Presigned GET URL, resolved server-side by user-service. "" when none. */
+  avatarUrl: string;
 }
 
 interface BulkSnapshotsResult {
@@ -33,17 +35,59 @@ export type ChatFriendshipStatus = "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
 export interface ChatFriendshipInfo {
   status: ChatFriendshipStatus;
   direction: "OUTGOING" | "INCOMING" | null;
+  /**
+   * Additive user-search-shaped fields — optional at the type level so existing
+   * test mocks that only supply {status, direction} keep compiling. The gRPC
+   * client always populates them (defaulting to null/false when missing); the
+   * consumer of `PeerFriendshipRelationship` derives its shape from these.
+   */
+  friendshipId?: string | null;
+  requesterId?: string | null;
+  canAccept?: boolean;
+  canReject?: boolean;
+  canCancel?: boolean;
 }
 
 interface FriendshipInfoRecord {
   userId: string;
   status: string;
   direction: string;
+  friendshipId?: string;
+  requesterId?: string;
+  canAccept?: boolean;
+  canReject?: boolean;
+  canCancel?: boolean;
 }
 
 interface CheckFriendshipsResult {
   friendIds: string[];
   relationships: FriendshipInfoRecord[];
+}
+
+export type FriendshipViewStatus =
+  | "NONE"
+  | "PENDING"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "CANCELLED"
+  | "UNFRIENDED"
+  | "BLOCKED";
+
+export interface FriendshipView {
+  status: FriendshipViewStatus;
+  direction: "OUTGOING" | "INCOMING" | null;
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
+}
+
+interface FriendshipViewRecord {
+  found: boolean;
+  status: string;
+  direction: string;
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
 }
 
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
@@ -89,6 +133,18 @@ const checkFriendshipsBreaker: Breaker<
     )
 );
 
+const getFriendshipViewBreaker: Breaker<
+  { friendshipId: string; viewerId: string },
+  FriendshipViewRecord
+> = makeBreaker(
+  "user.getFriendshipView",
+  (args: { friendshipId: string; viewerId: string }) =>
+    call<{ friendshipId: string; viewerId: string }, FriendshipViewRecord>(
+      "getFriendshipView",
+      args
+    )
+);
+
 export const userGrpcClient = {
   async bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[]> {
     const result = await bulkGetUserSnapshotsBreaker.fire({ userIds });
@@ -130,11 +186,48 @@ export const userGrpcClient = {
               r.direction === "OUTGOING" || r.direction === "INCOMING"
                 ? r.direction
                 : null,
+            friendshipId: r.friendshipId ? r.friendshipId : null,
+            requesterId: r.requesterId ? r.requesterId : null,
+            canAccept: r.canAccept ?? false,
+            canReject: r.canReject ?? false,
+            canCancel: r.canCancel ?? false,
           },
         ])
       );
     } catch {
       return new Map();
+    }
+  },
+
+  /**
+   * Current friendship state for a Notification Center row, viewer-relative.
+   * Notification is an immutable event log — this is the dynamic lookup that
+   * resolves whether a FRIEND_REQUEST row is still actionable. Fail-open to
+   * null on transport failure so a friendship-service blip never 500s the
+   * notifications list; the caller falls back to omitting `friendship`.
+   */
+  async getFriendshipView(
+    friendshipId: string,
+    viewerId: string
+  ): Promise<FriendshipView | null> {
+    try {
+      const r = await getFriendshipViewBreaker.fire({
+        friendshipId,
+        viewerId,
+      });
+      if (!r.found) return null;
+      return {
+        status: (r.status || "NONE") as FriendshipViewStatus,
+        direction:
+          r.direction === "OUTGOING" || r.direction === "INCOMING"
+            ? r.direction
+            : null,
+        canAccept: r.canAccept,
+        canReject: r.canReject,
+        canCancel: r.canCancel,
+      };
+    } catch {
+      return null;
     }
   },
 };

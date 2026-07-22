@@ -64,12 +64,14 @@ export function isWriteConflictError(err: unknown): boolean {
  * unchanged so callers' existing error handling is unaffected.
  *
  * The jitter de-correlates racing senders so they don't all retry in lockstep
- * and re-collide. Defaults (5 attempts, ~10/20/40/80ms capped at 100ms +
- * jitter) comfortably absorb a human typing/pasting a burst into one room.
+ * and re-collide. Defaults (8 attempts, ~10/20/40/80/100/100/100/100ms +
+ * jitter, capped at 100ms per attempt) comfortably absorb a rapid burst of
+ * ~20+ concurrent sends into a single room without any writer exhausting its
+ * retry budget — the intermittent SERVICE_ERROR ack.
  */
 export async function withWriteConflictRetry<T>(
   op: () => Promise<T>,
-  attempts = 5
+  attempts = 8
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {

@@ -43,6 +43,7 @@ import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
+import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
@@ -65,6 +66,7 @@ import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import { resolveNotificationFriendship } from "../lib/notification-friendship.enricher.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -206,6 +208,33 @@ function publishRealtimeSafe(
     });
 }
 
+/**
+ * Fan `message:new` out on every participant's PERSONAL bus, in addition to the
+ * `conv:<roomId>` room broadcast.
+ *
+ * WHY BOTH. A socket joins `conv:<id>` only when the client opens that chat
+ * (`conversation:join`), but joins `user:<id>` on connect. So the room broadcast
+ * alone reaches a recipient ONLY while they are sitting in that exact chat — not
+ * when they are on the chat list, in a different chat, or backgrounded, which is
+ * the normal case. Those recipients therefore never ran the client's delivery-receipt
+ * path, and the sender's bubble stayed on a single tick forever.
+ *
+ * `conv:updated` already uses this personal-bus pattern, which is why the inbox row
+ * updated while the message event itself went missing.
+ *
+ * Clients dedupe by `serverMessageId` (and the delivery receipt is debounced per room),
+ * so a recipient who IS in the chat and receives both copies is a no-op.
+ */
+function publishMessageNewToParticipants(
+  recipientIds: string[],
+  payload: unknown,
+  context: string
+): void {
+  for (const userId of new Set(recipientIds.filter(Boolean))) {
+    publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
+  }
+}
+
 export function createMessagingImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
@@ -248,9 +277,13 @@ export function createMessagingImpl(
           // after the call and used to suppress duplicate fan-out.
           let alreadySent = false;
 
-          const conversationType = String(
-            req.conversationType ?? ""
-          ).toUpperCase();
+          // Authoritative: derived from the room id, NOT req.conversationType.
+          // A client claiming "private" for a grp_ room was being sent through
+          // the friendship gate ("You must be friends to message this user").
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
           const content = parseMessageContent(req);
           if (conversationType === "GROUP") {
             msg = await deps.groupMessageService.sendMessage({
@@ -327,12 +360,37 @@ export function createMessagingImpl(
                   row as unknown as { countInUnread?: boolean | null }
                 ).countInUnread,
               });
+              const bcastContext = `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
               publishRealtimeSafe(
                 `conv:${req.conversationId}`,
                 "message:new",
                 rowPayload,
-                `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
+                bcastContext
               );
+              // Personal bus too — reaches recipients who don't have this chat open,
+              // which is what makes the delivered tick work. See the helper's KDoc.
+              if (conversationType === "GROUP") {
+                void deps.groupMessageService
+                  .getActiveMemberIds(req.conversationId)
+                  .then((ids) =>
+                    publishMessageNewToParticipants(
+                      ids,
+                      rowPayload,
+                      bcastContext
+                    )
+                  )
+                  .catch((err: unknown) => {
+                    logger.warn(
+                      `message:new personal fan-out failed ${bcastContext}: ${String(err)}`
+                    );
+                  });
+              } else {
+                publishMessageNewToParticipants(
+                  [req.senderId, req.receiverId],
+                  rowPayload,
+                  bcastContext
+                );
+              }
             }
           }
 
@@ -876,6 +934,7 @@ export function createMessagingImpl(
             userId: string;
             emoji: string;
             conversationType?: string;
+            mode?: string;
           };
 
           // §2.4: route group reactions to the group collection. The two services
@@ -919,28 +978,17 @@ export function createMessagingImpl(
             );
           }
 
-          // §2.4 toggle: react() reads-modifies-writes the stored reactor map —
-          // adds the reactor on first react, removes it on a duplicate react
-          // (toggle-off) — and persists the canonical reactor-object shape. The
-          // getMessageReactions call below flattens it to the wire shape.
-          const msg = await reactionService.react(
-            req.messageId,
-            req.userId,
-            req.emoji
-          );
-
-          // Flatten stored reactions for the gRPC ack (V1 thin shape — the
-          // ReactionDto proto carries {userId, emoji}; the gateway maps it).
-          const stored = (msg as Record<string, unknown>).reactions as
-            | Record<string, Array<{ userId: string }>>
-            | undefined;
-          const reactions: Array<{ emoji: string; userId: string }> = [];
-          if (stored && typeof stored === "object") {
-            for (const [emoji, users] of Object.entries(stored)) {
-              for (const u of users)
-                reactions.push({ emoji, userId: u.userId });
-            }
-          }
+          // §2.4 CAS toggle (PrivateMessageService.reactCas / GroupMessageService.
+          // reactCas): adds the reactor on first react, removes it on a duplicate
+          // react (toggle-off), one reaction per user — and also returns the
+          // add/remove + target info needed to bump the WhatsApp-style
+          // lastActivity below. The getMessageReactions call further down
+          // flattens the persisted reactions to the wire shape.
+          const toggled = await reactionService.reactToMessage({
+            messageId: req.messageId,
+            userId: req.userId,
+            emoji: req.emoji,
+          });
 
           // V2 §2.4: broadcast the full ChatReactionGroup[] shape (emoji, count,
           // users[displayName+avatar]) so the live push renders the reaction bar
@@ -967,21 +1015,22 @@ export function createMessagingImpl(
               })
             );
           } catch (groupErr) {
-            // Non-fatal: fall back to a thin grouping derived from stored ids so
-            // the broadcast still carries something renderable.
+            // Non-fatal: the reaction write already succeeded (toggled above);
+            // a grouping-read failure just degrades the broadcast to an empty
+            // set rather than failing the whole react — the ack still reflects
+            // the true persisted state on the next getMessageReactions call.
             logger.warn(
               `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
             );
-            const byEmoji = new Map<string, Set<string>>();
-            for (const r of reactions) {
-              if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, new Set());
-              byEmoji.get(r.emoji)!.add(r.userId);
-            }
-            reactionGroups = [...byEmoji.entries()].map(([emoji, ids]) => ({
-              emoji,
-              count: ids.size,
-              users: [...ids].map((userId) => ({ userId })),
-            }));
+            reactionGroups = [];
+          }
+
+          // Flatten stored reactions for the gRPC ack (V1 thin shape — the
+          // ReactionDto proto carries {userId, emoji}; the gateway maps it).
+          const reactions: Array<{ emoji: string; userId: string }> = [];
+          for (const g of reactionGroups) {
+            for (const u of g.users as Array<{ userId: string }>)
+              reactions.push({ emoji: g.emoji, userId: u.userId });
           }
 
           // Resolve-on-read: reactor avatars in the live reaction bar.
@@ -1027,6 +1076,24 @@ export function createMessagingImpl(
               emoji: r.emoji,
             })),
           });
+
+          // WhatsApp-style lastActivity bump/revert — fire-and-forget, never
+          // blocks the ack (mirrors the REST reactDirect wrapper's identical call).
+          void deps.chatMessageOrchestrator
+            .bumpReactionActivity({
+              conversationType:
+                reactConversationType === "GROUP" ? "GROUP" : "PRIVATE",
+              roomId: req.conversationId,
+              messageId: req.messageId,
+              emoji: req.emoji,
+              actorId: req.userId,
+              added: toggled.added,
+              targetUserId: toggled.targetUserId,
+              targetMessagePreview: toggled.targetMessagePreview,
+            })
+            .catch((err: unknown) =>
+              logger.warn(`sendReaction activity bump failed: ${String(err)}`)
+            );
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -1529,6 +1596,67 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Room-independent typing fan-out roster for private/group — the exact
+     * mirror of community-service's GetCommunityActiveMemberIds.
+     *
+     * The returned list does double duty for the gateway, identically to the
+     * community implementation: (1) membership validation for the sender — a
+     * non-participant / non-ACTIVE member never appears, so
+     * `userIds.includes(senderId)` replaces a second round trip — and (2) the
+     * recipient roster for direct `user:<id>` delivery.
+     *
+     * Reuses the EXISTING lookups (PrivateRoom.participants,
+     * GroupMessageService.getActiveMemberIds) — no new repository method.
+     * Never throws: an unknown room is an empty roster, which the gateway
+     * treats as "not authorized, broadcast nothing" (fail-closed).
+     */
+    getRoomParticipantIds: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId?: string;
+            conversationType?: string;
+          };
+          const conversationId = req.conversationId ?? "";
+          if (!conversationId) {
+            callback(null, { userIds: [] });
+            return;
+          }
+
+          if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
+            const userIds =
+              await deps.groupMessageService.getActiveMemberIds(conversationId);
+            callback(null, { userIds });
+            return;
+          }
+
+          // PRIVATE (explicit or defaulted). `conversationType` is an ADDITIVE
+          // socket field, so already-shipped clients typing in a GROUP room
+          // send no hint at all and land here. Falling back to the group
+          // roster when the room is not a private one keeps those clients
+          // working — without it, group typing would silently resolve to an
+          // empty roster and stop being delivered. The fallback costs one
+          // extra indexed lookup only in that legacy-group case.
+          const room = await deps.privateRoomRepo.findByRoomId(conversationId);
+          const userIds = room
+            ? (room.participants ?? [])
+            : await deps.groupMessageService.getActiveMemberIds(conversationId);
+
+          callback(null, { userIds });
+        } catch (err) {
+          // Fail-closed: an empty roster suppresses the indicator rather than
+          // leaking it. Typing is presence-only, so a dropped event is
+          // strictly better than an unauthorized broadcast or a socket error.
+          logger.warn(`gRPC getRoomParticipantIds error: ${String(err)}`);
+          callback(null, { userIds: [] });
+        }
+      })();
+    },
+
     catchupRoom: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -1541,6 +1669,7 @@ export function createMessagingImpl(
             sinceSeq: string | number;
             limit: number;
             conversationType: string;
+            sinceRevision: number | string; // int64 (string at runtime); -1 = not revision mode
           };
 
           const conversationType = String(
@@ -1550,18 +1679,30 @@ export function createMessagingImpl(
           const sinceSeq = Number(req.sinceSeq ?? 0);
           const limit = Math.min(Math.max(req.limit || 100, 1), 200);
 
+          // ZERO-LOSS revision cursor. The gateway sends -1 when the client did
+          // NOT opt in (0 is a VALID cold-start cursor), so only >= 0 enables
+          // revision mode — a raw request omitting the field (int64 default 0)
+          // stays on the legacy since_seq axis. Mirrors communityCatchup.
+          const sinceRevisionRaw = Number(req.sinceRevision);
+          const sinceRevision =
+            Number.isFinite(sinceRevisionRaw) && sinceRevisionRaw >= 0
+              ? sinceRevisionRaw
+              : undefined;
+
           const result =
             conversationType === "GROUP"
               ? await deps.groupMessageService.catchup({
                   roomId: req.conversationId,
                   userId: req.requesterId,
                   sinceSeq,
+                  sinceRevision,
                   limit,
                 })
               : await deps.privateMessageService.catchup({
                   roomId: req.conversationId,
                   userId: req.requesterId,
                   sinceSeq,
+                  sinceRevision,
                   limit,
                 });
 
@@ -1587,6 +1728,8 @@ export function createMessagingImpl(
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
               systemEvent: systemEvent ?? "",
               systemData: systemData ? JSON.stringify(systemData) : "",
+              // Zero-loss CHANGE cursor per message.
+              revision: (e as { revision?: number }).revision ?? 0,
             };
           });
 
@@ -1596,6 +1739,10 @@ export function createMessagingImpl(
             hasMore: result.hasMore,
             lastSeq: result.lastSeq,
             authorized: result.authorized,
+            // Zero-loss revision-mode fields (0/false in since_seq mode).
+            roomRevision: result.roomRevision,
+            lastRevision: result.lastRevision,
+            resetRequired: result.resetRequired,
           });
         } catch (err) {
           logger.error(`gRPC catchupRoom error: ${String(err)}`);
@@ -3384,6 +3531,7 @@ export function createNotificationImpl(
               referenceId: entityId,
               isRead: false,
               createdAt: created.createdAt.getTime(),
+              unreadCount,
             };
             if (parsedNavigation !== undefined)
               dto.navigation = parsedNavigation;
@@ -3399,7 +3547,7 @@ export function createNotificationImpl(
               redis,
               req.userId,
               "notification:count_update",
-              { count: unreadCount }
+              { count: unreadCount, unreadCount }
             );
           } catch (err) {
             logger.warn(
@@ -3443,44 +3591,54 @@ export function createNotificationImpl(
             req.userId
           );
 
-          const notifications = rows.map((n) => {
-            const payloadObj = (n.payload ?? {}) as {
-              title?: string;
-              body?: string;
-              data?: Record<string, string>;
-            };
-            const rawData = payloadObj.data ?? {};
-            const entity = (n.entity ?? {}) as { id?: string };
+          const notifications = await Promise.all(
+            rows.map(async (n) => {
+              const payloadObj = (n.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const rawData = payloadObj.data ?? {};
+              const entity = (n.entity ?? {}) as { id?: string };
 
-            let navParsed: unknown;
-            let actorParsed: unknown;
-            try {
-              if (rawData.navigation)
-                navParsed = JSON.parse(rawData.navigation);
-            } catch {
-              /* skip */
-            }
-            try {
-              if (rawData.actorSnapshot)
-                actorParsed = JSON.parse(rawData.actorSnapshot);
-            } catch {
-              /* skip */
-            }
+              let navParsed: unknown;
+              let actorParsed: unknown;
+              try {
+                if (rawData.navigation)
+                  navParsed = JSON.parse(rawData.navigation);
+              } catch {
+                /* skip */
+              }
+              try {
+                if (rawData.actorSnapshot)
+                  actorParsed = JSON.parse(rawData.actorSnapshot);
+              } catch {
+                /* skip */
+              }
 
-            const row: Record<string, unknown> = {
-              notificationId: n.id,
-              userId: n.userId,
-              type: n.type,
-              title: payloadObj.title ?? "",
-              body: payloadObj.body ?? "",
-              referenceId: entity.id ?? "",
-              isRead: n.isRead,
-              createdAt: n.createdAt.getTime(),
-            };
-            if (navParsed !== undefined) row.navigation = navParsed;
-            if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
-            return row;
-          });
+              const row: Record<string, unknown> = {
+                notificationId: n.id,
+                userId: n.userId,
+                type: n.type,
+                title: payloadObj.title ?? "",
+                body: payloadObj.body ?? "",
+                referenceId: entity.id ?? "",
+                isRead: n.isRead,
+                createdAt: n.createdAt.getTime(),
+              };
+              if (navParsed !== undefined) row.navigation = navParsed;
+              if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
+
+              const friendship = await resolveNotificationFriendship(
+                req.userId as string,
+                n.type,
+                rawData.friendshipId
+              );
+              if (friendship) row.friendship = friendship;
+
+              return row;
+            })
+          );
 
           // Cursor pagination: full page → assume there is a next page, hand
           // back the oldest row's timestamp as the cursor (findByUserId pages
@@ -3589,6 +3747,7 @@ export function createNotificationImpl(
                 "notification:deleted",
                 {
                   notificationId: req.notificationId,
+                  unreadCount: remainingUnread,
                 }
               );
             } catch (err) {

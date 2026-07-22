@@ -83,6 +83,11 @@ function makeService(
 
   const roomRepo = {
     allocateSequence: jest.fn(async () => 7),
+    allocateRevision: jest.fn(async () => 1),
+    allocateSequenceAndRevision: jest.fn(async () => ({
+      sequenceNumber: 7,
+      revision: 1,
+    })),
     addLastestMessageToRoom: jest.fn(async () => undefined),
   };
 

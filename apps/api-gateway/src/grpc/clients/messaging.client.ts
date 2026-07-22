@@ -119,6 +119,8 @@ export interface SendReactionParams {
   emoji: string;
   /** §2.4: route group reactions to the group collection (default private). */
   conversationType?: string;
+  /** "set" => caller ends up with exactly `emoji`; default "toggle" is the legacy per-emoji flip. */
+  mode?: string;
 }
 export interface SendReactionResult {
   messageId: string;
@@ -187,6 +189,9 @@ export interface CatchupRoomParams {
   sinceSeq: number;
   limit: number;
   conversationType: string;
+  /** ZERO-LOSS revision cursor. Omit to stay on the legacy sinceSeq axis — the
+   *  client sends the -1 "not revision mode" sentinel, since 0 is a valid cold start. */
+  sinceRevision?: number;
 }
 export interface CatchupEventDto {
   messageId: string;
@@ -202,6 +207,8 @@ export interface CatchupEventDto {
   editedAt: number;
   systemEvent: string;
   systemData: string;
+  /** Per-message CHANGE cursor (Telegram pts). 0 when the row predates the backfill. */
+  revision?: number;
 }
 export interface CatchupRoomResult {
   conversationId: string;
@@ -209,6 +216,23 @@ export interface CatchupRoomResult {
   hasMore: boolean;
   lastSeq: number;
   authorized: boolean;
+  /** Revision-mode fields — 0/false in sinceSeq mode. */
+  roomRevision?: number;
+  lastRevision?: number;
+  resetRequired?: boolean;
+}
+
+/**
+ * Typing-indicator roster for private/group. Mirrors community's
+ * getCommunityActiveMemberIds — one call yields both the sender-membership
+ * check and the direct-delivery recipient list.
+ */
+export interface GetRoomParticipantIdsParams {
+  conversationId: string;
+  conversationType?: string;
+}
+export interface GetRoomParticipantIdsResult {
+  userIds: string[];
 }
 
 export interface GetMessageReactionsParams {
@@ -317,6 +341,9 @@ export interface MessagingClient {
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
   handleLiveKitRoomFinished(p: { roomName: string }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
+  getRoomParticipantIds(
+    p: GetRoomParticipantIdsParams
+  ): Promise<GetRoomParticipantIdsResult>;
 }
 
 export function createMessagingClient(): MessagingClient {
@@ -494,6 +521,7 @@ export function createMessagingClient(): MessagingClient {
         userId: p.userId,
         emoji: p.emoji,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        mode: String(p.mode ?? "").toLowerCase() === "set" ? "set" : "toggle",
       });
     }
   );
@@ -667,8 +695,22 @@ export function createMessagingClient(): MessagingClient {
         sinceSeq: p.sinceSeq,
         limit: p.limit,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        // -1 = client did not opt into revision mode (0 IS a valid cold start).
+        sinceRevision: p.sinceRevision ?? -1,
       });
     }
+  );
+
+  const getRoomParticipantIdsBreaker = makeBreaker(
+    "messaging.getRoomParticipantIds",
+    (p: GetRoomParticipantIdsParams) =>
+      call<unknown, GetRoomParticipantIdsResult>("getRoomParticipantIds", {
+        conversationId: p.conversationId,
+        conversationType:
+          String(p.conversationType ?? "private").toUpperCase() === "GROUP"
+            ? "GROUP"
+            : "PRIVATE",
+      })
   );
 
   return {
@@ -693,5 +735,6 @@ export function createMessagingClient(): MessagingClient {
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
     handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
+    getRoomParticipantIds: (p) => getRoomParticipantIdsBreaker.fire(p),
   };
 }

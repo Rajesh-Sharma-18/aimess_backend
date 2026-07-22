@@ -249,7 +249,8 @@ export function buildApp(): BuiltApp {
   const groupMemberService = new GroupMemberService(
     groupMemberRepo,
     groupRoomRepo,
-    groupSystemMessageService
+    groupSystemMessageService,
+    redis
   );
   const groupRoomService = new GroupRoomService(
     groupRoomRepo,

@@ -40,6 +40,26 @@ function mockLiveRole(role: "ADMIN" | "MODERATOR" | "MEMBER" | ""): void {
   });
 }
 
+/**
+ * Prime the authoritative gRPC verdict to say "genuinely not a member" for
+ * tests modeling a PRIVATE non-member. The stale-mirror reconciliation added to
+ * assertCommunityReadAccess (fixes the join-request-approved → 403 race by
+ * doing an authoritative live-check on the private-community miss path) only
+ * denies when the AUTHORITATIVE store also confirms non-member — otherwise the
+ * default mock's `isMember: true` would heal the mirror and let the read
+ * through, invalidating the assertion.
+ */
+function mockLiveNotMember(): void {
+  (getCommunityReconcileClient as jest.Mock).mockReturnValueOnce({
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: false,
+      isBanned: false,
+      status: "LEFT",
+      role: "",
+    })),
+  });
+}
+
 const ROOM_ID = "c".repeat(24);
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
@@ -783,6 +803,7 @@ describe("assertCommunityReadAccess", () => {
   });
 
   it("blocks a NON-member from a PRIVATE community", async () => {
+    mockLiveNotMember();
     await expect(
       assertCommunityReadAccess(
         makeRoomRepo("PRIVATE") as never,
@@ -794,6 +815,7 @@ describe("assertCommunityReadAccess", () => {
   });
 
   it("fails closed (blocks) when the room's communityType is unsynced (null)", async () => {
+    mockLiveNotMember();
     await expect(
       assertCommunityReadAccess(
         makeRoomRepo(null) as never,
@@ -845,6 +867,7 @@ describe("assertCommunityReadAccess", () => {
   });
 
   it("allowBannedReadCutoff: still rejects a non-member of a PRIVATE community (the option only changes BANNED handling)", async () => {
+    mockLiveNotMember();
     await expect(
       assertCommunityReadAccess(
         makeRoomRepo("PRIVATE") as never,
@@ -901,6 +924,7 @@ describe("CommunityMessageService.getMessages access", () => {
   });
 
   it("non-member is blocked from a PRIVATE community history", async () => {
+    mockLiveNotMember();
     const { service, messageRepo } = build(null, "PRIVATE");
     await expect(
       service.getMessages({ roomId: ROOM_ID, userId: USER_ID, limit: 30 })
@@ -995,6 +1019,7 @@ describe("CommunityMessageService.getConversation / listMedia — banned read cu
   });
 
   it("getConversation blocks a non-member of a PRIVATE community", async () => {
+    mockLiveNotMember();
     const { service } = build(null, "PRIVATE");
     await expect(
       service.getConversation({
@@ -1019,6 +1044,7 @@ describe("CommunityMessageService.getConversation / listMedia — banned read cu
   });
 
   it("listMedia blocks a non-member of a PRIVATE community", async () => {
+    mockLiveNotMember();
     const { service } = build(null, "PRIVATE");
     await expect(
       service.listMedia({ roomId: ROOM_ID, userId: USER_ID, limit: 20 })
@@ -1048,6 +1074,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
     };
     const roomRepo = {
       allocateSequence: jest.fn().mockResolvedValue(1),
+      allocateRevision: jest.fn().mockResolvedValue(1),
+      allocateSequenceAndRevision: jest
+        .fn()
+        .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
       addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
     };
     const cacheRepo = {};

@@ -561,15 +561,17 @@ export class CommunityMessageController {
   reactToMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { emoji } = req.body as {
+    const { emoji, mode } = req.body as {
       communityId: string;
       emoji: string;
+      mode?: string;
     };
 
     const result = await this.service.reactToMessage({
       messageId,
       userId,
       emoji,
+      mode,
     });
 
     this.redis

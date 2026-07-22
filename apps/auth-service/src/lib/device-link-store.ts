@@ -27,6 +27,20 @@ function linkKey(linkToken: string): string {
   return `aimess:devlink:${linkToken}`;
 }
 
+/**
+ * Secondary index: maps a device fingerprint (derived from userAgent + IP,
+ * same as buildSessionContext's `deviceId`) to the most-recently-created
+ * PENDING QR linkToken for that device. Written atomically alongside the main
+ * QR record in `createLinkSession`, deleted when the session is cancelled,
+ * used, or expired. Allows "replace prior session" without a full SCAN.
+ *
+ * TTL intentionally matches the main record's extended TTL so the index never
+ * outlives the record it points to.
+ */
+function fingerprintKey(fingerprint: string): string {
+  return `aimess:devlink:fp:${fingerprint}`;
+}
+
 /** QR token: UUID v4, per spec. Never put anything else in the QR content. */
 function generateLinkToken(): string {
   return randomUUID();
@@ -59,6 +73,9 @@ return 'OK'
  * USED (terminal, single-use). No intermediate "approved but not yet
  * collected" state and no tokens stored in Redis: the caller already has the
  * freshly-issued tokens in memory and returns/emits them directly.
+ *
+ * Also removes the fingerprint pointer so a fresh QR can be created
+ * immediately on the same device after a successful scan.
  */
 const FINALIZE_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
@@ -71,6 +88,13 @@ if rec.scannedByUserId ~= ARGV[2] then return 'WRONG_USER' end
 rec.state = 'USED'
 rec.usedAt = ARGV[1]
 redis.call('SET', KEYS[1], cjson.encode(rec), 'KEEPTTL')
+if ARGV[3] ~= '' then
+  local fp_key = ARGV[3]
+  local current = redis.call('GET', fp_key)
+  if current == KEYS[1]:sub(16) then
+    redis.call('DEL', fp_key)
+  end
+end
 return 'OK'
 `;
 
@@ -81,6 +105,9 @@ return 'OK'
  * running) observes 'OK' for a given key; every other replica's concurrent
  * attempt on the same key sees a state that is no longer PENDING/SCANNED and
  * gets 'ALREADY', so `auth:qr:expired` is published exactly once.
+ *
+ * CANCELLED sessions are already terminal — they are skipped (returns 'ALREADY')
+ * so no duplicate `auth:qr:expired` is emitted for a superseded session.
  */
 const MARK_EXPIRED_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
@@ -93,9 +120,85 @@ redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', 10)
 return 'OK'
 `;
 
+/**
+ * Cancel atomically: atomically flips a PENDING session to CANCELLED (terminal).
+ * Used when the same device generates a new QR — the old session is superseded
+ * instantly so the waiting browser tab can be told immediately via
+ * `auth:qr:cancelled`, and the old token can never be scanned into.
+ *
+ * Only PENDING sessions are cancellable — a SCANNED session is mid-login and
+ * must not be interrupted; the result 'IN_PROGRESS' tells the caller to leave
+ * it alone and let the login complete or expire naturally.
+ *
+ * KEYS[1] = aimess:devlink:{oldLinkToken}
+ * ARGV[1] = ISO timestamp (cancelledAt)
+ */
+const CANCEL_SESSION_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 'NOT_FOUND' end
+local rec = cjson.decode(raw)
+if rec.state == 'SCANNED' then return 'IN_PROGRESS' end
+if rec.state ~= 'PENDING' then return 'ALREADY' end
+rec.state = 'CANCELLED'
+rec.cancelledAt = ARGV[1]
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', 10)
+return 'OK'
+`;
+
+/**
+ * Create a new QR link session, automatically superseding any prior PENDING
+ * session from the same device (identified by `fingerprint`, the sha256 of
+ * userAgent + IP captured in `buildSessionContext`).
+ *
+ * Returns the new linkToken/expiresAt plus — if a prior session was cancelled —
+ * the old linkToken so the service layer can publish `auth:qr:cancelled` to
+ * the old browser tab. The caller MUST publish the cancel event; this function
+ * only updates Redis state.
+ *
+ * WhatsApp-like guarantee: one active QR per device. Rapid re-generation from
+ * the same browser (refresh, multiple tabs) never accumulates stale PENDING
+ * sessions and can never trigger the IP-based rate limiter through normal
+ * browser behaviour.
+ */
 export async function createLinkSession(
-  device: DeviceLinkDeviceInfo
-): Promise<{ linkToken: string; expiresAt: string }> {
+  device: DeviceLinkDeviceInfo,
+  /** sha256(userAgent|ip) from buildSessionContext — used as the per-device index key. */
+  fingerprint: string
+): Promise<{
+  linkToken: string;
+  expiresAt: string;
+  cancelledToken: string | null;
+}> {
+  const fpKey = fingerprintKey(fingerprint);
+
+  // ── Step 1: Atomically cancel any prior PENDING session for this device. ──
+  // Look up the fingerprint pointer; if it points to a live PENDING session,
+  // cancel it. The cancel Lua script is atomic — a concurrent scan/login on
+  // the old token is either already SCANNED (IN_PROGRESS → we skip) or wins
+  // the PENDING → CANCELLED flip before us (NOT_FOUND/ALREADY → we skip).
+  let cancelledToken: string | null = null;
+
+  const priorToken = await redis.get(fpKey);
+  if (priorToken) {
+    const cancelResult = (await redis.eval(
+      CANCEL_SESSION_SCRIPT,
+      1,
+      linkKey(priorToken),
+      new Date().toISOString()
+    )) as string;
+
+    if (cancelResult === "OK") {
+      cancelledToken = priorToken;
+    }
+    // IN_PROGRESS: a scan is happening on the old QR right now — don't disrupt
+    // it. Leave the fingerprint pointer; the FINALIZE_SCRIPT will clean it up.
+    // NOT_FOUND / ALREADY: already gone — clean up the stale pointer.
+    if (cancelResult !== "IN_PROGRESS") {
+      await redis.del(fpKey);
+    }
+  }
+
+  // ── Step 2: Create the new session and write the fingerprint pointer. ──
   const linkToken = generateLinkToken();
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + LINK_TTL_SECONDS * 1000);
@@ -107,15 +210,23 @@ export async function createLinkSession(
     expiresAt: expiresAt.toISOString(),
   };
 
-  await redis.set(
-    linkKey(linkToken),
-    JSON.stringify(record),
-    "EX",
-    REDIS_KEY_TTL_SECONDS,
-    "NX"
-  );
+  // Pipeline: write the QR record + fingerprint index together. We intentionally
+  // use SET without NX here (unlike the old code) because the UUID guarantees
+  // uniqueness and we've already cancelled the prior session above. The
+  // fingerprint pointer overwrites any stale entry (e.g. a cancelled token we
+  // just cleaned up) in one atomic step.
+  await redis
+    .multi()
+    .set(
+      linkKey(linkToken),
+      JSON.stringify(record),
+      "EX",
+      REDIS_KEY_TTL_SECONDS
+    )
+    .set(fpKey, linkToken, "EX", REDIS_KEY_TTL_SECONDS)
+    .exec();
 
-  return { linkToken, expiresAt: expiresAt.toISOString() };
+  return { linkToken, expiresAt: expiresAt.toISOString(), cancelledToken };
 }
 
 /** Old records may still say "CONSUMED" (pre-rename); normalize on read. */
@@ -149,7 +260,9 @@ export async function claimLinkSessionAtomic(
 
 export async function finalizeLoginAtomic(
   linkToken: string,
-  userId: string
+  userId: string,
+  /** Fingerprint key so it can be cleaned up atomically on success. */
+  fingerprintKeyArg?: string
 ): Promise<
   "OK" | "NOT_FOUND" | "ALREADY" | "NOT_SCANNED" | "WRONG_USER" | "EXPIRED"
 > {
@@ -158,7 +271,8 @@ export async function finalizeLoginAtomic(
     1,
     linkKey(linkToken),
     new Date().toISOString(),
-    userId
+    userId,
+    fingerprintKeyArg ?? ""
   )) as string;
 
   return result as
@@ -174,6 +288,9 @@ export async function finalizeLoginAtomic(
  * SCAN (not KEYS — non-blocking, cursor-paged) every live device-link key.
  * Used only by the expiry sweeper's periodic tick; O(keys), fine at this
  * volume (each key lives at most ~90s).
+ *
+ * Fingerprint index keys (`aimess:devlink:fp:*`) are intentionally excluded
+ * — only the main session records (`aimess:devlink:<uuid>`) are swept.
  */
 export async function scanLiveLinkTokens(): Promise<string[]> {
   const tokens: string[] = [];
@@ -188,6 +305,8 @@ export async function scanLiveLinkTokens(): Promise<string[]> {
     );
     cursor = next;
     for (const key of keys) {
+      // Skip the fingerprint index keys — only sweep main session records.
+      if (key.includes(":fp:")) continue;
       tokens.push(key.replace("aimess:devlink:", ""));
     }
   } while (cursor !== "0");
@@ -197,6 +316,7 @@ export async function scanLiveLinkTokens(): Promise<string[]> {
 /**
  * Atomically claim a past-expiry PENDING/SCANNED session as EXPIRED. Called by
  * the sweeper for each candidate key; multi-instance safe (see MARK_EXPIRED_SCRIPT).
+ * CANCELLED sessions are skipped by the script (returns 'ALREADY').
  */
 export async function markExpiredAtomic(
   linkToken: string

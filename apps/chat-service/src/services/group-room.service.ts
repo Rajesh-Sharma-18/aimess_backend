@@ -73,24 +73,63 @@ export class GroupRoomService {
       })),
       userId
     );
-    if (!overrides.size) return rooms;
+    const withDeleteOverlay = !overrides.size
+      ? rooms
+      : rooms.map((room) => {
+          if (!overrides.has(room.roomId)) return room;
+          const prev: VisibleLast | null = overrides.get(room.roomId) ?? null;
+          const content = (prev?.content ?? null) as { text?: string } | null;
+          return {
+            ...room,
+            // Preserve the GroupRoom.lastMessagePreview JSON shape so the wire
+            // response is unchanged; only the per-viewer content differs.
+            lastMessagePreview: prev
+              ? {
+                  text: content?.text ?? "",
+                  senderId: prev.senderId,
+                  senderName: prev.senderName,
+                  messageType: prev.messageType,
+                  createdAt: prev.createdAt,
+                }
+              : null,
+          } as T;
+        });
+    return this.applyReactionOverlay(withDeleteOverlay, userId);
+  }
+
+  /**
+   * Reaction OVERLAY read-time gate — see PrivateRoomService.enrichConversations
+   * for the full rationale (identical semantics). Visible ONLY to its own actor
+   * and (if different) the reacted-to message's owner, and ONLY while strictly
+   * newer than the canonical lastMessageAt; every other member keeps the real
+   * last message. Overwrites `lastMessagePreview` only — never lastMessageAt
+   * (display-only, matches the delete-for-me overlay above).
+   */
+  private applyReactionOverlay<T extends GroupRoom>(
+    rooms: T[],
+    userId: string
+  ): T[] {
     return rooms.map((room) => {
-      if (!overrides.has(room.roomId)) return room;
-      const prev: VisibleLast | null = overrides.get(room.roomId) ?? null;
-      const content = (prev?.content ?? null) as { text?: string } | null;
+      const lastAt = room.lastMessageAt?.getTime() ?? 0;
+      if (
+        !room.reactionActivityAt ||
+        room.reactionActivityAt.getTime() <= lastAt
+      )
+        return room;
+      const isActor = room.reactionActivityActorId === userId;
+      const isTarget = room.reactionActivityTargetId === userId;
+      if (!isActor && !isTarget) return room;
       return {
         ...room,
-        // Preserve the GroupRoom.lastMessagePreview JSON shape so the wire
-        // response is unchanged; only the per-viewer content differs.
-        lastMessagePreview: prev
-          ? {
-              text: content?.text ?? "",
-              senderId: prev.senderId,
-              senderName: prev.senderName,
-              messageType: prev.messageType,
-              createdAt: prev.createdAt,
-            }
-          : null,
+        lastMessagePreview: {
+          text: isActor
+            ? (room.reactionActivityActorPreview ?? "")
+            : (room.reactionActivityTargetPreview ?? ""),
+          senderId: "",
+          senderName: "",
+          messageType: "SYSTEM",
+          createdAt: room.reactionActivityAt,
+        },
       } as T;
     });
   }
@@ -305,6 +344,9 @@ export class GroupRoomService {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** V2 compound-cursor tiebreaker; omitted on V1 (inclusive bare-ts bound). */
+    boundaryId?: string | null;
+    inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedGroupRoom[]> {
     const memberships = await this.memberRepo.getActiveMemberships(
@@ -319,6 +361,8 @@ export class GroupRoomService {
       roomIds,
       direction: params.direction,
       ts: params.ts,
+      boundaryId: params.boundaryId,
+      inclusive: params.inclusive,
       limit: params.limit,
     });
     // Per-user visibility: swap in the viewer's previous-visible preview for any

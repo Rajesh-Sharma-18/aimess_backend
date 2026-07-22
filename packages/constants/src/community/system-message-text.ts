@@ -203,12 +203,15 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return "You were unmuted";
       return `${target} was unmuted`;
 
-    case "PINNED_MESSAGE": {
-      // Use communityName from metadata (product requirement: "{CommunityName} pinned a message").
-      const communityName =
-        (metadata.communityName as string) || actor || "Community";
-      return `${communityName} pinned a message`;
-    }
+    // The ACTOR is a person, never the community — a pin is performed by an
+    // admin/moderator, so the line reads "{actor} pinned a message". Symmetrical
+    // with UNPINNED_MESSAGE below. `actor` is the pinner's displayName, resolved
+    // upstream from the user snapshot (see resolvePersonDisplayName).
+    // metadata.communityName is still carried for clients that render the
+    // community context alongside the line, but it is NOT the actor.
+    case "PINNED_MESSAGE":
+      if (isActor) return "You pinned a message";
+      return `${actor} pinned a message`;
 
     case "UNPINNED_MESSAGE":
       if (isActor) return "You unpinned a message";
@@ -357,7 +360,9 @@ export function buildReactionActivityText(params: {
   return {
     thirdPersonPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
     selfPreview: `You reacted ${emoji} to ${targetMessagePreview}`,
-    targetPreview: `${actorName} reacted ${emoji} to your message`,
+    // Target (message owner) sees WHAT was reacted to, same as everyone else —
+    // not a vague "your message" placeholder.
+    targetPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
   };
 }
 

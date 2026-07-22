@@ -654,6 +654,10 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           role: membership ? String(membership.role) : "",
           isCommunityClosed:
             !community || communityAccessPolicy.isEffectivelyClosed(community),
+          // PUBLIC communities allow non-members to read history (REST); the
+          // gateway uses this to let non-member sockets subscribe to live
+          // broadcasts too, so read access and receive access match.
+          isPublicCommunity: community?.type === CommunityType.PUBLIC,
         });
       } catch (err) {
         logger.error("checkCommunityMembership gRPC handler failed", err);
@@ -696,6 +700,52 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "checkCommunityMute failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Per-community notification-preference oracle for notifications-service's
+  // push gate. Defaults to enabled=true (no row → nothing disabled yet).
+  checkCommunityNotificationPref: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userId?: string;
+          field?: string;
+        };
+        const validFields = new Set([
+          "chatEnabled",
+          "streamEnabled",
+          "announcementEnabled",
+        ]);
+        if (
+          !req.communityId ||
+          !req.userId ||
+          !req.field ||
+          !validFields.has(req.field)
+        ) {
+          callback(null, { enabled: true });
+          return;
+        }
+        const row = await communityRepository.findMuteByUserAndCommunity(
+          req.userId,
+          req.communityId
+        );
+        const field = req.field as
+          | "chatEnabled"
+          | "streamEnabled"
+          | "announcementEnabled";
+        callback(null, { enabled: row ? row[field] : true });
+      } catch (err) {
+        logger.error("checkCommunityNotificationPref gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "checkCommunityNotificationPref failed",
         } as grpc.ServiceError);
       }
     })();

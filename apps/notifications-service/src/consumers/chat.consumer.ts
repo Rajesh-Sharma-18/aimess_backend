@@ -86,6 +86,10 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
+    // Community chat messages share the `communityEnabled` global category
+    // with generic community events but must gate on the community's own
+    // `chatEnabled` preference (the "Chat" toggle), not `announcementEnabled`.
+    ...(isCommunity ? { communityPrefField: "chatEnabled" as const } : {}),
     type: "MESSAGE",
     title,
     body,

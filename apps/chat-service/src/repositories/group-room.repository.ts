@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
@@ -66,6 +67,32 @@ export class GroupRoomRepository {
       })
     );
     return r.lastSequence;
+  }
+
+  /**
+   * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
+   * Same atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`, but on
+   * `lastRevision` and bumped on EVERY content change (insert, edit, delete-for-everyone,
+   * reaction) — not only on insert. Feeds the zero-loss `/changes` feed.
+   */
+  async allocateRevision(roomId: string): Promise<number> {
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.update({
+        where: { roomId },
+        data: { lastRevision: { increment: 1 } },
+        select: { lastRevision: true },
+      })
+    );
+    return r.lastRevision;
+  }
+
+  /** Current room CHANGE high-water — the client seeds/compares its cursor against this. */
+  async getRoomRevision(roomId: string): Promise<number> {
+    const room = await this.prisma.groupRoom.findUnique({
+      where: { roomId },
+      select: { lastRevision: true },
+    });
+    return room?.lastRevision ?? 0;
   }
 
   async findByRoomId(roomId: string): Promise<GroupRoom | null> {
@@ -223,6 +250,61 @@ export class GroupRoomRepository {
     });
   }
 
+  /**
+   * Persist the reaction OVERLAY — see PrivateRoomRepository.setReactionActivity
+   * for the full rationale (same fields, same semantics). Never touches
+   * lastMessagePreview/lastMessageAt.
+   */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.prisma.groupRoom.update({
+      where: { roomId },
+      data: {
+        reactionActivityAt: data.reactedAt,
+        reactionActivityMessageId: data.messageId,
+        reactionActivityEmoji: data.emoji,
+        reactionActivityActorId: data.actorId,
+        reactionActivityActorPreview: data.actorPreview,
+        reactionActivityTargetId: data.targetId,
+        reactionActivityTargetPreview: data.targetPreview,
+      },
+    });
+  }
+
+  /** See PrivateRoomRepository.clearReactionActivityIfCurrent — identical semantics. */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.prisma.groupRoom.updateMany({
+      where: {
+        roomId,
+        reactionActivityMessageId: identity.messageId,
+        reactionActivityEmoji: identity.emoji,
+        reactionActivityActorId: identity.actorId,
+      },
+      data: {
+        reactionActivityAt: null,
+        reactionActivityMessageId: null,
+        reactionActivityEmoji: null,
+        reactionActivityActorId: null,
+        reactionActivityActorPreview: null,
+        reactionActivityTargetId: null,
+        reactionActivityTargetPreview: null,
+      },
+    });
+  }
+
   async incMemberCount(roomId: string, inc: number): Promise<GroupRoom | null> {
     return this.prisma.groupRoom.update({
       where: { roomId },
@@ -369,18 +451,18 @@ export class GroupRoomRepository {
     roomIds: string[];
     direction: "before" | "after";
     ts: Date;
+    /** V2 keyset tiebreaker parsed from a compound "<ms>_<roomId>" cursor. */
+    boundaryId?: string | null;
+    /** V1 inclusive bound (default); V2 passes false for a strict keyset. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<GroupRoom[]> {
-    const bound =
-      params.direction === "before"
-        ? { lte: params.ts, not: null }
-        : { gte: params.ts, not: null };
     const dir = params.direction === "before" ? "desc" : "asc";
     return this.prisma.groupRoom.findMany({
       where: {
         roomId: { in: params.roomIds },
         status: "ACTIVE",
-        lastMessageAt: bound,
+        ...buildRoomKeysetWhere(params),
       },
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
       take: params.limit,

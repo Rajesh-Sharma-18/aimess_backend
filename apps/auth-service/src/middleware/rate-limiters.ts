@@ -1,6 +1,7 @@
 import type { Request } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "../config/env.js";
+import { resolveClientIp } from "../lib/session-context.js";
 
 /**
  * Rate limiter for sensitive auth operations (register, login, password reset, etc.).
@@ -15,33 +16,36 @@ export const sensitiveAuthRateLimiter = rateLimit({
   validate: {
     trustProxy: env.TRUST_PROXY_HOPS > 0,
   },
+  keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
   message: {
     success: false,
     message: "Too many attempts, please try again later.",
   },
 });
 
-/** QR login generation: 5 requests/minute/IP (unauthenticated endpoint). */
+/** QR login generation: configurable requests/minute/IP (unauthenticated endpoint). */
 export const qrGenerationRateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 5,
+  max: env.QR_GENERATION_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
+  keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
   message: {
     success: false,
     message: "Too many QR login sessions requested, please try again later.",
   },
 });
 
-/** QR login scan: 10 requests/minute/user (authenticated endpoint). */
+/** QR login scan: configurable requests/minute/user (authenticated endpoint). */
 export const qrScanRateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  max: env.QR_SCAN_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
-  keyGenerator: (req: Request) => req.auth?.userId ?? req.ip ?? "unknown",
+  keyGenerator: (req: Request) =>
+    req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
   message: {
     success: false,
     message: "Too many QR scan attempts, please try again later.",

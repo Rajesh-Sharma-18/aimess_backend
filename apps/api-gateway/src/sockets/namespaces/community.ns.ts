@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -8,7 +7,15 @@ import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
-import { resolveSocketUserDetails } from "../user-details.js";
+import {
+  resolveSocketUserDetails,
+  buildTypingBroadcast,
+} from "../user-details.js";
+import {
+  createPresenceIndicator,
+  createDirectRosterBroadcast,
+  createRoomBroadcast,
+} from "../presence-indicator.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
@@ -88,6 +95,8 @@ const CommunityMsgSendSchema = z.object({
     })
     .optional(),
   parentMessageId: z.string().optional(),
+  // Cross-namespace parity alias: /chat names the reply target `repliedToId`.
+  repliedToId: z.string().optional(),
 });
 const CommunityMsgsFetchSchema = z.object({
   roomId: z.string().min(1),
@@ -137,12 +146,20 @@ const CommunityCatchupSchema = z.object({
   rooms: z.array(CommunityCatchupRoomSchema).min(1).max(10),
 });
 
-const CommunityMsgEditSchema = z.object({
-  messageId: z.string().min(1),
-  communityId: z.string().min(1),
-  roomId: z.string().min(1).optional(),
-  content: z.object({ text: z.string().min(1).max(4000) }),
-});
+const CommunityMsgEditSchema = z
+  .object({
+    messageId: z.string().min(1),
+    communityId: z.string().min(1),
+    roomId: z.string().min(1).optional(),
+    content: z.object({ text: z.string().min(1).max(MAX_TEXT_LEN) }).optional(),
+    // Cross-namespace parity alias: /chat's message:edit sends a flat
+    // `contentText`. Exactly one of content.text / contentText is required.
+    contentText: z.string().min(1).max(MAX_TEXT_LEN).optional(),
+  })
+  .refine((v) => v.content !== undefined || v.contentText !== undefined, {
+    message: "content.text or contentText is required",
+    path: ["content"],
+  });
 
 const CommunityMsgDeleteSchema = z.object({
   messageId: z.string().min(1),
@@ -482,20 +499,21 @@ export function registerCommunityNamespace(
                 community
                   .to(`community:${removedCommunityId}`)
                   .to(typingRoom)
-                  .emit("typing:stop", {
-                    eventId: randomUUID(),
-                    communityId: removedCommunityId,
-                    roomId: removedCommunityId,
-                    userDetails: s.data.userDetails ?? {
-                      userId: removedUserId,
-                      username: "",
-                      displayName: "",
-                      avatarUrl: null,
-                    },
-                    userId: removedUserId,
-                    senderName: "",
-                    timestamp: Date.now(),
-                  });
+                  .emit(
+                    "typing:stop",
+                    buildTypingBroadcast(
+                      removedUserId,
+                      s.data.userDetails ?? {
+                        userId: removedUserId,
+                        username: "",
+                        displayName: "",
+                        avatarUrl: null,
+                      },
+                      removedCommunityId,
+                      Date.now(),
+                      { communityId: removedCommunityId }
+                    )
+                  );
               }
             } catch (evictErr) {
               logger.warn(
@@ -607,16 +625,9 @@ export function registerCommunityNamespace(
     // unchanged and still room-based): typing no longer relies on
     // community:<id> or community-typing:<id> room membership at all — a
     // member receives typing events whether or not their socket has ever
-    // joined either room. See getActiveCommunityMemberIds/emitDirectToUsers.
-    const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const clearTyping = (communityId: string): void => {
-      const t = typingTimers.get(communityId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        typingTimers.delete(communityId);
-      }
-    };
-
+    // joined either room. See getActiveCommunityMemberIds below; the direct
+    // per-recipient delivery itself now lives in the shared
+    // createDirectRosterBroadcast, which /chat typing uses too.
     // ── Room-independent recipient resolution (typing only) ────────────────
     // Reuses communityClient.getCommunityActiveMemberIds, which is itself a
     // thin gRPC wrapper around community-service's existing
@@ -646,29 +657,6 @@ export function registerCommunityNamespace(
         );
         return [];
       }
-    };
-
-    // Direct, per-recipient delivery: resolves every recipient's already-
-    // connected sockets via their `user:<id>` room — the project's existing
-    // per-user socket registry (every socket auto-joins it at connect for
-    // unrelated reasons: DM/notification relay, community:added, etc.) — NOT a
-    // community-scoped room. `community.in(rooms)` + per-socket `.emit()`
-    // mirrors the same fetchSockets()-then-emit pattern already used above for
-    // personalized community:message:new delivery — no new tracking
-    // introduced. A user with multiple open devices/tabs has multiple sockets
-    // in that same room and all of them receive the event in this one pass;
-    // an offline recipient simply isn't in the fetched set (skipped for free).
-    const emitDirectToUsers = async (
-      userIds: string[],
-      event: string,
-      payload: unknown
-    ): Promise<number> => {
-      if (userIds.length === 0) return 0;
-      const sockets = await community
-        .in(userIds.map((id) => `user:${id}`))
-        .fetchSockets();
-      for (const s of sockets) s.emit(event, payload);
-      return sockets.length;
     };
 
     // Authorization gate for the recording indicator (typing no longer uses
@@ -702,72 +690,47 @@ export function registerCommunityNamespace(
 
     // Build the canonical community typing payload for server→client broadcasts.
     // userId is always server-authoritative (from the verified JWT, not the payload).
-    const communityTypingPayload = (communityId: string) => ({
-      eventId: randomUUID(),
-      communityId,
-      roomId: communityId, // GeneralRoom id === communityId
-      userDetails: socket.data.userDetails,
-      // Legacy field kept for backward-compat (FE may still render senderName).
-      userId,
-      senderName: socket.data.userDetails.displayName || "",
-      timestamp: Date.now(),
+    // Shared with /chat via buildTypingBroadcast so private, group, and community
+    // presence events are byte-for-byte the same shape (roomId === communityId,
+    // because the community GeneralRoom id === communityId).
+    const communityTypingPayload = (communityId: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        communityId,
+        Date.now(),
+        { communityId }
+      );
+
+    // Room-independent typing, now driven by the SHARED presence engine that
+    // /chat also uses (timers, 6 s TTL, disconnect flush live there). The
+    // behaviour is unchanged: the active-member roster both validates the
+    // sender and supplies the recipient set, the sender is excluded by never
+    // appearing in that set, and the TTL re-resolves membership at fire time
+    // because it runs outside the request context.
+    const typing = createPresenceIndicator({
+      startEvent: "typing:start",
+      stopEvent: "typing:stop",
+      broadcast: createDirectRosterBroadcast({
+        namespace: community,
+        senderId: userId,
+        resolveRoster: getActiveCommunityMemberIds,
+        buildPayload: communityTypingPayload,
+        isSuppressed: (communityId) => closedCommunityIds.has(communityId),
+      }),
     });
 
     // Shared handler for both the new canonical name and the legacy alias.
-    // Room-independent: validates + resolves recipients from the active
-    // member list (see getActiveCommunityMemberIds) and delivers directly to
-    // each recipient's socket(s) (see emitDirectToUsers) — the sender is
-    // excluded by never including their own userId in the recipient set.
     const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (closedCommunityIds.has(communityId)) return;
-        const memberIds = await getActiveCommunityMemberIds(communityId);
-        if (!memberIds.includes(userId)) return; // sender not an active member
-        clearTyping(communityId);
-        const recipientIds = memberIds.filter((id) => id !== userId);
-        await emitDirectToUsers(
-          recipientIds,
-          "typing:start",
-          communityTypingPayload(communityId)
-        );
-        typingTimers.set(
-          communityId,
-          setTimeout(() => {
-            typingTimers.delete(communityId);
-            // TTL expiry: re-resolve membership at fire time (fires outside
-            // the request context, and membership may have changed since).
-            void (async () => {
-              const ids = await getActiveCommunityMemberIds(communityId);
-              await emitDirectToUsers(
-                ids.filter((id) => id !== userId),
-                "typing:stop",
-                communityTypingPayload(communityId)
-              );
-            })();
-          }, 6000)
-        );
-      })();
+      typing.start(r.data.communityId);
     };
 
     const handleTypingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (closedCommunityIds.has(communityId)) return;
-        const memberIds = await getActiveCommunityMemberIds(communityId);
-        if (!memberIds.includes(userId)) return; // sender not an active member
-        clearTyping(communityId);
-        const recipientIds = memberIds.filter((id) => id !== userId);
-        await emitDirectToUsers(
-          recipientIds,
-          "typing:stop",
-          communityTypingPayload(communityId)
-        );
-      })();
+      typing.stop(r.data.communityId);
     };
 
     // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
@@ -784,65 +747,42 @@ export function registerCommunityNamespace(
     // Broadcasts to both community:<id> (open-chat) AND community-typing:<id>
     // (always-on membership) rooms so sidebar recording indicators work even when
     // chat is not open. Socket.IO de-duplicates recipients.
-    const recordingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const communityRecordingPayload = (communityId: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        communityId,
+        Date.now(),
+        { communityId }
+      );
 
-    const clearRecording = (communityId: string): void => {
-      const t = recordingTimers.get(communityId);
-      if (t !== undefined) {
-        clearTimeout(t);
-        recordingTimers.delete(communityId);
-      }
-    };
-
-    const communityRecordingPayload = (communityId: string) => ({
-      eventId: randomUUID(),
-      communityId,
-      roomId: communityId,
-      userDetails: socket.data.userDetails,
-      userId,
-      senderName: socket.data.userDetails.displayName || "",
-      timestamp: Date.now(),
+    const recording = createPresenceIndicator({
+      startEvent: "recording:start",
+      stopEvent: "recording:stop",
+      broadcast: createRoomBroadcast({
+        namespace: community,
+        socket,
+        // Both rooms — Socket.IO de-duplicates a member present in both.
+        rooms: (communityId) => [
+          `community:${communityId}`,
+          `community-typing:${communityId}`,
+        ],
+        buildPayload: communityRecordingPayload,
+        isAuthorized: isAuthorizedForCommunity,
+      }),
     });
 
     // Shared handler for both canonical and legacy recording event names.
     const handleRecordingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
-        clearRecording(communityId);
-        // socket.to() excludes sender; chain both rooms — Socket.IO de-dupes.
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:start", communityRecordingPayload(communityId));
-        recordingTimers.set(
-          communityId,
-          setTimeout(() => {
-            recordingTimers.delete(communityId);
-            // TTL expiry: use community.to() — timer fires outside socket context.
-            community
-              .to(`community:${communityId}`)
-              .to(`community-typing:${communityId}`)
-              .emit("recording:stop", communityRecordingPayload(communityId));
-          }, 6000)
-        );
-      })();
+      recording.start(r.data.communityId);
     };
 
     const handleRecordingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
-      const { communityId } = r.data;
-      void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
-        clearRecording(communityId);
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:stop", communityRecordingPayload(communityId));
-      })();
+      recording.stop(r.data.communityId);
     };
 
     // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
@@ -862,12 +802,18 @@ export function registerCommunityNamespace(
         }
         const communityId = r.data.communityId;
         void (async () => {
-          // Ban gate: a BANNED user must not enter the broadcast room (and thus
-          // must not receive messages / member events / typing). Only an explicit
-          // BANNED verdict rejects — on a gRPC/breaker failure we fail OPEN (join
-          // allowed) because the act-vector (send/edit/react) is independently
-          // hard-blocked at chat-service, so the only risk of a transient failure
-          // is a brief receive-side leak, not an integrity breach.
+          // Membership gate: only a current ACTIVE member may enter the
+          // broadcast room. A BANNED user is rejected with the explicit
+          // USER_BANNED code; anyone else who isn't ACTIVE (LEFT — including a
+          // just-unbanned user who hasn't rejoined — PENDING, or never a
+          // member at all) is rejected as FORBIDDEN. Unban never re-admits: it
+          // only lifts the ban to LEFT, so this gate is what actually stops a
+          // stale/unbanned client from receiving room broadcasts until they go
+          // through the normal join flow again. Only an explicit verdict
+          // rejects — on a gRPC/breaker failure we fail OPEN (join allowed)
+          // because the act-vector (send/edit/react) is independently
+          // hard-blocked at chat-service, so the only risk of a transient
+          // failure is a brief receive-side leak, not an integrity breach.
           try {
             const m = await communityClient.checkCommunityMembership({
               communityId,
@@ -875,6 +821,14 @@ export function registerCommunityNamespace(
             });
             if (m.isBanned) {
               ackError(callback, "USER_BANNED", locale);
+              return;
+            }
+            // PUBLIC communities let non-members READ history via REST — the
+            // socket ban gate mirrors that by also letting them subscribe to
+            // live broadcasts, so the FE doesn't render past messages but
+            // silently miss every new one. PRIVATE stays members-only.
+            if (!m.isMember && !m.isPublicCommunity) {
+              ackError(callback, "FORBIDDEN", locale);
               return;
             }
             // Self-heal the local closed-community cache — covers a gateway
@@ -935,7 +889,8 @@ export function registerCommunityNamespace(
             location: r.data.location,
             contact: r.data.contact,
             sticker: r.data.sticker,
-            parentMessageId: r.data.parentMessageId,
+            // Cross-namespace parity: accept repliedToId as an alias.
+            parentMessageId: r.data.parentMessageId ?? r.data.repliedToId,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_SENT", locale, result)
@@ -1181,7 +1136,8 @@ export function registerCommunityNamespace(
             messageId: r.data.messageId,
             communityId: r.data.communityId,
             userId,
-            text: r.data.content.text,
+            // content.text is canonical; contentText is the /chat-parity alias.
+            text: r.data.content?.text ?? r.data.contentText ?? "",
           })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_EDITED", locale, result)
@@ -1302,7 +1258,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.kick gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1329,7 +1286,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.ban gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1356,7 +1314,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community member.unban gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1383,7 +1342,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community admin.transfer gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1407,7 +1367,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community member.role_change gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1434,7 +1395,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community report.create gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1465,7 +1427,8 @@ export function registerCommunityNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/community delete gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1491,7 +1454,8 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:read gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1519,7 +1483,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:reactions:get gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1554,7 +1519,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:forward gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1587,7 +1553,8 @@ export function registerCommunityNamespace(
             logger.warn(
               `/community message:delivered gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1610,33 +1577,13 @@ export function registerCommunityNamespace(
       // Clear session expiry timers.
       clearSessionTimers();
 
-      // Flush all pending typing-expiry timers and deliver stop directly to
-      // each active member (room-independent — see handleTypingStart/Stop
-      // above) so members are never stuck with a "typing…" indicator after
-      // the socket closes.
-      for (const [communityId, timer] of typingTimers) {
-        clearTimeout(timer);
-        void (async () => {
-          const ids = await getActiveCommunityMemberIds(communityId);
-          await emitDirectToUsers(
-            ids.filter((id) => id !== userId),
-            "typing:stop",
-            communityTypingPayload(communityId)
-          );
-        })();
-      }
-      typingTimers.clear();
-
-      // Flush all pending recording-expiry timers and broadcast stop so members are
-      // never stuck with a "recording…" indicator after the socket closes.
-      for (const [communityId, timer] of recordingTimers) {
-        clearTimeout(timer);
-        community
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("recording:stop", communityRecordingPayload(communityId));
-      }
-      recordingTimers.clear();
+      // Flush every pending presence timer and broadcast the stop, so members
+      // are never stuck with a "typing…" / "recording…" indicator after the
+      // socket closes. Typing delivers directly to each active member
+      // (room-independent), recording broadcasts to the rooms — both handled
+      // by the shared engine, identically to /chat.
+      typing.flush();
+      recording.flush();
     });
   });
 }

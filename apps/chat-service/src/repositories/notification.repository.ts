@@ -27,7 +27,16 @@ export class NotificationRepository {
 
   async findByUserId(
     userId: string,
-    params: { limit: number; cursor?: string | null }
+    params: {
+      limit: number;
+      cursor?: string | null;
+      /**
+       * Extra Prisma `where` fragment (e.g. category filter). Merged into
+       * the base userId/isDeleted/cursor predicate — kept optional so
+       * existing callers (gRPC list, tests) are unaffected.
+       */
+      where?: Record<string, unknown>;
+    }
   ): Promise<Notification[]> {
     return this.prisma.notification.findMany({
       where: {
@@ -36,6 +45,7 @@ export class NotificationRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
+        ...(params.where ?? {}),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit,
@@ -59,9 +69,19 @@ export class NotificationRepository {
     });
   }
 
-  async markAllRead(userId: string): Promise<void> {
+  /**
+   * Bulk mark-read. `extraWhere` is an optional Prisma fragment (e.g. the
+   * `categoryWhere("COMMUNITIES")` output from `lib/notification-category`) so
+   * the Notification Center's per-tab "Read All" only flips rows belonging to
+   * the currently-open tab. Omit or pass `undefined` for the historical
+   * mark-everything behaviour.
+   */
+  async markAllRead(
+    userId: string,
+    extraWhere?: Record<string, unknown>
+  ): Promise<void> {
     await this.prisma.notification.updateMany({
-      where: { userId, isRead: false },
+      where: { userId, isRead: false, ...(extraWhere ?? {}) },
       data: { isRead: true, readAt: new Date() },
     });
   }
@@ -76,6 +96,52 @@ export class NotificationRepository {
     return this.prisma.notification.count({
       where: { userId, isDeleted: false },
     });
+  }
+
+  /**
+   * Per-tab UNREAD counts for the Notification Center header badges. Five
+   * parallel counts (one per tab) — cheaper than a groupBy round-trip on
+   * Mongo, and each predicate hits the `(userId, type)` index. Unread-only
+   * so the badge decrements live as the user reads rows; the list-page
+   * invalidation on `markRead` / `markAllRead` triggers the refetch.
+   */
+  async countByCategories(userId: string): Promise<{
+    all: number;
+    friends: number;
+    communities: number;
+    mentions: number;
+    system: number;
+  }> {
+    const base = { userId, isDeleted: false, isRead: false } as const;
+    const [all, friends, communities, mentions, system] = await Promise.all([
+      this.prisma.notification.count({ where: base }),
+      this.prisma.notification.count({
+        where: { ...base, type: { startsWith: "friend." } },
+      }),
+      this.prisma.notification.count({
+        where: {
+          ...base,
+          AND: [
+            { type: { startsWith: "community." } },
+            { type: { notIn: ["chat.mention", "community.mention"] } },
+          ],
+        },
+      }),
+      this.prisma.notification.count({
+        where: { ...base, type: { in: ["chat.mention", "community.mention"] } },
+      }),
+      this.prisma.notification.count({
+        where: {
+          ...base,
+          NOT: [
+            { type: { startsWith: "friend." } },
+            { type: { startsWith: "community." } },
+            { type: { in: ["chat.mention", "community.mention"] } },
+          ],
+        },
+      }),
+    ]);
+    return { all, friends, communities, mentions, system };
   }
 
   async deleteById(

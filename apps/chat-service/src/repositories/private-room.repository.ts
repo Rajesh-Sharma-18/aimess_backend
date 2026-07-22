@@ -4,6 +4,22 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { buildRoomKeysetWhere } from "../lib/pagination.js";
+
+// ponytail: post-fetch delete-for-me filter. Reappears when a newer message
+// arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
+// Json path filters on MongoDB+Prisma are unreliable, so filter in memory.
+function isVisibleAfterDeleteForMe(
+  room: { deletedFor?: unknown; lastMessageAt?: Date | null },
+  userId: string
+): boolean {
+  const map = (room.deletedFor ?? {}) as Record<string, string>;
+  const deletedAt = map[userId];
+  if (!deletedAt) return true;
+  const deletedMs = new Date(deletedAt).getTime();
+  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
+  return lastMs > deletedMs;
+}
 
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -27,6 +43,32 @@ export class PrivateRoomRepository {
       })
     );
     return r.lastSequence;
+  }
+
+  /**
+   * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
+   * Same atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`, but on
+   * `lastRevision` and bumped on EVERY content change (insert, edit, delete-for-everyone,
+   * reaction) — not only on insert. Feeds the zero-loss `/changes` feed.
+   */
+  async allocateRevision(roomId: string): Promise<number> {
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.privateRoom.update({
+        where: { roomId },
+        data: { lastRevision: { increment: 1 } },
+        select: { lastRevision: true },
+      })
+    );
+    return r.lastRevision;
+  }
+
+  /** Current room CHANGE high-water — the client seeds/compares its cursor against this. */
+  async getRoomRevision(roomId: string): Promise<number> {
+    const room = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+      select: { lastRevision: true },
+    });
+    return room?.lastRevision ?? 0;
   }
 
   async findByParticipantsKey(key: string): Promise<PrivateRoom | null> {
@@ -155,7 +197,7 @@ export class PrivateRoomRepository {
     limit: number;
     cursor?: string | null;
   }): Promise<PrivateRoom[]> {
-    return this.prisma.privateRoom.findMany({
+    const rows = await this.prisma.privateRoom.findMany({
       where: {
         participants: { has: params.userId },
         lastMessageAt: params.cursor
@@ -165,12 +207,16 @@ export class PrivateRoomRepository {
       orderBy: { lastMessageAt: "desc" },
       take: params.limit,
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
   }
 
   async countConversations(userId: string): Promise<number> {
-    return this.prisma.privateRoom.count({
+    // Approximate; excludes rooms fully hidden by this user's delete-for-me.
+    const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: { deletedFor: true, lastMessageAt: true },
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, userId)).length;
   }
 
   /**
@@ -184,21 +230,22 @@ export class PrivateRoomRepository {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** V2 keyset tiebreaker parsed from a compound "<ms>_<roomId>" cursor. */
+    boundaryId?: string | null;
+    /** V1 inclusive bound (default); V2 passes false for a strict keyset. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<PrivateRoom[]> {
-    const bound =
-      params.direction === "before"
-        ? { lte: params.ts, not: null }
-        : { gte: params.ts, not: null };
     const dir = params.direction === "before" ? "desc" : "asc";
-    return this.prisma.privateRoom.findMany({
+    const rows = await this.prisma.privateRoom.findMany({
       where: {
         participants: { has: params.userId },
-        lastMessageAt: bound,
+        ...buildRoomKeysetWhere(params),
       },
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
       take: params.limit,
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
   }
 
   async updateRoomOnNewMessage(params: {
@@ -494,6 +541,65 @@ export class PrivateRoomRepository {
             lastMessageAt: null,
             lastMessage: null as unknown as Prisma.InputJsonValue,
           },
+    });
+  }
+
+  /**
+   * Persist the reaction OVERLAY (see schema comment on PrivateRoom.reactionActivity*).
+   * Never touches lastMessage/lastMessageAt — the canonical columns.
+   */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: {
+        reactionActivityAt: data.reactedAt,
+        reactionActivityMessageId: data.messageId,
+        reactionActivityEmoji: data.emoji,
+        reactionActivityActorId: data.actorId,
+        reactionActivityActorPreview: data.actorPreview,
+        reactionActivityTargetId: data.targetId,
+        reactionActivityTargetPreview: data.targetPreview,
+      },
+    });
+  }
+
+  /**
+   * Clear the reaction overlay IFF it still identifies the exact reaction being
+   * removed (messageId+emoji+actorId) — a no-op otherwise, since that reaction
+   * was never the one being shown. Mirrors community-service's identity-gated
+   * clear semantics.
+   */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.prisma.privateRoom.updateMany({
+      where: {
+        roomId,
+        reactionActivityMessageId: identity.messageId,
+        reactionActivityEmoji: identity.emoji,
+        reactionActivityActorId: identity.actorId,
+      },
+      data: {
+        reactionActivityAt: null,
+        reactionActivityMessageId: null,
+        reactionActivityEmoji: null,
+        reactionActivityActorId: null,
+        reactionActivityActorPreview: null,
+        reactionActivityTargetId: null,
+        reactionActivityTargetPreview: null,
+      },
     });
   }
 

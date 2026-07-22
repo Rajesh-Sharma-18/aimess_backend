@@ -55,6 +55,10 @@ export const CHAT_MESSAGES = {
     vi: "Lấy số lượng chưa đọc thành công",
     en: "Unread count fetched successfully",
   },
+  CHAT_NOTIFICATIONS_MARKED_READ: {
+    vi: "Đánh dấu thông báo đã đọc thành công",
+    en: "Notifications marked as read",
+  },
   CHAT_COMMUNITY_ROOMS_FETCHED: {
     vi: "Lấy danh sách phòng cộng đồng thành công",
     en: "Community rooms fetched successfully",
@@ -220,6 +224,10 @@ export const CHAT_MESSAGES = {
   CHAT_SYSTEM_MESSAGE_IMMUTABLE: {
     vi: "Không thể xóa tin nhắn hệ thống",
     en: "System messages cannot be deleted",
+  },
+  CHAT_REACTION_CONFLICT: {
+    vi: "Không thể cập nhật cảm xúc do xung đột, vui lòng thử lại",
+    en: "Couldn't update reaction due to a conflict, please try again",
   },
   CHAT_REPORT_NOT_PARTICIPANT: {
     vi: "Bạn không phải là thành viên của cuộc trò chuyện này",

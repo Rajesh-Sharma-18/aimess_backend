@@ -1,5 +1,6 @@
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GoneError,
   NotFoundError,
@@ -12,6 +13,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -20,6 +22,7 @@ import {
   buildReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
+  setStoredReaction,
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
@@ -650,7 +653,11 @@ export class PrivateMessageService {
     if (message.senderId !== userId) {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
-    const deleted = await this.messageRepo.deleteForEveryone(messageId, userId);
+    const deleted = await this.messageRepo.deleteForEveryone(
+      messageId,
+      message.roomId,
+      userId
+    );
     if (
       shouldCountInUnread({
         messageType: message.messageType,
@@ -713,6 +720,7 @@ export class PrivateMessageService {
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
     const updated = await this.messageRepo.editMessage(
       params.messageId,
+      message.roomId,
       params.content
     );
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
@@ -792,21 +800,109 @@ export class PrivateMessageService {
   }
 
   /**
-   * Toggle a single user's emoji reaction on a private message. Reads the stored
-   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
-   * react, remove on a duplicate react = toggle-off), and persists the canonical
-   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
-   * preserved.
+   * Compare-and-swap toggle core, shared by `react()` and `reactToMessage()`.
+   * Flips `userId`'s membership in the `emoji` bucket (add on first react,
+   * remove on a duplicate react = toggle-off; one reaction per user via the
+   * shared `toggleStoredReaction`, same as community/group). `revision` is
+   * bumped on every content change to this message, so matching it in the
+   * write's WHERE clause turns the write into a CAS — closes the concurrent-
+   * request lost-update race on the non-atomic reactions read-modify-write.
+   * Mirrors CommunityMessageService.reactToMessage's retry loop.
+   */
+  private async reactCas(
+    messageId: string,
+    userId: string,
+    emoji: string
+  ): Promise<{ message: PrivateMessage; added: boolean }> {
+    const MAX_ATTEMPTS = 5;
+    let message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    let added = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const refetched = await this.messageRepo.findById(messageId);
+        if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+        message = refetched;
+      }
+      const wasReactedByUser = (
+        reactionUserIdMap(message.reactions)[emoji] ?? []
+      ).includes(userId);
+      added = !wasReactedByUser;
+      const updated = toggleStoredReaction(message.reactions, userId, emoji);
+      const applied = await this.messageRepo.updateReactionsCas(
+        messageId,
+        message.roomId,
+        updated,
+        message.revision
+      );
+      if (applied) break;
+      if (attempt === MAX_ATTEMPTS - 1)
+        throw new ConflictError("CHAT_REACTION_CONFLICT");
+    }
+    const after = await this.messageRepo.findById(messageId);
+    return { message: after ?? message, added };
+  }
+
+  /**
+   * Toggle a single user's emoji reaction on a private message. Persists the
+   * canonical `{ emoji: [{ userId, userName, avatar, memberId }] }` shape.
+   * Other emojis are preserved. CAS-safe (see `reactCas`).
    */
   async react(
     messageId: string,
     userId: string,
     emoji: string
   ): Promise<PrivateMessage | null> {
+    const { message } = await this.reactCas(messageId, userId, emoji);
+    return message;
+  }
+
+  /**
+   * Same toggle as `react()`, additionally returning the WhatsApp-style
+   * lastActivity metadata (added vs removed, the message owner, and the
+   * reacted-to message's own preview text) needed to bump/revert the
+   * conversation list — mirrors CommunityMessageService.reactToMessage.
+   */
+  async reactToMessage(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const { message, added } = await this.reactCas(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    return {
+      roomId: message.roomId,
+      added,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
+  }
+
+  /**
+   * Single-reaction SET: `userId` ends up with exactly `emoji` (or none, if that was already their
+   * reaction). One write instead of the remove-then-add pair, so clients never observe the
+   * intermediate no-reaction state. Un-guarded like {@link react} — callers authorize.
+   */
+  async setReaction(
+    messageId: string,
+    userId: string,
+    emoji: string
+  ): Promise<PrivateMessage | null> {
     const raw = await this.messageRepo.getReactions(messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = toggleStoredReaction(raw, userId, emoji);
-    return this.messageRepo.addReactions(messageId, updated);
+    const updated = setStoredReaction(raw.reactions, userId, emoji);
+    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
 
   /**
@@ -817,6 +913,158 @@ export class PrivateMessageService {
    */
   async assertParticipant(roomId: string, userId: string): Promise<void> {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
+  /** The room's two participant userIds — the recipient list for `conv:updated` fan-out. */
+  async getParticipants(roomId: string): Promise<string[]> {
+    const room = await this.roomRepo.findByRoomId(roomId, {
+      projection: { participants: 1 },
+    });
+    return room?.participants ?? [];
+  }
+
+  /** See GroupRoomRepository.setReactionActivity — identical overlay semantics. */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.roomRepo.setReactionActivity(roomId, data);
+  }
+
+  /** See GroupRoomRepository.clearReactionActivityIfCurrent — identical semantics. */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.roomRepo.clearReactionActivityIfCurrent(roomId, identity);
+  }
+
+  /**
+   * The room's CURRENT canonical last message (never mutated by a reaction) —
+   * used to revert a reaction-removal's live bump back to reality, since the
+   * canonical lastMessage/lastMessageAt columns were never touched in the
+   * first place (see reactionActivity* schema comment).
+   */
+  async getRoomBumpSnapshot(roomId: string): Promise<{
+    lastMessageId: string | null;
+    lastMessageAt: number;
+    senderId: string;
+    content: unknown;
+    messageType: string;
+  } | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room?.lastMessage) return null;
+    const lm = room.lastMessage as Record<string, unknown>;
+    return {
+      lastMessageId: room.lastMessageId ?? null,
+      lastMessageAt: room.lastMessageAt?.getTime() ?? 0,
+      senderId: (lm.senderId as string) ?? "",
+      content: lm.content ?? null,
+      messageType: (lm.messageType as string) ?? "TEXT",
+    };
+  }
+
+  /** Deep-gap horizon: a `since_revision` more than this far below the room's current
+   *  revision triggers a bounded re-baseline instead of replaying the full backlog.
+   *  Same value and rule as community (`CommunityMessageService`). */
+  private readonly REVISION_RESET_HORIZON = 10_000;
+
+  /**
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/private/rooms/:roomId/changes`.
+   *
+   * Every message whose room CHANGE `revision > sinceRevision`, current state, ordered
+   * revision ASC — inserts AND mutations (edit/delete-for-everyone/reaction), regardless
+   * of how old the message's `sequenceNumber` is. This is what `after_seq` cannot do.
+   *
+   * NOTE for clients: per-viewer filtering happens AFTER the page slice, so
+   * `items.length < limit` while `hasMore === true` is legal. Drain on `hasMore`, never
+   * on `items.length`.
+   */
+  async getChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevisionCursor: string | null;
+    items: Awaited<ReturnType<PrivateMessageService["enrichMessages"]>>;
+  }> {
+    await this.assertParticipant(params.roomId, params.userId);
+    const changes = await this.resolveChanges(params);
+    const items = await this.enrichMessages(changes.messages, params.userId);
+
+    return {
+      roomRevision: changes.roomRevision,
+      resetRequired: changes.resetRequired,
+      hasMore: changes.hasMore,
+      nextRevisionCursor:
+        changes.hasMore && changes.nextRevision != null
+          ? String(changes.nextRevision)
+          : null,
+      items,
+    };
+  }
+
+  /**
+   * Shared core for the zero-loss changes feed — used by BOTH the REST `/changes`
+   * endpoint and the socket `chat:catchup(sinceRevision)` path. Assumes access is
+   * already asserted by the caller.
+   */
+  private async resolveChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevision: number | null;
+    messages: PrivateMessage[];
+  }> {
+    const roomRevision = await this.roomRepo.getRoomRevision(params.roomId);
+
+    // Deep gap ⇒ tell the client to drop local state and re-baseline from the newest page.
+    // since=0 (cold start) is NEVER a reset — it drains from the beginning.
+    const resetRequired =
+      params.sinceRevision > 0 &&
+      roomRevision - params.sinceRevision > this.REVISION_RESET_HORIZON;
+    if (resetRequired) {
+      return {
+        roomRevision,
+        resetRequired: true,
+        hasMore: false,
+        nextRevision: null,
+        messages: [],
+      };
+    }
+
+    const { messages, hasMore, nextRevision } =
+      await this.messageRepo.findByRoomIdRevisionSince({
+        roomId: params.roomId,
+        userId: params.userId,
+        sinceRevision: params.sinceRevision,
+        limit: params.limit,
+      });
+
+    return {
+      roomRevision,
+      resetRequired: false,
+      hasMore,
+      nextRevision,
+      messages,
+    };
   }
 
   async getMessageContext(
@@ -1011,7 +1259,7 @@ export class PrivateMessageService {
 
     // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
     // grouped result carries the plain id string in users[].userId (not the object).
-    const reactions = reactionUserIdMap(raw);
+    const reactions = reactionUserIdMap(raw.reactions);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -1054,17 +1302,26 @@ export class PrivateMessageService {
    * Reconnect gap-fill: returns messages with sequenceNumber > sinceSeq for a
    * room the user participates in. Includes tombstones (no isDeleted filter) so
    * the client can reconcile deletes/edits it missed while offline.
+   *
+   * When `sinceRevision` is set the room switches to the ZERO-LOSS revision axis
+   * instead: every message whose `revision > sinceRevision`, inserts AND mutations,
+   * via the same core as the REST `/changes` feed. `lastSeq` then still reports the
+   * page's highest sequenceNumber so a client mixing both cursors stays consistent.
    */
   async catchup(p: {
     roomId: string;
     userId: string;
     sinceSeq: number;
+    sinceRevision?: number;
     limit: number;
   }): Promise<{
     authorized: boolean;
     events: PrivateMessage[];
     hasMore: boolean;
     lastSeq: number;
+    lastRevision: number;
+    roomRevision: number;
+    resetRequired: boolean;
   }> {
     const room = await this.roomRepo.findByRoomId(p.roomId, {
       projection: { roomId: 1, participants: 1 },
@@ -1075,6 +1332,29 @@ export class PrivateMessageService {
         events: [],
         hasMore: false,
         lastSeq: p.sinceSeq,
+        lastRevision: 0,
+        roomRevision: 0,
+        resetRequired: false,
+      };
+    }
+
+    if (p.sinceRevision != null) {
+      const changes = await this.resolveChanges({
+        roomId: p.roomId,
+        userId: p.userId,
+        sinceRevision: p.sinceRevision,
+        limit: p.limit,
+      });
+      return {
+        authorized: true,
+        events: changes.messages,
+        hasMore: changes.hasMore,
+        lastSeq: changes.messages.length
+          ? Math.max(...changes.messages.map((m) => m.sequenceNumber))
+          : p.sinceSeq,
+        lastRevision: changes.nextRevision ?? p.sinceRevision,
+        roomRevision: changes.roomRevision,
+        resetRequired: changes.resetRequired,
       };
     }
 
@@ -1097,7 +1377,15 @@ export class PrivateMessageService {
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
 
-    return { authorized: true, events, hasMore, lastSeq };
+    return {
+      authorized: true,
+      events,
+      hasMore,
+      lastSeq,
+      lastRevision: 0,
+      roomRevision: 0,
+      resetRequired: false,
+    };
   }
 
   async enrichMessages(
@@ -1199,6 +1487,9 @@ export class PrivateMessageService {
         const sd = (m.systemData ?? {}) as Record<string, unknown>;
         const communityId = String(sd.communityId ?? "");
         const communityName = String(sd.communityName ?? "");
+        const storedHandle = sd.communityHandle
+          ? String(sd.communityHandle)
+          : null;
         const inviteCode = sd.linkCode ? String(sd.linkCode) : null;
         const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
         const ctx = communityId
@@ -1222,6 +1513,7 @@ export class PrivateMessageService {
               buildCommunityInvitationAction({
                 communityId,
                 communityName,
+                communityHandle: storedHandle,
                 inviteCode,
                 deepLink,
                 alreadyJoined: false,

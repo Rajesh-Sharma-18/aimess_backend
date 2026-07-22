@@ -7,6 +7,7 @@ import {
 } from "@aimess/constants";
 import type { SystemEvent } from "../types/enums.js";
 import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -141,6 +142,26 @@ export class GroupSystemMessageService {
       // Resolve the actor avatar key → download URL on the SERIALIZE-OUT
       // boundary only; the persisted senderAvatar above keeps the raw key.
       const actorAvatarUrl = await resolveMediaUrl(actorAvatar);
+
+      // Inbox bump for every member — `message:new` above only reaches sockets
+      // already joined to `conv:<roomId>`, which excludes anyone sitting on the
+      // chats list. Community's system service does the same (§community-system
+      // -message.service.ts publishCommunityUpdatedSafe).
+      publishConvUpdatedSafe({
+        redis: this.redis,
+        type: "GROUP",
+        roomId,
+        fetchRecipients: async () =>
+          (await this.memberRepo.findActiveMembers(roomId, { limit: 500 })).map(
+            (m) => m.userId
+          ),
+        senderId: "",
+        lastMessageId: message.id,
+        lastMessageAt: sysServerTs,
+        preview: { contentType: "SYSTEM", text },
+        countInUnread: false,
+      });
+
       this.redis
         .publish(
           `conv:${roomId}`,

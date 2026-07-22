@@ -55,15 +55,45 @@ export const deviceLinkService = {
   ): Promise<InitiateDeviceLinkResult> {
     const context = buildSessionContext(req);
 
-    const { linkToken, expiresAt } = await createLinkSession({
-      deviceName: context.deviceName,
-      deviceType: context.deviceType,
-      os: context.osVersion,
-      appVersion: context.appVersion,
-      ipAddress: context.ipAddress,
-      userAgent: context.userAgent,
-      countryCode: context.countryCode,
-    });
+    // WhatsApp-like: createLinkSession automatically cancels any prior PENDING
+    // session from the same browser (identified by deviceId, the sha256 of
+    // userAgent+IP) and returns the cancelled token so we can notify the old
+    // browser tab immediately. This eliminates stale PENDING accumulation and
+    // prevents the IP-based rate limiter from firing during normal usage
+    // (refresh, multiple tabs).
+    const { linkToken, expiresAt, cancelledToken } = await createLinkSession(
+      {
+        deviceName: context.deviceName,
+        deviceType: context.deviceType,
+        os: context.osVersion,
+        appVersion: context.appVersion,
+        ipAddress: context.ipAddress,
+        userAgent: context.userAgent,
+        countryCode: context.countryCode,
+      },
+      context.deviceId
+    );
+
+    // If a prior session was superseded, notify its waiting browser tab
+    // immediately via auth:qr:cancelled so the UI can react (e.g. show
+    // "Session replaced" and immediately subscribe to the new token).
+    // Fire-and-forget — a Redis hiccup must never fail QR generation.
+    if (cancelledToken) {
+      recordAuditEventSafe({
+        event: "QR_CANCELLED",
+        targetType: "qr_login_session",
+        targetId: cancelledToken,
+        ip: context.ipAddress,
+        metadata: { replacedBy: linkToken },
+      });
+
+      void publishQrLinkEvent(redis, cancelledToken, "auth:qr:cancelled", {
+        linkToken: cancelledToken,
+        reason: "replaced",
+      }).catch((err: unknown) =>
+        logger.warn(`Failed to publish auth:qr:cancelled: ${String(err)}`)
+      );
+    }
 
     recordAuditEventSafe({
       event: "QR_CREATED",
@@ -155,6 +185,8 @@ export const deviceLinkService = {
     // Finalize: SCANNED (just claimed above, same request) -> USED. NOT_SCANNED/
     // WRONG_USER/ALREADY are unreachable (this call always finalizes the exact
     // claim it just won, with the same userId) but are still guarded defensively.
+    // Pass the fingerprint key so the FINALIZE_SCRIPT can clean it up atomically
+    // (removing the device→token pointer so a fresh QR can be generated immediately).
     const finalize = await finalizeLoginAtomic(input.linkToken, userId);
     if (finalize !== "OK") {
       throw new NotFoundError("AUTH_DEVICE_LINK_EXPIRED");

@@ -2,6 +2,7 @@ import path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 
 import { adminStatsRepository } from "../repositories/admin-stats.repository.js";
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
@@ -275,7 +276,10 @@ export function startGrpcServer(port: number): grpc.Server {
   ] as unknown as grpc.ServiceClientConstructor;
 
   const server = new grpc.Server();
-  server.addService(AuthService.service, authImpl);
+  server.addService(
+    AuthService.service,
+    withServiceAuth("auth-service", authImpl)
+  );
 
   // Bounded EADDRINUSE retry: under `tsx watch`, a packages/* rebuild restarts
   // every service at once and a new instance can try to bind before the old one

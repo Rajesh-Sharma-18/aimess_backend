@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { withServiceAuth } from "@aimess/grpc-utils";
 import { isAppError } from "@aimess/errors";
 import { env } from "../config/env.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
@@ -10,6 +11,7 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
+import { avatarService } from "../services/avatar.service.js";
 import {
   buildFriendshipView,
   toChatRelationship,
@@ -211,12 +213,21 @@ export function startUserGrpcServer(): grpc.Server {
           const profiles = await userProfileRepository.findManyByUserIds(
             userIds.slice(0, 500)
           );
+          // Resolve a fresh presigned URL per profile — same resolver
+          // /users/search uses — so callers (chat-service notification
+          // enrichment, etc.) never persist a URL that later expires.
+          const avatarViews = await Promise.all(
+            profiles.map((p) =>
+              avatarService.resolveViewUrlForClient(p.avatarUrl)
+            )
+          );
           callback(null, {
-            users: profiles.map((p) => ({
+            users: profiles.map((p, i) => ({
               userId: p.userId,
               username: p.username,
               displayName: buildDisplayName(p.firstName, p.lastName),
               avatarObjectKey: p.avatarUrl ?? "",
+              avatarUrl: avatarViews[i]?.url ?? "",
             })),
           });
         } catch (err) {
@@ -266,22 +277,84 @@ export function startUserGrpcServer(): grpc.Server {
             ])
           );
           const relationships = candidateIds.map((userId) => {
-            const relationship = toChatRelationship(
-              buildFriendshipView(
-                callerId,
-                rowByPeer.get(userId) ?? null,
-                blockedIds.has(userId)
-              )
+            const row = rowByPeer.get(userId) ?? null;
+            const view = buildFriendshipView(
+              callerId,
+              row,
+              blockedIds.has(userId)
             );
+            const relationship = toChatRelationship(view);
+            const isPending = view.status === "PENDING";
             return {
               userId,
               status: relationship.status,
               direction: relationship.direction ?? "",
+              friendshipId: row?.id ?? "",
+              requesterId: isPending && row ? row.requesterId : "",
+              canAccept: view.canAccept,
+              canReject: view.canReject,
+              canCancel: view.canCancel,
             };
           });
           callback(null, { friendIds, relationships });
         } catch (err) {
           logger.error(`gRPC checkFriendships error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Internal: resolve the *current* friendship state for a Notification
+    // Center row, viewer-relative. Notification rows are immutable, so the
+    // caller must re-derive status/direction/canAccept-etc at read time.
+    getFriendshipView: (
+      call: grpc.ServerUnaryCall<
+        { friendshipId: string; viewerId: string },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            friendshipId?: string;
+            viewerId?: string;
+          };
+          const friendshipId = req.friendshipId ?? "";
+          const viewerId = req.viewerId ?? "";
+          if (!friendshipId || !viewerId) {
+            callback(null, {
+              found: false,
+              status: "NONE",
+              direction: "",
+              canAccept: false,
+              canReject: false,
+              canCancel: false,
+            });
+            return;
+          }
+
+          const row = await friendshipRepository.findById(friendshipId);
+          let isBlocked = false;
+          if (row) {
+            const [aBlockedB, bBlockedA] = await Promise.all([
+              friendshipRepository.findBlock(row.requesterId, row.addresseeId),
+              friendshipRepository.findBlock(row.addresseeId, row.requesterId),
+            ]);
+            isBlocked = Boolean(aBlockedB || bBlockedA);
+          }
+
+          const view = buildFriendshipView(viewerId, row, isBlocked);
+          callback(null, {
+            found: row !== null,
+            status: view.status,
+            direction: view.direction ?? "",
+            canAccept: view.canAccept,
+            canReject: view.canReject,
+            canCancel: view.canCancel,
+          });
+        } catch (err) {
+          logger.error(`gRPC getFriendshipView error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -321,7 +394,10 @@ export function startUserGrpcServer(): grpc.Server {
   };
 
   const server = new grpc.Server();
-  server.addService(UserService.service, userImpl);
+  server.addService(
+    UserService.service,
+    withServiceAuth("user-service", userImpl)
+  );
 
   server.bindAsync(
     `0.0.0.0:${env.USER_GRPC_PORT}`,

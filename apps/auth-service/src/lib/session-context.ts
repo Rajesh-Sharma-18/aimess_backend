@@ -22,7 +22,7 @@ export type SessionContext = {
 // (trust-proxy-aware) -> "unknown". No socket-handshake tier here — session
 // creation is always over HTTP (login/register/QR), never a raw socket
 // connection, so that tier from the IP-resolution spec doesn't apply.
-function resolveClientIp(req: Request): string {
+export function resolveClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string") {
     const first = forwarded.split(",")[0]?.trim();

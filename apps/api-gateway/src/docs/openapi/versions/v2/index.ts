@@ -342,10 +342,205 @@ const communityChangesV2 = {
   },
 };
 
+/** Opaque compound cursor over the `(createdAt, _id)` message keyset. */
+const messageCursorSchema = {
+  type: "string" as const,
+  pattern: "^\\d+(_[a-fA-F0-9]{24})?$",
+};
+
+const privateMessagesV2 = {
+  get: {
+    tags: ["Chat — Private"],
+    operationId: "getPrivateMessagesV2",
+    summary: "Get private messages — Cursor V2",
+    description:
+      "V2 of `GET /api/v1/chat/private/rooms/{roomId}/messages`. **Response body " +
+      "is identical** to v1 (`ChatMessagePage`). Access control, enrichment, " +
+      "serialization and the `around` window are unchanged — the ONLY difference " +
+      "is the pagination contract.\n\n" +
+      "v1's `before_ts`/`after_ts` are **gone** from this surface. Pages carry the " +
+      'same opaque compound `(createdAt, id)` keyset token (`"<ms>_<id>"`) on ' +
+      "`before_cursor` / `after_cursor` — the same cursor contract as " +
+      "`GET /api/v2/chat/community/rooms/{roomId}/messages`. Treat it as OPAQUE: " +
+      "omit for the newest page, then echo `pagination.nextCursor` back verbatim. " +
+      "Continuation is EXCLUSIVE, so consecutive pages never share a boundary " +
+      "message (no client-side de-dupe). A bare epoch-ms is accepted for a coarse " +
+      "first jump.\n\n" +
+      "**Migrating from v1:** change the endpoint and rename `before_ts` → " +
+      "`before_cursor`, `after_ts` → `after_cursor`. Nothing else changes.\n\n" +
+      "`before_seq`/`after_seq` (gap-safe `sequenceNumber` keyset) and " +
+      "`around=<messageId>` behave exactly as on v1.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+      {
+        name: "before_cursor",
+        in: "query",
+        required: false,
+        schema: messageCursorSchema,
+        description:
+          "Older page (scroll-up), newest-first. Opaque compound token; echo " +
+          "`pagination.nextCursor` back verbatim. Omit for the newest page.",
+      },
+      {
+        name: "after_cursor",
+        in: "query",
+        required: false,
+        schema: messageCursorSchema,
+        description:
+          "Newer page (forward paging), oldest-first. Same token format.",
+      },
+      {
+        name: "before_seq",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 0 },
+        description: "Seq keyset: sequenceNumber < before_seq, newest-first.",
+      },
+      {
+        name: "after_seq",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 0 },
+        description: "Seq keyset: sequenceNumber > after_seq, oldest-first.",
+      },
+      {
+        name: "around",
+        in: "query",
+        required: false,
+        schema: { type: "string", minLength: 1, maxLength: 100 },
+        description:
+          "Message ID anchoring a jump-to-message window; adds bidirectional " +
+          "`hasMoreOlder`/`hasMoreNewer`/`olderCursor`/`newerCursor`.",
+      },
+      {
+        name: "limit",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1, maximum: 100, default: 30 },
+        description: "Page size (default 30, max 100).",
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Messages — identical shape to v1 (`ChatMessagePage`).",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: { $ref: "#/components/schemas/ChatMessagePage" },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const inboxV2 = {
+  get: {
+    tags: ["Chat — Inbox"],
+    operationId: "getUnifiedInboxV2",
+    summary: "Unified inbox (private + group) — Cursor V2",
+    description:
+      "V2 of `GET /api/v1/chat/inbox`. **Response body is identical** to v1 " +
+      "(`ChatInboxPage`): same items, same ordering by `lastMessageAt`, same " +
+      "unread/mute/pin fields. Only the pagination contract changed.\n\n" +
+      "v1 paged on a bare, **inclusive** epoch-ms bound, so consecutive pages " +
+      "shared the boundary row whenever two conversations tied on " +
+      "`lastMessageAt` — clients had to de-duplicate by `roomId`. V2 pages on the " +
+      "strict compound `(lastMessageAt, roomId)` keyset: `pagination.nextCursor` " +
+      'is a `"<lastMessageAtMs>_<roomId>"` token you echo back verbatim as ' +
+      "`before_cursor` (or `after_cursor`). Boundaries are EXCLUSIVE — no skip, " +
+      "no duplicate, no client de-dupe.\n\n" +
+      "**Migrating from v1:** change the endpoint and rename `before_ts` → " +
+      "`before_cursor`, `after_ts` → `after_cursor`. Nothing else changes. A bare " +
+      "epoch-ms is accepted for a coarse first jump. Omit both for the newest page.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      { $ref: "#/components/parameters/LanguageHeader" },
+      {
+        name: "before_cursor",
+        in: "query",
+        required: false,
+        schema: { type: "string", pattern: "^\\d+(_[A-Za-z0-9_-]{1,64})?$" },
+        description:
+          'Older page (newest-first). Opaque compound token "<ms>_<roomId>"; ' +
+          "echo `pagination.nextCursor` back verbatim.",
+      },
+      {
+        name: "after_cursor",
+        in: "query",
+        required: false,
+        schema: { type: "string", pattern: "^\\d+(_[A-Za-z0-9_-]{1,64})?$" },
+        description: "Newer page (oldest-first). Same token format.",
+      },
+      {
+        name: "limit",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        description: "Page size (default 20, max 100).",
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Inbox list — identical shape to v1 (`ChatInboxPage`).",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: { $ref: "#/components/schemas/ChatInboxPage" },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+// Group shares the private V2 timeline contract byte-for-byte (same params, same
+// envelope) — derived rather than duplicated so the two can never drift.
+const groupMessagesV2 = {
+  get: {
+    ...privateMessagesV2.get,
+    tags: ["Chat — Group"],
+    operationId: "getGroupMessagesV2",
+    summary: "Get group messages — Cursor V2",
+    description:
+      "V2 of `GET /api/v1/chat/group/rooms/{roomId}/messages`. Identical " +
+      "contract to the private V2 timeline: same `before_cursor`/`after_cursor` " +
+      "compound cursor, same opt-in `before_seq`/`after_seq`, same `around` " +
+      "window, same `ChatMessagePage` response envelope. Only the room kind differs.",
+  },
+};
+
 export const v2Paths = {
   "/communities/mine": myCommunitiesV2,
   "/chat/community/rooms/{roomId}/messages": communityMessagesV2,
   "/chat/community/rooms/{roomId}/changes": communityChangesV2,
+  "/chat/private/rooms/{roomId}/messages": privateMessagesV2,
+  "/chat/group/rooms/{roomId}/messages": groupMessagesV2,
+  "/chat/inbox": inboxV2,
 };
 
 export const v2Tags = [
@@ -356,6 +551,19 @@ export const v2Tags = [
   {
     name: "Chat — Community",
     description: "Community room messaging — Sequence Cursor V2 (chat-service)",
+  },
+  {
+    name: "Chat — Private",
+    description: "1-to-1 private messaging — Cursor V2 (chat-service)",
+  },
+  {
+    name: "Chat — Group",
+    description: "Group room messaging — Cursor V2 (chat-service)",
+  },
+  {
+    name: "Chat — Inbox",
+    description:
+      "Unified private + group conversation list — Cursor V2 (chat-service)",
   },
 ];
 

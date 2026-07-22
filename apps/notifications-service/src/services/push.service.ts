@@ -1,14 +1,33 @@
 import { logger } from "@aimess/logger";
-import { CommunityEvents } from "@aimess/shared-types";
+import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { deviceTokenService } from "./device-token.service.js";
+import { isCommunityNotificationEnabled } from "./notification-eligibility.service.js";
 import {
   getNotificationSettings,
   isDeliveryAllowed,
   type NotificationCategory,
 } from "./notification-settings.service.js";
+
+type CommunityPrefField =
+  | "chatEnabled"
+  | "streamEnabled"
+  | "announcementEnabled";
+
+/**
+ * Category → per-community preference field, used when a caller doesn't pass
+ * `communityPrefField` explicitly. `chatEnabled` (private/group DMs) and the
+ * other non-community categories have no community mapping.
+ */
+function defaultCommunityPrefField(
+  category: NotificationCategory
+): CommunityPrefField | undefined {
+  if (category === "liveStreamEnabled") return "streamEnabled";
+  if (category === "communityEnabled") return "announcementEnabled";
+  return undefined;
+}
 
 const chatNotificationClient = createChatNotificationClient();
 
@@ -25,6 +44,21 @@ const chatNotificationClient = createChatNotificationClient();
 const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
+]);
+
+/**
+ * Notification Center allowlist — only these event types are persisted as an
+ * inbox row (and therefore ever surface from `GET /api/v1/chat/notifications`
+ * or the `notification:new`/`notification:count_update` socket events).
+ * Everything else (community messages, member joined/left/added/removed,
+ * role changes, mutes, reports, livestream, etc.) still gets FCM push same as
+ * before — this only gates the Notification Center write. Extensible: add a
+ * type here to enable it in the inbox without touching any producer.
+ */
+const INBOX_ALLOWED_TYPES = new Set<string>([
+  FriendshipEvents.FRIEND_REQUESTED,
+  FriendshipEvents.FRIEND_ACCEPTED,
+  CommunityEvents.MEMBER_BANNED,
 ]);
 
 export interface PushInput {
@@ -71,6 +105,16 @@ export interface PushInput {
    * must never appear there. Use for any chat-activity push.
    */
   skipInbox?: boolean;
+  /**
+   * Explicit per-community preference field to gate on (chatEnabled for
+   * community chat messages, streamEnabled for livestream, announcementEnabled
+   * for everything else). Only takes effect when `data.communityId` is set.
+   * Defaults from `category` via `defaultCommunityPrefField` when omitted —
+   * pass this explicitly whenever `category` doesn't already disambiguate
+   * (e.g. community chat messages currently share the `communityEnabled`
+   * category with generic community events but must gate on `chatEnabled`).
+   */
+  communityPrefField?: CommunityPrefField;
 }
 
 /**
@@ -129,15 +173,44 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
+  // Per-community notification-preference gate (Chat/Community/Live Stream
+  // toggles on the community's own mute-setting row) — independent of, and
+  // in addition to, the global per-category settings check above.
+  if (!bypassSettings) {
+    const communityId = data?.communityId;
+    const prefField =
+      input.communityPrefField ?? defaultCommunityPrefField(category);
+    if (communityId && prefField) {
+      try {
+        const enabled = await isCommunityNotificationEnabled(
+          userId,
+          communityId,
+          prefField
+        );
+        if (!enabled) {
+          logger.info(
+            `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+          );
+          return;
+        }
+      } catch (error) {
+        // Fail-open: an oracle outage never suppresses a notification.
+        logger.warn(`community pref check failed for ${userId}; allowing`);
+        logger.warn(error);
+      }
+    }
+  }
+
   // Apply preview masking — title is intentionally left unchanged.
   if (!showPreview) {
     body = showPreviewOverride ?? "New message";
   }
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
-  // entirely for chat-activity pushes — the Notification Center is
-  // business-events-only.
-  if (!skipInbox) {
+  // for chat-activity pushes (skipInbox) and for any type not on the
+  // Notification Center allowlist — the Notification Center is
+  // important-events-only, everything else stays FCM+realtime-only.
+  if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
       await chatNotificationClient.createNotification({
         userId,

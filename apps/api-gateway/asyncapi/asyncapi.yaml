@@ -1165,7 +1165,9 @@ operations:
       Throws ACTIVE_PIN_ALREADY_EXISTS if another pin is already active.
       Ack `data` on success: `{ pin: CommunityMessagePin, pinnedCount }`.
       Side-effect — broadcasts `community:message:pinned` to all members and posts a
-      "{CommunityName} pinned a message" SYSTEM line in the chat timeline.
+      "{actorName} pinned a message" SYSTEM line in the chat timeline ("You pinned
+      a message" for the pinner's own view). The actor is the USER who pinned,
+      never the community.
     messages: [{ $ref: "#/channels/community/messages/communityMessagePin" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -5848,31 +5850,99 @@ components:
     TypingBroadcastPayload:
       type: object
       description: |
-        Fire-and-forget typing signal re-emitted to the room. The server keeps NO
-        typing state, so a crashed sender cannot be cleaned up server-side. EXPIRY
-        CONTRACT: the RECEIVER auto-clears a "typing…" indicator after ~6 s with no
-        fresh typing:start; the SENDER re-emits typing:start every ~3–5 s while
-        typing and one typing:stop when it ends.
+        Fire-and-forget typing / recording presence signal. UNIFIED SHAPE: this is
+        byte-for-byte the same body on /chat (private + group) and /community —
+        both namespaces build it with the shared `buildTypingBroadcast()` helper
+        (sockets/user-details.ts), so one client-side parser handles all three
+        chat types.
+
+        The SENDER is always excluded from the broadcast (/chat uses
+        `socket.to(room)`; /community resolves an explicit recipient set that
+        omits the sender).
+
+        The server keeps NO typing state, so a crashed sender cannot be cleaned up
+        server-side. EXPIRY CONTRACT: the RECEIVER auto-clears a "typing…"
+        indicator after ~6 s with no fresh typing:start; the SENDER re-emits
+        typing:start every ~3–5 s while typing and one typing:stop when it ends.
+        The server additionally fires an automatic stop after a 6 s TTL and on
+        disconnect.
       properties:
-        userId: { type: string }
-        conversationId: { type: string }
+        eventId:
+          type: string
+          format: uuid
+          description: |
+            Per-broadcast dedupe key. Previously /community-only; now emitted on
+            /chat as well.
+        roomId:
+          type: string
+          description: |
+            CANONICAL room identifier — read this. On /community it equals
+            `communityId` (the GeneralRoom id === communityId).
+        conversationId:
+          type: string
+          description: |
+            BACK-COMPAT duplicate of `roomId`, retained because shipped Web /
+            Android / iOS /chat clients key typing state off it. Never removed;
+            new clients should read `roomId`.
+        communityId:
+          type: string
+          description: |
+            BACK-COMPAT duplicate of `roomId`, emitted on /community only (absent
+            on /chat). Existing community clients key typing state off it.
+        userId:
+          type: string
+          description: Server-authoritative sender id (from the verified JWT).
+        userDetails: { $ref: "#/components/schemas/SocketUserDetails" }
+        timestamp: { type: integer, description: epoch ms. }
         senderName:
           type: string
           description: |
-            §2.8: present only when the sender supplied it on the request
-            (`typing:start`/`typing:stop`). Lets recipients render "Alice is
-            typing…" without a profile fetch. Absent when the sender omitted it.
+            Display name for "Alice is typing…" without a profile fetch. Resolved
+            server-side from `userDetails.displayName`; falls back to the
+            client-supplied `senderName` on the request, then `""`. Always
+            present (possibly empty) — never absent.
+      required:
+        [
+          eventId,
+          roomId,
+          conversationId,
+          userId,
+          userDetails,
+          timestamp,
+          senderName,
+        ]
+    SocketUserDetails:
+      type: object
+      description: |
+        Sender identity resolved ONCE per socket connection (gRPC snapshot +
+        presigned avatar). Shared by /chat and /community presence broadcasts.
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatarUrl: { type: string, nullable: true }
+      required: [userId, username, displayName, avatarUrl]
     TypingRequestPayload:
       type: object
       description: |
         Fire-and-forget typing signal (client → server). The validator
-        (`TypingSchema`, chat.ns.ts:25) accepts an OPTIONAL `senderName` (≤100)
-        in addition to `conversationId`; supply it so the broadcast can show the
-        name without a lookup.
+        (`TypingSchema`, chat.ns.ts) accepts an OPTIONAL `senderName` (≤100) in
+        addition to the room identifier.
+
+        CROSS-NAMESPACE PARITY: `roomId` (the /community spelling) is accepted as
+        an alias for `conversationId` on every /chat inbound event. Send either;
+        `conversationId` wins if both are present. See `withCommunityAliases` in
+        chat.ns.ts.
       properties:
         conversationId: { type: string, minLength: 1 }
+        roomId:
+          type: string
+          minLength: 1
+          description: Alias for `conversationId` (cross-namespace parity).
         senderName: { type: string, maxLength: 100 }
-      required: [conversationId]
+      anyOf:
+        - required: [conversationId]
+        - required: [roomId]
     PresenceStatusPayload:
       type: object
       properties:
@@ -6255,14 +6325,14 @@ components:
         status:
           {
             type: string,
-            enum: [PENDING, APPROVED, REJECTED],
-            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it.",
+            enum: [PENDING, APPROVED, REJECTED, CANCELLED],
+            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it; CANCELLED = the requester withdrew.",
           }
         userId: { type: string, description: "The requester." }
         actorId:
           {
             type: string,
-            description: "The requester themself for PENDING, the deciding admin/moderator for APPROVED/REJECTED.",
+            description: "The requester themself for PENDING/CANCELLED, the deciding admin/moderator for APPROVED/REJECTED.",
           }
         updatedAt: { type: integer, description: "epoch ms." }
       required: [communityId, requestId, status, userId, updatedAt]
