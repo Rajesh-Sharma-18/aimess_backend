@@ -250,6 +250,61 @@ export class GroupRoomRepository {
     });
   }
 
+  /**
+   * Persist the reaction OVERLAY — see PrivateRoomRepository.setReactionActivity
+   * for the full rationale (same fields, same semantics). Never touches
+   * lastMessagePreview/lastMessageAt.
+   */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.prisma.groupRoom.update({
+      where: { roomId },
+      data: {
+        reactionActivityAt: data.reactedAt,
+        reactionActivityMessageId: data.messageId,
+        reactionActivityEmoji: data.emoji,
+        reactionActivityActorId: data.actorId,
+        reactionActivityActorPreview: data.actorPreview,
+        reactionActivityTargetId: data.targetId,
+        reactionActivityTargetPreview: data.targetPreview,
+      },
+    });
+  }
+
+  /** See PrivateRoomRepository.clearReactionActivityIfCurrent — identical semantics. */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.prisma.groupRoom.updateMany({
+      where: {
+        roomId,
+        reactionActivityMessageId: identity.messageId,
+        reactionActivityEmoji: identity.emoji,
+        reactionActivityActorId: identity.actorId,
+      },
+      data: {
+        reactionActivityAt: null,
+        reactionActivityMessageId: null,
+        reactionActivityEmoji: null,
+        reactionActivityActorId: null,
+        reactionActivityActorPreview: null,
+        reactionActivityTargetId: null,
+        reactionActivityTargetPreview: null,
+      },
+    });
+  }
+
   async incMemberCount(roomId: string, inc: number): Promise<GroupRoom | null> {
     return this.prisma.groupRoom.update({
       where: { roomId },

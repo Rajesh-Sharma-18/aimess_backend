@@ -977,28 +977,17 @@ export function createMessagingImpl(
             );
           }
 
-          // §2.4 toggle: react() reads-modifies-writes the stored reactor map —
-          // adds the reactor on first react, removes it on a duplicate react
-          // (toggle-off) — and persists the canonical reactor-object shape. The
-          // getMessageReactions call below flattens it to the wire shape.
-          const msg = await reactionService.react(
-            req.messageId,
-            req.userId,
-            req.emoji
-          );
-
-          // Flatten stored reactions for the gRPC ack (V1 thin shape — the
-          // ReactionDto proto carries {userId, emoji}; the gateway maps it).
-          const stored = (msg as Record<string, unknown>).reactions as
-            | Record<string, Array<{ userId: string }>>
-            | undefined;
-          const reactions: Array<{ emoji: string; userId: string }> = [];
-          if (stored && typeof stored === "object") {
-            for (const [emoji, users] of Object.entries(stored)) {
-              for (const u of users)
-                reactions.push({ emoji, userId: u.userId });
-            }
-          }
+          // §2.4 CAS toggle (PrivateMessageService.reactCas / GroupMessageService.
+          // reactCas): adds the reactor on first react, removes it on a duplicate
+          // react (toggle-off), one reaction per user — and also returns the
+          // add/remove + target info needed to bump the WhatsApp-style
+          // lastActivity below. The getMessageReactions call further down
+          // flattens the persisted reactions to the wire shape.
+          const toggled = await reactionService.reactToMessage({
+            messageId: req.messageId,
+            userId: req.userId,
+            emoji: req.emoji,
+          });
 
           // V2 §2.4: broadcast the full ChatReactionGroup[] shape (emoji, count,
           // users[displayName+avatar]) so the live push renders the reaction bar
@@ -1025,21 +1014,22 @@ export function createMessagingImpl(
               })
             );
           } catch (groupErr) {
-            // Non-fatal: fall back to a thin grouping derived from stored ids so
-            // the broadcast still carries something renderable.
+            // Non-fatal: the reaction write already succeeded (toggled above);
+            // a grouping-read failure just degrades the broadcast to an empty
+            // set rather than failing the whole react — the ack still reflects
+            // the true persisted state on the next getMessageReactions call.
             logger.warn(
               `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
             );
-            const byEmoji = new Map<string, Set<string>>();
-            for (const r of reactions) {
-              if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, new Set());
-              byEmoji.get(r.emoji)!.add(r.userId);
-            }
-            reactionGroups = [...byEmoji.entries()].map(([emoji, ids]) => ({
-              emoji,
-              count: ids.size,
-              users: [...ids].map((userId) => ({ userId })),
-            }));
+            reactionGroups = [];
+          }
+
+          // Flatten stored reactions for the gRPC ack (V1 thin shape — the
+          // ReactionDto proto carries {userId, emoji}; the gateway maps it).
+          const reactions: Array<{ emoji: string; userId: string }> = [];
+          for (const g of reactionGroups) {
+            for (const u of g.users as Array<{ userId: string }>)
+              reactions.push({ emoji: g.emoji, userId: u.userId });
           }
 
           // Resolve-on-read: reactor avatars in the live reaction bar.
@@ -1085,6 +1075,24 @@ export function createMessagingImpl(
               emoji: r.emoji,
             })),
           });
+
+          // WhatsApp-style lastActivity bump/revert — fire-and-forget, never
+          // blocks the ack (mirrors the REST reactDirect wrapper's identical call).
+          void deps.chatMessageOrchestrator
+            .bumpReactionActivity({
+              conversationType:
+                reactConversationType === "GROUP" ? "GROUP" : "PRIVATE",
+              roomId: req.conversationId,
+              messageId: req.messageId,
+              emoji: req.emoji,
+              actorId: req.userId,
+              added: toggled.added,
+              targetUserId: toggled.targetUserId,
+              targetMessagePreview: toggled.targetMessagePreview,
+            })
+            .catch((err: unknown) =>
+              logger.warn(`sendReaction activity bump failed: ${String(err)}`)
+            );
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

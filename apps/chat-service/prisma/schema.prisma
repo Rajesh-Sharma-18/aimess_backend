@@ -48,6 +48,20 @@ model PrivateRoom {
   // bumped on EVERY content change (insert, edit, delete-for-everyone, reaction) —
   // unlike `lastSequence`, bumped only on INSERT. Allocated via `allocateRevision`.
   lastRevision              Int      @default(0)
+  // Reaction OVERLAY — mirrors community-service's Community.lastActivityReaction*
+  // fields exactly (see that schema for the full rationale). Never overwrites
+  // lastMessage/lastMessageAt (the canonical columns everyone else keeps reading);
+  // visible ONLY to its own actor and (if different) the reacted-to message's
+  // owner via a read-time gate (reactionActivityAt > lastMessageAt). Explicitly
+  // cleared (all fields -> null) only when the SAME reaction (messageId+emoji+
+  // actorId) is the one removed.
+  reactionActivityAt            DateTime?
+  reactionActivityMessageId     String?
+  reactionActivityEmoji         String?
+  reactionActivityActorId       String?
+  reactionActivityActorPreview  String?
+  reactionActivityTargetId      String?
+  reactionActivityTargetPreview String?
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -157,6 +171,15 @@ model GroupRoom {
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
+  // Reaction OVERLAY — see PrivateRoom.reactionActivity* for the full rationale
+  // (same fields, same read-time gate, same identity-matched clear).
+  reactionActivityAt            DateTime?
+  reactionActivityMessageId     String?
+  reactionActivityEmoji         String?
+  reactionActivityActorId       String?
+  reactionActivityActorPreview  String?
+  reactionActivityTargetId      String?
+  reactionActivityTargetPreview String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

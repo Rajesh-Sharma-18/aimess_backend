@@ -522,6 +522,28 @@ export class PrivateMessageRepository {
     });
   }
 
+  /**
+   * Compare-and-swap reaction write — see GeneralRoomMessageRepository.updateReactionsCas
+   * for the full rationale. Returns false on a lost race so the caller re-reads
+   * and retries, closing the non-atomic reaction read-modify-write gap.
+   */
+  async updateReactionsCas(
+    messageId: string,
+    roomId: string,
+    reactions: Record<string, unknown[]>,
+    expectedRevision: number
+  ): Promise<boolean> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
+    const result = await this.prisma.privateMessage.updateMany({
+      where: { id: messageId, revision: expectedRevision },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        revision,
+      },
+    });
+    return result.count > 0;
+  }
+
   async editMessage(
     messageId: string,
     roomId: string,

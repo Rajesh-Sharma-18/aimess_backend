@@ -1,5 +1,6 @@
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GoneError,
   NotFoundError,
@@ -12,6 +13,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -797,21 +799,93 @@ export class PrivateMessageService {
   }
 
   /**
-   * Toggle a single user's emoji reaction on a private message. Reads the stored
-   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
-   * react, remove on a duplicate react = toggle-off), and persists the canonical
-   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
-   * preserved.
+   * Compare-and-swap toggle core, shared by `react()` and `reactToMessage()`.
+   * Flips `userId`'s membership in the `emoji` bucket (add on first react,
+   * remove on a duplicate react = toggle-off; one reaction per user via the
+   * shared `toggleStoredReaction`, same as community/group). `revision` is
+   * bumped on every content change to this message, so matching it in the
+   * write's WHERE clause turns the write into a CAS — closes the concurrent-
+   * request lost-update race on the non-atomic reactions read-modify-write.
+   * Mirrors CommunityMessageService.reactToMessage's retry loop.
+   */
+  private async reactCas(
+    messageId: string,
+    userId: string,
+    emoji: string
+  ): Promise<{ message: PrivateMessage; added: boolean }> {
+    const MAX_ATTEMPTS = 5;
+    let message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    let added = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const refetched = await this.messageRepo.findById(messageId);
+        if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+        message = refetched;
+      }
+      const wasReactedByUser = (
+        reactionUserIdMap(message.reactions)[emoji] ?? []
+      ).includes(userId);
+      added = !wasReactedByUser;
+      const updated = toggleStoredReaction(message.reactions, userId, emoji);
+      const applied = await this.messageRepo.updateReactionsCas(
+        messageId,
+        message.roomId,
+        updated,
+        message.revision
+      );
+      if (applied) break;
+      if (attempt === MAX_ATTEMPTS - 1)
+        throw new ConflictError("CHAT_REACTION_CONFLICT");
+    }
+    const after = await this.messageRepo.findById(messageId);
+    return { message: after ?? message, added };
+  }
+
+  /**
+   * Toggle a single user's emoji reaction on a private message. Persists the
+   * canonical `{ emoji: [{ userId, userName, avatar, memberId }] }` shape.
+   * Other emojis are preserved. CAS-safe (see `reactCas`).
    */
   async react(
     messageId: string,
     userId: string,
     emoji: string
   ): Promise<PrivateMessage | null> {
-    const raw = await this.messageRepo.getReactions(messageId);
-    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = toggleStoredReaction(raw.reactions, userId, emoji);
-    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+    const { message } = await this.reactCas(messageId, userId, emoji);
+    return message;
+  }
+
+  /**
+   * Same toggle as `react()`, additionally returning the WhatsApp-style
+   * lastActivity metadata (added vs removed, the message owner, and the
+   * reacted-to message's own preview text) needed to bump/revert the
+   * conversation list — mirrors CommunityMessageService.reactToMessage.
+   */
+  async reactToMessage(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const { message, added } = await this.reactCas(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    return {
+      roomId: message.roomId,
+      added,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
   }
 
   /**
@@ -822,6 +896,63 @@ export class PrivateMessageService {
    */
   async assertParticipant(roomId: string, userId: string): Promise<void> {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
+  /** The room's two participant userIds — the recipient list for `conv:updated` fan-out. */
+  async getParticipants(roomId: string): Promise<string[]> {
+    const room = await this.roomRepo.findByRoomId(roomId, {
+      projection: { participants: 1 },
+    });
+    return room?.participants ?? [];
+  }
+
+  /** See GroupRoomRepository.setReactionActivity — identical overlay semantics. */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.roomRepo.setReactionActivity(roomId, data);
+  }
+
+  /** See GroupRoomRepository.clearReactionActivityIfCurrent — identical semantics. */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.roomRepo.clearReactionActivityIfCurrent(roomId, identity);
+  }
+
+  /**
+   * The room's CURRENT canonical last message (never mutated by a reaction) —
+   * used to revert a reaction-removal's live bump back to reality, since the
+   * canonical lastMessage/lastMessageAt columns were never touched in the
+   * first place (see reactionActivity* schema comment).
+   */
+  async getRoomBumpSnapshot(roomId: string): Promise<{
+    lastMessageId: string | null;
+    lastMessageAt: number;
+    senderId: string;
+    content: unknown;
+    messageType: string;
+  } | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room?.lastMessage) return null;
+    const lm = room.lastMessage as Record<string, unknown>;
+    return {
+      lastMessageId: room.lastMessageId ?? null,
+      lastMessageAt: room.lastMessageAt?.getTime() ?? 0,
+      senderId: (lm.senderId as string) ?? "",
+      content: lm.content ?? null,
+      messageType: (lm.messageType as string) ?? "TEXT",
+    };
   }
 
   /** Deep-gap horizon: a `since_revision` more than this far below the room's current

@@ -636,6 +636,24 @@ export class GroupMessageRepository {
     });
   }
 
+  /** See PrivateMessageRepository.updateReactionsCas — identical CAS semantics. */
+  async updateReactionsCas(
+    messageId: string,
+    roomId: string,
+    reactions: Record<string, unknown[]>,
+    expectedRevision: number
+  ): Promise<boolean> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
+    const result = await this.prisma.groupMessage.updateMany({
+      where: { id: messageId, revision: expectedRevision },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        revision,
+      },
+    });
+    return result.count > 0;
+  }
+
   async deleteForEveryone(
     messageId: string,
     roomId: string,
