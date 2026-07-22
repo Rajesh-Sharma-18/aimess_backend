@@ -13,6 +13,10 @@ import {
 } from "../generated/prisma/index.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
 import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
+import {
+  buildCommunitySearchFilter,
+  normalizeForSearch,
+} from "../lib/community-search.util.js";
 
 /**
  * The `select` shared by the V1 timestamp `listMineByActivity` and the V2
@@ -420,6 +424,9 @@ export const communityRepository = {
     return prisma.community.create({
       data: {
         ...data,
+        // Formatting-insensitive search shadows — see schema doc comment.
+        normalizedName: normalizeForSearch(data.name),
+        normalizedHandle: normalizeForSearch(data.handle),
         memberCount: 1,
         lastActivityType: "created",
         // Canonical SYSTEM text — MUST match buildCommunitySystemFallbackText(
@@ -433,10 +440,31 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Generic community field updater. If `name`/`handle` is part of the
+   * update, this also refreshes the corresponding `normalizedName`/
+   * `normalizedHandle` search shadow so it's never possible for a caller to
+   * change the display name/handle without keeping search in sync — see the
+   * schema doc comment on those fields.
+   *
+   * `data.name`/`data.handle` are only ever passed as plain strings by every
+   * current caller (never as a nested `StringFieldUpdateOperationsInput`), so
+   * the `typeof` guard below both narrows the type and skips this when a
+   * caller updates unrelated fields.
+   */
   updateCommunity(id: string, data: Prisma.CommunityUpdateInput) {
+    const normalizedData: Prisma.CommunityUpdateInput = { ...data };
+    if (typeof normalizedData.name === "string") {
+      normalizedData.normalizedName = normalizeForSearch(normalizedData.name);
+    }
+    if (typeof normalizedData.handle === "string") {
+      normalizedData.normalizedHandle = normalizeForSearch(
+        normalizedData.handle
+      );
+    }
     return prisma.community.update({
       where: { id },
-      data,
+      data: normalizedData,
       include: { category: { select: { id: true, name: true } } },
     });
   },
@@ -1547,6 +1575,18 @@ export const communityRepository = {
    *     `includeMemberCommunityIds` (the caller's ACTIVE PRIVATE memberships).
    * Newest-first (ObjectId is time-ordered) with offset/page pagination on `id`.
    * Returns the page rows plus the total matching count.
+   *
+   * `q` is tokenized on whitespace and each token is normalized — lowercased,
+   * formatting characters (spaces/underscores/hyphens/dots/punctuation)
+   * stripped — before being matched against the pre-normalized
+   * `normalizedName`/`normalizedHandle` shadow fields (see
+   * {@link buildCommunitySearchFilter}). Every token must match `name` OR
+   * `handle`, and different tokens may match different fields, so a query
+   * like "text text1" matches a community named "Text Community" with
+   * handle "text1" even though neither field alone contains the full query.
+   * Formatting differences within a token don't block a match either — e.g.
+   * "dr_jhatka", "dr.jhatka", and "Dr Jhatka" all match a community named
+   * "Dr. Jhatka".
    */
   async listDiscoverable(params: {
     q?: string;
@@ -1573,13 +1613,12 @@ export const communityRepository = {
     if (params.categoryId) {
       and.push({ categoryId: params.categoryId });
     }
+    // Multi-word, formatting-insensitive `q`: every normalized token must
+    // match normalizedName OR normalizedHandle, but different tokens may
+    // match different fields (e.g. "text text1" against name "Text
+    // Community" + handle "text1" — see buildCommunitySearchFilter doc).
     if (params.q) {
-      and.push({
-        OR: [
-          { name: { contains: params.q, mode: "insensitive" } },
-          { handle: { contains: params.q, mode: "insensitive" } },
-        ],
-      });
+      and.push(...buildCommunitySearchFilter(params.q));
     }
 
     const where: Prisma.CommunityWhereInput = {
