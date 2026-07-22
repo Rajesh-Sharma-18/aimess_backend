@@ -27,10 +27,26 @@ export interface CheckCommunityMuteResult {
 /** Fail-open value: a muted-check failure must NEVER suppress a notification. */
 const FAIL_OPEN: CheckCommunityMuteResult = { isMuted: false, mutedUntil: 0 };
 
+export interface CheckCommunityNotificationPrefParams {
+  communityId: string;
+  userId: string;
+  field: "chatEnabled" | "streamEnabled" | "announcementEnabled";
+}
+
+export interface CheckCommunityNotificationPrefResult {
+  enabled: boolean;
+}
+
+/** Fail-open value: an oracle outage must NEVER suppress a notification. */
+const PREF_FAIL_OPEN: CheckCommunityNotificationPrefResult = { enabled: true };
+
 export interface CommunityClient {
   checkCommunityMute(
     p: CheckCommunityMuteParams
   ): Promise<CheckCommunityMuteResult>;
+  checkCommunityNotificationPref(
+    p: CheckCommunityNotificationPrefParams
+  ): Promise<CheckCommunityNotificationPrefResult>;
 }
 
 export function createCommunityClient(): CommunityClient {
@@ -67,8 +83,26 @@ export function createCommunityClient(): CommunityClient {
   // of rejecting — a mute-oracle outage must never suppress notifications.
   muteBreaker.fallback(() => FAIL_OPEN);
 
+  const prefBreaker = makeBreaker(
+    "community.checkCommunityNotificationPref",
+    (p: CheckCommunityNotificationPrefParams) =>
+      makeGrpcCall<unknown, CheckCommunityNotificationPrefResult>(
+        client,
+        "checkCommunityNotificationPref",
+        {
+          communityId: p.communityId,
+          userId: p.userId,
+          field: p.field,
+        }
+      )
+  );
+  // FAIL-OPEN: same rationale as the mute breaker above — an oracle outage
+  // must never suppress a notification.
+  prefBreaker.fallback(() => PREF_FAIL_OPEN);
+
   return {
     checkCommunityMute: (p) => muteBreaker.fire(p),
+    checkCommunityNotificationPref: (p) => prefBreaker.fire(p),
   };
 }
 

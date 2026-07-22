@@ -4,11 +4,30 @@ import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { deviceTokenService } from "./device-token.service.js";
+import { isCommunityNotificationEnabled } from "./notification-eligibility.service.js";
 import {
   getNotificationSettings,
   isDeliveryAllowed,
   type NotificationCategory,
 } from "./notification-settings.service.js";
+
+type CommunityPrefField =
+  | "chatEnabled"
+  | "streamEnabled"
+  | "announcementEnabled";
+
+/**
+ * Category → per-community preference field, used when a caller doesn't pass
+ * `communityPrefField` explicitly. `chatEnabled` (private/group DMs) and the
+ * other non-community categories have no community mapping.
+ */
+function defaultCommunityPrefField(
+  category: NotificationCategory
+): CommunityPrefField | undefined {
+  if (category === "liveStreamEnabled") return "streamEnabled";
+  if (category === "communityEnabled") return "announcementEnabled";
+  return undefined;
+}
 
 const chatNotificationClient = createChatNotificationClient();
 
@@ -86,6 +105,16 @@ export interface PushInput {
    * must never appear there. Use for any chat-activity push.
    */
   skipInbox?: boolean;
+  /**
+   * Explicit per-community preference field to gate on (chatEnabled for
+   * community chat messages, streamEnabled for livestream, announcementEnabled
+   * for everything else). Only takes effect when `data.communityId` is set.
+   * Defaults from `category` via `defaultCommunityPrefField` when omitted —
+   * pass this explicitly whenever `category` doesn't already disambiguate
+   * (e.g. community chat messages currently share the `communityEnabled`
+   * category with generic community events but must gate on `chatEnabled`).
+   */
+  communityPrefField?: CommunityPrefField;
 }
 
 /**
@@ -142,6 +171,34 @@ export async function pushToUser(input: PushInput): Promise<void> {
       `Notification suppressed by settings/quiet-hours: user=${userId} type=${type}`
     );
     return;
+  }
+
+  // Per-community notification-preference gate (Chat/Community/Live Stream
+  // toggles on the community's own mute-setting row) — independent of, and
+  // in addition to, the global per-category settings check above.
+  if (!bypassSettings) {
+    const communityId = data?.communityId;
+    const prefField =
+      input.communityPrefField ?? defaultCommunityPrefField(category);
+    if (communityId && prefField) {
+      try {
+        const enabled = await isCommunityNotificationEnabled(
+          userId,
+          communityId,
+          prefField
+        );
+        if (!enabled) {
+          logger.info(
+            `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+          );
+          return;
+        }
+      } catch (error) {
+        // Fail-open: an oracle outage never suppresses a notification.
+        logger.warn(`community pref check failed for ${userId}; allowing`);
+        logger.warn(error);
+      }
+    }
   }
 
   // Apply preview masking — title is intentionally left unchanged.

@@ -130,6 +130,12 @@ service CommunityService {
   // has been muted by a moderator. Read-only, single-row lookup; never throws.
   rpc CheckCommunityMute (CheckCommunityMuteRequest) returns (CheckCommunityMuteResponse);
 
+  // Per-community notification-preference oracle for notifications-service:
+  // whether `userId` wants pushes of `field` (chatEnabled/streamEnabled/
+  // announcementEnabled) from `communityId`. Read-only, single-row lookup,
+  // defaults to enabled=true when no preference row exists; never throws.
+  rpc CheckCommunityNotificationPref (CheckCommunityNotificationPrefRequest) returns (CheckCommunityNotificationPrefResponse);
+
   // Toggle reaction on a community message (add if absent, remove if present).
   rpc ReactToCommunityMessage (ReactToCommunityMessageRequest) returns (ReactToCommunityMessageResponse);
 
@@ -774,6 +780,10 @@ message CheckCommunityMembershipResponse {
 // ---- Moderation-mute check (notifications eligibility gate) ----
 message CheckCommunityMuteRequest  { string community_id = 1; string user_id = 2; }
 message CheckCommunityMuteResponse { bool is_muted = 1; int64 muted_until = 2; } // epoch ms; 0 = indefinite or not muted
+
+// field: one of "chatEnabled" | "streamEnabled" | "announcementEnabled".
+message CheckCommunityNotificationPrefRequest  { string community_id = 1; string user_id = 2; string field = 3; }
+message CheckCommunityNotificationPrefResponse { bool enabled = 1; }
 
 // ---- Community message reaction (toggle: add if absent, remove if present) ----
 message ReactToCommunityMessageRequest {
