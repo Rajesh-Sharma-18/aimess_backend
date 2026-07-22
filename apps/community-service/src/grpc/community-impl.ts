@@ -654,6 +654,10 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           role: membership ? String(membership.role) : "",
           isCommunityClosed:
             !community || communityAccessPolicy.isEffectivelyClosed(community),
+          // PUBLIC communities allow non-members to read history (REST); the
+          // gateway uses this to let non-member sockets subscribe to live
+          // broadcasts too, so read access and receive access match.
+          isPublicCommunity: community?.type === CommunityType.PUBLIC,
         });
       } catch (err) {
         logger.error("checkCommunityMembership gRPC handler failed", err);

@@ -19,34 +19,66 @@
 function decideJoinAck(m: {
   isBanned: boolean;
   isMember: boolean;
+  isPublicCommunity: boolean;
 }): "USER_BANNED" | "FORBIDDEN" | "JOINED" {
   if (m.isBanned) return "USER_BANNED";
-  if (!m.isMember) return "FORBIDDEN";
+  // PUBLIC communities let non-members subscribe (parity with REST history
+  // read access — otherwise the FE can browse past messages but silently
+  // misses every new one). PRIVATE stays members-only.
+  if (!m.isMember && !m.isPublicCommunity) return "FORBIDDEN";
   return "JOINED";
 }
 
 describe("community:join membership gate", () => {
-  it("an ACTIVE member joins the room", () => {
-    expect(decideJoinAck({ isBanned: false, isMember: true })).toBe("JOINED");
+  it("an ACTIVE member of a PRIVATE community joins the room", () => {
+    expect(
+      decideJoinAck({
+        isBanned: false,
+        isMember: true,
+        isPublicCommunity: false,
+      })
+    ).toBe("JOINED");
   });
 
-  it("a BANNED member is rejected with USER_BANNED", () => {
-    expect(decideJoinAck({ isBanned: true, isMember: false })).toBe(
-      "USER_BANNED"
-    );
+  it("a BANNED member is rejected with USER_BANNED even in a PUBLIC community", () => {
+    expect(
+      decideJoinAck({
+        isBanned: true,
+        isMember: false,
+        isPublicCommunity: true,
+      })
+    ).toBe("USER_BANNED");
   });
 
-  it("a just-unbanned (LEFT, not ACTIVE) user is rejected — unban never restores membership", () => {
+  it("a just-unbanned (LEFT) user in a PRIVATE community is rejected — unban never restores membership", () => {
     // unbanMember flips BANNED -> LEFT: isBanned false, isMember false (status
     // !== "ACTIVE"). Must NOT be treated as an ACTIVE member.
-    expect(decideJoinAck({ isBanned: false, isMember: false })).toBe(
-      "FORBIDDEN"
-    );
+    expect(
+      decideJoinAck({
+        isBanned: false,
+        isMember: false,
+        isPublicCommunity: false,
+      })
+    ).toBe("FORBIDDEN");
   });
 
-  it("a user who was never a member at all is rejected the same way", () => {
-    expect(decideJoinAck({ isBanned: false, isMember: false })).toBe(
-      "FORBIDDEN"
-    );
+  it("a non-member subscribing to a PUBLIC community is allowed (matches REST)", () => {
+    expect(
+      decideJoinAck({
+        isBanned: false,
+        isMember: false,
+        isPublicCommunity: true,
+      })
+    ).toBe("JOINED");
+  });
+
+  it("a non-member in a PRIVATE community is rejected", () => {
+    expect(
+      decideJoinAck({
+        isBanned: false,
+        isMember: false,
+        isPublicCommunity: false,
+      })
+    ).toBe("FORBIDDEN");
   });
 });

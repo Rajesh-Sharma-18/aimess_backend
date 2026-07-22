@@ -6,6 +6,21 @@
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
+// ponytail: post-fetch delete-for-me filter. Reappears when a newer message
+// arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
+// Json path filters on MongoDB+Prisma are unreliable, so filter in memory.
+function isVisibleAfterDeleteForMe(
+  room: { deletedFor?: unknown; lastMessageAt?: Date | null },
+  userId: string
+): boolean {
+  const map = (room.deletedFor ?? {}) as Record<string, string>;
+  const deletedAt = map[userId];
+  if (!deletedAt) return true;
+  const deletedMs = new Date(deletedAt).getTime();
+  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
+  return lastMs > deletedMs;
+}
+
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -182,7 +197,7 @@ export class PrivateRoomRepository {
     limit: number;
     cursor?: string | null;
   }): Promise<PrivateRoom[]> {
-    return this.prisma.privateRoom.findMany({
+    const rows = await this.prisma.privateRoom.findMany({
       where: {
         participants: { has: params.userId },
         lastMessageAt: params.cursor
@@ -192,12 +207,16 @@ export class PrivateRoomRepository {
       orderBy: { lastMessageAt: "desc" },
       take: params.limit,
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
   }
 
   async countConversations(userId: string): Promise<number> {
-    return this.prisma.privateRoom.count({
+    // Approximate; excludes rooms fully hidden by this user's delete-for-me.
+    const rows = await this.prisma.privateRoom.findMany({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: { deletedFor: true, lastMessageAt: true },
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, userId)).length;
   }
 
   /**
@@ -218,7 +237,7 @@ export class PrivateRoomRepository {
     limit: number;
   }): Promise<PrivateRoom[]> {
     const dir = params.direction === "before" ? "desc" : "asc";
-    return this.prisma.privateRoom.findMany({
+    const rows = await this.prisma.privateRoom.findMany({
       where: {
         participants: { has: params.userId },
         ...buildRoomKeysetWhere(params),
@@ -226,6 +245,7 @@ export class PrivateRoomRepository {
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
       take: params.limit,
     });
+    return rows.filter((r) => isVisibleAfterDeleteForMe(r, params.userId));
   }
 
   async updateRoomOnNewMessage(params: {

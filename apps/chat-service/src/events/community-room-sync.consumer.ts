@@ -112,6 +112,7 @@ interface CommunityRoomSyncEvent {
     communityStatus?: string;
     // community.invite_link_shared
     communityName?: string;
+    communityHandle?: string;
     linkCode?: string;
     inviterId?: string;
     recipientId?: string;
@@ -391,6 +392,7 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName,
+            communityHandle,
             communityAvatarUrl,
             memberCount,
             inviteUrl,
@@ -398,6 +400,7 @@ export class CommunityRoomSyncConsumer {
             isPermanent,
             inviterName,
             inviterAvatarUrl,
+            eventAt,
           } = event.data;
           if (!inviterId || !recipientId || !linkCode) {
             logger.warn(
@@ -411,6 +414,7 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName: communityName ?? "",
+            communityHandle: communityHandle ?? null,
             communityAvatarUrl: communityAvatarUrl ?? null,
             memberCount,
             inviteUrl,
@@ -418,6 +422,7 @@ export class CommunityRoomSyncConsumer {
             isPermanent,
             inviterName,
             inviterAvatarUrl: inviterAvatarUrl ?? null,
+            eventAt,
           });
           break;
         }
@@ -488,10 +493,13 @@ export class CommunityRoomSyncConsumer {
    * Bypasses the friendship check intentionally — this is an admin-initiated
    * system notification, not a user-to-user message.
    *
-   * Idempotent: a deterministic `clientMessageId`
-   * (`cinv:<communityId>:<linkCode>:<recipientId>`) means an accidental double
-   * Bulk-Send, or a RabbitMQ redelivery, reuses the existing message instead of
-   * posting a duplicate invitation.
+   * Idempotent per SHARE ACTION: `clientMessageId` is
+   * `cinv:<communityId>:<linkCode>:<recipientId>:<eventAt>`. Each Bulk-Send call
+   * mints a fresh `eventAt`, so N shares → N distinct messages (same behavior
+   * as text/image/file messages). A RabbitMQ redelivery of the SAME event
+   * carries the same `eventAt` and is deduped. `eventAt` is optional for
+   * back-compat with in-flight events from older publishers; when absent, a
+   * per-invocation nonce is used so distinct shares still don't collide.
    */
   private async deliverInviteLinkDm(params: {
     inviterId: string;
@@ -499,6 +507,7 @@ export class CommunityRoomSyncConsumer {
     linkCode: string;
     communityId: string;
     communityName: string;
+    communityHandle?: string | null;
     communityAvatarUrl?: string | null;
     memberCount?: number;
     inviteUrl?: string;
@@ -506,6 +515,7 @@ export class CommunityRoomSyncConsumer {
     isPermanent?: boolean;
     inviterName?: string;
     inviterAvatarUrl?: string | null;
+    eventAt?: string;
   }): Promise<void> {
     const {
       inviterId,
@@ -513,6 +523,7 @@ export class CommunityRoomSyncConsumer {
       linkCode,
       communityId,
       communityName,
+      communityHandle = null,
       communityAvatarUrl = null,
       memberCount,
       inviteUrl,
@@ -520,6 +531,7 @@ export class CommunityRoomSyncConsumer {
       isPermanent,
       inviterName,
       inviterAvatarUrl = null,
+      eventAt,
     } = params;
 
     // 1. Find or create the private room (no friendship check — system event).
@@ -537,9 +549,14 @@ export class CommunityRoomSyncConsumer {
       );
     }
 
-    // 2. Idempotency — a deterministic key per (community, link, recipient) so a
-    //    double Bulk-Send or a queue redelivery cannot post a duplicate.
-    const clientMessageId = `cinv:${communityId}:${linkCode}:${recipientId}`;
+    // 2. Idempotency — deterministic per SHARE ACTION (`eventAt` is minted once
+    //    per Bulk-Send call in community-service). Distinct shares of the same
+    //    community produce distinct messages; a RabbitMQ redelivery of the SAME
+    //    event carries the same `eventAt` and is deduped. Fallback nonce keeps
+    //    older in-flight events (without `eventAt`) from colliding.
+    const shareNonce =
+      eventAt ?? `${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+    const clientMessageId = `cinv:${communityId}:${linkCode}:${recipientId}:${shareNonce}`;
     const existing = await this.privateMessageRepo.findByClientMessageId(
       room.roomId,
       inviterId,
@@ -562,6 +579,7 @@ export class CommunityRoomSyncConsumer {
     const systemData: Record<string, unknown> = {
       communityId,
       communityName,
+      communityHandle,
       communityAvatarUrl,
       memberCount,
       linkCode,
@@ -638,6 +656,7 @@ export class CommunityRoomSyncConsumer {
     const systemAction = buildCommunityInvitationAction({
       communityId,
       communityName,
+      communityHandle,
       inviteCode: linkCode,
       deepLink: inviteDeepLink ?? inviteUrl ?? "",
       alreadyJoined: false,

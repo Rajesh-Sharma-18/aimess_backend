@@ -649,6 +649,7 @@ export type CommunityInviteLinkData = {
  */
 export type InviteLinkPreviewData = {
   communityId: string;
+  communityHandle: string;
   communityName: string;
   description: string | null;
   avatarUrl: string | null;

@@ -10,11 +10,24 @@
 import { ForbiddenError } from "@aimess/errors";
 
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
+import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
 
 const ROOM_ID = "c".repeat(24);
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 
 function buildService(memberStatus: string | null) {
+  // Authoritative gRPC verdict mirrors the local mirror status by default; the
+  // stale-mirror reconciliation in assertCommunityMember consults this on any
+  // non-active local state, so the mock must match the tested intent.
+  const grpcVerdict =
+    memberStatus === "banned"
+      ? { isMember: false, isBanned: true, status: "BANNED", role: "" }
+      : memberStatus === "active"
+        ? { isMember: true, isBanned: false, status: "ACTIVE", role: "MEMBER" }
+        : { isMember: false, isBanned: false, status: "LEFT", role: "" };
+  (
+    getCommunityReconcileClient() as { checkCommunityMembership: jest.Mock }
+  ).checkCommunityMembership.mockResolvedValue(grpcVerdict);
   const messageRepo = { create: jest.fn(), findOne: jest.fn() };
   const roomRepo = {
     findRoomById: jest.fn().mockResolvedValue({
@@ -33,6 +46,7 @@ function buildService(memberStatus: string | null) {
             role: "member",
           }
     ),
+    upsert: jest.fn(),
   };
   const cacheRepo = {
     getMessageIdempotency: jest.fn(),

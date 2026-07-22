@@ -764,6 +764,11 @@ message CheckCommunityMembershipResponse {
   // True when the community is owner-CLOSED or platform-SUSPENDED. Lets the
   // gateway block new socket writes (join/typing) into a closed community.
   bool   is_community_closed = 5;
+  // True when the community's visibility is PUBLIC. PUBLIC communities allow
+  // non-members to READ history via REST, so the socket ban gate mirrors that
+  // by letting non-member sockets subscribe to live broadcasts too — without
+  // this the FE could read past messages but never receive new ones.
+  bool   is_public_community = 6;
 }
 
 // ---- Moderation-mute check (notifications eligibility gate) ----

@@ -6325,14 +6325,14 @@ components:
         status:
           {
             type: string,
-            enum: [PENDING, APPROVED, REJECTED],
-            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it.",
+            enum: [PENDING, APPROVED, REJECTED, CANCELLED],
+            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it; CANCELLED = the requester withdrew.",
           }
         userId: { type: string, description: "The requester." }
         actorId:
           {
             type: string,
-            description: "The requester themself for PENDING, the deciding admin/moderator for APPROVED/REJECTED.",
+            description: "The requester themself for PENDING/CANCELLED, the deciding admin/moderator for APPROVED/REJECTED.",
           }
         updatedAt: { type: integer, description: "epoch ms." }
       required: [communityId, requestId, status, userId, updatedAt]

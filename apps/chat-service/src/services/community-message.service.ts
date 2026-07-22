@@ -404,11 +404,13 @@ export class CommunityMessageService {
     const created: GeneralRoomMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
-      const sequenceNumber = await this.roomRepo.allocateSequence(
-        params.roomId
-      );
-      // Insert bumps the room CHANGE revision too (zero-loss changes feed).
-      const revision = await this.roomRepo.allocateRevision(params.roomId);
+      // Single atomic $inc for BOTH counters — bursty concurrent sends to one
+      // room otherwise contend TWICE on the same GeneralRoom doc (sequence,
+      // then revision) and blow past the write-conflict retry budget → the
+      // intermittent SERVICE_ERROR ack. Insert bumps the room CHANGE revision
+      // too (zero-loss changes feed).
+      const { sequenceNumber, revision } =
+        await this.roomRepo.allocateSequenceAndRevision(params.roomId);
       const entity: Record<string, unknown> = {
         roomId: params.roomId,
         sentBy: params.sentBy,

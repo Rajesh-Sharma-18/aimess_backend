@@ -11,6 +11,7 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
+import { avatarService } from "../services/avatar.service.js";
 import {
   buildFriendshipView,
   toChatRelationship,
@@ -212,12 +213,21 @@ export function startUserGrpcServer(): grpc.Server {
           const profiles = await userProfileRepository.findManyByUserIds(
             userIds.slice(0, 500)
           );
+          // Resolve a fresh presigned URL per profile — same resolver
+          // /users/search uses — so callers (chat-service notification
+          // enrichment, etc.) never persist a URL that later expires.
+          const avatarViews = await Promise.all(
+            profiles.map((p) =>
+              avatarService.resolveViewUrlForClient(p.avatarUrl)
+            )
+          );
           callback(null, {
-            users: profiles.map((p) => ({
+            users: profiles.map((p, i) => ({
               userId: p.userId,
               username: p.username,
               displayName: buildDisplayName(p.firstName, p.lastName),
               avatarObjectKey: p.avatarUrl ?? "",
+              avatarUrl: avatarViews[i]?.url ?? "",
             })),
           });
         } catch (err) {
@@ -267,17 +277,23 @@ export function startUserGrpcServer(): grpc.Server {
             ])
           );
           const relationships = candidateIds.map((userId) => {
-            const relationship = toChatRelationship(
-              buildFriendshipView(
-                callerId,
-                rowByPeer.get(userId) ?? null,
-                blockedIds.has(userId)
-              )
+            const row = rowByPeer.get(userId) ?? null;
+            const view = buildFriendshipView(
+              callerId,
+              row,
+              blockedIds.has(userId)
             );
+            const relationship = toChatRelationship(view);
+            const isPending = view.status === "PENDING";
             return {
               userId,
               status: relationship.status,
               direction: relationship.direction ?? "",
+              friendshipId: row?.id ?? "",
+              requesterId: isPending && row ? row.requesterId : "",
+              canAccept: view.canAccept,
+              canReject: view.canReject,
+              canCancel: view.canCancel,
             };
           });
           callback(null, { friendIds, relationships });
