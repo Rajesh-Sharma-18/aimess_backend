@@ -94,22 +94,18 @@ import { shouldCountInUnread } from "../lib/unread-count.js";
  * LOWER-CASE `messageType` dropped and replaced by an UPPER-CASE `contentType`
  * (§1 single client-facing casing). Used as the return element of every REST
  * read path so HTTP clients never see the internal `messageType` field.
+ *
+ * Intentionally has NO `readBy`/`deliveredTo` — the frontend no longer
+ * consumes per-message delivery/read receipts on history reads (only the
+ * lighter-weight `community:message:read` live event + room-level unread
+ * counters are used), so `toWire` never computes or attaches them and they
+ * are omitted from the JSON response entirely (not `null`/`[]`).
  */
-type MemberReadStatus = {
-  userId: string;
-  lastReadAt: Date | null;
-  joinedAt: Date;
-};
-
 type CommunityMessageWire = Omit<
   GeneralRoomMessage,
   "messageType" | "visibleToUserId"
 > & {
   contentType: string;
-  /** Members whose read cursor is at or past this message's createdAt. */
-  readBy: Array<{ userId: string; readAt: number }>;
-  /** Members who were active in the room when this message was sent. */
-  deliveredTo: Array<{ userId: string; deliveredAt: number }>;
   /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
   isPersonal?: boolean;
 };
@@ -729,10 +725,8 @@ export class CommunityMessageService {
       readCutoff: bannedAtCutoff ?? null,
     });
 
-    const members = await this.memberRepo.findReadStatusByRoom(params.roomId);
     const items = await this.enrichTimelinePage(
       changes.messages,
-      members,
       params.userId
     );
     return {
@@ -1120,7 +1114,6 @@ export class CommunityMessageService {
 
   private toWire(
     m: GeneralRoomMessage,
-    members?: MemberReadStatus[],
     urlMap?: Map<string, string>,
     resolveReactionUser?: (
       userId: string
@@ -1191,26 +1184,6 @@ export class CommunityMessageService {
     // clients ignore it.
     wire.revision = m.revision ?? 0;
 
-    const msgTs = m.createdAt;
-
-    const readBy = members
-      ? members
-          .filter((mem) => mem.lastReadAt !== null && mem.lastReadAt >= msgTs)
-          .map((mem) => ({
-            userId: mem.userId,
-            readAt: mem.lastReadAt!.getTime(),
-          }))
-      : [];
-
-    const deliveredTo = members
-      ? members
-          .filter((mem) => mem.joinedAt <= msgTs)
-          .map((mem) => ({
-            userId: mem.userId,
-            deliveredAt: msgTs.getTime(),
-          }))
-      : [];
-
     // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
     // community") and DROP the raw `visibleToUserId` targeting column from the
     // wire — it is an internal access-control field, not a client contract.
@@ -1256,7 +1229,7 @@ export class CommunityMessageService {
       );
     }
 
-    return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
+    return wire as CommunityMessageWire;
   }
 
   async getMessages(params: {
@@ -1277,22 +1250,17 @@ export class CommunityMessageService {
     );
     const viewerIsActiveMember = isActiveMember(member);
     const beforeTimestamp = params.cursor || new Date().toISOString();
-    const [rows, members] = await Promise.all([
-      this.messageRepo.findByRoomIdWithTime(
-        params.roomId,
-        beforeTimestamp,
-        "older",
-        params.limit,
-        params.userId,
-        viewerIsActiveMember,
-        bannedAtCutoff
-      ),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
-    ]);
-    const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, members, urlMap, undefined, params.userId)
+    const rows = await this.messageRepo.findByRoomIdWithTime(
+      params.roomId,
+      beforeTimestamp,
+      "older",
+      params.limit,
+      params.userId,
+      viewerIsActiveMember,
+      bannedAtCutoff
     );
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   /**
@@ -1406,7 +1374,7 @@ export class CommunityMessageService {
     );
     const viewerIsActiveMember = isActiveMember(member);
     const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
-    const [{ messages: pageRows, hasMore }, members, total, roomRevision] =
+    const [{ messages: pageRows, hasMore }, total, roomRevision] =
       await Promise.all([
         adapter.timeline({
           roomId: params.roomId,
@@ -1416,7 +1384,6 @@ export class CommunityMessageService {
           viewerIsActiveMember,
           readCutoff: bannedAtCutoff,
         }),
-        this.memberRepo.findReadStatusByRoom(params.roomId),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
@@ -1452,7 +1419,7 @@ export class CommunityMessageService {
         },
         orderedItems
       ),
-      this.enrichTimelinePage(orderedItems, members, params.userId),
+      this.enrichTimelinePage(orderedItems, params.userId),
     ]);
     return { items, hasMore, nextCursor, total, cursors, roomRevision };
   }
@@ -1466,7 +1433,6 @@ export class CommunityMessageService {
    */
   private async enrichTimelinePage(
     orderedItems: GeneralRoomMessage[],
-    members: MemberReadStatus[],
     userId: string
   ): Promise<CommunityMessageWire[]> {
     // Fetch reactor snapshots first so we can collect their avatar object-keys
@@ -1500,7 +1466,7 @@ export class CommunityMessageService {
     };
 
     return orderedItems.map((m) =>
-      this.toWire(m, members, urlMap, resolveReactionUser, userId)
+      this.toWire(m, urlMap, resolveReactionUser, userId)
     );
   }
 
@@ -1779,7 +1745,7 @@ export class CommunityMessageService {
             inclusive: false,
           };
     const adapter = makeTimelineAdapter(this.messageRepo, cursor);
-    const [{ rows, cursors }, members, total] = await Promise.all([
+    const [{ rows, cursors }, total] = await Promise.all([
       adapter.around({
         roomId: params.roomId,
         userId: params.userId,
@@ -1788,7 +1754,6 @@ export class CommunityMessageService {
         viewerIsActiveMember,
         readCutoff: bannedAtCutoff,
       }),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
       // Use the history-visible count (same filter as the timeline) so `total`
       // matches what the client can actually page through — not countByRoom's
       // raw total (which includes hidden/personal/deleted-for-me rows).
@@ -1801,9 +1766,7 @@ export class CommunityMessageService {
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
     return {
-      items: rows.map((m) =>
-        this.toWire(m, members, urlMap, undefined, params.userId)
-      ),
+      items: rows.map((m) => this.toWire(m, urlMap, undefined, params.userId)),
       total,
       ...cursors,
     };
@@ -1881,7 +1844,7 @@ export class CommunityMessageService {
     const urlMap = await this.resolveRowsMedia(messages);
     return {
       messages: messages.map((m) =>
-        this.toWire(m, undefined, urlMap, undefined, params.userId)
+        this.toWire(m, urlMap, undefined, params.userId)
       ),
       total,
     };
@@ -1911,9 +1874,7 @@ export class CommunityMessageService {
       bannedAtCutoff
     );
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, undefined, urlMap, undefined, params.userId)
-    );
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -1965,9 +1926,7 @@ export class CommunityMessageService {
       readCutoff: bannedAtCutoff,
     });
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, undefined, urlMap, undefined, params.userId)
-    );
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   /** Bind a loaded message to its OWN room (never a body-supplied communityId)

@@ -133,7 +133,12 @@ export class RoomMemberRepository {
     });
   }
 
-  /** Lightweight read-status projection used to compute per-message readBy/deliveredTo. */
+  /**
+   * Lightweight read-status projection (userId, lastReadAt, joinedAt) for
+   * active members of a room. Kept for callers that still need per-member
+   * cursor/joinedAt data; history serializers no longer use this to attach
+   * per-message `readBy`/`deliveredTo` onto the wire.
+   */
   async findReadStatusByRoom(
     roomId: string
   ): Promise<

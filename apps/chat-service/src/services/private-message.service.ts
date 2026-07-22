@@ -1534,6 +1534,16 @@ export class PrivateMessageService {
       const wire = toWireMessage(
         message as { messageType?: string | null }
       ) as unknown as Record<string, unknown>;
+      // `readBy`/`deliveredTo`/`deliveredAt` are real PrivateMessage columns, so
+      // `toWireMessage`'s `...rest` spread carries them onto `wire` verbatim —
+      // strip them here so none leak into the history response. The frontend
+      // no longer consumes per-message delivery/read receipts on history
+      // reads; the underlying columns (still written by `markDelivered` etc.)
+      // are untouched — this only affects what gets serialized onto the wire.
+      // Fields are omitted entirely (not `null`/`[]`).
+      delete wire.readBy;
+      delete wire.deliveredTo;
+      delete wire.deliveredAt;
       wire.countInUnread = shouldCountInUnread({
         messageType: message.messageType,
         systemEvent: message.systemEvent,
@@ -1577,28 +1587,6 @@ export class PrivateMessageService {
         urlFromMap(urlMap, key)
       );
 
-      // Message-info parity with community's toWire(): `deliveredTo` was a
-      // stored field (populated by markDelivered) that was never surfaced on
-      // read — dead on the read side. Shape matches community's
-      // `Array<{userId, deliveredAt}>` convention. `readBy` is intentionally
-      // NOT added here: unlike community/group (which track a per-member
-      // lastReadAt this can be computed from), private read state lives on
-      // PrivateRoom.lastReadAtByUser, which isn't loaded by enrichMessages'
-      // current callers — deferred rather than threading a room fetch through
-      // every call site for a half-correct result.
-      const deliveredAtMap = (message.deliveredAt ?? {}) as Record<
-        string,
-        string
-      >;
-      const deliveredTo = Array.isArray(message.deliveredTo)
-        ? (message.deliveredTo as string[]).map((userId) => ({
-            userId,
-            deliveredAt: deliveredAtMap[userId]
-              ? new Date(deliveredAtMap[userId]).getTime()
-              : 0,
-          }))
-        : [];
-
       return {
         ...wire,
         content: resolvedContent,
@@ -1615,7 +1603,6 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
-        deliveredTo,
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

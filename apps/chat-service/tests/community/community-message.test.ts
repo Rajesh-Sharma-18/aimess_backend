@@ -79,6 +79,91 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
     expect(res.body.data.data[0].contentType).toBe("TEXT");
+    // Per-message delivery/read receipts are no longer part of the history
+    // wire — omit entirely (not null/[]).
+    expect(res.body.data.data[0]).not.toHaveProperty("deliveredTo");
+    expect(res.body.data.data[0]).not.toHaveProperty("readBy");
+  });
+
+  it("POSITIVE: history omits deliveredTo/readBy for every message type (TEXT/IMAGE/SYSTEM/reply)", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-text",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "hi",
+          messageType: "text",
+          createdAt: new Date(1),
+        },
+        {
+          id: "m-image",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "",
+          messageType: "image",
+          attachments: [{ objectKey: "img/1.jpg", mime: "image/jpeg" }],
+          createdAt: new Date(2),
+        },
+        {
+          id: "m-sys",
+          roomId: ROOM,
+          sentBy: "",
+          message: "Rajesh joined the community",
+          messageType: "system",
+          systemMessageType: "MEMBER_JOINED",
+          createdAt: new Date(3),
+        },
+        {
+          id: "m-reply",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "reply",
+          messageType: "text",
+          parentMessageId: "m-text",
+          quoteData: {
+            messageId: "m-text",
+            senderId: "u",
+            senderName: "U",
+            messageType: "TEXT",
+            preview: "hi",
+          },
+          createdAt: new Date(4),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(4);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([
+      {
+        userId: "peer",
+        lastReadAt: new Date(10),
+        joinedAt: new Date(0),
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(4);
+    for (const msg of res.body.data.data) {
+      expect(msg).not.toHaveProperty("deliveredTo");
+      expect(msg).not.toHaveProperty("readBy");
+    }
+    // Remaining fields stay intact across types (order is newest-first).
+    const byId = Object.fromEntries(
+      res.body.data.data.map((m: { id: string }) => [m.id, m])
+    );
+    expect(byId["m-text"].contentType).toBe("TEXT");
+    expect(byId["m-image"].contentType).toBe("IMAGE");
+    expect(byId["m-sys"].contentType).toBe("SYSTEM");
+    expect(byId["m-reply"].parentMessageId).toBe("m-text");
+    expect(res.body.data).toHaveProperty("pagination");
   });
 
   it("POSITIVE: pinnedMessage is null when the room has no active pin", async () => {
