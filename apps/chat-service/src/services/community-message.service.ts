@@ -32,6 +32,7 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
+  setStoredReaction,
   reactionUserIdMap,
   toWireMessage,
   buildCanonicalQuote,
@@ -2095,6 +2096,10 @@ export class CommunityMessageService {
     messageId: string;
     userId: string;
     emoji: string;
+    /** "set" => caller ends up with exactly `emoji` (re-sending the same one clears it), so a
+     *  reaction CHANGE is ONE call instead of remove-then-add — no intermediate empty broadcast.
+     *  Default/absent keeps the legacy per-emoji toggle. */
+    mode?: string;
   }): Promise<{
     messageId: string;
     roomId: string;
@@ -2141,13 +2146,13 @@ export class CommunityMessageService {
     ).includes(params.userId);
     const added = !wasReactedByUser;
 
-    // Toggle the reactor in/out of the emoji bucket (shared with private/group);
-    // non-atomic read-modify-write, acceptable at current scale.
-    const updatedReactions = toggleStoredReaction(
-      message.reactions,
-      params.userId,
-      params.emoji
-    );
+    // Apply the reactor to the emoji bucket (shared with private/group); non-atomic
+    // read-modify-write, acceptable at current scale. mode="set" drops the caller from every OTHER
+    // bucket in the same pass, so changing a reaction is one write + one broadcast.
+    const updatedReactions =
+      String(params.mode ?? "").toLowerCase() === "set"
+        ? setStoredReaction(message.reactions, params.userId, params.emoji)
+        : toggleStoredReaction(message.reactions, params.userId, params.emoji);
 
     // Fetch snapshots BEFORE persisting so the stored document carries real
     // userName / avatar / memberId (fixes the raw `reactions` field on read).

@@ -143,6 +143,12 @@ export const reactCommunityMessageSchema = z.object({
 export const reactCommunityMessageBodySchema = z.object({
   communityId: z.string().min(1),
   emoji: z.string().min(1).max(10),
+  // "set" => caller ends up with exactly `emoji` (re-sending the same one clears it), so changing a
+  // reaction is ONE call. Omitted/"toggle" keeps the legacy per-emoji flip for existing clients.
+  mode: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["toggle", "set"]).default("toggle")
+  ),
 });
 
 export const reportMessageSchema = z.object({
