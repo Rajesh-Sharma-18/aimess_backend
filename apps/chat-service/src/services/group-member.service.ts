@@ -12,17 +12,29 @@ import type { Redis, Cluster } from "ioredis";
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupMember } from "../generated/prisma/index.js";
+
+/**
+ * Injected user-service gRPC dep so direct adds can be friend-gated (mirrors
+ * PrivateRoomService.getOrCreateRoom's `checkFriendship`). Optional to keep the
+ * older test wiring compiling — when omitted, addMember falls back to the
+ * previous behavior (role + limit + status checks only).
+ */
+export interface GroupUserServiceClient {
+  checkFriendship(userA: string, userB: string): Promise<boolean>;
+}
 
 export class GroupMemberService {
   constructor(
     private readonly memberRepo: GroupMemberRepository,
     private readonly roomRepo: GroupRoomRepository,
     private readonly sysMsg: GroupSystemMessageService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly userServiceClient?: GroupUserServiceClient
   ) {}
 
   /**
@@ -70,6 +82,22 @@ export class GroupMemberService {
 
     if (room.memberCount >= room.memberLimit) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");
+    }
+
+    // Friend-gate direct adds — parity with private DM's friendship check.
+    // Skipped for invite-link self-joins (skipActorAuthz) and for the
+    // OWNER-onboards-themselves creation path (invitedBy == userId).
+    if (
+      !opts?.skipActorAuthz &&
+      params.invitedBy &&
+      params.invitedBy !== params.userId &&
+      this.userServiceClient
+    ) {
+      const isFriend = await this.userServiceClient.checkFriendship(
+        params.invitedBy,
+        params.userId
+      );
+      if (!isFriend) throw new ForbiddenError("CHAT_ADD_MEMBER_NOT_FRIEND");
     }
 
     const existing = await this.memberRepo.findByRoomAndUser(
@@ -297,7 +325,7 @@ export class GroupMemberService {
     await this.sysMsg.post({
       roomId: params.roomId,
       actorId: params.bannedBy,
-      systemEvent: SystemEvent.MEMBER_REMOVED,
+      systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: { targetUserId: params.targetUserId },
     });
 
@@ -331,12 +359,71 @@ export class GroupMemberService {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
 
-    return this.memberRepo.updateStatus(
+    const updated = await this.memberRepo.updateStatus(
       params.roomId,
       params.targetUserId,
       "LEFT",
       { bannedAt: null, bannedBy: null }
     );
+
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: params.unbannedBy,
+      systemEvent: SystemEvent.MEMBER_UNBANNED,
+      systemData: { targetUserId: params.targetUserId },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Report a member of this group. Best-effort forwards a normalized row to
+   * backoffice via the shared admin.report.ingest queue (same publisher as
+   * private message reports). No local dedupe row is persisted — backoffice
+   * owns the moderation ledger; adding one here would duplicate that state and
+   * require a new Prisma model + migration for negligible gain.
+   * ponytail: no local dedupe; add a chat-side unique index if abuse volume
+   * shows repeated backoffice ingest of the same (reporter, target, room).
+   */
+  async reportMember(params: {
+    roomId: string;
+    targetUserId: string;
+    reporterId: string;
+    reason: string;
+    description?: string;
+  }): Promise<{ ok: true }> {
+    if (params.reporterId === params.targetUserId) {
+      throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
+    }
+    // Reporter must be an active member of the group (mirrors private's
+    // participant guard). Target may be any status — banned members can still
+    // be reported for prior conduct.
+    const reporter = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.reporterId
+    );
+    if (!reporter) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+
+    const target = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.targetUserId
+    );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+
+    publishAdminReportIngestSafe({
+      type: "user",
+      targetId: params.targetUserId,
+      reporterId: params.reporterId,
+      reason: params.reason,
+      details: params.description?.trim() ? params.description.trim() : null,
+      // Groups are not community-scoped.
+      communityId: null,
+      eventAt: new Date().toISOString(),
+      // No local report row; identify the ingest via room + target for admin correlation.
+      sourceReportId: `grp:${params.roomId}:${params.targetUserId}:${Date.now()}`,
+    });
+
+    return { ok: true };
   }
 
   /**
@@ -396,6 +483,30 @@ export class GroupMemberService {
       params.roomId,
       params.targetUserId
     );
+
+    // Ownership transfer: promoting a member to OWNER auto-demotes the current
+    // OWNER to ADMIN and emits OWNERSHIP_TRANSFERRED instead of ROLE_CHANGED.
+    // Guarded above (only actor.role === OWNER may set OWNER), so `actor` IS
+    // the current owner.
+    if (params.newRole === "OWNER") {
+      await this.memberRepo.updateRole(
+        params.roomId,
+        params.actorUserId,
+        "ADMIN"
+      );
+      const updated = await this.memberRepo.updateRole(
+        params.roomId,
+        params.targetUserId,
+        "OWNER"
+      );
+      await this.sysMsg.post({
+        roomId: params.roomId,
+        actorId: params.actorUserId,
+        systemEvent: SystemEvent.OWNERSHIP_TRANSFERRED,
+        systemData: { targetUserId: params.targetUserId },
+      });
+      return updated;
+    }
 
     const updated = await this.memberRepo.updateRole(
       params.roomId,

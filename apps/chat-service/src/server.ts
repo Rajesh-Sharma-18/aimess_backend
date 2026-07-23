@@ -381,7 +381,8 @@ const startServer = async () => {
       groupMemberRepo,
       groupRoomRepo,
       groupSystemMessageService,
-      redis
+      redis,
+      userServiceClient
     );
     const groupRoomService = new GroupRoomService(
       groupRoomRepo,

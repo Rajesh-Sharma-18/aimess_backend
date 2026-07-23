@@ -167,7 +167,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || 50,
+      memberLimit: params.memberLimit || 256,
       memberCount: 1,
     });
 

@@ -40,6 +40,19 @@ export function buildGroupSystemFallbackText(
       if (isTarget) return "You were removed";
       return `${actor} removed ${target}`;
 
+    case "MEMBER_BANNED":
+      if (isTarget) return "You were banned";
+      return `${actor} banned ${target}`;
+
+    case "MEMBER_UNBANNED":
+      if (isTarget) return "You were unbanned";
+      return `${actor} unbanned ${target}`;
+
+    case "OWNERSHIP_TRANSFERRED":
+      if (isActor) return `You transferred ownership to ${target}`;
+      if (isTarget) return `${actor} transferred ownership to you`;
+      return `${actor} transferred ownership to ${target}`;
+
     case "ROLE_CHANGED": {
       const newRole = (data.newRole as string) || "";
       const oldRole = (data.oldRole as string) || "";
@@ -112,6 +125,9 @@ export function resolveGroupSystemSubjectUserId(
   const targetId = String(data.targetUserId ?? "").trim();
   switch (event) {
     case "MEMBER_ADDED":
+    case "MEMBER_BANNED":
+    case "MEMBER_UNBANNED":
+    case "OWNERSHIP_TRANSFERRED":
     case "ROLE_CHANGED":
       return targetId || null;
     default:
