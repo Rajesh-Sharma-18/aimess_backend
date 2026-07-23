@@ -2,6 +2,8 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
+import { publishChatUserEvent } from "@aimess/redis";
+
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
 import {
@@ -194,7 +196,38 @@ export class GroupRoomService {
     // message just set (the `room` above predates that write). Falls back to the
     // original row if the post/read was a no-op.
     const fresh = await this.roomRepo.findActiveByRoomId(roomId);
-    return { room: fresh ?? room, member };
+    const finalRoom = fresh ?? room;
+
+    // Creator isn't in `conv:<roomId>` yet (joined only via explicit client
+    // `conv:join`), so push the new group to their personal `user:<id>` channel
+    // — same `group:added` shape group-member.service.ts uses for later adds,
+    // so the existing frontend listener upserts it into the inbox with no
+    // client-side change. Fire-and-forget: a publish failure must never fail
+    // creation (mirrors PrivateRoomService's conv:created).
+    publishChatUserEvent(this.redis, params.createdBy, "group:added", {
+      type: "GROUP",
+      roomId: finalRoom.roomId,
+      lastMessageAt: finalRoom.lastMessageAt,
+      lastMessageId: finalRoom.lastMessageId,
+      lastMessage: finalRoom.lastMessagePreview ?? null,
+      unreadCount: 0,
+      isMuted: false,
+      pinnedCount: finalRoom.pinnedCount,
+      peer: null,
+      name: finalRoom.name,
+      avatar: finalRoom.avatar,
+      description: finalRoom.description,
+      memberCount: finalRoom.memberCount,
+      role: member.role,
+      isJoined: true,
+      addedAt: member.joinedAt,
+    }).catch((err: unknown) => {
+      logger.warn(
+        `GroupRoomService|createGroup|group:added publish failed room=${roomId} user=${params.createdBy}: ${String(err)}`
+      );
+    });
+
+    return { room: finalRoom, member };
   }
 
   async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
