@@ -509,10 +509,14 @@ export class PrivateRoomService {
       .map((room) => (room.participants || []).find((p) => p !== userId) || "")
       .filter(Boolean);
 
+    // Fetch the caller's own snapshot alongside the peers' — community-style
+    // lastActivity always carries the ACTUAL sender's live name (self included),
+    // never an empty placeholder; the client alone decides "You:" vs "<name>:".
     const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
-      peerIds,
+      [...peerIds, userId],
       this.cacheRepo
     );
+    const myDisplayName = resolveDisplayName(snapshots.get(userId));
 
     const friendshipByPeer = this.friendshipGrpcClient
       ? await this.friendshipGrpcClient.checkFriendships(userId, peerIds)
@@ -616,13 +620,20 @@ export class PrivateRoomService {
         ? new Date(lmRecord.createdAt as string | Date).getTime()
         : (room.lastMessageAt?.getTime() ?? 0);
       const lastActivityAt = lmDateTime || (room.lastMessageAt?.getTime() ?? 0);
+      // Always carry the ACTUAL sender's live name — self included — mirroring
+      // community's buildLastActivity. Previously this was forced empty when the
+      // caller sent the message, and the client filled the gap by falling back to
+      // `peer.displayName`, which showed the PEER's (or, via a stale/live-bump
+      // mismatch, the WRONG party's) name instead of "You:". The client alone
+      // decides the "You:" vs "<name>:" prefix from `userId === myUserId`.
       const lastActivity: PrivateConversationLastActivity = {
         type: "message",
         userId: lmSenderId,
-        username:
-          lmSenderId && lmSenderId === peerId
-            ? (snapshot.displayName as string) || ""
-            : "",
+        username: lmSenderId
+          ? lmSenderId === peerId
+            ? resolveDisplayName(snapshot)
+            : myDisplayName
+          : "",
         preview: lmRecord
           ? convertMessageToPreview(lmMessageType, lmRecord.content)
           : "",

@@ -40,6 +40,7 @@ import type { GroupMessageService } from "./group-message.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { resolveDisplayName } from "./user-snapshot.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
@@ -1551,8 +1552,13 @@ export class ChatMessageOrchestrator {
       this.cacheRepo
     );
     const snap = snaps.get(senderId);
+    // Use the shared fullName → displayName → username → memberId → "Unknown User"
+    // fallback chain so an empty computed displayName (profile with blank first/last)
+    // still yields a real sender name for the group/private list preview.
+    const resolvedName = resolveDisplayName(snap);
     return {
-      senderName: senderName ?? ((snap?.displayName as string) || ""),
+      senderName:
+        senderName ?? (resolvedName === "Unknown User" ? "" : resolvedName),
       senderAvatar: senderAvatar ?? ((snap?.avatar as string) || ""),
     };
   }

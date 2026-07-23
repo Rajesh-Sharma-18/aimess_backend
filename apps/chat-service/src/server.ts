@@ -390,7 +390,9 @@ const startServer = async () => {
       groupInviteLinkRepo,
       groupSystemMessageService,
       redis,
-      groupMessageRepo
+      groupMessageRepo,
+      userSnapshotService,
+      cacheRepo
     );
     const groupMessageService = new GroupMessageService(
       groupMessageRepo,

@@ -22,6 +22,9 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
+import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { resolveDisplayName } from "./user-snapshot.service.js";
+import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 
 export type GroupRoomMembership = GroupRoom & {
@@ -57,8 +60,54 @@ export class GroupRoomService {
     private readonly inviteLinkRepo: GroupInviteLinkRepository,
     private readonly sysMsg: GroupSystemMessageService,
     private readonly redis: Redis | Cluster,
-    private readonly messageRepo: GroupMessageRepository
+    private readonly messageRepo: GroupMessageRepository,
+    private readonly userSnapshotService?: UserSnapshotService,
+    private readonly cacheRepo?: CacheRepository
   ) {}
+
+  /**
+   * Overwrite each row's `lastMessagePreview.senderName` with the live snapshot's
+   * display name. Old rows persisted before the sender-name resolution fix carry
+   * an empty `senderName` frozen in the JSON, which strands the sidebar without
+   * a preview prefix — resolving at read time makes those self-heal without a
+   * data migration. Silently returns rooms untouched when the snapshot service
+   * hasn't been wired (test harnesses).
+   */
+  private async enrichLastMessageSenderNames<
+    T extends {
+      roomId: string;
+      lastMessagePreview: unknown;
+    },
+  >(rooms: T[]): Promise<T[]> {
+    if (!rooms.length || !this.userSnapshotService || !this.cacheRepo)
+      return rooms;
+    const senderIds = new Set<string>();
+    for (const r of rooms) {
+      const lp = r.lastMessagePreview as Record<string, unknown> | null;
+      const senderId = (lp?.senderId as string) || "";
+      if (senderId) senderIds.add(senderId);
+    }
+    if (!senderIds.size) return rooms;
+    const snaps = await this.userSnapshotService.getUserSnapshotsMap(
+      [...senderIds],
+      this.cacheRepo
+    );
+    return rooms.map((r) => {
+      const lp = r.lastMessagePreview as Record<string, unknown> | null;
+      if (!lp) return r;
+      const senderId = (lp.senderId as string) || "";
+      const live = senderId ? resolveDisplayName(snaps.get(senderId)) : "";
+      const liveName = live && live !== "Unknown User" ? live : "";
+      // Prefer the live name whenever we have one — this is the whole point of
+      // resolve-on-read (stored value may be empty or stale after a rename).
+      // Falls back to the stored senderName only when the snapshot lookup missed.
+      const nextSenderName = liveName || (lp.senderName as string) || "";
+      return {
+        ...r,
+        lastMessagePreview: { ...lp, senderName: nextSenderName },
+      } as T;
+    });
+  }
 
   /**
    * Adapter that exposes the group-message deletion shape (deletedForUserIds
@@ -294,6 +343,46 @@ export class GroupRoomService {
       });
     }
 
+    // Real-time meta fan-out so every member's inbox row + open group header
+    // updates without a refresh (parity with community:meta:updated). Fires only
+    // when a presentational field changed. Resolves the avatar object-key to a
+    // presigned URL at the publish boundary — raw keys must never leak on the wire.
+    const nameChanged = data.name != null && data.name !== room.name;
+    const avatarChanged = data.avatar != null && data.avatar !== room.avatar;
+    const descriptionChanged =
+      data.description != null && data.description !== room.description;
+    if (nameChanged || avatarChanged || descriptionChanged) {
+      void (async () => {
+        try {
+          const members = await this.memberRepo.findActiveMembers(roomId);
+          if (!members.length) return;
+          const resolvedAvatar = await resolveMediaUrl(updated.avatar ?? "");
+          const payload = {
+            type: "GROUP" as const,
+            roomId,
+            name: updated.name,
+            avatar: resolvedAvatar,
+            description: updated.description,
+            memberCount: updated.memberCount,
+            updatedBy: userId,
+            updatedAt: Date.now(),
+          };
+          const pipeline = this.redis.pipeline();
+          for (const m of members) {
+            pipeline.publish(
+              `user:${m.userId}`,
+              JSON.stringify({ event: "group:meta:updated", data: payload })
+            );
+          }
+          await pipeline.exec();
+        } catch (err) {
+          logger.warn(
+            `GroupRoomService|updateRoom|group:meta:updated publish failed room=${roomId}: ${String(err)}`
+          );
+        }
+      })();
+    }
+
     return updated;
   }
 
@@ -358,7 +447,9 @@ export class GroupRoomService {
     ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
-    const rooms = await this.applyPerUserPreview(rawRooms, userId);
+    const rooms = await this.enrichLastMessageSenderNames(
+      await this.applyPerUserPreview(rawRooms, userId)
+    );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
     // Every row here is a group the caller is an ACTIVE member of.
@@ -461,7 +552,9 @@ export class GroupRoomService {
     );
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
-    const rooms = await this.applyPerUserPreview(rawRooms, params.userId);
+    const rooms = await this.enrichLastMessageSenderNames(
+      await this.applyPerUserPreview(rawRooms, params.userId)
+    );
 
     // Resolve every room logo on this page ONCE (deduped) → download URLs, so
     // the unified inbox renders a usable avatar instead of a raw object key.

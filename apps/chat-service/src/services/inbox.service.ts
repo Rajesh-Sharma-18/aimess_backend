@@ -3,6 +3,7 @@ import type {
   EnrichedPrivateRoom,
   PrivateRoomPeer,
   PeerFriendshipRelationship,
+  PrivateConversationLastActivity,
 } from "./private-room.service.js";
 import { toPeerFriendshipRelationship } from "./private-room.service.js";
 import type {
@@ -29,6 +30,14 @@ export interface InboxItem {
   pinnedCount: number;
   // PRIVATE-only
   peer: PrivateRoomPeer | null;
+  /**
+   * PRIVATE-only: community-style normalized last-activity DTO
+   * ({type,userId,username,preview,dateTime}) — `username` always carries the
+   * ACTUAL sender's live name (self included), so the client decides "You:" vs
+   * "<name>:" purely from `userId === myUserId`, never from `peer.displayName`.
+   * Null on GROUP rows (they carry sender info on `lastMessage` instead).
+   */
+  lastActivity: PrivateConversationLastActivity | null;
   /**
    * PRIVATE-only: user-search-shaped relationship metadata for the peer —
    * identical fields as `GET /api/v1/users/search` (isFriend, relationshipStatus,
@@ -171,6 +180,7 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
+      lastActivity: room.lastActivity,
       isFriend: rel.isFriend,
       relationshipStatus: rel.relationshipStatus,
       friendshipId: rel.friendshipId,
@@ -203,6 +213,7 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,
+      lastActivity: null,
       isFriend: null,
       relationshipStatus: null,
       friendshipId: null,
