@@ -16,6 +16,10 @@ interface Stubs {
     findByCallId: jest.Mock;
     updateStatus: jest.Mock;
     findByParticipant: jest.Mock;
+    findCallerRinging: jest.Mock;
+    findActiveByParticipant: jest.Mock;
+    findActiveBetween: jest.Mock;
+    claimStatusTransition: jest.Mock;
   };
   privateRoomRepo: {
     findByRoomId: jest.Mock;
@@ -47,6 +51,11 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
       findByCallId: jest.fn(),
       updateStatus: jest.fn(),
       findByParticipant: jest.fn(),
+      // Busy-gate stubs — default to "nobody busy, no glare, cleanup wins".
+      findCallerRinging: jest.fn().mockResolvedValue([]),
+      findActiveByParticipant: jest.fn().mockResolvedValue([]),
+      findActiveBetween: jest.fn().mockResolvedValue(null),
+      claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
     },
     privateRoomRepo: {
       findByRoomId: jest.fn().mockResolvedValue({
@@ -104,9 +113,9 @@ describe("CallService.initiateCall gate", () => {
     expect(stubs.callRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({ privateRoomId: "room-1" })
     );
-    // Callee gets their token via user:<calleeId> channel.
+    // Callee gets their token via self:<calleeId> (not user: — presence-safe).
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:callee",
+      "self:callee",
       expect.stringContaining("call:incoming")
     );
   });
@@ -180,5 +189,139 @@ describe("CallService.initiateCall gate", () => {
     });
     await expect(service.initiateCall(params)).rejects.toThrow(/CALL_BLOCKED/);
     expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("CallService.initiateCall busy gate", () => {
+  it("BUSY: callee already IN_PROGRESS → CALL_USER_BUSY, no call row", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "live",
+        callerId: "callee",
+        calleeId: "other",
+        status: "IN_PROGRESS",
+      },
+    ]);
+    await expect(service.initiateCall(params)).rejects.toThrow(
+      /CALL_USER_BUSY/
+    );
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+    expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
+  });
+
+  it("BUSY: callee has a FRESH incoming ring → CALL_USER_BUSY", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "ring",
+        callerId: "someone",
+        calleeId: "callee",
+        status: "RINGING",
+      },
+    ]);
+    await expect(service.initiateCall(params)).rejects.toThrow(
+      /CALL_USER_BUSY/
+    );
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("ANTI-REGRESSION: STALE ringing (excluded by freshCutoff query) → NOT busy, call proceeds", async () => {
+    // The freshness bound lives in the repo query; the service trusts its
+    // result. A stale RINGING row is simply absent from findActiveByParticipant,
+    // so the gate passes and the call is created normally.
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([]);
+    const result = await service.initiateCall(params);
+    expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+    // The query must be bounded by a freshness cutoff (a Date), not unbounded.
+    expect(stubs.callRepo.findActiveByParticipant).toHaveBeenCalledWith(
+      ["caller", "callee"],
+      expect.any(Date)
+    );
+  });
+
+  it("SELF-CLEANUP: caller's own prior ring is cancelled and does not block", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.callRepo.findCallerRinging.mockResolvedValue([
+      {
+        callId: "old-out",
+        callerId: "caller",
+        calleeId: "old-callee",
+        status: "RINGING",
+      },
+    ]);
+    // After cleanup the gate sees nobody busy (default []), so the call proceeds.
+    const result = await service.initiateCall(params);
+    expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
+    // Old outbound ring was transitioned RINGING → ENDED...
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "old-out",
+      "RINGING",
+      expect.objectContaining({ status: "ENDED", endedBy: "caller" })
+    );
+    // ...and the old callee's ring was cancelled.
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:old-callee",
+      expect.stringContaining("call:cancelled")
+    );
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("GLARE: reciprocal with a SMALLER callId → this (larger) call loses, throws busy", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    // Force this call's generated id to be lexicographically larger than the
+    // reciprocal so it is the deterministic loser.
+    stubs.callRepo.create.mockResolvedValue({
+      callId: "zzz-loser",
+      callerId: "caller",
+      calleeId: "callee",
+      status: "RINGING",
+      type: "AUDIO",
+    });
+    stubs.callRepo.findActiveBetween.mockResolvedValue({
+      callId: "aaa-winner",
+      callerId: "callee",
+      calleeId: "caller",
+      status: "RINGING",
+    });
+    await expect(service.initiateCall(params)).rejects.toThrow(
+      /CALL_USER_BUSY/
+    );
+    // Loser cancels its OWN freshly-created row...
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "zzz-loser",
+      "RINGING",
+      expect.objectContaining({ status: "ENDED" })
+    );
+    // ...and never publishes an incoming ring for it.
+    expect(stubs.redis.publish).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining("call:incoming")
+    );
+  });
+
+  it("GLARE: reciprocal with a LARGER callId → this (smaller) call wins, proceeds", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.callRepo.create.mockResolvedValue({
+      callId: "aaa-winner",
+      callerId: "caller",
+      calleeId: "callee",
+      status: "RINGING",
+      type: "AUDIO",
+    });
+    stubs.callRepo.findActiveBetween.mockResolvedValue({
+      callId: "zzz-loser",
+      callerId: "callee",
+      calleeId: "caller",
+      status: "RINGING",
+    });
+    const result = await service.initiateCall(params);
+    expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:callee",
+      expect.stringContaining("call:incoming")
+    );
   });
 });

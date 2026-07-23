@@ -573,6 +573,11 @@ model Call {
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
   @@index([status])
+  // Busy-gate lookups filter by participant + status. ponytail: [status] alone
+  // works at dev scale; these compound indexes keep the query cheap as call
+  // volume grows.
+  @@index([callerId, status])
+  @@index([calleeId, status])
   @@map("calls")
 }
 
