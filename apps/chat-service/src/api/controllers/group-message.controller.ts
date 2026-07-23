@@ -490,11 +490,12 @@ export class GroupMessageController {
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    const { userId } = req.auth;
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const [pins, totalCount] = await Promise.all([
-      this.pinService.list(roomId, { limit, cursor }),
+      this.pinService.list(roomId, userId, { limit, cursor }),
       this.pinService.countPins(roomId),
     ]);
     const paginated = buildPaginatedResponse(

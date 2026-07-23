@@ -6,6 +6,11 @@
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
+const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
+function isObjectId(id: string): boolean {
+  return OBJECT_ID_RE.test(id);
+}
+
 // ponytail: post-fetch delete-for-me filter. Reappears when a newer message
 // arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
 // Json path filters on MongoDB+Prisma are unreliable, so filter in memory.
@@ -345,6 +350,10 @@ export class PrivateRoomRepository {
     });
     if (!existing) return null;
 
+    // Guard against optimistic client ids ("tmp-…") — Prisma throws on non-ObjectId lookups and
+    // writing a temp id into the read pointer would break subsequent reads for the same user.
+    if (!isObjectId(upToMessageId)) return existing;
+
     const lastReadMessageIdByUser = (existing.lastReadMessageIdByUser ??
       {}) as Record<string, string>;
 
@@ -357,7 +366,7 @@ export class PrivateRoomRepository {
       })
     )?.sequenceNumber;
     const currentReadId = lastReadMessageIdByUser[userId];
-    if (upToSeq != null && currentReadId) {
+    if (upToSeq != null && currentReadId && isObjectId(currentReadId)) {
       const currentSeq = (
         await this.prisma.privateMessage.findUnique({
           where: { id: currentReadId },

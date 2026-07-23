@@ -1183,10 +1183,11 @@ export class CommunityMessageController {
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    const { userId } = req.auth;
     // cursor = "<ms>_<id>" compound format (ISO datetime accepted for backward compat)
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
-    const pins = await this.pinService.list(roomId, { limit, cursor });
+    const pins = await this.pinService.list(roomId, userId, { limit, cursor });
     const hasMore = pins.length === limit;
     const nextCursor =
       hasMore && pins.length > 0

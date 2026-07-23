@@ -121,8 +121,15 @@ export class GroupPinService {
 
   async list(
     roomId: string,
+    userId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<Array<GroupMessagePin & { isAvailable: boolean }>> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+
     const pins = await this.pinRepo.findPinsByRoom(roomId, params);
     // Resolve the pinned snapshot's sender avatar + attachment keys on read so
     // the pinned-banner FE never receives a raw object key (URLs not persisted).

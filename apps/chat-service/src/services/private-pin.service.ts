@@ -125,8 +125,15 @@ export class PrivatePinService {
 
   async list(
     roomId: string,
+    userId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<Array<PrivateMessagePin & { isAvailable: boolean }>> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (!room.participants?.includes(userId)) {
+      throw new BadRequestError("CHAT_NOT_A_PARTICIPANT");
+    }
+
     const pins = await this.pinRepo.findPinsByRoom(roomId, params);
     // Resolve the pinned snapshot's sender avatar + attachment keys on read so
     // the pinned-banner FE never receives a raw object key (URLs not persisted).

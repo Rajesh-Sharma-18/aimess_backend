@@ -749,6 +749,10 @@ describe("POST /messages/:messageId/report", () => {
 
 describe("pins: GET list + POST pin + DELETE unpin", () => {
   it("POSITIVE: lists pins for a room, stamping isAvailable per pin (§5.8)", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
     mocks.privateMessagePinRepo.findPinsByRoom.mockResolvedValue([
       { id: "pin1", messageId: "m1", pinnedAt: new Date(1) }, // still live
       { id: "pin2", messageId: "m2", pinnedAt: new Date(2) }, // deleted-for-all

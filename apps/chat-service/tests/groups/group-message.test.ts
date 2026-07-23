@@ -546,6 +546,9 @@ describe("pins + forward + reactions", () => {
   });
 
   it("POSITIVE: lists pins (resolves snapshot media + stamps isAvailable §5.8)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
     mocks.groupMessagePinRepo.findPinsByRoom.mockResolvedValue([
       {
         id: "p1",

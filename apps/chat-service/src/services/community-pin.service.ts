@@ -5,6 +5,7 @@ import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import {
   assertCommunityMember,
   assertCommunityMemberNotMuted,
+  assertCommunityReadAccess,
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
 import {
@@ -305,10 +306,24 @@ export class CommunityPinService {
 
   async list(
     roomId: string,
+    userId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<CommunityMessagePin[]> {
+    // Same read-cutoff guard as message history — a banned member keeps read
+    // access to pins created before their ban, a non-member of a PRIVATE
+    // community gets denied outright. See assertCommunityReadAccess doc.
+    const { bannedAtCutoff } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      roomId,
+      userId,
+      { allowBannedReadCutoff: true }
+    );
     const pins = await this.pinRepo.findPinsByRoom(roomId, params);
-    return resolvePinsMedia(pins);
+    const visible = bannedAtCutoff
+      ? pins.filter((p) => p.pinnedAt <= bannedAtCutoff)
+      : pins;
+    return resolvePinsMedia(visible);
   }
 
   async countPins(roomId: string): Promise<number> {
