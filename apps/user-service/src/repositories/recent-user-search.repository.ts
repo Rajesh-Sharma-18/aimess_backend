@@ -47,4 +47,16 @@ export const recentUserSearchRepository = {
       }
     });
   },
+
+  deleteOne(params: {
+    userId: string;
+    targetType: RecentSearchTargetType;
+    targetId: string;
+  }) {
+    return prisma.recentUserSearch.deleteMany({ where: params });
+  },
+
+  clearAll(userId: string) {
+    return prisma.recentUserSearch.deleteMany({ where: { userId } });
+  },
 };
