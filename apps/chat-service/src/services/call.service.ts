@@ -132,11 +132,13 @@ export class CallService {
       })),
     ]);
 
-    // Notify callee via Redis. `callerName` + `callerAvatarUrl` let the FE
-    // render the incoming ring UI immediately without a second lookup.
+    // Notify callee via Redis `self:<id>` — NOT `user:<id>`. Every peer that
+    // presence:subscribed joins Socket.IO `user:<calleeId>`; publishing there
+    // leaked call:incoming (and LiveKit tokens) to the caller, who then ran
+    // busy auto-decline logic on zombie HMR sockets.
     await this.redis
       .publish(
-        `user:${params.calleeId}`,
+        `self:${params.calleeId}`,
         JSON.stringify({
           event: "call:incoming",
           data: {
@@ -167,6 +169,8 @@ export class CallService {
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (call.calleeId !== params.calleeId)
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+    // Idempotent re-answer (double-tap / multi-tab).
+    if (call.status === CallStatus.IN_PROGRESS) return call;
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
@@ -179,7 +183,11 @@ export class CallService {
         answeredAt,
       }
     );
-    if (!won) throw new BadRequestError("CALL_NOT_RINGING");
+    if (!won) {
+      const again = await this.callRepo.findByCallId(params.callId);
+      if (again?.status === CallStatus.IN_PROGRESS) return again;
+      throw new BadRequestError("CALL_NOT_RINGING");
+    }
     const updated: Call = {
       ...call,
       status: CallStatus.IN_PROGRESS,
@@ -187,19 +195,22 @@ export class CallService {
       updatedAt: answeredAt,
     };
 
-    await this.redis
-      .publish(
-        `call:${params.callId}`,
-        JSON.stringify({
-          event: "call:answered",
-          data: { callId: params.callId },
-        })
-      )
-      .catch((err: unknown) => {
-        logger.warn(
-          `CallService|answerCall|redis publish failed: ${String(err)}`
-        );
-      });
+    await Promise.all([
+      this.redis
+        .publish(
+          `call:${params.callId}`,
+          JSON.stringify({
+            event: "call:answered",
+            data: { callId: params.callId },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|answerCall|redis publish failed: ${String(err)}`
+          );
+        }),
+      this.publishCallHandled(params.calleeId, params.callId),
+    ]);
 
     return updated;
   }
@@ -212,8 +223,9 @@ export class CallService {
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (call.calleeId !== params.calleeId)
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
-    if (call.status !== CallStatus.RINGING)
-      throw new BadRequestError("CALL_NOT_RINGING");
+    // Idempotent / stale-UI: already left RINGING — succeed without error so
+    // double-taps don't trip the gateway circuit breaker.
+    if (call.status !== CallStatus.RINGING) return call;
 
     const endedAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
@@ -225,7 +237,11 @@ export class CallService {
         endedBy: params.calleeId,
       }
     );
-    if (!won) throw new BadRequestError("CALL_NOT_RINGING");
+    if (!won) {
+      const again = await this.callRepo.findByCallId(params.callId);
+      if (again) return again;
+      throw new BadRequestError("CALL_NOT_RINGING");
+    }
     const updated: Call = {
       ...call,
       status: CallStatus.DECLINED,
@@ -234,21 +250,41 @@ export class CallService {
       updatedAt: endedAt,
     };
 
+    await Promise.all([
+      this.redis
+        .publish(
+          `call:${params.callId}`,
+          JSON.stringify({
+            event: "call:declined",
+            data: { callId: params.callId },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|declineCall|redis publish failed: ${String(err)}`
+          );
+        }),
+      this.publishCallHandled(params.calleeId, params.callId),
+    ]);
+
+    return updated;
+  }
+
+  private async publishCallHandled(
+    calleeId: string,
+    callId: string
+  ): Promise<void> {
     await this.redis
       .publish(
-        `call:${params.callId}`,
+        `self:${calleeId}`,
         JSON.stringify({
-          event: "call:declined",
-          data: { callId: params.callId },
+          event: "call:handled",
+          data: { callId },
         })
       )
       .catch((err: unknown) => {
-        logger.warn(
-          `CallService|declineCall|redis publish failed: ${String(err)}`
-        );
+        logger.warn(`CallService|call:handled publish failed: ${String(err)}`);
       });
-
-    return updated;
   }
 
   async endCall(params: {
@@ -264,8 +300,9 @@ export class CallService {
       CallStatus.RINGING,
       CallStatus.IN_PROGRESS,
     ];
+    // Idempotent hangup — double-tap / teardown-after-terminal must not error.
     if (!activeStatuses.includes(call.status)) {
-      throw new BadRequestError("CALL_ALREADY_ENDED");
+      return { ...call, durationSec: call.durationSec ?? 0 };
     }
 
     const endedAt = new Date();
@@ -287,7 +324,13 @@ export class CallService {
         endedBy: params.userId,
       }
     );
-    if (!won) throw new BadRequestError("CALL_ALREADY_ENDED");
+    if (!won) {
+      const again = await this.callRepo.findByCallId(params.callId);
+      if (again && !activeStatuses.includes(again.status)) {
+        return { ...again, durationSec: again.durationSec ?? durationSec };
+      }
+      throw new BadRequestError("CALL_ALREADY_ENDED");
+    }
     const updated: Call = {
       ...call,
       status: CallStatus.ENDED,
@@ -298,11 +341,11 @@ export class CallService {
     };
 
     // Pre-answer cancel: callee never joined `call:<id>` room, reach them via
-    // their personal `user:<id>` channel with `call:cancelled` instead.
+    // their personal `self:<id>` channel with `call:cancelled` instead.
     if (wasRinging) {
       await this.redis
         .publish(
-          `user:${call.calleeId}`,
+          `self:${call.calleeId}`,
           JSON.stringify({
             event: "call:cancelled",
             data: { callId: params.callId },
@@ -379,7 +422,7 @@ export class CallService {
   /**
    * Sweep stuck RINGING calls → MISSED and publish `call:missed` to both the
    * caller (in `call:<callId>` room since Phase 1) and the callee (only in
-   * their `user:<id>` room since they never answered). Idempotent per row via
+   * their `self:<id>` room since they never answered). Idempotent per row via
    * `callRepo.claimForMissed` — if two nodes race, only one wins the atomic
    * update and only that node publishes. Returns count of flips for observability.
    */
@@ -409,7 +452,7 @@ export class CallService {
             )
           ),
         this.redis
-          .publish(`user:${call.calleeId}`, payload)
+          .publish(`self:${call.calleeId}`, payload)
           .catch((err: unknown) =>
             logger.warn(
               `CallService|sweep|publish user room failed: ${String(err)}`

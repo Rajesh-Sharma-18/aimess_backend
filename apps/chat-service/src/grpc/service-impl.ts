@@ -1473,7 +1473,10 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC initiateCall error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          // AppErrors must NOT be INTERNAL — opossum treats INTERNAL as infra
+          // failure, replaces it with "messaging.* unavailable", and opens the
+          // circuit so every subsequent call RPC fails.
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -1492,7 +1495,7 @@ export function createMessagingImpl(
           callback(null, { callId: result.callId, status: result.status });
         } catch (err) {
           logger.error(`gRPC answerCall error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -1511,7 +1514,7 @@ export function createMessagingImpl(
           callback(null, { callId: result.callId, status: result.status });
         } catch (err) {
           logger.error(`gRPC declineCall error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -1534,7 +1537,7 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC endCall error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

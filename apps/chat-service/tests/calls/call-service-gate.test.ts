@@ -104,9 +104,9 @@ describe("CallService.initiateCall gate", () => {
     expect(stubs.callRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({ privateRoomId: "room-1" })
     );
-    // Callee gets their token via user:<calleeId> channel.
+    // Callee gets their token via self:<calleeId> (not user: — presence-safe).
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:callee",
+      "self:callee",
       expect.stringContaining("call:incoming")
     );
   });

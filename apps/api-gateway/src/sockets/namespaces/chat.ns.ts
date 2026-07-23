@@ -320,10 +320,13 @@ export function registerChatNamespace(
   void redisSub.psubscribe("conv:*");
   void redisSub.psubscribe("call:*");
   void redisSub.psubscribe("user:*");
+  // Call lifecycle for a single user is published to Redis `self:<userId>` so
+  // presence subscribers (who join Socket.IO `user:<peerId>`) never see it.
+  void redisSub.psubscribe("self:*");
   redisSub.on(
     "pmessage",
     (pattern: string, channel: string, message: string) => {
-      const allowedPatterns = ["conv:*", "call:*", "user:*"];
+      const allowedPatterns = ["conv:*", "call:*", "user:*", "self:*"];
       if (!allowedPatterns.includes(pattern)) return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
@@ -364,12 +367,9 @@ export function registerChatNamespace(
           }
         }
 
-        // Call lifecycle events are published to `user:<id>`, but that room is
-        // also joined by every peer that `presence:subscribe`d to that user.
-        // Re-target them to `self:<id>` (own sockets only) — otherwise a DM
-        // peer receives `call:incoming` with the callee's LiveKit token, and
-        // the CALLER (subscribed to the callee's presence) receives their own
-        // outgoing call and auto-declines it via the busy branch.
+        // Call lifecycle on `user:<id>` must NOT fan out to presence subscribers.
+        // Prefer Redis `self:<id>` (see CallService); keep this rewrite as a
+        // safety net for any remaining user:* call publishes.
         const targetChannel =
           pattern === "user:*" && parsed.event.startsWith("call:")
             ? `self:${channel.slice("user:".length)}`
@@ -492,7 +492,13 @@ export function registerChatNamespace(
     privateRoomId: z.string().optional(),
   });
   const CallAnswerSchema = z.object({ callId: z.string().min(1) });
-  const CallDeclineSchema = z.object({ callId: z.string().min(1) });
+  // `intentional: true` is required so stale HMR/zombie socket listeners that
+  // still auto-emit `{ callId }` (old busy auto-decline) cannot kill a live ring.
+  // Only an explicit user Decline click from a current client includes the flag.
+  const CallDeclineSchema = z.object({
+    callId: z.string().min(1),
+    intentional: z.literal(true),
+  });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
 
   chat.on("connection", (socket: Socket) => {
@@ -1251,11 +1257,19 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = CallDeclineSchema.safeParse(payload);
         if (!r.success) {
+          // Likely a zombie HMR listener still doing busy auto-decline with
+          // `{ callId }` only — do not forward to chat-service.
+          logger.warn(
+            `/chat call:decline rejected (need intentional:true) userId=${userId} payload=${JSON.stringify(payload)}`
+          );
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
+        logger.info(
+          `/chat call:decline userId=${userId} callId=${r.data.callId} socket=${socket.id}`
+        );
         messagingClient
-          .declineCall({ ...r.data, calleeId: userId })
+          .declineCall({ callId: r.data.callId, calleeId: userId })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_DECLINED", locale, result)
           )
