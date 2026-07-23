@@ -737,14 +737,11 @@ export function createMessagingImpl(
           let readToSeq = 0;
           let unreadCount = 0;
           if (conversationType === "GROUP") {
-            await deps.groupMemberService.markRead({
+            ({ readToSeq } = await deps.groupMessageService.markReadUpTo({
               roomId: req.conversationId,
               userId: req.readerId,
-              lastMessageId: req.upToMessageId,
-            });
-            readToSeq = await deps.groupMessageService
-              .getMessageSequence(req.upToMessageId)
-              .catch(() => 0);
+              upToMessageId: req.upToMessageId,
+            }));
           } else {
             const room = (await deps.privateMessageService.markRead({
               roomId: req.conversationId,

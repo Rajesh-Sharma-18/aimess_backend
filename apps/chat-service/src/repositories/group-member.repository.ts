@@ -1,5 +1,6 @@
 ﻿import type { PrismaClient, GroupMember } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { isObjectId } from "../lib/object-id.js";
 
 export class GroupMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -185,27 +186,6 @@ export class GroupMemberRepository {
     });
   }
 
-  async markRead(
-    roomId: string,
-    userId: string,
-    lastMessageId: string
-  ): Promise<GroupMember | null> {
-    // Only update if the member is ACTIVE
-    const existing = await this.prisma.groupMember.findFirst({
-      where: { roomId, userId, status: "ACTIVE" },
-    });
-    if (!existing) return null;
-
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        lastReadMessageId: lastMessageId,
-        lastReadAt: new Date(),
-        unreadCount: 0,
-      },
-    });
-  }
-
   /**
    * Advance the member's read pointer to a specific message, forward-only: the
    * pointer is moved only when `messageCreatedAt` is newer than the stored
@@ -223,6 +203,10 @@ export class GroupMemberRepository {
     messageCreatedAt: Date,
     remainingUnread: number
   ): Promise<GroupMember | null> {
+    // Guard against optimistic client ids ("tmp-…") — Prisma throws on a
+    // non-ObjectId write into `lastReadMessageId` (@db.ObjectId).
+    if (!isObjectId(messageId)) return null;
+
     const existing = await this.prisma.groupMember.findFirst({
       where: { roomId, userId, status: "ACTIVE" },
     });

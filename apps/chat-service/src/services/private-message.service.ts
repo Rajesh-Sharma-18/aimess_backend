@@ -498,6 +498,27 @@ export class PrivateMessageService {
     return typeof seq === "number" ? seq : 0;
   }
 
+  /**
+   * The PEER's (other participant's) current read high-water mark, as a
+   * sequenceNumber. Used to hydrate each of MY OWN messages' "seen"/"delivered"
+   * tick on the INITIAL page load/refresh/reconnect — without this, every tick
+   * resets to "sent" until a live `message:read` arrives, because per-message
+   * read state isn't otherwise persisted on the wire (see `PrivateMessage.readBy`,
+   * which is dead/never populated — this cursor is the real source of truth).
+   * Returns 0 if the room/peer/read-pointer can't be resolved.
+   */
+  async getPeerReadSeq(roomId: string, userId: string): Promise<number> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return 0;
+    const peerId = (room.participants ?? []).find((id) => id !== userId);
+    if (!peerId) return 0;
+    const lastReadMessageIdByUser = (room.lastReadMessageIdByUser ??
+      {}) as Record<string, string>;
+    const peerReadMessageId = lastReadMessageIdByUser[peerId];
+    if (!peerReadMessageId) return 0;
+    return this.getMessageSequence(peerReadMessageId);
+  }
+
   async deleteForMe(
     messageId: string,
     userId: string

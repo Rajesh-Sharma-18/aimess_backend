@@ -183,6 +183,15 @@ export class PrivateMessageController {
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
     const around = req.query.around as string | undefined;
 
+    // The peer's read high-water mark (as a sequenceNumber) — included on every
+    // page so the FE can hydrate each of MY OWN messages' seen/delivered tick
+    // WITHOUT waiting for a live `message:read` event (fixes ticks resetting to
+    // "sent" on refresh/reconnect; see PrivateMessageService.getPeerReadSeq).
+    const peerReadSeq = await this.messageService.getPeerReadSeq(
+      roomId,
+      userId
+    );
+
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
         await this.messageService.getMessagesAround({
@@ -203,7 +212,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, peerReadSeq },
             enriched.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -240,7 +249,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, peerReadSeq },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -283,7 +292,9 @@ export class PrivateMessageController {
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ ...paginated, peerReadSeq }, msg));
   }
 
   getRoomMedia = asyncHandler(async (req: Request, res: Response) => {

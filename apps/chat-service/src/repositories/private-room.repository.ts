@@ -5,11 +5,7 @@
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
-
-const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
-function isObjectId(id: string): boolean {
-  return OBJECT_ID_RE.test(id);
-}
+import { isObjectId } from "../lib/object-id.js";
 
 // ponytail: post-fetch delete-for-me filter. Reappears when a newer message
 // arrives after the user's deletion timestamp (Telegram-style). Dynamic-key

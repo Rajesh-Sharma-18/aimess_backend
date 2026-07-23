@@ -528,18 +528,6 @@ export class GroupMemberService {
     return updated;
   }
 
-  async markRead(params: {
-    roomId: string;
-    userId: string;
-    lastMessageId: string;
-  }): Promise<GroupMember | null> {
-    return this.memberRepo.markRead(
-      params.roomId,
-      params.userId,
-      params.lastMessageId
-    );
-  }
-
   async getMembers(
     roomId: string,
     params?: { limit?: number; cursor?: string | null }

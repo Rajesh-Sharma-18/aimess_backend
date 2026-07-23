@@ -173,6 +173,14 @@ export class GroupMessageController {
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
     const around = req.query.around as string | undefined;
 
+    // Every other active member's read cursor — included on every page so the
+    // FE can hydrate per-message "seen by" state WITHOUT waiting for a live
+    // `message:read` event (see GroupMessageService.getMemberReadCursors).
+    // Best-effort: never blocks/fails the message page itself.
+    const memberReadSeq = await this.messageService
+      .getMemberReadCursors(roomId, userId)
+      .catch(() => ({}) as Record<string, number>);
+
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
         await this.messageService.getMessagesAround({
@@ -195,7 +203,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, memberReadSeq },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -232,7 +240,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, memberReadSeq },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -272,7 +280,9 @@ export class GroupMessageController {
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ ...paginated, memberReadSeq }, msg));
   }
 
   getConversation = asyncHandler(async (req: Request, res: Response) => {

@@ -28,6 +28,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -1394,6 +1395,89 @@ export class GroupMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /**
+   * Every OTHER active member's current read high-water mark, as a
+   * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
+   * read-count state on the INITIAL page load (group has no single "peer" —
+   * unlike private's `getPeerReadSeq` — so the FE compares each message's
+   * `sequenceNumber` against every other member's cursor here to know who has
+   * read it, without waiting for a live `message:read` event).
+   */
+  async getMemberReadCursors(
+    roomId: string,
+    excludeUserId: string
+  ): Promise<Record<string, number>> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    const others = members.filter(
+      (m) => m.userId !== excludeUserId && m.lastReadMessageId
+    );
+    const uniqueMessageIds = [
+      ...new Set(others.map((m) => m.lastReadMessageId as string)),
+    ];
+    const seqById = new Map<string, number>();
+    await Promise.all(
+      uniqueMessageIds.map(async (id) => {
+        seqById.set(id, await this.getMessageSequence(id));
+      })
+    );
+    const cursors: Record<string, number> = {};
+    for (const m of others) {
+      cursors[m.userId] = seqById.get(m.lastReadMessageId as string) ?? 0;
+    }
+    return cursors;
+  }
+
+  /**
+   * Explicit "mark read up to `upToMessageId`" action — the REST/gRPC
+   * mark-read entry point. Routes through the SAME guarded, forward-only,
+   * accurate-unread pointer advance (`memberRepo.advanceReadPointer`) that
+   * `getConversation`'s implicit fetch-triggered mark-read already uses, so
+   * both paths share one update rule instead of two divergent ones (the old
+   * `GroupMemberRepository#markRead` hard-zeroed unread and had no
+   * forward-only check or optimistic-id guard).
+   */
+  async markReadUpTo(params: {
+    roomId: string;
+    userId: string;
+    upToMessageId: string;
+  }): Promise<{ readToSeq: number }> {
+    if (!isObjectId(params.upToMessageId)) return { readToSeq: 0 };
+
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member) return { readToSeq: 0 };
+
+    const message = await this.messageRepo.findById(params.upToMessageId);
+    if (!message || message.roomId !== params.roomId) return { readToSeq: 0 };
+
+    const remainingUnread = await this.messageRepo
+      .countUnreadAfter({
+        roomId: params.roomId,
+        userId: params.userId,
+        afterDate: message.createdAt,
+        cutoff: getGroupDeletionCutoff(member),
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|markReadUpTo|countUnreadAfter failed: ${String(err)}`
+        );
+        return 0;
+      });
+
+    await this.memberRepo.advanceReadPointer(
+      params.roomId,
+      params.userId,
+      message.id,
+      message.createdAt,
+      remainingUnread
+    );
+
+    const seq = (message as { sequenceNumber?: number }).sequenceNumber;
+    return { readToSeq: typeof seq === "number" ? seq : 0 };
   }
 
   async getMessageReactions(params: {

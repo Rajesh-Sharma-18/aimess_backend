@@ -1168,14 +1168,11 @@ export class ChatMessageOrchestrator {
     let readToSeq: number;
     let unreadCount = 0;
     if (conversationType === "GROUP") {
-      await this.groupMemberService.markRead({
+      ({ readToSeq } = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
         userId: params.readerId,
-        lastMessageId: params.upToMessageId,
-      });
-      readToSeq = await this.groupMessageService
-        .getMessageSequence(params.upToMessageId)
-        .catch(() => 0);
+        upToMessageId: params.upToMessageId,
+      }));
     } else {
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
