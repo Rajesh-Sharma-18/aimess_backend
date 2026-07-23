@@ -8,6 +8,7 @@ jest.mock("../../src/lib/device-link-store.js", () => ({
   createLinkSession: jest.fn(async () => ({
     linkToken: "11111111-1111-4111-8111-111111111111",
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    cancelledToken: null,
   })),
   getLinkSession: jest.fn(async () => ({
     device: {
@@ -46,15 +47,15 @@ import app from "../../src/app.js";
 import { bearer, makeAccessToken } from "../helpers/auth.js";
 
 describe("QR login rate limiting", () => {
-  it("caps QR generation at 5 requests/minute/IP → 429 on the 6th", async () => {
+  it("does not rate limit QR generation requests (allows repeated generation)", async () => {
     let lastStatus = 0;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       const res = await request(app)
         .post("/api/auth/devices/link/initiate")
         .send({});
       lastStatus = res.status;
     }
-    expect(lastStatus).toBe(429);
+    expect(lastStatus).toBe(201);
   });
 
   it("caps QR scan at 10 requests/minute/user → 429 on the 11th", async () => {

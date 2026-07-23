@@ -544,6 +544,65 @@ export class PrivateRoomRepository {
     });
   }
 
+  /**
+   * Persist the reaction OVERLAY (see schema comment on PrivateRoom.reactionActivity*).
+   * Never touches lastMessage/lastMessageAt — the canonical columns.
+   */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: {
+        reactionActivityAt: data.reactedAt,
+        reactionActivityMessageId: data.messageId,
+        reactionActivityEmoji: data.emoji,
+        reactionActivityActorId: data.actorId,
+        reactionActivityActorPreview: data.actorPreview,
+        reactionActivityTargetId: data.targetId,
+        reactionActivityTargetPreview: data.targetPreview,
+      },
+    });
+  }
+
+  /**
+   * Clear the reaction overlay IFF it still identifies the exact reaction being
+   * removed (messageId+emoji+actorId) — a no-op otherwise, since that reaction
+   * was never the one being shown. Mirrors community-service's identity-gated
+   * clear semantics.
+   */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.prisma.privateRoom.updateMany({
+      where: {
+        roomId,
+        reactionActivityMessageId: identity.messageId,
+        reactionActivityEmoji: identity.emoji,
+        reactionActivityActorId: identity.actorId,
+      },
+      data: {
+        reactionActivityAt: null,
+        reactionActivityMessageId: null,
+        reactionActivityEmoji: null,
+        reactionActivityActorId: null,
+        reactionActivityActorPreview: null,
+        reactionActivityTargetId: null,
+        reactionActivityTargetPreview: null,
+      },
+    });
+  }
+
   async setDeletedFor(roomId: string, userId: string): Promise<void> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
@@ -553,9 +612,43 @@ export class PrivateRoomRepository {
     const deletedFor = (existing.deletedFor ?? {}) as Record<string, string>;
     deletedFor[userId] = new Date().toISOString();
 
+    // Zero this user's unread state too — everything currently unread is about
+    // to become invisible (before the cutoff), so it must not linger as a
+    // phantom unread count once the room reappears on a future message.
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[userId] = 0;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = false;
+    const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    firstUnreadMessageIdByUser[userId] = null;
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    lastUnreadMessageIdByUser[userId] = null;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    lastUnreadPreviewByUser[userId] = null;
+
     await this.prisma.privateRoom.update({
       where: { roomId },
-      data: { deletedFor },
+      data: {
+        deletedFor,
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        firstUnreadMessageIdByUser:
+          firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
+      },
     });
   }
 

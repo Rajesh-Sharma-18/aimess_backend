@@ -10,6 +10,7 @@ import { GroupMessageService } from "../../src/services/group-message.service.js
 function makeService(overrides: {
   messageRepo?: Record<string, jest.Mock>;
   roomRepo?: Record<string, jest.Mock>;
+  memberRepo?: Record<string, jest.Mock>;
 }) {
   const messageRepo = {
     findPreviousVisible: jest.fn(),
@@ -21,14 +22,18 @@ function makeService(overrides: {
     setLastMessage: jest.fn(),
     ...overrides.roomRepo,
   };
+  const memberRepo = {
+    findActiveByRoomAndUser: jest.fn().mockResolvedValue(null),
+    ...overrides.memberRepo,
+  };
   const service = new GroupMessageService(
     messageRepo as any,
     roomRepo as any,
-    {} as any,
+    memberRepo as any,
     {} as any,
     {} as any
   );
-  return { service, messageRepo, roomRepo };
+  return { service, messageRepo, roomRepo, memberRepo };
 }
 
 const ROOM = "grp_room_1";
@@ -82,12 +87,10 @@ describe("GroupMessageService.recalculateLastMessageAfterDelete (forEveryone)", 
           .mockResolvedValue({ id: "msg-current-last", createdAt: new Date() }),
       },
       roomRepo: {
-        findByRoomId: jest
-          .fn()
-          .mockResolvedValue({
-            roomId: ROOM,
-            lastMessageId: "msg-current-last",
-          }),
+        findByRoomId: jest.fn().mockResolvedValue({
+          roomId: ROOM,
+          lastMessageId: "msg-current-last",
+        }),
       },
     });
 
@@ -207,7 +210,8 @@ describe("GroupMessageService.recalculateLastMessageAfterDeleteForMe", () => {
     });
     expect(messageRepo.findPreviousVisibleForUser).toHaveBeenCalledWith(
       ROOM,
-      VIEWER
+      VIEWER,
+      undefined
     );
     expect(roomRepo.setLastMessage).not.toHaveBeenCalled();
   });

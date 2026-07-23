@@ -64,6 +64,19 @@ export class GroupMemberController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  reportMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: reporterId } = req.auth;
+    const { roomId, userId, reason, description } = req.body;
+    const result = await this.service.reportMember({
+      roomId,
+      targetUserId: userId,
+      reporterId,
+      reason,
+      description,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   updateRole = asyncHandler(async (req: Request, res: Response) => {
     const { userId: actorUserId } = req.auth;
     const { roomId, userId, role } = req.body;

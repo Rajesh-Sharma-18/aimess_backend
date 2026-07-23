@@ -29,3 +29,24 @@ export async function isCommunityActorMuted(
     })
   ).isMuted;
 }
+
+/**
+ * True when `recipientId` wants pushes of `field` from `communityId` — the
+ * recipient's own per-community notification-preference toggle (distinct
+ * from `isCommunityActorMuted`, which gates on the *sender's* moderation
+ * mute). Fail-open: an oracle outage resolves to "enabled" so a preference
+ * check outage never suppresses a notification.
+ */
+export async function isCommunityNotificationEnabled(
+  recipientId: string,
+  communityId: string,
+  field: "chatEnabled" | "streamEnabled" | "announcementEnabled"
+): Promise<boolean> {
+  return (
+    await communityClient.checkCommunityNotificationPref({
+      communityId,
+      userId: recipientId,
+      field,
+    })
+  ).enabled;
+}

@@ -1,4 +1,5 @@
 import type { PrismaClient, Call } from "../generated/prisma/index.js";
+import { CallStatus } from "../types/enums.js";
 
 export class CallRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -99,6 +100,81 @@ export class CallRepository {
       },
       orderBy: { initiatedAt: "desc" },
       take: limit,
+    });
+  }
+
+  /**
+   * Busy-detection query. A call counts as "genuinely active" (and therefore
+   * blocks a new call) only if it is IN_PROGRESS, or RINGING **and still fresh**
+   * (`initiatedAt >= freshCutoff`). A RINGING row older than the ringing-timeout
+   * window is a crashed/abandoned attempt that the sweep is about to flip to
+   * MISSED — it must NOT count as busy (this is the guard against the old
+   * false-busy bug). Returns every active call touching any of `userIds`.
+   */
+  async findActiveByParticipant(
+    userIds: string[],
+    freshCutoff: Date
+  ): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        OR: [{ callerId: { in: userIds } }, { calleeId: { in: userIds } }],
+        AND: [
+          {
+            OR: [
+              { status: CallStatus.IN_PROGRESS },
+              {
+                status: CallStatus.RINGING,
+                initiatedAt: { gte: freshCutoff },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  }
+
+  /**
+   * Glare backstop: find an active call between exactly this pair (either
+   * direction) other than `excludeCallId`. Same freshness rule as
+   * `findActiveByParticipant`.
+   */
+  async findActiveBetween(
+    userA: string,
+    userB: string,
+    excludeCallId: string,
+    freshCutoff: Date
+  ): Promise<Call | null> {
+    return this.prisma.call.findFirst({
+      where: {
+        callId: { not: excludeCallId },
+        OR: [
+          { callerId: userA, calleeId: userB },
+          { callerId: userB, calleeId: userA },
+        ],
+        AND: [
+          {
+            OR: [
+              { status: CallStatus.IN_PROGRESS },
+              {
+                status: CallStatus.RINGING,
+                initiatedAt: { gte: freshCutoff },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  }
+
+  /**
+   * The caller's own outbound rings. Starting a new outgoing call implies the
+   * caller abandoned any prior one, so the service cancels these first (both to
+   * avoid falsely marking the caller busy on their own zombie call and to stop
+   * the old callee's ring immediately).
+   */
+  async findCallerRinging(callerId: string): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: { callerId, status: CallStatus.RINGING },
     });
   }
 }

@@ -1,6 +1,7 @@
 ﻿import { logger } from "@aimess/logger";
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GoneError,
   NotFoundError,
@@ -32,8 +33,9 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
-  setStoredReaction,
+  // setStoredReaction,
   reactionUserIdMap,
+  type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
   buildReplyQuoteSnapshot,
@@ -92,22 +94,18 @@ import { shouldCountInUnread } from "../lib/unread-count.js";
  * LOWER-CASE `messageType` dropped and replaced by an UPPER-CASE `contentType`
  * (§1 single client-facing casing). Used as the return element of every REST
  * read path so HTTP clients never see the internal `messageType` field.
+ *
+ * Intentionally has NO `readBy`/`deliveredTo` — the frontend no longer
+ * consumes per-message delivery/read receipts on history reads (only the
+ * lighter-weight `community:message:read` live event + room-level unread
+ * counters are used), so `toWire` never computes or attaches them and they
+ * are omitted from the JSON response entirely (not `null`/`[]`).
  */
-type MemberReadStatus = {
-  userId: string;
-  lastReadAt: Date | null;
-  joinedAt: Date;
-};
-
 type CommunityMessageWire = Omit<
   GeneralRoomMessage,
   "messageType" | "visibleToUserId"
 > & {
   contentType: string;
-  /** Members whose read cursor is at or past this message's createdAt. */
-  readBy: Array<{ userId: string; readAt: number }>;
-  /** Members who were active in the room when this message was sent. */
-  deliveredTo: Array<{ userId: string; deliveredAt: number }>;
   /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
   isPersonal?: boolean;
 };
@@ -727,10 +725,8 @@ export class CommunityMessageService {
       readCutoff: bannedAtCutoff ?? null,
     });
 
-    const members = await this.memberRepo.findReadStatusByRoom(params.roomId);
     const items = await this.enrichTimelinePage(
       changes.messages,
-      members,
       params.userId
     );
     return {
@@ -1118,7 +1114,6 @@ export class CommunityMessageService {
 
   private toWire(
     m: GeneralRoomMessage,
-    members?: MemberReadStatus[],
     urlMap?: Map<string, string>,
     resolveReactionUser?: (
       userId: string
@@ -1189,26 +1184,6 @@ export class CommunityMessageService {
     // clients ignore it.
     wire.revision = m.revision ?? 0;
 
-    const msgTs = m.createdAt;
-
-    const readBy = members
-      ? members
-          .filter((mem) => mem.lastReadAt !== null && mem.lastReadAt >= msgTs)
-          .map((mem) => ({
-            userId: mem.userId,
-            readAt: mem.lastReadAt!.getTime(),
-          }))
-      : [];
-
-    const deliveredTo = members
-      ? members
-          .filter((mem) => mem.joinedAt <= msgTs)
-          .map((mem) => ({
-            userId: mem.userId,
-            deliveredAt: msgTs.getTime(),
-          }))
-      : [];
-
     // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
     // community") and DROP the raw `visibleToUserId` targeting column from the
     // wire — it is an internal access-control field, not a client contract.
@@ -1254,7 +1229,7 @@ export class CommunityMessageService {
       );
     }
 
-    return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
+    return wire as CommunityMessageWire;
   }
 
   async getMessages(params: {
@@ -1275,22 +1250,17 @@ export class CommunityMessageService {
     );
     const viewerIsActiveMember = isActiveMember(member);
     const beforeTimestamp = params.cursor || new Date().toISOString();
-    const [rows, members] = await Promise.all([
-      this.messageRepo.findByRoomIdWithTime(
-        params.roomId,
-        beforeTimestamp,
-        "older",
-        params.limit,
-        params.userId,
-        viewerIsActiveMember,
-        bannedAtCutoff
-      ),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
-    ]);
-    const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, members, urlMap, undefined, params.userId)
+    const rows = await this.messageRepo.findByRoomIdWithTime(
+      params.roomId,
+      beforeTimestamp,
+      "older",
+      params.limit,
+      params.userId,
+      viewerIsActiveMember,
+      bannedAtCutoff
     );
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   /**
@@ -1404,7 +1374,7 @@ export class CommunityMessageService {
     );
     const viewerIsActiveMember = isActiveMember(member);
     const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
-    const [{ messages: pageRows, hasMore }, members, total, roomRevision] =
+    const [{ messages: pageRows, hasMore }, total, roomRevision] =
       await Promise.all([
         adapter.timeline({
           roomId: params.roomId,
@@ -1414,7 +1384,6 @@ export class CommunityMessageService {
           viewerIsActiveMember,
           readCutoff: bannedAtCutoff,
         }),
-        this.memberRepo.findReadStatusByRoom(params.roomId),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
@@ -1450,7 +1419,7 @@ export class CommunityMessageService {
         },
         orderedItems
       ),
-      this.enrichTimelinePage(orderedItems, members, params.userId),
+      this.enrichTimelinePage(orderedItems, params.userId),
     ]);
     return { items, hasMore, nextCursor, total, cursors, roomRevision };
   }
@@ -1464,7 +1433,6 @@ export class CommunityMessageService {
    */
   private async enrichTimelinePage(
     orderedItems: GeneralRoomMessage[],
-    members: MemberReadStatus[],
     userId: string
   ): Promise<CommunityMessageWire[]> {
     // Fetch reactor snapshots first so we can collect their avatar object-keys
@@ -1498,7 +1466,7 @@ export class CommunityMessageService {
     };
 
     return orderedItems.map((m) =>
-      this.toWire(m, members, urlMap, resolveReactionUser, userId)
+      this.toWire(m, urlMap, resolveReactionUser, userId)
     );
   }
 
@@ -1777,7 +1745,7 @@ export class CommunityMessageService {
             inclusive: false,
           };
     const adapter = makeTimelineAdapter(this.messageRepo, cursor);
-    const [{ rows, cursors }, members, total] = await Promise.all([
+    const [{ rows, cursors }, total] = await Promise.all([
       adapter.around({
         roomId: params.roomId,
         userId: params.userId,
@@ -1786,7 +1754,6 @@ export class CommunityMessageService {
         viewerIsActiveMember,
         readCutoff: bannedAtCutoff,
       }),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
       // Use the history-visible count (same filter as the timeline) so `total`
       // matches what the client can actually page through — not countByRoom's
       // raw total (which includes hidden/personal/deleted-for-me rows).
@@ -1799,9 +1766,7 @@ export class CommunityMessageService {
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
     return {
-      items: rows.map((m) =>
-        this.toWire(m, members, urlMap, undefined, params.userId)
-      ),
+      items: rows.map((m) => this.toWire(m, urlMap, undefined, params.userId)),
       total,
       ...cursors,
     };
@@ -1879,7 +1844,7 @@ export class CommunityMessageService {
     const urlMap = await this.resolveRowsMedia(messages);
     return {
       messages: messages.map((m) =>
-        this.toWire(m, undefined, urlMap, undefined, params.userId)
+        this.toWire(m, urlMap, undefined, params.userId)
       ),
       total,
     };
@@ -1909,9 +1874,7 @@ export class CommunityMessageService {
       bannedAtCutoff
     );
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, undefined, urlMap, undefined, params.userId)
-    );
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -1963,9 +1926,7 @@ export class CommunityMessageService {
       readCutoff: bannedAtCutoff,
     });
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) =>
-      this.toWire(m, undefined, urlMap, undefined, params.userId)
-    );
+    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
   }
 
   /** Bind a loaded message to its OWN room (never a body-supplied communityId)
@@ -2119,84 +2080,103 @@ export class CommunityMessageService {
     /** The reacted-to message's own preview text (quoted text or media label). */
     targetMessagePreview: string;
   }> {
-    const message = await this.messageRepo.findById(params.messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    if (message.deletedForAll)
+    const first = await this.messageRepo.findById(params.messageId);
+    if (!first) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (first.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
-    if (normalizeMessageType(message.messageType) === "SYSTEM")
+    if (normalizeMessageType(first.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Guard: only active members may react (banned → USER_BANNED).
     const member = await this.memberRepo.findByRoomAndUser(
-      message.roomId,
+      first.roomId,
       params.userId
     );
     assertRoomMemberActive(member);
     // A muted member can neither add NOR remove a reaction (this path toggles).
     assertCommunityMemberNotMuted(member);
     // ...and only when the community room is open (closed/suspended → read-only).
-    assertCommunityRoomWritable(
-      await this.roomRepo.findRoomById(message.roomId)
-    );
+    assertCommunityRoomWritable(await this.roomRepo.findRoomById(first.roomId));
 
-    // Determine add vs remove BEFORE toggling — the lastActivity preview must
-    // only bump on add (Telegram never shows a "removed their reaction" line).
-    const wasReactedByUser = (
-      reactionUserIdMap(message.reactions)[params.emoji] ?? []
-    ).includes(params.userId);
-    const added = !wasReactedByUser;
+    // Compare-and-swap loop: two concurrent reacts on the same message would
+    // otherwise both read the same stale `reactions` map and each write back
+    // an independently-computed result, silently dropping one of them (lost
+    // update). `revision` is bumped on EVERY state change to this message, so
+    // matching it in the write's WHERE clause turns the write into a CAS —
+    // a losing racer's write affects 0 rows and retries against fresh state.
+    const MAX_ATTEMPTS = 5;
+    let message = first;
+    let added = false;
+    let enrichedReactions: Record<string, StoredReactor[]> = {};
+    let revision = message.revision;
+    let snaps = new Map<string, Record<string, unknown>>();
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const refetched = await this.messageRepo.findById(params.messageId);
+        if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+        message = refetched;
+      }
 
-    // Apply the reactor to the emoji bucket (shared with private/group); non-atomic
-    // read-modify-write, acceptable at current scale. mode="set" drops the caller from every OTHER
-    // bucket in the same pass, so changing a reaction is one write + one broadcast.
-    const updatedReactions =
-      String(params.mode ?? "").toLowerCase() === "set"
-        ? setStoredReaction(message.reactions, params.userId, params.emoji)
-        : toggleStoredReaction(message.reactions, params.userId, params.emoji);
+      // Determine add vs remove BEFORE toggling — the lastActivity preview must
+      // only bump on add (Telegram never shows a "removed their reaction" line).
+      const wasReactedByUser = (
+        reactionUserIdMap(message.reactions)[params.emoji] ?? []
+      ).includes(params.userId);
+      added = !wasReactedByUser;
 
-    // Fetch snapshots BEFORE persisting so the stored document carries real
-    // userName / avatar / memberId (fixes the raw `reactions` field on read).
-    const allUserIds = [
-      ...new Set(
-        Object.values(updatedReactions)
-          .flat()
-          .map((e) => e.userId)
-          .filter(Boolean)
-      ),
-    ];
+      // Toggle the reactor in/out of the emoji bucket (shared with private/group).
+      const updatedReactions = toggleStoredReaction(
+        message.reactions,
+        params.userId,
+        params.emoji
+      );
 
-    const snaps =
-      allUserIds.length > 0
-        ? await this.userSnapshotService.getUserSnapshotsMap(
-            allUserIds,
-            this.cacheRepo
-          )
-        : new Map<string, Record<string, unknown>>();
+      // Fetch snapshots BEFORE persisting so the stored document carries real
+      // userName / avatar / memberId (fixes the raw `reactions` field on read).
+      const allUserIds = [
+        ...new Set(
+          Object.values(updatedReactions)
+            .flat()
+            .map((e) => e.userId)
+            .filter(Boolean)
+        ),
+      ];
 
-    // Enrich stored reactor objects with live profile data.
-    const enrichedReactions: Record<string, (typeof updatedReactions)[string]> =
-      {};
-    for (const [emoji, reactors] of Object.entries(updatedReactions)) {
-      enrichedReactions[emoji] = reactors.map((r) => {
-        const snap = snaps.get(r.userId);
-        return {
-          userId: r.userId,
-          userName: (snap?.displayName as string) || r.userName || "",
-          avatar: (snap?.avatar as string) || r.avatar || "",
-          memberId: (snap?.memberId as string) || r.memberId || "",
-        };
-      });
+      snaps =
+        allUserIds.length > 0
+          ? await this.userSnapshotService.getUserSnapshotsMap(
+              allUserIds,
+              this.cacheRepo
+            )
+          : new Map<string, Record<string, unknown>>();
+
+      // Enrich stored reactor objects with live profile data.
+      enrichedReactions = {};
+      for (const [emoji, reactors] of Object.entries(updatedReactions)) {
+        enrichedReactions[emoji] = reactors.map((r) => {
+          const snap = snaps.get(r.userId);
+          return {
+            userId: r.userId,
+            userName: (snap?.displayName as string) || r.userName || "",
+            avatar: (snap?.avatar as string) || r.avatar || "",
+            memberId: (snap?.memberId as string) || r.memberId || "",
+          };
+        });
+      }
+
+      // Reaction change bumps the room CHANGE revision so the changes feed
+      // replays the message's current aggregate to offline clients.
+      revision = await this.roomRepo.allocateRevision(message.roomId);
+      const applied = await this.messageRepo.updateReactionsCas(
+        params.messageId,
+        enrichedReactions,
+        message.revision,
+        revision
+      );
+      if (applied) break;
+      if (attempt === MAX_ATTEMPTS - 1)
+        throw new ConflictError("CHAT_REACTION_CONFLICT");
     }
-
-    // Reaction change bumps the room CHANGE revision so the changes feed replays
-    // the message's current aggregate to offline clients.
-    const revision = await this.roomRepo.allocateRevision(message.roomId);
-    await this.messageRepo.updateById(
-      message.roomId,
-      params.messageId,
-      enrichedReactions,
-      revision
-    );
 
     // Resolve the stored avatar object-keys to full presigned download URLs so
     // both the REST response and the socket broadcast carry real URLs.

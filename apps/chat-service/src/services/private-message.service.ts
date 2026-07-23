@@ -1,5 +1,6 @@
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GoneError,
   NotFoundError,
@@ -12,6 +13,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -27,6 +29,7 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -285,7 +288,8 @@ export class PrivateMessageService {
       params.userId,
       { roomId: room.roomId },
       beforeTimestamp,
-      params.limit
+      params.limit,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -315,6 +319,7 @@ export class PrivateMessageService {
       params.roomId,
       params.userId
     );
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
 
     const [{ messages: items, hasMore }, total] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
@@ -325,10 +330,12 @@ export class PrivateMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
         limit: params.limit,
+        cutoff,
       }),
       this.messageRepo.countTimeline({
         roomId: room.roomId,
         userId: params.userId,
+        cutoff,
       }),
     ]);
 
@@ -371,6 +378,7 @@ export class PrivateMessageService {
       direction: params.direction,
       seq: params.seq,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
@@ -396,11 +404,13 @@ export class PrivateMessageService {
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: room.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
+      cutoff,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -411,6 +421,7 @@ export class PrivateMessageService {
         direction,
         seq,
         limit: 1,
+        cutoff,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -423,13 +434,18 @@ export class PrivateMessageService {
     limit: number;
     skip?: number;
   }): Promise<PrivateMessage[]> {
-    await assertPrivateParticipant(this.roomRepo, params.roomId, params.userId);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId,
-      params.skip ?? 0
+      params.skip ?? 0,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -454,6 +470,7 @@ export class PrivateMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
   }
 
@@ -606,7 +623,8 @@ export class PrivateMessageService {
     // the globally-last but could still be the user's effective last visible.
     const prev = await this.messageRepo.findPreviousVisibleForUser(
       roomId,
-      userId
+      userId,
+      getPrivateDeletionCutoff(room, userId)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -798,21 +816,93 @@ export class PrivateMessageService {
   }
 
   /**
-   * Toggle a single user's emoji reaction on a private message. Reads the stored
-   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
-   * react, remove on a duplicate react = toggle-off), and persists the canonical
-   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
-   * preserved.
+   * Compare-and-swap toggle core, shared by `react()` and `reactToMessage()`.
+   * Flips `userId`'s membership in the `emoji` bucket (add on first react,
+   * remove on a duplicate react = toggle-off; one reaction per user via the
+   * shared `toggleStoredReaction`, same as community/group). `revision` is
+   * bumped on every content change to this message, so matching it in the
+   * write's WHERE clause turns the write into a CAS — closes the concurrent-
+   * request lost-update race on the non-atomic reactions read-modify-write.
+   * Mirrors CommunityMessageService.reactToMessage's retry loop.
+   */
+  private async reactCas(
+    messageId: string,
+    userId: string,
+    emoji: string
+  ): Promise<{ message: PrivateMessage; added: boolean }> {
+    const MAX_ATTEMPTS = 5;
+    let message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    let added = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const refetched = await this.messageRepo.findById(messageId);
+        if (!refetched) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+        message = refetched;
+      }
+      const wasReactedByUser = (
+        reactionUserIdMap(message.reactions)[emoji] ?? []
+      ).includes(userId);
+      added = !wasReactedByUser;
+      const updated = toggleStoredReaction(message.reactions, userId, emoji);
+      const applied = await this.messageRepo.updateReactionsCas(
+        messageId,
+        message.roomId,
+        updated,
+        message.revision
+      );
+      if (applied) break;
+      if (attempt === MAX_ATTEMPTS - 1)
+        throw new ConflictError("CHAT_REACTION_CONFLICT");
+    }
+    const after = await this.messageRepo.findById(messageId);
+    return { message: after ?? message, added };
+  }
+
+  /**
+   * Toggle a single user's emoji reaction on a private message. Persists the
+   * canonical `{ emoji: [{ userId, userName, avatar, memberId }] }` shape.
+   * Other emojis are preserved. CAS-safe (see `reactCas`).
    */
   async react(
     messageId: string,
     userId: string,
     emoji: string
   ): Promise<PrivateMessage | null> {
-    const raw = await this.messageRepo.getReactions(messageId);
-    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const updated = toggleStoredReaction(raw.reactions, userId, emoji);
-    return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+    const { message } = await this.reactCas(messageId, userId, emoji);
+    return message;
+  }
+
+  /**
+   * Same toggle as `react()`, additionally returning the WhatsApp-style
+   * lastActivity metadata (added vs removed, the message owner, and the
+   * reacted-to message's own preview text) needed to bump/revert the
+   * conversation list — mirrors CommunityMessageService.reactToMessage.
+   */
+  async reactToMessage(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const { message, added } = await this.reactCas(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    return {
+      roomId: message.roomId,
+      added,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
   }
 
   /**
@@ -839,6 +929,63 @@ export class PrivateMessageService {
    */
   async assertParticipant(roomId: string, userId: string): Promise<void> {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
+  /** The room's two participant userIds — the recipient list for `conv:updated` fan-out. */
+  async getParticipants(roomId: string): Promise<string[]> {
+    const room = await this.roomRepo.findByRoomId(roomId, {
+      projection: { participants: 1 },
+    });
+    return room?.participants ?? [];
+  }
+
+  /** See GroupRoomRepository.setReactionActivity — identical overlay semantics. */
+  async setReactionActivity(
+    roomId: string,
+    data: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await this.roomRepo.setReactionActivity(roomId, data);
+  }
+
+  /** See GroupRoomRepository.clearReactionActivityIfCurrent — identical semantics. */
+  async clearReactionActivityIfCurrent(
+    roomId: string,
+    identity: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await this.roomRepo.clearReactionActivityIfCurrent(roomId, identity);
+  }
+
+  /**
+   * The room's CURRENT canonical last message (never mutated by a reaction) —
+   * used to revert a reaction-removal's live bump back to reality, since the
+   * canonical lastMessage/lastMessageAt columns were never touched in the
+   * first place (see reactionActivity* schema comment).
+   */
+  async getRoomBumpSnapshot(roomId: string): Promise<{
+    lastMessageId: string | null;
+    lastMessageAt: number;
+    senderId: string;
+    content: unknown;
+    messageType: string;
+  } | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room?.lastMessage) return null;
+    const lm = room.lastMessage as Record<string, unknown>;
+    return {
+      lastMessageId: room.lastMessageId ?? null,
+      lastMessageAt: room.lastMessageAt?.getTime() ?? 0,
+      senderId: (lm.senderId as string) ?? "",
+      content: lm.content ?? null,
+      messageType: (lm.messageType as string) ?? "TEXT",
+    };
   }
 
   /** Deep-gap horizon: a `since_revision` more than this far below the room's current
@@ -869,8 +1016,15 @@ export class PrivateMessageService {
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<PrivateMessageService["enrichMessages"]>>;
   }> {
-    await this.assertParticipant(params.roomId, params.userId);
-    const changes = await this.resolveChanges(params);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
+    const changes = await this.resolveChanges({
+      ...params,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
     const items = await this.enrichMessages(changes.messages, params.userId);
 
     return {
@@ -895,6 +1049,7 @@ export class PrivateMessageService {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -925,6 +1080,7 @@ export class PrivateMessageService {
         userId: params.userId,
         sinceRevision: params.sinceRevision,
         limit: params.limit,
+        cutoff: params.cutoff,
       });
 
     return {
@@ -941,7 +1097,7 @@ export class PrivateMessageService {
     messageId: string,
     userId: string
   ): Promise<PrivateMessage> {
-    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+    const room = await assertPrivateParticipant(this.roomRepo, roomId, userId);
     const message = await this.messageRepo.findMessageMeta({
       roomId,
       messageId,
@@ -955,6 +1111,10 @@ export class PrivateMessageService {
       message.deletedFor &&
       (message.deletedFor as Record<string, boolean>)[userId]
     ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    const cutoff = getPrivateDeletionCutoff(room, userId);
+    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -996,7 +1156,13 @@ export class PrivateMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query, userId);
+    const room = await this.roomRepo.findByRoomId(roomId);
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      getPrivateDeletionCutoff(room, userId)
+    );
   }
 
   async forwardMessage(params: {
@@ -1207,12 +1373,15 @@ export class PrivateMessageService {
       };
     }
 
+    const cutoff = getPrivateDeletionCutoff(room, p.userId);
+
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
         roomId: p.roomId,
         userId: p.userId,
         sinceRevision: p.sinceRevision,
         limit: p.limit,
+        cutoff,
       });
       return {
         authorized: true,
@@ -1235,11 +1404,14 @@ export class PrivateMessageService {
     const hasMore = rows.length > p.limit;
     const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
 
-    // Exclude messages the requesting user hid with "delete for me".
+    // Exclude messages the requesting user hid with "delete for me", and
+    // anything at/before their "delete conversation" cutoff.
     // deletedFor shape: { [userId]: ISO-timestamp }
     const events = rawEvents.filter((m) => {
       const deletedFor = (m.deletedFor ?? {}) as Record<string, unknown>;
-      return !(p.userId in deletedFor);
+      if (p.userId in deletedFor) return false;
+      if (cutoff && m.createdAt <= cutoff) return false;
+      return true;
     });
 
     const lastSeq = events.length
@@ -1403,6 +1575,16 @@ export class PrivateMessageService {
       const wire = toWireMessage(
         message as { messageType?: string | null }
       ) as unknown as Record<string, unknown>;
+      // `readBy`/`deliveredTo`/`deliveredAt` are real PrivateMessage columns, so
+      // `toWireMessage`'s `...rest` spread carries them onto `wire` verbatim —
+      // strip them here so none leak into the history response. The frontend
+      // no longer consumes per-message delivery/read receipts on history
+      // reads; the underlying columns (still written by `markDelivered` etc.)
+      // are untouched — this only affects what gets serialized onto the wire.
+      // Fields are omitted entirely (not `null`/`[]`).
+      delete wire.readBy;
+      delete wire.deliveredTo;
+      delete wire.deliveredAt;
       wire.countInUnread = shouldCountInUnread({
         messageType: message.messageType,
         systemEvent: message.systemEvent,
@@ -1446,28 +1628,6 @@ export class PrivateMessageService {
         urlFromMap(urlMap, key)
       );
 
-      // Message-info parity with community's toWire(): `deliveredTo` was a
-      // stored field (populated by markDelivered) that was never surfaced on
-      // read — dead on the read side. Shape matches community's
-      // `Array<{userId, deliveredAt}>` convention. `readBy` is intentionally
-      // NOT added here: unlike community/group (which track a per-member
-      // lastReadAt this can be computed from), private read state lives on
-      // PrivateRoom.lastReadAtByUser, which isn't loaded by enrichMessages'
-      // current callers — deferred rather than threading a room fetch through
-      // every call site for a half-correct result.
-      const deliveredAtMap = (message.deliveredAt ?? {}) as Record<
-        string,
-        string
-      >;
-      const deliveredTo = Array.isArray(message.deliveredTo)
-        ? (message.deliveredTo as string[]).map((userId) => ({
-            userId,
-            deliveredAt: deliveredAtMap[userId]
-              ? new Date(deliveredAtMap[userId]).getTime()
-              : 0,
-          }))
-        : [];
-
       return {
         ...wire,
         content: resolvedContent,
@@ -1484,7 +1644,6 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
-        deliveredTo,
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

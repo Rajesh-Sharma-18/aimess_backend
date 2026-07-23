@@ -48,9 +48,10 @@ export class GroupRoomController {
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
+    const q = (req.query.q as string | undefined)?.trim() || undefined;
     const [groups, totalCount] = await Promise.all([
-      this.service.getUserGroups(userId, { limit, cursor }),
-      this.service.countUserGroups(userId),
+      this.service.getUserGroups(userId, { limit, cursor, q }),
+      this.service.countUserGroups(userId, q),
     ]);
     const paginated = buildPaginatedResponse(
       groups as unknown as Record<string, unknown>[],
@@ -63,6 +64,15 @@ export class GroupRoomController {
       ? t("CHAT_GROUPS_FETCHED", req.locale)
       : t("CHAT_NO_GROUPS_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  clearConversation = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    await this.service.clearConversation(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("CHAT_CONVERSATION_DELETED", req.locale)));
   });
 
   archiveRoom = asyncHandler(async (req: Request, res: Response) => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { logger } from "@aimess/logger";
 import { NotFoundError } from "@aimess/errors";
+import { buildReactionActivityText } from "@aimess/constants";
 
 import type { Redis, Cluster } from "ioredis";
 
@@ -1346,9 +1347,14 @@ export class ChatMessageOrchestrator {
       return { reactions: await toResolvedGroups(before) };
     }
 
-    // 3b. State-changing op: toggle, re-read, then broadcast message:reaction
+    // 3b. State-changing op: CAS-toggle (see PrivateMessageService.reactCas /
+    //     GroupMessageService.reactCas), re-read, then broadcast message:reaction
     //     exactly like the gRPC sendReaction handler.
-    await service.react(params.messageId, params.userId, params.emoji);
+    const toggled = await service.reactToMessage({
+      messageId: params.messageId,
+      userId: params.userId,
+      emoji: params.emoji,
+    });
     const after = await service.getMessageReactions({
       messageId: params.messageId,
       roomId: params.roomId,
@@ -1368,7 +1374,162 @@ export class ChatMessageOrchestrator {
       })
     );
 
+    // WhatsApp-style lastActivity bump/revert — fire-and-forget, never blocks
+    // the reaction response (mirrors every other post-write side-effect here).
+    void this.bumpReactionActivity({
+      conversationType,
+      roomId: params.roomId,
+      messageId: params.messageId,
+      emoji: params.emoji,
+      actorId: params.userId,
+      added: toggled.added,
+      targetUserId: toggled.targetUserId,
+      targetMessagePreview: toggled.targetMessagePreview,
+    }).catch((err: unknown) =>
+      logger.warn(`reactDirect activity bump failed: ${String(err)}`)
+    );
+
     return { reactions: resolvedGroups };
+  }
+
+  /**
+   * WhatsApp-style reaction lastActivity bump/revert — shared by REST
+   * `reactDirect` and the gRPC `sendReaction` handler so both transports
+   * produce the identical side-effect through ONE place. Mirrors
+   * CommunityMessageService.reactToMessage's community:updated bump, but
+   * scoped to chat-service's own PrivateRoom/GroupRoom (no cross-service RPC
+   * needed — reaction and room live in the same service/DB here).
+   *
+   * On add: persists the reaction OVERLAY (self+target personalized text;
+   * NEVER touches the canonical lastMessage/lastMessageAt columns) and
+   * publishes `conv:updated` to ONLY the actor (+ target, if different) — the
+   * overlay is invisible to every other participant/member, same as community.
+   *
+   * On remove: clears the overlay IFF it still identifies this exact reaction
+   * (identity-gated, mirrors community), then re-publishes the room's
+   * untouched canonical last message to the same [actor(+target)] pair so
+   * their client reverts off the "reacted to" line.
+   */
+  async bumpReactionActivity(params: {
+    conversationType: "PRIVATE" | "GROUP";
+    roomId: string;
+    messageId: string;
+    emoji: string;
+    actorId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }): Promise<void> {
+    const service =
+      params.conversationType === "GROUP"
+        ? this.groupMessageService
+        : this.privateMessageService;
+    const isSelfReaction =
+      !params.targetUserId || params.targetUserId === params.actorId;
+    const recipients = isSelfReaction
+      ? [params.actorId]
+      : [params.actorId, params.targetUserId];
+
+    if (params.added) {
+      const { senderName: actorName } = await this.resolveSenderIdentity(
+        params.actorId
+      );
+      const reactedAt = new Date();
+      const { selfPreview, targetPreview } = buildReactionActivityText({
+        actorName,
+        targetMessagePreview: params.targetMessagePreview,
+        emoji: params.emoji,
+        isSelfReaction,
+      });
+
+      await service.setReactionActivity(params.roomId, {
+        messageId: params.messageId,
+        emoji: params.emoji,
+        actorId: params.actorId,
+        actorPreview: selfPreview,
+        targetId: isSelfReaction ? null : params.targetUserId,
+        targetPreview: isSelfReaction ? null : targetPreview,
+        reactedAt,
+      });
+
+      publishConvUpdatedSafe({
+        redis: this.redis,
+        type: params.conversationType,
+        roomId: params.roomId,
+        recipientIds: recipients,
+        senderId: params.actorId,
+        senderName: actorName,
+        lastMessageId: params.messageId,
+        lastMessageAt: reactedAt.getTime(),
+        preview: { contentType: "SYSTEM", text: selfPreview },
+        countInUnread: false,
+        resolveOverrides: () =>
+          Promise.resolve(
+            isSelfReaction
+              ? new Map()
+              : new Map([
+                  [
+                    params.targetUserId,
+                    {
+                      lastMessageId: params.messageId,
+                      lastMessageAt: reactedAt.getTime(),
+                      senderId: params.actorId,
+                      senderName: actorName,
+                      preview: { contentType: "SYSTEM", text: targetPreview },
+                    },
+                  ],
+                ])
+          ),
+      });
+      return;
+    }
+
+    // Removed — clear the overlay IF this exact reaction is the one currently
+    // shown (identity match; a no-op otherwise, mirrors community).
+    await service.clearReactionActivityIfCurrent(params.roomId, {
+      messageId: params.messageId,
+      emoji: params.emoji,
+      actorId: params.actorId,
+    });
+
+    // Revert bump: republish the room's own untouched canonical last message
+    // so a client that applied the reaction-add bump reverts to reality. A
+    // fresh Date.now() timestamp (not the real message's own older createdAt)
+    // guarantees a client that only applies bumps newer than what it already
+    // has doesn't silently drop this revert.
+    const snapshot = (await service.getRoomBumpSnapshot(params.roomId)) as {
+      lastMessageId: string | null;
+      lastMessageAt: number;
+      senderId: string;
+      senderName?: string;
+      content: unknown;
+      messageType: string;
+    } | null;
+    const revertAt = Date.now();
+    const revertSenderName = snapshot
+      ? (snapshot.senderName ??
+        (await this.resolveSenderIdentity(snapshot.senderId)).senderName)
+      : "";
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: params.conversationType,
+      roomId: params.roomId,
+      recipientIds: recipients,
+      senderId: snapshot?.senderId ?? "",
+      senderName: revertSenderName,
+      lastMessageId: snapshot?.lastMessageId ?? "",
+      lastMessageAt: snapshot?.lastMessageAt ?? revertAt,
+      preview: snapshot
+        ? {
+            contentType: normalizeMessageType(snapshot.messageType),
+            text: convertMessageToPreview(
+              snapshot.messageType,
+              snapshot.content
+            ),
+          }
+        : { contentType: "", text: "" },
+      countInUnread: false,
+    });
   }
 
   /**

@@ -172,7 +172,8 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
       "hello",
       10,
       expect.any(String),
-      10
+      10,
+      undefined
     );
   });
 
@@ -191,7 +192,8 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(mocks.groupMessageRepo.countSearchResults).toHaveBeenCalledWith(
       ROOM,
       "hello",
-      expect.any(String)
+      expect.any(String),
+      undefined
     );
   });
 

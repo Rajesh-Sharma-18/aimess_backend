@@ -74,7 +74,7 @@ describe("CallService.sweepMissedCalls", () => {
       expect.stringContaining("call:missed")
     );
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:u2",
+      "self:u2",
       expect.stringContaining("call:missed")
     );
     expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(2);
@@ -229,7 +229,7 @@ describe("CallService.endCall chat messages", () => {
 
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:u2",
+      "self:u2",
       expect.stringContaining("call:cancelled")
     );
   });

@@ -1899,7 +1899,8 @@ export const authPaths = {
         "Called by a new, unauthenticated device (web/desktop). Returns a `linkToken`; the session expires in 60s.\n\n" +
         "**Client responsibilities (QR is entirely client-side — the backend never generates or scans it):**\n" +
         "- Encode **only the `linkToken`** into the QR (e.g. as `aimess://login?token=<linkToken>`).\n" +
-        "- Connect to Socket.IO namespace `/auth` and emit `auth:qr:subscribe` with `{ token: linkToken }` to receive `auth:qr:success` / `auth:qr:expired` / `auth:qr:failed` in real time. There is no polling endpoint.\n" +
+        "- Connect to Socket.IO namespace `/auth` and emit `auth:qr:subscribe` with `{ token: linkToken }` to receive `auth:qr:success` / `auth:qr:expired` / `auth:qr:cancelled` / `auth:qr:failed` in real time. There is no polling endpoint.\n" +
+        '- **Session replacement (WhatsApp-like):** Generating a new QR from the same browser/device automatically supersedes any prior pending session. The old tab receives an `auth:qr:cancelled` event (with `{ reason: "replaced" }`) so it can immediately subscribe to the new token. This prevents stale session accumulation and the "Too many QR sessions" error.\n' +
         "- When the 60s TTL lapses, regenerate by calling this endpoint again and refresh the QR.\n\n" +
         "**Telegram-style instant login:** the already-signed-in mobile device scans the QR and immediately calls `POST /auth/devices/link/scan` with its own access token — that single call validates the QR, mints a brand-new web session, and logs the browser in. There is no separate approve/reject step and no confirmation screen.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],

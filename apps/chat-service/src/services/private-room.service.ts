@@ -629,6 +629,30 @@ export class PrivateRoomService {
         dateTime: lastActivityAt,
       };
 
+      // Reaction OVERLAY read-time gate (mirrors community-service's listMine
+      // reconciliation): visible ONLY to its own actor and (if different) the
+      // reacted-to message's owner, and ONLY while it's strictly newer than the
+      // canonical lastActivity — a genuinely newer message silently supersedes a
+      // stale reaction with no explicit clear needed. Every other viewer (never
+      // more than one "other" here, since PRIVATE has exactly 2 participants)
+      // keeps the real last message untouched.
+      if (
+        room.reactionActivityAt &&
+        room.reactionActivityAt.getTime() > lastActivityAt
+      ) {
+        const isActor = room.reactionActivityActorId === userId;
+        const isTarget = room.reactionActivityTargetId === userId;
+        if (isActor || isTarget) {
+          lastActivity.type = "message";
+          lastActivity.userId = room.reactionActivityActorId;
+          lastActivity.username = "";
+          lastActivity.preview = isActor
+            ? (room.reactionActivityActorPreview ?? "")
+            : (room.reactionActivityTargetPreview ?? "");
+          lastActivity.dateTime = room.reactionActivityAt.getTime();
+        }
+      }
+
       const unreadCountByUser = (room.unreadCountByUser ?? {}) as Record<
         string,
         number

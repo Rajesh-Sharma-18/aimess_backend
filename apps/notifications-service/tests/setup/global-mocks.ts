@@ -59,11 +59,17 @@ jest.mock("../../src/grpc/community.client.js", () => ({
       isMuted: false,
       mutedUntil: 0,
     })),
+    checkCommunityNotificationPref: jest.fn(async () => ({
+      enabled: true,
+    })),
   })),
   communityClient: {
     checkCommunityMute: jest.fn(async () => ({
       isMuted: false,
       mutedUntil: 0,
+    })),
+    checkCommunityNotificationPref: jest.fn(async () => ({
+      enabled: true,
     })),
   },
 }));

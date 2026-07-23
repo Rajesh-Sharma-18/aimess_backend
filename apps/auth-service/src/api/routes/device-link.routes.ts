@@ -6,10 +6,7 @@ import {
 } from "../controllers/device-link.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
-import {
-  qrGenerationRateLimiter,
-  qrScanRateLimiter,
-} from "../../middleware/rate-limiters.js";
+import { qrScanRateLimiter } from "../../middleware/rate-limiters.js";
 import {
   initiateDeviceLinkSchema,
   scanDeviceLinkSchema,
@@ -20,7 +17,6 @@ export const deviceLinkRoutes: IRouter = Router();
 /** New device starts a link session and renders it as a QR. No auth. */
 deviceLinkRoutes.post(
   "/devices/link/initiate",
-  qrGenerationRateLimiter,
   validateBody(initiateDeviceLinkSchema),
   initiateDeviceLink
 );

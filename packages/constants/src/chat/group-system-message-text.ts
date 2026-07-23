@@ -40,11 +40,51 @@ export function buildGroupSystemFallbackText(
       if (isTarget) return "You were removed";
       return `${actor} removed ${target}`;
 
+    case "MEMBER_BANNED":
+      if (isTarget) return "You were banned";
+      return `${actor} banned ${target}`;
+
+    case "MEMBER_UNBANNED":
+      if (isTarget) return "You were unbanned";
+      return `${actor} unbanned ${target}`;
+
+    case "OWNERSHIP_TRANSFERRED":
+      if (isActor) return `You transferred ownership to ${target}`;
+      if (isTarget) return `${actor} transferred ownership to you`;
+      return `${actor} transferred ownership to ${target}`;
+
     case "ROLE_CHANGED": {
-      const role = (data.newRole as string) || "a new role";
+      const newRole = (data.newRole as string) || "";
+      const oldRole = (data.oldRole as string) || "";
+      const rank: Record<string, number> = { MEMBER: 1, ADMIN: 2, OWNER: 3 };
+      const roleLabel = (r: string) => r.charAt(0) + r.slice(1).toLowerCase();
+
+      if (newRole === "OWNER") {
+        if (isActor) return `You made ${target} the group owner`;
+        if (isTarget) return `${actor} made you the group owner`;
+        return `${actor} made ${target} the group owner`;
+      }
+      if (oldRole && rank[oldRole] != null && rank[newRole] != null) {
+        const promoted = rank[newRole]! > rank[oldRole]!;
+        if (promoted) {
+          if (isTarget) return `${actor} promoted you to ${roleLabel(newRole)}`;
+          return `${actor} promoted ${target} to ${roleLabel(newRole)}`;
+        }
+        if (isTarget) return `${actor} demoted you to ${roleLabel(newRole)}`;
+        return `${actor} demoted ${target} to ${roleLabel(newRole)}`;
+      }
+      const role = newRole || "a new role";
       if (isTarget) return `${actor} changed your role to ${role}`;
       return `${actor} changed ${target}'s role to ${role}`;
     }
+
+    case "MESSAGE_PINNED":
+      if (isActor) return "You pinned a message";
+      return `${actor} pinned a message`;
+
+    case "MESSAGE_UNPINNED":
+      if (isActor) return "You unpinned a message";
+      return `${actor} unpinned a message`;
 
     case "ROOM_RENAMED": {
       const name = (data.newName as string) || "";
@@ -69,6 +109,29 @@ export function buildGroupSystemFallbackText(
     default:
       if (isActor) return "You updated the group";
       return `${actor} updated the group`;
+  }
+}
+
+/**
+ * Member whose inbox-list bump preview should read "You …" instead of the
+ * third-person line — mirrors `resolveCommunitySystemSubjectUserId`. Only the
+ * events where the target's own perspective actually differs from everyone
+ * else's need an entry; every other event bumps with the shared text as-is.
+ */
+export function resolveGroupSystemSubjectUserId(
+  event: string,
+  data: Record<string, unknown>
+): string | null {
+  const targetId = String(data.targetUserId ?? "").trim();
+  switch (event) {
+    case "MEMBER_ADDED":
+    case "MEMBER_BANNED":
+    case "MEMBER_UNBANNED":
+    case "OWNERSHIP_TRANSFERRED":
+    case "ROLE_CHANGED":
+      return targetId || null;
+    default:
+      return null;
   }
 }
 

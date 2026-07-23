@@ -48,6 +48,20 @@ model PrivateRoom {
   // bumped on EVERY content change (insert, edit, delete-for-everyone, reaction) —
   // unlike `lastSequence`, bumped only on INSERT. Allocated via `allocateRevision`.
   lastRevision              Int      @default(0)
+  // Reaction OVERLAY — mirrors community-service's Community.lastActivityReaction*
+  // fields exactly (see that schema for the full rationale). Never overwrites
+  // lastMessage/lastMessageAt (the canonical columns everyone else keeps reading);
+  // visible ONLY to its own actor and (if different) the reacted-to message's
+  // owner via a read-time gate (reactionActivityAt > lastMessageAt). Explicitly
+  // cleared (all fields -> null) only when the SAME reaction (messageId+emoji+
+  // actorId) is the one removed.
+  reactionActivityAt            DateTime?
+  reactionActivityMessageId     String?
+  reactionActivityEmoji         String?
+  reactionActivityActorId       String?
+  reactionActivityActorPreview  String?
+  reactionActivityTargetId      String?
+  reactionActivityTargetPreview String?
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -139,6 +153,9 @@ model GroupRoom {
   roomId             String    @unique
   type               String    @default("GROUP")
   name               String
+  // Formatting-insensitive shadow of `name` for search — see
+  // `@aimess/utils` `normalizeForSearch` and `group-search.util.ts`.
+  normalizedName     String    @default("")
   avatar             String    @default("")
   description        String    @default("")
   createdBy          String
@@ -157,6 +174,15 @@ model GroupRoom {
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
+  // Reaction OVERLAY — see PrivateRoom.reactionActivity* for the full rationale
+  // (same fields, same read-time gate, same identity-matched clear).
+  reactionActivityAt            DateTime?
+  reactionActivityMessageId     String?
+  reactionActivityEmoji         String?
+  reactionActivityActorId       String?
+  reactionActivityActorPreview  String?
+  reactionActivityTargetId      String?
+  reactionActivityTargetPreview String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -167,6 +193,7 @@ model GroupRoom {
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
+  @@index([normalizedName])
   @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }
@@ -242,6 +269,11 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Per-user "delete conversation" cutoff (Telegram-style): messages created
+  // at/before this instant are hidden from this member, even after new
+  // messages restore the group to their inbox. Distinct from `leftAt` — the
+  // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
+  clearedAt            DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)
@@ -541,6 +573,11 @@ model Call {
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
   @@index([status])
+  // Busy-gate lookups filter by participant + status. ponytail: [status] alone
+  // works at dev scale; these compound indexes keep the query cheap as call
+  // volume grows.
+  @@index([callerId, status])
+  @@index([calleeId, status])
   @@map("calls")
 }
 

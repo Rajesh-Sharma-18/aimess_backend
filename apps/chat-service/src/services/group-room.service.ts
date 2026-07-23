@@ -2,6 +2,8 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
+import { publishChatUserEvent } from "@aimess/redis";
+
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
 import {
@@ -26,6 +28,21 @@ export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
   isJoined: boolean;
 };
+
+/**
+ * Post-fetch "delete conversation" visibility gate — mirrors
+ * PrivateRoomRepository's `isVisibleAfterDeleteForMe`. A member who cleared
+ * their group history stays ACTIVE (unlike Leave), so the room only reappears
+ * in their list once a message newer than the clear lands.
+ */
+function isVisibleAfterClear(
+  room: { lastMessageAt: Date | null },
+  clearedAt: Date | null | undefined
+): boolean {
+  if (!clearedAt) return true;
+  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
+  return lastMs > clearedAt.getTime();
+}
 
 export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
@@ -73,24 +90,63 @@ export class GroupRoomService {
       })),
       userId
     );
-    if (!overrides.size) return rooms;
+    const withDeleteOverlay = !overrides.size
+      ? rooms
+      : rooms.map((room) => {
+          if (!overrides.has(room.roomId)) return room;
+          const prev: VisibleLast | null = overrides.get(room.roomId) ?? null;
+          const content = (prev?.content ?? null) as { text?: string } | null;
+          return {
+            ...room,
+            // Preserve the GroupRoom.lastMessagePreview JSON shape so the wire
+            // response is unchanged; only the per-viewer content differs.
+            lastMessagePreview: prev
+              ? {
+                  text: content?.text ?? "",
+                  senderId: prev.senderId,
+                  senderName: prev.senderName,
+                  messageType: prev.messageType,
+                  createdAt: prev.createdAt,
+                }
+              : null,
+          } as T;
+        });
+    return this.applyReactionOverlay(withDeleteOverlay, userId);
+  }
+
+  /**
+   * Reaction OVERLAY read-time gate — see PrivateRoomService.enrichConversations
+   * for the full rationale (identical semantics). Visible ONLY to its own actor
+   * and (if different) the reacted-to message's owner, and ONLY while strictly
+   * newer than the canonical lastMessageAt; every other member keeps the real
+   * last message. Overwrites `lastMessagePreview` only — never lastMessageAt
+   * (display-only, matches the delete-for-me overlay above).
+   */
+  private applyReactionOverlay<T extends GroupRoom>(
+    rooms: T[],
+    userId: string
+  ): T[] {
     return rooms.map((room) => {
-      if (!overrides.has(room.roomId)) return room;
-      const prev: VisibleLast | null = overrides.get(room.roomId) ?? null;
-      const content = (prev?.content ?? null) as { text?: string } | null;
+      const lastAt = room.lastMessageAt?.getTime() ?? 0;
+      if (
+        !room.reactionActivityAt ||
+        room.reactionActivityAt.getTime() <= lastAt
+      )
+        return room;
+      const isActor = room.reactionActivityActorId === userId;
+      const isTarget = room.reactionActivityTargetId === userId;
+      if (!isActor && !isTarget) return room;
       return {
         ...room,
-        // Preserve the GroupRoom.lastMessagePreview JSON shape so the wire
-        // response is unchanged; only the per-viewer content differs.
-        lastMessagePreview: prev
-          ? {
-              text: content?.text ?? "",
-              senderId: prev.senderId,
-              senderName: prev.senderName,
-              messageType: prev.messageType,
-              createdAt: prev.createdAt,
-            }
-          : null,
+        lastMessagePreview: {
+          text: isActor
+            ? (room.reactionActivityActorPreview ?? "")
+            : (room.reactionActivityTargetPreview ?? ""),
+          senderId: "",
+          senderName: "",
+          messageType: "SYSTEM",
+          createdAt: room.reactionActivityAt,
+        },
       } as T;
     });
   }
@@ -111,7 +167,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || 50,
+      memberLimit: params.memberLimit || 256,
       memberCount: 1,
     });
 
@@ -140,7 +196,38 @@ export class GroupRoomService {
     // message just set (the `room` above predates that write). Falls back to the
     // original row if the post/read was a no-op.
     const fresh = await this.roomRepo.findActiveByRoomId(roomId);
-    return { room: fresh ?? room, member };
+    const finalRoom = fresh ?? room;
+
+    // Creator isn't in `conv:<roomId>` yet (joined only via explicit client
+    // `conv:join`), so push the new group to their personal `user:<id>` channel
+    // — same `group:added` shape group-member.service.ts uses for later adds,
+    // so the existing frontend listener upserts it into the inbox with no
+    // client-side change. Fire-and-forget: a publish failure must never fail
+    // creation (mirrors PrivateRoomService's conv:created).
+    publishChatUserEvent(this.redis, params.createdBy, "group:added", {
+      type: "GROUP",
+      roomId: finalRoom.roomId,
+      lastMessageAt: finalRoom.lastMessageAt,
+      lastMessageId: finalRoom.lastMessageId,
+      lastMessage: finalRoom.lastMessagePreview ?? null,
+      unreadCount: 0,
+      isMuted: false,
+      pinnedCount: finalRoom.pinnedCount,
+      peer: null,
+      name: finalRoom.name,
+      avatar: finalRoom.avatar,
+      description: finalRoom.description,
+      memberCount: finalRoom.memberCount,
+      role: member.role,
+      isJoined: true,
+      addedAt: member.joinedAt,
+    }).catch((err: unknown) => {
+      logger.warn(
+        `GroupRoomService|createGroup|group:added publish failed room=${roomId} user=${params.createdBy}: ${String(err)}`
+      );
+    });
+
+    return { room: finalRoom, member };
   }
 
   async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
@@ -229,13 +316,46 @@ export class GroupRoomService {
     return disbanded;
   }
 
+  /**
+   * "Delete Conversation" for a group: clears the caller's own history view
+   * (mirrors PrivateRoomService.deleteForMe) WITHOUT leaving the group — the
+   * member stays ACTIVE, keeps receiving new messages, and the room reappears
+   * in their inbox the moment one arrives, showing only messages sent after
+   * this cutoff. Distinct from Leave, which removes membership entirely.
+   */
+  async clearConversation(roomId: string, userId: string): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    await this.memberRepo.setClearedAt(roomId, userId);
+
+    // Notify the user's other devices the conversation was cleared from their view.
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:deleted",
+          data: { roomId, deletedBy: userId, type: "GROUP" },
+        })
+      )
+      .catch(() => {});
+  }
+
   async getUserGroups(
     userId: string,
-    params: { limit: number; cursor?: string | null }
+    params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoomMembership[]> {
-    const roomIds = await this.memberRepo.getActiveRoomIds(userId);
-    if (!roomIds.length) return [];
-    const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return [];
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const roomIds = [...clearedByRoom.keys()];
+    const rawRooms = (
+      await this.roomRepo.getUserGroups(userId, roomIds, params)
+    ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.applyPerUserPreview(rawRooms, userId);
@@ -249,10 +369,19 @@ export class GroupRoomService {
     }));
   }
 
-  async countUserGroups(userId: string): Promise<number> {
-    const roomIds = await this.memberRepo.getActiveRoomIds(userId);
-    if (!roomIds.length) return 0;
-    return this.roomRepo.countUserGroups(roomIds);
+  async countUserGroups(userId: string, q?: string): Promise<number> {
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return 0;
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const rows = await this.roomRepo.findLastMessageAtForRooms(
+      [...clearedByRoom.keys()],
+      q
+    );
+    return rows.filter((r) =>
+      isVisibleAfterClear(r, clearedByRoom.get(r.roomId))
+    ).length;
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
@@ -318,14 +447,18 @@ export class GroupRoomService {
     const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     const roomIds = memberships.map((m) => m.roomId);
 
-    const rawRooms = await this.roomRepo.getInboxGroups({
-      roomIds,
-      direction: params.direction,
-      ts: params.ts,
-      boundaryId: params.boundaryId,
-      inclusive: params.inclusive,
-      limit: params.limit,
-    });
+    const rawRooms = (
+      await this.roomRepo.getInboxGroups({
+        roomIds,
+        direction: params.direction,
+        ts: params.ts,
+        boundaryId: params.boundaryId,
+        inclusive: params.inclusive,
+        limit: params.limit,
+      })
+    ).filter((r) =>
+      isVisibleAfterClear(r, membershipByRoom.get(r.roomId)?.clearedAt)
+    );
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.applyPerUserPreview(rawRooms, params.userId);
