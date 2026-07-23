@@ -27,6 +27,14 @@ model UserProfile {
   isGoogleLogin          Boolean               @default(false)
   firstName              String                @db.VarChar(50)
   lastName               String                @db.VarChar(50)
+  // Formatting-insensitive shadows of username/firstName/lastName for search
+  // — see `@aimess/utils` `normalizeForSearch` and `user-search.util.ts`.
+  normalizedUsername     String                @default("")
+  normalizedFirstName    String                @default("")
+  normalizedLastName     String                @default("")
+  // Space-insensitive full name shadow — normalizeForSearch(firstName + lastName),
+  // so a no-space query like "vasurajesh" matches "Vasu Rajesh".
+  normalizedFullName     String                @default("")
   bio                    String?               @db.VarChar(280)
   gender                 ProfileGender?
   avatarUrl              String?
@@ -62,6 +70,10 @@ model UserProfile {
   @@index([username])
   @@index([firstName, lastName])
   @@index([status, deletedAt])
+  @@index([normalizedUsername])
+  @@index([normalizedFirstName])
+  @@index([normalizedLastName])
+  @@index([normalizedFullName])
   @@map("user_profiles")
 }
 

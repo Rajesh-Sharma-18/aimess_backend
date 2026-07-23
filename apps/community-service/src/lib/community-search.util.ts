@@ -1,14 +1,8 @@
+import { tokenizeAndNormalize, tokenizeSearchQuery } from "@aimess/utils";
+
 import type { Prisma } from "../generated/prisma/index.js";
 
-/**
- * Splits a free-text search query into individual terms: trims leading/
- * trailing whitespace, then splits on any run of whitespace (so repeated
- * spaces between words collapse to a single separator). Empty input (or a
- * query that's whitespace-only) yields an empty token list.
- */
-export function tokenizeSearchQuery(q: string): string[] {
-  return q.trim().split(/\s+/).filter(Boolean);
-}
+export { tokenizeSearchQuery };
 
 /**
  * Normalizes a string for formatting-insensitive search — Instagram/Telegram/
@@ -18,13 +12,10 @@ export function tokenizeSearchQuery(q: string): string[] {
  * normalize to the same "drjhatka", regardless of how the stored record or
  * the searcher happens to punctuate/space/case it.
  *
- * `\p{L}`/`\p{N}` (Unicode property escapes, `u` flag) are used instead of
- * `[a-z0-9]` so non-Latin names/handles normalize correctly too, rather than
- * having every non-ASCII letter stripped out.
+ * Re-exported from `@aimess/utils` (`normalizeForSearch`) so every "search my
+ * X" endpoint (communities, users, groups) normalizes identically.
  */
-export function normalizeForSearch(value: string): string {
-  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-}
+export { normalizeForSearch } from "@aimess/utils";
 
 /**
  * Builds the Prisma `AND`-of-`OR` clauses backing community search by name
@@ -51,15 +42,12 @@ export function normalizeForSearch(value: string): string {
 export function buildCommunitySearchFilter(
   q: string
 ): Prisma.CommunityWhereInput[] {
-  return tokenizeSearchQuery(q)
-    .map((raw) => ({ raw, normalized: normalizeForSearch(raw) }))
-    .filter(({ normalized }) => Boolean(normalized))
-    .map(({ raw, normalized }) => ({
-      OR: [
-        { normalizedName: { contains: normalized } },
-        { normalizedHandle: { contains: normalized } },
-        { name: { contains: raw, mode: "insensitive" } },
-        { handle: { contains: raw, mode: "insensitive" } },
-      ],
-    }));
+  return tokenizeAndNormalize(q).map(({ raw, normalized }) => ({
+    OR: [
+      { normalizedName: { contains: normalized } },
+      { normalizedHandle: { contains: normalized } },
+      { name: { contains: raw, mode: "insensitive" } },
+      { handle: { contains: raw, mode: "insensitive" } },
+    ],
+  }));
 }

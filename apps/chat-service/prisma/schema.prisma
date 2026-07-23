@@ -153,6 +153,9 @@ model GroupRoom {
   roomId             String    @unique
   type               String    @default("GROUP")
   name               String
+  // Formatting-insensitive shadow of `name` for search — see
+  // `@aimess/utils` `normalizeForSearch` and `group-search.util.ts`.
+  normalizedName     String    @default("")
   avatar             String    @default("")
   description        String    @default("")
   createdBy          String
@@ -190,6 +193,7 @@ model GroupRoom {
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
+  @@index([normalizedName])
   @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }

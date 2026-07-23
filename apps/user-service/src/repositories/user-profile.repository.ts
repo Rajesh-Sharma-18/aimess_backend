@@ -5,6 +5,11 @@ import {
 } from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
 import { normalizeUsername } from "../lib/username.util.js";
+import {
+  normalizeForSearch,
+  buildUserSearchFilter,
+  buildNormalizedFullName,
+} from "../lib/user-search.util.js";
 import { PLACEHOLDER_DATE_OF_BIRTH } from "../lib/profile-fields.util.js";
 
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
@@ -21,39 +26,10 @@ const DISCOVERY_SELECT = {
 } as const;
 
 function buildSearchFilter(q: string | undefined): {
-  OR?: Prisma.UserProfileWhereInput[];
+  AND?: Prisma.UserProfileWhereInput[];
 } {
   if (!q) return {};
-
-  const or: Prisma.UserProfileWhereInput[] = [
-    { username: { contains: q, mode: "insensitive" } },
-    { firstName: { contains: q, mode: "insensitive" } },
-    { lastName: { contains: q, mode: "insensitive" } },
-  ];
-
-  // Multi-word query: also try firstName+lastName in both orders
-  // e.g. "John Doe" → firstName=John AND lastName=Doe, or firstName=Doe AND lastName=John
-  const parts = q.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    const first = parts[0]!;
-    const rest = parts.slice(1).join(" ");
-    or.push(
-      {
-        AND: [
-          { firstName: { contains: first, mode: "insensitive" } },
-          { lastName: { contains: rest, mode: "insensitive" } },
-        ],
-      },
-      {
-        AND: [
-          { firstName: { contains: rest, mode: "insensitive" } },
-          { lastName: { contains: first, mode: "insensitive" } },
-        ],
-      }
-    );
-  }
-
-  return { OR: or };
+  return { AND: buildUserSearchFilter(q) };
 }
 
 export const userProfileRepository = {
@@ -86,7 +62,7 @@ export const userProfileRepository = {
     });
   },
 
-  updateProfile(
+  async updateProfile(
     userId: string,
     data: {
       firstName?: string;
@@ -99,9 +75,41 @@ export const userProfileRepository = {
       lastUsernameChangeAt?: Date;
     }
   ) {
+    // Keep the normalized search shadows in sync whenever the searchable
+    // fields change — mirrors community's updateCommunity guard pattern.
+    const patch: typeof data & {
+      normalizedUsername?: string;
+      normalizedFirstName?: string;
+      normalizedLastName?: string;
+      normalizedFullName?: string;
+    } = { ...data };
+    if (data.username !== undefined) {
+      patch.normalizedUsername = normalizeForSearch(data.username);
+    }
+    if (data.firstName !== undefined) {
+      patch.normalizedFirstName = normalizeForSearch(data.firstName);
+    }
+    if (data.lastName !== undefined) {
+      patch.normalizedLastName = normalizeForSearch(data.lastName);
+    }
+    if (data.firstName !== undefined || data.lastName !== undefined) {
+      // normalizedFullName needs BOTH names — fetch whichever side isn't
+      // part of this patch so a single-field update still recomputes it
+      // correctly (e.g. editing just lastName still fixes the shadow).
+      let { firstName, lastName } = data;
+      if (firstName === undefined || lastName === undefined) {
+        const current = await prisma.userProfile.findUnique({
+          where: { userId },
+          select: { firstName: true, lastName: true },
+        });
+        firstName ??= current?.firstName ?? "";
+        lastName ??= current?.lastName ?? "";
+      }
+      patch.normalizedFullName = buildNormalizedFullName(firstName, lastName);
+    }
     return prisma.userProfile.update({
       where: { userId },
-      data,
+      data: patch,
       select: {
         userId: true,
         username: true,
@@ -200,8 +208,12 @@ export const userProfileRepository = {
           userId,
           account,
           username,
+          normalizedUsername: normalizeForSearch(username),
           firstName: displayName,
+          normalizedFirstName: normalizeForSearch(displayName),
           lastName: "User",
+          normalizedLastName: normalizeForSearch("User"),
+          normalizedFullName: buildNormalizedFullName(displayName, "User"),
           dateOfBirth: PLACEHOLDER_DATE_OF_BIRTH,
           isGoogleLogin,
         },

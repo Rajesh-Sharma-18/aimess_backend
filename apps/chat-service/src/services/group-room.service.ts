@@ -270,7 +270,7 @@ export class GroupRoomService {
 
   async getUserGroups(
     userId: string,
-    params: { limit: number; cursor?: string | null }
+    params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoomMembership[]> {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return [];
@@ -288,10 +288,10 @@ export class GroupRoomService {
     }));
   }
 
-  async countUserGroups(userId: string): Promise<number> {
+  async countUserGroups(userId: string, q?: string): Promise<number> {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return 0;
-    return this.roomRepo.countUserGroups(roomIds);
+    return this.roomRepo.countUserGroups(roomIds, q);
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {

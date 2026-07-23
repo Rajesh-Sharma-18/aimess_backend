@@ -4,6 +4,10 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import {
+  buildGroupSearchFilter,
+  normalizeForSearch,
+} from "../lib/group-search.util.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
@@ -27,6 +31,7 @@ export class GroupRoomRepository {
         roomId: data.roomId,
         type: (data.type as string) ?? "GROUP",
         name: data.name,
+        normalizedName: normalizeForSearch(data.name),
         avatar: (data.avatar as string) ?? "",
         description: (data.description as string) ?? "",
         createdBy: data.createdBy,
@@ -178,9 +183,14 @@ export class GroupRoomRepository {
     roomId: string,
     data: Record<string, unknown>
   ): Promise<GroupRoom | null> {
+    // Keep the normalized search shadow in sync whenever the display name changes.
+    const patch =
+      typeof data.name === "string"
+        ? { ...data, normalizedName: normalizeForSearch(data.name) }
+        : data;
     return this.prisma.groupRoom.update({
       where: { roomId },
-      data: data as Parameters<typeof this.prisma.groupRoom.update>[0]["data"],
+      data: patch as Parameters<typeof this.prisma.groupRoom.update>[0]["data"],
     });
   }
 
@@ -369,7 +379,7 @@ export class GroupRoomRepository {
   async getUserGroups(
     _userId: string,
     roomIds: string[],
-    params: { limit: number; cursor?: string | null }
+    params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoom[]> {
     return this.prisma.groupRoom.findMany({
       where: {
@@ -378,15 +388,20 @@ export class GroupRoomRepository {
         ...(params.cursor
           ? { lastMessageAt: { lt: new Date(params.cursor) } }
           : {}),
+        ...(params.q ? { AND: buildGroupSearchFilter(params.q) } : {}),
       },
       orderBy: { lastMessageAt: "desc" },
       take: params.limit,
     });
   }
 
-  async countUserGroups(roomIds: string[]): Promise<number> {
+  async countUserGroups(roomIds: string[], q?: string): Promise<number> {
     return this.prisma.groupRoom.count({
-      where: { roomId: { in: roomIds }, status: "ACTIVE" },
+      where: {
+        roomId: { in: roomIds },
+        status: "ACTIVE",
+        ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
+      },
     });
   }
 
@@ -410,7 +425,7 @@ export class GroupRoomRepository {
       where: {
         roomId: { in: roomIds },
         status: "ACTIVE",
-        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+        ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
       orderBy: { lastMessageAt: "desc" },
       take: limit,
@@ -432,7 +447,7 @@ export class GroupRoomRepository {
       where: {
         ...(excludeRoomIds.length ? { roomId: { notIn: excludeRoomIds } } : {}),
         status: "ACTIVE",
-        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+        ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
       orderBy: { memberCount: "desc" },
       take: limit,
