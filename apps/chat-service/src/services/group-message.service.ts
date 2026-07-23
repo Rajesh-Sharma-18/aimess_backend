@@ -27,6 +27,7 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -344,13 +345,18 @@ export class GroupMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<GroupMessage[]> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const beforeTimestamp = params.cursor || new Date().toISOString();
     return this.messageRepo.findByRoomIdWithTime(
       params.roomId,
       beforeTimestamp,
       params.limit,
-      params.userId
+      params.userId,
+      getGroupDeletionCutoff(member)
     );
   }
 
@@ -377,7 +383,12 @@ export class GroupMessageService {
     nextCursor: string | null;
     total: number;
   }> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const cutoff = getGroupDeletionCutoff(member);
     const [{ messages: items, hasMore }, total] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
         userId: params.userId,
@@ -387,10 +398,12 @@ export class GroupMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
         limit: params.limit,
+        cutoff,
       }),
       this.messageRepo.countTimeline({
         roomId: params.roomId,
         userId: params.userId,
+        cutoff,
       }),
     ]);
 
@@ -420,13 +433,18 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: params.userId,
       roomId: params.roomId,
       direction: params.direction,
       seq: params.seq,
       limit: params.limit,
+      cutoff: getGroupDeletionCutoff(member),
     });
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
@@ -444,14 +462,20 @@ export class GroupMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: GroupMessage[]; anchorSeq: number } & AroundCursors> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const cutoff = getGroupDeletionCutoff(member);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: params.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
+      cutoff,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -462,6 +486,7 @@ export class GroupMessageService {
         direction,
         seq,
         limit: 1,
+        cutoff,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -486,6 +511,7 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    const cutoff = getGroupDeletionCutoff(member);
 
     const beforeMs = params.timestamp ?? Date.now();
     const skip = (params.pageNumber - 1) * params.limit;
@@ -497,6 +523,7 @@ export class GroupMessageService {
         beforeMs,
         skip,
         take: params.limit,
+        cutoff,
       }),
       // Count must match the page's filter (createdAt < beforeMs + per-user
       // deletion exclusion), not the boundary-less countByRoom.
@@ -504,6 +531,7 @@ export class GroupMessageService {
         roomId: params.roomId,
         userId: params.userId,
         beforeMs,
+        cutoff,
       }),
     ]);
 
@@ -518,6 +546,7 @@ export class GroupMessageService {
           roomId: params.roomId,
           userId: params.userId,
           afterDate: newest.createdAt,
+          cutoff,
         })
         .catch((err: unknown) => {
           logger.warn(
@@ -550,13 +579,18 @@ export class GroupMessageService {
     limit: number;
     skip?: number;
   }): Promise<GroupMessage[]> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId,
-      params.skip ?? 0
+      params.skip ?? 0,
+      getGroupDeletionCutoff(member)
     );
   }
 
@@ -580,6 +614,7 @@ export class GroupMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      cutoff: getGroupDeletionCutoff(member),
     });
   }
 
@@ -592,7 +627,16 @@ export class GroupMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query, userId);
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      getGroupDeletionCutoff(member)
+    );
   }
 
   /**
@@ -725,9 +769,14 @@ export class GroupMessageService {
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return null;
-    const prev = await this.messageRepo.findPreviousVisibleForUser(
+    const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
       userId
+    );
+    const prev = await this.messageRepo.findPreviousVisibleForUser(
+      roomId,
+      userId,
+      getGroupDeletionCutoff(member)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1002,8 +1051,15 @@ export class GroupMessageService {
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<GroupMessageService["enrichForWire"]>>;
   }> {
-    await this.assertMember(params.roomId, params.userId);
-    const changes = await this.resolveChanges(params);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const changes = await this.resolveChanges({
+      ...params,
+      cutoff: getGroupDeletionCutoff(member),
+    });
     const items = await this.enrichForWire(changes.messages, params.userId);
 
     return {
@@ -1028,6 +1084,7 @@ export class GroupMessageService {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -1056,6 +1113,7 @@ export class GroupMessageService {
         userId: params.userId,
         sinceRevision: params.sinceRevision,
         limit: params.limit,
+        cutoff: params.cutoff,
       });
 
     return {
@@ -1072,7 +1130,7 @@ export class GroupMessageService {
     messageId: string,
     userId: string
   ): Promise<GroupMessage> {
-    await assertGroupMember(this.memberRepo, roomId, userId);
+    const member = await assertGroupMember(this.memberRepo, roomId, userId);
     const message = await this.messageRepo.findById(messageId);
     if (!message || message.roomId !== roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1084,6 +1142,10 @@ export class GroupMessageService {
       message.deletedForUserIds &&
       (message.deletedForUserIds as string[]).includes(userId)
     ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    const cutoff = getGroupDeletionCutoff(member);
+    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -1266,12 +1328,15 @@ export class GroupMessageService {
       };
     }
 
+    const cutoff = getGroupDeletionCutoff(member);
+
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
         roomId: p.roomId,
         userId: p.userId,
         sinceRevision: p.sinceRevision,
         limit: p.limit,
+        cutoff,
       });
       return {
         authorized: true,
@@ -1294,12 +1359,15 @@ export class GroupMessageService {
     const hasMore = rows.length > p.limit;
     const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
 
-    // Exclude messages the requesting user hid with "delete for me".
+    // Exclude messages the requesting user hid with "delete for me", and
+    // anything at/before their "delete conversation" cutoff.
     // deletedForUserIds shape: string[] (array of userId strings)
     const events = rawEvents.filter((m) => {
       const raw = m as unknown as { deletedForUserIds?: unknown };
       const deletedForUserIds = (raw.deletedForUserIds ?? []) as string[];
-      return !deletedForUserIds.includes(p.userId);
+      if (deletedForUserIds.includes(p.userId)) return false;
+      if (cutoff && m.createdAt <= cutoff) return false;
+      return true;
     });
 
     const lastSeq = events.length

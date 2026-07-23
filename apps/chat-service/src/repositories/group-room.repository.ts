@@ -406,6 +406,26 @@ export class GroupRoomRepository {
   }
 
   /**
+   * Lean `{roomId, lastMessageAt}` for a set of rooms — used by the service to
+   * apply the per-user "delete conversation" (`clearedAt`) visibility filter in
+   * memory before counting, since that cutoff lives on GroupMember, not GroupRoom.
+   */
+  async findLastMessageAtForRooms(
+    roomIds: string[],
+    q?: string
+  ): Promise<Array<{ roomId: string; lastMessageAt: Date | null }>> {
+    if (!roomIds.length) return [];
+    return this.prisma.groupRoom.findMany({
+      where: {
+        roomId: { in: roomIds },
+        status: "ACTIVE",
+        ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
+      },
+      select: { roomId: true, lastMessageAt: true },
+    });
+  }
+
+  /**
    * Timestamp-bounded group fetch for the unified inbox.
    * - direction "before": lastMessageAt <= ts, newest-first (desc).
    * - direction "after" : lastMessageAt >= ts, oldest-first (asc).

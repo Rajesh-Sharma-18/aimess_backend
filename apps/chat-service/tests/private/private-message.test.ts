@@ -421,7 +421,8 @@ describe("GET /rooms/:roomId/messages/search", () => {
       "hello",
       10,
       expect.any(String),
-      10
+      10,
+      undefined
     );
   });
 
@@ -441,7 +442,8 @@ describe("GET /rooms/:roomId/messages/search", () => {
     expect(mocks.privateMessageRepo.countSearchResults).toHaveBeenCalledWith(
       ROOM,
       "hello",
-      expect.any(String)
+      expect.any(String),
+      undefined
     );
   });
 

@@ -34,6 +34,9 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
     ctrl.update
   );
   router.post("/:roomId/disband", authenticate, ctrl.disband);
+  // Delete Conversation: clears the caller's own history, stays a member —
+  // distinct from group-member's POST /:roomId/leave.
+  router.delete("/:roomId", authenticate, ctrl.clearConversation);
   router.patch("/:roomId/archive", authenticate, ctrl.archiveRoom);
   router.patch("/:roomId/unarchive", authenticate, ctrl.unarchiveRoom);
 

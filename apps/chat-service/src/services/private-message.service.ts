@@ -29,6 +29,7 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -287,7 +288,8 @@ export class PrivateMessageService {
       params.userId,
       { roomId: room.roomId },
       beforeTimestamp,
-      params.limit
+      params.limit,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -317,6 +319,7 @@ export class PrivateMessageService {
       params.roomId,
       params.userId
     );
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
 
     const [{ messages: items, hasMore }, total] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
@@ -327,10 +330,12 @@ export class PrivateMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
         limit: params.limit,
+        cutoff,
       }),
       this.messageRepo.countTimeline({
         roomId: room.roomId,
         userId: params.userId,
+        cutoff,
       }),
     ]);
 
@@ -373,6 +378,7 @@ export class PrivateMessageService {
       direction: params.direction,
       seq: params.seq,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
@@ -398,11 +404,13 @@ export class PrivateMessageService {
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: room.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
+      cutoff,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -413,6 +421,7 @@ export class PrivateMessageService {
         direction,
         seq,
         limit: 1,
+        cutoff,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -425,13 +434,18 @@ export class PrivateMessageService {
     limit: number;
     skip?: number;
   }): Promise<PrivateMessage[]> {
-    await assertPrivateParticipant(this.roomRepo, params.roomId, params.userId);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId,
-      params.skip ?? 0
+      params.skip ?? 0,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -456,6 +470,7 @@ export class PrivateMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
   }
 
@@ -608,7 +623,8 @@ export class PrivateMessageService {
     // the globally-last but could still be the user's effective last visible.
     const prev = await this.messageRepo.findPreviousVisibleForUser(
       roomId,
-      userId
+      userId,
+      getPrivateDeletionCutoff(room, userId)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1000,8 +1016,15 @@ export class PrivateMessageService {
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<PrivateMessageService["enrichMessages"]>>;
   }> {
-    await this.assertParticipant(params.roomId, params.userId);
-    const changes = await this.resolveChanges(params);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
+    const changes = await this.resolveChanges({
+      ...params,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
     const items = await this.enrichMessages(changes.messages, params.userId);
 
     return {
@@ -1026,6 +1049,7 @@ export class PrivateMessageService {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -1056,6 +1080,7 @@ export class PrivateMessageService {
         userId: params.userId,
         sinceRevision: params.sinceRevision,
         limit: params.limit,
+        cutoff: params.cutoff,
       });
 
     return {
@@ -1072,7 +1097,7 @@ export class PrivateMessageService {
     messageId: string,
     userId: string
   ): Promise<PrivateMessage> {
-    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+    const room = await assertPrivateParticipant(this.roomRepo, roomId, userId);
     const message = await this.messageRepo.findMessageMeta({
       roomId,
       messageId,
@@ -1086,6 +1111,10 @@ export class PrivateMessageService {
       message.deletedFor &&
       (message.deletedFor as Record<string, boolean>)[userId]
     ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    const cutoff = getPrivateDeletionCutoff(room, userId);
+    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -1127,7 +1156,13 @@ export class PrivateMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query, userId);
+    const room = await this.roomRepo.findByRoomId(roomId);
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      getPrivateDeletionCutoff(room, userId)
+    );
   }
 
   async forwardMessage(params: {
@@ -1338,12 +1373,15 @@ export class PrivateMessageService {
       };
     }
 
+    const cutoff = getPrivateDeletionCutoff(room, p.userId);
+
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
         roomId: p.roomId,
         userId: p.userId,
         sinceRevision: p.sinceRevision,
         limit: p.limit,
+        cutoff,
       });
       return {
         authorized: true,
@@ -1366,11 +1404,14 @@ export class PrivateMessageService {
     const hasMore = rows.length > p.limit;
     const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
 
-    // Exclude messages the requesting user hid with "delete for me".
+    // Exclude messages the requesting user hid with "delete for me", and
+    // anything at/before their "delete conversation" cutoff.
     // deletedFor shape: { [userId]: ISO-timestamp }
     const events = rawEvents.filter((m) => {
       const deletedFor = (m.deletedFor ?? {}) as Record<string, unknown>;
-      return !(p.userId in deletedFor);
+      if (p.userId in deletedFor) return false;
+      if (cutoff && m.createdAt <= cutoff) return false;
+      return true;
     });
 
     const lastSeq = events.length

@@ -87,6 +87,7 @@ export class GroupMemberRepository {
       role: string;
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
+      clearedAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -96,6 +97,23 @@ export class GroupMemberRepository {
         role: true,
         unreadCount: true,
         notificationSettings: true,
+        clearedAt: true,
+      },
+    });
+  }
+
+  /**
+   * "Delete Conversation" for a group: the member stays ACTIVE (unlike Leave)
+   * but hides all history up to now — mirrors PrivateRoomRepository.setDeletedFor.
+   * Also zeroes unread state so a phantom count doesn't survive the cutoff.
+   */
+  async setClearedAt(roomId: string, userId: string): Promise<void> {
+    await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      data: {
+        clearedAt: new Date(),
+        unreadCount: 0,
+        lastReadAt: new Date(),
       },
     });
   }

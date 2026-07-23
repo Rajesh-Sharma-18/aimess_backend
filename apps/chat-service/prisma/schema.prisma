@@ -269,6 +269,11 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Per-user "delete conversation" cutoff (Telegram-style): messages created
+  // at/before this instant are hidden from this member, even after new
+  // messages restore the group to their inbox. Distinct from `leftAt` — the
+  // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
+  clearedAt            DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)

@@ -66,6 +66,15 @@ export class GroupRoomController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
   });
 
+  clearConversation = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    await this.service.clearConversation(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("CHAT_CONVERSATION_DELETED", req.locale)));
+  });
+
   archiveRoom = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

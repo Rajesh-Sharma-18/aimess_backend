@@ -612,9 +612,43 @@ export class PrivateRoomRepository {
     const deletedFor = (existing.deletedFor ?? {}) as Record<string, string>;
     deletedFor[userId] = new Date().toISOString();
 
+    // Zero this user's unread state too — everything currently unread is about
+    // to become invisible (before the cutoff), so it must not linger as a
+    // phantom unread count once the room reappears on a future message.
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[userId] = 0;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = false;
+    const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    firstUnreadMessageIdByUser[userId] = null;
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    lastUnreadMessageIdByUser[userId] = null;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    lastUnreadPreviewByUser[userId] = null;
+
     await this.prisma.privateRoom.update({
       where: { roomId },
-      data: { deletedFor },
+      data: {
+        deletedFor,
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        firstUnreadMessageIdByUser:
+          firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
+      },
     });
   }
 

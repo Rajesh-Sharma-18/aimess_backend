@@ -106,11 +106,15 @@ describe("POST /api/chat/groups (create)", () => {
 
 describe("GET /api/chat/groups/my-groups", () => {
   it("POSITIVE: returns the caller's active groups", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+      { roomId: "grp_1", clearedAt: null },
+    ]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       { roomId: "grp_1", name: "Devs", lastMessageAt: new Date(1) },
     ]);
-    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(1) },
+    ]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -122,7 +126,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   });
 
   it("EDGE: no memberships → 200 with empty data", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -135,7 +139,9 @@ describe("GET /api/chat/groups/my-groups", () => {
   // Resolve-on-read: the stored group logo object key must surface as a full
   // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves the group logo object key to a download URL", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+      { roomId: "grp_1", clearedAt: null },
+    ]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       {
         roomId: "grp_1",
@@ -144,7 +150,9 @@ describe("GET /api/chat/groups/my-groups", () => {
         lastMessageAt: new Date(1),
       },
     ]);
-    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(1) },
+    ]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
