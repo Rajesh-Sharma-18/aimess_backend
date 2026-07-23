@@ -123,6 +123,11 @@ export class CallService {
     const freshCutoff = new Date(
       now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
     );
+    // Same idea for answered calls: past this, the row is an abandoned session
+    // the sweep is about to end, not a real conversation.
+    const liveCutoff = new Date(
+      now.getTime() - env.CALL_MAX_DURATION_SEC * 1000
+    );
 
     // (a) Self-cleanup: a new outgoing call means the caller abandoned any prior
     // OUTGOING ring. Cancel the caller's own RINGING-as-caller rows so (1) the
@@ -154,7 +159,8 @@ export class CallService {
     // (b) Busy gate — is either party genuinely active right now?
     const active = await this.callRepo.findActiveByParticipant(
       [params.callerId, params.calleeId],
-      freshCutoff
+      freshCutoff,
+      liveCutoff
     );
     const calleeBusy = active.some(
       (c) => c.callerId === params.calleeId || c.calleeId === params.calleeId
@@ -194,7 +200,8 @@ export class CallService {
       params.callerId,
       params.calleeId,
       call.callId,
-      freshCutoff
+      freshCutoff,
+      liveCutoff
     );
     if (reciprocal && call.callId > reciprocal.callId) {
       await this.callRepo.claimStatusTransition(
@@ -552,6 +559,80 @@ export class CallService {
     }
     if (flipped > 0) {
       logger.info(`CallService|sweep|flipped ${flipped} call(s) to MISSED`);
+    }
+    return flipped;
+  }
+
+  /**
+   * Sweep abandoned IN_PROGRESS calls → ENDED. An answered call is normally
+   * ended by `call:end` or the LiveKit `room_finished` webhook; neither fires if
+   * the client was force-killed/crashed or the webhook URL is unreachable, and
+   * the surviving row makes BOTH participants permanently busy. Mirrors
+   * `sweepMissedCalls`: CAS-claimed per row, so only one node publishes.
+   */
+  async sweepStuckInProgressCalls(
+    now: Date,
+    maxDurationSec: number,
+    batchLimit: number
+  ): Promise<number> {
+    const cutoff = new Date(now.getTime() - maxDurationSec * 1000);
+    const candidates = await this.callRepo.findStuckInProgress(
+      cutoff,
+      batchLimit
+    );
+    let flipped = 0;
+    for (const call of candidates) {
+      const durationSec = call.answeredAt
+        ? Math.max(
+            0,
+            Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
+          )
+        : 0;
+      const { won } = await this.callRepo.claimStatusTransition(
+        call.callId,
+        CallStatus.IN_PROGRESS,
+        {
+          status: CallStatus.ENDED,
+          endedAt: now,
+          durationSec,
+          endedBy: "SYSTEM",
+        }
+      );
+      if (!won) continue;
+      flipped++;
+      const payload = JSON.stringify({
+        event: "call:ended",
+        data: { callId: call.callId, endedBy: "SYSTEM", durationSec },
+      });
+      // Both parties answered, so both are in `call:<callId>`. Their `self:`
+      // rooms too — a device that missed the room join still needs to stop.
+      await Promise.all(
+        [
+          `call:${call.callId}`,
+          `self:${call.callerId}`,
+          `self:${call.calleeId}`,
+        ].map((channel) =>
+          this.redis
+            .publish(channel, payload)
+            .catch((err: unknown) =>
+              logger.warn(
+                `CallService|sweepInProgress|publish ${channel} failed: ${String(err)}`
+              )
+            )
+        )
+      );
+      await this.postCallChatMessageSafe(
+        call,
+        "ENDED",
+        now,
+        durationSec,
+        "SYSTEM"
+      );
+    }
+    if (flipped > 0) {
+      logger.info(
+        `CallService|sweepInProgress|flipped ${flipped} stale call(s) to ENDED`
+      );
     }
     return flipped;
   }

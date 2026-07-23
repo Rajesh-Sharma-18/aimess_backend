@@ -80,6 +80,22 @@ export class CallRepository {
     });
   }
 
+  /**
+   * IN_PROGRESS rows past the max-duration ceiling, plus rows with a null
+   * `answeredAt` (already inconsistent). Both are unreachable by any normal end
+   * path once the client is gone, so they must be swept or the participants stay
+   * permanently busy.
+   */
+  async findStuckInProgress(cutoff: Date, limit: number): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        status: CallStatus.IN_PROGRESS,
+        OR: [{ answeredAt: { lt: cutoff } }, { answeredAt: null }],
+      },
+      take: limit,
+    });
+  }
+
   async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
     const result = await this.prisma.call.updateMany({
       where: { callId, status: "RINGING" },
@@ -104,31 +120,37 @@ export class CallRepository {
   }
 
   /**
-   * Busy-detection query. A call counts as "genuinely active" (and therefore
-   * blocks a new call) only if it is IN_PROGRESS, or RINGING **and still fresh**
-   * (`initiatedAt >= freshCutoff`). A RINGING row older than the ringing-timeout
-   * window is a crashed/abandoned attempt that the sweep is about to flip to
-   * MISSED — it must NOT count as busy (this is the guard against the old
-   * false-busy bug). Returns every active call touching any of `userIds`.
+   * "Genuinely active right now" — the shared busy predicate.
+   *
+   * BOTH states are time-bounded, and both bounds exist for the same reason: a
+   * client that dies without signalling must never leave a row that blocks
+   * calling forever.
+   *  - RINGING  → `initiatedAt >= freshCutoff` (crashed ring, sweep will MISS it)
+   *  - IN_PROGRESS → `answeredAt >= liveCutoff` (crashed/force-killed call; only
+   *    an explicit `call:end` or the LiveKit `room_finished` webhook ends one
+   *    normally, and neither fires if the app died or the webhook is unreachable)
+   * An IN_PROGRESS row with a null `answeredAt` is already inconsistent, so it
+   * is deliberately excluded here and swept below.
    */
+  private activeWhere(freshCutoff: Date, liveCutoff: Date) {
+    return {
+      OR: [
+        { status: CallStatus.IN_PROGRESS, answeredAt: { gte: liveCutoff } },
+        { status: CallStatus.RINGING, initiatedAt: { gte: freshCutoff } },
+      ],
+    };
+  }
+
+  /** Every active call touching any of `userIds`. */
   async findActiveByParticipant(
     userIds: string[],
-    freshCutoff: Date
+    freshCutoff: Date,
+    liveCutoff: Date
   ): Promise<Call[]> {
     return this.prisma.call.findMany({
       where: {
         OR: [{ callerId: { in: userIds } }, { calleeId: { in: userIds } }],
-        AND: [
-          {
-            OR: [
-              { status: CallStatus.IN_PROGRESS },
-              {
-                status: CallStatus.RINGING,
-                initiatedAt: { gte: freshCutoff },
-              },
-            ],
-          },
-        ],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
       },
     });
   }
@@ -142,7 +164,8 @@ export class CallRepository {
     userA: string,
     userB: string,
     excludeCallId: string,
-    freshCutoff: Date
+    freshCutoff: Date,
+    liveCutoff: Date
   ): Promise<Call | null> {
     return this.prisma.call.findFirst({
       where: {
@@ -151,17 +174,7 @@ export class CallRepository {
           { callerId: userA, calleeId: userB },
           { callerId: userB, calleeId: userA },
         ],
-        AND: [
-          {
-            OR: [
-              { status: CallStatus.IN_PROGRESS },
-              {
-                status: CallStatus.RINGING,
-                initiatedAt: { gte: freshCutoff },
-              },
-            ],
-          },
-        ],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
       },
     });
   }

@@ -626,14 +626,26 @@ const startServer = async () => {
     // Ringing-call timeout sweeper — flips RINGING → MISSED after
     // CALL_RINGING_TIMEOUT_SEC. Multi-node safe (atomic per-row updateMany).
     callTimeoutSweepHandle = setInterval(() => {
+      const now = new Date();
       void callService
         .sweepMissedCalls(
-          new Date(),
+          now,
           env.CALL_RINGING_TIMEOUT_SEC,
           env.CALL_TIMEOUT_SWEEP_BATCH
         )
         .catch((err: unknown) => {
           logger.warn(`callTimeoutSweep failed: ${String(err)}`);
+        });
+      // Same cadence, answered calls: without this an app that dies before
+      // `call:end` leaves a row that makes both parties permanently busy.
+      void callService
+        .sweepStuckInProgressCalls(
+          now,
+          env.CALL_MAX_DURATION_SEC,
+          env.CALL_TIMEOUT_SWEEP_BATCH
+        )
+        .catch((err: unknown) => {
+          logger.warn(`callInProgressSweep failed: ${String(err)}`);
         });
     }, env.CALL_TIMEOUT_SWEEP_INTERVAL_SEC * 1000);
     // Don't hold the event loop open on shutdown.

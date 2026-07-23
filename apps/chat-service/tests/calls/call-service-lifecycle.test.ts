@@ -15,6 +15,7 @@ function buildService() {
       claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
       findByParticipant: jest.fn(),
       findStuckRinging: jest.fn(),
+      findStuckInProgress: jest.fn().mockResolvedValue([]),
       claimForMissed: jest.fn(),
     },
     privateRoomRepo: {
@@ -42,6 +43,53 @@ function buildService() {
   );
   return { service, stubs };
 }
+
+describe("CallService.sweepStuckInProgressCalls", () => {
+  // Regression: an IN_PROGRESS row survives a client that died before
+  // `call:end`, and used to make BOTH participants permanently busy — every
+  // later call:initiate returned CONFLICT with no way to recover.
+  it("ends abandoned answered calls and publishes call:ended to both parties", async () => {
+    const { service, stubs } = buildService();
+    const now = new Date(10_000_000);
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      {
+        callId: "c1",
+        callerId: "u1",
+        calleeId: "u2",
+        privateRoomId: "r1",
+        type: "VIDEO",
+        answeredAt: new Date(now.getTime() - 7_200_000),
+      },
+    ]);
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: true });
+
+    const flipped = await service.sweepStuckInProgressCalls(now, 3600, 50);
+
+    expect(flipped).toBe(1);
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "IN_PROGRESS",
+      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM" })
+    );
+    const channels = stubs.redis.publish.mock.calls.map((c) => c[0]);
+    expect(channels).toEqual(
+      expect.arrayContaining(["call:c1", "self:u1", "self:u2"])
+    );
+  });
+
+  it("does not publish when another node won the CAS", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      { callId: "c1", callerId: "u1", calleeId: "u2", answeredAt: new Date(0) },
+    ]);
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
+
+    expect(await service.sweepStuckInProgressCalls(new Date(1), 3600, 50)).toBe(
+      0
+    );
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+});
 
 describe("CallService.sweepMissedCalls", () => {
   it("flips claimed rows and publishes call:missed to both rooms", async () => {
