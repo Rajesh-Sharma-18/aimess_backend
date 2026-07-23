@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { env } from "../config/env.js";
 import type { Redis, Cluster } from "ioredis";
 import type { Call } from "../generated/prisma/index.js";
 import type { CallRepository } from "../repositories/call.repository.js";
@@ -108,6 +114,60 @@ export class CallService {
       throw new ForbiddenError("CALL_BLOCKED");
     }
 
+    // Busy/conflict handling. Only GENUINELY-active calls block a new one: a
+    // call is active iff IN_PROGRESS, or RINGING and still within the ringing
+    // window (`initiatedAt >= freshCutoff`). A RINGING row older than that is a
+    // crashed/abandoned attempt about to be swept to MISSED — never "busy".
+    // This freshness bound is the guard against the old false-busy regression.
+    const now = new Date();
+    const freshCutoff = new Date(
+      now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
+    );
+
+    // (a) Self-cleanup: a new outgoing call means the caller abandoned any prior
+    // OUTGOING ring. Cancel the caller's own RINGING-as-caller rows so (1) the
+    // caller is never falsely "busy" on their own zombie call, and (2) the old
+    // callee's ring stops immediately instead of waiting for the sweep.
+    const ownRinging = await this.callRepo.findCallerRinging(params.callerId);
+    for (const stale of ownRinging) {
+      const { won } = await this.callRepo.claimStatusTransition(
+        stale.callId,
+        CallStatus.RINGING,
+        { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
+      );
+      if (!won) continue;
+      await this.redis
+        .publish(
+          `self:${stale.calleeId}`,
+          JSON.stringify({
+            event: "call:cancelled",
+            data: { callId: stale.callId },
+          })
+        )
+        .catch((err: unknown) =>
+          logger.warn(
+            `CallService|initiateCall|self-cleanup publish failed: ${String(err)}`
+          )
+        );
+    }
+
+    // (b) Busy gate — is either party genuinely active right now?
+    const active = await this.callRepo.findActiveByParticipant(
+      [params.callerId, params.calleeId],
+      freshCutoff
+    );
+    const calleeBusy = active.some(
+      (c) => c.callerId === params.calleeId || c.calleeId === params.calleeId
+    );
+    if (calleeBusy) throw new ConflictError("CALL_USER_BUSY");
+    const callerBusy = active.some(
+      (c) => c.callerId === params.callerId || c.calleeId === params.callerId
+    );
+    // Defense-in-depth: the caller's own client also guards against this, and
+    // self-cleanup above already cleared their outbound rings — reaching here
+    // means the caller is IN_PROGRESS or has a fresh INCOMING ring to handle.
+    if (callerBusy) throw new ConflictError("CALL_ALREADY_IN_CALL");
+
     const callId = randomUUID();
     const call = await this.callRepo.create({
       callId,
@@ -119,6 +179,35 @@ export class CallService {
       // normally omits privateRoomId and lets us derive it from the pair.
       privateRoomId: room.roomId,
     });
+
+    // Glare backstop: the true sub-latency A↔B race where both initiates pass
+    // gate (b) before either row is visible. After create, look for a reciprocal
+    // active call for this exact pair. Deterministic winner = lexicographically
+    // smaller callId; the loser cancels its own row and throws busy BEFORE
+    // publishing call:incoming — so it creates no client session and sends no
+    // stray ring, and the loser's caller (the winner's callee) still gets the
+    // winner's ring and can answer it. One call connects, deterministically.
+    // ponytail: residual — if both creates AND both reciprocal reads interleave
+    // sub-ms, neither sees the other and the 60s ring-timeout is the final
+    // backstop. Add a unique sorted-pair index only if this shows up in practice.
+    const reciprocal = await this.callRepo.findActiveBetween(
+      params.callerId,
+      params.calleeId,
+      call.callId,
+      freshCutoff
+    );
+    if (reciprocal && call.callId > reciprocal.callId) {
+      await this.callRepo.claimStatusTransition(
+        call.callId,
+        CallStatus.RINGING,
+        {
+          status: CallStatus.ENDED,
+          endedAt: now,
+          endedBy: params.callerId,
+        }
+      );
+      throw new ConflictError("CALL_USER_BUSY");
+    }
 
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
     // UI in parallel — all three are independent I/O.
