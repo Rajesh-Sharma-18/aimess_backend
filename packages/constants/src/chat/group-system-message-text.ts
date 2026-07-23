@@ -41,10 +41,37 @@ export function buildGroupSystemFallbackText(
       return `${actor} removed ${target}`;
 
     case "ROLE_CHANGED": {
-      const role = (data.newRole as string) || "a new role";
+      const newRole = (data.newRole as string) || "";
+      const oldRole = (data.oldRole as string) || "";
+      const rank: Record<string, number> = { MEMBER: 1, ADMIN: 2, OWNER: 3 };
+      const roleLabel = (r: string) => r.charAt(0) + r.slice(1).toLowerCase();
+
+      if (newRole === "OWNER") {
+        if (isActor) return `You made ${target} the group owner`;
+        if (isTarget) return `${actor} made you the group owner`;
+        return `${actor} made ${target} the group owner`;
+      }
+      if (oldRole && rank[oldRole] != null && rank[newRole] != null) {
+        const promoted = rank[newRole]! > rank[oldRole]!;
+        if (promoted) {
+          if (isTarget) return `${actor} promoted you to ${roleLabel(newRole)}`;
+          return `${actor} promoted ${target} to ${roleLabel(newRole)}`;
+        }
+        if (isTarget) return `${actor} demoted you to ${roleLabel(newRole)}`;
+        return `${actor} demoted ${target} to ${roleLabel(newRole)}`;
+      }
+      const role = newRole || "a new role";
       if (isTarget) return `${actor} changed your role to ${role}`;
       return `${actor} changed ${target}'s role to ${role}`;
     }
+
+    case "MESSAGE_PINNED":
+      if (isActor) return "You pinned a message";
+      return `${actor} pinned a message`;
+
+    case "MESSAGE_UNPINNED":
+      if (isActor) return "You unpinned a message";
+      return `${actor} unpinned a message`;
 
     case "ROOM_RENAMED": {
       const name = (data.newName as string) || "";

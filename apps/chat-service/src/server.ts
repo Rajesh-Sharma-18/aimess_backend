@@ -34,6 +34,7 @@ import { InboxService } from "./services/inbox.service.js";
 import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
+import { PrivateSystemMessageService } from "./services/private-system-message.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
 import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
@@ -352,12 +353,20 @@ const startServer = async () => {
       privateMessageReportRepo,
       getCommunityReconcileClient()
     );
+    const privateSystemMessageService = new PrivateSystemMessageService(
+      privateMessageRepo,
+      privateRoomRepo,
+      userSnapshotService,
+      cacheRepo,
+      redis
+    );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,
       privateMessageRepo,
       privateRoomRepo,
       cacheRepo,
-      userSnapshotService
+      userSnapshotService,
+      privateSystemMessageService
     );
 
     const groupSystemMessageService = new GroupSystemMessageService(
@@ -400,7 +409,8 @@ const startServer = async () => {
       groupRoomRepo,
       groupMemberRepo,
       cacheRepo,
-      userSnapshotService
+      userSnapshotService,
+      groupSystemMessageService
     );
 
     const notificationService = new NotificationService(

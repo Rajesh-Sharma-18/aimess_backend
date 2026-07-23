@@ -205,20 +205,26 @@ export class GroupRoomRepository {
       createdAt: Date;
     }
   ): Promise<GroupRoom | null> {
-    return this.prisma.groupRoom.update({
-      where: { roomId },
-      data: {
-        lastMessageId: String(message._id),
-        lastMessageAt: message.createdAt,
-        lastMessagePreview: {
-          text: message.content?.text || "",
-          senderId: message.senderId,
-          senderName: message.senderName,
-          messageType: message.messageType,
-          createdAt: message.createdAt,
+    // Bursty concurrent sends/system-messages all write this same document;
+    // retry the transient Mongo write-conflict (Prisma P2034) instead of
+    // silently dropping the lastActivity bump — same reasoning as
+    // allocateSequence/allocateRevision above.
+    return withWriteConflictRetry(() =>
+      this.prisma.groupRoom.update({
+        where: { roomId },
+        data: {
+          lastMessageId: String(message._id),
+          lastMessageAt: message.createdAt,
+          lastMessagePreview: {
+            text: message.content?.text || "",
+            senderId: message.senderId,
+            senderName: message.senderName,
+            messageType: message.messageType,
+            createdAt: message.createdAt,
+          },
         },
-      },
-    });
+      })
+    );
   }
 
   /**

@@ -2,12 +2,14 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import { env } from "../config/env.js";
 import { resolvePinsMedia } from "../lib/media-resolve.js";
+import { SystemEvent } from "../types/enums.js";
 import type { GroupMessagePinRepository } from "../repositories/group-message-pin.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
 export class GroupPinService {
@@ -17,7 +19,8 @@ export class GroupPinService {
     private readonly roomRepo: GroupRoomRepository,
     private readonly memberRepo: GroupMemberRepository,
     private readonly cacheRepo: CacheRepository,
-    private readonly userSnapshotService: UserSnapshotService
+    private readonly userSnapshotService: UserSnapshotService,
+    private readonly sysMsg: GroupSystemMessageService
   ) {}
 
   async pin(params: {
@@ -71,6 +74,14 @@ export class GroupPinService {
     });
 
     const updated = await this.roomRepo.incPinnedCount(roomId, 1);
+
+    await this.sysMsg.post({
+      roomId,
+      actorId: userId,
+      systemEvent: SystemEvent.MESSAGE_PINNED,
+      systemData: { messageId },
+    });
+
     return { pin, pinnedCount: updated?.pinnedCount || 0 };
   }
 
@@ -97,6 +108,14 @@ export class GroupPinService {
     if (!result.deletedCount) throw new NotFoundError("CHAT_PIN_NOT_FOUND");
 
     const updated = await this.roomRepo.incPinnedCount(roomId, -1);
+
+    await this.sysMsg.post({
+      roomId,
+      actorId: userId,
+      systemEvent: SystemEvent.MESSAGE_UNPINNED,
+      systemData: { messageId },
+    });
+
     return { pinnedCount: updated?.pinnedCount || 0 };
   }
 

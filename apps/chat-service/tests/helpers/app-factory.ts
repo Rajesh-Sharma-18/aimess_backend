@@ -29,6 +29,7 @@ import { InboxService } from "../../src/services/inbox.service.js";
 import { SyncService } from "../../src/services/sync.service.js";
 import { PrivateMessageService } from "../../src/services/private-message.service.js";
 import { PrivatePinService } from "../../src/services/private-pin.service.js";
+import { PrivateSystemMessageService } from "../../src/services/private-system-message.service.js";
 import { GroupRoomService } from "../../src/services/group-room.service.js";
 import { GroupSystemMessageService } from "../../src/services/group-system-message.service.js";
 import { GroupMessageService } from "../../src/services/group-message.service.js";
@@ -230,12 +231,20 @@ export function buildApp(): BuiltApp {
     privateMessageReportRepo,
     communityClient
   );
+  const privateSystemMessageService = new PrivateSystemMessageService(
+    privateMessageRepo,
+    privateRoomRepo,
+    userSnapshotService,
+    cacheRepo,
+    redis
+  );
   const privatePinService = new PrivatePinService(
     privateMessagePinRepo,
     privateMessageRepo,
     privateRoomRepo,
     cacheRepo,
-    userSnapshotService
+    userSnapshotService,
+    privateSystemMessageService
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(
@@ -278,7 +287,8 @@ export function buildApp(): BuiltApp {
     groupRoomRepo,
     groupMemberRepo,
     cacheRepo,
-    userSnapshotService
+    userSnapshotService,
+    groupSystemMessageService
   );
 
   const notificationService = new NotificationService(notificationRepo);

@@ -389,6 +389,14 @@ export class GroupMemberService {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
+    // Captured before the write so the system-message text can distinguish a
+    // promotion from a demotion (and an ownership transfer) instead of a
+    // generic "role changed to X" line.
+    const target = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.targetUserId
+    );
+
     const updated = await this.memberRepo.updateRole(
       params.roomId,
       params.targetUserId,
@@ -401,6 +409,7 @@ export class GroupMemberService {
       systemEvent: SystemEvent.ROLE_CHANGED,
       systemData: {
         targetUserId: params.targetUserId,
+        oldRole: target?.role ?? "",
         newRole: params.newRole,
       },
     });

@@ -15,6 +15,7 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
+import { systemMessageBumpsActivity } from "../lib/system-message-policy.js";
 
 export interface PostSystemMessageParams {
   roomId: string;
@@ -106,15 +107,19 @@ export class GroupSystemMessageService {
         sequenceNumber: seq,
       });
 
-      // Bump inbox order/preview (no unread increment).
-      await this.roomRepo.updateLastMessage(roomId, {
-        _id: message.id,
-        senderId: message.senderId ?? null,
-        senderName: message.senderName,
-        messageType: message.messageType,
-        content: { text },
-        createdAt: message.createdAt,
-      });
+      // Bump inbox order/preview (no unread increment) — gated per-subtype so
+      // membership churn (join/left/removed) can't reorder the list, matching
+      // Community's SYSTEM_MESSAGE_BUMPS_ACTIVITY.
+      if (systemMessageBumpsActivity(systemEvent)) {
+        await this.roomRepo.updateLastMessage(roomId, {
+          _id: message.id,
+          senderId: message.senderId ?? null,
+          senderName: message.senderName,
+          messageType: message.messageType,
+          content: { text },
+          createdAt: message.createdAt,
+        });
+      }
 
       if (
         shouldCountInUnread({
@@ -146,21 +151,25 @@ export class GroupSystemMessageService {
       // Inbox bump for every member — `message:new` above only reaches sockets
       // already joined to `conv:<roomId>`, which excludes anyone sitting on the
       // chats list. Community's system service does the same (§community-system
-      // -message.service.ts publishCommunityUpdatedSafe).
-      publishConvUpdatedSafe({
-        redis: this.redis,
-        type: "GROUP",
-        roomId,
-        fetchRecipients: async () =>
-          (await this.memberRepo.findActiveMembers(roomId, { limit: 500 })).map(
-            (m) => m.userId
-          ),
-        senderId: "",
-        lastMessageId: message.id,
-        lastMessageAt: sysServerTs,
-        preview: { contentType: "SYSTEM", text },
-        countInUnread: false,
-      });
+      // -message.service.ts publishCommunityUpdatedSafe). Gated the same as the
+      // DB write above — a non-bumping event (member left/removed, unpin, …)
+      // must not reorder the recipient's inbox either.
+      if (systemMessageBumpsActivity(systemEvent)) {
+        publishConvUpdatedSafe({
+          redis: this.redis,
+          type: "GROUP",
+          roomId,
+          fetchRecipients: async () =>
+            (
+              await this.memberRepo.findActiveMembers(roomId, { limit: 500 })
+            ).map((m) => m.userId),
+          senderId: "",
+          lastMessageId: message.id,
+          lastMessageAt: sysServerTs,
+          preview: { contentType: "SYSTEM", text },
+          countInUnread: false,
+        });
+      }
 
       this.redis
         .publish(
