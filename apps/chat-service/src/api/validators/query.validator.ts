@@ -196,7 +196,7 @@ export const communityTimelineQuerySchema = z
  * - `cursor`     : older page — messages strictly older than the token, newest-first.
  * - `before_ts`  : migration alias for `cursor` (accepts the same compound token).
  * - `after_ts`   : newer placement page (forward paging).
- * - `around`     : jump-to-message window (returns `<ms>_<id>` continuation cursors).
+ * - `around`     : timestamp-anchored jump window (returns cursors for `before_ts`/`after_ts`).
  * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset. Ignored
  *   until a seq backfill has run (`sequenceNumber > 0`); clients should prefer
  *   the opaque `cursor` unless they know the room is backfilled.
@@ -206,6 +206,11 @@ export const communityTimelineQuerySchema = z
 export const communityTimelineV2QuerySchema = z
   .object({
     cursor: compoundTsCursor.optional(),
+    // Canonical V2 names — identical contract to private/group, so ONE client paging path
+    // covers all three. `before_ts`/`after_ts` below are DEPRECATED aliases kept only so
+    // already-shipped iOS/web builds keep working; new clients must send *_cursor.
+    before_cursor: compoundTsCursor.optional(),
+    after_cursor: compoundTsCursor.optional(),
     before_ts: compoundTsCursor.optional(),
     after_ts: compoundTsCursor.optional(),
     before_seq: z.coerce.number().int().min(0).optional(),

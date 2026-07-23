@@ -335,14 +335,22 @@ export class CommunityMessageController {
       // DEFAULT: opaque compound `(createdAt, id)` cursor. `cursor`/`before_ts`
       // page OLDER (scroll-up); `after_ts` pages newer. Both carry the opaque
       // `<ms>_<id>` token (a bare epoch-ms is also accepted for a coarse jump).
+      // Canonical V2 names first (before_cursor/after_cursor — identical to private/group), then
+      // the deprecated cursor/before_ts/after_ts aliases for already-shipped clients.
       const rawOlder =
-        req.query.cursor != null
-          ? String(req.query.cursor)
-          : req.query.before_ts != null
-            ? String(req.query.before_ts)
-            : undefined;
+        req.query.before_cursor != null
+          ? String(req.query.before_cursor)
+          : req.query.cursor != null
+            ? String(req.query.cursor)
+            : req.query.before_ts != null
+              ? String(req.query.before_ts)
+              : undefined;
       const rawNewer =
-        req.query.after_ts != null ? String(req.query.after_ts) : undefined;
+        req.query.after_cursor != null
+          ? String(req.query.after_cursor)
+          : req.query.after_ts != null
+            ? String(req.query.after_ts)
+            : undefined;
       const raw = rawNewer ?? rawOlder;
       const direction = rawNewer != null ? "after" : "before";
 
@@ -370,10 +378,10 @@ export class CommunityMessageController {
 
     // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
     // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
-    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursors are plain seq
-    // strings: olderCursor → before_seq, newerCursor → after_seq. Both the
-    // seq-keyset and opaque-cursor branches share the same core (see
-    // `getTimelinePageShared`), so `cursors`/`roomRevision` are always present.
+    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursor format follows
+    // the selected axis: explicit seq pages return seq strings; the default
+    // timestamp branch returns opaque `(createdAt,id)` tokens. Both branches
+    // share the same core, so `cursors`/`roomRevision` are always present.
     const paginated = {
       ...buildTimelineResponse(
         result.items as unknown as Record<string, unknown>[],
