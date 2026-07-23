@@ -3,6 +3,7 @@ import type { Redis, Cluster } from "ioredis";
 
 import {
   buildGroupSystemFallbackText,
+  resolveGroupSystemSubjectUserId,
   resolvePersonDisplayName,
 } from "@aimess/constants";
 import type { SystemEvent } from "../types/enums.js";
@@ -155,6 +156,17 @@ export class GroupSystemMessageService {
       // DB write above — a non-bumping event (member left/removed, unpin, …)
       // must not reorder the recipient's inbox either.
       if (systemMessageBumpsActivity(systemEvent)) {
+        // The subject member's own list row should read "You were added" /
+        // "Alex promoted you to admin" rather than the shared third-person
+        // line — mirrors Community's subjectUserId/selfPreview personalization.
+        const subjectUserId = resolveGroupSystemSubjectUserId(
+          systemEvent,
+          systemData
+        );
+        const selfPreview = subjectUserId
+          ? buildGroupSystemFallbackText(systemEvent, systemData, subjectUserId)
+          : undefined;
+
         publishConvUpdatedSafe({
           redis: this.redis,
           type: "GROUP",
@@ -168,6 +180,9 @@ export class GroupSystemMessageService {
           lastMessageAt: sysServerTs,
           preview: { contentType: "SYSTEM", text },
           countInUnread: false,
+          ...(subjectUserId && selfPreview
+            ? { subjectUserId, selfPreview }
+            : {}),
         });
       }
 

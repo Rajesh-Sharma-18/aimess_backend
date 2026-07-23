@@ -99,6 +99,26 @@ export function buildGroupSystemFallbackText(
   }
 }
 
+/**
+ * Member whose inbox-list bump preview should read "You …" instead of the
+ * third-person line — mirrors `resolveCommunitySystemSubjectUserId`. Only the
+ * events where the target's own perspective actually differs from everyone
+ * else's need an entry; every other event bumps with the shared text as-is.
+ */
+export function resolveGroupSystemSubjectUserId(
+  event: string,
+  data: Record<string, unknown>
+): string | null {
+  const targetId = String(data.targetUserId ?? "").trim();
+  switch (event) {
+    case "MEMBER_ADDED":
+    case "ROLE_CHANGED":
+      return targetId || null;
+    default:
+      return null;
+  }
+}
+
 /** Personalize a persisted third-person group SYSTEM line for one viewer. */
 export function personalizeGroupSystemMessageForViewer(
   event: string,
