@@ -292,10 +292,6 @@ export class CommunityRoomSyncConsumer {
             const boundary = event.data.eventAt
               ? new Date(event.data.eventAt)
               : undefined;
-            // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
-            logger.info(
-              `[JOIN-TRACE] delete-cleanup (LEAVE path) START community=${communityId} user=${userId} boundary=${boundary?.toISOString() ?? "none"} ts=${Date.now()}`
-            );
             const deletedIds = await this.messageRepo
               .deletePersonalJoinMessages({
                 roomId: communityId,
@@ -311,10 +307,6 @@ export class CommunityRoomSyncConsumer {
                 );
                 return [] as string[];
               });
-            // [JOIN-TRACE]
-            logger.info(
-              `[JOIN-TRACE] delete-cleanup (LEAVE path) DONE community=${communityId} user=${userId} deletedIds=${JSON.stringify(deletedIds)} ts=${Date.now()}`
-            );
             if (deletedIds.length > 0) {
               logger.debug(
                 `member.synced join-cleanup: removed ${deletedIds.length} personal join line(s) community=${communityId} user=${userId}`
@@ -327,10 +319,6 @@ export class CommunityRoomSyncConsumer {
                   scope: "forEveryone",
                   deletedBy: "",
                 });
-                // [JOIN-TRACE]
-                logger.info(
-                  `[JOIN-TRACE] delete PUBLISH (LEAVE path) messageId=${messageId} community=${communityId} user=${userId} channel=user:${userId} payload=${JSON.stringify(tombstone)} ts=${Date.now()}`
-                );
                 await redis
                   .publish(
                     `user:${userId}`,
