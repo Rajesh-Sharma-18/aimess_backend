@@ -82,6 +82,12 @@ export interface PushInput {
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
   priority?: "high" | "normal";
   /**
+   * Data-only push: omit the FCM `notification` block so the OS doesn't draw a
+   * tray notification and the app is woken to own the UI (full-screen call
+   * intent). Required for the call ring/cancel wake on a killed Android app.
+   */
+  dataOnly?: boolean;
+  /**
    * When true, skip the notification-settings/quiet-hours gate entirely.
    * Use ONLY for non-toggleable critical events (kick, ban, delete, calls).
    * Inbox row is still persisted; FCM is still sent.
@@ -145,6 +151,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     bypassSettings = false,
     showPreviewOverride,
     skipInbox = false,
+    dataOnly = false,
   } = input;
 
   let body = input.body;
@@ -251,6 +258,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
         collapseKey,
         ttl,
         priority,
+        dataOnly,
       });
       if (result.invalidToken) {
         try {

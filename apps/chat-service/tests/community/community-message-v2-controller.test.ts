@@ -179,7 +179,8 @@ describe("getMessagesV2 — param routing", () => {
     expect(res.status).toHaveBeenCalledWith(200);
     const body = res.json.mock.calls[0]![0];
     expect(body.data.pinnedMessage).toEqual({ id: "pin-1" });
-    expect(body.data.roomRevision).toBe(215);
+    // Ordinary pages carry the revision returned by the timeline read itself.
+    expect(body.data.roomRevision).toBe(261);
   });
 
   it("ordinary page carries bidirectional continuation + roomRevision (Gap B)", async () => {

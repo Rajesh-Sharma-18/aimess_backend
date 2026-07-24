@@ -19,6 +19,10 @@ import type {
 } from "./call-chat-message.service.js";
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import {
+  publishCallRingingSafe,
+  publishCallCancelSafe,
+} from "../events/publish-call-ringing.js";
 import { CallStatus, CallType } from "../types/enums.js";
 
 /**
@@ -254,6 +258,18 @@ export class CallService {
         );
       });
 
+    publishCallRingingSafe({
+      calleeId: params.calleeId,
+      callId,
+      callerId: params.callerId,
+      callerName: callerSnapshot.displayName,
+      callerAvatarUrl: callerSnapshot.avatarUrl,
+      callType: params.type || CallType.AUDIO,
+      livekitUrl: calleeCreds.url,
+      token: calleeCreds.token,
+      sentAt: now.getTime(),
+    });
+
     return { ...call, livekit: callerCreds };
   }
 
@@ -307,6 +323,12 @@ export class CallService {
         }),
       this.publishCallHandled(params.calleeId, params.callId),
     ]);
+
+    publishCallCancelSafe({
+      calleeId: params.calleeId,
+      callId: params.callId,
+      reason: "answered_elsewhere",
+    });
 
     return updated;
   }
@@ -362,6 +384,12 @@ export class CallService {
         }),
       this.publishCallHandled(params.calleeId, params.callId),
     ]);
+
+    publishCallCancelSafe({
+      calleeId: params.calleeId,
+      callId: params.callId,
+      reason: "declined",
+    });
 
     return updated;
   }
@@ -452,6 +480,12 @@ export class CallService {
             `CallService|endCall|cancel publish failed: ${String(err)}`
           );
         });
+
+      publishCallCancelSafe({
+        calleeId: call.calleeId,
+        callId: params.callId,
+        reason: "ended",
+      });
     } else {
       await this.redis
         .publish(
@@ -555,6 +589,11 @@ export class CallService {
             )
           ),
       ]);
+      publishCallCancelSafe({
+        calleeId: call.calleeId,
+        callId: call.callId,
+        reason: "missed",
+      });
       await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
     }
     if (flipped > 0) {
