@@ -155,6 +155,9 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 // --- RabbitMQ: community chat publishers (key for system-message tests) ---
 jest.mock("../../src/messaging/publish-community-chat.js", () => ({
   publishCommunitySystemMessageForChatSafe: jest.fn(),
+  publishCommunitySystemMessageForChatAwaited: jest
+    .fn()
+    .mockResolvedValue(undefined),
   publishCommunityCreatedForChatSafe: jest.fn(),
   publishCommunityDeletedForChatSafe: jest.fn(),
   publishCommunityInviteLinkSharedForChatSafe: jest.fn(),

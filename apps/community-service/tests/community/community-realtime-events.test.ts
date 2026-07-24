@@ -78,7 +78,10 @@ import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { publishCommunityMemberLeftSafe } from "../../src/messaging/publish-community.js";
-import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import {
+  publishCommunitySystemMessageForChatSafe,
+  publishCommunitySystemMessageForChatAwaited,
+} from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -89,6 +92,8 @@ const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
 const pubUserEvent = publishChatUserEvent as jest.Mock;
 const pubMemberLeft = publishCommunityMemberLeftSafe as jest.Mock;
 const pubSysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+const pubSysMsgAwaited =
+  publishCommunitySystemMessageForChatAwaited as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -150,6 +155,7 @@ beforeEach(() => {
   pubUserEvent.mockClear();
   pubMemberLeft.mockClear();
   pubSysMsg.mockClear();
+  pubSysMsgAwaited.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -305,12 +311,13 @@ describe("banMember — real-time broadcasts", () => {
     expect(pubRoomEvent).not.toHaveBeenCalled();
   });
 
-  it("posts a MEMBER_BANNED chat system message (visible moderation — Telegram parity)", async () => {
+  it("posts a MEMBER_BANNED chat system message (PERSONAL — visible only to the banned user), via the AWAITED publish", async () => {
     await communityService.banMember(CID, ADMIN, TARGET, "spam");
 
-    // MEMBER_BANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES — a ban is shown in the
-    // chat timeline to all members (Telegram parity).
-    const postedTypes = pubSysMsg.mock.calls.map(
+    // MEMBER_BANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES, so it's always
+    // posted. It rides the AWAITED variant (not the fire-and-forget Safe one)
+    // so the enqueue is confirmed before eviction/ban-notice events fire.
+    const postedTypes = pubSysMsgAwaited.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
     expect(postedTypes).toContain("MEMBER_BANNED");

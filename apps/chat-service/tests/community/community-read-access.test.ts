@@ -743,6 +743,34 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     expect(match.systemMessageType).toBeUndefined();
   });
 
+  it("findLatestPersonalByRooms surfaces the banned user's own MEMBER_BANNED row — a ban IS the true latest activity visible to them (product decision)", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([
+      {
+        _id: { $oid: ROOM_ID },
+        message: "You were banned from this community",
+        createdAt: {},
+      },
+    ]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const map = await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [ROOM_ID],
+    });
+
+    // No type filter blocks MEMBER_BANNED — it's persisted with
+    // visibleToUserId set (never hidden), so it's eligible like any other
+    // PERSONAL row. unbanMember hard-deletes it (purgeAndTombstone), which is
+    // what stops it from winning here again after unban — not a query-level
+    // exclusion.
+    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    expect(match.systemMessageType).toBeUndefined();
+    expect(map.get(ROOM_ID)?.message).toBe(
+      "You were banned from this community"
+    );
+  });
+
   it("bulk unread count excludes ALL system messages (any systemMessageType) via $in:[null]", async () => {
     const aggregateRaw = jest.fn().mockResolvedValue([]);
     const prisma = { generalRoomMessage: { aggregateRaw } };

@@ -1103,6 +1103,14 @@ export class GeneralRoomMessageRepository {
             // excluded — they're already covered by room.lastMessage).
             visibleToUserId: params.userId,
             deletedBy: { $ne: params.userId },
+            // No type filter — MEMBER_MUTED/MEMBER_UNMUTED/MEMBER_BANNED etc. all
+            // surface here like any other PERSONAL line. A banned user's own
+            // "You were banned from this community" line is INTENDED to become
+            // their lastActivity overlay (product decision — it's the true latest
+            // event visible to them). unbanMember hard-deletes this row (see
+            // purgeAndTombstone(["MEMBER_BANNED"]) in community-room-sync.consumer.ts)
+            // so it naturally stops winning here once unbanned, falling back to
+            // the next-latest personal row or the shared base lastActivity.
           },
         },
         { $sort: { createdAt: -1 } },

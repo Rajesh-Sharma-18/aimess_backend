@@ -24,7 +24,10 @@ import {
   publishCommunityMemberBannedSafe,
   publishCommunityMemberLeftSafe,
 } from "../../src/messaging/publish-community.js";
-import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import {
+  publishCommunitySystemMessageForChatSafe,
+  publishCommunitySystemMessageForChatAwaited,
+} from "../../src/messaging/publish-community-chat.js";
 import { fetchUserSnapshots } from "../../src/lib/user-client.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
@@ -33,6 +36,8 @@ const pubUserEvent = publishChatUserEvent as jest.Mock;
 const pubBanned = publishCommunityMemberBannedSafe as jest.Mock;
 const pubMemberLeft = publishCommunityMemberLeftSafe as jest.Mock;
 const pubSysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+const pubSysMsgAwaited =
+  publishCommunitySystemMessageForChatAwaited as jest.Mock;
 
 const CID = "c".repeat(24);
 const ADMIN = "11111111-1111-4111-8111-111111111111";
@@ -164,6 +169,27 @@ describe("banMember — reuses the leave removal core (architecture requirement)
         actorId: ADMIN,
       })
     );
+  });
+
+  it("enqueues the MEMBER_BANNED system message BEFORE evicting the socket / notifying the target — narrows the race where 'you're banned' could reach the client ahead of their final system message", async () => {
+    await communityService.banMember(CID, ADMIN, TARGET);
+
+    expect(pubSysMsgAwaited).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: CID,
+        systemMessageType: "MEMBER_BANNED",
+        visibleToUserId: TARGET,
+      })
+    );
+    // Jest tracks a monotonic invocation order across ALL mocks — use it to
+    // pin that the (awaited) system-message enqueue lands before the
+    // eviction (community:member:removed) and ban-notice
+    // (community:membership:restricted) Redis publishes fire.
+    const sysMsgOrder = pubSysMsgAwaited.mock.invocationCallOrder[0]!;
+    const evictOrder = pubRoomEvent.mock.invocationCallOrder[0]!;
+    const restrictedOrder = pubUserEvent.mock.invocationCallOrder[0]!;
+    expect(sysMsgOrder).toBeLessThan(evictOrder);
+    expect(sysMsgOrder).toBeLessThan(restrictedOrder);
   });
 
   it("resets role to MEMBER in the same write, so a banned MODERATOR can never have rank restored on a later reactivation", async () => {
