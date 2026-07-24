@@ -156,6 +156,7 @@ import {
   publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
+  publishCommunitySystemMessageForChatAwaited,
   publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
@@ -3182,6 +3183,28 @@ export const communityService = {
       return toMemberData(target);
     }
 
+    // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
+    // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
+    // themselves gets a private "You were banned from this community." line
+    // in their own history (Telegram parity). Enqueued and AWAITED here,
+    // BEFORE removeActiveMember below fires the client-facing eviction
+    // (community:member:removed) and ban-notice (community:membership:
+    // restricted, isBanned:true) events. Those are near-instant Redis
+    // publishes; this system message is consumed async by chat-service over
+    // RabbitMQ, so publishing it first (and confirming the broker has it)
+    // narrows the window where a client could render "you're banned" before
+    // the system message / their final personal-channel state arrives.
+    // MEMBER_BANNED is never a hidden type, so this always reaches the
+    // target via visibleToUserId.
+    await publishCommunitySystemMessageForChatAwaited({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      metadata: { targetUserId },
+      triggeredByUserId: callerId,
+      eventAt: new Date().toISOString(),
+      visibleToUserId: targetUserId,
+    });
+
     // Ban = automatic leave: reuse the same removal core as leaveCommunity
     // (status flip, memberCount recompute, audit, socket eviction via
     // community:member:removed, and community-list drop via
@@ -3226,19 +3249,6 @@ export const communityService = {
       reason: reason ?? null,
       communityName: community.name,
       communityAvatarUrl: bannedCommunityAvatar?.url ?? null,
-    });
-    // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
-    // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
-    // themselves gets a private "You were banned from this community." line
-    // in their own history (Telegram parity). emitMemberSystemMessage() is a
-    // no-op for hidden types and MEMBER_BANNED isn't one, so this only ever
-    // reaches the target via visibleToUserId.
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_BANNED",
-      actorId: callerId,
-      targetUserId,
-      visibleToUserId: targetUserId,
     });
 
     // Best-effort: kick the target from any of their currently-LIVE stream

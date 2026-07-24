@@ -25,8 +25,8 @@ rtc:
   # Docker publishes UDP 50000-50100 + TCP 7881 to the host; Windows Firewall
   # must allow inbound UDP 50000-50100 for other machines to reach media.
   use_external_ip: false
-  # node_ip: 13.203.130.146
-  node_ip: 10.0.127.227
+  node_ip: 13.203.130.146
+  # node_ip: 10.0.127.227
   # node_ip: 10.0.127.212
 
 redis:

@@ -33,19 +33,25 @@ async function getChannel(): Promise<amqp.Channel> {
   return channelPromise;
 }
 
+async function publishRaw(
+  type: string,
+  data: unknown,
+  label: string
+): Promise<void> {
+  try {
+    const channel = await getChannel();
+    channel.sendToQueue(QUEUE, Buffer.from(JSON.stringify({ type, data })), {
+      persistent: true,
+    });
+  } catch (error) {
+    channelPromise = null;
+    logger.error(`Failed to publish ${label}`);
+    logger.error(error);
+  }
+}
+
 function publishSafe(type: string, data: unknown, label: string): void {
-  void (async () => {
-    try {
-      const channel = await getChannel();
-      channel.sendToQueue(QUEUE, Buffer.from(JSON.stringify({ type, data })), {
-        persistent: true,
-      });
-    } catch (error) {
-      channelPromise = null;
-      logger.error(`Failed to publish ${label}`);
-      logger.error(error);
-    }
-  })();
+  void publishRaw(type, data, label);
 }
 
 export interface CommunityCreatedForChat {
@@ -247,6 +253,25 @@ export function publishCommunitySystemMessageForChatSafe(
   data: CommunitySystemMessageForChat
 ): void {
   publishSafe(
+    "community.system_message",
+    data,
+    "community.system_message (chat-sync)"
+  );
+}
+
+/**
+ * Same as `publishCommunitySystemMessageForChatSafe`, but awaited — for the
+ * one caller (ban) that needs the enqueue to land BEFORE it fires the
+ * client-facing eviction/ban-notice events, narrowing the race where the
+ * near-instant `community:membership:restricted` Redis publish otherwise
+ * reaches the banned user before their MEMBER_BANNED system message (queued
+ * here, consumed async by chat-service) does. Still never throws — a publish
+ * failure is logged and swallowed, exactly like the fire-and-forget variant.
+ */
+export async function publishCommunitySystemMessageForChatAwaited(
+  data: CommunitySystemMessageForChat
+): Promise<void> {
+  await publishRaw(
     "community.system_message",
     data,
     "community.system_message (chat-sync)"
