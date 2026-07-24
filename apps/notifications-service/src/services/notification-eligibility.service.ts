@@ -34,8 +34,11 @@ export async function isCommunityActorMuted(
  * True when `recipientId` wants pushes of `field` from `communityId` — the
  * recipient's own per-community notification-preference toggle (distinct
  * from `isCommunityActorMuted`, which gates on the *sender's* moderation
- * mute). Fail-open: an oracle outage resolves to "enabled" so a preference
- * check outage never suppresses a notification.
+ * mute). Also requires an ACTIVE community membership: LEFT / BANNED /
+ * PENDING / missing members always resolve to false so they never receive
+ * community FCM or inbox pushes. Fail-open: an oracle outage resolves to
+ * "enabled" so a preference/membership check outage never suppresses a
+ * notification.
  */
 export async function isCommunityNotificationEnabled(
   recipientId: string,

@@ -259,6 +259,18 @@ export class PrivateMessageService {
       })
     ).length;
 
+    // The room row is pre-provisioned (empty, no lastMessageAt) as soon as two
+    // users become friends (see PrivateRoomService.getOrCreateRoom), so THIS is
+    // the actual "conversation just became visible" moment for both clients —
+    // not room creation, which already fired its own `conv:created` too early
+    // (before either client's friend-suggestion/inbox UI had anything to react
+    // to). Snapshot the pre-update state so we can tell the very first message
+    // apart from every later one.
+    const roomBefore = await this.roomRepo
+      .findByRoomId(params.roomId)
+      .catch(() => null);
+    const isFirstMessage = !roomBefore?.lastMessageAt;
+
     // Update room with last message; unread += one per persisted row.
     this.roomRepo
       .updateRoomOnNewMessage({
@@ -274,6 +286,23 @@ export class PrivateMessageService {
         },
         receiverId: params.receiverId,
         unreadIncrement,
+      })
+      .then(() => {
+        if (!isFirstMessage || !this.redis) return;
+        // Tell both participants a real conversation now exists — lets the
+        // frontend drop the "friend suggestion" placeholder and insert the
+        // room into the conversation list without a manual refresh.
+        const payload = JSON.stringify({
+          event: "conv:created",
+          data: {
+            roomId: params.roomId,
+            participants: [params.senderId, params.receiverId],
+          },
+        });
+        this.redis!.publish(`user:${params.senderId}`, payload).catch(() => {});
+        this.redis!.publish(`user:${params.receiverId}`, payload).catch(
+          () => {}
+        );
       })
       .catch((err: unknown) => {
         logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);

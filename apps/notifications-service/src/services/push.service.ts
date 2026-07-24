@@ -61,6 +61,20 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_BANNED,
 ]);
 
+/**
+ * Notification types that intentionally target a non-ACTIVE recipient for a
+ * community (invitee, rejected join requester, unbanned former member). The
+ * community preference/membership oracle would return enabled=false for them,
+ * so these skip that gate while still honoring global settings/quiet-hours.
+ * Kick/ban/delete use `bypassSettings` instead (critical, non-toggleable).
+ */
+const COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES = new Set<string>([
+  CommunityEvents.JOIN_REQUEST_APPROVED,
+  CommunityEvents.JOIN_REQUEST_REJECTED,
+  CommunityEvents.INVITE_SENT,
+  CommunityEvents.MEMBER_UNBANNED,
+]);
+
 export interface PushInput {
   userId: string;
   category: NotificationCategory;
@@ -173,10 +187,13 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
-  // Per-community notification-preference gate (Chat/Community/Live Stream
-  // toggles on the community's own mute-setting row) — independent of, and
-  // in addition to, the global per-category settings check above.
-  if (!bypassSettings) {
+  // Per-community notification-preference + ACTIVE-membership gate
+  // (Chat/Community/Live Stream toggles on the community's own mute-setting
+  // row, and membership must be ACTIVE). Independent of, and in addition to,
+  // the global per-category settings check above. Lifecycle events that
+  // intentionally target non-members (invites, join decisions, unban) skip
+  // this gate via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
+  if (!bypassSettings && !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)) {
     const communityId = data?.communityId;
     const prefField =
       input.communityPrefField ?? defaultCommunityPrefField(category);
@@ -189,7 +206,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
         );
         if (!enabled) {
           logger.info(
-            `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+            `Notification suppressed by community preference/membership: user=${userId} community=${communityId} field=${prefField} type=${type}`
           );
           return;
         }

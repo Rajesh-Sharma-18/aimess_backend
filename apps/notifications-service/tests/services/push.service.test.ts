@@ -1,8 +1,9 @@
 /**
  * push.service.ts — verifies the `skipInbox` flag (Notification Center is
  * business-events-only; chat-activity pushes must skip the inbox write but
- * still send FCM), and that `NOTIFY_SUPPRESSED_TYPES` no longer swallows
- * JOIN_REQUEST_REJECTED / MEMBER_UNBANNED / LIVESTREAM_STARTED.
+ * still send FCM), that `NOTIFY_SUPPRESSED_TYPES` no longer swallows
+ * JOIN_REQUEST_REJECTED / MEMBER_UNBANNED / LIVESTREAM_STARTED, and that
+ * non-ACTIVE community members are blocked from community FCM/inbox pushes.
  */
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
@@ -28,14 +29,17 @@ jest.mock("../../src/grpc/user-settings.client.js", () => ({
 
 import { CommunityEvents } from "@aimess/shared-types";
 
+import { communityClient } from "../../src/grpc/community.client.js";
 import { pushToUser } from "../../src/services/push.service.js";
 import { sendPush } from "../../src/providers/firebase/sendPush.js";
 
 const chatNotificationClient = mockChatNotificationClient;
 const userSettingsClient = mockUserSettingsClient;
 const send = sendPush as unknown as jest.Mock;
+const checkPref = communityClient.checkCommunityNotificationPref as jest.Mock;
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
+const COMMUNITY_ID = "a".repeat(24);
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -53,6 +57,7 @@ beforeEach(() => {
     quietHoursDays: [],
   });
   send.mockResolvedValue({ invalidToken: false });
+  checkPref.mockResolvedValue({ enabled: true });
 });
 
 describe("pushToUser — skipInbox", () => {
@@ -103,7 +108,7 @@ describe("pushToUser — NOTIFY_SUPPRESSED_TYPES", () => {
     CommunityEvents.MEMBER_UNBANNED,
     CommunityEvents.LIVESTREAM_STARTED,
   ])(
-    "no longer suppresses %s — inbox + push both fire (Notification Center requirement)",
+    "no longer suppresses %s — push still fires (Notification Center requirement)",
     async (type) => {
       await pushToUser({
         userId: USER_ID,
@@ -113,9 +118,70 @@ describe("pushToUser — NOTIFY_SUPPRESSED_TYPES", () => {
         body: "y",
       });
 
-      expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(
-        1
-      );
+      expect(send).toHaveBeenCalledTimes(1);
+    }
+  );
+});
+
+describe("pushToUser — ACTIVE community membership gate", () => {
+  it("suppresses FCM when the community pref/membership oracle returns enabled=false", async () => {
+    checkPref.mockResolvedValue({ enabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "communityEnabled",
+      type: "MESSAGE",
+      title: "Community",
+      body: "Hi!",
+      skipInbox: true,
+      communityPrefField: "chatEnabled",
+      data: { communityId: COMMUNITY_ID },
+    });
+
+    expect(checkPref).toHaveBeenCalledWith({
+      communityId: COMMUNITY_ID,
+      userId: USER_ID,
+      field: "chatEnabled",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("still sends FCM for ACTIVE members when oracle returns enabled=true", async () => {
+    checkPref.mockResolvedValue({ enabled: true });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "communityEnabled",
+      type: "MESSAGE",
+      title: "Community",
+      body: "Hi!",
+      skipInbox: true,
+      communityPrefField: "chatEnabled",
+      data: { communityId: COMMUNITY_ID },
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    CommunityEvents.INVITE_SENT,
+    CommunityEvents.JOIN_REQUEST_REJECTED,
+    CommunityEvents.MEMBER_UNBANNED,
+  ])(
+    "skips the membership gate for lifecycle type %s (non-member recipient)",
+    async (type) => {
+      checkPref.mockResolvedValue({ enabled: false });
+
+      await pushToUser({
+        userId: USER_ID,
+        category: "communityEnabled",
+        type,
+        title: "x",
+        body: "y",
+        data: { communityId: COMMUNITY_ID },
+      });
+
+      expect(checkPref).not.toHaveBeenCalled();
       expect(send).toHaveBeenCalledTimes(1);
     }
   );

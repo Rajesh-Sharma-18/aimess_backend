@@ -782,6 +782,8 @@ message CheckCommunityMuteRequest  { string community_id = 1; string user_id = 2
 message CheckCommunityMuteResponse { bool is_muted = 1; int64 muted_until = 2; } // epoch ms; 0 = indefinite or not muted
 
 // field: one of "chatEnabled" | "streamEnabled" | "announcementEnabled".
+// enabled is false when the user is not an ACTIVE community member (LEFT /
+// BANNED / PENDING / no row), regardless of any stored preference toggles.
 message CheckCommunityNotificationPrefRequest  { string community_id = 1; string user_id = 2; string field = 3; }
 message CheckCommunityNotificationPrefResponse { bool enabled = 1; }
 
