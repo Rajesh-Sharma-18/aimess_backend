@@ -328,3 +328,76 @@ describe("CallService.initiateCall busy gate", () => {
     );
   });
 });
+
+describe("CallService.initiateCall — platform-wide calling kill-switch", () => {
+  /** Same stubs as `buildService`, plus an injectable `callFlags` (arg 9). */
+  function buildWithFlags(isCallingEnabled: jest.Mock): {
+    service: CallService;
+    stubs: Stubs;
+  } {
+    const { stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    const service = new CallService(
+      stubs.callRepo as never,
+      stubs.privateRoomRepo as never,
+      stubs.redis as never,
+      stubs.livekit as never,
+      stubs.friendshipRepo as never,
+      stubs.getCallPrivacy,
+      stubs.getUserSnapshot,
+      undefined,
+      { isCallingEnabled } as never
+    );
+    return { service, stubs };
+  }
+
+  it("DISABLED: calling switched off → CALLING_DISABLED before any other gate runs", async () => {
+    const { service, stubs } = buildWithFlags(
+      jest.fn().mockResolvedValue(false)
+    );
+
+    await expect(service.initiateCall(params)).rejects.toThrow(
+      /CALLING_DISABLED/
+    );
+    // Gate 0 short-circuits everything downstream — no friendship/privacy
+    // lookup, no call row, no LiveKit token minted.
+    expect(stubs.friendshipRepo.areFriends).not.toHaveBeenCalled();
+    expect(stubs.getCallPrivacy).not.toHaveBeenCalled();
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+    expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
+  });
+
+  it("ENABLED: calling switched on → call proceeds normally", async () => {
+    const { service, stubs } = buildWithFlags(
+      jest.fn().mockResolvedValue(true)
+    );
+
+    const result = await service.initiateCall(params);
+
+    expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("FAIL-OPEN: a flag service that resolves true on error never blocks calls", async () => {
+    // CallFlagService.isCallingEnabled swallows its own errors and returns
+    // true; this asserts CallService honours that contract rather than
+    // treating a degraded flag lookup as "disabled".
+    const { service, stubs } = buildWithFlags(
+      jest.fn().mockResolvedValue(true)
+    );
+
+    await expect(service.initiateCall(params)).resolves.toMatchObject({
+      livekit: { url: "ws://livekit", token: "tk" },
+    });
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("BACKWARD-COMPAT: no flag service injected → calling enabled", async () => {
+    // Every pre-existing call site constructs CallService without arg 9.
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+
+    await expect(service.initiateCall(params)).resolves.toMatchObject({
+      livekit: { url: "ws://livekit", token: "tk" },
+    });
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+});

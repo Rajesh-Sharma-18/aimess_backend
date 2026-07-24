@@ -41,6 +41,8 @@ import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
+import type { CallFlagService } from "../services/call-flag.service.js";
+import type { CallAnalyticsRepository } from "../repositories/call-analytics.repository.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
@@ -136,6 +138,10 @@ export interface GrpcDeps {
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
   callService: CallService;
+  /** Admin call analytics + health counters (backoffice has no DB access). */
+  callAnalyticsRepo: CallAnalyticsRepository;
+  /** Platform-wide calling kill-switch, read/written by the admin panel. */
+  callFlagService: CallFlagService;
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
@@ -1942,6 +1948,91 @@ export function createMessagingImpl(
         } catch (err) {
           logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Calling: aggregate call stats over an optional date range. The
+    // `calls` collection lives in chat-service's DB, so this RPC is the only
+    // way the admin panel can see it.
+    adminGetCallAnalytics: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { fromDate?: string; toDate?: string };
+          const result = await deps.callAnalyticsRepo.getAnalytics({
+            from: parseAdminDate(req.fromDate) ?? null,
+            to: parseAdminDate(req.toDate) ?? null,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminGetCallAnalytics error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Admin Calling: live health counters. Doubles as the backoffice health
+    // probe's ping, so it must stay cheap (two counts).
+    adminGetCallHealth: (
+      _call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const result = await deps.callAnalyticsRepo.getHealth();
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminGetCallHealth error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Admin Calling: read the platform-wide kill-switch. Uncached read so the
+    // admin panel always shows the persisted truth, not a node's cached view.
+    adminGetCallingEnabled: (
+      _call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const state = await deps.callFlagService.getState();
+          callback(null, {
+            enabled: state.enabled,
+            updatedBy: state.updatedBy ?? "",
+            updatedAt: state.updatedAt ? state.updatedAt.getTime() : 0,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetCallingEnabled error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Admin Calling: flip the platform-wide kill-switch. Blocks only NEW calls
+    // — anything already connected keeps running.
+    adminSetCallingEnabled: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { enabled?: boolean; actorId?: string };
+          const state = await deps.callFlagService.setEnabled(
+            Boolean(req.enabled),
+            req.actorId || null
+          );
+          callback(null, {
+            enabled: state.enabled,
+            updatedBy: state.updatedBy ?? "",
+            updatedAt: state.updatedAt ? state.updatedAt.getTime() : 0,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminSetCallingEnabled error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

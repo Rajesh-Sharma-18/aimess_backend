@@ -85,12 +85,17 @@ export class CallRepository {
    * `answeredAt` (already inconsistent). Both are unreachable by any normal end
    * path once the client is gone, so they must be swept or the participants stay
    * permanently busy.
+   * Sweep candidates for calls stranded in IN_PROGRESS: answered longer ago
+   * than any plausible call could run. These are rows whose LiveKit room has
+   * already closed but whose `room_finished` webhook never landed — without
+   * this they stay IN_PROGRESS forever and keep the participants "busy".
+   * Keyed on `answeredAt` (when the call actually started), not `initiatedAt`.
    */
   async findStuckInProgress(cutoff: Date, limit: number): Promise<Call[]> {
     return this.prisma.call.findMany({
       where: {
         status: CallStatus.IN_PROGRESS,
-        OR: [{ answeredAt: { lt: cutoff } }, { answeredAt: null }],
+        answeredAt: { lt: cutoff },
       },
       take: limit,
     });

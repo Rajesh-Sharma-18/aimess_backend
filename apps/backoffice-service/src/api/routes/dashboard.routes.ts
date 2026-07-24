@@ -5,13 +5,17 @@ import {
   getDashboardOverview,
   getDashboardCharts,
   getDashboardServiceStatus,
+  getDashboardCallAnalytics,
 } from "../controllers/index.js";
 import {
   adminAuth,
   requirePermission,
   validateQuery,
 } from "../middleware/index.js";
-import { dashboardChartsQuerySchema } from "../validators/index.js";
+import {
+  callAnalyticsQuerySchema,
+  dashboardChartsQuerySchema,
+} from "../validators/index.js";
 
 export const dashboardRoutes: IRouter = Router();
 
@@ -37,4 +41,11 @@ dashboardRoutes.get(
   "/service-status",
   requirePermission(PERMISSIONS.DASHBOARD_READ),
   getDashboardServiceStatus
+);
+//   /calls           → call analytics (?fromDate=&toDate=, YYYY-MM-DD) + live counters
+dashboardRoutes.get(
+  "/calls",
+  requirePermission(PERMISSIONS.DASHBOARD_READ),
+  validateQuery(callAnalyticsQuerySchema),
+  getDashboardCallAnalytics
 );

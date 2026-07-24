@@ -21,6 +21,7 @@ describe("bootstrapHealthChecks", () => {
     ).toEqual(
       [
         "auth",
+        "calls",
         "chat",
         "community",
         "media",
@@ -41,7 +42,7 @@ describe("bootstrapHealthChecks", () => {
     bootstrapHealthChecks();
     bootstrapHealthChecks();
 
-    expect(healthServiceRegistry.getServices()).toHaveLength(7);
+    expect(healthServiceRegistry.getServices()).toHaveLength(8);
     expect(healthInfrastructureRegistry.getInfrastructure()).toHaveLength(4);
   });
 });

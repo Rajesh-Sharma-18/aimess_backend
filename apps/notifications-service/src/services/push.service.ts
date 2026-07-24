@@ -62,6 +62,9 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   FriendshipEvents.FRIEND_REQUESTED,
   FriendshipEvents.FRIEND_ACCEPTED,
   CommunityEvents.MEMBER_BANNED,
+  // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
+  // missed call is exactly the kind of thing a user wants to find later.
+  "CALL_MISSED",
 ]);
 
 /**
@@ -286,6 +289,19 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
   const tokens = [...new Set(rawTokens)];
+
+  // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
+  // registered device, so nothing can ever be delivered no matter what the rest
+  // of the backend does — fix registration in the browser, not here.
+  if (tokens.length === 0) {
+    logger.warn(
+      `[push:deliver] user=${userId} type=${type} tokens=0 — NO registered device, nothing sent`
+    );
+    return;
+  }
+  logger.info(
+    `[push:deliver] user=${userId} type=${type} tokens=${tokens.length}`
+  );
 
   await Promise.all(
     tokens.map(async (token) => {

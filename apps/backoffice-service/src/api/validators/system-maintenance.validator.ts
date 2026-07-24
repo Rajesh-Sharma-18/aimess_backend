@@ -14,3 +14,14 @@ export const disconnectAllFriendshipsSchema = z.object({
 export type DisconnectAllFriendshipsInput = z.infer<
   typeof disconnectAllFriendshipsSchema
 >;
+
+/**
+ * Body for PATCH /v1/system/calling. No `confirm` trip-wire here: unlike the
+ * friendship sweep this is fully reversible and destroys nothing — disabling
+ * blocks new calls, and flipping it back restores service immediately.
+ */
+export const setCallingEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
+
+export type SetCallingEnabledInput = z.infer<typeof setCallingEnabledSchema>;
