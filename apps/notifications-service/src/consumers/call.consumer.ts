@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { buildDeepLink } from "../lib/deep-link.js";
+import { callCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 // chat-service publishes call ring/cancel events to the durable `call.ring.queue`.
@@ -35,18 +38,21 @@ async function handleCallRinging(data: CallRingingPayload): Promise<void> {
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL",
-    title: data.callerName || "",
-    body:
-      data.callType === "VIDEO" ? "Incoming video call" : "Incoming voice call",
+    ...callCopy.ringing(data.callerName, data.callType),
     priority: "high",
     bypassSettings: true,
     skipInbox: true,
     ttl: 40,
     dataOnly: true,
     collapseKey: `call:${data.callId}`,
+    deepLink: buildDeepLink("call", data.callId),
     data: {
       notificationType: "CALL",
       callId: data.callId,
+      navigation: JSON.stringify({
+        screen: "PRIVATE_CHAT",
+        userId: data.callerId,
+      } satisfies NotificationNavigation),
       callerId: data.callerId,
       callerName: data.callerName ?? "",
       callerAvatarUrl: data.callerAvatarUrl ?? "",
@@ -63,18 +69,21 @@ async function handleCallCancelled(data: CallCancelPayload): Promise<void> {
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL_CANCEL",
-    title: "",
-    body: "",
+    ...callCopy.cancelled(),
     priority: "high",
     bypassSettings: true,
     skipInbox: true,
     ttl: 40,
     dataOnly: true,
     collapseKey: `call:${data.callId}`,
+    deepLink: buildDeepLink("call", data.callId),
     data: {
       notificationType: "CALL_CANCEL",
       callId: data.callId,
       reason: data.reason ?? "",
+      navigation: JSON.stringify({
+        screen: "PRIVATE_CHAT",
+      } satisfies NotificationNavigation),
     },
   });
 }

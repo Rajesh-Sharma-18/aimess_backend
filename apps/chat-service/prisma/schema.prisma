@@ -506,8 +506,10 @@ model Notification {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, type])
-  @@index([isRead])
-  @@index([isDeleted])
+  // Covers the unread count — the hottest query here (every create, read,
+  // delete and socket connect). The bare isRead/isDeleted indexes never
+  // applied: every query is userId-scoped.
+  @@index([userId, isRead, isDeleted])
   @@map("notifications")
 }
 

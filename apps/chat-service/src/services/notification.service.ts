@@ -117,10 +117,12 @@ export class NotificationService {
     notificationIds: string[],
     userId: string
   ): Promise<{ updatedCount: number; unreadCount: number }> {
-    const results = await Promise.all(
-      notificationIds.map((id) => this.notificationRepo.markRead(id, userId))
+    // One updateMany, not a read+write per id — the 500-id cap made this up to
+    // 1000 Mongo ops for a single request.
+    const updatedCount = await this.notificationRepo.markManyRead(
+      notificationIds,
+      userId
     );
-    const updatedCount = results.filter((r) => r !== null).length;
     const unreadCount = await this.notificationRepo.getUnreadCount(userId);
 
     if (updatedCount > 0) {

@@ -1,5 +1,4 @@
 import { logger } from "@aimess/logger";
-import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
@@ -32,33 +31,17 @@ function defaultCommunityPrefField(
 const chatNotificationClient = createChatNotificationClient();
 
 /**
- * Notification types that must never reach the `notify` socket (or the
- * inbox), nor FCM. Checked first in `pushToUser` so no DB row, FCM send, or
- * socket event is ever produced for these types.
+ * Types kept OUT of the Notification Center. Chat activity belongs in the chat
+ * list and calls in the call UI — everything else gets an inbox row, so a
+ * missed push is always recoverable from the notification screen.
  *
- * Join Rejected / Unban / Stream Started are deliberately NOT here — the
- * Notification Center business requirement lists them as required entries
- * (see `friend.consumer.ts` / `community.consumer.ts`), so they must reach
- * the inbox + push like any other business event.
+ * Was an allowlist of 3 types, which made ~32 types push-only: if the push was
+ * missed the event was gone for good.
  */
-const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
-  CommunityEvents.MEMBER_KICKED,
-  CommunityEvents.DELETED,
-]);
-
-/**
- * Notification Center allowlist — only these event types are persisted as an
- * inbox row (and therefore ever surface from `GET /api/v1/chat/notifications`
- * or the `notification:new`/`notification:count_update` socket events).
- * Everything else (community messages, member joined/left/added/removed,
- * role changes, mutes, reports, livestream, etc.) still gets FCM push same as
- * before — this only gates the Notification Center write. Extensible: add a
- * type here to enable it in the inbox without touching any producer.
- */
-const INBOX_ALLOWED_TYPES = new Set<string>([
-  FriendshipEvents.FRIEND_REQUESTED,
-  FriendshipEvents.FRIEND_ACCEPTED,
-  CommunityEvents.MEMBER_BANNED,
+const INBOX_EXCLUDED_TYPES = new Set<string>([
+  "MESSAGE",
+  "CALL",
+  "CALL_CANCEL",
 ]);
 
 export interface PushInput {
@@ -133,17 +116,12 @@ export interface PushInput {
  * Never throws — push delivery must not poison the consumer (which would DLQ).
  */
 export async function pushToUser(input: PushInput): Promise<void> {
-  if (NOTIFY_SUPPRESSED_TYPES.has(input.type)) {
-    return;
-  }
-
   const {
     userId,
     category,
     type,
     title,
     actorId,
-    data,
     deepLink,
     collapseKey,
     ttl,
@@ -155,6 +133,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
   } = input;
 
   let body = input.body;
+  // actorId is needed by clients for avatars and "who did this" routing, but it
+  // only ever reached the DB row — the FCM data map dropped it.
+  let data: Record<string, string> = actorId
+    ? { ...input.data, actorId }
+    : { ...input.data };
 
   let allowed = true;
   // NotificationSettings from gRPC does not yet expose showPreview at the
@@ -208,18 +191,20 @@ export async function pushToUser(input: PushInput): Promise<void> {
     }
   }
 
-  // Apply preview masking — title is intentionally left unchanged.
-  if (!showPreview) {
-    body = showPreviewOverride ?? "New message";
+  // Preview masking is a CHAT privacy setting. Only producers that supply their
+  // own masked copy opt in — blanket masking turned a ban notice into
+  // "New message".
+  if (!showPreview && showPreviewOverride) {
+    body = showPreviewOverride;
   }
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
   // for chat-activity pushes (skipInbox) and for any type not on the
   // Notification Center allowlist — the Notification Center is
   // important-events-only, everything else stays FCM+realtime-only.
-  if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
+  if (!skipInbox && !INBOX_EXCLUDED_TYPES.has(type)) {
     try {
-      await chatNotificationClient.createNotification({
+      const created = await chatNotificationClient.createNotification({
         userId,
         actorId,
         type,
@@ -227,6 +212,8 @@ export async function pushToUser(input: PushInput): Promise<void> {
         body,
         data,
       });
+      // Correlate the push with its inbox row so a tray tap can mark it read.
+      if (created?.id) data = { ...data, notificationId: created.id };
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
       logger.warn(error);

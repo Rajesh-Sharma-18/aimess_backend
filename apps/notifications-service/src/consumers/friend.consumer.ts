@@ -6,20 +6,17 @@ import {
   type FriendCancelledPayload,
   type FriendRejectedPayload,
   type FriendRequestedPayload,
+  type NotificationNavigation,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { friendCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 // user-service publishes friendship events to a plain durable queue (NOT a
 // topic exchange) — match that. (See user-service publish-friendship.ts.)
 const FRIENDSHIP_QUEUE = "friendship.queue";
-
-/** Display names are optional on the wire (e.g. bulk auto-connect/-disconnect never sends them) — fall back generically. */
-function nameOr(name: string | undefined): string {
-  return name || "Someone";
-}
 
 async function handleFriendEvent(type: string, data: unknown): Promise<void> {
   switch (type) {
@@ -31,13 +28,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "New friend request",
-        body: `${nameOr(p.requesterName)} sent you a friend request.`,
+        ...friendCopy.requested(p.requesterName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          navigation: JSON.stringify({
+            screen: "FRIEND_REQUESTS",
+            userId: p.requesterId,
+          } satisfies NotificationNavigation),
         },
       });
       break;
@@ -52,13 +52,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        title: "Friend request accepted",
-        body: `${nameOr(p.addresseeName)} accepted your friend request.`,
+        ...friendCopy.acceptedForRequester(p.addresseeName),
         deepLink: deepLinkForRequester,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink: deepLinkForRequester,
+          navigation: JSON.stringify({
+            screen: "USER_PROFILE",
+            userId: p.addresseeId,
+          } satisfies NotificationNavigation),
         },
       });
       // Addressee — the side who just accepted. Their own notification
@@ -70,13 +73,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "New friend",
-        body: `You are now friends with ${nameOr(p.requesterName)}.`,
+        ...friendCopy.acceptedForAddressee(p.requesterName),
         deepLink: deepLinkForAddressee,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink: deepLinkForAddressee,
+          navigation: JSON.stringify({
+            screen: "USER_PROFILE",
+            userId: p.requesterId,
+          } satisfies NotificationNavigation),
         },
       });
       break;
@@ -90,13 +96,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        title: "Friend request declined",
-        body: `${nameOr(p.addresseeName)} declined your friend request.`,
+        ...friendCopy.rejected(p.addresseeName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink,
+          navigation: JSON.stringify({
+            screen: "FRIEND_REQUESTS",
+            userId: p.addresseeId,
+          } satisfies NotificationNavigation),
         },
       });
       break;
@@ -110,13 +119,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "Friend request cancelled",
-        body: `${nameOr(p.requesterName)} cancelled their friend request.`,
+        ...friendCopy.cancelled(p.requesterName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          navigation: JSON.stringify({
+            screen: "FRIEND_REQUESTS",
+            userId: p.requesterId,
+          } satisfies NotificationNavigation),
         },
       });
       break;

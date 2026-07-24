@@ -3,9 +3,12 @@ import amqp from "amqplib";
 import {
   ChatEvents,
   type ChatGroupMemberAddedPayload,
+  type NotificationNavigation,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { buildDeepLink } from "../lib/deep-link.js";
+import { groupCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -20,14 +23,25 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
   switch (type) {
     case ChatEvents.GROUP_MEMBER_ADDED: {
       const p = data as ChatGroupMemberAddedPayload;
+      const deepLink = buildDeepLink("group", p.roomId);
       await pushToUser({
         userId: p.addedUserId,
         category: "chatEnabled",
         type,
         actorId: p.actorId,
-        title: "Added to group",
-        body: `You were added to ${p.groupName}.`,
-        data: { roomId: p.roomId },
+        ...groupCopy.memberAdded(p.groupName),
+        deepLink,
+        data: {
+          roomId: p.roomId,
+          groupName: p.groupName,
+          actorId: p.actorId,
+          deepLink,
+          navigation: JSON.stringify({
+            screen: "GROUP_CHAT",
+            roomId: p.roomId,
+            conversationType: "GROUP",
+          } satisfies NotificationNavigation),
+        },
       });
       break;
     }

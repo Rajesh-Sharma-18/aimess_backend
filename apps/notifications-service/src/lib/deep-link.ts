@@ -11,7 +11,8 @@ export type DeepLinkType =
   | "communities"
   | "group"
   | "call"
-  | "user";
+  | "user"
+  | "stream";
 
 /**
  * Build a canonical deep-link URL.
@@ -24,6 +25,7 @@ export type DeepLinkType =
  *   buildDeepLink('group', id)                     → aimess://group/{id}
  *   buildDeepLink('call', id)                      → aimess://call/{id}
  *   buildDeepLink('user', id)                      → aimess://user/{id}
+ *   buildDeepLink('stream', id)                    → aimess://stream/{id}
  */
 export function buildDeepLink(type: "conversation", id: string): string;
 export function buildDeepLink(
@@ -35,6 +37,7 @@ export function buildDeepLink(type: "communities"): string;
 export function buildDeepLink(type: "group", id: string): string;
 export function buildDeepLink(type: "call", id: string): string;
 export function buildDeepLink(type: "user", id: string): string;
+export function buildDeepLink(type: "stream", id: string): string;
 export function buildDeepLink(
   type: DeepLinkType,
   id?: string,
@@ -50,7 +53,7 @@ export function buildDeepLink(
     }
 
     default:
-      // conversation, group, call, user — all follow aimess://<type>/<id>
+      // conversation, group, call, user, stream — all follow aimess://<type>/<id>
       return `aimess://${type}/${id ?? ""}`;
   }
 }

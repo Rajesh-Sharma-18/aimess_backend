@@ -1,8 +1,10 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { chatCopy } from "../lib/notification-copy.js";
 import { pushToUsers } from "../services/push.service.js";
 import { isCommunityActorMuted } from "../services/notification-eligibility.service.js";
 
@@ -63,12 +65,12 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   // For community messages: title = community name (if known), body = "Sender: preview".
   // For private/group: title = sender name, body = preview text.
-  const title = isCommunity
-    ? data.communityName || data.senderName || "Community"
-    : data.senderName || "New message";
-  const body = isCommunity
-    ? `${data.senderName || "Someone"}: ${data.preview || "New message"}`
-    : data.preview || "New message";
+  const { title, body } = chatCopy.message({
+    isCommunity,
+    communityName: data.communityName,
+    senderName: data.senderName,
+    preview: data.preview,
+  });
 
   // Include messageId in the community deep link so the client can scroll to
   // the specific message after navigating to the community chat room.
@@ -79,9 +81,22 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   // showPreviewOverride hides sender name and message content when the user
   // has "show preview" disabled — the title (community/sender name) is safe.
-  const showPreviewOverride = isCommunity
-    ? `New message in ${data.communityName || "community"}`
-    : "New message";
+  const navigation = JSON.stringify({
+    screen: isCommunity
+      ? "COMMUNITY_CHAT"
+      : data.conversationType === "GROUP"
+        ? "GROUP_CHAT"
+        : "PRIVATE_CHAT",
+    ...(data.communityId ? { communityId: data.communityId } : {}),
+    ...(data.communityName ? { communityName: data.communityName } : {}),
+    roomId: data.conversationId,
+    conversationType: data.conversationType,
+    messageId: data.messageId,
+  } satisfies NotificationNavigation);
+
+  const showPreviewOverride = chatCopy.messagePreviewHidden(
+    isCommunity ? data.communityName : undefined
+  );
 
   await pushToUsers(recipients, (userId) => ({
     userId,
@@ -119,6 +134,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       sentAt: String(data.sentAt ?? ""),
       idempotencyKey: data.messageId,
       deepLink,
+      navigation,
     },
   }));
 }

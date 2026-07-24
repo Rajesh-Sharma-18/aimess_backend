@@ -52,6 +52,19 @@ export class NotificationRepository {
     });
   }
 
+  /** Owner-scoped bulk mark-read. One query regardless of id count. */
+  async markManyRead(
+    notificationIds: string[],
+    userId: string
+  ): Promise<number> {
+    if (notificationIds.length === 0) return 0;
+    const result = await this.prisma.notification.updateMany({
+      where: { id: { in: notificationIds }, userId, isRead: false },
+      data: { isRead: true, readAt: new Date() },
+    });
+    return result.count;
+  }
+
   async markRead(
     notificationId: string,
     userId: string

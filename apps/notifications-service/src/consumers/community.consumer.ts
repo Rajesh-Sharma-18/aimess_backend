@@ -32,6 +32,7 @@ import {
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { communityCopy } from "../lib/notification-copy.js";
 import { redis } from "../config/redis.js";
 import {
   pushToUser,
@@ -52,14 +53,31 @@ function base(
   actorId: string | undefined,
   extra: Record<string, string>,
   deepLink?: string,
-  category: PushInput["category"] = "communityEnabled"
+  category: PushInput["category"] = "communityEnabled",
+  nav?: Omit<NotificationNavigation, "communityId">
 ): Pick<PushInput, "category" | "type" | "actorId" | "deepLink" | "data"> {
+  // Every notification carries a navigation object — it is what the client
+  // routes on. Community identity is folded in from `extra` so a call site
+  // never has to repeat it.
+  const navigation: NotificationNavigation = {
+    screen: "COMMUNITY_DETAILS",
+    ...nav,
+    communityId,
+    communityName: nav?.communityName ?? extra.communityName,
+    communityHandle: nav?.communityHandle ?? extra.communityHandle,
+    communityAvatarUrl: nav?.communityAvatarUrl ?? extra.communityAvatarUrl,
+  };
   return {
     category,
     type,
     actorId,
     deepLink,
-    data: { communityId, deepLink: deepLink ?? "", ...extra },
+    data: {
+      communityId,
+      deepLink: deepLink ?? "",
+      ...extra,
+      navigation: JSON.stringify(navigation),
+    },
   };
 }
 
@@ -75,14 +93,6 @@ async function handleCommunityEvent(
   switch (type) {
     case CommunityEvents.JOIN_REQUESTED: {
       const p = data as CommunityJoinRequestedPayload;
-      const navigation: NotificationNavigation = {
-        screen: "COMMUNITY_REQUESTS",
-        communityId: p.communityId,
-        communityName: p.communityName,
-        communityAvatarUrl: p.communityAvatarUrl,
-        communityHandle: p.communityHandle,
-        requestId: p.requestId,
-      };
       const actorSnapshot = {
         userId: p.userId,
         displayName: p.requesterDisplayName,
@@ -90,8 +100,7 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.moderatorRecipientIds, (userId) => ({
         userId,
-        title: "New join request",
-        body: `${p.requesterDisplayName} requested to join ${p.communityName}.`,
+        ...communityCopy.joinRequested(p.communityName, p.requesterDisplayName),
         ...base(
           type,
           p.communityId,
@@ -104,10 +113,15 @@ async function handleCommunityEvent(
             communityAvatarUrl: p.communityAvatarUrl ?? "",
             requesterDisplayName: p.requesterDisplayName,
             requesterAvatarUrl: p.requesterAvatarUrl ?? "",
-            navigation: JSON.stringify(navigation),
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          {
+            screen: "COMMUNITY_REQUESTS",
+            requestId: p.requestId,
+            userId: p.userId,
+          }
         ),
       }));
       break;
@@ -117,14 +131,6 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamStartedPayload;
       if (!p.recipientIds?.length) break;
       const hostName = p.hostDisplayName || "Someone";
-      const navigation: NotificationNavigation = {
-        screen: "COMMUNITY_LIVESTREAM",
-        communityId: p.communityId,
-        communityName: p.communityName,
-        communityAvatarUrl: p.communityAvatarUrl,
-        communityHandle: p.communityHandle,
-        livestreamId: p.livestreamId,
-      };
       const actorSnapshot = {
         userId: p.hostUserId,
         displayName: p.hostDisplayName,
@@ -132,8 +138,7 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.recipientIds, (userId) => ({
         userId,
-        title: p.communityName,
-        body: `${hostName} started a livestream.`,
+        ...communityCopy.livestreamStarted(p.communityName, hostName),
         ...base(
           type,
           p.communityId,
@@ -146,11 +151,14 @@ async function handleCommunityEvent(
             communityName: p.communityName,
             communityHandle: p.communityHandle ?? "",
             communityAvatarUrl: p.communityAvatarUrl ?? "",
-            navigation: JSON.stringify(navigation),
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("community", p.communityId),
-          "liveStreamEnabled"
+          buildDeepLink("stream", p.livestreamId),
+          "liveStreamEnabled",
+          {
+            screen: "COMMUNITY_LIVESTREAM",
+            livestreamId: p.livestreamId,
+          }
         ),
       }));
       break;
@@ -160,14 +168,6 @@ async function handleCommunityEvent(
       const p = data as CommunityLivestreamEndedPayload;
       if (!p.recipientIds?.length) break;
       const hostName = p.hostDisplayName || "Someone";
-      const navigation: NotificationNavigation = {
-        screen: "COMMUNITY_LIVESTREAM",
-        communityId: p.communityId,
-        communityName: p.communityName,
-        communityAvatarUrl: p.communityAvatarUrl,
-        communityHandle: p.communityHandle,
-        livestreamId: p.livestreamId,
-      };
       const actorSnapshot = {
         userId: p.hostUserId,
         displayName: p.hostDisplayName,
@@ -175,10 +175,7 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.recipientIds, (userId) => ({
         userId,
-        title: p.communityName,
-        body: p.duration
-          ? `${hostName} ended the livestream (${p.duration}).`
-          : `${hostName} ended the livestream.`,
+        ...communityCopy.livestreamEnded(p.communityName, hostName, p.duration),
         ...base(
           type,
           p.communityId,
@@ -193,11 +190,14 @@ async function handleCommunityEvent(
             communityName: p.communityName,
             communityHandle: p.communityHandle ?? "",
             communityAvatarUrl: p.communityAvatarUrl ?? "",
-            navigation: JSON.stringify(navigation),
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("community", p.communityId),
-          "liveStreamEnabled"
+          buildDeepLink("stream", p.livestreamId),
+          "liveStreamEnabled",
+          {
+            screen: "COMMUNITY_LIVESTREAM",
+            livestreamId: p.livestreamId,
+          }
         ),
       }));
       break;
@@ -219,8 +219,10 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        title: "Join request approved",
-        body: `Your request to join ${p.communityName} was approved by ${p.decidedBy.displayName}.`,
+        ...communityCopy.joinRequestApproved(
+          p.communityName,
+          p.decidedBy.displayName
+        ),
         ...base(
           type,
           p.communityId,
@@ -232,10 +234,11 @@ async function handleCommunityEvent(
             communityHandle: p.communityHandle,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
             decidedByDisplayName: p.decidedBy.displayName,
-            navigation: JSON.stringify(navigation),
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          navigation
         ),
       });
       await publishUserSocketEvent(
@@ -270,8 +273,7 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        title: "Join request declined",
-        body: `Your request to join ${p.communityName} was declined.`,
+        ...communityCopy.joinRequestRejected(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -283,10 +285,11 @@ async function handleCommunityEvent(
             communityHandle: p.communityHandle,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
             decidedByDisplayName: p.decidedBy.displayName,
-            navigation: JSON.stringify(navigation),
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          navigation
         ),
       });
       await publishUserSocketEvent(
@@ -335,17 +338,9 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_JOINED: {
       const p = data as CommunityMemberJoinedPayload;
-      const navigation: NotificationNavigation = {
-        screen: "COMMUNITY_DETAILS",
-        communityId: p.communityId,
-        communityName: p.communityName,
-        communityAvatarUrl: p.communityAvatarUrl,
-        communityHandle: p.communityHandle,
-      };
       await pushToUser({
         userId: p.userId,
-        title: "Joined a community",
-        body: `You have joined ${p.communityName}.`,
+        ...communityCopy.memberJoined(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -354,9 +349,10 @@ async function handleCommunityEvent(
             communityName: p.communityName,
             communityHandle: p.communityHandle,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
-            navigation: JSON.stringify(navigation),
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS" }
         ),
       });
       // Real-time UI flip: "Join" button → "Joined" without a page refresh.
@@ -375,17 +371,21 @@ async function handleCommunityEvent(
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
-        const communityLabel = p.communityName ?? "a community";
         await pushToUser({
           userId: p.targetUserId,
-          title: "Welcome to the community",
-          body: `You were added to ${communityLabel}.`,
+          ...communityCopy.memberAdded(p.communityName),
           ...base(
             type,
             p.communityId,
             p.actorId,
-            { via: p.via },
-            buildDeepLink("community", p.communityId)
+            {
+              via: p.via,
+              ...(p.communityName ? { communityName: p.communityName } : {}),
+              ...(p.requestId ? { requestId: p.requestId } : {}),
+            },
+            buildDeepLink("community", p.communityId),
+            "communityEnabled",
+            { screen: "COMMUNITY_DETAILS", requestId: p.requestId }
           ),
         });
       }
@@ -396,8 +396,7 @@ async function handleCommunityEvent(
       if (mods.length > 0) {
         await pushToUsers(mods, (userId) => ({
           userId,
-          title: "New member joined",
-          body: "A new member joined your community.",
+          ...communityCopy.memberAddedForModerators(p.communityName),
           ...base(
             type,
             p.communityId,
@@ -405,8 +404,11 @@ async function handleCommunityEvent(
             {
               via: p.via,
               joinedUserId: p.targetUserId,
+              ...(p.communityName ? { communityName: p.communityName } : {}),
             },
-            buildDeepLink("community", p.communityId)
+            buildDeepLink("community", p.communityId),
+            "communityEnabled",
+            { screen: "COMMUNITY_MEMBERS", userId: p.targetUserId }
           ),
         }));
       }
@@ -417,14 +419,15 @@ async function handleCommunityEvent(
       const p = data as CommunityAdminTransferredPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "You are now an admin",
-        body: "Community administration was transferred to you.",
+        ...communityCopy.adminTransferred(),
         ...base(
           type,
           p.communityId,
           p.actorId,
           { reason: p.reason },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS" }
         ),
       });
       break;
@@ -434,8 +437,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberRoleChangedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "Your role changed",
-        body: `Your role is now ${p.newRole}.`,
+        ...communityCopy.roleChanged(p.newRole),
         ...base(
           type,
           p.communityId,
@@ -444,7 +446,9 @@ async function handleCommunityEvent(
             oldRole: p.oldRole,
             newRole: p.newRole,
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS" }
         ),
       });
       break;
@@ -454,8 +458,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberKickedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "Removed from community",
-        body: "You were removed from a community.",
+        ...communityCopy.memberKicked(),
         bypassSettings: true,
         ...base(
           type,
@@ -464,7 +467,9 @@ async function handleCommunityEvent(
           {
             reason: p.reason ?? "",
           },
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -472,11 +477,9 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_BANNED: {
       const p = data as CommunityMemberBannedPayload;
-      const communityLabel = p.communityName || "a community";
       await pushToUser({
         userId: p.targetUserId,
-        title: "Banned from community",
-        body: `You were banned from ${communityLabel}.`,
+        ...communityCopy.memberBanned(p.communityName),
         bypassSettings: true,
         ...base(
           type,
@@ -487,7 +490,9 @@ async function handleCommunityEvent(
             communityName: p.communityName ?? "",
             communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -497,14 +502,15 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberUnbannedNotifyPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "Ban lifted",
-        body: "Your ban from a community has been lifted.",
+        ...communityCopy.memberUnbanned(),
         ...base(
           type,
           p.communityId,
           p.actorId,
           {},
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -514,10 +520,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberMutedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "You have been muted",
-        body: p.mutedUntil
-          ? "You were muted in a community for a limited time."
-          : "You were muted in a community.",
+        ...communityCopy.memberMuted(p.mutedUntil),
         ...base(
           type,
           p.communityId,
@@ -526,7 +529,9 @@ async function handleCommunityEvent(
             reason: p.reason ?? "",
             mutedUntil: p.mutedUntil ?? "",
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -536,14 +541,15 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberUnmutedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "You have been unmuted",
-        body: "You can post in the community again.",
+        ...communityCopy.memberUnmuted(),
         ...base(
           type,
           p.communityId,
           p.actorId,
           {},
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -553,14 +559,15 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberWarnedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        title: "You received a warning",
-        body: p.note || "A moderator issued you a warning in a community.",
+        ...communityCopy.memberWarned(p.note),
         ...base(
           type,
           p.communityId,
           p.actorId,
           { note: p.note },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
         ),
       });
       break;
@@ -575,8 +582,7 @@ async function handleCommunityEvent(
       const p = data as CommunityInviteSentPayload;
       await pushToUser({
         userId: p.inviteeId,
-        title: "Community invite",
-        body: "You were invited to join a community.",
+        ...communityCopy.inviteSent(),
         ...base(
           type,
           p.communityId,
@@ -585,7 +591,9 @@ async function handleCommunityEvent(
             inviteId: p.inviteId,
             inviterId: p.inviterId,
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_INVITE", inviteId: p.inviteId }
         ),
       });
       break;
@@ -596,8 +604,7 @@ async function handleCommunityEvent(
       // Notify the original inviter that their invite was accepted.
       await pushToUser({
         userId: p.inviterId,
-        title: "Invite accepted",
-        body: "Your community invite was accepted.",
+        ...communityCopy.inviteAccepted(),
         ...base(
           type,
           p.communityId,
@@ -606,7 +613,13 @@ async function handleCommunityEvent(
             inviteId: p.inviteId,
             acceptedById: p.userId,
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          {
+            screen: "COMMUNITY_INVITE",
+            inviteId: p.inviteId,
+            userId: p.userId,
+          }
         ),
       });
       break;
@@ -617,8 +630,7 @@ async function handleCommunityEvent(
       const recipients = p.moderatorRecipientIds;
       await pushToUsers(recipients, (userId) => ({
         userId,
-        title: "New community report",
-        body: "A new report needs review.",
+        ...communityCopy.reportCreated(),
         ...base(
           type,
           p.communityId,
@@ -628,7 +640,13 @@ async function handleCommunityEvent(
             reporterId: p.reporterId,
             targetUserId: p.targetUserId ?? "",
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          {
+            screen: "COMMUNITY_REPORTS",
+            reportId: p.reportId,
+            ...(p.targetUserId ? { userId: p.targetUserId } : {}),
+          }
         ),
       }));
       break;
@@ -638,8 +656,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReportActionedPayload;
       await pushToUser({
         userId: p.reporterId,
-        title: "Report reviewed",
-        body: "Your report was reviewed by a moderator.",
+        ...communityCopy.reportActioned(),
         ...base(
           type,
           p.communityId,
@@ -648,7 +665,13 @@ async function handleCommunityEvent(
             reportId: p.reportId,
             targetUserId: p.targetUserId ?? "",
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          {
+            screen: "COMMUNITY_REPORTS",
+            reportId: p.reportId,
+            ...(p.targetUserId ? { userId: p.targetUserId } : {}),
+          }
         ),
       });
       break;
@@ -658,8 +681,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReportResolvedPayload;
       await pushToUser({
         userId: p.reporterId,
-        title: "Report resolved",
-        body: "Your report has been resolved.",
+        ...communityCopy.reportResolved(),
         ...base(
           type,
           p.communityId,
@@ -669,7 +691,13 @@ async function handleCommunityEvent(
             targetUserId: p.targetUserId ?? "",
             resolution: p.resolution,
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          {
+            screen: "COMMUNITY_REPORTS",
+            reportId: p.reportId,
+            ...(p.targetUserId ? { userId: p.targetUserId } : {}),
+          }
         ),
       });
       break;
@@ -679,15 +707,16 @@ async function handleCommunityEvent(
       const p = data as CommunityDeletedPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        title: "Community deleted",
-        body: "A community you were in was deleted.",
+        ...communityCopy.deleted(),
         bypassSettings: true,
         ...base(
           type,
           p.communityId,
           p.actorId,
           { reason: p.reason },
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          { screen: "COMMUNITY_LIST" }
         ),
       }));
       break;
@@ -697,14 +726,15 @@ async function handleCommunityEvent(
       const p = data as CommunityClosedNotifyPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        title: "Community closed",
-        body: "A community you were in has been closed.",
+        ...communityCopy.closed(),
         ...base(
           type,
           p.communityId,
           p.actorId,
           { reason: p.reason ?? "" },
-          buildDeepLink("communities")
+          buildDeepLink("communities"),
+          "communityEnabled",
+          { screen: "COMMUNITY_LIST" }
         ),
       }));
       break;
@@ -716,8 +746,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReopenedNotifyPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        title: "Community reopened",
-        body: `${p.communityName} is open again.`,
+        ...communityCopy.reopened(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -725,11 +754,17 @@ async function handleCommunityEvent(
           {
             communityName: p.communityName,
           },
-          buildDeepLink("community", p.communityId)
+          buildDeepLink("community", p.communityId),
+          "communityEnabled",
+          { screen: "COMMUNITY_DETAILS" }
         ),
       }));
       break;
     }
+
+    case CommunityEvents.INVITE_LINK_SHARED:
+      // chat-service owns this one — it lands as a system DM, not a push.
+      break;
 
     case CommunityEvents.JOINED:
       // Self-join — the user already knows; no notification.

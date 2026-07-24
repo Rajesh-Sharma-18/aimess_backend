@@ -1,5 +1,8 @@
 import { logger } from "@aimess/logger";
-import { type AdminUserNotifyPayload } from "@aimess/shared-types";
+import {
+  type AdminUserNotifyPayload,
+  type NotificationNavigation,
+} from "@aimess/shared-types";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
@@ -35,7 +38,12 @@ async function handleAdminUserNotify(
     actorId,
     title: p.title,
     body: p.body,
-    data: p.data ?? {},
+    data: {
+      ...p.data,
+      navigation: JSON.stringify({
+        screen: "ACCOUNT_STATUS",
+      } satisfies NotificationNavigation),
+    },
   });
 }
 
