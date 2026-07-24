@@ -13,6 +13,7 @@ import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
 import { memberAvatarService } from "../services/member-avatar.service.js";
 import { communityAccessPolicy } from "../lib/community-access-policy.js";
+import { resolveCommunityNotificationPrefEnabled } from "../lib/community-notification-pref.js";
 import { getChatClient } from "./chat.client.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
@@ -706,7 +707,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
   },
 
   // Per-community notification-preference oracle for notifications-service's
-  // push gate. Defaults to enabled=true (no row → nothing disabled yet).
+  // push gate. Non-ACTIVE members always resolve to enabled=false (so left /
+  // banned / pending users never get community FCM or inbox pushes). ACTIVE
+  // members with no mute-setting row default to enabled=true.
   checkCommunityNotificationPref: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: grpc.sendUnaryData<unknown>
@@ -729,18 +732,21 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           !req.field ||
           !validFields.has(req.field)
         ) {
+          // Malformed request — fail-open (same as transport outage) so a
+          // producer bug never silently drops every push.
           callback(null, { enabled: true });
           return;
         }
-        const row = await communityRepository.findMuteByUserAndCommunity(
-          req.userId,
-          req.communityId
-        );
         const field = req.field as
           | "chatEnabled"
           | "streamEnabled"
           | "announcementEnabled";
-        callback(null, { enabled: row ? row[field] : true });
+        const enabled = await resolveCommunityNotificationPrefEnabled(
+          req.communityId,
+          req.userId,
+          field
+        );
+        callback(null, { enabled });
       } catch (err) {
         logger.error("checkCommunityNotificationPref gRPC handler failed", err);
         callback({

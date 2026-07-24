@@ -1,6 +1,9 @@
 import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
-import { CommunitySystemMessageType } from "@aimess/constants";
+import {
+  CommunitySystemMessageType,
+  PERSONAL_JOIN_SESSION_TYPES,
+} from "@aimess/constants";
 
 import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
@@ -288,64 +291,78 @@ export class CommunityRoomSyncConsumer {
               });
           }
 
-          if (rawStatus === "LEFT" || rawStatus === "BANNED") {
-            const boundary = event.data.eventAt
-              ? new Date(event.data.eventAt)
-              : undefined;
-            // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
-            logger.info(
-              `[JOIN-TRACE] delete-cleanup (LEAVE path) START community=${communityId} user=${userId} boundary=${boundary?.toISOString() ?? "none"} ts=${Date.now()}`
-            );
+          // Hard-deletes stale PERSONAL session lines of `types` for this user
+          // and tombstones each on their own `user:<id>` channel so an
+          // already-connected client that rendered the line learns it's gone
+          // without waiting for a reload. Shared by the join-line cleanup below
+          // and the ban-line cleanup on unban.
+          const purgeAndTombstone = async (
+            types: readonly string[],
+            label: string,
+            boundary?: Date
+          ) => {
             const deletedIds = await this.messageRepo
               .deletePersonalJoinMessages({
                 roomId: communityId,
                 userId,
-                beforeOrAt:
-                  boundary && !Number.isNaN(boundary.getTime())
-                    ? boundary
-                    : undefined,
+                types,
+                beforeOrAt: boundary,
               })
               .catch((err: unknown) => {
                 logger.warn(
-                  `member.synced join-cleanup failed community=${communityId} user=${userId}: ${String(err)}`
+                  `member.synced ${label}-cleanup failed community=${communityId} user=${userId}: ${String(err)}`
                 );
                 return [] as string[];
               });
-            // [JOIN-TRACE]
-            logger.info(
-              `[JOIN-TRACE] delete-cleanup (LEAVE path) DONE community=${communityId} user=${userId} deletedIds=${JSON.stringify(deletedIds)} ts=${Date.now()}`
+            if (deletedIds.length === 0) return;
+            logger.debug(
+              `member.synced ${label}-cleanup: removed ${deletedIds.length} personal line(s) community=${communityId} user=${userId}`
             );
-            if (deletedIds.length > 0) {
-              logger.debug(
-                `member.synced join-cleanup: removed ${deletedIds.length} personal join line(s) community=${communityId} user=${userId}`
-              );
-              for (const messageId of deletedIds) {
-                const tombstone = buildDeletePayload({
-                  conversationType: "COMMUNITY",
-                  messageId,
-                  roomId: communityId,
-                  scope: "forEveryone",
-                  deletedBy: "",
+            for (const messageId of deletedIds) {
+              const tombstone = buildDeletePayload({
+                conversationType: "COMMUNITY",
+                messageId,
+                roomId: communityId,
+                scope: "forEveryone",
+                deletedBy: "",
+              });
+              await redis
+                .publish(
+                  `user:${userId}`,
+                  JSON.stringify({
+                    event: "community:message:deleted",
+                    data: tombstone,
+                  })
+                )
+                .catch((err: unknown) => {
+                  logger.warn(
+                    `member.synced ${label}-cleanup delete-publish failed community=${communityId} user=${userId} message=${messageId}: ${String(err)}`
+                  );
                 });
-                // [JOIN-TRACE]
-                logger.info(
-                  `[JOIN-TRACE] delete PUBLISH (LEAVE path) messageId=${messageId} community=${communityId} user=${userId} channel=user:${userId} payload=${JSON.stringify(tombstone)} ts=${Date.now()}`
-                );
-                await redis
-                  .publish(
-                    `user:${userId}`,
-                    JSON.stringify({
-                      event: "community:message:deleted",
-                      data: tombstone,
-                    })
-                  )
-                  .catch((err: unknown) => {
-                    logger.warn(
-                      `member.synced join-cleanup delete-publish failed community=${communityId} user=${userId} message=${messageId}: ${String(err)}`
-                    );
-                  });
-              }
             }
+          };
+
+          if (rawStatus === "LEFT" || rawStatus === "BANNED") {
+            const boundary = event.data.eventAt
+              ? new Date(event.data.eventAt)
+              : undefined;
+            await purgeAndTombstone(
+              PERSONAL_JOIN_SESSION_TYPES,
+              "join",
+              boundary && !Number.isNaN(boundary.getTime())
+                ? boundary
+                : undefined
+            );
+          }
+
+          // Unban always transitions BANNED -> LEFT (never straight to ACTIVE —
+          // a rejoin is a separate later event), so retiring the stale "You were
+          // banned" PERSONAL line on the LEFT transition covers unban without
+          // also firing on the ban itself (rawStatus === "BANNED", when the line
+          // is being created, not retired). A plain voluntary leave/kick has no
+          // ban line to match, so this is a harmless no-op for that case.
+          if (rawStatus === "LEFT") {
+            await purgeAndTombstone(["MEMBER_BANNED"], "ban");
           }
           break;
         }

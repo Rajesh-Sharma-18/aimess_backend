@@ -29,6 +29,7 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -66,6 +67,8 @@ import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PresenceService } from "./presence.service.js";
+import type { Redis, Cluster } from "ioredis";
 import type {
   PrivateMessage,
   PrivateMessageReport,
@@ -83,7 +86,15 @@ export class PrivateMessageService {
     // messages just fall back to "assume the invite is still usable" (see
     // enrichMessages) when no client is wired, same fail-open policy as an
     // actual gRPC/community-service outage.
-    private readonly communityClient?: CommunityReconcileClient
+    private readonly communityClient?: CommunityReconcileClient,
+    // Presence-aware delivery: when injected, sendMessage checks the peer's
+    // live socket status and — if online — persists deliveredTo + publishes
+    // `message:delivered` immediately, so the sender's tick flips to ✓✓ without
+    // depending on the client-triggered `message:delivered` ack ever arriving.
+    // Optional so existing unit tests that construct the service without these
+    // keep working (delivery just stays "sent" until the client ack lands).
+    private readonly presenceService?: PresenceService,
+    private readonly redis?: Redis | Cluster | null
   ) {}
 
   async sendMessage(params: {
@@ -248,6 +259,18 @@ export class PrivateMessageService {
       })
     ).length;
 
+    // The room row is pre-provisioned (empty, no lastMessageAt) as soon as two
+    // users become friends (see PrivateRoomService.getOrCreateRoom), so THIS is
+    // the actual "conversation just became visible" moment for both clients —
+    // not room creation, which already fired its own `conv:created` too early
+    // (before either client's friend-suggestion/inbox UI had anything to react
+    // to). Snapshot the pre-update state so we can tell the very first message
+    // apart from every later one.
+    const roomBefore = await this.roomRepo
+      .findByRoomId(params.roomId)
+      .catch(() => null);
+    const isFirstMessage = !roomBefore?.lastMessageAt;
+
     // Update room with last message; unread += one per persisted row.
     this.roomRepo
       .updateRoomOnNewMessage({
@@ -264,10 +287,166 @@ export class PrivateMessageService {
         receiverId: params.receiverId,
         unreadIncrement,
       })
+      .then(() => {
+        if (!isFirstMessage || !this.redis) return;
+        // Tell both participants a real conversation now exists — lets the
+        // frontend drop the "friend suggestion" placeholder and insert the
+        // room into the conversation list without a manual refresh.
+        const payload = JSON.stringify({
+          event: "conv:created",
+          data: {
+            roomId: params.roomId,
+            participants: [params.senderId, params.receiverId],
+          },
+        });
+        this.redis!.publish(`user:${params.senderId}`, payload).catch(() => {});
+        this.redis!.publish(`user:${params.receiverId}`, payload).catch(
+          () => {}
+        );
+      })
       .catch((err: unknown) => {
         logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
       });
+
+    // Presence-aware delivery: if the peer has ANY authenticated socket right
+    // now, the message is DELIVERED the moment it's persisted (Telegram/WhatsApp
+    // parity: ✓✓ means "the recipient device holds it", not "the recipient
+    // opened the chat"). Fire-and-forget so the send path returns promptly.
+    void this.markDeliveredForOnlinePeer({
+      roomId: params.roomId,
+      peerId: params.receiverId,
+      senderId: params.senderId,
+      messages: created,
+    });
+
     return attachAlbumMessages(message, created);
+  }
+
+  /**
+   * The OTHER participant in a private room, given either side's own id.
+   * Mirrors the peer-resolution `getPeerReadSeq` already does inline — pulled
+   * out as a public helper so gRPC handlers (markDelivered) can resolve "who
+   * needs to know" without duplicating the room lookup.
+   */
+  async getPeerId(roomId: string, userId: string): Promise<string | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return null;
+    return (room.participants ?? []).find((id) => id !== userId) ?? null;
+  }
+
+  /**
+   * Persist deliveredTo + publish `message:delivered` for a peer we already
+   * know (or just discovered) is online. Idempotent under retries — callers
+   * that resubmit an already-delivered messageId simply produce a no-op event
+   * because `markDeliveredUpTo` filters candidates by `senderId != recipient`
+   * and skips docs where the entry already exists.
+   */
+  private async markDeliveredForOnlinePeer(params: {
+    roomId: string;
+    peerId: string;
+    senderId: string;
+    messages: PrivateMessage[];
+  }): Promise<void> {
+    if (!this.presenceService || !this.redis || params.messages.length === 0)
+      return;
+    try {
+      const isOnline = await this.presenceService.getIsOnline(params.peerId);
+      if (!isOnline) return;
+      const last = params.messages[params.messages.length - 1]!;
+      const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+        params.roomId,
+        params.peerId,
+        last.id
+      );
+      if (count === 0) return;
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: {
+          conversationId: params.roomId,
+          recipientId: params.peerId,
+          upToMessageId: last.id,
+          messageIds,
+        },
+      });
+      await this.redis.publish(`conv:${params.roomId}`, payload);
+      // ALSO direct to the sender's own `user:<id>` channel — see the identical
+      // comment on service-impl.ts's markMessagesRead. Guarantees the sender's
+      // conversation-list row updates even if their sidebar socket hasn't (yet)
+      // joined this specific `conv:<roomId>` room.
+      void this.redis
+        .publish(`user:${params.senderId}`, payload)
+        .catch((e: unknown) =>
+          logger.warn(
+            `PrivateMessageService|markDeliveredForOnlinePeer direct publish failed sender=${params.senderId}: ${String(e)}`
+          )
+        );
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|markDeliveredForOnlinePeer failed roomId=${params.roomId} peer=${params.peerId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Presence-connect backfill entry point — called by PresenceService when a
+   * user transitions offline→online. Walks every private room the user is a
+   * participant in and marks their pending inbox as delivered (single Mongo
+   * update per room, capped batch inside `markDeliveredUpTo`). Publishes one
+   * `message:delivered` per room so every sender's tick catches up live.
+   *
+   * Safe on cold rooms (no unread messages) — `markDeliveredUpTo` returns
+   * count:0 and nothing is published.
+   */
+  async backfillDeliveredOnPresenceConnect(userId: string): Promise<void> {
+    if (!this.redis) return;
+    let rooms: Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      participants: string[];
+    }>;
+    try {
+      rooms = await this.roomRepo.findParticipatingRoomHeads(userId);
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|backfill|findParticipatingRoomHeads failed userId=${userId}: ${String(err)}`
+      );
+      return;
+    }
+    for (const room of rooms) {
+      if (!room.lastMessageId) continue;
+      try {
+        const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+          room.roomId,
+          userId,
+          room.lastMessageId
+        );
+        if (count === 0) continue;
+        const payload = JSON.stringify({
+          event: "message:delivered",
+          data: {
+            conversationId: room.roomId,
+            recipientId: userId,
+            upToMessageId: room.lastMessageId,
+            messageIds,
+          },
+        });
+        await this.redis.publish(`conv:${room.roomId}`, payload);
+        const senderId = room.participants.find((id) => id !== userId);
+        if (senderId) {
+          await this.redis
+            .publish(`user:${senderId}`, payload)
+            .catch((e: unknown) =>
+              logger.warn(
+                `PrivateMessageService|backfill direct publish failed sender=${senderId}: ${String(e)}`
+              )
+            );
+        }
+      } catch (err) {
+        logger.warn(
+          `PrivateMessageService|backfill|room=${room.roomId} userId=${userId}: ${String(err)}`
+        );
+      }
+    }
   }
 
   async getMessages(params: {
@@ -287,7 +466,8 @@ export class PrivateMessageService {
       params.userId,
       { roomId: room.roomId },
       beforeTimestamp,
-      params.limit
+      params.limit,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -317,6 +497,7 @@ export class PrivateMessageService {
       params.roomId,
       params.userId
     );
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
 
     const [{ messages: items, hasMore }, total] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
@@ -327,10 +508,12 @@ export class PrivateMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
         limit: params.limit,
+        cutoff,
       }),
       this.messageRepo.countTimeline({
         roomId: room.roomId,
         userId: params.userId,
+        cutoff,
       }),
     ]);
 
@@ -373,6 +556,7 @@ export class PrivateMessageService {
       direction: params.direction,
       seq: params.seq,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
@@ -398,11 +582,13 @@ export class PrivateMessageService {
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: room.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
+      cutoff,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -413,6 +599,7 @@ export class PrivateMessageService {
         direction,
         seq,
         limit: 1,
+        cutoff,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -425,13 +612,18 @@ export class PrivateMessageService {
     limit: number;
     skip?: number;
   }): Promise<PrivateMessage[]> {
-    await assertPrivateParticipant(this.roomRepo, params.roomId, params.userId);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId,
-      params.skip ?? 0
+      params.skip ?? 0,
+      getPrivateDeletionCutoff(room, params.userId)
     );
   }
 
@@ -456,6 +648,7 @@ export class PrivateMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
     });
   }
 
@@ -481,6 +674,44 @@ export class PrivateMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /**
+   * The PEER's (other participant's) current read high-water mark, as a
+   * sequenceNumber. Used to hydrate each of MY OWN messages' "seen"/"delivered"
+   * tick on the INITIAL page load/refresh/reconnect — without this, every tick
+   * resets to "sent" until a live `message:read` arrives, because per-message
+   * read state isn't otherwise persisted on the wire (see `PrivateMessage.readBy`,
+   * which is dead/never populated — this cursor is the real source of truth).
+   * Returns 0 if the room/peer/read-pointer can't be resolved.
+   */
+  async getPeerReadSeq(roomId: string, userId: string): Promise<number> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return 0;
+    const peerId = (room.participants ?? []).find((id) => id !== userId);
+    if (!peerId) return 0;
+    const lastReadMessageIdByUser = (room.lastReadMessageIdByUser ??
+      {}) as Record<string, string>;
+    const peerReadMessageId = lastReadMessageIdByUser[peerId];
+    if (!peerReadMessageId) return 0;
+    return this.getMessageSequence(peerReadMessageId);
+  }
+
+  /**
+   * The high-water mark for messages the peer has been marked delivered on,
+   * as a `sequenceNumber`. Mirrors `getPeerReadSeq` — used to hydrate the
+   * DELIVERED (✓✓, not blue) tick on the initial page load, so a refresh
+   * while the peer is online-but-hasn't-opened-the-chat correctly shows
+   * double ticks instead of resetting to single. Derived from the sender-
+   * indexed newest message the peer appears in `deliveredTo` on — one indexed
+   * query, bounded to the room's own messages.
+   */
+  async getPeerDeliveredSeq(roomId: string, userId: string): Promise<number> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return 0;
+    const peerId = (room.participants ?? []).find((id) => id !== userId);
+    if (!peerId) return 0;
+    return this.messageRepo.getNewestDeliveredSeq(roomId, userId, peerId);
   }
 
   async deleteForMe(
@@ -608,7 +839,8 @@ export class PrivateMessageService {
     // the globally-last but could still be the user's effective last visible.
     const prev = await this.messageRepo.findPreviousVisibleForUser(
       roomId,
-      userId
+      userId,
+      getPrivateDeletionCutoff(room, userId)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1000,8 +1232,15 @@ export class PrivateMessageService {
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<PrivateMessageService["enrichMessages"]>>;
   }> {
-    await this.assertParticipant(params.roomId, params.userId);
-    const changes = await this.resolveChanges(params);
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
+    const changes = await this.resolveChanges({
+      ...params,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
     const items = await this.enrichMessages(changes.messages, params.userId);
 
     return {
@@ -1026,6 +1265,7 @@ export class PrivateMessageService {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -1056,6 +1296,7 @@ export class PrivateMessageService {
         userId: params.userId,
         sinceRevision: params.sinceRevision,
         limit: params.limit,
+        cutoff: params.cutoff,
       });
 
     return {
@@ -1072,7 +1313,7 @@ export class PrivateMessageService {
     messageId: string,
     userId: string
   ): Promise<PrivateMessage> {
-    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+    const room = await assertPrivateParticipant(this.roomRepo, roomId, userId);
     const message = await this.messageRepo.findMessageMeta({
       roomId,
       messageId,
@@ -1086,6 +1327,10 @@ export class PrivateMessageService {
       message.deletedFor &&
       (message.deletedFor as Record<string, boolean>)[userId]
     ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    const cutoff = getPrivateDeletionCutoff(room, userId);
+    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -1127,7 +1372,13 @@ export class PrivateMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query, userId);
+    const room = await this.roomRepo.findByRoomId(roomId);
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      getPrivateDeletionCutoff(room, userId)
+    );
   }
 
   async forwardMessage(params: {
@@ -1338,12 +1589,15 @@ export class PrivateMessageService {
       };
     }
 
+    const cutoff = getPrivateDeletionCutoff(room, p.userId);
+
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
         roomId: p.roomId,
         userId: p.userId,
         sinceRevision: p.sinceRevision,
         limit: p.limit,
+        cutoff,
       });
       return {
         authorized: true,
@@ -1366,11 +1620,14 @@ export class PrivateMessageService {
     const hasMore = rows.length > p.limit;
     const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
 
-    // Exclude messages the requesting user hid with "delete for me".
+    // Exclude messages the requesting user hid with "delete for me", and
+    // anything at/before their "delete conversation" cutoff.
     // deletedFor shape: { [userId]: ISO-timestamp }
     const events = rawEvents.filter((m) => {
       const deletedFor = (m.deletedFor ?? {}) as Record<string, unknown>;
-      return !(p.userId in deletedFor);
+      if (p.userId in deletedFor) return false;
+      if (cutoff && m.createdAt <= cutoff) return false;
+      return true;
     });
 
     const lastSeq = events.length
@@ -1534,6 +1791,16 @@ export class PrivateMessageService {
       const wire = toWireMessage(
         message as { messageType?: string | null }
       ) as unknown as Record<string, unknown>;
+      // `readBy`/`deliveredTo`/`deliveredAt` are real PrivateMessage columns, so
+      // `toWireMessage`'s `...rest` spread carries them onto `wire` verbatim —
+      // strip them here so none leak into the history response. The frontend
+      // no longer consumes per-message delivery/read receipts on history
+      // reads; the underlying columns (still written by `markDelivered` etc.)
+      // are untouched — this only affects what gets serialized onto the wire.
+      // Fields are omitted entirely (not `null`/`[]`).
+      delete wire.readBy;
+      delete wire.deliveredTo;
+      delete wire.deliveredAt;
       wire.countInUnread = shouldCountInUnread({
         messageType: message.messageType,
         systemEvent: message.systemEvent,
@@ -1577,28 +1844,6 @@ export class PrivateMessageService {
         urlFromMap(urlMap, key)
       );
 
-      // Message-info parity with community's toWire(): `deliveredTo` was a
-      // stored field (populated by markDelivered) that was never surfaced on
-      // read — dead on the read side. Shape matches community's
-      // `Array<{userId, deliveredAt}>` convention. `readBy` is intentionally
-      // NOT added here: unlike community/group (which track a per-member
-      // lastReadAt this can be computed from), private read state lives on
-      // PrivateRoom.lastReadAtByUser, which isn't loaded by enrichMessages'
-      // current callers — deferred rather than threading a room fetch through
-      // every call site for a half-correct result.
-      const deliveredAtMap = (message.deliveredAt ?? {}) as Record<
-        string,
-        string
-      >;
-      const deliveredTo = Array.isArray(message.deliveredTo)
-        ? (message.deliveredTo as string[]).map((userId) => ({
-            userId,
-            deliveredAt: deliveredAtMap[userId]
-              ? new Date(deliveredAtMap[userId]).getTime()
-              : 0,
-          }))
-        : [];
-
       return {
         ...wire,
         content: resolvedContent,
@@ -1615,7 +1860,6 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
-        deliveredTo,
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

@@ -23,3 +23,36 @@ export const disconnectAllFriendships: RequestHandler = (req, res, next) => {
     }
   })();
 };
+
+/** GET /v1/system/calling — current state of the platform-wide kill-switch. */
+export const getCallingEnabled: RequestHandler = (_req, res, next) => {
+  void (async () => {
+    try {
+      const result = await systemMaintenanceService.getCallingEnabled();
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * PATCH /v1/system/calling — enable/disable calling platform-wide.
+ * `requirePermission(PERMISSIONS.SETTINGS_MANAGE)` on the route is the access
+ * control (SUPER_ADMIN only). Disabling blocks NEW calls only.
+ */
+export const setCallingEnabled: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const { enabled } = req.body as { enabled: boolean };
+      const result = await systemMaintenanceService.setCallingEnabled(
+        enabled,
+        req.admin!.id,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};

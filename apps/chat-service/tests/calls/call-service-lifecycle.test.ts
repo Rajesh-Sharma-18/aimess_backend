@@ -15,7 +15,10 @@ function buildService() {
       claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
       findByParticipant: jest.fn(),
       findStuckRinging: jest.fn(),
+      findStuckInProgress: jest.fn().mockResolvedValue([]),
       claimForMissed: jest.fn(),
+      // Default to "nothing stranded" so the existing sweep tests are unaffected.
+      findStuckInProgress: jest.fn().mockResolvedValue([]),
     },
     privateRoomRepo: {
       findByRoomId: jest.fn(),
@@ -74,7 +77,7 @@ describe("CallService.sweepMissedCalls", () => {
       expect.stringContaining("call:missed")
     );
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:u2",
+      "self:u2",
       expect.stringContaining("call:missed")
     );
     expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(2);
@@ -229,8 +232,96 @@ describe("CallService.endCall chat messages", () => {
 
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
     expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "user:u2",
+      "self:u2",
       expect.stringContaining("call:cancelled")
     );
+  });
+});
+
+describe("CallService.sweepStaleInProgressCalls", () => {
+  const NOW = new Date(10_000_000_000);
+  const MAX = 14_400; // 4h
+
+  /** A call answered `agoSec` before NOW. */
+  const staleCall = (callId: string, agoSec: number) => ({
+    callId,
+    callerId: "u1",
+    calleeId: "u2",
+    privateRoomId: "r1",
+    type: "AUDIO",
+    answeredAt: new Date(NOW.getTime() - agoSec * 1000),
+  });
+
+  it("flips a stranded IN_PROGRESS call to ENDED with endedBy SYSTEM_TIMEOUT", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      staleCall("c1", MAX + 600),
+    ]);
+
+    const flipped = await service.sweepStaleInProgressCalls(NOW, MAX, 50);
+
+    expect(flipped).toBe(1);
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "IN_PROGRESS",
+      expect.objectContaining({
+        status: "ENDED",
+        endedBy: "SYSTEM_TIMEOUT",
+      })
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:ended")
+    );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("CAPS durationSec at maxDurationSec — an 8-day stranded call must not record 8 days", async () => {
+    const { service, stubs } = buildService();
+    const eightDaysSec = 8 * 24 * 60 * 60;
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      staleCall("c1", eightDaysSec),
+    ]);
+
+    await service.sweepStaleInProgressCalls(NOW, MAX, 50);
+
+    const update = stubs.callRepo.claimStatusTransition.mock.calls[0][2] as {
+      durationSec: number;
+    };
+    expect(update.durationSec).toBe(MAX);
+    expect(update.durationSec).toBeLessThan(eightDaysSec);
+  });
+
+  it("does NOT touch fresh IN_PROGRESS calls — the repo cutoff excludes them", async () => {
+    const { service, stubs } = buildService();
+    // A live call is simply absent from the finder's result set.
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([]);
+
+    const flipped = await service.sweepStaleInProgressCalls(NOW, MAX, 50);
+
+    expect(flipped).toBe(0);
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    // The cutoff must be derived from maxDurationSec, not hardcoded.
+    expect(stubs.callRepo.findStuckInProgress).toHaveBeenCalledWith(
+      new Date(NOW.getTime() - MAX * 1000),
+      50
+    );
+  });
+
+  it("IDEMPOTENT: a lost claim race publishes nothing and is not counted", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckInProgress.mockResolvedValue([
+      staleCall("c1", MAX + 600),
+    ]);
+    // Another node won the transition first.
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
+
+    const flipped = await service.sweepStaleInProgressCalls(NOW, MAX, 50);
+
+    expect(flipped).toBe(0);
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
   });
 });

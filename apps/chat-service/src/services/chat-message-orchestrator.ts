@@ -40,6 +40,7 @@ import type { GroupMessageService } from "./group-message.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { resolveDisplayName } from "./user-snapshot.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
@@ -1167,14 +1168,11 @@ export class ChatMessageOrchestrator {
     let readToSeq: number;
     let unreadCount = 0;
     if (conversationType === "GROUP") {
-      await this.groupMemberService.markRead({
+      ({ readToSeq } = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
         userId: params.readerId,
-        lastMessageId: params.upToMessageId,
-      });
-      readToSeq = await this.groupMessageService
-        .getMessageSequence(params.upToMessageId)
-        .catch(() => 0);
+        upToMessageId: params.upToMessageId,
+      }));
     } else {
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
@@ -1551,8 +1549,13 @@ export class ChatMessageOrchestrator {
       this.cacheRepo
     );
     const snap = snaps.get(senderId);
+    // Use the shared fullName → displayName → username → memberId → "Unknown User"
+    // fallback chain so an empty computed displayName (profile with blank first/last)
+    // still yields a real sender name for the group/private list preview.
+    const resolvedName = resolveDisplayName(snap);
     return {
-      senderName: senderName ?? ((snap?.displayName as string) || ""),
+      senderName:
+        senderName ?? (resolvedName === "Unknown User" ? "" : resolvedName),
       senderAvatar: senderAvatar ?? ((snap?.avatar as string) || ""),
     };
   }

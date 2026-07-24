@@ -4,7 +4,10 @@ import amqp from "amqplib";
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { pushToUsers } from "../services/push.service.js";
-import { isCommunityActorMuted } from "../services/notification-eligibility.service.js";
+import {
+  filterToActiveCommunityMembers,
+  isCommunityActorMuted,
+} from "../services/notification-eligibility.service.js";
 
 /**
  * V2 §4: chat-message → FCM/APNs push bridge.
@@ -38,27 +41,48 @@ interface MessageSentPayload {
 }
 
 async function handleMessageSent(data: MessageSentPayload): Promise<void> {
+  const isCommunity = data.conversationType === "COMMUNITY";
+  // Prefer explicit communityId; fall back to conversationId (roomId ===
+  // communityId for community chat) so the membership gate always has a key.
+  const communityId = isCommunity
+    ? (data.communityId ?? data.conversationId)
+    : data.communityId;
+
   // Notification eligibility gate (community only). A moderator-muted member's
   // community messages must NOT generate notifications for anyone. PRIVATE/GROUP
   // never invoke the gate (no gRPC call). Fail-open: an oracle outage resolves to
   // "not muted" so notifications still fan out. Returning early here is a
   // SUCCESS (the message is still ACKed by the consume callback) — NOT a nack.
-  if (data.conversationType === "COMMUNITY" && data.communityId) {
-    const muted = await isCommunityActorMuted(data.senderId, data.communityId);
+  if (isCommunity && communityId) {
+    const muted = await isCommunityActorMuted(data.senderId, communityId);
     if (muted) {
       logger.info(
-        `Suppressing community notification fan-out: sender ${data.senderId} is muted in community ${data.communityId} (message ${data.messageId})`
+        `Suppressing community notification fan-out: sender ${data.senderId} is muted in community ${communityId} (message ${data.messageId})`
       );
       return;
     }
   }
 
-  const recipients = (data.recipientIds ?? []).filter(
+  let recipients = (data.recipientIds ?? []).filter(
     (id) => id && id !== data.senderId
   );
   if (recipients.length === 0) return;
 
-  const isCommunity = data.conversationType === "COMMUNITY";
+  // Authoritative ACTIVE-roster filter: chat-service's RoomMember mirror can
+  // lag behind leave/kick/ban, so a LEFT user may still appear in recipientIds.
+  // Intersect with community-service's live ACTIVE ids before any FCM send.
+  // Fail-closed (empty list) on oracle outage — never push to former members.
+  if (isCommunity && communityId) {
+    const before = recipients.length;
+    recipients = await filterToActiveCommunityMembers(communityId, recipients);
+    if (recipients.length < before) {
+      logger.info(
+        `Filtered ${before - recipients.length} non-ACTIVE recipient(s) from community FCM fan-out community=${communityId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
+
   const category = isCommunity ? "communityEnabled" : "chatEnabled";
 
   // For community messages: title = community name (if known), body = "Sender: preview".
@@ -72,7 +96,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   // Include messageId in the community deep link so the client can scroll to
   // the specific message after navigating to the community chat room.
-  const communityTarget = data.communityId ?? data.conversationId;
+  const communityTarget = communityId ?? data.conversationId;
   const deepLink = isCommunity
     ? buildDeepLink("community", communityTarget, data.messageId)
     : buildDeepLink("conversation", data.conversationId);
@@ -107,7 +131,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       type: "MESSAGE",
       conversationId: data.conversationId,
       conversationType: data.conversationType,
-      ...(data.communityId ? { communityId: data.communityId } : {}),
+      ...(communityId ? { communityId } : {}),
       ...(data.communityName ? { communityName: data.communityName } : {}),
       messageId: data.messageId,
       clientMessageId: data.clientMessageId ?? "",

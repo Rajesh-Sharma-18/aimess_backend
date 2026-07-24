@@ -163,6 +163,28 @@ export const userSearchService = {
     });
   },
 
+  /** Remove one recently-viewed target. Returns false if no matching row existed. */
+  async removeRecent(params: {
+    userId: string;
+    targetType: "USER" | "GROUP";
+    targetId: string;
+  }): Promise<boolean> {
+    const result = await recentUserSearchRepository.deleteOne({
+      userId: params.userId,
+      targetType:
+        params.targetType === "GROUP"
+          ? RecentSearchTargetType.GROUP
+          : RecentSearchTargetType.USER,
+      targetId: params.targetId,
+    });
+    return result.count > 0;
+  },
+
+  /** Clear every recently-viewed target for this user. */
+  async clearRecent(userId: string): Promise<void> {
+    await recentUserSearchRepository.clearAll(userId);
+  },
+
   /** `q` empty/whitespace → Recent only. No search logic runs. */
   async searchRecent(
     viewerId: string

@@ -33,6 +33,7 @@ export {
   getDashboardOverview,
   getDashboardCharts,
   getDashboardServiceStatus,
+  getDashboardCallAnalytics,
 } from "./dashboard.controller.js";
 export {
   listUsers,
@@ -76,7 +77,11 @@ export {
 } from "./category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
 export { getSystemHealth } from "./system-health.controller.js";
-export { disconnectAllFriendships } from "./system-maintenance.controller.js";
+export {
+  disconnectAllFriendships,
+  getCallingEnabled,
+  setCallingEnabled,
+} from "./system-maintenance.controller.js";
 export {
   listAdminAccounts,
   createAdminAccount,

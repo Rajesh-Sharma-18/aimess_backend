@@ -54,6 +54,15 @@ model Community {
   id          String            @id @default(auto()) @map("_id") @db.ObjectId
   name        String            
   handle      String            @unique
+  // Formatting-insensitive search shadows of name/handle: lowercased with every
+  // non-letter/digit character (spaces, underscores, hyphens, dots, other
+  // punctuation) stripped — see `normalizeForSearch` in
+  // `lib/community-search.util.ts`. Kept in sync by `createCommunity`/
+  // `updateCommunity` in the repository whenever name/handle is written, so a
+  // query like "dr_jhatka" or "dr.jhatka" matches a community named
+  // "Dr. Jhatka" regardless of how either side is punctuated/spaced/cased.
+  normalizedName   String        @default("")
+  normalizedHandle String        @default("")
   description String?
   type        CommunityType     @default(PUBLIC)
   categoryId  String            @db.ObjectId
@@ -154,6 +163,13 @@ model Community {
   @@index([categoryName])
   // Backs the admin user→communities list's name sort (orderBy name, _id tiebreak).
   @@index([name])
+  // Formatting-insensitive search: these can't accelerate an arbitrary
+  // mid-string `contains` (Mongo can only index-optimize a left-anchored
+  // regex), but DO speed up prefix-style lookups and keep the fields easy to
+  // find/inspect. See the "Performance considerations" note on
+  // `normalizeForSearch`/`buildCommunitySearchFilter` for the full picture.
+  @@index([normalizedName])
+  @@index([normalizedHandle])
   // Backs fast lookup by permanent invitation code (lookupInviteLink fallback).
   // The sparse unique variant of this index is created at startup; this entry
   // documents intent but the actual enforcement is in server.ts.

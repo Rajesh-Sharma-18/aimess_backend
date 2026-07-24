@@ -8,7 +8,8 @@
  * existing paging params already consume, so a client feeds them straight back
  * with no new cursor scheme (see the message-navigation contract §5.2):
  *  - private / group: plain `sequenceNumber` → `before_seq` (older) / `after_seq` (newer).
- *  - community:       `"<ms>_<id>"` compound → `before_ts` (older); plain epoch-ms → `after_ts` (newer).
+ *  - community:       `"<ms>_<id>"` compound in BOTH directions → `before_cursor` (older) /
+ *    `after_cursor` (newer). Both are opaque: echo verbatim, never parse.
  */
 export interface AroundCursors {
   /** A history-visible message older than the window's first row exists. */
@@ -89,6 +90,10 @@ export async function computeDateAroundCursors<
     hasMoreOlder: hasAny(older),
     hasMoreNewer: hasAny(newer),
     olderCursor: `${oldest.createdAt.getTime()}_${oldest.id}`,
-    newerCursor: String(newest.createdAt.getTime()),
+    // Compound, exactly like olderCursor. A bare epoch-ms carries no tiebreaker, so
+    // `buildRoomKeysetWhere` degraded to `createdAt > ts` and SILENTLY DROPPED every message
+    // sharing the boundary millisecond — forward paging lost messages while backward paging
+    // (already compound) did not. findByRoomIdTimeline takes boundaryId in both directions.
+    newerCursor: `${newest.createdAt.getTime()}_${newest.id}`,
   };
 }

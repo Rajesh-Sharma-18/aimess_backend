@@ -102,15 +102,51 @@ describe("POST /api/chat/groups (create)", () => {
       .send({ name: "Devs" });
     expect(res.status).toBe(401);
   });
+
+  it("POSITIVE: publishes group:added to the creator's own channel so their inbox updates without a refresh", async () => {
+    mocks.groupRoomRepo.create.mockResolvedValue({
+      roomId: "grp_new",
+      name: "Devs",
+    });
+    mocks.groupMemberRepo.create.mockResolvedValue({
+      roomId: "grp_new",
+      userId: TEST_USER_ID,
+      role: "OWNER",
+      joinedAt: "2030-01-01T00:00:00.000Z",
+    });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_new",
+      name: "Devs",
+      memberCount: 1,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/groups")
+      .set(bearer(makeAccessToken()))
+      .send({ name: "Devs" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining("group:added")
+    );
+    const [, payload] = mocks.redis.publish.mock.calls[0];
+    expect(payload).toContain('"roomId":"grp_new"');
+    expect(payload).toContain('"role":"OWNER"');
+  });
 });
 
 describe("GET /api/chat/groups/my-groups", () => {
   it("POSITIVE: returns the caller's active groups", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+      { roomId: "grp_1", clearedAt: null },
+    ]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       { roomId: "grp_1", name: "Devs", lastMessageAt: new Date(1) },
     ]);
-    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(1) },
+    ]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -122,7 +158,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   });
 
   it("EDGE: no memberships → 200 with empty data", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -135,7 +171,9 @@ describe("GET /api/chat/groups/my-groups", () => {
   // Resolve-on-read: the stored group logo object key must surface as a full
   // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves the group logo object key to a download URL", async () => {
-    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+      { roomId: "grp_1", clearedAt: null },
+    ]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       {
         roomId: "grp_1",
@@ -144,7 +182,9 @@ describe("GET /api/chat/groups/my-groups", () => {
         lastMessageAt: new Date(1),
       },
     ]);
-    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(1) },
+    ]);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")

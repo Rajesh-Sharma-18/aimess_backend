@@ -151,4 +151,17 @@ jest.mock("../../src/grpc/community.client.js", () => ({
   })),
 }));
 
+// --- user-service gRPC client (same import.meta.url + proto loader +
+//     __dirname-redeclare issue as stream/community clients above). Pulled in
+//     transitively by NotificationService → notification-friendship.enricher
+//     whenever app-factory boots the real Express app. --------------------
+jest.mock("../../src/grpc/user-snapshot.client.js", () => ({
+  userGrpcClient: {
+    getFriendshipView: jest.fn(async () => null),
+    getFriendshipInfoBulk: jest.fn(async () => []),
+    getUserSnapshotsBulk: jest.fn(async () => []),
+    getCallPrivacy: jest.fn(async () => null),
+  },
+}));
+
 export {};

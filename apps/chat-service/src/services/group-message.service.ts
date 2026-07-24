@@ -27,6 +27,8 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
@@ -61,6 +63,8 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PresenceService } from "./presence.service.js";
+import type { Redis, Cluster } from "ioredis";
 import type { GroupMessage } from "../generated/prisma/index.js";
 
 export class GroupMessageService {
@@ -69,7 +73,15 @@ export class GroupMessageService {
     private readonly roomRepo: GroupRoomRepository,
     private readonly memberRepo: GroupMemberRepository,
     private readonly cacheRepo: CacheRepository,
-    private readonly userSnapshotService: UserSnapshotService
+    private readonly userSnapshotService: UserSnapshotService,
+    // Presence-aware delivery — populates `deliveredTo` at insert time from
+    // every active OTHER member currently online, and publishes one
+    // `message:delivered` per online member so the sender's tick flips to ✓✓
+    // immediately without waiting for each recipient's client-triggered ack.
+    // Optional so unit tests that construct the service without these keep
+    // working (delivery stays "sent" until the client ack lands).
+    private readonly presenceService?: PresenceService,
+    private readonly redis?: Redis | Cluster | null
   ) {}
 
   async sendMessage(params: {
@@ -184,6 +196,36 @@ export class GroupMessageService {
       }
     }
 
+    // Presence-aware group delivery: resolve every OTHER active member's live
+    // socket status in ONE batch call BEFORE inserting, so the persisted
+    // `deliveredTo` list reflects the truthful "who was online at send time"
+    // rather than "who has a client-side ack listener that happened to fire".
+    // Only queried when the service is fully wired (presence + redis) — tests
+    // that omit those keep the old behaviour and deliveredTo starts empty.
+    let deliveredToOnInsert: string[] = [];
+    if (this.presenceService && this.redis) {
+      try {
+        const others = (
+          await this.memberRepo.findActiveMembers(params.roomId)
+        ).filter((m) => m.userId !== params.senderId);
+        if (others.length > 0) {
+          const presence = await this.presenceService.getPresenceMany(
+            others.map((m) => m.userId)
+          );
+          deliveredToOnInsert = others
+            .filter((m) => presence.get(m.userId) === true)
+            .map((m) => m.userId);
+        }
+      } catch (err) {
+        // Delivery is best-effort — a presence lookup outage must never block
+        // the send itself. The client-triggered `message:delivered` ack path
+        // remains as the fallback delivery signal.
+        logger.warn(
+          `GroupMessageService|resolvePresence|room=${params.roomId}: ${String(err)}`
+        );
+      }
+    }
+
     const created: GroupMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
@@ -196,6 +238,9 @@ export class GroupMessageService {
         messageType: normalizeMessageType(part.messageType),
         parentMessageId: resolvedParentId,
         clientMessageId: part.clientMessageId || null,
+        // Same deliveredTo snapshot on every album sibling — atomic delivery
+        // for a media set that the recipient's client will receive as one page.
+        deliveredTo: deliveredToOnInsert,
         ...(i === 0 && params.clientTs
           ? { clientInfo: { clientTs: params.clientTs } }
           : {}),
@@ -279,7 +324,118 @@ export class GroupMessageService {
           );
         });
     }
+
+    // Fire one `message:delivered` per online member so the sender's tick can
+    // flip SENT→DELIVERED as each recipient is confirmed present. Fire-and-
+    // forget — a Redis blip must never fail the send itself.
+    if (this.redis && deliveredToOnInsert.length > 0) {
+      const messageIds = created.map((m) => m.id);
+      const lastId = message.id;
+      for (const recipientId of deliveredToOnInsert) {
+        void this.redis
+          .publish(
+            `conv:${params.roomId}`,
+            JSON.stringify({
+              event: "message:delivered",
+              data: {
+                conversationId: params.roomId,
+                recipientId,
+                upToMessageId: lastId,
+                messageIds,
+              },
+            })
+          )
+          .catch((err: unknown) =>
+            logger.warn(
+              `GroupMessageService|publish message:delivered failed room=${params.roomId} recipient=${recipientId}: ${String(err)}`
+            )
+          );
+      }
+      // ALSO direct to the SENDER's own `user:<id>` channel — one publish
+      // regardless of how many members came online (the sender's list row only
+      // needs one tick update). Guarantees delivery even if the sender's
+      // sidebar socket hasn't (yet) joined `conv:<roomId>` — see the identical
+      // comment on the private markDelivered path.
+      void this.redis
+        .publish(
+          `user:${params.senderId}`,
+          JSON.stringify({
+            event: "message:delivered",
+            data: {
+              conversationId: params.roomId,
+              recipientId: deliveredToOnInsert[0],
+              upToMessageId: lastId,
+              messageIds,
+            },
+          })
+        )
+        .catch((err: unknown) =>
+          logger.warn(
+            `GroupMessageService|publish message:delivered direct failed room=${params.roomId} sender=${params.senderId}: ${String(err)}`
+          )
+        );
+    }
+
     return withRole(attachAlbumMessages(message, created));
+  }
+
+  /**
+   * Presence-connect backfill for GROUPS — called by PresenceService when a
+   * user transitions offline→online. Walks every group the user is an active
+   * member of, atomically appends the userId to every message's `deliveredTo`
+   * where they aren't already present, and publishes one `message:delivered`
+   * per room so senders' ticks catch up live. Bounded by member count and by
+   * the repo's per-room 200-row cap inside markDeliveredUpTo.
+   */
+  async backfillDeliveredOnPresenceConnect(userId: string): Promise<void> {
+    if (!this.redis) return;
+    let memberships: Array<{ roomId: string }>;
+    try {
+      memberships = await this.memberRepo.getActiveMemberships(userId);
+    } catch (err) {
+      logger.warn(
+        `GroupMessageService|backfill|getActiveMemberships failed userId=${userId}: ${String(err)}`
+      );
+      return;
+    }
+    for (const membership of memberships) {
+      try {
+        const head = await this.roomRepo.findActiveByRoomId(membership.roomId);
+        if (!head?.lastMessageId) continue;
+        const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+          membership.roomId,
+          userId,
+          head.lastMessageId
+        );
+        if (count === 0) continue;
+        const payload = JSON.stringify({
+          event: "message:delivered",
+          data: {
+            conversationId: membership.roomId,
+            recipientId: userId,
+            upToMessageId: head.lastMessageId,
+            messageIds,
+          },
+        });
+        await this.redis.publish(`conv:${membership.roomId}`, payload);
+        const senderId = (
+          head.lastMessagePreview as { senderId?: string } | null
+        )?.senderId;
+        if (senderId && senderId !== userId) {
+          await this.redis
+            .publish(`user:${senderId}`, payload)
+            .catch((e: unknown) =>
+              logger.warn(
+                `GroupMessageService|backfill direct publish failed sender=${senderId}: ${String(e)}`
+              )
+            );
+        }
+      } catch (err) {
+        logger.warn(
+          `GroupMessageService|backfill|room=${membership.roomId} userId=${userId}: ${String(err)}`
+        );
+      }
+    }
   }
 
   /**
@@ -289,6 +445,17 @@ export class GroupMessageService {
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return members.map((m) => m.userId);
+  }
+
+  /**
+   * The room's CURRENT last-message sequenceNumber (0 if none). Used by the
+   * read-receipt fan-out to tell the sender's inbox row whether a reader's
+   * watermark has caught up to the newest message — see `getMessageSequence`.
+   */
+  async getRoomLastMessageSeq(roomId: string): Promise<number> {
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    const lastId = room?.lastMessageId;
+    return lastId ? this.getMessageSequence(lastId) : 0;
   }
 
   /** See PrivateRoomRepository.setReactionActivity — identical overlay semantics. */
@@ -344,13 +511,18 @@ export class GroupMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<GroupMessage[]> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const beforeTimestamp = params.cursor || new Date().toISOString();
     return this.messageRepo.findByRoomIdWithTime(
       params.roomId,
       beforeTimestamp,
       params.limit,
-      params.userId
+      params.userId,
+      getGroupDeletionCutoff(member)
     );
   }
 
@@ -377,7 +549,12 @@ export class GroupMessageService {
     nextCursor: string | null;
     total: number;
   }> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const cutoff = getGroupDeletionCutoff(member);
     const [{ messages: items, hasMore }, total] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
         userId: params.userId,
@@ -387,10 +564,12 @@ export class GroupMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
         limit: params.limit,
+        cutoff,
       }),
       this.messageRepo.countTimeline({
         roomId: params.roomId,
         userId: params.userId,
+        cutoff,
       }),
     ]);
 
@@ -420,13 +599,18 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: params.userId,
       roomId: params.roomId,
       direction: params.direction,
       seq: params.seq,
       limit: params.limit,
+      cutoff: getGroupDeletionCutoff(member),
     });
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
@@ -444,14 +628,20 @@ export class GroupMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: GroupMessage[]; anchorSeq: number } & AroundCursors> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const cutoff = getGroupDeletionCutoff(member);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: params.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
+      cutoff,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -462,6 +652,7 @@ export class GroupMessageService {
         direction,
         seq,
         limit: 1,
+        cutoff,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -486,6 +677,7 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    const cutoff = getGroupDeletionCutoff(member);
 
     const beforeMs = params.timestamp ?? Date.now();
     const skip = (params.pageNumber - 1) * params.limit;
@@ -497,6 +689,7 @@ export class GroupMessageService {
         beforeMs,
         skip,
         take: params.limit,
+        cutoff,
       }),
       // Count must match the page's filter (createdAt < beforeMs + per-user
       // deletion exclusion), not the boundary-less countByRoom.
@@ -504,6 +697,7 @@ export class GroupMessageService {
         roomId: params.roomId,
         userId: params.userId,
         beforeMs,
+        cutoff,
       }),
     ]);
 
@@ -518,6 +712,7 @@ export class GroupMessageService {
           roomId: params.roomId,
           userId: params.userId,
           afterDate: newest.createdAt,
+          cutoff,
         })
         .catch((err: unknown) => {
           logger.warn(
@@ -550,13 +745,18 @@ export class GroupMessageService {
     limit: number;
     skip?: number;
   }): Promise<GroupMessage[]> {
-    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId,
-      params.skip ?? 0
+      params.skip ?? 0,
+      getGroupDeletionCutoff(member)
     );
   }
 
@@ -580,6 +780,7 @@ export class GroupMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
+      cutoff: getGroupDeletionCutoff(member),
     });
   }
 
@@ -592,7 +793,16 @@ export class GroupMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query, userId);
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      getGroupDeletionCutoff(member)
+    );
   }
 
   /**
@@ -725,9 +935,14 @@ export class GroupMessageService {
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) return null;
-    const prev = await this.messageRepo.findPreviousVisibleForUser(
+    const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
       userId
+    );
+    const prev = await this.messageRepo.findPreviousVisibleForUser(
+      roomId,
+      userId,
+      getGroupDeletionCutoff(member)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1002,8 +1217,15 @@ export class GroupMessageService {
     nextRevisionCursor: string | null;
     items: Awaited<ReturnType<GroupMessageService["enrichForWire"]>>;
   }> {
-    await this.assertMember(params.roomId, params.userId);
-    const changes = await this.resolveChanges(params);
+    const member = await assertGroupMember(
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const changes = await this.resolveChanges({
+      ...params,
+      cutoff: getGroupDeletionCutoff(member),
+    });
     const items = await this.enrichForWire(changes.messages, params.userId);
 
     return {
@@ -1028,6 +1250,7 @@ export class GroupMessageService {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     roomRevision: number;
     resetRequired: boolean;
@@ -1056,6 +1279,7 @@ export class GroupMessageService {
         userId: params.userId,
         sinceRevision: params.sinceRevision,
         limit: params.limit,
+        cutoff: params.cutoff,
       });
 
     return {
@@ -1072,7 +1296,7 @@ export class GroupMessageService {
     messageId: string,
     userId: string
   ): Promise<GroupMessage> {
-    await assertGroupMember(this.memberRepo, roomId, userId);
+    const member = await assertGroupMember(this.memberRepo, roomId, userId);
     const message = await this.messageRepo.findById(messageId);
     if (!message || message.roomId !== roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1084,6 +1308,10 @@ export class GroupMessageService {
       message.deletedForUserIds &&
       (message.deletedForUserIds as string[]).includes(userId)
     ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    const cutoff = getGroupDeletionCutoff(member);
+    if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
     return message;
@@ -1266,12 +1494,15 @@ export class GroupMessageService {
       };
     }
 
+    const cutoff = getGroupDeletionCutoff(member);
+
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
         roomId: p.roomId,
         userId: p.userId,
         sinceRevision: p.sinceRevision,
         limit: p.limit,
+        cutoff,
       });
       return {
         authorized: true,
@@ -1294,12 +1525,15 @@ export class GroupMessageService {
     const hasMore = rows.length > p.limit;
     const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
 
-    // Exclude messages the requesting user hid with "delete for me".
+    // Exclude messages the requesting user hid with "delete for me", and
+    // anything at/before their "delete conversation" cutoff.
     // deletedForUserIds shape: string[] (array of userId strings)
     const events = rawEvents.filter((m) => {
       const raw = m as unknown as { deletedForUserIds?: unknown };
       const deletedForUserIds = (raw.deletedForUserIds ?? []) as string[];
-      return !deletedForUserIds.includes(p.userId);
+      if (deletedForUserIds.includes(p.userId)) return false;
+      if (cutoff && m.createdAt <= cutoff) return false;
+      return true;
     });
 
     const lastSeq = events.length
@@ -1326,6 +1560,89 @@ export class GroupMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /**
+   * Every OTHER active member's current read high-water mark, as a
+   * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
+   * read-count state on the INITIAL page load (group has no single "peer" —
+   * unlike private's `getPeerReadSeq` — so the FE compares each message's
+   * `sequenceNumber` against every other member's cursor here to know who has
+   * read it, without waiting for a live `message:read` event).
+   */
+  async getMemberReadCursors(
+    roomId: string,
+    excludeUserId: string
+  ): Promise<Record<string, number>> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    const others = members.filter(
+      (m) => m.userId !== excludeUserId && m.lastReadMessageId
+    );
+    const uniqueMessageIds = [
+      ...new Set(others.map((m) => m.lastReadMessageId as string)),
+    ];
+    const seqById = new Map<string, number>();
+    await Promise.all(
+      uniqueMessageIds.map(async (id) => {
+        seqById.set(id, await this.getMessageSequence(id));
+      })
+    );
+    const cursors: Record<string, number> = {};
+    for (const m of others) {
+      cursors[m.userId] = seqById.get(m.lastReadMessageId as string) ?? 0;
+    }
+    return cursors;
+  }
+
+  /**
+   * Explicit "mark read up to `upToMessageId`" action — the REST/gRPC
+   * mark-read entry point. Routes through the SAME guarded, forward-only,
+   * accurate-unread pointer advance (`memberRepo.advanceReadPointer`) that
+   * `getConversation`'s implicit fetch-triggered mark-read already uses, so
+   * both paths share one update rule instead of two divergent ones (the old
+   * `GroupMemberRepository#markRead` hard-zeroed unread and had no
+   * forward-only check or optimistic-id guard).
+   */
+  async markReadUpTo(params: {
+    roomId: string;
+    userId: string;
+    upToMessageId: string;
+  }): Promise<{ readToSeq: number }> {
+    if (!isObjectId(params.upToMessageId)) return { readToSeq: 0 };
+
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member) return { readToSeq: 0 };
+
+    const message = await this.messageRepo.findById(params.upToMessageId);
+    if (!message || message.roomId !== params.roomId) return { readToSeq: 0 };
+
+    const remainingUnread = await this.messageRepo
+      .countUnreadAfter({
+        roomId: params.roomId,
+        userId: params.userId,
+        afterDate: message.createdAt,
+        cutoff: getGroupDeletionCutoff(member),
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|markReadUpTo|countUnreadAfter failed: ${String(err)}`
+        );
+        return 0;
+      });
+
+    await this.memberRepo.advanceReadPointer(
+      params.roomId,
+      params.userId,
+      message.id,
+      message.createdAt,
+      remainingUnread
+    );
+
+    const seq = (message as { sequenceNumber?: number }).sequenceNumber;
+    return { readToSeq: typeof seq === "number" ? seq : 0 };
   }
 
   async getMessageReactions(params: {

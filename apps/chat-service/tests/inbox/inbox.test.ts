@@ -68,6 +68,9 @@ describe("GET /api/chat/inbox", () => {
       },
     ]);
     mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(3000) },
+    ]);
 
     // user snapshot fan-out resolves from cache (empty) → placeholder peer.
     mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
@@ -109,6 +112,9 @@ describe("GET /api/chat/inbox", () => {
       },
     ]);
     mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(3000) },
+    ]);
     mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
 
     const res = await request(app).get(BASE).set(bearer(makeAccessToken()));

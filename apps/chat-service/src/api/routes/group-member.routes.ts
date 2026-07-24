@@ -9,6 +9,7 @@ import {
   unbanMemberSchema,
   updateRoleSchema,
   muteGroupSchema,
+  reportMemberSchema,
 } from "../validators/group-member.validator.js";
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
 
@@ -29,6 +30,12 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     authenticate,
     validateBody(unbanMemberSchema),
     ctrl.unban
+  );
+  router.post(
+    "/report",
+    authenticate,
+    validateBody(reportMemberSchema),
+    ctrl.reportMember
   );
   router.post(
     "/role",

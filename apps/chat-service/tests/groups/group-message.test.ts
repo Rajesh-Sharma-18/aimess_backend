@@ -172,7 +172,8 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
       "hello",
       10,
       expect.any(String),
-      10
+      10,
+      undefined
     );
   });
 
@@ -191,7 +192,8 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(mocks.groupMessageRepo.countSearchResults).toHaveBeenCalledWith(
       ROOM,
       "hello",
-      expect.any(String)
+      expect.any(String),
+      undefined
     );
   });
 
@@ -544,6 +546,9 @@ describe("pins + forward + reactions", () => {
   });
 
   it("POSITIVE: lists pins (resolves snapshot media + stamps isAvailable §5.8)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
     mocks.groupMessagePinRepo.findPinsByRoom.mockResolvedValue([
       {
         id: "p1",

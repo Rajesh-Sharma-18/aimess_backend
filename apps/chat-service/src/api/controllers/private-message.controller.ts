@@ -183,6 +183,18 @@ export class PrivateMessageController {
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
     const around = req.query.around as string | undefined;
 
+    // The peer's read high-water mark (as a sequenceNumber) — included on every
+    // page so the FE can hydrate each of MY OWN messages' seen/delivered tick
+    // WITHOUT waiting for a live `message:read` event (fixes ticks resetting to
+    // "sent" on refresh/reconnect; see PrivateMessageService.getPeerReadSeq).
+    // peerDeliveredSeq is the parallel signal for the DELIVERED (✓✓ grey) tick
+    // when the peer has received but not yet opened the chat — hydrated from
+    // the newest MY-message the peer appears in `deliveredTo` on.
+    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getPeerReadSeq(roomId, userId),
+      this.messageService.getPeerDeliveredSeq(roomId, userId),
+    ]);
+
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
         await this.messageService.getMessagesAround({
@@ -203,7 +215,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, peerReadSeq, peerDeliveredSeq },
             enriched.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -240,7 +252,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, peerReadSeq, peerDeliveredSeq },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -283,7 +295,11 @@ export class PrivateMessageController {
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse({ ...paginated, peerReadSeq, peerDeliveredSeq }, msg)
+      );
   }
 
   getRoomMedia = asyncHandler(async (req: Request, res: Response) => {
@@ -415,11 +431,12 @@ export class PrivateMessageController {
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    const { userId } = req.auth;
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const [pins, totalCount] = await Promise.all([
-      this.pinService.list(roomId, { limit, cursor }),
+      this.pinService.list(roomId, userId, { limit, cursor }),
       this.pinService.countPins(roomId),
     ]);
     const paginated = buildPaginatedResponse(

@@ -153,6 +153,9 @@ model GroupRoom {
   roomId             String    @unique
   type               String    @default("GROUP")
   name               String
+  // Formatting-insensitive shadow of `name` for search — see
+  // `@aimess/utils` `normalizeForSearch` and `group-search.util.ts`.
+  normalizedName     String    @default("")
   avatar             String    @default("")
   description        String    @default("")
   createdBy          String
@@ -190,6 +193,7 @@ model GroupRoom {
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
+  @@index([normalizedName])
   @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }
@@ -225,6 +229,11 @@ model GroupMessage {
   sequenceNumber     Int       @default(0)
   // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
   revision           Int       @default(0)
+  // Members (userIds) whose socket the server has considered this message delivered
+  // to — populated at send time from `PresenceService.getPresenceMany` and topped up
+  // by the presence-connect backfill. Powers the group "at least one member online"
+  // DELIVERED tier in the inbox tick without a new schema table.
+  deliveredTo        Json      @default("[]")
   createdAt          DateTime  @default(now())
   editedAt           DateTime?
   editHistory        Json      @default("[]")
@@ -265,6 +274,11 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Per-user "delete conversation" cutoff (Telegram-style): messages created
+  // at/before this instant are hidden from this member, even after new
+  // messages restore the group to their inbox. Distinct from `leftAt` — the
+  // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
+  clearedAt            DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)
@@ -564,7 +578,31 @@ model Call {
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
   @@index([status])
+  // Busy-gate lookups filter by participant + status. ponytail: [status] alone
+  // works at dev scale; these compound indexes keep the query cheap as call
+  // volume grows.
+  @@index([callerId, status])
+  @@index([calleeId, status])
+  // Admin call analytics scans a date range across ALL users (no participant
+  // filter), so the participant-prefixed indexes above can't serve it.
+  @@index([initiatedAt])
   @@map("calls")
+}
+
+// -----------------------------------------------------------------------------
+// SystemFlag — platform-wide feature switches owned by chat-service.
+// One row per flag, keyed by name (e.g. "calling.enabled"). Written by admins
+// over gRPC (AdminSetCallingEnabled) and read on the hot path through a small
+// TTL cache. Durable on purpose: a chat-service restart must not silently
+// re-enable something an admin turned off.
+// -----------------------------------------------------------------------------
+model SystemFlag {
+  key       String   @id @map("_id")
+  enabled   Boolean
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+
+  @@map("system_flags")
 }
 
 // -----------------------------------------------------------------------------

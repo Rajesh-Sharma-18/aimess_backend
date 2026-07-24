@@ -1,4 +1,5 @@
 import type { PrismaClient, Call } from "../generated/prisma/index.js";
+import { CallStatus } from "../types/enums.js";
 
 export class CallRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -79,6 +80,27 @@ export class CallRepository {
     });
   }
 
+  /**
+   * IN_PROGRESS rows past the max-duration ceiling, plus rows with a null
+   * `answeredAt` (already inconsistent). Both are unreachable by any normal end
+   * path once the client is gone, so they must be swept or the participants stay
+   * permanently busy.
+   * Sweep candidates for calls stranded in IN_PROGRESS: answered longer ago
+   * than any plausible call could run. These are rows whose LiveKit room has
+   * already closed but whose `room_finished` webhook never landed — without
+   * this they stay IN_PROGRESS forever and keep the participants "busy".
+   * Keyed on `answeredAt` (when the call actually started), not `initiatedAt`.
+   */
+  async findStuckInProgress(cutoff: Date, limit: number): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        status: CallStatus.IN_PROGRESS,
+        answeredAt: { lt: cutoff },
+      },
+      take: limit,
+    });
+  }
+
   async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
     const result = await this.prisma.call.updateMany({
       where: { callId, status: "RINGING" },
@@ -99,6 +121,78 @@ export class CallRepository {
       },
       orderBy: { initiatedAt: "desc" },
       take: limit,
+    });
+  }
+
+  /**
+   * "Genuinely active right now" — the shared busy predicate.
+   *
+   * BOTH states are time-bounded, and both bounds exist for the same reason: a
+   * client that dies without signalling must never leave a row that blocks
+   * calling forever.
+   *  - RINGING  → `initiatedAt >= freshCutoff` (crashed ring, sweep will MISS it)
+   *  - IN_PROGRESS → `answeredAt >= liveCutoff` (crashed/force-killed call; only
+   *    an explicit `call:end` or the LiveKit `room_finished` webhook ends one
+   *    normally, and neither fires if the app died or the webhook is unreachable)
+   * An IN_PROGRESS row with a null `answeredAt` is already inconsistent, so it
+   * is deliberately excluded here and swept below.
+   */
+  private activeWhere(freshCutoff: Date, liveCutoff: Date) {
+    return {
+      OR: [
+        { status: CallStatus.IN_PROGRESS, answeredAt: { gte: liveCutoff } },
+        { status: CallStatus.RINGING, initiatedAt: { gte: freshCutoff } },
+      ],
+    };
+  }
+
+  /** Every active call touching any of `userIds`. */
+  async findActiveByParticipant(
+    userIds: string[],
+    freshCutoff: Date,
+    liveCutoff: Date
+  ): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        OR: [{ callerId: { in: userIds } }, { calleeId: { in: userIds } }],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
+      },
+    });
+  }
+
+  /**
+   * Glare backstop: find an active call between exactly this pair (either
+   * direction) other than `excludeCallId`. Same freshness rule as
+   * `findActiveByParticipant`.
+   */
+  async findActiveBetween(
+    userA: string,
+    userB: string,
+    excludeCallId: string,
+    freshCutoff: Date,
+    liveCutoff: Date
+  ): Promise<Call | null> {
+    return this.prisma.call.findFirst({
+      where: {
+        callId: { not: excludeCallId },
+        OR: [
+          { callerId: userA, calleeId: userB },
+          { callerId: userB, calleeId: userA },
+        ],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
+      },
+    });
+  }
+
+  /**
+   * The caller's own outbound rings. Starting a new outgoing call implies the
+   * caller abandoned any prior one, so the service cancels these first (both to
+   * avoid falsely marking the caller busy on their own zombie call and to stop
+   * the old callee's ring immediately).
+   */
+  async findCallerRinging(callerId: string): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: { callerId, status: CallStatus.RINGING },
     });
   }
 }

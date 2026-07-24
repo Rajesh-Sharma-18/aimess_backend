@@ -86,6 +86,62 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Batch findById — used to resolve a page's own-last-message read ticks in one query. */
+  async findManyByIds(ids: string[]): Promise<GroupMessage[]> {
+    const validIds = [...new Set(ids)].filter((id) =>
+      /^[0-9a-f]{24}$/i.test(id)
+    );
+    if (!validIds.length) return [];
+    return this.prisma.groupMessage.findMany({
+      where: { id: { in: validIds } },
+    });
+  }
+
+  /**
+   * Presence-driven delivery: append `recipientId` to `deliveredTo` on every
+   * message in `roomId` at or before `upToMessageId` that was sent by someone
+   * OTHER than the recipient and that they aren't already listed in. Returns
+   * the touched ids so the caller can publish one `message:delivered` per
+   * batch. Mirrors PrivateMessageRepository.markDeliveredUpTo. 200-row cap
+   * keeps a big offline-then-online catch-up from stalling the presence recompute.
+   */
+  async markDeliveredUpTo(
+    roomId: string,
+    recipientId: string,
+    upToMessageId: string
+  ): Promise<{ count: number; messageIds: string[] }> {
+    if (!/^[0-9a-f]{24}$/i.test(upToMessageId))
+      return { count: 0, messageIds: [] };
+    const upTo = await this.prisma.groupMessage.findUnique({
+      where: { id: upToMessageId },
+    });
+    if (!upTo) return { count: 0, messageIds: [] };
+
+    const candidates = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId,
+        senderId: { not: recipientId },
+        createdAt: { lte: upTo.createdAt },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const updatedIds: string[] = [];
+    for (const msg of candidates) {
+      const deliveredTo = (msg as unknown as { deliveredTo?: unknown })
+        .deliveredTo;
+      const list = Array.isArray(deliveredTo) ? (deliveredTo as string[]) : [];
+      if (list.includes(recipientId)) continue;
+      await this.prisma.groupMessage.update({
+        where: { id: msg.id },
+        data: { deliveredTo: [...list, recipientId] },
+      });
+      updatedIds.push(msg.id);
+    }
+    return { count: updatedIds.length, messageIds: updatedIds };
+  }
+
   /**
    * Which of `ids` are still live (exist in this room, not deleted-for-
    * everyone). One batched query — used by the pins list to stamp each pin's
@@ -118,12 +174,14 @@ export class GroupMessageRepository {
     roomId: string,
     beforeTimestamp: string,
     limit: number,
-    userId?: string
+    userId?: string,
+    cutoff?: Date
   ): Promise<GroupMessage[]> {
+    const ltDate = new Date(beforeTimestamp);
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId,
-        createdAt: { lt: new Date(beforeTimestamp) },
+        createdAt: cutoff ? { lt: ltDate, gt: cutoff } : { lt: ltDate },
       },
       orderBy: { createdAt: "desc" },
       take: limit,
@@ -159,10 +217,19 @@ export class GroupMessageRepository {
   private timelineMatch(params: {
     roomId: string;
     userId: string;
+    /** Per-user "delete conversation" cutoff — excludes everything at/before it. */
+    cutoff?: Date;
   }): Record<string, unknown> {
-    return {
+    const core = {
       roomId: params.roomId,
       deletedForUserIds: { $ne: params.userId },
+    };
+    if (!params.cutoff) return core;
+    return {
+      $and: [
+        core,
+        { createdAt: { $gt: { $date: params.cutoff.toISOString() } } },
+      ],
     };
   }
 
@@ -193,11 +260,14 @@ export class GroupMessageRepository {
     /** Include rows whose createdAt == ts (first page); ignored when boundaryId set. */
     inclusive?: boolean;
     limit: number;
+    /** Per-user "delete conversation" cutoff — see {@link timelineMatch}. */
+    cutoff?: Date;
   }): Promise<{ messages: GroupMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
+      cutoff: params.cutoff,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -358,6 +428,7 @@ export class GroupMessageRepository {
   async countTimeline(params: {
     roomId: string;
     userId: string;
+    cutoff?: Date;
   }): Promise<number> {
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -378,6 +449,7 @@ export class GroupMessageRepository {
     direction: "before" | "after";
     seq: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const bound =
       params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
@@ -386,6 +458,7 @@ export class GroupMessageRepository {
       where: {
         roomId: params.roomId,
         sequenceNumber: bound,
+        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
       },
       orderBy: { sequenceNumber: order },
       take: params.limit + 1 + 10,
@@ -407,6 +480,7 @@ export class GroupMessageRepository {
     roomId: string;
     anchorSeq: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
     const keep = (msg: GroupMessage): boolean => {
@@ -414,11 +488,15 @@ export class GroupMessageRepository {
       const deletedFor = (raw.deletedForUserIds ?? []) as string[];
       return !deletedFor.includes(params.userId);
     };
+    const cutoffWhere = params.cutoff
+      ? { createdAt: { gt: params.cutoff } }
+      : {};
     const [before, anchorAndAfter] = await Promise.all([
       this.prisma.groupMessage.findMany({
         where: {
           roomId: params.roomId,
           sequenceNumber: { lt: params.anchorSeq },
+          ...cutoffWhere,
         },
         orderBy: { sequenceNumber: "desc" },
         take: half + 10,
@@ -427,6 +505,7 @@ export class GroupMessageRepository {
         where: {
           roomId: params.roomId,
           sequenceNumber: { gte: params.anchorSeq },
+          ...cutoffWhere,
         },
         orderBy: { sequenceNumber: "asc" },
         take: half + 1 + 10,
@@ -449,11 +528,17 @@ export class GroupMessageRepository {
     roomId: string;
     userId: string;
     beforeMs: number;
+    cutoff?: Date;
   }): Prisma.InputJsonObject {
     return {
       roomId: params.roomId,
       isDeleted: false,
-      createdAt: { $lt: { $date: new Date(params.beforeMs).toISOString() } },
+      createdAt: {
+        $lt: { $date: new Date(params.beforeMs).toISOString() },
+        ...(params.cutoff
+          ? { $gt: { $date: params.cutoff.toISOString() } }
+          : {}),
+      },
       deletedForUserIds: { $ne: params.userId },
     };
   }
@@ -471,6 +556,7 @@ export class GroupMessageRepository {
     beforeMs: number;
     skip: number;
     take: number;
+    cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const raw = (await this.prisma.groupMessage.findRaw({
       filter: this.conversationMatch(params),
@@ -507,6 +593,7 @@ export class GroupMessageRepository {
     roomId: string;
     userId: string;
     beforeMs: number;
+    cutoff?: Date;
   }): Promise<number> {
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -526,14 +613,21 @@ export class GroupMessageRepository {
     roomId: string;
     userId: string;
     afterDate: Date;
+    cutoff?: Date;
   }): Promise<number> {
+    // The read pointer never sits before the user's own delete-conversation
+    // cutoff, but clamp defensively so unread can never count pre-cutoff rows.
+    const effectiveAfter =
+      params.cutoff && params.cutoff > params.afterDate
+        ? params.cutoff
+        : params.afterDate;
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
         {
           $match: {
             roomId: params.roomId,
             isDeleted: false,
-            createdAt: { $gt: { $date: params.afterDate.toISOString() } },
+            createdAt: { $gt: { $date: effectiveAfter.toISOString() } },
             deletedForUserIds: { $ne: params.userId },
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
@@ -549,13 +643,15 @@ export class GroupMessageRepository {
     query: string,
     limit: number,
     userId: string,
-    skip = 0
+    skip = 0,
+    cutoff?: Date
   ): Promise<GroupMessage[]> {
     // content.text is inside a Json column — use a raw regex query for matching
     // ids, then re-fetch via the typed client for the normal message shape.
     // `deletedForUserIds` mirrors the same per-user delete-for-me idiom used
     // elsewhere in this repository (e.g. countUnreadSince above) — without it,
-    // search resurrects messages this user deleted for themselves.
+    // search resurrects messages this user deleted for themselves. `cutoff`
+    // (delete-conversation) is the same idea at the whole-room level.
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const raw = (await this.prisma.groupMessage.findRaw({
       filter: {
@@ -563,6 +659,9 @@ export class GroupMessageRepository {
         isDeleted: false,
         deletedForUserIds: { $ne: userId },
         "content.text": { $regex: escaped, $options: "i" },
+        ...(cutoff
+          ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+          : {}),
       },
       options: { sort: { createdAt: -1 }, skip, limit },
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
@@ -702,7 +801,8 @@ export class GroupMessageRepository {
   async countSearchResults(
     roomId: string,
     query: string,
-    userId: string
+    userId: string,
+    cutoff?: Date
   ): Promise<number> {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const result = (await this.prisma.groupMessage.aggregateRaw({
@@ -713,6 +813,9 @@ export class GroupMessageRepository {
             isDeleted: false,
             deletedForUserIds: { $ne: userId },
             "content.text": { $regex: escaped, $options: "i" },
+            ...(cutoff
+              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+              : {}),
           },
         },
         { $count: "total" },
@@ -778,6 +881,7 @@ export class GroupMessageRepository {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     messages: GroupMessage[];
     hasMore: boolean;
@@ -799,7 +903,9 @@ export class GroupMessageRepository {
     const messages = page.filter((msg) => {
       const hidden = ((msg as unknown as { deletedForUserIds?: unknown })
         .deletedForUserIds ?? []) as string[];
-      return !hidden.includes(params.userId);
+      if (hidden.includes(params.userId)) return false;
+      if (params.cutoff && msg.createdAt <= params.cutoff) return false;
+      return true;
     });
 
     return { messages, hasMore, nextRevision };
@@ -865,16 +971,18 @@ export class GroupMessageRepository {
     type?: string;
     cursor?: string | null;
     limit: number;
+    cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const mediaTypes = MEDIA_MESSAGE_TYPES;
+    const createdAt: { lt?: Date; gt?: Date } = {};
+    if (params.cursor) createdAt.lt = new Date(params.cursor);
+    if (params.cutoff) createdAt.gt = params.cutoff;
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
         messageType: params.type ? params.type : { in: [...mediaTypes] },
-        ...(params.cursor
-          ? { createdAt: { lt: new Date(params.cursor) } }
-          : {}),
+        ...(Object.keys(createdAt).length ? { createdAt } : {}),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
@@ -946,7 +1054,8 @@ export class GroupMessageRepository {
    */
   async findPreviousVisibleForUser(
     roomId: string,
-    userId: string
+    userId: string,
+    cutoff?: Date
   ): Promise<GroupMessage | null> {
     const raw = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -955,6 +1064,9 @@ export class GroupMessageRepository {
             roomId,
             isDeleted: false,
             deletedForUserIds: { $ne: userId },
+            ...(cutoff
+              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+              : {}),
           },
         },
         { $sort: { createdAt: -1 } },

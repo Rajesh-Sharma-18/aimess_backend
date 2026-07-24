@@ -5,6 +5,8 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type {
   RecordRecentUserSearchBody,
+  RemoveRecentUserSearchParams,
+  RemoveRecentUserSearchQuery,
   UnifiedSearchQuery,
 } from "../validators/user-search.validator.js";
 import { userSearchService } from "../../services/user-search.service.js";
@@ -22,6 +24,36 @@ export const recordRecentUserSearch = asyncHandler(
       .json(
         new ApiResponse(null, t("USER_RECENT_SEARCH_RECORDED", req.locale))
       );
+  }
+);
+
+export const removeRecentUserSearch = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { targetId } = req.params as unknown as RemoveRecentUserSearchParams;
+    const { targetType } = req.query as unknown as RemoveRecentUserSearchQuery;
+    const deleted = await userSearchService.removeRecent({
+      userId: req.auth.userId,
+      targetType,
+      targetId,
+    });
+    if (!deleted) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({
+        success: false,
+        message: t("RECENT_SEARCH_NOT_FOUND", req.locale),
+      });
+    }
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("RECENT_SEARCH_DELETED", req.locale)));
+  }
+);
+
+export const clearRecentUserSearches = asyncHandler(
+  async (req: Request, res: Response) => {
+    await userSearchService.clearRecent(req.auth.userId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("RECENT_SEARCH_CLEARED", req.locale)));
   }
 );
 

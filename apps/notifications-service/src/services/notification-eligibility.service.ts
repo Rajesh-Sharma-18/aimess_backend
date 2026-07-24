@@ -1,16 +1,10 @@
 /**
  * NotificationEligibilityService — the central CommunityNotificationPolicy gate.
  *
- * ALL future community-action notification flows (mentions, replies, reactions,
- * and the current chat-message fan-out) MUST pass through this gate so a
- * moderator-muted member never generates community notifications. Today the only
- * call site is the chat-message consumer; mention/reply/reaction notifications
- * are not produced yet, so wiring them here now would be dead code — add those
- * call sites when those notification flows are introduced.
- *
- * Fail-open by construction: `communityClient.checkCommunityMute` resolves to
- * `{ isMuted: false }` on ANY transport error, so an oracle outage never
- * suppresses a notification.
+ * Community FCM / inbox delivery must never reach a non-ACTIVE member. The
+ * mute gate stays fail-open (oracle outage must not suppress everyone else's
+ * pushes). Membership + preference gates are fail-closed so a LEFT/removed
+ * user cannot keep receiving community pushes when the oracle is unhealthy.
  */
 import { communityClient } from "../grpc/community.client.js";
 
@@ -31,11 +25,43 @@ export async function isCommunityActorMuted(
 }
 
 /**
+ * True only when `userId` is an ACTIVE member of `communityId`. Fail-closed:
+ * transport / breaker failures resolve to false so former members never get
+ * community FCM or inbox pushes during an oracle outage.
+ */
+export async function isCommunityActiveMember(
+  userId: string,
+  communityId: string
+): Promise<boolean> {
+  return (
+    await communityClient.checkCommunityMembership({
+      communityId,
+      userId,
+    })
+  ).isMember;
+}
+
+/**
+ * Intersect `userIds` with the authoritative ACTIVE roster for `communityId`.
+ * Fail-closed: oracle outage → empty list (suppress the whole fan-out).
+ */
+export async function filterToActiveCommunityMembers(
+  communityId: string,
+  userIds: string[]
+): Promise<string[]> {
+  const unique = [...new Set(userIds.filter(Boolean))];
+  if (unique.length === 0) return [];
+
+  const { userIds: activeIds } =
+    await communityClient.getCommunityActiveMemberIds({ communityId });
+  const active = new Set(activeIds);
+  return unique.filter((id) => active.has(id));
+}
+
+/**
  * True when `recipientId` wants pushes of `field` from `communityId` — the
- * recipient's own per-community notification-preference toggle (distinct
- * from `isCommunityActorMuted`, which gates on the *sender's* moderation
- * mute). Fail-open: an oracle outage resolves to "enabled" so a preference
- * check outage never suppresses a notification.
+ * recipient's own per-community notification-preference toggle. Also requires
+ * ACTIVE membership (community-service oracle). Fail-closed on oracle outage.
  */
 export async function isCommunityNotificationEnabled(
   recipientId: string,

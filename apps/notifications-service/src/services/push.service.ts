@@ -4,7 +4,10 @@ import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { deviceTokenService } from "./device-token.service.js";
-import { isCommunityNotificationEnabled } from "./notification-eligibility.service.js";
+import {
+  isCommunityActiveMember,
+  isCommunityNotificationEnabled,
+} from "./notification-eligibility.service.js";
 import {
   getNotificationSettings,
   isDeliveryAllowed,
@@ -59,6 +62,23 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   FriendshipEvents.FRIEND_REQUESTED,
   FriendshipEvents.FRIEND_ACCEPTED,
   CommunityEvents.MEMBER_BANNED,
+  // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
+  // missed call is exactly the kind of thing a user wants to find later.
+  "CALL_MISSED",
+]);
+
+/**
+ * Notification types that intentionally target a non-ACTIVE recipient for a
+ * community (invitee, rejected join requester, unbanned former member). The
+ * community preference/membership oracle would return enabled=false for them,
+ * so these skip that gate while still honoring global settings/quiet-hours.
+ * Kick/ban/delete use `bypassSettings` instead (critical, non-toggleable).
+ */
+const COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES = new Set<string>([
+  CommunityEvents.JOIN_REQUEST_APPROVED,
+  CommunityEvents.JOIN_REQUEST_REJECTED,
+  CommunityEvents.INVITE_SENT,
+  CommunityEvents.MEMBER_UNBANNED,
 ]);
 
 export interface PushInput {
@@ -81,6 +101,12 @@ export interface PushInput {
   ttl?: number;
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
   priority?: "high" | "normal";
+  /**
+   * Data-only push: omit the FCM `notification` block so the OS doesn't draw a
+   * tray notification and the app is woken to own the UI (full-screen call
+   * intent). Required for the call ring/cancel wake on a killed Android app.
+   */
+  dataOnly?: boolean;
   /**
    * When true, skip the notification-settings/quiet-hours gate entirely.
    * Use ONLY for non-toggleable critical events (kick, ban, delete, calls).
@@ -145,6 +171,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     bypassSettings = false,
     showPreviewOverride,
     skipInbox = false,
+    dataOnly = false,
   } = input;
 
   let body = input.body;
@@ -173,30 +200,53 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
-  // Per-community notification-preference gate (Chat/Community/Live Stream
-  // toggles on the community's own mute-setting row) — independent of, and
-  // in addition to, the global per-category settings check above.
-  if (!bypassSettings) {
+  // ACTIVE-membership gate first (fail-closed): LEFT / BANNED / PENDING /
+  // missing members never get community FCM or inbox pushes. Preference
+  // toggles are checked second. Lifecycle events that intentionally target
+  // non-members skip both via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
+  if (!bypassSettings && !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)) {
     const communityId = data?.communityId;
-    const prefField =
-      input.communityPrefField ?? defaultCommunityPrefField(category);
-    if (communityId && prefField) {
+    if (communityId) {
       try {
-        const enabled = await isCommunityNotificationEnabled(
-          userId,
-          communityId,
-          prefField
-        );
-        if (!enabled) {
+        const isActive = await isCommunityActiveMember(userId, communityId);
+        if (!isActive) {
           logger.info(
-            `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+            `Notification suppressed: user=${userId} is not an ACTIVE member of community=${communityId} type=${type}`
           );
           return;
         }
       } catch (error) {
-        // Fail-open: an oracle outage never suppresses a notification.
-        logger.warn(`community pref check failed for ${userId}; allowing`);
+        // Fail-closed: never notify a possibly-former member when the
+        // membership oracle errors out.
+        logger.warn(
+          `community membership check failed for ${userId}; suppressing`
+        );
         logger.warn(error);
+        return;
+      }
+
+      const prefField =
+        input.communityPrefField ?? defaultCommunityPrefField(category);
+      if (prefField) {
+        try {
+          const enabled = await isCommunityNotificationEnabled(
+            userId,
+            communityId,
+            prefField
+          );
+          if (!enabled) {
+            logger.info(
+              `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+            );
+            return;
+          }
+        } catch (error) {
+          // Preference oracle is also fail-closed (membership is encoded
+          // there too) — suppress rather than notify former members.
+          logger.warn(`community pref check failed for ${userId}; suppressing`);
+          logger.warn(error);
+          return;
+        }
       }
     }
   }
@@ -240,6 +290,19 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // token appears more than once in the store.
   const tokens = [...new Set(rawTokens)];
 
+  // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
+  // registered device, so nothing can ever be delivered no matter what the rest
+  // of the backend does — fix registration in the browser, not here.
+  if (tokens.length === 0) {
+    logger.warn(
+      `[push:deliver] user=${userId} type=${type} tokens=0 — NO registered device, nothing sent`
+    );
+    return;
+  }
+  logger.info(
+    `[push:deliver] user=${userId} type=${type} tokens=${tokens.length}`
+  );
+
   await Promise.all(
     tokens.map(async (token) => {
       const result = await sendPush({
@@ -251,6 +314,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
         collapseKey,
         ttl,
         priority,
+        dataOnly,
       });
       if (result.invalidToken) {
         try {

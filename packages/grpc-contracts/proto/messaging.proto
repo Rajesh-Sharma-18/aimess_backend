@@ -50,6 +50,14 @@ service MessagingService {
   rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGroupDetail);
   rpc AdminListGroupMembers   (AdminListGroupMembersRequest)   returns (AdminListGroupMembersResponse);
 
+  // Admin Calling: analytics, the global kill-switch, and a lightweight health
+  // ping. Calls are owned by chat-service, so the Call collection is only ever
+  // reachable through these RPCs (backoffice has no direct DB access).
+  rpc AdminGetCallAnalytics   (AdminGetCallAnalyticsRequest)   returns (AdminCallAnalytics);
+  rpc AdminGetCallHealth      (AdminGetCallHealthRequest)      returns (AdminCallHealth);
+  rpc AdminGetCallingEnabled  (AdminGetCallingEnabledRequest)  returns (AdminCallingEnabled);
+  rpc AdminSetCallingEnabled  (AdminSetCallingEnabledRequest)  returns (AdminCallingEnabled);
+
   // Authorize a media download against resource membership. media-service calls
   // this for chat-scoped attachments because the object key encodes the uploader,
   // not the room/group/community the file belongs to. Reuses chat-service's
@@ -201,6 +209,66 @@ message AdminListGroupMembersResponse {
   bool                         found   = 1;
   repeated AdminGroupMemberRow members = 2;
   int32                        total   = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Admin Calling — analytics, kill-switch, health. Backoffice has no direct
+// access to the `calls` collection, so everything flows through these.
+// ---------------------------------------------------------------------------
+
+/** Calls started in one hour-of-day bucket (UTC), for the peak-hours chart. */
+message AdminCallHourBucket {
+  int32 hour  = 1; // 0-23, UTC
+  int64 count = 2;
+}
+
+/** Inclusive YYYY-MM-DD range; empty strings mean "no bound". */
+message AdminGetCallAnalyticsRequest {
+  string from_date = 1;
+  string to_date   = 2;
+}
+
+message AdminCallAnalytics {
+  int64  total_calls     = 1;
+  int64  audio_calls     = 2;
+  int64  video_calls     = 3;
+  int64  answered_calls  = 4;
+  int64  missed_calls    = 5;
+  int64  declined_calls  = 6;
+  // missed_calls / total_calls, 0 when total_calls == 0.
+  double missed_rate     = 7;
+  // Mean/sum over calls that actually connected (duration_sec > 0).
+  double avg_duration_sec   = 8;
+  int64  total_duration_sec = 9;
+  repeated AdminCallHourBucket peak_hours = 10;
+  // The mean is skewed hard by calls left open by a crashed client, so p50/p90
+  // are also reported — p50 is the number an admin should actually read.
+  int64  median_duration_sec = 12;
+  int64  p90_duration_sec    = 13;
+  // Answered calls that produced real media (duration_sec > 0) ÷ answered
+  // calls. Proxy for call quality: a low value means calls are being picked up
+  // but the media path is failing. True MOS/jitter needs LiveKit analytics.
+  double connection_success_rate = 11;
+}
+
+message AdminGetCallHealthRequest {}
+
+message AdminCallHealth {
+  int64 active_calls  = 1; // IN_PROGRESS
+  int64 ringing_calls = 2; // RINGING within the ringing-timeout window
+}
+
+message AdminGetCallingEnabledRequest {}
+
+message AdminSetCallingEnabledRequest {
+  bool   enabled  = 1;
+  string actor_id = 2; // admin id, recorded on the flag row
+}
+
+message AdminCallingEnabled {
+  bool   enabled    = 1;
+  string updated_by = 2;
+  int64  updated_at = 3; // epoch ms, 0 when never set
 }
 
 message SendMessageRequest {

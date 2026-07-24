@@ -3,6 +3,7 @@ import type {
   EnrichedPrivateRoom,
   PrivateRoomPeer,
   PeerFriendshipRelationship,
+  PrivateConversationLastActivity,
 } from "./private-room.service.js";
 import { toPeerFriendshipRelationship } from "./private-room.service.js";
 import type {
@@ -24,11 +25,24 @@ export interface InboxItem {
   lastMessageAt: Date | null;
   lastMessageId: string | null;
   lastMessage: unknown | null;
+  /**
+   * Telegram/WhatsApp-style tick for `lastMessage` — SENT/DELIVERED(PRIVATE only)/READ
+   * when the CALLER sent it, else null (no tick on a peer/other-member's message).
+   */
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
   unreadCount: number;
   isMuted: boolean;
   pinnedCount: number;
   // PRIVATE-only
   peer: PrivateRoomPeer | null;
+  /**
+   * PRIVATE-only: community-style normalized last-activity DTO
+   * ({type,userId,username,preview,dateTime}) — `username` always carries the
+   * ACTUAL sender's live name (self included), so the client decides "You:" vs
+   * "<name>:" purely from `userId === myUserId`, never from `peer.displayName`.
+   * Null on GROUP rows (they carry sender info on `lastMessage` instead).
+   */
+  lastActivity: PrivateConversationLastActivity | null;
   /**
    * PRIVATE-only: user-search-shaped relationship metadata for the peer —
    * identical fields as `GET /api/v1/users/search` (isFriend, relationshipStatus,
@@ -167,10 +181,12 @@ export class InboxService {
       lastMessageAt: room.lastMessageAt,
       lastMessageId: room.lastMessageId,
       lastMessage: room.lastMessage ?? null,
+      lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: unreadByUser[userId] ?? 0,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
+      lastActivity: room.lastActivity,
       isFriend: rel.isFriend,
       relationshipStatus: rel.relationshipStatus,
       friendshipId: rel.friendshipId,
@@ -199,10 +215,12 @@ export class InboxService {
               room.lastMessagePreview as { messageType?: string | null }
             )
           : (room.lastMessagePreview ?? null),
+      lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: room.unreadCount,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,
+      lastActivity: null,
       isFriend: null,
       relationshipStatus: null,
       friendshipId: null,

@@ -99,6 +99,12 @@ const envSchema = z.object({
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
   CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
+
+  // Hard ceiling on an IN_PROGRESS call. Without it a client that dies before
+  // sending `call:end` (crash, force-kill, dead network) leaves the row active
+  // forever and BOTH participants are permanently "busy" — no future call can
+  // be placed. Defaults to LIVEKIT_TOKEN_TTL: media cannot outlive its token.
+  CALL_MAX_DURATION_SEC: z.coerce.number().positive().default(3600),
 });
 
 const parsed = envSchema.safeParse(process.env);

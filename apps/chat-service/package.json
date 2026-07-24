@@ -10,6 +10,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "backfill:seq": "tsx scripts/backfill-sequence-numbers.ts",
     "backfill:revision": "tsx scripts/backfill-revisions.ts",
+    "db:backfill:normalized-group-name": "tsx scripts/backfill-normalized-group-name.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "lint": "eslint .",

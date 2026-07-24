@@ -62,6 +62,15 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     checkCommunityNotificationPref: jest.fn(async () => ({
       enabled: true,
     })),
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: true,
+      isBanned: false,
+      status: "ACTIVE",
+      role: "MEMBER",
+    })),
+    getCommunityActiveMemberIds: jest.fn(async () => ({
+      userIds: [],
+    })),
   })),
   communityClient: {
     checkCommunityMute: jest.fn(async () => ({
@@ -70,6 +79,15 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     })),
     checkCommunityNotificationPref: jest.fn(async () => ({
       enabled: true,
+    })),
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: true,
+      isBanned: false,
+      status: "ACTIVE",
+      role: "MEMBER",
+    })),
+    getCommunityActiveMemberIds: jest.fn(async () => ({
+      userIds: [],
     })),
   },
 }));

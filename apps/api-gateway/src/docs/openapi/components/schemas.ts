@@ -9152,7 +9152,8 @@ export const openApiSchemas = {
       "Shape differs from the send-response (`ChatCommunityWireMessage`): uses `sentBy` (not `senderId`), " +
       "flat `attachments[]` (not structured `content`), and `createdAt` epoch-ms (not `serverTs`). " +
       "SYSTEM messages have `contentType: SYSTEM` and a null `sentBy`/`senderName`/`senderAvatar`; " +
-      "the actor is in `systemMetadata` only.",
+      "the actor is in `systemMetadata` only. Per-message `readBy`/`deliveredTo` are intentionally " +
+      "omitted from history (live receipt events + room unread counters cover that).",
     properties: {
       id: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
       roomId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c0d" },
@@ -9543,41 +9544,6 @@ export const openApiSchemas = {
           "Client reconciliation: `new` → insert; `edited` → update text; `deleted` → remove (tombstone); `reacted` → refresh reactions.",
         example: null,
       },
-      readBy: {
-        type: "array",
-        description:
-          "Users who have read this message (lastReadAt >= message.createdAt). Excludes the sender.",
-        items: {
-          type: "object",
-          properties: {
-            userId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i1" },
-            readAt: {
-              type: "integer",
-              description: "Epoch ms when the user read up to this message.",
-              example: 1782133110000,
-            },
-          },
-          required: ["userId", "readAt"],
-        },
-      },
-      deliveredTo: {
-        type: "array",
-        description:
-          "Users who were active members of this room when the message was sent (joinedAt <= message.createdAt). Excludes the sender.",
-        items: {
-          type: "object",
-          properties: {
-            userId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i2" },
-            deliveredAt: {
-              type: "integer",
-              description:
-                "Epoch ms — equals the message `createdAt` timestamp.",
-              example: 1782133107521,
-            },
-          },
-          required: ["userId", "deliveredAt"],
-        },
-      },
     },
     required: ["id", "roomId", "sentBy", "createdAt", "isEdited"],
     example: {
@@ -9611,8 +9577,6 @@ export const openApiSchemas = {
       createdAt: 1782133107521,
       updatedAt: null,
       syncEventType: null,
-      readBy: [],
-      deliveredTo: [],
     },
   },
   ChatCommunityMessageList: {
@@ -9994,19 +9958,6 @@ export const openApiSchemas = {
           createdAt: 1782133107521,
           updatedAt: null,
           syncEventType: null,
-          readBy: [
-            { userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1", readAt: 1782133110000 },
-          ],
-          deliveredTo: [
-            {
-              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
-              deliveredAt: 1782133107521,
-            },
-            {
-              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
-              deliveredAt: 1782133107521,
-            },
-          ],
         },
         // ── Scenario 2: TEXT reply (parentMessageId + quoteData) ────────────
         {
@@ -10038,13 +9989,6 @@ export const openApiSchemas = {
           createdAt: 1782133200000,
           updatedAt: 1782133215000,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [
-            {
-              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
-              deliveredAt: 1782133200000,
-            },
-          ],
         },
         // ── Scenario 3: IMAGE message with attachment ────────────────────────
         {
@@ -10082,8 +10026,6 @@ export const openApiSchemas = {
           createdAt: 1782133300000,
           updatedAt: null,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
         // ── Scenario 4: VOICE note with waveform ─────────────────────────────
         {
@@ -10131,8 +10073,6 @@ export const openApiSchemas = {
           createdAt: 1782133400000,
           updatedAt: null,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
         // ── Scenario 5: LOCATION share ───────────────────────────────────────
         {
@@ -10165,8 +10105,6 @@ export const openApiSchemas = {
           createdAt: 1782133500000,
           updatedAt: null,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
         // ── Scenario 6: deleted message (tombstone) ──────────────────────────
         {
@@ -10190,8 +10128,6 @@ export const openApiSchemas = {
           createdAt: 1782133600000,
           updatedAt: 1782133650000,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
         // ── Scenario 7: SYSTEM message — role change (visible to all) ────────
         {
@@ -10222,8 +10158,6 @@ export const openApiSchemas = {
           createdAt: 1782133700000,
           updatedAt: null,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
         // ── Scenario 8: SYSTEM message — personal join (only viewer sees this)
         {
@@ -10250,8 +10184,6 @@ export const openApiSchemas = {
           createdAt: 1782133800000,
           updatedAt: null,
           syncEventType: null,
-          readBy: [],
-          deliveredTo: [],
         },
       ],
     },
@@ -10321,8 +10253,6 @@ export const openApiSchemas = {
           createdAt: 1782133500000,
           updatedAt: 1782133500000,
           syncEventType: "new",
-          readBy: [],
-          deliveredTo: [],
         },
         // ── edited message ───────────────────────────────────────────────────
         {
@@ -10347,8 +10277,6 @@ export const openApiSchemas = {
           createdAt: 1782133400000,
           updatedAt: 1782133600000,
           syncEventType: "edited",
-          readBy: [],
-          deliveredTo: [],
         },
         // ── deleted message (tombstone) ──────────────────────────────────────
         {
@@ -10372,8 +10300,6 @@ export const openApiSchemas = {
           createdAt: 1782133300000,
           updatedAt: 1782133650000,
           syncEventType: "deleted",
-          readBy: [],
-          deliveredTo: [],
         },
         // ── reaction update ──────────────────────────────────────────────────
         {
@@ -10407,8 +10333,6 @@ export const openApiSchemas = {
           createdAt: 1782133200000,
           updatedAt: 1782133640000,
           syncEventType: "reacted",
-          readBy: [],
-          deliveredTo: [],
         },
       ],
     },

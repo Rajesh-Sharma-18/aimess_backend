@@ -1,4 +1,6 @@
 ﻿import type { PrismaClient, GroupMember } from "../generated/prisma/index.js";
+import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { isObjectId } from "../lib/object-id.js";
 
 export class GroupMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -87,6 +89,7 @@ export class GroupMemberRepository {
       role: string;
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
+      clearedAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -96,6 +99,23 @@ export class GroupMemberRepository {
         role: true,
         unreadCount: true,
         notificationSettings: true,
+        clearedAt: true,
+      },
+    });
+  }
+
+  /**
+   * "Delete Conversation" for a group: the member stays ACTIVE (unlike Leave)
+   * but hides all history up to now — mirrors PrivateRoomRepository.setDeletedFor.
+   * Also zeroes unread state so a phantom count doesn't survive the cutoff.
+   */
+  async setClearedAt(roomId: string, userId: string): Promise<void> {
+    await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      data: {
+        clearedAt: new Date(),
+        unreadCount: 0,
+        lastReadAt: new Date(),
       },
     });
   }
@@ -166,27 +186,6 @@ export class GroupMemberRepository {
     });
   }
 
-  async markRead(
-    roomId: string,
-    userId: string,
-    lastMessageId: string
-  ): Promise<GroupMember | null> {
-    // Only update if the member is ACTIVE
-    const existing = await this.prisma.groupMember.findFirst({
-      where: { roomId, userId, status: "ACTIVE" },
-    });
-    if (!existing) return null;
-
-    return this.prisma.groupMember.update({
-      where: { roomId_userId: { roomId, userId } },
-      data: {
-        lastReadMessageId: lastMessageId,
-        lastReadAt: new Date(),
-        unreadCount: 0,
-      },
-    });
-  }
-
   /**
    * Advance the member's read pointer to a specific message, forward-only: the
    * pointer is moved only when `messageCreatedAt` is newer than the stored
@@ -204,6 +203,10 @@ export class GroupMemberRepository {
     messageCreatedAt: Date,
     remainingUnread: number
   ): Promise<GroupMember | null> {
+    // Guard against optimistic client ids ("tmp-…") — Prisma throws on a
+    // non-ObjectId write into `lastReadMessageId` (@db.ObjectId).
+    if (!isObjectId(messageId)) return null;
+
     const existing = await this.prisma.groupMember.findFirst({
       where: { roomId, userId, status: "ACTIVE" },
     });
@@ -230,14 +233,20 @@ export class GroupMemberRepository {
     increment = 1
   ): Promise<void> {
     if (increment <= 0) return;
-    await this.prisma.groupMember.updateMany({
-      where: {
-        roomId,
-        status: "ACTIVE",
-        userId: { not: excludeUserId },
-      },
-      data: { unreadCount: { increment } },
-    });
+    // Same write-conflict-retry as GroupRoomRepository.updateLastMessage — this
+    // `$inc updateMany` and that room bump land moments apart for every send;
+    // without the retry, a transient P2034 here (and only here) desyncs the
+    // inbox's unread badge from its already-bumped lastActivity/preview.
+    await withWriteConflictRetry(() =>
+      this.prisma.groupMember.updateMany({
+        where: {
+          roomId,
+          status: "ACTIVE",
+          userId: { not: excludeUserId },
+        },
+        data: { unreadCount: { increment } },
+      })
+    );
   }
 
   async decrementUnreadForMessage(params: {

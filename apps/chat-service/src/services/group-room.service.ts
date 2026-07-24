@@ -2,6 +2,8 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
+import { publishChatUserEvent } from "@aimess/redis";
+
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
 import {
@@ -20,6 +22,9 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
+import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { resolveDisplayName } from "./user-snapshot.service.js";
+import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 
 export type GroupRoomMembership = GroupRoom & {
@@ -27,10 +32,36 @@ export type GroupRoomMembership = GroupRoom & {
   isJoined: boolean;
 };
 
+/**
+ * Post-fetch "delete conversation" visibility gate — mirrors
+ * PrivateRoomRepository's `isVisibleAfterDeleteForMe`. A member who cleared
+ * their group history stays ACTIVE (unlike Leave), so the room only reappears
+ * in their list once a message newer than the clear lands.
+ */
+function isVisibleAfterClear(
+  room: { lastMessageAt: Date | null },
+  clearedAt: Date | null | undefined
+): boolean {
+  if (!clearedAt) return true;
+  const lastMs = room.lastMessageAt ? room.lastMessageAt.getTime() : 0;
+  return lastMs > clearedAt.getTime();
+}
+
 export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
   unreadCount: number;
   role: string;
+  /**
+   * Telegram-style tick for the last message, but ONLY meaningful when the
+   * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
+   *  - SENT: no other active member has been marked delivered yet.
+   *  - DELIVERED: at least one other active member is in the message's
+   *    `deliveredTo` (populated at send-time from live presence, and topped
+   *    up by the presence-connect backfill).
+   *  - READ: every other active member's `lastReadMessageId` cursor has caught
+   *    up to the last message's sequenceNumber.
+   */
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
 };
 
 export class GroupRoomService {
@@ -40,8 +71,54 @@ export class GroupRoomService {
     private readonly inviteLinkRepo: GroupInviteLinkRepository,
     private readonly sysMsg: GroupSystemMessageService,
     private readonly redis: Redis | Cluster,
-    private readonly messageRepo: GroupMessageRepository
+    private readonly messageRepo: GroupMessageRepository,
+    private readonly userSnapshotService?: UserSnapshotService,
+    private readonly cacheRepo?: CacheRepository
   ) {}
+
+  /**
+   * Overwrite each row's `lastMessagePreview.senderName` with the live snapshot's
+   * display name. Old rows persisted before the sender-name resolution fix carry
+   * an empty `senderName` frozen in the JSON, which strands the sidebar without
+   * a preview prefix — resolving at read time makes those self-heal without a
+   * data migration. Silently returns rooms untouched when the snapshot service
+   * hasn't been wired (test harnesses).
+   */
+  private async enrichLastMessageSenderNames<
+    T extends {
+      roomId: string;
+      lastMessagePreview: unknown;
+    },
+  >(rooms: T[]): Promise<T[]> {
+    if (!rooms.length || !this.userSnapshotService || !this.cacheRepo)
+      return rooms;
+    const senderIds = new Set<string>();
+    for (const r of rooms) {
+      const lp = r.lastMessagePreview as Record<string, unknown> | null;
+      const senderId = (lp?.senderId as string) || "";
+      if (senderId) senderIds.add(senderId);
+    }
+    if (!senderIds.size) return rooms;
+    const snaps = await this.userSnapshotService.getUserSnapshotsMap(
+      [...senderIds],
+      this.cacheRepo
+    );
+    return rooms.map((r) => {
+      const lp = r.lastMessagePreview as Record<string, unknown> | null;
+      if (!lp) return r;
+      const senderId = (lp.senderId as string) || "";
+      const live = senderId ? resolveDisplayName(snaps.get(senderId)) : "";
+      const liveName = live && live !== "Unknown User" ? live : "";
+      // Prefer the live name whenever we have one — this is the whole point of
+      // resolve-on-read (stored value may be empty or stale after a rename).
+      // Falls back to the stored senderName only when the snapshot lookup missed.
+      const nextSenderName = liveName || (lp.senderName as string) || "";
+      return {
+        ...r,
+        lastMessagePreview: { ...lp, senderName: nextSenderName },
+      } as T;
+    });
+  }
 
   /**
    * Adapter that exposes the group-message deletion shape (deletedForUserIds
@@ -98,6 +175,94 @@ export class GroupRoomService {
   }
 
   /**
+   * Batch-resolves the "did every other active member read the caller's last
+   * message" tick for a page of rooms — one shared query pass instead of N+1.
+   * Rows whose last message wasn't sent by `userId` are left unset (null tick).
+   */
+  private async computeLastMessageReadStatuses(
+    rooms: Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      lastMessagePreview: unknown;
+    }>,
+    userId: string
+  ): Promise<Map<string, "SENT" | "DELIVERED" | "READ">> {
+    const result = new Map<string, "SENT" | "DELIVERED" | "READ">();
+    const ownRoomIds: string[] = [];
+    const lastMessageIdByRoom = new Map<string, string>();
+    for (const room of rooms) {
+      const senderId = (room.lastMessagePreview as { senderId?: string } | null)
+        ?.senderId;
+      if (senderId !== userId || !room.lastMessageId) continue;
+      ownRoomIds.push(room.roomId);
+      lastMessageIdByRoom.set(room.roomId, room.lastMessageId);
+    }
+    if (!ownRoomIds.length) return result;
+
+    const activeMembersByRoom = new Map(
+      await Promise.all(
+        ownRoomIds.map(
+          async (roomId) =>
+            [roomId, await this.memberRepo.findActiveMembers(roomId)] as const
+        )
+      )
+    );
+
+    const idsToResolve = new Set<string>();
+    for (const roomId of ownRoomIds) {
+      idsToResolve.add(lastMessageIdByRoom.get(roomId) as string);
+      for (const member of activeMembersByRoom.get(roomId) ?? []) {
+        if (member.userId !== userId && member.lastReadMessageId)
+          idsToResolve.add(member.lastReadMessageId);
+      }
+    }
+    const resolvedMessages = idsToResolve.size
+      ? await this.messageRepo.findManyByIds([...idsToResolve])
+      : [];
+    const seqById = new Map(
+      resolvedMessages.map((m) => [
+        m.id,
+        (m as { sequenceNumber?: number }).sequenceNumber ?? 0,
+      ])
+    );
+
+    // Also pull the full last-message docs (already in resolvedMessages) so
+    // we can read `deliveredTo` for the DELIVERED tier without a second query.
+    const lastMessageById = new Map(resolvedMessages.map((m) => [m.id, m]));
+
+    for (const roomId of ownRoomIds) {
+      const lastMessageId = lastMessageIdByRoom.get(roomId) as string;
+      const lastSeq = seqById.get(lastMessageId) ?? 0;
+      const others = (activeMembersByRoom.get(roomId) ?? []).filter(
+        (m) => m.userId !== userId
+      );
+      const allRead =
+        others.length > 0 &&
+        lastSeq > 0 &&
+        others.every(
+          (m) =>
+            (m.lastReadMessageId
+              ? (seqById.get(m.lastReadMessageId) ?? 0)
+              : 0) >= lastSeq
+        );
+      if (allRead) {
+        result.set(roomId, "READ");
+        continue;
+      }
+      const lastMsg = lastMessageById.get(lastMessageId) as
+        | { deliveredTo?: unknown }
+        | undefined;
+      const deliveredTo = Array.isArray(lastMsg?.deliveredTo)
+        ? (lastMsg.deliveredTo as string[])
+        : [];
+      const otherIds = new Set(others.map((m) => m.userId));
+      const anyDelivered = deliveredTo.some((id) => otherIds.has(id));
+      result.set(roomId, anyDelivered ? "DELIVERED" : "SENT");
+    }
+    return result;
+  }
+
+  /**
    * Reaction OVERLAY read-time gate — see PrivateRoomService.enrichConversations
    * for the full rationale (identical semantics). Visible ONLY to its own actor
    * and (if different) the reacted-to message's owner, and ONLY while strictly
@@ -150,7 +315,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || 50,
+      memberLimit: params.memberLimit || 256,
       memberCount: 1,
     });
 
@@ -179,7 +344,38 @@ export class GroupRoomService {
     // message just set (the `room` above predates that write). Falls back to the
     // original row if the post/read was a no-op.
     const fresh = await this.roomRepo.findActiveByRoomId(roomId);
-    return { room: fresh ?? room, member };
+    const finalRoom = fresh ?? room;
+
+    // Creator isn't in `conv:<roomId>` yet (joined only via explicit client
+    // `conv:join`), so push the new group to their personal `user:<id>` channel
+    // — same `group:added` shape group-member.service.ts uses for later adds,
+    // so the existing frontend listener upserts it into the inbox with no
+    // client-side change. Fire-and-forget: a publish failure must never fail
+    // creation (mirrors PrivateRoomService's conv:created).
+    publishChatUserEvent(this.redis, params.createdBy, "group:added", {
+      type: "GROUP",
+      roomId: finalRoom.roomId,
+      lastMessageAt: finalRoom.lastMessageAt,
+      lastMessageId: finalRoom.lastMessageId,
+      lastMessage: finalRoom.lastMessagePreview ?? null,
+      unreadCount: 0,
+      isMuted: false,
+      pinnedCount: finalRoom.pinnedCount,
+      peer: null,
+      name: finalRoom.name,
+      avatar: finalRoom.avatar,
+      description: finalRoom.description,
+      memberCount: finalRoom.memberCount,
+      role: member.role,
+      isJoined: true,
+      addedAt: member.joinedAt,
+    }).catch((err: unknown) => {
+      logger.warn(
+        `GroupRoomService|createGroup|group:added publish failed room=${roomId} user=${params.createdBy}: ${String(err)}`
+      );
+    });
+
+    return { room: finalRoom, member };
   }
 
   async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
@@ -246,6 +442,46 @@ export class GroupRoomService {
       });
     }
 
+    // Real-time meta fan-out so every member's inbox row + open group header
+    // updates without a refresh (parity with community:meta:updated). Fires only
+    // when a presentational field changed. Resolves the avatar object-key to a
+    // presigned URL at the publish boundary — raw keys must never leak on the wire.
+    const nameChanged = data.name != null && data.name !== room.name;
+    const avatarChanged = data.avatar != null && data.avatar !== room.avatar;
+    const descriptionChanged =
+      data.description != null && data.description !== room.description;
+    if (nameChanged || avatarChanged || descriptionChanged) {
+      void (async () => {
+        try {
+          const members = await this.memberRepo.findActiveMembers(roomId);
+          if (!members.length) return;
+          const resolvedAvatar = await resolveMediaUrl(updated.avatar ?? "");
+          const payload = {
+            type: "GROUP" as const,
+            roomId,
+            name: updated.name,
+            avatar: resolvedAvatar,
+            description: updated.description,
+            memberCount: updated.memberCount,
+            updatedBy: userId,
+            updatedAt: Date.now(),
+          };
+          const pipeline = this.redis.pipeline();
+          for (const m of members) {
+            pipeline.publish(
+              `user:${m.userId}`,
+              JSON.stringify({ event: "group:meta:updated", data: payload })
+            );
+          }
+          await pipeline.exec();
+        } catch (err) {
+          logger.warn(
+            `GroupRoomService|updateRoom|group:meta:updated publish failed room=${roomId}: ${String(err)}`
+          );
+        }
+      })();
+    }
+
     return updated;
   }
 
@@ -268,16 +504,51 @@ export class GroupRoomService {
     return disbanded;
   }
 
+  /**
+   * "Delete Conversation" for a group: clears the caller's own history view
+   * (mirrors PrivateRoomService.deleteForMe) WITHOUT leaving the group — the
+   * member stays ACTIVE, keeps receiving new messages, and the room reappears
+   * in their inbox the moment one arrives, showing only messages sent after
+   * this cutoff. Distinct from Leave, which removes membership entirely.
+   */
+  async clearConversation(roomId: string, userId: string): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    await this.memberRepo.setClearedAt(roomId, userId);
+
+    // Notify the user's other devices the conversation was cleared from their view.
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:deleted",
+          data: { roomId, deletedBy: userId, type: "GROUP" },
+        })
+      )
+      .catch(() => {});
+  }
+
   async getUserGroups(
     userId: string,
-    params: { limit: number; cursor?: string | null }
+    params: { limit: number; cursor?: string | null; q?: string }
   ): Promise<GroupRoomMembership[]> {
-    const roomIds = await this.memberRepo.getActiveRoomIds(userId);
-    if (!roomIds.length) return [];
-    const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return [];
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const roomIds = [...clearedByRoom.keys()];
+    const rawRooms = (
+      await this.roomRepo.getUserGroups(userId, roomIds, params)
+    ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
-    const rooms = await this.applyPerUserPreview(rawRooms, userId);
+    const rooms = await this.enrichLastMessageSenderNames(
+      await this.applyPerUserPreview(rawRooms, userId)
+    );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
     // Every row here is a group the caller is an ACTIVE member of.
@@ -288,10 +559,19 @@ export class GroupRoomService {
     }));
   }
 
-  async countUserGroups(userId: string): Promise<number> {
-    const roomIds = await this.memberRepo.getActiveRoomIds(userId);
-    if (!roomIds.length) return 0;
-    return this.roomRepo.countUserGroups(roomIds);
+  async countUserGroups(userId: string, q?: string): Promise<number> {
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return 0;
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const rows = await this.roomRepo.findLastMessageAtForRooms(
+      [...clearedByRoom.keys()],
+      q
+    );
+    return rows.filter((r) =>
+      isVisibleAfterClear(r, clearedByRoom.get(r.roomId))
+    ).length;
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
@@ -357,21 +637,31 @@ export class GroupRoomService {
     const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     const roomIds = memberships.map((m) => m.roomId);
 
-    const rawRooms = await this.roomRepo.getInboxGroups({
-      roomIds,
-      direction: params.direction,
-      ts: params.ts,
-      boundaryId: params.boundaryId,
-      inclusive: params.inclusive,
-      limit: params.limit,
-    });
+    const rawRooms = (
+      await this.roomRepo.getInboxGroups({
+        roomIds,
+        direction: params.direction,
+        ts: params.ts,
+        boundaryId: params.boundaryId,
+        inclusive: params.inclusive,
+        limit: params.limit,
+      })
+    ).filter((r) =>
+      isVisibleAfterClear(r, membershipByRoom.get(r.roomId)?.clearedAt)
+    );
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
-    const rooms = await this.applyPerUserPreview(rawRooms, params.userId);
+    const rooms = await this.enrichLastMessageSenderNames(
+      await this.applyPerUserPreview(rawRooms, params.userId)
+    );
 
     // Resolve every room logo on this page ONCE (deduped) → download URLs, so
     // the unified inbox renders a usable avatar instead of a raw object key.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
+    const readStatusByRoom = await this.computeLastMessageReadStatuses(
+      rooms,
+      params.userId
+    );
 
     const now = Date.now();
     return rooms.map((room) => {
@@ -392,6 +682,7 @@ export class GroupRoomService {
         unreadCount: membership?.unreadCount ?? 0,
         role: membership?.role ?? "MEMBER",
         isJoined,
+        lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });
   }

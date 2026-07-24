@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
+import { isObjectId } from "../lib/object-id.js";
 
 // ponytail: post-fetch delete-for-me filter. Reappears when a newer message
 // arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
@@ -159,6 +160,28 @@ export class PrivateRoomRepository {
           : null;
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
+  }
+
+  /**
+   * Cheapest possible list of a user's rooms + their last message id — used by
+   * the presence-connect delivered backfill. No participant list, no preview,
+   * no ordering — just enough to walk and call markDeliveredUpTo per room.
+   * 500 cap so a whale user's connect never blocks the presence recompute.
+   */
+  async findParticipatingRoomHeads(
+    userId: string
+  ): Promise<
+    Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      participants: string[];
+    }>
+  > {
+    return this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: { roomId: true, lastMessageId: true, participants: true },
+      take: 500,
+    });
   }
 
   async create(data: {
@@ -345,6 +368,10 @@ export class PrivateRoomRepository {
     });
     if (!existing) return null;
 
+    // Guard against optimistic client ids ("tmp-…") — Prisma throws on non-ObjectId lookups and
+    // writing a temp id into the read pointer would break subsequent reads for the same user.
+    if (!isObjectId(upToMessageId)) return existing;
+
     const lastReadMessageIdByUser = (existing.lastReadMessageIdByUser ??
       {}) as Record<string, string>;
 
@@ -357,7 +384,7 @@ export class PrivateRoomRepository {
       })
     )?.sequenceNumber;
     const currentReadId = lastReadMessageIdByUser[userId];
-    if (upToSeq != null && currentReadId) {
+    if (upToSeq != null && currentReadId && isObjectId(currentReadId)) {
       const currentSeq = (
         await this.prisma.privateMessage.findUnique({
           where: { id: currentReadId },
@@ -612,9 +639,43 @@ export class PrivateRoomRepository {
     const deletedFor = (existing.deletedFor ?? {}) as Record<string, string>;
     deletedFor[userId] = new Date().toISOString();
 
+    // Zero this user's unread state too — everything currently unread is about
+    // to become invisible (before the cutoff), so it must not linger as a
+    // phantom unread count once the room reappears on a future message.
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[userId] = 0;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = false;
+    const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    firstUnreadMessageIdByUser[userId] = null;
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    lastUnreadMessageIdByUser[userId] = null;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    lastUnreadPreviewByUser[userId] = null;
+
     await this.prisma.privateRoom.update({
       where: { roomId },
-      data: { deletedFor },
+      data: {
+        deletedFor,
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        firstUnreadMessageIdByUser:
+          firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
+      },
     });
   }
 

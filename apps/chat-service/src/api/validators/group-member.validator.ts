@@ -36,3 +36,21 @@ export const markReadSchema = z.object({
 export const muteGroupSchema = z.object({
   muteUntil: z.string().datetime().nullish(),
 });
+
+// Same reason vocabulary as private message reports — both flow into the same
+// backoffice ingest queue, so keeping the enum aligned avoids downstream
+// normalization.
+export const reportMemberSchema = z.object({
+  roomId: z.string().min(5).max(100),
+  userId: z.string().min(5).max(100),
+  reason: z.enum([
+    "SPAM",
+    "HARASSMENT",
+    "HATE_SPEECH",
+    "NUDITY",
+    "VIOLENCE",
+    "SCAM",
+    "OTHER",
+  ]),
+  description: z.string().max(1000).default(""),
+});

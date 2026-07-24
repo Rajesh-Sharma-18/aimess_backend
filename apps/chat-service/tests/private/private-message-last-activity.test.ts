@@ -83,12 +83,10 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
           .mockResolvedValue({ id: "msg-current-last", createdAt: new Date() }),
       },
       roomRepo: {
-        findByRoomId: jest
-          .fn()
-          .mockResolvedValue({
-            roomId: ROOM,
-            lastMessageId: "msg-current-last",
-          }),
+        findByRoomId: jest.fn().mockResolvedValue({
+          roomId: ROOM,
+          lastMessageId: "msg-current-last",
+        }),
       },
     });
 
@@ -208,7 +206,8 @@ describe("PrivateMessageService.recalculateLastMessageAfterDeleteForMe", () => {
     });
     expect(messageRepo.findPreviousVisibleForUser).toHaveBeenCalledWith(
       ROOM,
-      VIEWER
+      VIEWER,
+      undefined
     );
     expect(roomRepo.setLastMessage).not.toHaveBeenCalled();
   });

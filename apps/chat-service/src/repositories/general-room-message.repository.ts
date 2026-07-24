@@ -1147,9 +1147,13 @@ export class GeneralRoomMessageRepository {
    * line created by a subsequent rejoin (which is strictly newer). Omit to purge
    * all sessions (e.g. one-time backfill).
    *
+   * `types` defaults to the join-session set but accepts any PERSONAL
+   * membership-session subtype — e.g. `["MEMBER_BANNED"]` to retire the "You
+   * were banned" line on unban, the same shape as retiring a stale join line.
+   *
    * Returns the deleted row ids (not just a count) so the caller can emit a
    * `community:message:deleted` event per id — an already-connected client that
-   * rendered the prior join line before this cleanup ran has no other way to
+   * rendered the prior line before this cleanup ran has no other way to
    * learn it was removed; without this it stays on screen until the client
    * does a fresh fetch (reload/reconnect).
    */
@@ -1158,11 +1162,14 @@ export class GeneralRoomMessageRepository {
     userId: string;
     beforeOrAt?: Date;
     keepId?: string;
+    types?: readonly string[];
   }): Promise<string[]> {
     const where = {
       roomId: params.roomId,
       visibleToUserId: params.userId,
-      systemMessageType: { in: [...PERSONAL_JOIN_SESSION_TYPES] },
+      systemMessageType: {
+        in: [...(params.types ?? PERSONAL_JOIN_SESSION_TYPES)],
+      },
       ...(params.beforeOrAt ? { createdAt: { lte: params.beforeOrAt } } : {}),
       ...(params.keepId ? { NOT: { id: params.keepId } } : {}),
     };

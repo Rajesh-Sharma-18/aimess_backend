@@ -211,6 +211,7 @@ function makePrivateController() {
     }),
     enrichMessages: jest.fn().mockResolvedValue([]),
     countMessages: jest.fn().mockResolvedValue(0),
+    getPeerReadSeq: jest.fn().mockResolvedValue(0),
   };
   return {
     controller: new PrivateMessageController(

@@ -60,6 +60,80 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     // Canonical kind field: contentType present (UPPER), internal messageType stripped.
     expect(res.body.data.data[0].contentType).toBe("TEXT");
     expect(res.body.data.data[0].messageType).toBeUndefined();
+    // Per-message delivery/read receipts are no longer part of the history
+    // wire — omit entirely (not null/[]), even when the DB row has them.
+    expect(res.body.data.data[0]).not.toHaveProperty("deliveredTo");
+    expect(res.body.data.data[0]).not.toHaveProperty("readBy");
+  });
+
+  it("POSITIVE: history strips deliveredTo/readBy even when stored on the row", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          senderId: "peer",
+          messageType: "TEXT",
+          content: { text: "hi" },
+          createdAt: new Date(1000),
+          readBy: ["peer"],
+          deliveredTo: [TEST_USER_ID],
+          deliveredAt: { [TEST_USER_ID]: new Date(1000).toISOString() },
+        },
+        {
+          id: "m2",
+          senderId: "peer",
+          messageType: "IMAGE",
+          content: { files: [{ objectKey: "img/1.jpg", mime: "image/jpeg" }] },
+          createdAt: new Date(2000),
+          readBy: [],
+          deliveredTo: [TEST_USER_ID],
+          deliveredAt: {},
+        },
+        {
+          id: "m3",
+          senderId: "peer",
+          messageType: "TEXT",
+          content: { text: "reply" },
+          parentMessageId: "m1",
+          quoteData: {
+            messageId: "m1",
+            senderId: "peer",
+            senderName: "Peer",
+            messageType: "TEXT",
+            preview: "hi",
+          },
+          createdAt: new Date(3000),
+          readBy: [TEST_USER_ID],
+          deliveredTo: [TEST_USER_ID],
+        },
+      ],
+      hasMore: true,
+      nextCursor: "3000_m3",
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(3);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(3);
+    for (const msg of res.body.data.data) {
+      expect(msg).not.toHaveProperty("deliveredTo");
+      expect(msg).not.toHaveProperty("readBy");
+      expect(msg).not.toHaveProperty("deliveredAt");
+    }
+    // Remaining fields + pagination preserved.
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[1].contentType).toBe("IMAGE");
+    expect(res.body.data.data[2].parentMessageId).toBe("m1");
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data).toHaveProperty("pagination");
   });
 
   it("POSITIVE: a COMMUNITY_INVITE SYSTEM message carries a resolved systemAction card", async () => {
@@ -347,7 +421,8 @@ describe("GET /rooms/:roomId/messages/search", () => {
       "hello",
       10,
       expect.any(String),
-      10
+      10,
+      undefined
     );
   });
 
@@ -367,7 +442,8 @@ describe("GET /rooms/:roomId/messages/search", () => {
     expect(mocks.privateMessageRepo.countSearchResults).toHaveBeenCalledWith(
       ROOM,
       "hello",
-      expect.any(String)
+      expect.any(String),
+      undefined
     );
   });
 
@@ -673,6 +749,10 @@ describe("POST /messages/:messageId/report", () => {
 
 describe("pins: GET list + POST pin + DELETE unpin", () => {
   it("POSITIVE: lists pins for a room, stamping isAvailable per pin (§5.8)", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
     mocks.privateMessagePinRepo.findPinsByRoom.mockResolvedValue([
       { id: "pin1", messageId: "m1", pinnedAt: new Date(1) }, // still live
       { id: "pin2", messageId: "m2", pinnedAt: new Date(2) }, // deleted-for-all

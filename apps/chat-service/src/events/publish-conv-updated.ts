@@ -64,6 +64,16 @@ interface PublishConvUpdatedParams {
    *  value null => empty preview for that recipient). */
   recipientOverrides?: Map<string, RecipientBump | null>;
   /**
+   * Self-referential SYSTEM line personalization (mirrors
+   * `publishCommunityUpdated`'s subjectUserId/selfPreview): when set, the one
+   * recipient whose id === `subjectUserId` receives `selfPreview` ("You were
+   * added to the group" / "Alex promoted you to admin") in place of
+   * `preview.text`, while every other recipient gets the third-person
+   * `preview` unchanged. Ignored when a delete-recalc override applies.
+   */
+  subjectUserId?: string;
+  selfPreview?: string;
+  /**
    * Canonical online-status lookup (reuses `PresenceService.getIsOnline`,
    * i.e. the same `presence:user:<id>` Redis source the REST conversation
    * APIs read). When supplied for `type: "PRIVATE"`, each recipient's payload
@@ -127,6 +137,8 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       recipientOverrides,
       getIsOnline: p.getIsOnline,
       countInUnread: p.countInUnread,
+      subjectUserId: p.subjectUserId,
+      selfPreview: p.selfPreview,
     });
   })().catch((error) => {
     logger.warn(
@@ -177,9 +189,14 @@ export async function publishConvUpdated(
         override === undefined
           ? p.lastMessageId
           : (override?.lastMessageId ?? "");
+      // Self-referential system line: the subject recipient sees "You …";
+      // everyone else gets the third-person preview as-is. Only applies when
+      // there's no delete-recalc override for this recipient.
       const lastMessage =
         override === undefined
-          ? p.preview
+          ? p.selfPreview && p.subjectUserId && recipientId === p.subjectUserId
+            ? { ...p.preview, text: p.selfPreview }
+            : p.preview
           : (override?.preview ?? EMPTY_BUMP_PREVIEW);
       const lastMessageAt =
         override === undefined

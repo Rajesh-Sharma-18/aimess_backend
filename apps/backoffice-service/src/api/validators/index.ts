@@ -76,6 +76,8 @@ export {
 export {
   dashboardChartsQuerySchema,
   type DashboardChartsQueryInput,
+  callAnalyticsQuerySchema,
+  type CallAnalyticsQueryInput,
 } from "./dashboard.validator.js";
 
 export {
@@ -197,4 +199,6 @@ export {
 export {
   disconnectAllFriendshipsSchema,
   type DisconnectAllFriendshipsInput,
+  setCallingEnabledSchema,
+  type SetCallingEnabledInput,
 } from "./system-maintenance.validator.js";

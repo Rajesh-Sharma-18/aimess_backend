@@ -87,6 +87,52 @@ export class PrivateMessageRepository {
     return this.prisma.privateMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Batch findById — used to resolve a page's own-last-message read/delivery ticks in one query. */
+  async findManyByIds(ids: string[]): Promise<PrivateMessage[]> {
+    const validIds = [...new Set(ids)].filter((id) =>
+      /^[0-9a-f]{24}$/i.test(id)
+    );
+    if (!validIds.length) return [];
+    return this.prisma.privateMessage.findMany({
+      where: { id: { in: validIds } },
+    });
+  }
+
+  /**
+   * Newest MY-message the peer has been marked delivered on, as a sequenceNumber.
+   * The delivered high-water for hydrating ✓✓ ticks on the initial page load —
+   * see PrivateMessageService.getPeerDeliveredSeq.
+   *
+   * Implementation note: Prisma Mongo's `JsonFilter.array_contains` throws
+   * `PrismaClientValidationError` at runtime on `Json`-typed columns in this
+   * generator version (silently type-checks via cast, then rejects the args at
+   * exec time — which our error handler surfaces as a 400 INVALID_REQUEST and
+   * broke the entire messages endpoint). Since `deliveredTo` monotonically
+   * fills once the peer starts receiving and delivery is always a suffix, the
+   * newest MY-message with the peer present is almost always the head; scanning
+   * the newest 50 own-messages in memory gives an exact answer without a Json
+   * filter Prisma won't reliably compile.
+   */
+  async getNewestDeliveredSeq(
+    roomId: string,
+    userId: string,
+    peerId: string
+  ): Promise<number> {
+    const rows = await this.prisma.privateMessage.findMany({
+      where: { roomId, senderId: userId, isDeleted: false },
+      orderBy: { sequenceNumber: "desc" },
+      take: 50,
+      select: { sequenceNumber: true, deliveredTo: true },
+    });
+    for (const row of rows) {
+      const list = Array.isArray(row.deliveredTo)
+        ? (row.deliveredTo as unknown as string[])
+        : [];
+      if (list.includes(peerId)) return row.sequenceNumber ?? 0;
+    }
+    return 0;
+  }
+
   async findAfterSeq(
     roomId: string,
     sinceSeq: number,
@@ -115,7 +161,8 @@ export class PrivateMessageRepository {
     userId: string,
     room: { roomId: string },
     beforeTimestamp: string,
-    limit: number
+    limit: number,
+    cutoff?: Date
   ): Promise<PrivateMessage[]> {
     const ltDate = new Date(beforeTimestamp);
 
@@ -125,7 +172,7 @@ export class PrivateMessageRepository {
       where: {
         roomId: room.roomId,
         isDeleted: false,
-        createdAt: { lt: ltDate },
+        createdAt: cutoff ? { lt: ltDate, gt: cutoff } : { lt: ltDate },
       },
       orderBy: { createdAt: "desc" },
       take: limit + 10,
@@ -160,11 +207,23 @@ export class PrivateMessageRepository {
   private timelineMatch(params: {
     roomId: string;
     userId: string;
+    /** Per-user "delete conversation" cutoff — excludes everything at/before it. */
+    cutoff?: Date;
   }): Record<string, unknown> {
-    return {
+    const core = {
       roomId: params.roomId,
       isDeleted: false,
       [`deletedFor.${params.userId}`]: { $exists: false },
+    };
+    if (!params.cutoff) return core;
+    // Wrapped in $and (rather than merged into `core.createdAt`) so callers can
+    // freely layer their own createdAt bound (keyset boundary, $or tie-break) on
+    // top without colliding operator keys on the same field.
+    return {
+      $and: [
+        core,
+        { createdAt: { $gt: { $date: params.cutoff.toISOString() } } },
+      ],
     };
   }
 
@@ -195,11 +254,14 @@ export class PrivateMessageRepository {
     /** Include rows whose createdAt == ts (first page); ignored when boundaryId set. */
     inclusive?: boolean;
     limit: number;
+    /** Per-user "delete conversation" cutoff — see {@link timelineMatch}. */
+    cutoff?: Date;
   }): Promise<{ messages: PrivateMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
+      cutoff: params.cutoff,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -360,6 +422,7 @@ export class PrivateMessageRepository {
   async countTimeline(params: {
     roomId: string;
     userId: string;
+    cutoff?: Date;
   }): Promise<number> {
     const result = (await this.prisma.privateMessage.aggregateRaw({
       pipeline: [
@@ -384,6 +447,7 @@ export class PrivateMessageRepository {
     direction: "before" | "after";
     seq: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<PrivateMessage[]> {
     const bound =
       params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
@@ -393,6 +457,7 @@ export class PrivateMessageRepository {
         roomId: params.roomId,
         isDeleted: false,
         sequenceNumber: bound,
+        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
       },
       orderBy: { sequenceNumber: order },
       take: params.limit + 1 + 10,
@@ -419,14 +484,19 @@ export class PrivateMessageRepository {
     roomId: string;
     anchorSeq: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<PrivateMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
+    const cutoffWhere = params.cutoff
+      ? { createdAt: { gt: params.cutoff } }
+      : {};
     const [before, anchorAndAfter] = await Promise.all([
       this.prisma.privateMessage.findMany({
         where: {
           roomId: params.roomId,
           isDeleted: false,
           sequenceNumber: { lt: params.anchorSeq },
+          ...cutoffWhere,
         },
         orderBy: { sequenceNumber: "desc" },
         take: half + 10,
@@ -436,6 +506,7 @@ export class PrivateMessageRepository {
           roomId: params.roomId,
           isDeleted: false,
           sequenceNumber: { gte: params.anchorSeq },
+          ...cutoffWhere,
         },
         orderBy: { sequenceNumber: "asc" },
         take: half + 1 + 10,
@@ -472,7 +543,8 @@ export class PrivateMessageRepository {
     query: string,
     limit: number,
     userId: string,
-    skip = 0
+    skip = 0,
+    cutoff?: Date
   ): Promise<PrivateMessage[]> {
     // content.text lives inside a Json column, which Prisma's `contains` can't
     // target — use a raw regex query to find matching ids, then re-fetch via
@@ -480,6 +552,7 @@ export class PrivateMessageRepository {
     // <userId>` mirrors the exact filter findPreviousVisibleForUser/the main
     // timeline reads use to hide messages this user deleted-for-me — without
     // it, search resurrects messages the user can no longer see anywhere else.
+    // `cutoff` (delete-conversation) is the same idea at the whole-room level.
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const raw = (await this.prisma.privateMessage.findRaw({
       filter: {
@@ -487,6 +560,9 @@ export class PrivateMessageRepository {
         isDeleted: false,
         [`deletedFor.${userId}`]: { $exists: false },
         "content.text": { $regex: escaped, $options: "i" },
+        ...(cutoff
+          ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+          : {}),
       },
       options: { sort: { createdAt: -1 }, skip, limit },
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
@@ -689,7 +765,8 @@ export class PrivateMessageRepository {
   async countSearchResults(
     roomId: string,
     query: string,
-    userId: string
+    userId: string,
+    cutoff?: Date
   ): Promise<number> {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const result = (await this.prisma.privateMessage.aggregateRaw({
@@ -700,6 +777,9 @@ export class PrivateMessageRepository {
             isDeleted: false,
             [`deletedFor.${userId}`]: { $exists: false },
             "content.text": { $regex: escaped, $options: "i" },
+            ...(cutoff
+              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+              : {}),
           },
         },
         { $count: "total" },
@@ -802,6 +882,7 @@ export class PrivateMessageRepository {
     userId: string;
     sinceRevision: number;
     limit: number;
+    cutoff?: Date;
   }): Promise<{
     messages: PrivateMessage[];
     hasMore: boolean;
@@ -822,7 +903,9 @@ export class PrivateMessageRepository {
 
     const messages = page.filter((msg) => {
       const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
-      return !(params.userId in deletedFor);
+      if (params.userId in deletedFor) return false;
+      if (params.cutoff && msg.createdAt <= params.cutoff) return false;
+      return true;
     });
 
     return { messages, hasMore, nextRevision };
@@ -855,16 +938,18 @@ export class PrivateMessageRepository {
     type?: string;
     cursor?: string | null;
     limit: number;
+    cutoff?: Date;
   }): Promise<PrivateMessage[]> {
     const mediaTypes = MEDIA_MESSAGE_TYPES;
+    const createdAt: { lt?: Date; gt?: Date } = {};
+    if (params.cursor) createdAt.lt = new Date(params.cursor);
+    if (params.cutoff) createdAt.gt = params.cutoff;
     const messages = await this.prisma.privateMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
         messageType: params.type ? params.type : { in: [...mediaTypes] },
-        ...(params.cursor
-          ? { createdAt: { lt: new Date(params.cursor) } }
-          : {}),
+        ...(Object.keys(createdAt).length ? { createdAt } : {}),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
@@ -930,7 +1015,8 @@ export class PrivateMessageRepository {
    */
   async findPreviousVisibleForUser(
     roomId: string,
-    userId: string
+    userId: string,
+    cutoff?: Date
   ): Promise<PrivateMessage | null> {
     const raw = (await this.prisma.privateMessage.aggregateRaw({
       pipeline: [
@@ -939,6 +1025,9 @@ export class PrivateMessageRepository {
             roomId,
             isDeleted: false,
             [`deletedFor.${userId}`]: { $exists: false },
+            ...(cutoff
+              ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+              : {}),
           },
         },
         { $sort: { createdAt: -1 } },
