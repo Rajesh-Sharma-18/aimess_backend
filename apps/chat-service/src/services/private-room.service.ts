@@ -319,12 +319,35 @@ export class PrivateRoomService {
     logger.debug(`PrivateRoomService|getOrCreateRoom|created room=${roomId}`);
 
     // Notify both participants that a new conversation was opened.
-    const convCreatedPayload = JSON.stringify({
-      event: "conv:created",
-      data: { roomId, participants: [userId, peerId] },
+    //
+    // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
+    // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
+    // therefore never returns a room that has no messages yet — a chat created by accepting a
+    // friend request showed a nameless row until the first message. Existing clients ignore the
+    // extra field; the `participants` array and every other field are unchanged.
+    const snapshots = await this.userSnapshotService
+      .getUserSnapshotsMap([userId, peerId], this.cacheRepo)
+      .catch(() => new Map<string, Record<string, unknown>>());
+    const briefFor = (id: string) => ({
+      id,
+      displayName: resolveDisplayName(snapshots.get(id)),
+      memberId: (snapshots.get(id)?.memberId as string) || "",
     });
-    this.redis.publish(`user:${userId}`, convCreatedPayload).catch(() => {});
-    this.redis.publish(`user:${peerId}`, convCreatedPayload).catch(() => {});
+    const convCreatedFor = (recipientId: string, otherId: string) =>
+      JSON.stringify({
+        event: "conv:created",
+        data: {
+          roomId,
+          participants: [userId, peerId],
+          peer: briefFor(otherId),
+        },
+      });
+    this.redis
+      .publish(`user:${userId}`, convCreatedFor(userId, peerId))
+      .catch(() => {});
+    this.redis
+      .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
+      .catch(() => {});
 
     return room;
   }
