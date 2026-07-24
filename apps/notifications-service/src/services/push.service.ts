@@ -4,7 +4,10 @@ import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { deviceTokenService } from "./device-token.service.js";
-import { isCommunityNotificationEnabled } from "./notification-eligibility.service.js";
+import {
+  isCommunityActiveMember,
+  isCommunityNotificationEnabled,
+} from "./notification-eligibility.service.js";
 import {
   getNotificationSettings,
   isDeliveryAllowed,
@@ -194,33 +197,53 @@ export async function pushToUser(input: PushInput): Promise<void> {
     return;
   }
 
-  // Per-community notification-preference + ACTIVE-membership gate
-  // (Chat/Community/Live Stream toggles on the community's own mute-setting
-  // row, and membership must be ACTIVE). Independent of, and in addition to,
-  // the global per-category settings check above. Lifecycle events that
-  // intentionally target non-members (invites, join decisions, unban) skip
-  // this gate via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
+  // ACTIVE-membership gate first (fail-closed): LEFT / BANNED / PENDING /
+  // missing members never get community FCM or inbox pushes. Preference
+  // toggles are checked second. Lifecycle events that intentionally target
+  // non-members skip both via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
   if (!bypassSettings && !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)) {
     const communityId = data?.communityId;
-    const prefField =
-      input.communityPrefField ?? defaultCommunityPrefField(category);
-    if (communityId && prefField) {
+    if (communityId) {
       try {
-        const enabled = await isCommunityNotificationEnabled(
-          userId,
-          communityId,
-          prefField
-        );
-        if (!enabled) {
+        const isActive = await isCommunityActiveMember(userId, communityId);
+        if (!isActive) {
           logger.info(
-            `Notification suppressed by community preference/membership: user=${userId} community=${communityId} field=${prefField} type=${type}`
+            `Notification suppressed: user=${userId} is not an ACTIVE member of community=${communityId} type=${type}`
           );
           return;
         }
       } catch (error) {
-        // Fail-open: an oracle outage never suppresses a notification.
-        logger.warn(`community pref check failed for ${userId}; allowing`);
+        // Fail-closed: never notify a possibly-former member when the
+        // membership oracle errors out.
+        logger.warn(
+          `community membership check failed for ${userId}; suppressing`
+        );
         logger.warn(error);
+        return;
+      }
+
+      const prefField =
+        input.communityPrefField ?? defaultCommunityPrefField(category);
+      if (prefField) {
+        try {
+          const enabled = await isCommunityNotificationEnabled(
+            userId,
+            communityId,
+            prefField
+          );
+          if (!enabled) {
+            logger.info(
+              `Notification suppressed by community preference: user=${userId} community=${communityId} field=${prefField} type=${type}`
+            );
+            return;
+          }
+        } catch (error) {
+          // Preference oracle is also fail-closed (membership is encoded
+          // there too) — suppress rather than notify former members.
+          logger.warn(`community pref check failed for ${userId}; suppressing`);
+          logger.warn(error);
+          return;
+        }
       }
     }
   }

@@ -25,7 +25,10 @@ export interface CheckCommunityMuteResult {
 }
 
 /** Fail-open value: a muted-check failure must NEVER suppress a notification. */
-const FAIL_OPEN: CheckCommunityMuteResult = { isMuted: false, mutedUntil: 0 };
+const MUTE_FAIL_OPEN: CheckCommunityMuteResult = {
+  isMuted: false,
+  mutedUntil: 0,
+};
 
 export interface CheckCommunityNotificationPrefParams {
   communityId: string;
@@ -37,8 +40,47 @@ export interface CheckCommunityNotificationPrefResult {
   enabled: boolean;
 }
 
-/** Fail-open value: an oracle outage must NEVER suppress a notification. */
-const PREF_FAIL_OPEN: CheckCommunityNotificationPrefResult = { enabled: true };
+/**
+ * Fail-CLOSED for preference+membership oracle: an outage must NOT push to
+ * former members. Prefer wrongly suppressing a push over notifying a LEFT user.
+ */
+const PREF_FAIL_CLOSED: CheckCommunityNotificationPrefResult = {
+  enabled: false,
+};
+
+export interface CheckCommunityMembershipParams {
+  communityId: string;
+  userId: string;
+}
+
+export interface CheckCommunityMembershipResult {
+  /** True only when the user has an ACTIVE membership row. */
+  isMember: boolean;
+  isBanned: boolean;
+  status: string;
+  role: string;
+}
+
+/** Fail-CLOSED: treat oracle outages as "not a member" so FCM never leaks. */
+const MEMBERSHIP_FAIL_CLOSED: CheckCommunityMembershipResult = {
+  isMember: false,
+  isBanned: false,
+  status: "",
+  role: "",
+};
+
+export interface GetCommunityActiveMemberIdsParams {
+  communityId: string;
+}
+
+export interface GetCommunityActiveMemberIdsResult {
+  userIds: string[];
+}
+
+/** Fail-CLOSED: empty roster → no community message pushes during an outage. */
+const ACTIVE_MEMBERS_FAIL_CLOSED: GetCommunityActiveMemberIdsResult = {
+  userIds: [],
+};
 
 export interface CommunityClient {
   checkCommunityMute(
@@ -47,6 +89,12 @@ export interface CommunityClient {
   checkCommunityNotificationPref(
     p: CheckCommunityNotificationPrefParams
   ): Promise<CheckCommunityNotificationPrefResult>;
+  checkCommunityMembership(
+    p: CheckCommunityMembershipParams
+  ): Promise<CheckCommunityMembershipResult>;
+  getCommunityActiveMemberIds(
+    p: GetCommunityActiveMemberIdsParams
+  ): Promise<GetCommunityActiveMemberIdsResult>;
 }
 
 export function createCommunityClient(): CommunityClient {
@@ -78,10 +126,7 @@ export function createCommunityClient(): CommunityClient {
         }
       )
   );
-  // FAIL-OPEN: override the shared breaker's default (throwing) fallback so any
-  // failure (timeout / open circuit / INTERNAL) resolves to "not muted" instead
-  // of rejecting — a mute-oracle outage must never suppress notifications.
-  muteBreaker.fallback(() => FAIL_OPEN);
+  muteBreaker.fallback(() => MUTE_FAIL_OPEN);
 
   const prefBreaker = makeBreaker(
     "community.checkCommunityNotificationPref",
@@ -96,13 +141,40 @@ export function createCommunityClient(): CommunityClient {
         }
       )
   );
-  // FAIL-OPEN: same rationale as the mute breaker above — an oracle outage
-  // must never suppress a notification.
-  prefBreaker.fallback(() => PREF_FAIL_OPEN);
+  // FAIL-CLOSED: this oracle also encodes ACTIVE membership. An outage must
+  // not re-open the door for LEFT/BANNED recipients.
+  prefBreaker.fallback(() => PREF_FAIL_CLOSED);
+
+  const membershipBreaker = makeBreaker(
+    "community.checkCommunityMembership",
+    (p: CheckCommunityMembershipParams) =>
+      makeGrpcCall<unknown, CheckCommunityMembershipResult>(
+        client,
+        "checkCommunityMembership",
+        {
+          communityId: p.communityId,
+          userId: p.userId,
+        }
+      )
+  );
+  membershipBreaker.fallback(() => MEMBERSHIP_FAIL_CLOSED);
+
+  const activeMembersBreaker = makeBreaker(
+    "community.getCommunityActiveMemberIds",
+    (p: GetCommunityActiveMemberIdsParams) =>
+      makeGrpcCall<unknown, GetCommunityActiveMemberIdsResult>(
+        client,
+        "getCommunityActiveMemberIds",
+        { communityId: p.communityId }
+      )
+  );
+  activeMembersBreaker.fallback(() => ACTIVE_MEMBERS_FAIL_CLOSED);
 
   return {
     checkCommunityMute: (p) => muteBreaker.fire(p),
     checkCommunityNotificationPref: (p) => prefBreaker.fire(p),
+    checkCommunityMembership: (p) => membershipBreaker.fire(p),
+    getCommunityActiveMemberIds: (p) => activeMembersBreaker.fire(p),
   };
 }
 

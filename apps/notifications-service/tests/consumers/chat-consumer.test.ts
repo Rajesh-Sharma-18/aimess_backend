@@ -42,14 +42,23 @@ jest.mock("../../src/services/push.service.js", () => ({
 // parse (it crashes the whole suite at import). Each test drives `isMuted`.
 jest.mock("../../src/services/notification-eligibility.service.js", () => ({
   isCommunityActorMuted: jest.fn(async () => false),
+  // Default: pass recipients through unchanged so existing routing specs stay
+  // focused. Specs that assert LEFT-member filtering re-mock this explicitly.
+  filterToActiveCommunityMembers: jest.fn(
+    async (_communityId: string, userIds: string[]) => userIds
+  ),
 }));
 
 import { startChatConsumer } from "../../src/consumers/chat.consumer.js";
 import { pushToUsers } from "../../src/services/push.service.js";
-import { isCommunityActorMuted } from "../../src/services/notification-eligibility.service.js";
+import {
+  filterToActiveCommunityMembers,
+  isCommunityActorMuted,
+} from "../../src/services/notification-eligibility.service.js";
 
 const pushMany = pushToUsers as jest.Mock;
 const isMutedMock = isCommunityActorMuted as jest.Mock;
+const filterActiveMock = filterToActiveCommunityMembers as jest.Mock;
 
 type ConsumeCallback = (msg: { content: Buffer } | null) => void;
 
@@ -97,6 +106,10 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
     isMutedMock.mockResolvedValue(false); // default: not muted
+    filterActiveMock.mockReset();
+    filterActiveMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
   });
 
   it("COMMUNITY → category:communityEnabled + communityId in FCM data", async () => {
@@ -211,6 +224,10 @@ describe("startChatConsumer — community mute suppression", () => {
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
     isMutedMock.mockResolvedValue(false);
+    filterActiveMock.mockReset();
+    filterActiveMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
   });
 
   // (1) POSITIVE CORE — muted sender in a COMMUNITY → fan-out fully suppressed,
@@ -307,24 +324,27 @@ describe("startChatConsumer — community mute suppression", () => {
     expect(channelMock.ack).not.toHaveBeenCalled();
   });
 
-  // (6) EDGE — conversationType COMMUNITY but communityId MISSING → gate skipped
-  // (fail-open), message still fans out and is ACKed. Documents the falsy-guard.
-  it("COMMUNITY + communityId undefined → gate skipped, push sent, ACKed", async () => {
+  // (6) EDGE — conversationType COMMUNITY but communityId MISSING → fall back
+  // to conversationId (roomId === communityId) so the mute + ACTIVE-roster
+  // gates still run.
+  it("COMMUNITY + communityId undefined → falls back to conversationId for gates", async () => {
     const msg = makeMsg({ ...BASE, conversationType: "COMMUNITY" }); // no communityId
     consume(msg);
     await flush();
 
-    expect(isMutedMock).not.toHaveBeenCalled();
+    expect(isMutedMock).toHaveBeenCalledWith(
+      BASE.senderId,
+      BASE.conversationId
+    );
+    expect(filterActiveMock).toHaveBeenCalledWith(BASE.conversationId, [
+      "recipient-uuid",
+    ]);
     expect(pushMany).toHaveBeenCalledTimes(1);
     expect(channelMock.ack).toHaveBeenCalledWith(msg);
   });
 
-  // (6b) ADVERSARIAL — EMPTY-STRING communityId. "" is falsy, so the gate is
-  // SKIPPED and a muted user's message WOULD fan out. Confirms whether an empty
-  // communityId is a bypass vector. With current code the gate is not called.
-  // (See BUG LIST: this is the documented fail-open seam, not a defect, BECAUSE
-  // chat-service always emits a real communityId for COMMUNITY messages; flagged
-  // for awareness.)
+  // (6b) ADVERSARIAL — EMPTY-STRING communityId. "" is falsy and is NOT nullish,
+  // so we do NOT fall back to conversationId; gates stay skipped.
   it("COMMUNITY + communityId === '' → gate skipped (falsy guard), push sent", async () => {
     isMutedMock.mockResolvedValue(true); // even if the user WERE muted...
     consume(
@@ -334,6 +354,45 @@ describe("startChatConsumer — community mute suppression", () => {
 
     expect(isMutedMock).not.toHaveBeenCalled(); // "" is falsy → gate bypassed
     expect(pushMany).toHaveBeenCalledTimes(1); // ...message still fans out
+  });
+
+  // (6c) LEFT/removed members must be stripped from FCM recipients even when
+  // chat-service's stale RoomMember mirror still listed them.
+  it("COMMUNITY → filters recipientIds to ACTIVE members only before FCM", async () => {
+    filterActiveMock.mockResolvedValue(["still-active"]);
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+        recipientIds: ["still-active", "left-user", "banned-user"],
+      })
+    );
+    await flush();
+
+    expect(filterActiveMock).toHaveBeenCalledWith("comm1", [
+      "still-active",
+      "left-user",
+      "banned-user",
+    ]);
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients] = pushMany.mock.calls[0] as [string[], unknown];
+    expect(recipients).toEqual(["still-active"]);
+  });
+
+  it("COMMUNITY → no FCM when ACTIVE-roster filter removes everyone", async () => {
+    filterActiveMock.mockResolvedValue([]);
+    const msg = makeMsg({
+      ...BASE,
+      conversationType: "COMMUNITY",
+      communityId: "comm1",
+      recipientIds: ["left-user"],
+    });
+    consume(msg);
+    await flush();
+
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
   });
 
   // (7) BADGE / COUNTER LOCK — when suppressed, pushToUsers (the SOLE path that
