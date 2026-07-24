@@ -17,6 +17,7 @@ const CALL_PUSH_QUEUE = "call.push.queue";
 
 export const CALL_INCOMING_EVENT = "call.incoming";
 export const CALL_MISSED_EVENT = "call.missed";
+export const CALL_CANCELLED_EVENT = "call.cancelled";
 
 export interface CallIncomingPayload {
   callId: string;
@@ -42,6 +43,13 @@ export interface CallMissedPayload {
   callType: string;
   /** epoch ms */
   missedAt: number;
+}
+
+export interface CallCancelPayload {
+  /** The user whose ring should be dismissed — the push recipient. */
+  calleeId: string;
+  callId: string;
+  reason: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;
@@ -121,6 +129,33 @@ export function publishCallMissedSafe(p: CallMissedPayload): void {
       channelPromise = null;
       logger.warn(
         `Failed to publish call.missed for ${p.callId}: ${String(error)}`
+      );
+    }
+  })();
+}
+
+/**
+ * Fire-and-forget push trigger to dismiss an in-flight ring (answered
+ * elsewhere / declined / ended / missed before the callee's device woke).
+ * Best-effort: a failure is logged, never thrown.
+ */
+export function publishCallCancelSafe(p: CallCancelPayload): void {
+  const url = env.RABBITMQ_URL;
+  if (!url) return; // RabbitMQ not configured — skip (push is a fallback channel)
+  void (async () => {
+    try {
+      const channel = await getChannel(url);
+      const payload = JSON.stringify({ type: CALL_CANCELLED_EVENT, data: p });
+      channel.sendToQueue(CALL_PUSH_QUEUE, Buffer.from(payload), {
+        persistent: true,
+      });
+      logger.info(
+        `[push:publish] call.cancelled callId=${p.callId} callee=${p.calleeId} reason=${p.reason}`
+      );
+    } catch (error) {
+      channelPromise = null;
+      logger.warn(
+        `Failed to publish call.cancelled for ${p.callId}: ${String(error)}`
       );
     }
   })();
