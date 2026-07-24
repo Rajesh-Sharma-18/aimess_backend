@@ -67,6 +67,8 @@ import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PresenceService } from "./presence.service.js";
+import type { Redis, Cluster } from "ioredis";
 import type {
   PrivateMessage,
   PrivateMessageReport,
@@ -84,7 +86,15 @@ export class PrivateMessageService {
     // messages just fall back to "assume the invite is still usable" (see
     // enrichMessages) when no client is wired, same fail-open policy as an
     // actual gRPC/community-service outage.
-    private readonly communityClient?: CommunityReconcileClient
+    private readonly communityClient?: CommunityReconcileClient,
+    // Presence-aware delivery: when injected, sendMessage checks the peer's
+    // live socket status and — if online — persists deliveredTo + publishes
+    // `message:delivered` immediately, so the sender's tick flips to ✓✓ without
+    // depending on the client-triggered `message:delivered` ack ever arriving.
+    // Optional so existing unit tests that construct the service without these
+    // keep working (delivery just stays "sent" until the client ack lands).
+    private readonly presenceService?: PresenceService,
+    private readonly redis?: Redis | Cluster | null
   ) {}
 
   async sendMessage(params: {
@@ -268,7 +278,146 @@ export class PrivateMessageService {
       .catch((err: unknown) => {
         logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
       });
+
+    // Presence-aware delivery: if the peer has ANY authenticated socket right
+    // now, the message is DELIVERED the moment it's persisted (Telegram/WhatsApp
+    // parity: ✓✓ means "the recipient device holds it", not "the recipient
+    // opened the chat"). Fire-and-forget so the send path returns promptly.
+    void this.markDeliveredForOnlinePeer({
+      roomId: params.roomId,
+      peerId: params.receiverId,
+      senderId: params.senderId,
+      messages: created,
+    });
+
     return attachAlbumMessages(message, created);
+  }
+
+  /**
+   * The OTHER participant in a private room, given either side's own id.
+   * Mirrors the peer-resolution `getPeerReadSeq` already does inline — pulled
+   * out as a public helper so gRPC handlers (markDelivered) can resolve "who
+   * needs to know" without duplicating the room lookup.
+   */
+  async getPeerId(roomId: string, userId: string): Promise<string | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return null;
+    return (room.participants ?? []).find((id) => id !== userId) ?? null;
+  }
+
+  /**
+   * Persist deliveredTo + publish `message:delivered` for a peer we already
+   * know (or just discovered) is online. Idempotent under retries — callers
+   * that resubmit an already-delivered messageId simply produce a no-op event
+   * because `markDeliveredUpTo` filters candidates by `senderId != recipient`
+   * and skips docs where the entry already exists.
+   */
+  private async markDeliveredForOnlinePeer(params: {
+    roomId: string;
+    peerId: string;
+    senderId: string;
+    messages: PrivateMessage[];
+  }): Promise<void> {
+    if (!this.presenceService || !this.redis || params.messages.length === 0)
+      return;
+    try {
+      const isOnline = await this.presenceService.getIsOnline(params.peerId);
+      if (!isOnline) return;
+      const last = params.messages[params.messages.length - 1]!;
+      const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+        params.roomId,
+        params.peerId,
+        last.id
+      );
+      if (count === 0) return;
+      const payload = JSON.stringify({
+        event: "message:delivered",
+        data: {
+          conversationId: params.roomId,
+          recipientId: params.peerId,
+          upToMessageId: last.id,
+          messageIds,
+        },
+      });
+      await this.redis.publish(`conv:${params.roomId}`, payload);
+      // ALSO direct to the sender's own `user:<id>` channel — see the identical
+      // comment on service-impl.ts's markMessagesRead. Guarantees the sender's
+      // conversation-list row updates even if their sidebar socket hasn't (yet)
+      // joined this specific `conv:<roomId>` room.
+      void this.redis
+        .publish(`user:${params.senderId}`, payload)
+        .catch((e: unknown) =>
+          logger.warn(
+            `PrivateMessageService|markDeliveredForOnlinePeer direct publish failed sender=${params.senderId}: ${String(e)}`
+          )
+        );
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|markDeliveredForOnlinePeer failed roomId=${params.roomId} peer=${params.peerId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Presence-connect backfill entry point — called by PresenceService when a
+   * user transitions offline→online. Walks every private room the user is a
+   * participant in and marks their pending inbox as delivered (single Mongo
+   * update per room, capped batch inside `markDeliveredUpTo`). Publishes one
+   * `message:delivered` per room so every sender's tick catches up live.
+   *
+   * Safe on cold rooms (no unread messages) — `markDeliveredUpTo` returns
+   * count:0 and nothing is published.
+   */
+  async backfillDeliveredOnPresenceConnect(userId: string): Promise<void> {
+    if (!this.redis) return;
+    let rooms: Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      participants: string[];
+    }>;
+    try {
+      rooms = await this.roomRepo.findParticipatingRoomHeads(userId);
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|backfill|findParticipatingRoomHeads failed userId=${userId}: ${String(err)}`
+      );
+      return;
+    }
+    for (const room of rooms) {
+      if (!room.lastMessageId) continue;
+      try {
+        const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+          room.roomId,
+          userId,
+          room.lastMessageId
+        );
+        if (count === 0) continue;
+        const payload = JSON.stringify({
+          event: "message:delivered",
+          data: {
+            conversationId: room.roomId,
+            recipientId: userId,
+            upToMessageId: room.lastMessageId,
+            messageIds,
+          },
+        });
+        await this.redis.publish(`conv:${room.roomId}`, payload);
+        const senderId = room.participants.find((id) => id !== userId);
+        if (senderId) {
+          await this.redis
+            .publish(`user:${senderId}`, payload)
+            .catch((e: unknown) =>
+              logger.warn(
+                `PrivateMessageService|backfill direct publish failed sender=${senderId}: ${String(e)}`
+              )
+            );
+        }
+      } catch (err) {
+        logger.warn(
+          `PrivateMessageService|backfill|room=${room.roomId} userId=${userId}: ${String(err)}`
+        );
+      }
+    }
   }
 
   async getMessages(params: {
@@ -517,6 +666,23 @@ export class PrivateMessageService {
     const peerReadMessageId = lastReadMessageIdByUser[peerId];
     if (!peerReadMessageId) return 0;
     return this.getMessageSequence(peerReadMessageId);
+  }
+
+  /**
+   * The high-water mark for messages the peer has been marked delivered on,
+   * as a `sequenceNumber`. Mirrors `getPeerReadSeq` — used to hydrate the
+   * DELIVERED (✓✓, not blue) tick on the initial page load, so a refresh
+   * while the peer is online-but-hasn't-opened-the-chat correctly shows
+   * double ticks instead of resetting to single. Derived from the sender-
+   * indexed newest message the peer appears in `deliveredTo` on — one indexed
+   * query, bounded to the room's own messages.
+   */
+  async getPeerDeliveredSeq(roomId: string, userId: string): Promise<number> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return 0;
+    const peerId = (room.participants ?? []).find((id) => id !== userId);
+    if (!peerId) return 0;
+    return this.messageRepo.getNewestDeliveredSeq(roomId, userId, peerId);
   }
 
   async deleteForMe(

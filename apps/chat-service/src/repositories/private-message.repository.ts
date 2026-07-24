@@ -87,6 +87,52 @@ export class PrivateMessageRepository {
     return this.prisma.privateMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Batch findById — used to resolve a page's own-last-message read/delivery ticks in one query. */
+  async findManyByIds(ids: string[]): Promise<PrivateMessage[]> {
+    const validIds = [...new Set(ids)].filter((id) =>
+      /^[0-9a-f]{24}$/i.test(id)
+    );
+    if (!validIds.length) return [];
+    return this.prisma.privateMessage.findMany({
+      where: { id: { in: validIds } },
+    });
+  }
+
+  /**
+   * Newest MY-message the peer has been marked delivered on, as a sequenceNumber.
+   * The delivered high-water for hydrating ✓✓ ticks on the initial page load —
+   * see PrivateMessageService.getPeerDeliveredSeq.
+   *
+   * Implementation note: Prisma Mongo's `JsonFilter.array_contains` throws
+   * `PrismaClientValidationError` at runtime on `Json`-typed columns in this
+   * generator version (silently type-checks via cast, then rejects the args at
+   * exec time — which our error handler surfaces as a 400 INVALID_REQUEST and
+   * broke the entire messages endpoint). Since `deliveredTo` monotonically
+   * fills once the peer starts receiving and delivery is always a suffix, the
+   * newest MY-message with the peer present is almost always the head; scanning
+   * the newest 50 own-messages in memory gives an exact answer without a Json
+   * filter Prisma won't reliably compile.
+   */
+  async getNewestDeliveredSeq(
+    roomId: string,
+    userId: string,
+    peerId: string
+  ): Promise<number> {
+    const rows = await this.prisma.privateMessage.findMany({
+      where: { roomId, senderId: userId, isDeleted: false },
+      orderBy: { sequenceNumber: "desc" },
+      take: 50,
+      select: { sequenceNumber: true, deliveredTo: true },
+    });
+    for (const row of rows) {
+      const list = Array.isArray(row.deliveredTo)
+        ? (row.deliveredTo as unknown as string[])
+        : [];
+      if (list.includes(peerId)) return row.sequenceNumber ?? 0;
+    }
+    return 0;
+  }
+
   async findAfterSeq(
     roomId: string,
     sinceSeq: number,

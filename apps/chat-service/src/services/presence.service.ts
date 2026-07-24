@@ -7,10 +7,21 @@ import type { PrivateRoomRepository } from "../repositories/private-room.reposit
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
 
+/**
+ * Hook contract the presence service uses to trigger delivered-tick backfill
+ * for offline messages when a user comes back online. Injected AFTER the
+ * message services are constructed (mutual dependency), via `wireBackfill`.
+ */
+export interface PresenceBackfillHooks {
+  backfillDeliveredOnPresenceConnect(userId: string): Promise<void>;
+}
+
 export class PresenceService {
   private readonly backgroundTimeoutMs: number;
   /** Cap on how many private rooms get a presence-driven conv:updated bump per status flip. */
   private static readonly PRESENCE_BUMP_ROOM_LIMIT = 500;
+  private privateBackfill?: PresenceBackfillHooks;
+  private groupBackfill?: PresenceBackfillHooks;
 
   constructor(
     private readonly cacheRepo: CacheRepository,
@@ -22,6 +33,20 @@ export class PresenceService {
     options?: { backgroundTimeoutMs?: number }
   ) {
     this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 5 * 60 * 1000;
+  }
+
+  /**
+   * Late-bound wiring for the presence-connect delivered-tick backfill hooks,
+   * called AFTER construction because Presence and Private/Group message
+   * services depend on each other. Absent injection is a valid state — the
+   * backfill simply doesn't run (test/legacy compatible).
+   */
+  wireBackfill(hooks: {
+    privateMessages?: PresenceBackfillHooks;
+    groupMessages?: PresenceBackfillHooks;
+  }): void {
+    this.privateBackfill = hooks.privateMessages;
+    this.groupBackfill = hooks.groupMessages;
   }
 
   /** Single canonical online-status read — reused by REST responses and conv:updated. */
@@ -77,6 +102,30 @@ export class PresenceService {
 
       // Emit presence change if status changed
       const prevOnline = previousStatus === "online";
+      // Offline→online transition: sweep any messages that landed while the
+      // user was offline and mark them delivered — fires one `message:delivered`
+      // per affected room so senders' ticks catch up without waiting for the
+      // client to individually ack each incoming message on catchup.
+      if (!prevOnline && isOnline) {
+        if (this.privateBackfill) {
+          void this.privateBackfill
+            .backfillDeliveredOnPresenceConnect(userId)
+            .catch((err) =>
+              logger.warn(
+                `PresenceService|privateBackfill|userId=${userId}|error=${String(err)}`
+              )
+            );
+        }
+        if (this.groupBackfill) {
+          void this.groupBackfill
+            .backfillDeliveredOnPresenceConnect(userId)
+            .catch((err) =>
+              logger.warn(
+                `PresenceService|groupBackfill|userId=${userId}|error=${String(err)}`
+              )
+            );
+        }
+      }
       if (prevOnline !== isOnline && this.redis) {
         await this.redis.publish(
           `user:${userId}`,

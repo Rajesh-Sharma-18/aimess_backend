@@ -63,6 +63,8 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PresenceService } from "./presence.service.js";
+import type { Redis, Cluster } from "ioredis";
 import type { GroupMessage } from "../generated/prisma/index.js";
 
 export class GroupMessageService {
@@ -71,7 +73,15 @@ export class GroupMessageService {
     private readonly roomRepo: GroupRoomRepository,
     private readonly memberRepo: GroupMemberRepository,
     private readonly cacheRepo: CacheRepository,
-    private readonly userSnapshotService: UserSnapshotService
+    private readonly userSnapshotService: UserSnapshotService,
+    // Presence-aware delivery — populates `deliveredTo` at insert time from
+    // every active OTHER member currently online, and publishes one
+    // `message:delivered` per online member so the sender's tick flips to ✓✓
+    // immediately without waiting for each recipient's client-triggered ack.
+    // Optional so unit tests that construct the service without these keep
+    // working (delivery stays "sent" until the client ack lands).
+    private readonly presenceService?: PresenceService,
+    private readonly redis?: Redis | Cluster | null
   ) {}
 
   async sendMessage(params: {
@@ -186,6 +196,36 @@ export class GroupMessageService {
       }
     }
 
+    // Presence-aware group delivery: resolve every OTHER active member's live
+    // socket status in ONE batch call BEFORE inserting, so the persisted
+    // `deliveredTo` list reflects the truthful "who was online at send time"
+    // rather than "who has a client-side ack listener that happened to fire".
+    // Only queried when the service is fully wired (presence + redis) — tests
+    // that omit those keep the old behaviour and deliveredTo starts empty.
+    let deliveredToOnInsert: string[] = [];
+    if (this.presenceService && this.redis) {
+      try {
+        const others = (
+          await this.memberRepo.findActiveMembers(params.roomId)
+        ).filter((m) => m.userId !== params.senderId);
+        if (others.length > 0) {
+          const presence = await this.presenceService.getPresenceMany(
+            others.map((m) => m.userId)
+          );
+          deliveredToOnInsert = others
+            .filter((m) => presence.get(m.userId) === true)
+            .map((m) => m.userId);
+        }
+      } catch (err) {
+        // Delivery is best-effort — a presence lookup outage must never block
+        // the send itself. The client-triggered `message:delivered` ack path
+        // remains as the fallback delivery signal.
+        logger.warn(
+          `GroupMessageService|resolvePresence|room=${params.roomId}: ${String(err)}`
+        );
+      }
+    }
+
     const created: GroupMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
@@ -198,6 +238,9 @@ export class GroupMessageService {
         messageType: normalizeMessageType(part.messageType),
         parentMessageId: resolvedParentId,
         clientMessageId: part.clientMessageId || null,
+        // Same deliveredTo snapshot on every album sibling — atomic delivery
+        // for a media set that the recipient's client will receive as one page.
+        deliveredTo: deliveredToOnInsert,
         ...(i === 0 && params.clientTs
           ? { clientInfo: { clientTs: params.clientTs } }
           : {}),
@@ -281,7 +324,118 @@ export class GroupMessageService {
           );
         });
     }
+
+    // Fire one `message:delivered` per online member so the sender's tick can
+    // flip SENT→DELIVERED as each recipient is confirmed present. Fire-and-
+    // forget — a Redis blip must never fail the send itself.
+    if (this.redis && deliveredToOnInsert.length > 0) {
+      const messageIds = created.map((m) => m.id);
+      const lastId = message.id;
+      for (const recipientId of deliveredToOnInsert) {
+        void this.redis
+          .publish(
+            `conv:${params.roomId}`,
+            JSON.stringify({
+              event: "message:delivered",
+              data: {
+                conversationId: params.roomId,
+                recipientId,
+                upToMessageId: lastId,
+                messageIds,
+              },
+            })
+          )
+          .catch((err: unknown) =>
+            logger.warn(
+              `GroupMessageService|publish message:delivered failed room=${params.roomId} recipient=${recipientId}: ${String(err)}`
+            )
+          );
+      }
+      // ALSO direct to the SENDER's own `user:<id>` channel — one publish
+      // regardless of how many members came online (the sender's list row only
+      // needs one tick update). Guarantees delivery even if the sender's
+      // sidebar socket hasn't (yet) joined `conv:<roomId>` — see the identical
+      // comment on the private markDelivered path.
+      void this.redis
+        .publish(
+          `user:${params.senderId}`,
+          JSON.stringify({
+            event: "message:delivered",
+            data: {
+              conversationId: params.roomId,
+              recipientId: deliveredToOnInsert[0],
+              upToMessageId: lastId,
+              messageIds,
+            },
+          })
+        )
+        .catch((err: unknown) =>
+          logger.warn(
+            `GroupMessageService|publish message:delivered direct failed room=${params.roomId} sender=${params.senderId}: ${String(err)}`
+          )
+        );
+    }
+
     return withRole(attachAlbumMessages(message, created));
+  }
+
+  /**
+   * Presence-connect backfill for GROUPS — called by PresenceService when a
+   * user transitions offline→online. Walks every group the user is an active
+   * member of, atomically appends the userId to every message's `deliveredTo`
+   * where they aren't already present, and publishes one `message:delivered`
+   * per room so senders' ticks catch up live. Bounded by member count and by
+   * the repo's per-room 200-row cap inside markDeliveredUpTo.
+   */
+  async backfillDeliveredOnPresenceConnect(userId: string): Promise<void> {
+    if (!this.redis) return;
+    let memberships: Array<{ roomId: string }>;
+    try {
+      memberships = await this.memberRepo.getActiveMemberships(userId);
+    } catch (err) {
+      logger.warn(
+        `GroupMessageService|backfill|getActiveMemberships failed userId=${userId}: ${String(err)}`
+      );
+      return;
+    }
+    for (const membership of memberships) {
+      try {
+        const head = await this.roomRepo.findActiveByRoomId(membership.roomId);
+        if (!head?.lastMessageId) continue;
+        const { count, messageIds } = await this.messageRepo.markDeliveredUpTo(
+          membership.roomId,
+          userId,
+          head.lastMessageId
+        );
+        if (count === 0) continue;
+        const payload = JSON.stringify({
+          event: "message:delivered",
+          data: {
+            conversationId: membership.roomId,
+            recipientId: userId,
+            upToMessageId: head.lastMessageId,
+            messageIds,
+          },
+        });
+        await this.redis.publish(`conv:${membership.roomId}`, payload);
+        const senderId = (
+          head.lastMessagePreview as { senderId?: string } | null
+        )?.senderId;
+        if (senderId && senderId !== userId) {
+          await this.redis
+            .publish(`user:${senderId}`, payload)
+            .catch((e: unknown) =>
+              logger.warn(
+                `GroupMessageService|backfill direct publish failed sender=${senderId}: ${String(e)}`
+              )
+            );
+        }
+      } catch (err) {
+        logger.warn(
+          `GroupMessageService|backfill|room=${membership.roomId} userId=${userId}: ${String(err)}`
+        );
+      }
+    }
   }
 
   /**
@@ -291,6 +445,17 @@ export class GroupMessageService {
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return members.map((m) => m.userId);
+  }
+
+  /**
+   * The room's CURRENT last-message sequenceNumber (0 if none). Used by the
+   * read-receipt fan-out to tell the sender's inbox row whether a reader's
+   * watermark has caught up to the newest message — see `getMessageSequence`.
+   */
+  async getRoomLastMessageSeq(roomId: string): Promise<number> {
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    const lastId = room?.lastMessageId;
+    return lastId ? this.getMessageSequence(lastId) : 0;
   }
 
   /** See PrivateRoomRepository.setReactionActivity — identical overlay semantics. */

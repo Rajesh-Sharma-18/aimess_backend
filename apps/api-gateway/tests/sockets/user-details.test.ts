@@ -347,16 +347,35 @@ describe("buildTypingBroadcast", () => {
     expect(out.senderName).toBe("Alice");
   });
 
-  it("senderName falls back to the client value only when displayName is empty", () => {
+  it("senderName falls back to username (not the client value) when displayName is empty", () => {
+    // username (always set at signup) must win over a client-supplied senderName —
+    // a nameless profile (empty firstName/lastName) should never surface a raw
+    // userId on the client, and username is the more authoritative real identity.
     const noName: SocketUserDetails = { ...details, displayName: "" };
+    const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS, {
+      senderName: "ClientTyped",
+    });
+    expect(out.senderName).toBe("alice");
+  });
+
+  it("senderName falls back to the client value only when BOTH displayName and username are empty", () => {
+    const noName: SocketUserDetails = {
+      ...details,
+      displayName: "",
+      username: "",
+    };
     const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS, {
       senderName: "ClientTyped",
     });
     expect(out.senderName).toBe("ClientTyped");
   });
 
-  it("senderName is '' when both displayName and client senderName are empty", () => {
-    const noName: SocketUserDetails = { ...details, displayName: "" };
+  it("senderName is '' when displayName, username, and client senderName are all empty", () => {
+    const noName: SocketUserDetails = {
+      ...details,
+      displayName: "",
+      username: "",
+    };
     const out = buildTypingBroadcast(USER_ID, noName, "conv1", TS);
     expect(out.senderName).toBe("");
   });

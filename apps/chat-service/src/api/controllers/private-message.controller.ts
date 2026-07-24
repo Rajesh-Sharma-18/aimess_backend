@@ -187,10 +187,13 @@ export class PrivateMessageController {
     // page so the FE can hydrate each of MY OWN messages' seen/delivered tick
     // WITHOUT waiting for a live `message:read` event (fixes ticks resetting to
     // "sent" on refresh/reconnect; see PrivateMessageService.getPeerReadSeq).
-    const peerReadSeq = await this.messageService.getPeerReadSeq(
-      roomId,
-      userId
-    );
+    // peerDeliveredSeq is the parallel signal for the DELIVERED (✓✓ grey) tick
+    // when the peer has received but not yet opened the chat — hydrated from
+    // the newest MY-message the peer appears in `deliveredTo` on.
+    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getPeerReadSeq(roomId, userId),
+      this.messageService.getPeerDeliveredSeq(roomId, userId),
+    ]);
 
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
@@ -212,7 +215,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, peerReadSeq },
+            { ...paginated, peerReadSeq, peerDeliveredSeq },
             enriched.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -249,7 +252,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, peerReadSeq },
+            { ...paginated, peerReadSeq, peerDeliveredSeq },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -294,7 +297,9 @@ export class PrivateMessageController {
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ ...paginated, peerReadSeq }, msg));
+      .json(
+        new ApiResponse({ ...paginated, peerReadSeq, peerDeliveredSeq }, msg)
+      );
   }
 
   getRoomMedia = asyncHandler(async (req: Request, res: Response) => {

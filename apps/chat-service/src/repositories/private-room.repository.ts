@@ -162,6 +162,28 @@ export class PrivateRoomRepository {
       .filter((x): x is NonNullable<typeof x> => x !== null);
   }
 
+  /**
+   * Cheapest possible list of a user's rooms + their last message id — used by
+   * the presence-connect delivered backfill. No participant list, no preview,
+   * no ordering — just enough to walk and call markDeliveredUpTo per room.
+   * 500 cap so a whale user's connect never blocks the presence recompute.
+   */
+  async findParticipatingRoomHeads(
+    userId: string
+  ): Promise<
+    Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      participants: string[];
+    }>
+  > {
+    return this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: { roomId: true, lastMessageId: true, participants: true },
+      take: 500,
+    });
+  }
+
   async create(data: {
     roomId: string;
     participants: string[];

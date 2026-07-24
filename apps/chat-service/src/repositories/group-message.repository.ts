@@ -86,6 +86,62 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Batch findById — used to resolve a page's own-last-message read ticks in one query. */
+  async findManyByIds(ids: string[]): Promise<GroupMessage[]> {
+    const validIds = [...new Set(ids)].filter((id) =>
+      /^[0-9a-f]{24}$/i.test(id)
+    );
+    if (!validIds.length) return [];
+    return this.prisma.groupMessage.findMany({
+      where: { id: { in: validIds } },
+    });
+  }
+
+  /**
+   * Presence-driven delivery: append `recipientId` to `deliveredTo` on every
+   * message in `roomId` at or before `upToMessageId` that was sent by someone
+   * OTHER than the recipient and that they aren't already listed in. Returns
+   * the touched ids so the caller can publish one `message:delivered` per
+   * batch. Mirrors PrivateMessageRepository.markDeliveredUpTo. 200-row cap
+   * keeps a big offline-then-online catch-up from stalling the presence recompute.
+   */
+  async markDeliveredUpTo(
+    roomId: string,
+    recipientId: string,
+    upToMessageId: string
+  ): Promise<{ count: number; messageIds: string[] }> {
+    if (!/^[0-9a-f]{24}$/i.test(upToMessageId))
+      return { count: 0, messageIds: [] };
+    const upTo = await this.prisma.groupMessage.findUnique({
+      where: { id: upToMessageId },
+    });
+    if (!upTo) return { count: 0, messageIds: [] };
+
+    const candidates = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId,
+        senderId: { not: recipientId },
+        createdAt: { lte: upTo.createdAt },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const updatedIds: string[] = [];
+    for (const msg of candidates) {
+      const deliveredTo = (msg as unknown as { deliveredTo?: unknown })
+        .deliveredTo;
+      const list = Array.isArray(deliveredTo) ? (deliveredTo as string[]) : [];
+      if (list.includes(recipientId)) continue;
+      await this.prisma.groupMessage.update({
+        where: { id: msg.id },
+        data: { deliveredTo: [...list, recipientId] },
+      });
+      updatedIds.push(msg.id);
+    }
+    return { count: updatedIds.length, messageIds: updatedIds };
+  }
+
   /**
    * Which of `ids` are still live (exist in this room, not deleted-for-
    * everyone). One batched query — used by the pins list to stamp each pin's

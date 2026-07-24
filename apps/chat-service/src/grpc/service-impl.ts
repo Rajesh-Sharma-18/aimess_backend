@@ -736,12 +736,33 @@ export function createMessagingImpl(
 
           let readToSeq = 0;
           let unreadCount = 0;
+          // The room's CURRENT last-message seq — lets us tell the sender's
+          // conversation-LIST row, authoritatively, whether this reader's
+          // watermark has caught up to the newest message. Without this the
+          // list has to guess by byte-matching the read boundary id against its
+          // (possibly stale) cached lastMessageId, which silently misses the
+          // READ tick — the room view stays lenient (watermark) and diverges.
+          let lastMessageSeq = 0;
+          // Every OTHER active participant/member — the sender(s) whose OWN tick
+          // needs to flip to READ. Resolved alongside the mark-read write itself
+          // (no extra query for PRIVATE — the room doc is already in hand).
+          let otherUserIds: string[] = [];
           if (conversationType === "GROUP") {
             ({ readToSeq } = await deps.groupMessageService.markReadUpTo({
               roomId: req.conversationId,
               userId: req.readerId,
               upToMessageId: req.upToMessageId,
             }));
+            const [members, lastSeq] = await Promise.all([
+              deps.groupMessageService
+                .getActiveMemberIds(req.conversationId)
+                .catch(() => [] as string[]),
+              deps.groupMessageService
+                .getRoomLastMessageSeq(req.conversationId)
+                .catch(() => 0),
+            ]);
+            otherUserIds = members.filter((id) => id !== req.readerId);
+            lastMessageSeq = lastSeq;
           } else {
             const room = (await deps.privateMessageService.markRead({
               roomId: req.conversationId,
@@ -749,27 +770,65 @@ export function createMessagingImpl(
               lastMessageId: req.upToMessageId,
             })) as {
               unreadCountByUser?: Record<string, number>;
+              participants?: string[];
+              lastMessageId?: string | null;
             } | null;
             unreadCount = room?.unreadCountByUser?.[req.readerId] ?? 0;
+            otherUserIds = (room?.participants ?? []).filter(
+              (id) => id !== req.readerId
+            );
             readToSeq = await deps.privateMessageService
               .getMessageSequence(req.upToMessageId)
               .catch(() => 0);
+            lastMessageSeq = room?.lastMessageId
+              ? await deps.privateMessageService
+                  .getMessageSequence(room.lastMessageId)
+                  .catch(() => 0)
+              : 0;
           }
+
+          // Authoritative "this reader has now read the room's current newest
+          // message" — the single flag the sender's inbox row keys off, so it
+          // never has to id-match a stale cached boundary. read_to_seq is the
+          // reader's forward-only watermark; lastMessageSeq is resolved above.
+          const readsLastMessage =
+            readToSeq > 0 && lastMessageSeq > 0 && readToSeq >= lastMessageSeq;
+
+          const readPayload = JSON.stringify({
+            event: "message:read",
+            data: {
+              conversationId: req.conversationId,
+              readerId: req.readerId,
+              upToMessageId: req.upToMessageId,
+              read_to_seq: readToSeq,
+              last_message_seq: lastMessageSeq,
+              readsLastMessage,
+            },
+          });
 
           // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
           // or below the boundary to READ (watermark), not just the boundary message.
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:read",
-              data: {
-                conversationId: req.conversationId,
-                readerId: req.readerId,
-                upToMessageId: req.upToMessageId,
-                read_to_seq: readToSeq,
-              },
-            })
-          );
+          await redis.publish(`conv:${req.conversationId}`, readPayload);
+
+          // ALSO publish directly to every other participant/member's own
+          // `user:<id>` channel — every socket joins that room unconditionally
+          // at connect (see `socket.join(\`user:${userId}\`)`), unlike `conv:<roomId>`
+          // which requires an explicit `conv:join`. The conversation-LIST view
+          // (sidebar) only joins `conv:*` rooms it's currently rendering via a
+          // best-effort typing workaround — without this direct delivery, a
+          // sender's list row can miss the READ tick whenever their sidebar
+          // socket wasn't (yet) joined to this specific room, going stale until
+          // a manual refetch. Same direct-roster pattern already used for typing
+          // (`createDirectRosterBroadcast`) and community's read_sync.
+          for (const otherId of otherUserIds) {
+            void redis
+              .publish(`user:${otherId}`, readPayload)
+              .catch((e: unknown) =>
+                logger.warn(
+                  `message:read direct publish failed userId=${otherId}: ${String(e)}`
+                )
+              );
+          }
 
           // V2 §2.6/§5.5: read_sync to the reader's OWN other devices so their
           // unread badge clears too. Published to user:<readerId> (every device of
@@ -831,18 +890,32 @@ export function createMessagingImpl(
             });
 
           if (count > 0) {
-            await redis.publish(
-              `conv:${req.conversationId}`,
-              JSON.stringify({
-                event: "message:delivered",
-                data: {
-                  conversationId: req.conversationId,
-                  recipientId: req.recipientId,
-                  upToMessageId: req.upToMessageId,
-                  messageIds,
-                },
-              })
-            );
+            const deliveredPayload = JSON.stringify({
+              event: "message:delivered",
+              data: {
+                conversationId: req.conversationId,
+                recipientId: req.recipientId,
+                upToMessageId: req.upToMessageId,
+                messageIds,
+              },
+            });
+            await redis.publish(`conv:${req.conversationId}`, deliveredPayload);
+
+            // ALSO publish directly to the sender's own `user:<id>` channel — see
+            // the identical comment on markMessagesRead. The sender is the ONLY
+            // other participant in a private room.
+            const peerId = await deps.privateMessageService
+              .getPeerId(req.conversationId, req.recipientId)
+              .catch(() => null);
+            if (peerId) {
+              void redis
+                .publish(`user:${peerId}`, deliveredPayload)
+                .catch((e: unknown) =>
+                  logger.warn(
+                    `message:delivered direct publish failed userId=${peerId}: ${String(e)}`
+                  )
+                );
+            }
           }
 
           callback(null, { updatedCount: count });

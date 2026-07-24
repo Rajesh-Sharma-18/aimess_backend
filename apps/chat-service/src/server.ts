@@ -351,7 +351,9 @@ const startServer = async () => {
       userSnapshotService,
       userServiceClient,
       privateMessageReportRepo,
-      getCommunityReconcileClient()
+      getCommunityReconcileClient(),
+      presenceService,
+      redis
     );
     const privateSystemMessageService = new PrivateSystemMessageService(
       privateMessageRepo,
@@ -399,8 +401,17 @@ const startServer = async () => {
       groupRoomRepo,
       groupMemberRepo,
       cacheRepo,
-      userSnapshotService
+      userSnapshotService,
+      presenceService,
+      redis
     );
+    // Wire presence-connect delivered-tick backfill: on offline→online,
+    // PresenceService now walks both surfaces and marks pending messages
+    // delivered, publishing `message:delivered` so senders see live ticks.
+    presenceService.wireBackfill({
+      privateMessages: privateMessageService,
+      groupMessages: groupMessageService,
+    });
     const groupInviteLinkService = new GroupInviteLinkService(
       groupInviteLinkRepo,
       groupRoomRepo,

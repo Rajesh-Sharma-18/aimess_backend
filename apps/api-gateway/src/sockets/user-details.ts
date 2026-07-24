@@ -92,6 +92,11 @@ export function buildTypingBroadcast(
     userId,
     userDetails,
     timestamp,
-    senderName: userDetails.displayName || opts?.senderName || "",
+    // `displayName` is server-derived from firstName+lastName (buildDisplayName)
+    // and is EMPTY for any user who never set a name — fall back to `username`
+    // (always set at signup) before an explicit caller-supplied senderName, so a
+    // nameless profile never leaves the client nothing but the raw userId to show.
+    senderName:
+      userDetails.displayName || userDetails.username || opts?.senderName || "",
   };
 }

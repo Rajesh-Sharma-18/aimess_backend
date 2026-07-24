@@ -51,6 +51,17 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
   unreadCount: number;
   role: string;
+  /**
+   * Telegram-style tick for the last message, but ONLY meaningful when the
+   * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
+   *  - SENT: no other active member has been marked delivered yet.
+   *  - DELIVERED: at least one other active member is in the message's
+   *    `deliveredTo` (populated at send-time from live presence, and topped
+   *    up by the presence-connect backfill).
+   *  - READ: every other active member's `lastReadMessageId` cursor has caught
+   *    up to the last message's sequenceNumber.
+   */
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
 };
 
 export class GroupRoomService {
@@ -161,6 +172,94 @@ export class GroupRoomService {
           } as T;
         });
     return this.applyReactionOverlay(withDeleteOverlay, userId);
+  }
+
+  /**
+   * Batch-resolves the "did every other active member read the caller's last
+   * message" tick for a page of rooms — one shared query pass instead of N+1.
+   * Rows whose last message wasn't sent by `userId` are left unset (null tick).
+   */
+  private async computeLastMessageReadStatuses(
+    rooms: Array<{
+      roomId: string;
+      lastMessageId: string | null;
+      lastMessagePreview: unknown;
+    }>,
+    userId: string
+  ): Promise<Map<string, "SENT" | "DELIVERED" | "READ">> {
+    const result = new Map<string, "SENT" | "DELIVERED" | "READ">();
+    const ownRoomIds: string[] = [];
+    const lastMessageIdByRoom = new Map<string, string>();
+    for (const room of rooms) {
+      const senderId = (room.lastMessagePreview as { senderId?: string } | null)
+        ?.senderId;
+      if (senderId !== userId || !room.lastMessageId) continue;
+      ownRoomIds.push(room.roomId);
+      lastMessageIdByRoom.set(room.roomId, room.lastMessageId);
+    }
+    if (!ownRoomIds.length) return result;
+
+    const activeMembersByRoom = new Map(
+      await Promise.all(
+        ownRoomIds.map(
+          async (roomId) =>
+            [roomId, await this.memberRepo.findActiveMembers(roomId)] as const
+        )
+      )
+    );
+
+    const idsToResolve = new Set<string>();
+    for (const roomId of ownRoomIds) {
+      idsToResolve.add(lastMessageIdByRoom.get(roomId) as string);
+      for (const member of activeMembersByRoom.get(roomId) ?? []) {
+        if (member.userId !== userId && member.lastReadMessageId)
+          idsToResolve.add(member.lastReadMessageId);
+      }
+    }
+    const resolvedMessages = idsToResolve.size
+      ? await this.messageRepo.findManyByIds([...idsToResolve])
+      : [];
+    const seqById = new Map(
+      resolvedMessages.map((m) => [
+        m.id,
+        (m as { sequenceNumber?: number }).sequenceNumber ?? 0,
+      ])
+    );
+
+    // Also pull the full last-message docs (already in resolvedMessages) so
+    // we can read `deliveredTo` for the DELIVERED tier without a second query.
+    const lastMessageById = new Map(resolvedMessages.map((m) => [m.id, m]));
+
+    for (const roomId of ownRoomIds) {
+      const lastMessageId = lastMessageIdByRoom.get(roomId) as string;
+      const lastSeq = seqById.get(lastMessageId) ?? 0;
+      const others = (activeMembersByRoom.get(roomId) ?? []).filter(
+        (m) => m.userId !== userId
+      );
+      const allRead =
+        others.length > 0 &&
+        lastSeq > 0 &&
+        others.every(
+          (m) =>
+            (m.lastReadMessageId
+              ? (seqById.get(m.lastReadMessageId) ?? 0)
+              : 0) >= lastSeq
+        );
+      if (allRead) {
+        result.set(roomId, "READ");
+        continue;
+      }
+      const lastMsg = lastMessageById.get(lastMessageId) as
+        | { deliveredTo?: unknown }
+        | undefined;
+      const deliveredTo = Array.isArray(lastMsg?.deliveredTo)
+        ? (lastMsg.deliveredTo as string[])
+        : [];
+      const otherIds = new Set(others.map((m) => m.userId));
+      const anyDelivered = deliveredTo.some((id) => otherIds.has(id));
+      result.set(roomId, anyDelivered ? "DELIVERED" : "SENT");
+    }
+    return result;
   }
 
   /**
@@ -559,6 +658,10 @@ export class GroupRoomService {
     // Resolve every room logo on this page ONCE (deduped) → download URLs, so
     // the unified inbox renders a usable avatar instead of a raw object key.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
+    const readStatusByRoom = await this.computeLastMessageReadStatuses(
+      rooms,
+      params.userId
+    );
 
     const now = Date.now();
     return rooms.map((room) => {
@@ -579,6 +682,7 @@ export class GroupRoomService {
         unreadCount: membership?.unreadCount ?? 0,
         role: membership?.role ?? "MEMBER",
         isJoined,
+        lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });
   }

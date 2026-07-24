@@ -160,6 +160,14 @@ export type EnrichedPrivateRoom = PrivateRoom & {
   unreadMessageCount: number;
   /** Live friendship state from user-service — never the local send-gate read-model. */
   friendship: ChatFriendshipInfo;
+  /**
+   * Telegram/WhatsApp-style tick for the last message, but ONLY meaningful when
+   * the CALLER sent it (null otherwise — no tick to show on a peer's message).
+   * DELIVERED/READ are resolved from real persisted state: `PrivateMessage.deliveredTo`
+   * (written by markDeliveredUpTo) and the peer's `lastReadMessageIdByUser` cursor
+   * (the real read source of truth — `PrivateMessage.readBy` is dead/unpopulated).
+   */
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
 };
 
 /**
@@ -192,6 +200,7 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   lastActivity: PrivateConversationLastActivity;
   isMuted: boolean;
   friendship: WireFriendship;
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
 }
 
 function toConversationListItem(
@@ -214,6 +223,7 @@ function toConversationListItem(
     lastActivity: room.lastActivity,
     isMuted: room.isMuted,
     friendship: toWireFriendship(room.friendship),
+    lastMessageReadStatus: room.lastMessageReadStatus,
     ...toPeerFriendshipRelationship(room.friendship),
   };
 }
@@ -584,6 +594,62 @@ export class PrivateRoomService {
       );
     }
 
+    // Own-last-message read/delivery tick (Telegram/WhatsApp parity) — batch-resolved
+    // once for the whole page. Uses the SAME rawLm each row's lastActivity below is
+    // built from, so a delete-for-me override is respected. Only computed for rows
+    // where the CALLER sent the (viewer-visible) last message.
+    const idsToResolve = new Set<string>();
+    const ownRowMeta = new Map<
+      string,
+      { lastMessageId: string; peerReadCursorId: string | null }
+    >();
+    for (const room of rooms) {
+      const rawLmForStatus = perUserFallback.has(room.roomId)
+        ? (perUserFallback.get(room.roomId) ?? null)
+        : room.lastMessage;
+      const lmSenderId = (rawLmForStatus as Record<string, unknown> | null)
+        ?.senderId as string | undefined;
+      if (lmSenderId !== userId || !room.lastMessageId) continue;
+      const peerId = (room.participants || []).find((p) => p !== userId) || "";
+      const cursorMap = (room.lastReadMessageIdByUser ?? {}) as Record<
+        string,
+        string
+      >;
+      const peerReadCursorId = cursorMap[peerId] || null;
+      ownRowMeta.set(room.roomId, {
+        lastMessageId: room.lastMessageId,
+        peerReadCursorId,
+      });
+      idsToResolve.add(room.lastMessageId);
+      if (peerReadCursorId) idsToResolve.add(peerReadCursorId);
+    }
+    const resolvedMessages = idsToResolve.size
+      ? await this.privateMessageRepo.findManyByIds([...idsToResolve])
+      : [];
+    const messageById = new Map(resolvedMessages.map((m) => [m.id, m]));
+    const readStatusByRoom = new Map<string, "SENT" | "DELIVERED" | "READ">();
+    for (const [roomId, meta] of ownRowMeta) {
+      const lastMsg = messageById.get(meta.lastMessageId) as
+        | { sequenceNumber?: number; deliveredTo?: unknown[] }
+        | undefined;
+      const lastSeq = lastMsg?.sequenceNumber ?? 0;
+      const peerReadSeq = meta.peerReadCursorId
+        ? ((
+            messageById.get(meta.peerReadCursorId) as
+              | { sequenceNumber?: number }
+              | undefined
+          )?.sequenceNumber ?? 0)
+        : 0;
+      if (lastSeq > 0 && peerReadSeq >= lastSeq) {
+        readStatusByRoom.set(roomId, "READ");
+      } else {
+        readStatusByRoom.set(
+          roomId,
+          (lastMsg?.deliveredTo ?? []).length > 0 ? "DELIVERED" : "SENT"
+        );
+      }
+    }
+
     const now = Date.now();
     return rooms.map((room) => {
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
@@ -691,6 +757,7 @@ export class PrivateRoomService {
         lastActivity,
         unreadMessageCount: unreadCountByUser[userId] ?? 0,
         friendship: friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP,
+        lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });
   }

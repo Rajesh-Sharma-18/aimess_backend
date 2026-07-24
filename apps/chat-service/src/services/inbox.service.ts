@@ -25,6 +25,11 @@ export interface InboxItem {
   lastMessageAt: Date | null;
   lastMessageId: string | null;
   lastMessage: unknown | null;
+  /**
+   * Telegram/WhatsApp-style tick for `lastMessage` — SENT/DELIVERED(PRIVATE only)/READ
+   * when the CALLER sent it, else null (no tick on a peer/other-member's message).
+   */
+  lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
   unreadCount: number;
   isMuted: boolean;
   pinnedCount: number;
@@ -176,6 +181,7 @@ export class InboxService {
       lastMessageAt: room.lastMessageAt,
       lastMessageId: room.lastMessageId,
       lastMessage: room.lastMessage ?? null,
+      lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: unreadByUser[userId] ?? 0,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
@@ -209,6 +215,7 @@ export class InboxService {
               room.lastMessagePreview as { messageType?: string | null }
             )
           : (room.lastMessagePreview ?? null),
+      lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: room.unreadCount,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,

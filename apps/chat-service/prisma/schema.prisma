@@ -229,6 +229,11 @@ model GroupMessage {
   sequenceNumber     Int       @default(0)
   // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
   revision           Int       @default(0)
+  // Members (userIds) whose socket the server has considered this message delivered
+  // to — populated at send time from `PresenceService.getPresenceMany` and topped up
+  // by the presence-connect backfill. Powers the group "at least one member online"
+  // DELIVERED tier in the inbox tick without a new schema table.
+  deliveredTo        Json      @default("[]")
   createdAt          DateTime  @default(now())
   editedAt           DateTime?
   editHistory        Json      @default("[]")
