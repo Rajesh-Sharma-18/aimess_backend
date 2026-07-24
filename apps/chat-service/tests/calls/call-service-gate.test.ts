@@ -235,9 +235,12 @@ describe("CallService.initiateCall busy gate", () => {
     const result = await service.initiateCall(params);
     expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
     expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
-    // The query must be bounded by a freshness cutoff (a Date), not unbounded.
+    // Both states must be time-bounded: RINGING by the freshness cutoff and
+    // IN_PROGRESS by the max-duration cutoff. An unbounded IN_PROGRESS makes a
+    // crashed call block both parties forever.
     expect(stubs.callRepo.findActiveByParticipant).toHaveBeenCalledWith(
       ["caller", "callee"],
+      expect.any(Date),
       expect.any(Date)
     );
   });

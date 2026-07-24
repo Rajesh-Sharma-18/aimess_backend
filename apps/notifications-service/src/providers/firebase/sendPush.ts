@@ -18,6 +18,11 @@ interface SendPushParams {
   ttl?: number;
   /** FCM delivery priority. Use 'high' for calls/time-sensitive events. */
   priority?: "high" | "normal";
+  /**
+   * When true, omit the `notification` block so the OS doesn't draw a tray
+   * notification — the app is woken to own the UI (e.g. full-screen call intent).
+   */
+  dataOnly?: boolean;
 }
 
 /** FCM error codes that mean the token is permanently dead → prune it. */
@@ -43,6 +48,7 @@ export async function sendPush({
   collapseKey,
   ttl = 86_400,
   priority = "normal",
+  dataOnly = false,
 }: SendPushParams): Promise<SendPushResult> {
   // Merge deepLink into the data map so native clients can read it.
   const enrichedData: Record<string, string> = {
@@ -56,7 +62,9 @@ export async function sendPush({
   try {
     const messageId = await messaging.send({
       token,
-      notification: { title, body },
+      // Data-only omits `notification` so the OS wakes the app instead of drawing
+      // a tray notification (client owns the full-screen call intent).
+      ...(dataOnly ? {} : { notification: { title, body } }),
 
       // ── Android ──────────────────────────────────────────────────────────
       android: {
@@ -68,11 +76,10 @@ export async function sendPush({
       apns: {
         headers: {
           "apns-priority": apnsPriority,
+          ...(dataOnly ? { "apns-push-type": "background" } : {}),
         },
         payload: {
-          aps: {
-            sound: "default",
-          },
+          aps: dataOnly ? { contentAvailable: true } : { sound: "default" },
         },
       },
 

@@ -6,6 +6,7 @@ import { connectDatabase } from "./config/prisma.js";
 import { redis } from "./config/redis.js";
 import { startAdminUserConsumer } from "./consumers/admin-user.consumer.js";
 import { startAnnouncementConsumer } from "./consumers/announcement.consumer.js";
+import { startCallConsumer } from "./consumers/call.consumer.js";
 import { startChatConsumer } from "./consumers/chat.consumer.js";
 import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startGroupConsumer } from "./consumers/group.consumer.js";
@@ -53,6 +54,7 @@ async function start() {
 
     await startConsumerSafe("notification consumer", startConsumer);
     await startConsumerSafe("chat push consumer", startChatConsumer);
+    await startConsumerSafe("call push consumer", startCallConsumer);
     await startConsumerSafe("community consumer", startCommunityConsumer);
     await startConsumerSafe("group consumer", startGroupConsumer);
     await startConsumerSafe("friend consumer", startFriendConsumer);
