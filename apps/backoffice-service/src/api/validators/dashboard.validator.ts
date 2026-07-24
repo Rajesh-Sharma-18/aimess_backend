@@ -13,3 +13,20 @@ export const dashboardChartsQuerySchema = z.object({
 export type DashboardChartsQueryInput = z.infer<
   typeof dashboardChartsQuerySchema
 >;
+
+/**
+ * Query schema for GET /v1/dashboard/calls. Inclusive YYYY-MM-DD bounds; both
+ * optional, and omitting them reports over all time.
+ */
+export const callAnalyticsQuerySchema = z.object({
+  fromDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "fromDate must be YYYY-MM-DD")
+    .optional(),
+  toDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "toDate must be YYYY-MM-DD")
+    .optional(),
+});
+
+export type CallAnalyticsQueryInput = z.infer<typeof callAnalyticsQuerySchema>;

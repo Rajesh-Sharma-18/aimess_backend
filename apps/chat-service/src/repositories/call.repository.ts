@@ -80,6 +80,23 @@ export class CallRepository {
     });
   }
 
+  /**
+   * Sweep candidates for calls stranded in IN_PROGRESS: answered longer ago
+   * than any plausible call could run. These are rows whose LiveKit room has
+   * already closed but whose `room_finished` webhook never landed — without
+   * this they stay IN_PROGRESS forever and keep the participants "busy".
+   * Keyed on `answeredAt` (when the call actually started), not `initiatedAt`.
+   */
+  async findStuckInProgress(cutoff: Date, limit: number): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        status: CallStatus.IN_PROGRESS,
+        answeredAt: { lt: cutoff },
+      },
+      take: limit,
+    });
+  }
+
   async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
     const result = await this.prisma.call.updateMany({
       where: { callId, status: "RINGING" },

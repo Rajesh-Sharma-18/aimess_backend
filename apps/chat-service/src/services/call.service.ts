@@ -18,7 +18,12 @@ import type {
   CallChatMessageOutcome,
 } from "./call-chat-message.service.js";
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
+import type { CallFlagService } from "./call-flag.service.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import {
+  publishCallIncomingSafe,
+  publishCallMissedSafe,
+} from "../events/publish-call-incoming.js";
 import { CallStatus, CallType } from "../types/enums.js";
 
 /**
@@ -47,7 +52,12 @@ export class CallService {
     private readonly friendshipRepo: FriendshipRepository,
     private readonly getCallPrivacy: GetCallPrivacyFn,
     private readonly getUserSnapshot: GetUserSnapshotFn,
-    private readonly callChatMessages?: Pick<CallChatMessageService, "post">
+    private readonly callChatMessages?: Pick<CallChatMessageService, "post">,
+    /**
+     * Platform-wide calling kill-switch. Optional so existing call sites and
+     * tests that predate it construct unchanged — when absent, calling is on.
+     */
+    private readonly callFlags?: Pick<CallFlagService, "isCallingEnabled">
   ) {}
 
   async initiateCall(params: {
@@ -58,6 +68,15 @@ export class CallService {
   }): Promise<Call & { livekit: LiveKitCredentials }> {
     if (params.callerId === params.calleeId) {
       throw new BadRequestError("CALL_SELF_NOT_ALLOWED");
+    }
+
+    // Gate 0: platform-wide kill-switch (admin panel). Checked before every
+    // other gate because it's global — no point resolving friendship/privacy
+    // for a feature that is switched off. Fails OPEN: `isCallingEnabled` never
+    // throws, and an absent flag service means calling is on. Blocks only NEW
+    // calls; anything already connected keeps running.
+    if (this.callFlags && !(await this.callFlags.isCallingEnabled())) {
+      throw new ForbiddenError("CALLING_DISABLED");
     }
 
     // Gate 1: friendship. Local Prisma read on chat-service's event-sourced
@@ -246,6 +265,20 @@ export class CallService {
           `CallService|initiateCall|redis publish failed: ${String(err)}`
         );
       });
+
+    // Push fallback: the Redis/socket path above only reaches a LIVE socket. A
+    // callee with the tab backgrounded or closed gets nothing, so also fan out a
+    // high-priority FCM push via notifications-service. Fire-and-forget — never
+    // blocks or fails the call.
+    publishCallIncomingSafe({
+      callId,
+      calleeId: params.calleeId,
+      callerId: params.callerId,
+      callerName: callerSnapshot.displayName,
+      callerAvatar: callerSnapshot.avatarUrl,
+      callType: params.type || CallType.AUDIO,
+      initiatedAt: now.getTime(),
+    });
 
     return { ...call, livekit: callerCreds };
   }
@@ -511,8 +544,9 @@ export class CallService {
   /**
    * Sweep stuck RINGING calls → MISSED and publish `call:missed` to both the
    * caller (in `call:<callId>` room since Phase 1) and the callee (only in
-   * their `self:<id>` room since they never answered). Idempotent per row via
-   * `callRepo.claimForMissed` — if two nodes race, only one wins the atomic
+   * their `self:<id>` room since they never answered), plus an FCM push to the
+   * callee so a backgrounded/offline device still finds out. Idempotent per row
+   * via `callRepo.claimForMissed` — if two nodes race, only one wins the atomic
    * update and only that node publishes. Returns count of flips for observability.
    */
   async sweepMissedCalls(
@@ -527,6 +561,12 @@ export class CallService {
       const { won } = await this.callRepo.claimForMissed(call.callId, now);
       if (!won) continue;
       flipped++;
+      // Kick this off now so it overlaps with the Redis publishes / chat message
+      // below instead of adding to the tail latency of the loop.
+      const snapshotPromise = this.getUserSnapshot(call.callerId).catch(() => ({
+        displayName: "",
+        avatarUrl: "",
+      }));
       const payload = JSON.stringify({
         event: "call:missed",
         data: { callId: call.callId },
@@ -549,9 +589,107 @@ export class CallService {
           ),
       ]);
       await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
+
+      // Push fallback: the two Redis publishes above only reach a LIVE socket.
+      // A callee whose tab is backgrounded or closed would otherwise never learn
+      // they missed a call — this is the one place that tells them afterward.
+      const callerSnapshot = await snapshotPromise;
+      publishCallMissedSafe({
+        callId: call.callId,
+        calleeId: call.calleeId,
+        callerId: call.callerId,
+        callerName: callerSnapshot.displayName,
+        callerAvatar: callerSnapshot.avatarUrl,
+        callType: call.type,
+        missedAt: now.getTime(),
+      });
     }
     if (flipped > 0) {
       logger.info(`CallService|sweep|flipped ${flipped} call(s) to MISSED`);
+    }
+    return flipped;
+  }
+
+  /**
+   * Sweep calls stranded in IN_PROGRESS → ENDED.
+   *
+   * `sweepMissedCalls` only reaps RINGING, so a call that was answered and then
+   * lost its `room_finished` webhook (gateway restart, network blip, signature
+   * failure) stayed IN_PROGRESS forever — keeping both participants permanently
+   * "busy" and, once something finally closed it, recording an absurd duration.
+   *
+   * The real end time is unknowable: LiveKit auto-closes empty rooms, so the
+   * media session ended whenever the clients vanished — we just never heard.
+   * We therefore CAP `durationSec` at `maxDurationSec` rather than recording
+   * the true elapsed time, which is exactly what produced an 8-day call and
+   * destroyed the duration analytics. `endedBy: "SYSTEM_TIMEOUT"` keeps these
+   * distinguishable from real hangups and from `SYSTEM_LIVEKIT` reconciles.
+   *
+   * Idempotent per row via `claimStatusTransition` — if two nodes race, only
+   * one wins the atomic update and only that node publishes.
+   */
+  async sweepStaleInProgressCalls(
+    now: Date,
+    maxDurationSec: number,
+    batchLimit: number
+  ): Promise<number> {
+    const cutoff = new Date(now.getTime() - maxDurationSec * 1000);
+    const candidates = await this.callRepo.findStuckInProgress(
+      cutoff,
+      batchLimit
+    );
+    let flipped = 0;
+    for (const call of candidates) {
+      const durationSec = Math.min(
+        maxDurationSec,
+        call.answeredAt
+          ? Math.max(
+              0,
+              Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
+            )
+          : maxDurationSec
+      );
+      const { won } = await this.callRepo.claimStatusTransition(
+        call.callId,
+        CallStatus.IN_PROGRESS,
+        {
+          status: CallStatus.ENDED,
+          endedAt: now,
+          durationSec,
+          endedBy: "SYSTEM_TIMEOUT",
+        }
+      );
+      if (!won) continue;
+      flipped++;
+
+      await this.redis
+        .publish(
+          `call:${call.callId}`,
+          JSON.stringify({
+            event: "call:ended",
+            data: {
+              callId: call.callId,
+              endedBy: "SYSTEM_TIMEOUT",
+              durationSec,
+            },
+          })
+        )
+        .catch((err: unknown) =>
+          logger.warn(`CallService|sweepStale|publish failed: ${String(err)}`)
+        );
+
+      await this.postCallChatMessageSafe(
+        call,
+        "ENDED",
+        now,
+        durationSec,
+        "SYSTEM_TIMEOUT"
+      );
+    }
+    if (flipped > 0) {
+      logger.info(
+        `CallService|sweepStale|flipped ${flipped} stranded IN_PROGRESS call(s) to ENDED`
+      );
     }
     return flipped;
   }

@@ -578,7 +578,26 @@ model Call {
   // volume grows.
   @@index([callerId, status])
   @@index([calleeId, status])
+  // Admin call analytics scans a date range across ALL users (no participant
+  // filter), so the participant-prefixed indexes above can't serve it.
+  @@index([initiatedAt])
   @@map("calls")
+}
+
+// -----------------------------------------------------------------------------
+// SystemFlag — platform-wide feature switches owned by chat-service.
+// One row per flag, keyed by name (e.g. "calling.enabled"). Written by admins
+// over gRPC (AdminSetCallingEnabled) and read on the hot path through a small
+// TTL cache. Durable on purpose: a chat-service restart must not silently
+// re-enable something an admin turned off.
+// -----------------------------------------------------------------------------
+model SystemFlag {
+  key       String   @id @map("_id")
+  enabled   Boolean
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+
+  @@map("system_flags")
 }
 
 // -----------------------------------------------------------------------------

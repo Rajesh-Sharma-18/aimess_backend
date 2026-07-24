@@ -50,6 +50,9 @@ import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
+import { CallFlagService } from "./services/call-flag.service.js";
+import { CallAnalyticsRepository } from "./repositories/call-analytics.repository.js";
+import { SystemFlagRepository } from "./repositories/system-flag.repository.js";
 import { CallChatMessageService } from "./services/call-chat-message.service.js";
 import { LiveKitService } from "./services/livekit.service.js";
 import { FriendshipRepository } from "./repositories/friendship.repository.js";
@@ -442,6 +445,9 @@ const startServer = async () => {
       resolveCallUserSnapshot,
       (userId) => presenceService.getIsOnline(userId)
     );
+    const systemFlagRepo = new SystemFlagRepository(prisma);
+    const callFlagService = new CallFlagService(systemFlagRepo);
+    const callAnalyticsRepo = new CallAnalyticsRepository(prisma);
     const callService = new CallService(
       callRepo,
       privateRoomRepo,
@@ -452,7 +458,9 @@ const startServer = async () => {
       // Caller snapshot for the `call:incoming` ringing UI. Best-effort:
       // on gRPC/S3 failure we still ring — just with empty name/avatar.
       resolveCallUserSnapshot,
-      callChatMessageService
+      callChatMessageService,
+      // Platform-wide calling kill-switch (admin panel). Fails open.
+      callFlagService
     );
 
     const communityRoomService = new CommunityRoomService(
@@ -530,6 +538,8 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       callService,
+      callAnalyticsRepo,
+      callFlagService,
       presenceService,
       communityMessageService,
       communityPinService,
@@ -623,17 +633,31 @@ const startServer = async () => {
     // rooms / deactivate rooms of deleted communities. Self-heals dropped events.
     void reconcileCommunityRooms();
 
-    // Ringing-call timeout sweeper — flips RINGING → MISSED after
-    // CALL_RINGING_TIMEOUT_SEC. Multi-node safe (atomic per-row updateMany).
+    // Call sweepers — both multi-node safe (atomic per-row updateMany):
+    //   1. RINGING  → MISSED after CALL_RINGING_TIMEOUT_SEC (never answered).
+    //   2. IN_PROGRESS → ENDED after CALL_MAX_DURATION_SEC (answered, then the
+    //      `room_finished` webhook was lost — the row would otherwise stay open
+    //      forever and keep both participants "busy").
+    // Independently caught so a failure in one never stops the other.
     callTimeoutSweepHandle = setInterval(() => {
+      const now = new Date();
       void callService
         .sweepMissedCalls(
-          new Date(),
+          now,
           env.CALL_RINGING_TIMEOUT_SEC,
           env.CALL_TIMEOUT_SWEEP_BATCH
         )
         .catch((err: unknown) => {
           logger.warn(`callTimeoutSweep failed: ${String(err)}`);
+        });
+      void callService
+        .sweepStaleInProgressCalls(
+          now,
+          env.CALL_MAX_DURATION_SEC,
+          env.CALL_TIMEOUT_SWEEP_BATCH
+        )
+        .catch((err: unknown) => {
+          logger.warn(`callStaleInProgressSweep failed: ${String(err)}`);
         });
     }, env.CALL_TIMEOUT_SWEEP_INTERVAL_SEC * 1000);
     // Don't hold the event loop open on shutdown.

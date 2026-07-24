@@ -5,6 +5,7 @@ import {
 import { authServiceProbe } from "../probes/auth.service.probe.js";
 import { communityServiceProbe } from "../probes/community.service.probe.js";
 import { chatServiceProbe } from "../probes/chat.service.probe.js";
+import { callServiceProbe } from "../probes/call.service.probe.js";
 import { userServiceProbe } from "../probes/user.service.probe.js";
 import { mediaServiceProbe } from "../probes/media.service.probe.js";
 import { notificationServiceProbe } from "../probes/notification.service.probe.js";
@@ -31,6 +32,9 @@ export function bootstrapHealthChecks(): void {
   healthServiceRegistry.registerService(authServiceProbe);
   healthServiceRegistry.registerService(communityServiceProbe);
   healthServiceRegistry.registerService(chatServiceProbe);
+  // Calling has its own probe/breaker so it can report degraded independently
+  // of the rest of chat-service.
+  healthServiceRegistry.registerService(callServiceProbe);
   healthServiceRegistry.registerService(userServiceProbe);
   healthServiceRegistry.registerService(mediaServiceProbe);
   healthServiceRegistry.registerService(notificationServiceProbe);

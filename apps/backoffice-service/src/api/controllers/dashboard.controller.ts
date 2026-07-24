@@ -1,7 +1,13 @@
 import type { RequestHandler } from "express";
 
-import { dashboardService } from "../../services/index.js";
-import type { DashboardChartsQueryInput } from "../validators/index.js";
+import {
+  callAnalyticsService,
+  dashboardService,
+} from "../../services/index.js";
+import type {
+  CallAnalyticsQueryInput,
+  DashboardChartsQueryInput,
+} from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
 
 /**
@@ -42,6 +48,28 @@ export const getDashboardServiceStatus: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const data = await dashboardService.getServiceStatus();
+      res.status(HTTP_STATUS.OK).json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/dashboard/calls — call analytics over an optional YYYY-MM-DD range
+ * (totals, audio/video split, avg duration, missed rate, peak hours) plus live
+ * active/ringing counters. `data.available === false` means chat-service was
+ * unreachable and the figures are placeholders.
+ */
+export const getDashboardCallAnalytics: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const { fromDate, toDate } =
+        req.query as unknown as CallAnalyticsQueryInput;
+      const data = await callAnalyticsService.getAnalytics({
+        fromDate,
+        toDate,
+      });
       res.status(HTTP_STATUS.OK).json({ success: true, data });
     } catch (error) {
       next(error);

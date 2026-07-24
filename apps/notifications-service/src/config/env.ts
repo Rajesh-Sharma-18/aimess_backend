@@ -32,6 +32,11 @@ const envSchema = z.object({
   // Cached notification-settings TTL (seconds).
   NOTIF_SETTINGS_CACHE_TTL_SEC: z.coerce.number().positive().default(300),
 
+  // FCM TTL for an incoming-call push. Mirrors chat-service's
+  // CALL_RINGING_TIMEOUT_SEC — a ring delivered after the call stopped ringing
+  // is noise, so the push expires with the ringing window. Keep the two in sync.
+  CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
+
   // JWT access secret — verifies device-registration requests.
   JWT_ACCESS_SECRET: z.string(),
 

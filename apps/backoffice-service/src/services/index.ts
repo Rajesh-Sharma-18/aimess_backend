@@ -5,6 +5,7 @@ export { auditService } from "./audit.service.js";
 export { moderationService } from "./moderation.service.js";
 export { livestreamService, thumbnailService } from "./livestream.service.js";
 export { dashboardService } from "./dashboard.service.js";
+export { callAnalyticsService } from "./call-analytics.service.js";
 export { userManagementService } from "./user-management.service.js";
 export { communityService } from "./community.service.js";
 export { groupService } from "./group.service.js";

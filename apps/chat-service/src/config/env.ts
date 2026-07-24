@@ -99,6 +99,13 @@ const envSchema = z.object({
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
   CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
+  // Max plausible call length. An IN_PROGRESS call answered longer ago than
+  // this is stranded — its LiveKit room closed long ago and we simply never got
+  // the `room_finished` webhook (gateway restart, network blip, bad signature).
+  // The same sweep that reaps RINGING flips these to ENDED, and caps the
+  // recorded duration at this value: leaving them open produced an 8-day call
+  // that single-handedly wrecked the duration analytics.
+  CALL_MAX_DURATION_SEC: z.coerce.number().positive().default(14_400), // 4h
 });
 
 const parsed = envSchema.safeParse(process.env);
