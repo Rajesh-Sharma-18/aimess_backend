@@ -35,15 +35,15 @@ const NOTIFY_COPY: Record<string, { title: string; body: string } | undefined> =
   {
     [AdminUserEvents.USER_BANNED]: {
       title: "Account banned",
-      body: "Your account has been banned.",
+      body: "Your account has been banned. Reach out to support if you think this is a mistake.",
     },
     [AdminUserEvents.USER_SUSPENDED]: {
       title: "Account suspended",
-      body: "Your account has been suspended.",
+      body: "Your account is temporarily suspended",
     },
     [AdminUserEvents.USER_UNBANNED]: {
-      title: "Account reinstated",
-      body: "Your account has been reinstated.",
+      title: "Welcome back",
+      body: "Your account has been reinstated",
     },
   };
 

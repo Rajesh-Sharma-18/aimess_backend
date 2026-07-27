@@ -1,6 +1,10 @@
-import type { SecurityNewLoginPayload } from "@aimess/shared-types";
+import type {
+  NotificationNavigation,
+  SecurityNewLoginPayload,
+} from "@aimess/shared-types";
 
 import type { PushInput } from "../services/push.service.js";
+import { authCopy } from "./notification-copy.js";
 
 /**
  * Mask a client IP for display: keep the network-ish prefix, hide the host.
@@ -34,8 +38,6 @@ export function buildNewLoginNotification(
   eventType: string,
   p: SecurityNewLoginPayload
 ): PushInput {
-  const device = p.deviceName ?? "a new device";
-
   const data: Record<string, string> = { actionType: "SESSION_CREATED" };
   if (p.sessionId) data.sessionId = p.sessionId;
   if (p.deviceName) data.deviceName = p.deviceName;
@@ -44,8 +46,10 @@ export function buildNewLoginNotification(
   const maskedIp = maskIp(p.ipAddress);
   if (maskedIp) data.ip = maskedIp;
   if (p.at) data.createdAt = p.at;
-
-  const location = p.countryCode ? ` from ${p.countryCode}` : "";
+  data.navigation = JSON.stringify({
+    screen: "LINKED_DEVICES",
+    ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+  } satisfies NotificationNavigation);
 
   return {
     userId: p.userId,
@@ -53,8 +57,7 @@ export function buildNewLoginNotification(
     type: eventType,
     // Security alert — must ignore notification settings / quiet hours.
     bypassSettings: true,
-    title: "Login Detected",
-    body: `New login detected on ${device}${location}. If this wasn't you, terminate the session.`,
+    ...authCopy.newLogin(p.deviceName, p.countryCode),
     data,
   };
 }

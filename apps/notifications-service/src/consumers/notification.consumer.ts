@@ -3,6 +3,7 @@ import {
   AdminAuthEvents,
   AuthEvents,
   type EmailChangedPayload,
+  type NotificationNavigation,
   type PasswordChangedPayload,
   type SecurityNewLoginPayload,
 } from "@aimess/shared-types";
@@ -17,9 +18,14 @@ import {
 import { env } from "../config/env.js";
 import { logger } from "@aimess/logger";
 import { buildNewLoginNotification } from "../lib/new-login-notification.js";
+import { authCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 const QUEUE_NAME = "notification.queue";
+
+const ACCOUNT_STATUS_NAVIGATION = JSON.stringify({
+  screen: "ACCOUNT_STATUS",
+} satisfies NotificationNavigation);
 
 /**
  * Dead-letter topology for notification.queue. Must stay in sync with every
@@ -166,8 +172,8 @@ export async function startConsumer() {
             category: "systemEnabled",
             type: parsed.type,
             bypassSettings: true,
-            title: "Password changed",
-            body: "Your password was changed successfully.",
+            ...authCopy.passwordChanged(),
+            data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });
           break;
         }
@@ -178,8 +184,8 @@ export async function startConsumer() {
             category: "systemEnabled",
             type: parsed.type,
             bypassSettings: true,
-            title: "Email changed",
-            body: "Your account email was changed successfully.",
+            ...authCopy.emailChanged(),
+            data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });
           break;
         }
