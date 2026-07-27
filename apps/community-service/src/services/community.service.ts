@@ -24,6 +24,7 @@ import type {
   CommunityMemberUpdatedPayload,
   CommunityMetaDto,
   CommunityMetaUpdatedPayload,
+  CommunityNotificationSettingUpdatedSocketPayload,
   CommunityReopenedPayload,
   CommunityStatsUpdatedPayload,
   MediaObject,
@@ -55,6 +56,7 @@ import {
   slugifyCategoryName,
 } from "../lib/community-slug.util.js";
 import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
+import { isMuteRowActive } from "../lib/community-notification-pref.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
@@ -880,18 +882,49 @@ async function loadMuteMap(
 /** Derive the caller-facing mute + notification-preference fields from a (possibly absent) mute row. */
 function muteFields(muteRow: MuteRowFragment): {
   isMuted: boolean;
+  notificationsMuted: boolean;
   muteUntil: string | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
 } {
+  const muted = isMuteRowActive(muteRow);
   return {
-    isMuted: !!muteRow,
+    isMuted: muted,
+    // Alias of `isMuted` for FE clients using the Telegram-style naming.
+    notificationsMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
     streamEnabled: muteRow?.streamEnabled ?? true,
     chatEnabled: muteRow?.chatEnabled ?? true,
     announcementEnabled: muteRow?.announcementEnabled ?? true,
   };
+}
+
+/**
+ * Notify the caller's OTHER devices/tabs that their own notification-mute
+ * toggle changed for a community — self-service setting, so only the acting
+ * user's `user:<id>` channel gets it (never the community room).
+ */
+function publishNotificationMuteChanged(
+  communityId: string,
+  callerId: string,
+  notificationsMuted: boolean
+): void {
+  const payload: CommunityNotificationSettingUpdatedSocketPayload = {
+    communityId,
+    notificationsMuted,
+    updatedAt: Date.now(),
+  };
+  publishChatUserEvent(
+    redis,
+    callerId,
+    "community:notification-setting-updated",
+    payload
+  ).catch((error) => {
+    logger.warn(
+      `community:notification-setting-updated publish failed for community=${communityId} user=${callerId}: ${String(error)}`
+    );
+  });
 }
 
 /** Platform cap on concurrent LIVE streams per community (see stream-service). */
@@ -7707,6 +7740,8 @@ export const communityService = {
       mutedUntil
     );
 
+    publishNotificationMuteChanged(communityId, callerId, true);
+
     return {
       communityId,
       mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
@@ -7733,6 +7768,7 @@ export const communityService = {
     }
 
     await communityRepository.clearMute(callerId, communityId);
+    publishNotificationMuteChanged(communityId, callerId, false);
   },
 
   async bulkMute(
@@ -7766,6 +7802,9 @@ export const communityService = {
           ? null
           : new Date(Date.now() + durationMinutes * 60_000);
       await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
+      toMute.forEach((id) =>
+        publishNotificationMuteChanged(id, callerId, true)
+      );
     }
 
     return { muted: toMute, skipped };
@@ -7787,6 +7826,9 @@ export const communityService = {
 
     if (toUnmute.length > 0) {
       await communityRepository.bulkClearMute(callerId, toUnmute);
+      toUnmute.forEach((id) =>
+        publishNotificationMuteChanged(id, callerId, false)
+      );
     }
 
     return { unmuted: toUnmute, skipped };

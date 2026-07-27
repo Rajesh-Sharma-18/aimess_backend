@@ -5507,6 +5507,10 @@ export const openApiSchemas = {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
       },
+      notificationsMuted: {
+        type: "boolean",
+        description: "Spec-aligned alias of `isMuted`.",
+      },
       muteUntil: {
         type: "string",
         format: "date-time",
@@ -5869,6 +5873,10 @@ export const openApiSchemas = {
       isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
+      },
+      notificationsMuted: {
+        type: "boolean",
+        description: "Spec-aligned alias of `isMuted`.",
       },
       muteUntil: {
         type: "string",

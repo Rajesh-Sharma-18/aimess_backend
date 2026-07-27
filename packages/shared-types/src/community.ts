@@ -142,6 +142,19 @@ export interface CommunityMemberUnmutedSocketPayload {
 }
 
 /**
+ * Server → client, self-service only. The caller toggled their own
+ * "Mute Notifications" setting for a community (`CommunityMuteSetting`) —
+ * distinct from {@link CommunityMemberMutedSocketPayload}'s moderator mute.
+ * Delivered ONLY to the acting user's own `user:<id>` channel (every device/tab
+ * they're logged in on), never to the community room or other members.
+ */
+export interface CommunityNotificationSettingUpdatedSocketPayload {
+  communityId: string;
+  notificationsMuted: boolean;
+  updatedAt: number; // epoch ms
+}
+
+/**
  * Server → client. A livestream went LIVE in a community (`community:stream:started`).
  * Emitted by stream-service to the `community:<id>` room AND relayed to the
  * lightweight `community-typing:<id>` room (auto-joined by every member) so the

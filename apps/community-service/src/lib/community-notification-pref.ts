@@ -16,6 +16,17 @@ export type CommunityNotificationPrefField =
   | "streamEnabled"
   | "announcementEnabled";
 
+/**
+ * A mute row with `mutedUntil` in the past is a lapsed temp-mute — lazily
+ * treat it as expired rather than muted (no sweeper garbage-collects these).
+ */
+export function isMuteRowActive(
+  row: { mutedUntil: Date | null } | null | undefined
+): boolean {
+  if (!row) return false;
+  return row.mutedUntil === null || row.mutedUntil > new Date();
+}
+
 export async function resolveCommunityNotificationPrefEnabled(
   communityId: string,
   userId: string,
@@ -33,5 +44,9 @@ export async function resolveCommunityNotificationPrefEnabled(
     userId,
     communityId
   );
+  // A full mute (the general "Mute Notifications" toggle) suppresses every
+  // notification kind, regardless of the individual stream/chat/announcement
+  // sub-toggles.
+  if (isMuteRowActive(row)) return false;
   return row ? row[field] : true;
 }
