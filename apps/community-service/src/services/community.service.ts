@@ -3763,8 +3763,7 @@ export const communityService = {
               snapshotUsername: snap.username,
               snapshotDisplayName: snap.displayName,
               snapshotAvatarKey: snap.avatarObjectKey,
-            },
-            m.role
+            }
           );
           reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
@@ -5276,8 +5275,7 @@ export const communityService = {
         newRow = await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           callerId,
-          snapshotData,
-          existingMember!.role
+          snapshotData
         );
       } else {
         newRow = await communityRepository.createMember({
@@ -6145,8 +6143,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        },
-        targetMember.role
+        }
       );
     } else {
       await communityRepository.createMember({
@@ -6391,8 +6388,7 @@ export const communityService = {
         await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           request.userId,
-          snapshotData,
-          existing.role
+          snapshotData
         );
       } else if (
         !existing ||
@@ -7032,8 +7028,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        },
-        targetMember.role
+        }
       );
     } else {
       await communityRepository.createMember({
@@ -8708,8 +8703,7 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          },
-          existing.role
+          }
         );
       } else {
         member = await communityRepository.createMember({
