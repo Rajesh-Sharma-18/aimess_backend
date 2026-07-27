@@ -1167,38 +1167,88 @@ export class ChatMessageOrchestrator {
     // Assigned in both branches below before it's read — no initializer needed.
     let readToSeq: number;
     let unreadCount = 0;
+    // The room's CURRENT last-message seq, and every OTHER active
+    // participant/member (the sender(s) whose OWN tick needs to flip to READ) —
+    // mirrors the gRPC `markMessagesRead` handler exactly, see its comments.
+    // Assigned in both branches below before read — no initializer needed.
+    let lastMessageSeq: number;
+    let otherUserIds: string[];
     if (conversationType === "GROUP") {
       ({ readToSeq } = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
         userId: params.readerId,
         upToMessageId: params.upToMessageId,
       }));
+      const [members, lastSeq] = await Promise.all([
+        this.groupMessageService
+          .getActiveMemberIds(params.roomId)
+          .catch(() => [] as string[]),
+        this.groupMessageService
+          .getRoomLastMessageSeq(params.roomId)
+          .catch(() => 0),
+      ]);
+      otherUserIds = members.filter((id) => id !== params.readerId);
+      lastMessageSeq = lastSeq;
     } else {
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
         userId: params.readerId,
         lastMessageId: params.upToMessageId,
-      })) as { unreadCountByUser?: Record<string, number> } | null;
+      })) as {
+        unreadCountByUser?: Record<string, number>;
+        participants?: string[];
+        lastMessageId?: string | null;
+      } | null;
       unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
+      otherUserIds = (room?.participants ?? []).filter(
+        (id) => id !== params.readerId
+      );
       readToSeq = await this.privateMessageService
         .getMessageSequence(params.upToMessageId)
         .catch(() => 0);
+      lastMessageSeq = room?.lastMessageId
+        ? await this.privateMessageService
+            .getMessageSequence(room.lastMessageId)
+            .catch(() => 0)
+        : 0;
     }
+
+    // Authoritative "this reader has now read the room's current newest
+    // message" — the single flag the sender's inbox row keys off, so it never
+    // has to id-match a stale cached boundary.
+    const readsLastMessage =
+      readToSeq > 0 && lastMessageSeq > 0 && readToSeq >= lastMessageSeq;
+
+    const readPayload = JSON.stringify({
+      event: "message:read",
+      data: {
+        conversationId: params.roomId,
+        readerId: params.readerId,
+        upToMessageId: params.upToMessageId,
+        read_to_seq: readToSeq,
+        last_message_seq: lastMessageSeq,
+        readsLastMessage,
+      },
+    });
 
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.
-    await this.redis.publish(
-      `conv:${params.roomId}`,
-      JSON.stringify({
-        event: "message:read",
-        data: {
-          conversationId: params.roomId,
-          readerId: params.readerId,
-          upToMessageId: params.upToMessageId,
-          read_to_seq: readToSeq,
-        },
-      })
-    );
+    await this.redis.publish(`conv:${params.roomId}`, readPayload);
+
+    // ALSO publish directly to every other participant/member's own
+    // `user:<id>` channel — the conversation-LIST view only joins `conv:*`
+    // rooms it's currently rendering, so without this direct delivery a
+    // sender's list row misses the READ tick whenever their sidebar socket
+    // wasn't (yet) joined to this specific room. Mirrors the gRPC handler.
+    for (const otherId of otherUserIds) {
+      void this.redis
+        .publish(`user:${otherId}`, readPayload)
+        .catch((e: unknown) =>
+          logger.warn(
+            `message:read direct publish failed userId=${otherId}: ${String(e)}`
+          )
+        );
+    }
 
     // read_sync to the reader's OWN other devices so their unread badge clears
     // too. Published to user:<readerId> (every device of that user joins this
