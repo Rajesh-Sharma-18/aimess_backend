@@ -32,11 +32,20 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         deepLink,
         data: {
           friendshipId: p.friendshipId,
+          // Alias of friendshipId — matches the FE's pending-conversation
+          // contract field name (`friendRequestId`), so a tapped push can
+          // open the pending row directly without a name translation.
+          friendRequestId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
           navigation: JSON.stringify({
-            screen: "FRIEND_REQUESTS",
+            // Opens the pending-conversation screen (Accept/Reject only),
+            // not the generic friend-requests list — same deep-link target
+            // as a real private chat, distinguished by conversationType.
+            screen: "PRIVATE_CHAT",
             userId: p.requesterId,
+            conversationType: "PRIVATE_PENDING",
+            requestId: p.friendshipId,
           } satisfies NotificationNavigation),
         },
       });
