@@ -55,6 +55,7 @@ interface StreamEndedData {
   endedAt: number;
   peakViewers: number;
   liveStreamCount?: number;
+  reason?: string;
 }
 
 interface StreamUpdatedData {
@@ -101,6 +102,7 @@ export function buildStreamSocketPayload(
       communityId,
       streamId,
       liveStreamCount: d.liveStreamCount ?? 0,
+      ...(d.reason ? { reason: d.reason } : {}),
     };
   }
   return { communityId, streamId };

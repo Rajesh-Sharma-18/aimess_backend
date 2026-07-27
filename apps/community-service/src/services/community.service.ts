@@ -2964,6 +2964,16 @@ export const communityService = {
       );
     });
 
+    // A demotion to plain MEMBER drops livestream permission — force-end any
+    // stream they're currently hosting, same pipeline as ban/kick.
+    if (role === CommunityMemberRole.MEMBER) {
+      void getStreamClient().forceEndStreamsByCreator(
+        communityId,
+        targetUserId,
+        "ROLE_UPDATED"
+      );
+    }
+
     return toMemberData(updated);
   },
 
@@ -3167,7 +3177,7 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "COMMUNITY_KICKED"
+      "MEMBER_REMOVED"
     );
 
     return toMemberData(updated);
@@ -3301,7 +3311,7 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "COMMUNITY_BANNED"
+      "MEMBER_BANNED"
     );
 
     return toMemberData(updated);
