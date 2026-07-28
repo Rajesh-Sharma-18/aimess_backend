@@ -103,6 +103,9 @@ const envSchema = z.object({
    * to forward FCM token lists for delivery. Defaults to local dev.
    */
   NOTIFICATIONS_SERVICE_URL: z.string().url().default("http://localhost:3006"),
+
+  /** chat-service gRPC address — used to update login-notification status on Terminate/Trust. */
+  CHAT_SERVICE_GRPC_URL: z.string().min(1).default("localhost:4004"),
 });
 
 const parsed = envSchema.safeParse(process.env);

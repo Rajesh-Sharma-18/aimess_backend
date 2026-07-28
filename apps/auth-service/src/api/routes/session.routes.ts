@@ -4,6 +4,7 @@ import {
   listSessions,
   revokeAllSessions,
   revokeSession,
+  trustSession,
 } from "../controllers/session.controller.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import { validateParams } from "../../middleware/validate-params.js";
@@ -22,4 +23,10 @@ sessionRoutes.delete(
   authenticateAccessToken,
   validateParams(sessionIdParamsSchema),
   revokeSession
+);
+sessionRoutes.post(
+  "/sessions/:sessionId/trust",
+  authenticateAccessToken,
+  validateParams(sessionIdParamsSchema),
+  trustSession
 );

@@ -41,13 +41,19 @@ export function registerNotifyNamespace(
     // channel = "notify:<userId>"
     if (!channel.startsWith("notify:")) return;
     try {
-      const parsed = JSON.parse(message) as RedisSocketEvent;
-      void emitPersonalizedSender(
-        notify,
-        channel.replace("notify:", "user:"),
-        parsed.event,
-        parsed.data
-      );
+      const parsed = JSON.parse(message) as RedisSocketEvent & {
+        excludeSessionId?: string;
+      };
+      const room = channel.replace("notify:", "user:");
+      if (parsed.excludeSessionId) {
+        // Exclude the newly-logged-in device from receiving its own login alert.
+        notify
+          .to(room)
+          .except(`session:${parsed.excludeSessionId}`)
+          .emit(parsed.event, parsed.data);
+      } else {
+        void emitPersonalizedSender(notify, room, parsed.event, parsed.data);
+      }
     } catch (err) {
       logger.warn(
         `/notify Redis message parse error on ${channel}: ${String(err)}`

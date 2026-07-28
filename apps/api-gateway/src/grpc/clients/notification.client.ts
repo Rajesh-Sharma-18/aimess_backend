@@ -31,6 +31,8 @@ export interface NotificationDto {
   referenceId: string;
   isRead: boolean;
   createdAt: number;
+  /** Context bag — includes actionTaken for login-detected notifications. */
+  data?: Record<string, string>;
 }
 export interface MarkNotificationsReadParams {
   userId: string;

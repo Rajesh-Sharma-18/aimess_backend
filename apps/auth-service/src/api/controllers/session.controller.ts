@@ -66,6 +66,19 @@ export const revokeSession = asyncHandler(
   }
 );
 
+/** "It's Me" — resolve the login-detected notification without terminating the session. */
+export const trustSession = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { sessionId } = req.params as { sessionId: string };
+
+    await sessionService.trustSession(req.auth.userId, sessionId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("AUTH_SESSION_TRUSTED", req.locale)));
+  }
+);
+
 /** Revoke every active session (all devices). */
 export const revokeAllSessions = asyncHandler(
   async (req: Request, res: Response) => {

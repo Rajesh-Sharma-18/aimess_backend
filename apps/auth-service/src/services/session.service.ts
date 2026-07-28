@@ -26,6 +26,7 @@ import {
   publishAllSessionsRevokedSafe,
 } from "../messaging/publish-session-revoked.js";
 import { recordAuditEventSafe } from "./audit.service.js";
+import { recordSessionActionSafe } from "../grpc/notification.client.js";
 import type {
   AccessTokenResponse,
   AuthTokensResponse,
@@ -279,6 +280,40 @@ export const sessionService = {
     void publishSessionRevokedEvent(redis, userId, targetSessionId).catch(
       () => undefined
     );
+
+    // Update the login-detected notification so all devices see "Session
+    // terminated." and the action buttons disappear without a page refresh.
+    if (reason === SessionRevokeReason.REMOTE_SIGNOUT) {
+      recordSessionActionSafe({
+        userId,
+        sessionId: targetSessionId,
+        action: "TERMINATED",
+        body: "Session terminated.",
+      });
+    }
+  },
+
+  /**
+   * "It's Me" — mark the login-detected notification for targetSessionId as
+   * trusted. The session itself is untouched; only the notification status
+   * changes so the UI resolves without action buttons.
+   */
+  async trustSession(userId: string, targetSessionId: string): Promise<void> {
+    // Verify the session belongs to this user (IDOR guard).
+    const session = await sessionRepository.findActiveForUser(
+      userId,
+      targetSessionId
+    );
+    if (!session) {
+      throw new NotFoundError("AUTH_SESSION_NOT_FOUND");
+    }
+
+    recordSessionActionSafe({
+      userId,
+      sessionId: targetSessionId,
+      action: "TRUSTED",
+      body: "Login verified.",
+    });
   },
 
   /** "Sign out from all other devices" — keeps the caller's current session active. */

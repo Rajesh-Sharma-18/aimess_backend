@@ -49,7 +49,7 @@ export const friendCopy = {
   }),
   acceptedForAddressee: (requesterName?: string): NotificationCopy => ({
     title: person(requesterName),
-    body: "You're now friends",
+    body: "You are now friends!",
   }),
   rejected: (addresseeName?: string): NotificationCopy => ({
     title: person(addresseeName),
@@ -60,7 +60,7 @@ export const friendCopy = {
   // (the requester's name) from the stored notification row.
   rejectedSelf: (): NotificationCopy => ({
     title: "",
-    body: "I have declined the friend request.",
+    body: "You have declined the friend request.",
   }),
   cancelled: (requesterName?: string): NotificationCopy => ({
     title: person(requesterName),

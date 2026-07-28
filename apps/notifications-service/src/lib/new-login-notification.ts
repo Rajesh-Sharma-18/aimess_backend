@@ -39,7 +39,12 @@ export function buildNewLoginNotification(
   p: SecurityNewLoginPayload
 ): PushInput {
   const data: Record<string, string> = { actionType: "SESSION_CREATED" };
-  if (p.sessionId) data.sessionId = p.sessionId;
+  if (p.sessionId) {
+    data.sessionId = p.sessionId;
+    // Tells the /notify relay to skip this session's own socket — the newly
+    // logged-in device must not receive its own "Login Detected" alert.
+    data.excludeSessionId = p.sessionId;
+  }
   if (p.deviceName) data.deviceName = p.deviceName;
   if (p.deviceType) data.platform = p.deviceType;
   if (p.countryCode) data.location = p.countryCode;

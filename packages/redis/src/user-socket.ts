@@ -17,9 +17,18 @@ export function publishUserSocketEvent(
   redis: Redis | Cluster,
   userId: string,
   event: string,
-  data: unknown
+  data: unknown,
+  /** When set, the /notify relay skips the socket whose session matches this id. */
+  excludeSessionId?: string
 ): Promise<number> {
-  return redis.publish(`notify:${userId}`, JSON.stringify({ event, data }));
+  return redis.publish(
+    `notify:${userId}`,
+    JSON.stringify({
+      event,
+      data,
+      ...(excludeSessionId ? { excludeSessionId } : {}),
+    })
+  );
 }
 
 /**

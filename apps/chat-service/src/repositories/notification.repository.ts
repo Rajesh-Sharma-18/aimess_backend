@@ -174,6 +174,21 @@ export class NotificationRepository {
     });
   }
 
+  async findByNewLoginSessionId(
+    userId: string,
+    sessionId: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: {
+        userId,
+        type: "auth.security_new_login",
+        isDeleted: false,
+        payload: { path: ["data", "sessionId"], equals: sessionId },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
   async findByTypeAndActor(
     userId: string,
     type: string,
@@ -223,7 +238,7 @@ export class NotificationRepository {
   ): Promise<Notification | null> {
     return this.prisma.notification.update({
       where: { id },
-      data: { type, payload },
+      data: { type, payload: payload as object },
     });
   }
 }

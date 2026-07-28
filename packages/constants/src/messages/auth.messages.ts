@@ -86,6 +86,10 @@ export const AUTH_MESSAGES = {
     vi: "Phiên đăng nhập không tồn tại hoặc đã kết thúc",
     en: "Session not found or already ended.",
   },
+  AUTH_SESSION_TRUSTED: {
+    vi: "Đã xác nhận đăng nhập",
+    en: "Login verified.",
+  },
   AUTH_SESSIONS_ALL_REVOKED: {
     vi: "Đã đăng xuất trên tất cả thiết bị",
     en: "Signed out from all devices.",

@@ -3684,11 +3684,12 @@ export function createNotificationImpl(
                 body?: string;
                 data?: Record<string, string>;
               };
+              const preservedTitle = existingPayload.title ?? req.title ?? "";
               const updated = await deps.notificationRepo.updatePayloadAndType(
                 existing.id,
                 req.type,
                 {
-                  title: existingPayload.title ?? req.title ?? "",
+                  title: preservedTitle,
                   body: req.body ?? "",
                   data: { ...(existingPayload.data ?? {}), ...data },
                 }
@@ -3703,10 +3704,12 @@ export function createNotificationImpl(
                       notificationId: updated.id,
                       userId: req.userId,
                       type: req.type,
-                      title: existingPayload.title ?? req.title ?? "",
+                      title: preservedTitle,
                       body: req.body ?? "",
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
+                      // No navigation on decline — the notification is terminal.
+                      navigation: null,
                     }
                   );
                 } catch (err) {
@@ -3746,6 +3749,12 @@ export function createNotificationImpl(
                       body: req.body ?? "",
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
+                      // Include updated navigation so the frontend can replace the
+                      // cached payload cleanly without rendering both the old body
+                      // ("Sent you a friend request.") and the new one together.
+                      ...(parsedNavigation !== undefined
+                        ? { navigation: parsedNavigation }
+                        : {}),
                     }
                   );
                 } catch (err) {
@@ -3798,11 +3807,16 @@ export function createNotificationImpl(
               dto.navigation = parsedNavigation;
             if (parsedActorSnapshot !== undefined)
               dto.actorSnapshot = parsedActorSnapshot;
+            // Strip the internal relay hint; send remaining data to the client.
+            const { excludeSessionId: _excl, ...clientData } = data;
+            if (Object.keys(clientData).length > 0) dto.data = clientData;
             await publishUserSocketEvent(
               redis,
               req.userId,
               "notification:new",
-              dto
+              dto,
+              // Exclude the newly-logged-in device from its own login alert.
+              data.excludeSessionId
             );
             await publishUserSocketEvent(
               redis,
@@ -3886,6 +3900,9 @@ export function createNotificationImpl(
                 referenceId: entity.id ?? "",
                 isRead: n.isRead,
                 createdAt: n.createdAt.getTime(),
+                // Include the full data map so clients can restore notification
+                // state (e.g. actionTaken="TERMINATED") on page refresh.
+                data: rawData,
               };
               if (navParsed !== undefined) row.navigation = navParsed;
               if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
@@ -4021,6 +4038,82 @@ export function createNotificationImpl(
           callback(null, { deleted, remainingUnread });
         } catch (err) {
           logger.error(`gRPC deleteNotification error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    recordSessionAction: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            sessionId?: string;
+            action?: string;
+            body?: string;
+          };
+          if (!req.userId || !req.sessionId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId and sessionId are required",
+            });
+            return;
+          }
+
+          const notification =
+            await deps.notificationRepo.findByNewLoginSessionId(
+              req.userId,
+              req.sessionId
+            );
+          if (!notification) {
+            callback(null, { notificationId: "", updated: false });
+            return;
+          }
+
+          const updated = await deps.notificationRepo.recordAction(
+            notification.id,
+            req.userId,
+            req.body ?? "",
+            req.action ?? ""
+          );
+
+          if (updated) {
+            const payloadObj = (updated.payload ?? {}) as { title?: string };
+            try {
+              await publishUserSocketEvent(
+                redis,
+                req.userId,
+                "notification:updated",
+                {
+                  notificationId: updated.id,
+                  userId: req.userId,
+                  type: updated.type,
+                  title: payloadObj.title ?? "",
+                  body: req.body ?? "",
+                  isRead: true,
+                  createdAt: updated.createdAt.getTime(),
+                  data: {
+                    actionTaken: req.action ?? "",
+                    sessionId: req.sessionId,
+                  },
+                }
+              );
+            } catch (err) {
+              logger.warn(
+                `recordSessionAction notify:updated publish failed for ${req.userId}: ${String(err)}`
+              );
+            }
+          }
+
+          callback(null, {
+            notificationId: notification.id,
+            updated: !!updated,
+          });
+        } catch (err) {
+          logger.error(`gRPC recordSessionAction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
