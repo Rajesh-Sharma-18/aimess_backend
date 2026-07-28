@@ -37,6 +37,22 @@ process.env.FIREBASE_CLIENT_EMAIL = "test@test.iam.gserviceaccount.com";
 process.env.FIREBASE_PRIVATE_KEY =
   "-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----\\n";
 
+// APNs VoIP push (iOS call ringing). apn.Provider validates this as a real
+// ES256 (P-256) key at construction time (unlike firebase-admin's lazy
+// validation), so this must be an actual EC key — not an opaque placeholder
+// string. Test-only key, generated with:
+//   openssl ecparam -name prime256v1 -genkey -noout
+process.env.APNS_KEY_ID = "TESTKEYID1";
+process.env.APNS_TEAM_ID = "TESTTEAMID";
+process.env.APNS_BUNDLE_ID = "com.aimess.test";
+process.env.APNS_PRIVATE_KEY =
+  "-----BEGIN EC PRIVATE KEY-----\\n" +
+  "MHcCAQEEIB4GlYgNhuRyFt2Tc/RO5sDgL2lmiIpGCUcyedTlSq2doAoGCCqGSM49\\n" +
+  "AwEHoUQDQgAEMfZunlU8YI4XaSHYKT0c5rlqR/gd0PCn5mN7S3jUTxXeqN0/1cja\\n" +
+  "qsuOoIt/RIMEa3KkaUsKjuor/nVBpRvg7w==\\n" +
+  "-----END EC PRIVATE KEY-----\\n";
+process.env.APNS_PRODUCTION = "false";
+
 // SMTP (mail provider).
 process.env.SMTP_HOST = "localhost";
 process.env.SMTP_PORT = "1025";

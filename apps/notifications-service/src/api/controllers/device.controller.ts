@@ -27,6 +27,7 @@ export async function registerDevice(
       userId: req.auth.userId,
       token: parsed.data.token,
       platform: parsed.data.platform,
+      tokenType: parsed.data.tokenType,
       deviceId: parsed.data.deviceId ?? null,
     });
     return res.status(200).json({ success: true });
