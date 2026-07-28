@@ -89,56 +89,20 @@ async function invoke(
 }
 
 describe("getMessagesV2 — param routing", () => {
-  it("no params → newest page via the TIMESTAMP keyset (inclusive, no boundary) — NOT the seq path", async () => {
+  it("no params → newest page on the SEQ keyset (seq null) — the timestamp path is gone", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { limit: "40" });
-    expect(service.getMessagesTimeline).toHaveBeenCalledWith(
-      expect.objectContaining({
-        roomId: "room-1",
-        userId: "user-1",
-        direction: "before",
-        boundaryId: null,
-        inclusive: true, // first page includes the newest message
-        limit: 40,
-      })
-    );
-    expect(service.getMessagesSeqV2).not.toHaveBeenCalled();
-  });
-
-  it("opaque cursor '<ms>_<id>' → OLDER page, exclusive, decoded to (ts, boundaryId)", async () => {
-    const { controller, service } = makeController();
-    await invoke(controller, {
-      cursor: "1784031657087_6a5629a90c4f76f4a84fc199",
-      limit: "3",
+    expect(service.getMessagesSeqV2).toHaveBeenCalledWith({
+      roomId: "room-1",
+      userId: "user-1",
+      direction: "before",
+      seq: null,
+      limit: 40,
     });
-    const arg = service.getMessagesTimeline.mock.calls[0]![0];
-    expect(arg.direction).toBe("before");
-    expect(arg.boundaryId).toBe("6a5629a90c4f76f4a84fc199");
-    expect(arg.ts.getTime()).toBe(1784031657087); // decoded ms
-    expect(arg.inclusive).toBe(false); // continuation page is exclusive
-    expect(service.getMessagesSeqV2).not.toHaveBeenCalled();
+    expect(service.getMessagesTimeline).not.toHaveBeenCalled();
   });
 
-  it("before_ts (migration alias) is honored the same as cursor", async () => {
-    const { controller, service } = makeController();
-    await invoke(controller, {
-      before_ts: "1784031657087_6a5629a90c4f76f4a84fc199",
-    });
-    const arg = service.getMessagesTimeline.mock.calls[0]![0];
-    expect(arg.ts.getTime()).toBe(1784031657087);
-    expect(arg.boundaryId).toBe("6a5629a90c4f76f4a84fc199");
-  });
-
-  it("bare epoch-ms cursor (no tiebreaker) still decodes (coarse jump)", async () => {
-    const { controller, service } = makeController();
-    await invoke(controller, { cursor: "1784106000000" });
-    const arg = service.getMessagesTimeline.mock.calls[0]![0];
-    expect(arg.ts.getTime()).toBe(1784106000000);
-    expect(arg.boundaryId).toBe(null);
-    expect(arg.inclusive).toBe(false);
-  });
-
-  it("before_seq → OPT-IN seq path, direction 'before'", async () => {
+  it("before_seq → seq path, direction 'before'", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { before_seq: "100", limit: "40" });
     expect(service.getMessagesSeqV2).toHaveBeenCalledWith({
@@ -159,7 +123,7 @@ describe("getMessagesV2 — param routing", () => {
     );
   });
 
-  it("around=<id> → ts-anchored window (getMessagesAround)", async () => {
+  it("around=<id> → jump window (getMessagesAround)", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { around: "msg-9", limit: "40" });
     expect(service.getMessagesAround).toHaveBeenCalledWith({
@@ -179,7 +143,7 @@ describe("getMessagesV2 — param routing", () => {
     expect(res.status).toHaveBeenCalledWith(200);
     const body = res.json.mock.calls[0]![0];
     expect(body.data.pinnedMessage).toEqual({ id: "pin-1" });
-    // Ordinary pages carry the revision returned by the timeline read itself.
+    // Ordinary pages carry the revision from the timeline read; 261 = the seq-path fixture.
     expect(body.data.roomRevision).toBe(261);
   });
 

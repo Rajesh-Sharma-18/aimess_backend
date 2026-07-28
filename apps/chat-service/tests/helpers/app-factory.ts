@@ -178,6 +178,15 @@ export function buildApp(): BuiltApp {
     id: "room",
     status: "active",
   });
+  // Every timeline page probes one row beyond each seq edge for the bidirectional
+  // continuation block and reads the room's change high-water. Default both so a
+  // spec only stubs them when it actually asserts on continuation/revision.
+  for (const repo of [privateMessageRepo, groupMessageRepo]) {
+    repo.findByRoomIdSeq.mockResolvedValue([]);
+  }
+  for (const repo of [privateRoomRepo, groupRoomRepo]) {
+    repo.getRoomRevision.mockResolvedValue(0);
+  }
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();

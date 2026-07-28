@@ -1,7 +1,7 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import { env } from "../config/env.js";
-import { resolvePinsMedia } from "../lib/media-resolve.js";
+import { resolvePinsMedia, type MediaFileLike } from "../lib/media-resolve.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupMessagePinRepository } from "../repositories/group-message-pin.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -10,6 +10,7 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
+import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
 export class GroupPinService {
@@ -148,5 +149,45 @@ export class GroupPinService {
 
   async countPins(roomId: string): Promise<number> {
     return this.pinRepo.countPinsByRoom(roomId);
+  }
+
+  /**
+   * The room's newest pin, in the SAME shape community embeds as `pinnedMessage`
+   * on every messages response — so the client has one pin contract across all
+   * three surfaces and needs no dedicated `/pins` round-trip on room open.
+   * Group has no `unpinnedAt` (unpin hard-deletes), so newest row = active pin.
+   */
+  async getActivePinSummary(
+    roomId: string,
+    userId: string
+  ): Promise<PinnedMessageSummary | null> {
+    const [pin] = await this.list(roomId, userId, { limit: 1 });
+    if (!pin) return null;
+    // Live row wins for text/type (a message edited after pinning must not render its
+    // pin-time snapshot); the frozen snapshot is the fallback once the message is gone.
+    const live = pin.isAvailable
+      ? await this.messageRepo.findById(pin.messageId)
+      : null;
+    const liveContent = (live?.content ?? {}) as { text?: string };
+    const snapshot = (pin.contentPinned ?? {}) as {
+      text?: string;
+      files?: MediaFileLike[];
+    };
+    return {
+      messageId: pin.messageId,
+      roomId: pin.roomId,
+      communityId: pin.roomId,
+      senderId: pin.senderId,
+      senderName: pin.senderDisplayName || "",
+      senderHandle: "",
+      senderAvatar: pin.senderAvatar || "",
+      messageType: (live?.messageType as string) || "TEXT",
+      text: liveContent.text ?? snapshot.text ?? "",
+      media: Array.isArray(snapshot.files) ? snapshot.files : [],
+      createdAt: pin.messageCreatedAt.getTime(),
+      pinnedAt: pin.pinnedAt.getTime(),
+      pinnedBy: pin.pinnedBy,
+      isAvailable: pin.isAvailable,
+    };
   }
 }

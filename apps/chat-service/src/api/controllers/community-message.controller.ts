@@ -12,6 +12,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  parseTsCursor,
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
@@ -21,6 +22,7 @@ import {
   buildAvailableContext,
   buildUnavailableContext,
 } from "../../lib/message-context.js";
+import { toCanonicalMessages } from "../../lib/canonical-message.js";
 import {
   publishCommunityUpdatedSafe,
   type RecipientBump,
@@ -289,7 +291,7 @@ export class CommunityMessageController {
         limit,
       });
       const paginated = buildAroundResponse(
-        items as unknown as Record<string, unknown>[],
+        toCanonicalMessages(items as unknown as Record<string, unknown>[]),
         total,
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
@@ -311,80 +313,43 @@ export class CommunityMessageController {
       return;
     }
 
-    // OPT-IN seq keyset — only when the client explicitly sends a seq cursor
-    // (requires a seq backfill; unbackfilled rooms have sequenceNumber 0 and
-    // should use the opaque `cursor` below instead).
     const beforeSeq =
       req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
     const afterSeq =
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    const beforeCursor = parseTsCursor(req.query.before_cursor);
+    const afterCursor = parseTsCursor(req.query.after_cursor);
+    const cursor = afterCursor ?? beforeCursor;
 
-    let result: Awaited<ReturnType<typeof this.service.getMessagesSeqV2>>;
+    // Seq is the primary axis; the opaque cursor is the fallback for rooms whose
+    // history predates sequence allocation (every row `sequenceNumber === 0`,
+    // where a seq keyset can only ever return the newest page).
+    const result =
+      beforeSeq != null || afterSeq != null || cursor == null
+        ? await this.service.getMessagesSeqV2({
+            roomId,
+            userId,
+            direction: afterSeq != null ? "after" : "before",
+            seq: afterSeq ?? beforeSeq ?? null,
+            limit,
+          })
+        : await this.service.getMessagesTimeline({
+            roomId,
+            userId,
+            direction: afterCursor != null ? "after" : "before",
+            ts: new Date(cursor.ms),
+            boundaryId: cursor.id,
+            inclusive: false,
+            limit,
+          });
 
-    if (beforeSeq != null || afterSeq != null) {
-      const direction = afterSeq != null ? "after" : "before";
-      const seq = afterSeq ?? beforeSeq ?? null;
-      result = await this.service.getMessagesSeqV2({
-        roomId,
-        userId,
-        direction,
-        seq,
-        limit,
-      });
-    } else {
-      // DEFAULT: opaque compound `(createdAt, id)` cursor. `cursor`/`before_ts`
-      // page OLDER (scroll-up); `after_ts` pages newer. Both carry the opaque
-      // `<ms>_<id>` token (a bare epoch-ms is also accepted for a coarse jump).
-      // Canonical V2 names first (before_cursor/after_cursor — identical to private/group), then
-      // the deprecated cursor/before_ts/after_ts aliases for already-shipped clients.
-      const rawOlder =
-        req.query.before_cursor != null
-          ? String(req.query.before_cursor)
-          : req.query.cursor != null
-            ? String(req.query.cursor)
-            : req.query.before_ts != null
-              ? String(req.query.before_ts)
-              : undefined;
-      const rawNewer =
-        req.query.after_cursor != null
-          ? String(req.query.after_cursor)
-          : req.query.after_ts != null
-            ? String(req.query.after_ts)
-            : undefined;
-      const raw = rawNewer ?? rawOlder;
-      const direction = rawNewer != null ? "after" : "before";
-
-      let ts: number | undefined;
-      let boundaryId: string | null = null;
-      if (raw != null && raw !== "") {
-        const sep = raw.indexOf("_");
-        ts = Number(sep === -1 ? raw : raw.slice(0, sep));
-        boundaryId = sep === -1 ? null : raw.slice(sep + 1);
-      }
-      const hasCursor = ts != null;
-
-      result = await this.service.getMessagesTimeline({
-        roomId,
-        userId,
-        direction,
-        ts: new Date(hasCursor ? ts! : Date.now()),
-        boundaryId,
-        // First page (no cursor) includes the newest message; a cursor page is
-        // exclusive so it never re-returns its own boundary row.
-        inclusive: !hasCursor,
-        limit,
-      });
-    }
-
-    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
-    // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
-    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursor format follows
-    // the selected axis: explicit seq pages return seq strings; the default
-    // timestamp branch returns opaque `(createdAt,id)` tokens. Both branches
-    // share the same core, so `cursors`/`roomRevision` are always present.
+    // hasMore/nextCursor stay OLDER-direction-correct; the bidirectional block
+    // (hasMoreOlder/hasMoreNewer/olderCursor/newerCursor) rides every page.
     const paginated = {
       ...buildTimelineResponse(
-        result.items as unknown as Record<string, unknown>[],
+        toCanonicalMessages(
+          result.items as unknown as Record<string, unknown>[]
+        ),
         result.total,
         limit,
         result.hasMore,

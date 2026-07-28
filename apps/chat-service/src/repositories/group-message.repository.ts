@@ -447,12 +447,17 @@ export class GroupMessageRepository {
     userId: string;
     roomId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = no lower bound, i.e. the newest page. */
+    seq: number | null;
     limit: number;
     cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const bound =
-      params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
+      params.seq == null
+        ? undefined
+        : params.direction === "before"
+          ? { lt: params.seq }
+          : { gt: params.seq };
     const order = params.direction === "before" ? "desc" : "asc";
     const messages = await this.prisma.groupMessage.findMany({
       where: {

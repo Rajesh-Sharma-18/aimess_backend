@@ -16,7 +16,18 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
+import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { CacheRepository } from "../repositories/cache.repository.js";
+import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import type { GroupMember } from "../generated/prisma/index.js";
+
+/** Roster row + the identity fields the FE needs to render a member without extra lookups. */
+export type EnrichedGroupMember = GroupMember & {
+  displayName: string;
+  username: string;
+  avatarUrl: string;
+  isDeletedUser: boolean;
+};
 
 /**
  * Injected user-service gRPC dep so direct adds can be friend-gated (mirrors
@@ -34,7 +45,11 @@ export class GroupMemberService {
     private readonly roomRepo: GroupRoomRepository,
     private readonly sysMsg: GroupSystemMessageService,
     private readonly redis: Redis | Cluster,
-    private readonly userServiceClient?: GroupUserServiceClient
+    private readonly userServiceClient?: GroupUserServiceClient,
+    /** Optional so existing 5-arg construction sites (tests) keep compiling; when
+     *  absent the roster is returned bare, exactly as before. */
+    private readonly userSnapshotService?: UserSnapshotService,
+    private readonly cacheRepo?: CacheRepository
   ) {}
 
   /**
@@ -528,11 +543,43 @@ export class GroupMemberService {
     return updated;
   }
 
+  /**
+   * Active roster, identity-enriched. The bare row carries only `userId`+`role`, which left the
+   * FE rendering raw ids (`@da1311`) and blank avatars — it had no second source to join against.
+   * Same batched snapshot + resolve-on-read media path `enrichMessages` uses: one snapshot lookup
+   * and one URL resolve for the whole page, never per member.
+   */
   async getMembers(
     roomId: string,
     params?: { limit?: number; cursor?: string | null }
-  ): Promise<GroupMember[]> {
-    return this.memberRepo.findActiveMembers(roomId, params);
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
+    const members = await this.memberRepo.findActiveMembers(roomId, params);
+    if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
+      return members;
+    }
+    const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
+      members.map((m) => m.userId),
+      this.cacheRepo
+    );
+    const avatarKeys: string[] = [];
+    for (const snap of snapshots.values()) {
+      const avatar = (snap as Record<string, unknown>).avatar;
+      if (typeof avatar === "string" && avatar) avatarKeys.push(avatar);
+    }
+    const urlMap = await resolveMediaUrlMap(avatarKeys);
+    return members.map((member) => {
+      const snap = (snapshots.get(member.userId) || {}) as Record<
+        string,
+        unknown
+      >;
+      return {
+        ...member,
+        displayName: (snap.displayName as string) || "",
+        username: (snap.memberId as string) || "",
+        avatarUrl: urlFromMap(urlMap, (snap.avatar as string) || ""),
+        isDeletedUser: snap.isDeletedUser === true,
+      };
+    });
   }
 
   async countMembers(roomId: string): Promise<number> {
