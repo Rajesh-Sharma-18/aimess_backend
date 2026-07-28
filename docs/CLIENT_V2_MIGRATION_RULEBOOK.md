@@ -29,9 +29,35 @@ It says nothing about an edit, a delete or a reaction on a message you already h
 `revision` bumps on **every** mutation of a room — insert, edit, delete, reaction. It is the Telegram
 `pts`. It is the only correct catch-up cursor.
 
-**Never sort by `createdAt`.** Order by `sequenceNumber` when present, `createdAt` as fallback,
-`clientMessageId` as the final tiebreaker. Server clocks collide inside a single millisecond under
-load; timestamp ordering visibly reorders messages when it happens.
+There is no third axis. **Timestamp pagination is gone.**
+
+#### Delete these from your client. All of them.
+
+| Delete                                                                | Replace with                 |
+| --------------------------------------------------------------------- | ---------------------------- |
+| `before_ts=` on any message endpoint                                  | `before_seq=`                |
+| `after_ts=` on any message endpoint                                   | `after_seq=`                 |
+| `before_cursor=` / `after_cursor=` on any message endpoint            | `before_seq=` / `after_seq=` |
+| `cursor=` (opaque `<ms>_<id>`) on any message endpoint                | `before_seq=`                |
+| any `createdAt`-based page boundary                                   | `sequenceNumber`             |
+| any client-side "did I already load this?" check keyed on a timestamp | `sequenceNumber`             |
+
+Sequence is the **only** pagination axis for messages. `before_seq` / `after_seq` / `around`, nothing
+else. The V2 timeline schema is `.strict()`, so a leftover `before_ts` or `before_cursor` is a **400**,
+not a silently-ignored param — you will find these the moment you point at V2.
+
+Why this is not negotiable: the timestamp cursors page on `(createdAt, id)`, and under load the server
+writes many messages inside the same millisecond. A timestamp boundary steps over the rows that share
+its millisecond and **drops them permanently** — the client never knows they existed, because the
+next page starts after the gap. This was reproduced with real inverted rows in community history. A
+sequence boundary cannot skip: `sequenceNumber` is a per-room monotonic integer with no ties.
+
+**Never sort by `createdAt` either.** Order by `sequenceNumber`, with `createdAt` and then
+`clientMessageId` only as tiebreakers for legacy rows that predate sequence allocation.
+
+> Exception, and it is the only one: **list** endpoints (conversation inbox, joined communities) are
+> not per-room timelines and have no sequence axis. They still paginate on time — see 2.11 and 2.12.
+> Do not "clean up" those; deleting `before_ts` there breaks list paging.
 
 ### R2. History and catch-up are REST. Sockets are live events only.
 
@@ -114,16 +140,25 @@ for one surface, now exists for all three.
 The V2 schema is `.strict()`. **An unknown query param is a 400**, not a warning. Remove your V1
 params before you point at V2.
 
-| Param                            | Meaning                                                                                                                 |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `before_seq`                     | older page: `sequenceNumber < seq`, newest-first                                                                        |
-| `after_seq`                      | newer page: `sequenceNumber > seq`, oldest-first                                                                        |
-| `around=<messageId>`             | window centred on and including a message (jump-to-message)                                                             |
-| `before_cursor` / `after_cursor` | opaque `<ms>_<id>` — **fallback only**, for legacy rooms where every `sequenceNumber` is 0. Echo verbatim, never parse. |
-| `limit`                          | 1–100, default 40                                                                                                       |
+**Sequence only** (R1). These four are the entire pagination surface:
 
-`before_seq` and `after_seq` are mutually exclusive (400). Same for the two cursors. Sequence wins if
-you send both axes.
+| Param                | Meaning                                                     |
+| -------------------- | ----------------------------------------------------------- |
+| `before_seq`         | older page: `sequenceNumber < seq`, newest-first            |
+| `after_seq`          | newer page: `sequenceNumber > seq`, oldest-first            |
+| `around=<messageId>` | window centred on and including a message (jump-to-message) |
+| `limit`              | 1–100, default 40                                           |
+
+`before_seq` and `after_seq` are mutually exclusive — sending both is a **400**.
+
+**Rejected with 400 — do not send:** `before_ts`, `after_ts`, `cursor`, `page`, `offset`, and any V1
+param not in the table above.
+
+`before_cursor` / `after_cursor` still parse, but treat them as **removed**. They exist only so the
+server can serve rooms whose entire history predates sequence allocation (every `sequenceNumber` is
+`0`). No client should send them, and no client should carry code paths for them: if you hit such a
+room, the fix is a backend seq backfill, not a client fallback. Building the fallback is how you end
+up maintaining two pagination implementations again — the exact thing this migration removes.
 
 Response adds, beyond the V1 envelope:
 
@@ -331,9 +366,12 @@ re-resolving each member.
 
 ### 2.11 Inbox / conversation list — CHANGED
 
+> **This is a list, not a timeline. The seq-only rule (R1) does not apply here** — a conversation
+> list has no per-room sequence to page on. Keep the time cursors on these endpoints.
+
 `GET /api/v2/chat/inbox` — opaque compound `(lastMessageAt, roomId)` cursor via
 `before_cursor` / `after_cursor` + `limit` (max 100, default 20). The two cursors are mutually
-exclusive.
+exclusive. The cursor is opaque: echo `nextCursor` verbatim, never parse or construct it.
 
 `GET /chat/private/conversations` takes `before_ts` / `after_ts` / `limit` (epoch ms) — deliberately
 the same shape as the joined-communities list, so one pagination helper serves both.
@@ -346,6 +384,9 @@ Private room details and inbox rows now carry **friendship metadata** — use it
 and the friend CTA without a second call.
 
 ### 2.12 Cursor pagination on lists — CHANGED
+
+> Same note as 2.11: **lists keep their time cursors.** R1 removes timestamp paging from _message_
+> endpoints only.
 
 `GET /api/v2/communities/mine?scope=joined` requires **one of** `before_ts`, `after_ts`, `q` or
 `categoryId`. Sending only `scope` + `limit` is a **400**. First page: `before_ts = now()` in epoch
@@ -420,7 +461,9 @@ Work top to bottom. Each item is independently shippable.
 **Timeline**
 
 - [ ] Move to `/api/v2/.../messages`; strip params V2's `.strict()` will reject
-- [ ] Page with `before_seq` / `after_seq`; keep the opaque cursor only as the legacy fallback
+- [ ] **Grep the client for `before_ts`, `after_ts`, `before_cursor`, `after_cursor`, `cursor=` and
+      delete every message-endpoint use** — leave the _list_ endpoints alone (2.11, 2.12)
+- [ ] Page with `before_seq` / `after_seq` only; delete the opaque-cursor code path entirely
 - [ ] Read `hasMoreNewer` / `newerCursor` so a jump can scroll back to the present
 - [ ] `around=` for jump-to-message; drop `/context` (2.4)
 - [ ] Track jump-island bounds so paging never replays cached rows (2.4)
