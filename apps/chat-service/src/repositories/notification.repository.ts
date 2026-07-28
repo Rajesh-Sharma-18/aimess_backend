@@ -12,15 +12,42 @@ import { categoryWhere } from "../lib/notification-category.js";
  * "auth.security_new_login" rows, see create() below) rather than a JSON-path
  * query, because MongoDB's Prisma JSON `path` filter can't be combined with
  * NOT/OR/AND — confirmed at runtime ("Unknown argument `path`") — it only
- * works as a bare top-level predicate. A plain scalar `not` filter has no such
- * restriction and naturally passes through every other notification (whose
- * loginSessionId is null, which `not: viewerSessionId` always matches).
+ * works as a bare top-level predicate.
+ *
+ * MUST be `{ isSet: false } OR { not: viewerSessionId }`, not a bare
+ * `{ not: viewerSessionId }` — confirmed by direct testing against the live
+ * DB: Prisma's Mongo `$expr`-compiled `not` filter does NOT match documents
+ * where the field is entirely absent (as every notification created before
+ * this column existed is), only documents where it's explicitly `null`/set.
+ * A bare `not` filter silently hid every pre-existing notification, not just
+ * login-detected ones — this is the fixed, verified-safe form.
  */
 function excludeSelfLoginWhere(
   viewerSessionId?: string | null
 ): Record<string, unknown> {
   if (!viewerSessionId) return {};
-  return { loginSessionId: { not: viewerSessionId } };
+  return {
+    OR: [
+      { loginSessionId: { isSet: false } },
+      { loginSessionId: { not: viewerSessionId } },
+    ],
+  };
+}
+
+/**
+ * ANDs multiple Prisma `where` fragments without key collisions — two
+ * fragments both using a top-level `OR` (e.g. excludeSelfLoginWhere +
+ * a SYSTEM/FRIENDS categoryWhere) would silently clobber each other if
+ * object-spread together, since the later spread's `OR` key overwrites
+ * the earlier one.
+ */
+function combineWhere(
+  ...fragments: Record<string, unknown>[]
+): Record<string, unknown> {
+  const nonEmpty = fragments.filter((f) => Object.keys(f).length > 0);
+  if (nonEmpty.length === 0) return {};
+  if (nonEmpty.length === 1) return nonEmpty[0];
+  return { AND: nonEmpty };
 }
 
 export class NotificationRepository {
@@ -80,8 +107,10 @@ export class NotificationRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
-        ...excludeSelfLoginWhere(params.viewerSessionId),
-        ...(params.where ?? {}),
+        ...combineWhere(
+          excludeSelfLoginWhere(params.viewerSessionId),
+          params.where ?? {}
+        ),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit,
@@ -172,15 +201,14 @@ export class NotificationRepository {
     mentions: number;
     system: number;
   }> {
-    const base = {
-      userId,
-      isDeleted: false,
-      isRead: false,
-      ...excludeSelfLoginWhere(viewerSessionId),
-    };
+    const selfExclusion = excludeSelfLoginWhere(viewerSessionId);
+    const base = { userId, isDeleted: false, isRead: false };
     const countFor = (cat: Parameters<typeof categoryWhere>[0]) =>
       this.prisma.notification.count({
-        where: { ...base, ...categoryWhere(cat) },
+        where: {
+          ...base,
+          ...combineWhere(selfExclusion, categoryWhere(cat)),
+        },
       });
     const [all, friends, communities, mentions, system] = await Promise.all([
       countFor("ALL"),
