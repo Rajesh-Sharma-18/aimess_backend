@@ -123,10 +123,21 @@ export const messageSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
-/** Query schema for the shared media/docs listing endpoints. */
+/** Query schema for the shared media/docs listing endpoints.
+ *  Grouped aliases: "media" → IMAGE/VIDEO/GIF/STICKER, "file" → DOCUMENT, "link" → TEXT with URLs. */
 export const mediaListQuerySchema = z.object({
   type: z
-    .enum(["IMAGE", "VIDEO", "GIF", "VOICE", "DOCUMENT", "STICKER"])
+    .enum([
+      "IMAGE",
+      "VIDEO",
+      "GIF",
+      "VOICE",
+      "DOCUMENT",
+      "STICKER",
+      "media",
+      "file",
+      "link",
+    ])
     .optional(),
   cursor: z.string().nullish(),
   limit: z.coerce.number().min(1).max(100).default(30),
