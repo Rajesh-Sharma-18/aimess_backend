@@ -42,7 +42,6 @@ const MENTION_TYPES = ["chat.mention", "community.mention"] as const;
  * convention for new types.
  */
 const SYSTEM_VERBATIM = [
-  "CALL_MISSED",
   "ANNOUNCEMENT",
   "MAINTENANCE",
   "UPDATE_REQUIRED",
@@ -60,7 +59,7 @@ export function categorize(type: string): Exclude<NotificationCategory, "ALL"> {
   // Mentions checked before COMMUNITIES so `community.mention` doesn't get
   // swallowed by the `community.` prefix branch.
   if ((MENTION_TYPES as readonly string[]).includes(type)) return "MENTIONS";
-  if (type.startsWith("friend.")) return "FRIENDS";
+  if (type.startsWith("friend.") || type === "CALL_MISSED") return "FRIENDS";
   if (type.startsWith("community.")) return "COMMUNITIES";
   if (
     type.startsWith("auth.") ||
@@ -85,7 +84,12 @@ export function categoryWhere(
     case "ALL":
       return {};
     case "FRIENDS":
-      return { type: { startsWith: "friend." } };
+      return {
+        OR: [
+          { type: { startsWith: "friend." } },
+          { type: { in: ["CALL_MISSED"] } },
+        ],
+      };
     case "COMMUNITIES":
       // `community.mention` belongs to MENTIONS — exclude it from COMMUNITIES
       // so a row is counted / listed in exactly one tab.

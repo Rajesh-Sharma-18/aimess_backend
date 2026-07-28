@@ -3662,6 +3662,47 @@ export function createNotificationImpl(
           const entityId =
             data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
+          // For friend.accepted: update the existing friend.requested row in-place
+          // instead of creating a duplicate so the notification center shows one entry.
+          if (req.type === "friend.accepted" && req.actorId) {
+            const existing = await deps.notificationRepo.findByTypeAndActor(
+              req.userId,
+              "friend.requested",
+              req.actorId
+            );
+            if (existing) {
+              const updated = await deps.notificationRepo.updatePayloadAndType(
+                existing.id,
+                req.type,
+                { title: req.title ?? "", body: req.body ?? "", data }
+              );
+              if (updated) {
+                try {
+                  await publishUserSocketEvent(
+                    redis,
+                    req.userId,
+                    "notification:updated",
+                    {
+                      notificationId: updated.id,
+                      userId: req.userId,
+                      type: req.type,
+                      title: req.title ?? "",
+                      body: req.body ?? "",
+                      isRead: updated.isRead,
+                      createdAt: updated.createdAt.getTime(),
+                    }
+                  );
+                } catch (err) {
+                  logger.warn(
+                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
+                  );
+                }
+                callback(null, { id: updated.id });
+                return;
+              }
+            }
+          }
+
           const created = await deps.notificationRepo.create({
             userId: req.userId,
             actorId: req.actorId ?? "",
