@@ -1,5 +1,10 @@
 import { logger } from "@aimess/logger";
-import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
+import {
+  AdminUserEvents,
+  AuthEvents,
+  CommunityEvents,
+  FriendshipEvents,
+} from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
@@ -59,12 +64,26 @@ const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
  * type here to enable it in the inbox without touching any producer.
  */
 const INBOX_ALLOWED_TYPES = new Set<string>([
+  // ── Social ──────────────────────────────────────────────────────────────
   FriendshipEvents.FRIEND_REQUESTED,
   FriendshipEvents.FRIEND_ACCEPTED,
   CommunityEvents.MEMBER_BANNED,
   // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
   // missed call is exactly the kind of thing a user wants to find later.
   "CALL_MISSED",
+
+  // ── System / account-level ──────────────────────────────────────────────
+  // These map to the SYSTEM tab in the Notification Center (categoryWhere).
+  // Every type added here must also be covered by categoryWhere("SYSTEM").
+  AuthEvents.SECURITY_NEW_LOGIN,
+  AuthEvents.PASSWORD_CHANGED,
+  AuthEvents.EMAIL_CHANGED,
+  AdminUserEvents.USER_BANNED,
+  AdminUserEvents.USER_SUSPENDED,
+  AdminUserEvents.USER_UNBANNED,
+  "ANNOUNCEMENT",
+  "MAINTENANCE",
+  "UPDATE_REQUIRED",
 ]);
 
 /**

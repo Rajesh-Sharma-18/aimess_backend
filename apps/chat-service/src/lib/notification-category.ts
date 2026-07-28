@@ -1,13 +1,23 @@
 /**
  * Notification Center tab taxonomy. The Notification page has 5 tabs — ALL,
  * FRIENDS, COMMUNITIES, MENTIONS, SYSTEM — and the REST endpoint filters +
- * counts by these buckets. Event type strings use the domain-namespaced form
- * from `@aimess/shared-types` (`friend.*`, `community.*`, `auth.*`, ...) so
- * prefix routing is enough — no per-type maintenance.
+ * counts by these buckets.
  *
- * MENTIONS currently has no producer; `chat.mention` / `community.mention` are
- * reserved for the mention pipeline that today runs push-only with skipInbox.
- * Reserved so adding the type later needs no re-plumbing here.
+ * Routing rules (checked in priority order inside categorize()):
+ *   MENTIONS    → type ∈ MENTION_TYPES  (checked first so community.mention
+ *                 doesn't also match the community.* COMMUNITIES branch)
+ *   FRIENDS     → type starts with "friend."
+ *   COMMUNITIES → type starts with "community." (excluding MENTION_TYPES)
+ *   SYSTEM      → type starts with "auth." or "admin.", or ∈ SYSTEM_VERBATIM
+ *
+ * Adding a new system notification:
+ *   1. Publish it from the producer with a type that starts with "auth." or
+ *      "admin." (or add it to SYSTEM_VERBATIM below).
+ *   2. Add it to INBOX_ALLOWED_TYPES in notifications-service/push.service.ts.
+ *   No changes to this file are needed for auth.* / admin.* types.
+ *
+ * MENTIONS currently has no inbox producer; `chat.mention` / `community.mention`
+ * are reserved for the mention pipeline that runs push-only with skipInbox.
  */
 export type NotificationCategory =
   | "ALL"
@@ -26,6 +36,18 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
 
 const MENTION_TYPES = ["chat.mention", "community.mention"] as const;
 
+/**
+ * Verbatim type strings that belong to the SYSTEM tab but don't carry an
+ * "auth." or "admin." prefix. Keep this list small — prefer the prefix
+ * convention for new types.
+ */
+const SYSTEM_VERBATIM = [
+  "CALL_MISSED",
+  "ANNOUNCEMENT",
+  "MAINTENANCE",
+  "UPDATE_REQUIRED",
+] as const;
+
 export function parseCategory(raw: unknown): NotificationCategory {
   if (typeof raw !== "string") return "ALL";
   const up = raw.toUpperCase();
@@ -40,6 +62,14 @@ export function categorize(type: string): Exclude<NotificationCategory, "ALL"> {
   if ((MENTION_TYPES as readonly string[]).includes(type)) return "MENTIONS";
   if (type.startsWith("friend.")) return "FRIENDS";
   if (type.startsWith("community.")) return "COMMUNITIES";
+  if (
+    type.startsWith("auth.") ||
+    type.startsWith("admin.") ||
+    (SYSTEM_VERBATIM as readonly string[]).includes(type)
+  )
+    return "SYSTEM";
+  // Unknown types fall to SYSTEM so they surface somewhere visible rather than
+  // disappearing, but they won't reach the inbox unless added to INBOX_ALLOWED_TYPES.
   return "SYSTEM";
 }
 
@@ -68,14 +98,15 @@ export function categoryWhere(
     case "MENTIONS":
       return { type: { in: [...MENTION_TYPES] } };
     case "SYSTEM":
-      // Everything that isn't friend/community/mention. This intentionally
-      // catches auth.*, admin.*, session.*, user.registered, and anything
-      // new that lands without a dedicated tab.
+      // Explicit inclusion: only auth.* (security/account events) and admin.*
+      // (ban/suspend/unban) prefixes, plus the small verbatim set above.
+      // Using an allowlist instead of a catch-all exclusion prevents community
+      // notifications stored with non-standard type strings from leaking here.
       return {
-        NOT: [
-          { type: { startsWith: "friend." } },
-          { type: { startsWith: "community." } },
-          { type: { in: [...MENTION_TYPES] } },
+        OR: [
+          { type: { startsWith: "auth." } },
+          { type: { startsWith: "admin." } },
+          { type: { in: [...SYSTEM_VERBATIM] } },
         ],
       };
   }
