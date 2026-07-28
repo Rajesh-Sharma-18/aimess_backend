@@ -151,3 +151,14 @@ export const updateSettingsSchema = z
   });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
+
+export const friendIdParamSchema = z.object({ friendId: uuidSchema });
+export type FriendIdParam = z.infer<typeof friendIdParamSchema>;
+
+export const listCallAllowedFriendsQuerySchema = z.object({
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(30),
+});
+export type ListCallAllowedFriendsQuery = z.infer<
+  typeof listCallAllowedFriendsQuerySchema
+>;

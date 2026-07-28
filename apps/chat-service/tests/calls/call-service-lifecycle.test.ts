@@ -162,14 +162,53 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
 
-  it("RINGING → leave alone (sweep will pick it up as MISSED)", async () => {
+  it("RINGING → cancels (caller abandoned before answer): RINGING→ENDED + call:cancelled to BOTH rooms, no chat row", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
       status: "RINGING",
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
     });
+
     await service.reconcileFromLiveKitRoomFinished("c1");
-    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "RINGING",
+      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
+    );
+    // Callee on their personal channel (they never joined call:<id>)...
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:u2",
+      expect.stringContaining("call:cancelled")
+    );
+    // ...and caller on `call:<id>` (they joined at ack) so their FE clears too,
+    // covering the rare network-split where their own Disconnected doesn't fire.
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:cancelled")
+    );
+    // Pre-answer cancel posts no ENDED audit row — mirrors endCall's wasRinging.
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+  });
+
+  it("RINGING with a lost claim (raced by decline/sweep) publishes nothing", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "RINGING",
+      callerId: "u1",
+      calleeId: "u2",
+    });
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
+
+    await service.reconcileFromLiveKitRoomFinished("c1");
+
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
   });
 
   it("losing the atomic terminal transition emits no event or chat row", async () => {

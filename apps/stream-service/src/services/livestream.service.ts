@@ -617,7 +617,9 @@ export class LivestreamService {
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
     );
-    await this.publishStatus(updated.id, "ENDED", updated.communityId);
+    await this.publishStatus(updated.id, "ENDED", updated.communityId, {
+      creatorId: stream.creatorId,
+    });
     void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
     void this.closeOpenViewerSessions(
       updated.id,
@@ -2203,13 +2205,15 @@ export class LivestreamService {
     streamId: string,
     status: string,
     communityId: string,
-    // Extra fields included only on LIVE transitions so the gateway can send a
-    // targeted stream:broadcast:live event to the broadcaster's socket.
+    // Extra fields so the gateway can send targeted events to the broadcaster's
+    // socket. For LIVE: includes hlsUrl/flvUrl/startedAt for stream:broadcast:live.
+    // For ENDED: only creatorId is needed so the gateway can find and notify the
+    // broadcaster even if they've already left the stream room (e.g. after a ban kick).
     broadcasterCtx?: {
       creatorId: string;
-      hlsUrl: string | null;
-      flvUrl: string | null;
-      startedAt: number;
+      hlsUrl?: string | null;
+      flvUrl?: string | null;
+      startedAt?: number;
     }
   ): Promise<void> {
     try {
