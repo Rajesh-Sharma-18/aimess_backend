@@ -100,6 +100,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_REJECTED: {
       const p = data as FriendRejectedPayload;
       const deepLink = buildDeepLink("user", p.addresseeId);
+      // Notify the requester that their request was declined.
       await pushToUser({
         userId: p.requesterId,
         category: "friendRequestEnabled",
@@ -115,6 +116,21 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
             screen: "FRIEND_REQUESTS",
             userId: p.addresseeId,
           } satisfies NotificationNavigation),
+        },
+      });
+      // Update the ADDRESSEE's own friend.requested inbox row in-place so it
+      // persists the "I have declined" state across reloads. The gRPC handler
+      // detects type="friend.rejected" and replaces the existing friend.requested
+      // row instead of creating a new notification (mirrors the friend.accepted path).
+      await pushToUser({
+        userId: p.addresseeId,
+        category: "friendRequestEnabled",
+        type,
+        actorId: p.requesterId,
+        ...friendCopy.rejectedSelf(),
+        data: {
+          friendshipId: p.friendshipId,
+          requesterId: p.requesterId,
         },
       });
       break;

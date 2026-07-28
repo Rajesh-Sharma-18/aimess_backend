@@ -2,7 +2,10 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
-import { markReadSchema } from "../validators/notification.validator.js";
+import {
+  markReadSchema,
+  recordActionSchema,
+} from "../validators/notification.validator.js";
 import type { NotificationController } from "../controllers/notification.controller.js";
 
 export function createNotificationRoutes(ctrl: NotificationController): Router {
@@ -17,6 +20,12 @@ export function createNotificationRoutes(ctrl: NotificationController): Router {
   );
   router.post("/read-all", authenticate, ctrl.markAllRead);
   router.get("/unread-count", authenticate, ctrl.getUnreadCount);
+  router.patch(
+    "/:id/action",
+    authenticate,
+    validateBody(recordActionSchema),
+    ctrl.recordAction
+  );
 
   return router;
 }

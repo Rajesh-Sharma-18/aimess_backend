@@ -8,6 +8,11 @@ export const getNotificationsSchema = z.object({
     .optional(),
 });
 
+export const recordActionSchema = z.object({
+  action: z.enum(["TERMINATE", "CONFIRM", "REJECT", "ACCEPT"]),
+  body: z.string().min(1).max(500),
+});
+
 export const markReadSchema = z.union([
   z.object({ notificationId: z.string().min(5).max(100) }),
   z.object({

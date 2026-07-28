@@ -3662,8 +3662,57 @@ export function createNotificationImpl(
           const entityId =
             data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
-          // For friend.accepted: update the existing friend.requested row in-place
-          // instead of creating a duplicate so the notification center shows one entry.
+          // For friend.accepted / friend.rejected: update the existing friend.requested
+          // row in-place instead of creating a duplicate. friend.rejected preserves the
+          // original title (requester's name) so the actor display stays correct.
+          if (req.type === "friend.rejected" && req.actorId) {
+            const existing = await deps.notificationRepo.findByTypeAndActor(
+              req.userId,
+              "friend.requested",
+              req.actorId
+            );
+            if (existing) {
+              const existingPayload = (existing.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const updated = await deps.notificationRepo.updatePayloadAndType(
+                existing.id,
+                req.type,
+                {
+                  title: existingPayload.title ?? req.title ?? "",
+                  body: req.body ?? "",
+                  data: { ...(existingPayload.data ?? {}), ...data },
+                }
+              );
+              if (updated) {
+                try {
+                  await publishUserSocketEvent(
+                    redis,
+                    req.userId,
+                    "notification:updated",
+                    {
+                      notificationId: updated.id,
+                      userId: req.userId,
+                      type: req.type,
+                      title: existingPayload.title ?? req.title ?? "",
+                      body: req.body ?? "",
+                      isRead: updated.isRead,
+                      createdAt: updated.createdAt.getTime(),
+                    }
+                  );
+                } catch (err) {
+                  logger.warn(
+                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
+                  );
+                }
+                callback(null, { id: updated.id });
+                return;
+              }
+            }
+          }
+
           if (req.type === "friend.accepted" && req.actorId) {
             const existing = await deps.notificationRepo.findByTypeAndActor(
               req.userId,

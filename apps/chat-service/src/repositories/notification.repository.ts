@@ -185,6 +185,37 @@ export class NotificationRepository {
     });
   }
 
+  /**
+   * Persists a user-initiated action on a notification (e.g. "TERMINATE" session,
+   * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
+   * and marks the row read in one write. Owner-scoped (IDOR-safe).
+   */
+  async recordAction(
+    id: string,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<Notification | null> {
+    const existing = await this.prisma.notification.findFirst({
+      where: { id, userId, isDeleted: false },
+    });
+    if (!existing) return null;
+    const existingPayload = (existing.payload ?? {}) as {
+      title?: string;
+      body?: string;
+      data?: Record<string, string>;
+    };
+    const updatedPayload = {
+      ...existingPayload,
+      body,
+      data: { ...(existingPayload.data ?? {}), actionTaken: action },
+    };
+    return this.prisma.notification.update({
+      where: { id },
+      data: { payload: updatedPayload, isRead: true, readAt: new Date() },
+    });
+  }
+
   async updatePayloadAndType(
     id: string,
     type: string,
