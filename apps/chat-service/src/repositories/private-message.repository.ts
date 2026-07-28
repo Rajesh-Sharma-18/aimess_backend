@@ -965,12 +965,15 @@ export class PrivateMessageRepository {
         orderBy: { createdAt: "desc" },
         take: params.limit * 5,
       });
+      const URL_RE = /https?:\/\/\S+|www\.\S+/i;
       return msgs
         .filter(notDeletedFor)
         .filter((m) => {
-          const urls =
-            ((m.content as Record<string, unknown>)?.urls as unknown[]) ?? [];
-          return urls.length > 0;
+          const content = (m.content as Record<string, unknown>) ?? {};
+          const urls = (content.urls as unknown[]) ?? [];
+          if (urls.length > 0) return true;
+          const text = (content.text as string) ?? "";
+          return URL_RE.test(text);
         })
         .slice(0, params.limit);
     }
