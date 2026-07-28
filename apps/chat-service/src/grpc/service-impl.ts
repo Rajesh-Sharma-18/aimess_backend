@@ -1568,7 +1568,14 @@ export function createMessagingImpl(
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
           });
-          callback(null, { callId: result.callId, status: result.status });
+          callback(null, {
+            callId: result.callId,
+            status: result.status,
+            livekit: {
+              url: result.livekit.url,
+              token: result.livekit.token,
+            },
+          });
         } catch (err) {
           logger.error(`gRPC answerCall error: ${String(err)}`);
           callback(toGrpcCallbackError(err));

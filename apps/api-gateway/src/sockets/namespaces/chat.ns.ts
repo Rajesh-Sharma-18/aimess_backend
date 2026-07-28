@@ -1242,7 +1242,12 @@ export function registerChatNamespace(
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
             void socket.join(`call:${result.callId}`);
-            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result);
+            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, {
+              callId: result.callId,
+              status: result.status,
+              livekitUrl: result.livekit?.url,
+              token: result.livekit?.token,
+            });
           })
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);

@@ -294,13 +294,16 @@ export class CallService {
   async answerCall(params: {
     callId: string;
     calleeId: string;
-  }): Promise<Call> {
+  }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (call.calleeId !== params.calleeId)
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
-    // Idempotent re-answer (double-tap / multi-tab).
-    if (call.status === CallStatus.IN_PROGRESS) return call;
+    const livekit = await this.livekit.mintToken(
+      params.callId,
+      params.calleeId
+    );
+    if (call.status === CallStatus.IN_PROGRESS) return { ...call, livekit };
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
@@ -315,7 +318,8 @@ export class CallService {
     );
     if (!won) {
       const again = await this.callRepo.findByCallId(params.callId);
-      if (again?.status === CallStatus.IN_PROGRESS) return again;
+      if (again?.status === CallStatus.IN_PROGRESS)
+        return { ...again, livekit };
       throw new BadRequestError("CALL_NOT_RINGING");
     }
     const updated: Call = {
@@ -348,7 +352,7 @@ export class CallService {
       reason: "answered_elsewhere",
     });
 
-    return updated;
+    return { ...updated, livekit };
   }
 
   async declineCall(params: {
