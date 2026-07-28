@@ -175,7 +175,7 @@ describe("InboxController.getInboxV2", () => {
     expect(arg.compoundCursor).toBeUndefined();
   });
 
-  it("V2 response envelope is byte-identical in shape to V1", async () => {
+  it("V2 uses the LIST envelope: items + one page block, no V1 duplication", async () => {
     const { controller, service } = makeInboxController();
     service.getInbox.mockResolvedValue({
       items: [{ roomId: "prv_a" }],
@@ -187,10 +187,19 @@ describe("InboxController.getInboxV2", () => {
     expect(res.status).toHaveBeenCalledWith(200);
     const body = res.json.mock.calls[0]![0].data;
     expect(Object.keys(body).sort()).toEqual(
-      ["data", "hasMore", "nextCursor", "pagination"].sort()
+      ["items", "page", "totalCount"].sort()
     );
-    expect(body.nextCursor).toBe("1784031657087_prv_a");
-    expect(body.pagination.nextCursor).toBe("1784031657087_prv_a");
+    // Continuation lives in `page` and NOWHERE else — the V1 top-level
+    // `hasMore`/`nextCursor` shortcuts and the `pagination` block are gone.
+    expect(body.page).toEqual({
+      limit: 20,
+      hasMore: true,
+      nextCursor: "1784031657087_prv_a",
+    });
+    expect(body.totalCount).toBe(3);
+    expect(body.data).toBeUndefined();
+    expect(body.pagination).toBeUndefined();
+    expect(body.nextCursor).toBeUndefined();
   });
 });
 

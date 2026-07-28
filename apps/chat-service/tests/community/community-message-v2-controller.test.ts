@@ -1,11 +1,11 @@
 /**
  * `CommunityMessageController.getMessagesV2` — request-parameter ROUTING.
  *
- * V2 history pages on an OPAQUE `cursor` (compound `(createdAt, id)` keyset) by
- * default — the axis that works on all existing data and returns a real
- * `<ms>_<id>` nextCursor (never "0"). `before_seq`/`after_seq` are an OPT-IN
- * gap-safe seq path. `around` uses the ts-anchored window. These tests pin that
- * precedence and the exact args forwarded — no DB, service + pin service mocked.
+ * V2 pages on `sequenceNumber` ONLY — `before_seq`/`after_seq`/`around`, or the
+ * newest page when all are omitted. The timestamp keyset is gone: it stepped over
+ * rows sharing a millisecond and dropped them silently. These tests pin the param
+ * routing, the exact service args, and the response envelope — no DB, service +
+ * pin service mocked.
  */
 import { CommunityMessageController } from "../../src/api/controllers/community-message.controller.js";
 
@@ -147,17 +147,38 @@ describe("getMessagesV2 — param routing", () => {
     expect(body.data.roomRevision).toBe(261);
   });
 
-  it("ordinary page carries bidirectional continuation + roomRevision (Gap B)", async () => {
+  it("ordinary page carries the V2 timeline envelope: items + one page block", async () => {
     const { controller } = makeController();
     const res = await invoke(controller, { limit: "30" });
     const body = res.json.mock.calls[0]![0];
-    expect(body.data.hasMoreOlder).toBe(true);
-    expect(body.data.hasMoreNewer).toBe(false);
-    expect(body.data.olderCursor).toBe("41");
-    expect(body.data.newerCursor).toBeNull();
+    expect(Object.keys(body.data).sort()).toEqual(
+      ["items", "page", "pinnedMessage", "roomRevision"].sort()
+    );
+    // Both directions on every page, boundaries as NUMBERS on the seq axis.
+    expect(body.data.page).toEqual({
+      limit: 30,
+      hasMoreOlder: true,
+      hasMoreNewer: false,
+      olderSeq: 41,
+      newerSeq: null,
+    });
     expect(body.data.roomRevision).toBe(261);
-    // Legacy single-direction pair is untouched (direction-correct).
-    expect(body.data.hasMore).toBe(false);
-    expect(body.data.nextCursor).toBeNull();
+  });
+
+  it("drops every V1 duplication: no data.data, no pagination, no top-level cursors", async () => {
+    const { controller } = makeController();
+    const res = await invoke(controller, { limit: "30" });
+    const body = res.json.mock.calls[0]![0].data;
+    for (const retired of [
+      "data",
+      "pagination",
+      "hasMore",
+      "nextCursor",
+      "hasMoreOlder",
+      "olderCursor",
+      "newerCursor",
+    ]) {
+      expect(body[retired]).toBeUndefined();
+    }
   });
 });

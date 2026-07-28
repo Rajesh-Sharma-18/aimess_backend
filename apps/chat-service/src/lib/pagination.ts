@@ -25,6 +25,102 @@ export interface PaginatedResponse<T> {
   nextCursor: string | null;
 }
 
+/**
+ * V2 envelope. Two shapes, chosen by what the endpoint IS — the V1
+ * `PaginatedResponse` forced offset semantics (`totalPage`, `currentPage`) onto
+ * keyset endpoints that have no such concept, then bolted the real continuation
+ * signals on beside them.
+ *
+ * Rules, for both shapes:
+ *  - the collection is `items`, never `data` (a controller nesting a `data` key
+ *    under the response's own `data` is what produced `data.data`);
+ *  - continuation lives in `page` and NOWHERE else — no top-level shortcuts, so
+ *    there is exactly one copy of every signal;
+ *  - no `totalData`/`totalPage`/`currentPage`. They cost a `count()` per page and
+ *    describe paging this API does not do.
+ */
+export interface TimelinePage {
+  limit: number;
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  /** Feed back verbatim as `before_seq`. Null = no older page. */
+  olderSeq: number | null;
+  /** Feed back verbatim as `after_seq`. Null = caller is at the live edge. */
+  newerSeq: number | null;
+}
+
+export interface TimelineResponseV2<T> {
+  items: T[];
+  page: TimelinePage;
+}
+
+/**
+ * A message page. Both directions ride EVERY page (ordinary and `around` alike),
+ * so the client has one shape and no branch. Boundaries are sequence NUMBERS —
+ * the axis the endpoint actually pages on — not stringly-typed "cursors".
+ */
+export function buildTimelinePageV2<T>(
+  items: T[],
+  limit: number,
+  cursors: {
+    hasMoreOlder: boolean;
+    hasMoreNewer: boolean;
+    olderCursor: string | number | null;
+    newerCursor: string | number | null;
+  }
+): TimelineResponseV2<T> {
+  return {
+    items,
+    page: {
+      limit,
+      hasMoreOlder: cursors.hasMoreOlder,
+      hasMoreNewer: cursors.hasMoreNewer,
+      olderSeq: toSeq(cursors.olderCursor),
+      newerSeq: toSeq(cursors.newerCursor),
+    },
+  };
+}
+
+export interface ListPage {
+  limit: number;
+  hasMore: boolean;
+  /** Opaque `<ms>_<id>` keyset token. Echo back verbatim; never parse it. */
+  nextCursor: string | null;
+}
+
+export interface ListResponseV2<T> {
+  items: T[];
+  page: ListPage;
+  /** Only where a UI renders a count — it costs a full `count()`. */
+  totalCount?: number;
+}
+
+/**
+ * A list page (inbox, members, notifications). Lists are NOT timelines: they have
+ * no sequence axis, so they keep a genuine time-keyset cursor — honestly named.
+ */
+export function buildListPageV2<T>(
+  items: T[],
+  limit: number,
+  hasMore: boolean,
+  nextCursor: string | null,
+  totalCount?: number
+): ListResponseV2<T> {
+  const out: ListResponseV2<T> = {
+    items,
+    page: { limit, hasMore, nextCursor },
+  };
+  if (totalCount != null) out.totalCount = totalCount;
+  return out;
+}
+
+/** Sequence boundaries cross the wire as numbers. Unparseable/absent → null. */
+function toSeq(value: string | number | null | undefined): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function buildPaginatedResponse<T extends Record<string, unknown>>(
   items: T[],
   totalCount: number,
@@ -185,7 +281,9 @@ export function buildRoomKeysetWhere(params: {
   const before = direction === "before";
 
   if (inclusive) {
-    return { lastMessageAt: before ? { lte: ts, not: null } : { gte: ts, not: null } };
+    return {
+      lastMessageAt: before ? { lte: ts, not: null } : { gte: ts, not: null },
+    };
   }
   const op = before ? "lt" : "gt";
   if (!boundaryId) {

@@ -3,7 +3,11 @@ import type { Request, Response } from "express";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
-import { parseTsCursor, type PaginatedResponse } from "../../lib/pagination.js";
+import {
+  parseTsCursor,
+  buildListPageV2,
+  type PaginatedResponse,
+} from "../../lib/pagination.js";
 import type { InboxService, InboxItem } from "../../services/inbox.service.js";
 
 export class InboxController {
@@ -79,7 +83,25 @@ export class InboxController {
       limit,
     });
 
-    this.send(req, res, result, limit);
+    // V2 list envelope: `items` + a single `page`. The inbox is a LIST, not a
+    // timeline — it has no sequence axis, so it keeps a genuine time-keyset
+    // cursor. `totalCount` rides along because the tab badge renders it.
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          buildListPageV2(
+            result.items,
+            limit,
+            result.hasMore,
+            result.nextCursor,
+            result.total
+          ),
+          result.items.length
+            ? t("CHAT_INBOX_FETCHED", req.locale)
+            : t("CHAT_NO_INBOX_FOUND", req.locale)
+        )
+      );
   });
 
   /** Shared response envelope — identical for V1 and V2. */
@@ -89,7 +111,6 @@ export class InboxController {
     result: Awaited<ReturnType<InboxService["getInbox"]>>,
     limit: number
   ) {
-
     const paginated: PaginatedResponse<InboxItem> = {
       pagination: {
         totalData: result.total,
