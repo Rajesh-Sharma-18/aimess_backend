@@ -3,6 +3,8 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
+import { NotFoundError } from "@aimess/errors";
 
 import {
   buildPaginatedResponse,
@@ -118,8 +120,106 @@ export class PrivateMessageController {
    * contract (see `communityTimelineV2QuerySchema`).
    */
   getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessages(req, res, "before_cursor", "after_cursor")
+    this.listMessagesV2(req, res)
   );
+
+  /**
+   * V2 timeline — `before_seq`/`after_seq`/`around` only. The retired timestamp
+   * cursors are rejected by `timelineV2QuerySchema.strict()`, so there is no
+   * fallback branch here: sequence is the single pagination axis.
+   */
+  private async listMessagesV2(req: Request, res: Response) {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
+    const around = req.query.around as string | undefined;
+
+    const send = (paginated: { data: unknown[] }) =>
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            paginated.data.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+
+    if (around) {
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const [enriched, totalCount, pinnedMessage] = await Promise.all([
+        this.messageService.enrichMessages(items, userId),
+        this.messageService.countMessages(roomId),
+        this.pinService.getActivePinSummary(roomId, userId),
+      ]);
+      const aroundPayload = {
+        ...buildAroundResponse(enriched, totalCount, limit, {
+          hasMoreOlder,
+          hasMoreNewer,
+          olderCursor,
+          newerCursor,
+        }),
+        pinnedMessage,
+      };
+      send(aroundPayload);
+      return;
+    }
+
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    const beforeCursor = parseTsCursor(req.query.before_cursor);
+    const afterCursor = parseTsCursor(req.query.after_cursor);
+    const cursor = afterCursor ?? beforeCursor;
+
+    // Seq is the primary axis; the opaque cursor is the fallback for rooms whose
+    // history predates sequence allocation (every row `sequenceNumber === 0`).
+    const [result, totalCount] = await Promise.all([
+      beforeSeq != null || afterSeq != null || cursor == null
+        ? this.messageService.getMessagesSeq({
+            roomId,
+            userId,
+            direction: afterSeq != null ? "after" : "before",
+            seq: afterSeq ?? beforeSeq ?? null,
+            limit,
+          })
+        : this.messageService.getMessagesTimeline({
+            roomId,
+            userId,
+            direction: afterCursor != null ? "after" : "before",
+            ts: new Date(cursor.ms),
+            boundaryId: cursor.id,
+            inclusive: false,
+            limit,
+          }),
+      this.messageService.countMessages(roomId),
+    ]);
+    const [enriched, pinnedMessage] = await Promise.all([
+      this.messageService.enrichMessages(result.items, userId),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
+    const paginated = {
+      ...buildTimelineResponse(
+        enriched,
+        totalCount,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+      pinnedMessage,
+    };
+    send(paginated);
+  }
 
   /**
    * V2 — `GET /api/v2/chat/private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
@@ -241,13 +341,17 @@ export class PrivateMessageController {
         result.items,
         userId
       );
-      const paginated = buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      );
+      const paginated = {
+        ...buildTimelineResponse(
+          enriched,
+          totalCount,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -285,13 +389,17 @@ export class PrivateMessageController {
       result.items,
       userId
     );
-    const paginated = buildTimelineResponse(
-      enriched,
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    const paginated = {
+      ...buildTimelineResponse(
+        enriched,
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
@@ -630,6 +738,28 @@ export class PrivateMessageController {
       userId,
       emoji,
       op: "add",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
+
+  /**
+   * V2 `POST /messages/:messageId/react` — single-write SET, matching the community
+   * REST react. The room is resolved from the message, so the offline queue can drain
+   * a reaction with only (messageId, emoji) regardless of conversation type.
+   */
+  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { emoji } = req.body as { emoji: string };
+    const message = await this.messageService.findMessageById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "PRIVATE",
+      roomId: message.roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "set",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
   });

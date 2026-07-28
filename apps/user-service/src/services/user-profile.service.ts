@@ -29,7 +29,15 @@ import type {
 import { isProfileComplete } from "../lib/profile-completion.util.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
-import type { UserProfileData } from "../types/user-profile.types.js";
+import type {
+  PublicUserProfileData,
+  UserProfileData,
+} from "../types/user-profile.types.js";
+import { friendshipRepository } from "../repositories/friendship.repository.js";
+import {
+  buildFriendshipView,
+  toSearchRelationship,
+} from "../lib/friendship-view.js";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
@@ -217,7 +225,118 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   return profile;
 }
 
+/**
+ * Does `scope` admit this viewer? `FRIENDS_OF_FRIENDS` is treated as FRIENDS —
+ * the graph query it would need does not exist yet and over-sharing is the
+ * worse failure. Self always passes.
+ */
+function scopeAdmits(
+  scope: string | null | undefined,
+  isSelf: boolean,
+  isFriend: boolean
+): boolean {
+  if (isSelf) return true;
+  switch (scope) {
+    case "NO_ONE":
+      return false;
+    case "FRIENDS":
+    case "FRIENDS_OF_FRIENDS":
+      return isFriend;
+    default:
+      return true; // EVERYONE, or unset (the schema default)
+  }
+}
+
 export const userProfileService = {
+  /**
+   * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
+   * confirm the account exists). The `whoCanViewProfile` / `whoCanSeeOnlineStatus`
+   * scopes have been stored-but-unenforced until now; they degrade the payload
+   * instead of failing it, so the client always renders a card.
+   */
+  async getPublicProfile(
+    viewerId: string,
+    targetUserId: string
+  ): Promise<PublicUserProfileData> {
+    const notFound = () => new NotFoundError("USER_PROFILE_NOT_FOUND");
+
+    const [profile, blockedByTarget, blockedByViewer] = await Promise.all([
+      userProfileRepository.findPublicProfileByUserId(targetUserId),
+      viewerId === targetUserId
+        ? Promise.resolve(null)
+        : friendshipRepository.findBlock(targetUserId, viewerId),
+      viewerId === targetUserId
+        ? Promise.resolve(null)
+        : friendshipRepository.findBlock(viewerId, targetUserId),
+    ]);
+
+    if (!profile || profile.deletedAt) throw notFound();
+    // Either direction hides the account entirely — same policy search already
+    // applies via `findAllBlocks`.
+    if (blockedByTarget) throw notFound();
+
+    const isSelf = viewerId === targetUserId;
+    const friendshipRow = isSelf
+      ? null
+      : await friendshipRepository.findByPair(viewerId, targetUserId);
+    const view = buildFriendshipView(
+      viewerId,
+      friendshipRow,
+      Boolean(blockedByViewer)
+    );
+    const isFriend = view.status === "ACCEPTED";
+    const isDeletedUser = profile.status === ProfileStatus.DELETED;
+
+    const [avatarView, avatar] = await Promise.all([
+      avatarService.resolveViewUrlForClient(profile.avatarUrl),
+      toMediaObject({
+        bucket: env.MINIO_BUCKET_AVATARS,
+        stored: profile.avatarUrl,
+        prefixes: MEDIA_PREFIXES.userAvatars,
+        strategy: mediaUrlStrategy,
+      }),
+    ]);
+
+    const canViewProfile =
+      !isDeletedUser &&
+      scopeAdmits(profile.privacySettings?.whoCanViewProfile, isSelf, isFriend);
+    const canSeePresence =
+      canViewProfile &&
+      scopeAdmits(
+        profile.privacySettings?.whoCanSeeOnlineStatus,
+        isSelf,
+        isFriend
+      );
+
+    return {
+      userId: profile.userId,
+      username: profile.username,
+      displayName: buildDisplayName(profile.firstName, profile.lastName),
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      bio: canViewProfile ? profile.bio : null,
+      avatarUrl: avatarView?.url ?? null,
+      avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+      avatar,
+      coverImageUrl: canViewProfile ? profile.coverImageUrl : null,
+      isOnline: canSeePresence ? profile.isOnline : null,
+      lastSeenAt:
+        canSeePresence && profile.lastSeenAt
+          ? profile.lastSeenAt.toISOString()
+          : null,
+      friendsCount: canViewProfile ? profile.friendsCount : null,
+      groupsCount: canViewProfile ? profile.groupsCount : null,
+      communitiesCount: canViewProfile ? profile.communitiesCount : null,
+      isDeletedUser,
+      // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
+      // it is what every existing client relationship parser already speaks.
+      relationship: {
+        friendshipId: friendshipRow?.id ?? null,
+        ...toSearchRelationship(view),
+      },
+    };
+  },
+
   async getMyProfile(userId: string): Promise<UserProfileData> {
     const profile = await loadProfileRecord(userId);
     const authSummary = await resolveProfileAuthSummary(userId);

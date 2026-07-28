@@ -1,16 +1,23 @@
 /**
- * Cursor V2 for the two chat surfaces that moved off timestamp pagination:
- *   `GET /api/v2/chat/private/rooms/:roomId/messages`  (PrivateMessageController.getMessagesV2)
- *   `GET /api/v2/chat/inbox`                           (InboxController.getInboxV2)
+ * Cursor V2 across the chat surfaces.
  *
- * Both reuse the exact community-V2 contract: an OPAQUE compound keyset token
- * (`"<ms>_<id>"`), exclusive continuation, first page inclusive. These tests pin
- * the decode/encode and the boundary the repositories receive — no DB, services
- * mocked. V1 behavior is asserted unchanged alongside.
+ * `GET /api/v2/chat/inbox` keeps the OPAQUE compound keyset token
+ * (`"<ms>_<roomId>"`) — the inbox orders by `lastMessageAt` and has no sequence.
+ *
+ * `GET /api/v2/chat/{private,group,community}/rooms/:roomId/messages` pages on
+ * `sequenceNumber` ONLY. These tests pin that the timestamp params are rejected
+ * rather than silently ignored, and that all three surfaces share one schema.
+ * No DB — services mocked. V1 behavior is asserted unchanged alongside.
  */
 import { buildRoomKeysetWhere } from "../../src/lib/pagination.js";
 import { InboxController } from "../../src/api/controllers/inbox.controller.js";
 import { PrivateMessageController } from "../../src/api/controllers/private-message.controller.js";
+import {
+  timelineV2QuerySchema,
+  privateTimelineV2QuerySchema,
+  groupTimelineV2QuerySchema,
+  communityTimelineV2QuerySchema,
+} from "../../src/api/validators/query.validator.js";
 
 type Res = { status: jest.Mock; json: jest.Mock };
 
@@ -225,55 +232,26 @@ function makePrivateController() {
 }
 
 describe("PrivateMessageController.getMessagesV2", () => {
-  it("no params → newest page, inclusive (same as V1)", async () => {
+  it("no params → newest page (seq = null), never the timestamp keyset", async () => {
     const { controller, messageService } = makePrivateController();
     await invoke(controller.getMessagesV2, { limit: "30" });
-    expect(messageService.getMessagesTimeline).toHaveBeenCalledWith(
-      expect.objectContaining({
-        roomId: "prv_room1",
-        userId: "user-1",
-        direction: "before",
-        boundaryId: null,
-        inclusive: true,
-        limit: 30,
-      })
-    );
-  });
-
-  it("before_cursor carries the compound keyset; continuation is exclusive", async () => {
-    const { controller, messageService } = makePrivateController();
-    await invoke(controller.getMessagesV2, {
-      before_cursor: "1784031657087_6a5629a90c4f76f4a84fc199",
-    });
-    const arg = messageService.getMessagesTimeline.mock.calls[0]![0];
-    expect(arg.ts.getTime()).toBe(1784031657087);
-    expect(arg.boundaryId).toBe("6a5629a90c4f76f4a84fc199");
-    expect(arg.inclusive).toBe(false);
-    expect(arg.direction).toBe("before");
-  });
-
-  it("after_cursor pages forward", async () => {
-    const { controller, messageService } = makePrivateController();
-    await invoke(controller.getMessagesV2, {
-      after_cursor: "1784031657087_6a5629a90c4f76f4a84fc199",
-    });
-    expect(messageService.getMessagesTimeline.mock.calls[0]![0].direction).toBe(
-      "after"
-    );
-  });
-
-  it("V2 IGNORES before_ts — the timestamp params are gone from this surface", async () => {
-    const { controller, messageService } = makePrivateController();
-    await invoke(controller.getMessagesV2, { before_ts: "1784031657087" });
-    const arg = messageService.getMessagesTimeline.mock.calls[0]![0];
-    expect(arg.inclusive).toBe(true); // treated as "no cursor" → newest page
-    expect(arg.boundaryId).toBeNull();
-  });
-
-  it("seq + around paths are shared with V1, unchanged", async () => {
-    const { controller, messageService } = makePrivateController();
-    await invoke(controller.getMessagesV2, { before_seq: "100", limit: "30" });
+    expect(messageService.getMessagesTimeline).not.toHaveBeenCalled();
     expect(messageService.getMessagesSeq).toHaveBeenCalledWith({
+      roomId: "prv_room1",
+      userId: "user-1",
+      direction: "before",
+      seq: null,
+      limit: 30,
+    });
+  });
+
+  it("before_seq pages older, after_seq pages newer", async () => {
+    const older = makePrivateController();
+    await invoke(older.controller.getMessagesV2, {
+      before_seq: "100",
+      limit: "30",
+    });
+    expect(older.messageService.getMessagesSeq).toHaveBeenCalledWith({
       roomId: "prv_room1",
       userId: "user-1",
       direction: "before",
@@ -281,14 +259,49 @@ describe("PrivateMessageController.getMessagesV2", () => {
       limit: 30,
     });
 
-    const fresh = makePrivateController();
-    await invoke(fresh.controller.getMessagesV2, { around: "msg-9" });
-    expect(fresh.messageService.getMessagesAround).toHaveBeenCalledWith({
+    const newer = makePrivateController();
+    await invoke(newer.controller.getMessagesV2, {
+      after_seq: "100",
+      limit: "30",
+    });
+    expect(newer.messageService.getMessagesSeq).toHaveBeenCalledWith({
+      roomId: "prv_room1",
+      userId: "user-1",
+      direction: "after",
+      seq: 100,
+      limit: 30,
+    });
+  });
+
+  it("around anchors a jump window", async () => {
+    const { controller, messageService } = makePrivateController();
+    await invoke(controller.getMessagesV2, { around: "msg-9", limit: "30" });
+    expect(messageService.getMessagesAround).toHaveBeenCalledWith({
       roomId: "prv_room1",
       userId: "user-1",
       messageId: "msg-9",
       limit: 30,
     });
+  });
+
+  it("the V2 schema REJECTS every retired pagination param", () => {
+    for (const q of [
+      { before_ts: "1784031657087" },
+      { after_ts: "1784031657087" },
+      { before_cursor: "1784031657087_6a5629a90c4f76f4a84fc199" },
+      { after_cursor: "1784031657087_6a5629a90c4f76f4a84fc199" },
+      { cursor: "1784031657087" },
+    ]) {
+      // Silently STRIPPING these is what returned the newest page forever
+      // instead of the requested one — a 200-status infinite pagination loop.
+      expect(timelineV2QuerySchema.safeParse(q).success).toBe(false);
+    }
+  });
+
+  it("the V2 schema is identical for private, group and community", () => {
+    expect(privateTimelineV2QuerySchema).toBe(timelineV2QuerySchema);
+    expect(groupTimelineV2QuerySchema).toBe(timelineV2QuerySchema);
+    expect(communityTimelineV2QuerySchema).toBe(timelineV2QuerySchema);
   });
 
   it("V1 getMessages still reads before_ts (frozen)", async () => {

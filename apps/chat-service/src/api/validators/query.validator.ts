@@ -2,6 +2,9 @@ import { z } from "zod";
 
 /** Shared query-param schemas for message list + search endpoints. */
 
+/** One page size for every V2 timeline — private, group and community alike. */
+export const V2_TIMELINE_LIMIT = 40;
+
 export const messageListQuerySchema = z.object({
   cursor: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -57,49 +60,48 @@ export const messageTimelineQuerySchema = z
   });
 
 /**
- * V2 query schema for the private message timeline
- * (`GET /api/v2/chat/private/rooms/:roomId/messages`).
+ * THE V2 message-timeline query contract — identical for private, group AND
+ * community, so one client paging path covers all three.
  *
- * Same Cursor V2 contract as {@link communityTimelineV2QuerySchema}: the opaque
- * compound `(createdAt, id)` keyset token is the PRIMARY axis, only the param
- * names change from V1's `before_ts`/`after_ts` to `before_cursor`/`after_cursor`
- * so V2 carries no timestamp-shaped params at all. Treat the token as OPAQUE —
- * echo `pagination.nextCursor` back verbatim (a bare epoch-ms is still accepted
- * for a coarse first jump, exactly as in community V2).
+ * `sequenceNumber` is the only pagination axis. It is a server-assigned monotonic
+ * counter, so it matches display order by definition. `(createdAt, id)` does NOT:
+ * this server has verified timestamp inversions, and an exclusive timestamp cursor
+ * steps over the inverted rows and drops them with no error and no gap marker.
  *
- * - `before_cursor`: older page (scroll-up), newest-first.
- * - `after_cursor` : newer page, oldest-first.
- * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset (unchanged
- *   from V1 — private messages already carry a real per-room sequence).
- * - `around`: jump-to-message window anchored on a messageId.
+ * - `before_seq`: older page — `sequenceNumber < seq`.
+ * - `after_seq` : newer page — `sequenceNumber > seq`.
+ * - `around`    : jump-to-message window centered on a messageId.
+ * - omit all    : newest page.
  *
- * Omit everything for the newest page.
+ * `.strict()` is load-bearing. Zod silently STRIPS unknown keys by default, so a
+ * client sending a retired param (`cursor`, `before_ts`, `after_cursor`) got the
+ * NEWEST page back instead of the page it asked for — an infinite pagination loop
+ * with a 200 status. Rejecting the request makes that a loud 400 instead.
  */
-export const privateTimelineV2QuerySchema = z
+export const timelineV2QuerySchema = z
   .object({
-    before_cursor: compoundTsCursor.optional(),
-    after_cursor: compoundTsCursor.optional(),
     before_seq: z.coerce.number().int().min(0).optional(),
     after_seq: z.coerce.number().int().min(0).optional(),
+    // Fallback axis for rooms whose history predates sequence allocation
+    // (`sequenceNumber === 0`). Opaque `<ms>_<id>` — echo it back, never parse.
+    // Seq wins whenever the client sends both.
+    before_cursor: compoundTsCursor.optional(),
+    after_cursor: compoundTsCursor.optional(),
     around: z.string().min(1).max(100).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(30),
+    limit: z.coerce.number().int().min(1).max(100).default(V2_TIMELINE_LIMIT),
+  })
+  .strict()
+  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
+    message: "Provide either before_seq or after_seq, not both",
+    path: ["before_seq"],
   })
   .refine((q) => !(q.before_cursor != null && q.after_cursor != null), {
     message: "Provide either before_cursor or after_cursor, not both",
     path: ["before_cursor"],
-  })
-  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
-    message: "Provide either before_seq or after_seq, not both",
-    path: ["before_seq"],
   });
 
-/**
- * V2 query schema for the GROUP message timeline
- * (`GET /api/v2/chat/group/rooms/:roomId/messages`). Byte-identical contract to
- * {@link privateTimelineV2QuerySchema} — group and private share one client
- * paging path, so they must not drift.
- */
-export const groupTimelineV2QuerySchema = privateTimelineV2QuerySchema;
+export const privateTimelineV2QuerySchema = timelineV2QuerySchema;
+export const groupTimelineV2QuerySchema = timelineV2QuerySchema;
 
 /**
  * Query schema for the private + group ZERO-LOSS changes feeds
@@ -184,44 +186,8 @@ export const communityTimelineQuerySchema = z
   });
 
 /**
- * V2 query schema for the community message timeline
- * (`GET /api/v2/chat/community/rooms/:roomId/messages`).
- *
- * PRIMARY axis = an OPAQUE `cursor` on the gap-safe compound `(createdAt, id)`
- * keyset (the same keyset V1 computes). The client treats `cursor` as opaque:
- * omit it for the newest page, then echo `pagination.nextCursor` (a
- * `"<ms>_<id>"` token) back verbatim to page OLDER. This works on ALL existing
- * data with no backfill and always returns a real token (never `"0"`).
- *
- * - `cursor`     : older page — messages strictly older than the token, newest-first.
- * - `before_ts`  : migration alias for `cursor` (accepts the same compound token).
- * - `after_ts`   : newer placement page (forward paging).
- * - `around`     : timestamp-anchored jump window (returns cursors for `before_ts`/`after_ts`).
- * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset. Ignored
- *   until a seq backfill has run (`sequenceNumber > 0`); clients should prefer
- *   the opaque `cursor` unless they know the room is backfilled.
- *
- * Omit everything for the newest page.
- */
-export const communityTimelineV2QuerySchema = z
-  .object({
-    cursor: compoundTsCursor.optional(),
-    // Canonical V2 names — identical contract to private/group, so ONE client paging path
-    // covers all three. `before_ts`/`after_ts` below are DEPRECATED aliases kept only so
-    // already-shipped iOS/web builds keep working; new clients must send *_cursor.
-    before_cursor: compoundTsCursor.optional(),
-    after_cursor: compoundTsCursor.optional(),
-    before_ts: compoundTsCursor.optional(),
-    after_ts: compoundTsCursor.optional(),
-    before_seq: z.coerce.number().int().min(0).optional(),
-    after_seq: z.coerce.number().int().min(0).optional(),
-    around: z.string().min(1).max(100).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(40),
-  })
-  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
-    message: "Provide either before_seq or after_seq, not both",
-    path: ["before_seq"],
-  });
+/** Community V2 timeline — the same contract as private/group. */
+export const communityTimelineV2QuerySchema = timelineV2QuerySchema;
 
 /**
  * Query schema for the ZERO-LOSS changes feed

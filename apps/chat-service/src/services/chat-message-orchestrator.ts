@@ -224,7 +224,8 @@ export interface ReactDirectParams {
   userId: string;
   emoji: string;
   /** add = toggle the reaction ON if absent; remove = toggle it OFF if present. */
-  op: "add" | "remove";
+  /** `set` = caller ends up holding exactly this emoji (community REST semantics). */
+  op: "add" | "remove" | "set";
 }
 
 export interface ReactDirectResult {
@@ -360,6 +361,7 @@ export class ChatMessageOrchestrator {
       clientTs,
       serverTs,
       sequenceNumber: msg.sequenceNumber,
+      revision: (msg as unknown as { revision?: number }).revision ?? 0,
       countInUnread: (msg as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -394,6 +396,7 @@ export class ChatMessageOrchestrator {
           clientTs,
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
+          revision: (row as unknown as { revision?: number }).revision ?? 0,
           countInUnread: (row as unknown as { countInUnread?: boolean | null })
             .countInUnread,
         });
@@ -1385,9 +1388,13 @@ export class ChatMessageOrchestrator {
       ) ||
         false);
 
-    // 2. Decide whether the op would actually change state.
+    // 2. Decide whether the op would actually change state. "set" always writes:
+    //    it must also clear whatever OTHER emoji the caller currently holds, which
+    //    the `already` probe (single-emoji) cannot rule out.
     const shouldToggle =
-      (params.op === "add" && !already) || (params.op === "remove" && already);
+      params.op === "set" ||
+      (params.op === "add" && !already) ||
+      (params.op === "remove" && already);
 
     // 3a. NO-OP (duplicate add / absent remove): return the already-read state,
     //     avatars resolved for the response — but DO NOT re-read or publish.
@@ -1397,8 +1404,13 @@ export class ChatMessageOrchestrator {
 
     // 3b. State-changing op: CAS-toggle (see PrivateMessageService.reactCas /
     //     GroupMessageService.reactCas), re-read, then broadcast message:reaction
-    //     exactly like the gRPC sendReaction handler.
-    const toggled = await service.reactToMessage({
+    //     exactly like the gRPC sendReaction handler. "set" lands the caller on
+    //     exactly this emoji in ONE write, so no intermediate empty set is observed.
+    const write =
+      params.op === "set"
+        ? service.setReactionDetailed.bind(service)
+        : service.reactToMessage.bind(service);
+    const toggled = await write({
       messageId: params.messageId,
       userId: params.userId,
       emoji: params.emoji,
