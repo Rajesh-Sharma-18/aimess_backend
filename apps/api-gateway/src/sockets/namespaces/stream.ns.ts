@@ -372,6 +372,31 @@ export function registerStreamNamespace(
               }
             })();
           }
+          // If this is an ENDED transition, also send stream:status directly to
+          // the creator's socket across the whole namespace — they may have already
+          // left the stream room (e.g. kicked out by a prior stream:banned event
+          // during a community ban) and would otherwise miss this event, leaving
+          // their broadcast running with no signal to stop.
+          if (d.status === "ENDED" && d.creatorId) {
+            void (async () => {
+              try {
+                const sockets = await streamNs.fetchSockets();
+                for (const s of sockets) {
+                  if (s.data.userId !== d.creatorId) continue;
+                  if (s.rooms.has(channel)) continue; // already got it via room broadcast
+                  s.emit("stream:status", {
+                    streamId: d.streamId,
+                    status: "ENDED",
+                    communityId: d.communityId,
+                  });
+                }
+              } catch (err) {
+                logger.warn(
+                  `/stream broadcast:ended targeted emit error on ${channel}: ${String(err)}`
+                );
+              }
+            })();
+          }
           return;
         }
         streamNs.to(channel).emit(parsed.event, parsed.data);

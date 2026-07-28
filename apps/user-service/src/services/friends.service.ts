@@ -4,6 +4,7 @@ import {
   friendsRepository,
   type FriendProfileRow,
 } from "../repositories/friends.repository.js";
+import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import type {
   FriendListItem,
   FriendsListResult,
@@ -19,7 +20,8 @@ function sectionFor(firstName: string): string {
 }
 
 async function toFriendListItem(
-  row: FriendProfileRow
+  row: FriendProfileRow,
+  callAllowedSet: Set<string>
 ): Promise<FriendListItem> {
   const avatarView = await avatarService.resolveViewUrlForClient(row.avatarUrl);
 
@@ -38,6 +40,7 @@ async function toFriendListItem(
     avatarUrl: avatarView?.url ?? null,
     avatar,
     section: sectionFor(row.firstName),
+    isCallAllowed: callAllowedSet.has(row.userId),
   };
 }
 
@@ -53,18 +56,24 @@ export const friendsService = {
       return { friends: [], nextCursor: null, totalCount: 0 };
     }
 
-    const rows = await friendsRepository.listFriendProfiles({
-      friendIds,
-      search: params.search,
-      limit: params.limit,
-      cursor: params.cursor,
-    });
+    const [rows, allowedIds] = await Promise.all([
+      friendsRepository.listFriendProfiles({
+        friendIds,
+        search: params.search,
+        limit: params.limit,
+        cursor: params.cursor,
+      }),
+      userSettingsRepository.findCallAllowedIds(me),
+    ]);
 
+    const callAllowedSet = new Set(allowedIds);
     const hasMore = rows.length > params.limit;
     const page = hasMore ? rows.slice(0, params.limit) : rows;
     const nextCursor = hasMore ? (page[page.length - 1]?.userId ?? null) : null;
 
-    const friends = await Promise.all(page.map(toFriendListItem));
+    const friends = await Promise.all(
+      page.map((row) => toFriendListItem(row, callAllowedSet))
+    );
 
     return { friends, nextCursor, totalCount: friendIds.length };
   },

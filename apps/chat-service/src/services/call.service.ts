@@ -726,17 +726,74 @@ export class CallService {
   }
 
   /**
-   * Reconcile a Call from a LiveKit `room_finished` webhook. The webhook is
-   * our authoritative "the media session actually ended" signal — protects
-   * against clients that crash/lose network without sending `call:end`.
+   * Reconcile a Call from a LiveKit `room_finished` OR `participant_left` webhook
+   * — the authoritative "the media session for this call is gone" signal. Guards
+   * against clients that crash / lose network without sending `call:end` or
+   * `call:decline`. `participant_left` is what catches the 1:1 case where one peer
+   * drops but the other stays connected: the room never empties, so `room_finished`
+   * never fires, and the row would otherwise sit IN_PROGRESS keeping BOTH users
+   * "busy" until the max-duration sweep. LiveKit fires `participant_left` only after
+   * its own reconnection grace, so a transient blip does not reach here.
    *
-   * Idempotent: only IN_PROGRESS calls transition. RINGING at this point is
-   * unusual (LiveKit never fires room_started for empty rooms), but if it
-   * happens we leave it alone and let the timeout sweep flip it to MISSED.
+   * Idempotent via `claimStatusTransition` (first writer wins, only it publishes):
+   *  - IN_PROGRESS → ENDED, publish `call:ended` to `call:<id>` + chat audit.
+   *  - RINGING → cancel (caller abandoned before answer): ENDED + `call:cancelled`
+   *    to the callee's `self:` channel + push dismiss, mirroring `endCall`'s
+   *    pre-answer branch so the ring stops now instead of at the 60s missed sweep.
+   *    (During RINGING only the caller is in the LiveKit room, so a leave here can
+   *    only be the caller giving up.)
+   *  - anything terminal → no-op.
    */
   async reconcileFromLiveKitRoomFinished(callId: string): Promise<void> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return; // room name wasn't a callId — ignore
+
+    if (call.status === CallStatus.RINGING) {
+      const endedAt = new Date();
+      const { won } = await this.callRepo.claimStatusTransition(
+        callId,
+        CallStatus.RINGING,
+        { status: CallStatus.ENDED, endedAt, endedBy: "SYSTEM_LIVEKIT" }
+      );
+      if (!won) return;
+
+      // Publish to BOTH rooms — mirrors sweepMissedCalls. Unlike endCall's
+      // RINGING branch (where the CALLER initiated the end and already cleared
+      // their own session), this is a server-triggered end: the caller has NOT
+      // done any local teardown, so they must be told too — otherwise their FE
+      // sits with a ghost outgoing ring if their own `RoomEvent.Disconnected`
+      // didn't fire (rare network split where LiveKit sees them leave but the
+      // /chat socket survives). Callee gets it on `self:<id>` (they never joined
+      // `call:<id>` — pre-answer); caller gets it on `call:<id>` (joined at ack).
+      const cancelPayload = JSON.stringify({
+        event: "call:cancelled",
+        data: { callId },
+      });
+      await Promise.all([
+        this.redis
+          .publish(`self:${call.calleeId}`, cancelPayload)
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|reconcile|cancel publish (callee) failed: ${String(err)}`
+            )
+          ),
+        this.redis
+          .publish(`call:${callId}`, cancelPayload)
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|reconcile|cancel publish (call room) failed: ${String(err)}`
+            )
+          ),
+      ]);
+
+      publishCallCancelSafe({
+        calleeId: call.calleeId,
+        callId,
+        reason: "cancelled",
+      });
+      return;
+    }
+
     if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
 
     const endedAt = new Date();
