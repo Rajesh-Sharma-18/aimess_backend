@@ -12,6 +12,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -134,13 +135,13 @@ export class PrivateMessageController {
     const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
     const around = req.query.around as string | undefined;
 
-    const send = (paginated: { data: unknown[] }) =>
+    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
       res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
-            paginated.data.length
+            payload,
+            payload.items.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
           )
@@ -154,21 +155,19 @@ export class PrivateMessageController {
           messageId: around,
           limit,
         });
-      const [enriched, totalCount, pinnedMessage] = await Promise.all([
+      const [enriched, pinnedMessage] = await Promise.all([
         this.messageService.enrichMessages(items, userId),
-        this.messageService.countMessages(roomId),
         this.pinService.getActivePinSummary(roomId, userId),
       ]);
-      const aroundPayload = {
-        ...buildAroundResponse(enriched, totalCount, limit, {
+      send({
+        ...buildTimelinePageV2(enriched, limit, {
           hasMoreOlder,
           hasMoreNewer,
           olderCursor,
           newerCursor,
         }),
         pinnedMessage,
-      };
-      send(aroundPayload);
+      });
       return;
     }
 
@@ -176,49 +175,23 @@ export class PrivateMessageController {
       req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
     const afterSeq =
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
-    const beforeCursor = parseTsCursor(req.query.before_cursor);
-    const afterCursor = parseTsCursor(req.query.after_cursor);
-    const cursor = afterCursor ?? beforeCursor;
 
-    // Seq is the primary axis; the opaque cursor is the fallback for rooms whose
-    // history predates sequence allocation (every row `sequenceNumber === 0`).
-    const [result, totalCount] = await Promise.all([
-      beforeSeq != null || afterSeq != null || cursor == null
-        ? this.messageService.getMessagesSeq({
-            roomId,
-            userId,
-            direction: afterSeq != null ? "after" : "before",
-            seq: afterSeq ?? beforeSeq ?? null,
-            limit,
-          })
-        : this.messageService.getMessagesTimeline({
-            roomId,
-            userId,
-            direction: afterCursor != null ? "after" : "before",
-            ts: new Date(cursor.ms),
-            boundaryId: cursor.id,
-            inclusive: false,
-            limit,
-          }),
-      this.messageService.countMessages(roomId),
-    ]);
+    const result = await this.messageService.getMessagesSeq({
+      roomId,
+      userId,
+      direction: afterSeq != null ? "after" : "before",
+      seq: afterSeq ?? beforeSeq ?? null,
+      limit,
+    });
     const [enriched, pinnedMessage] = await Promise.all([
       this.messageService.enrichMessages(result.items, userId),
       this.pinService.getActivePinSummary(roomId, userId),
     ]);
-    const paginated = {
-      ...buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      ),
-      ...result.cursors,
+    send({
+      ...buildTimelinePageV2(enriched, limit, result.cursors),
       roomRevision: result.roomRevision,
       pinnedMessage,
-    };
-    send(paginated);
+    });
   }
 
   /**
@@ -244,11 +217,11 @@ export class PrivateMessageController {
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
+          items: result.items,
           roomRevision: result.roomRevision,
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
-          data: result.items,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)

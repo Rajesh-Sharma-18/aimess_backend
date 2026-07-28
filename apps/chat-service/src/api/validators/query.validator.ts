@@ -82,11 +82,6 @@ export const timelineV2QuerySchema = z
   .object({
     before_seq: z.coerce.number().int().min(0).optional(),
     after_seq: z.coerce.number().int().min(0).optional(),
-    // Fallback axis for rooms whose history predates sequence allocation
-    // (`sequenceNumber === 0`). Opaque `<ms>_<id>` — echo it back, never parse.
-    // Seq wins whenever the client sends both.
-    before_cursor: compoundTsCursor.optional(),
-    after_cursor: compoundTsCursor.optional(),
     around: z.string().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(V2_TIMELINE_LIMIT),
   })
@@ -94,10 +89,6 @@ export const timelineV2QuerySchema = z
   .refine((q) => !(q.before_seq != null && q.after_seq != null), {
     message: "Provide either before_seq or after_seq, not both",
     path: ["before_seq"],
-  })
-  .refine((q) => !(q.before_cursor != null && q.after_cursor != null), {
-    message: "Provide either before_cursor or after_cursor, not both",
-    path: ["before_cursor"],
   });
 
 export const privateTimelineV2QuerySchema = timelineV2QuerySchema;
