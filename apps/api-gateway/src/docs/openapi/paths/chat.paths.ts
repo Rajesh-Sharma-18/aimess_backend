@@ -1221,11 +1221,37 @@ const notifications = {
     operationId: "listNotifications",
     summary: "List notifications",
     description:
-      "Fetch the user's in-app notification inbox. Real-time updates arrive via Socket.IO /notify namespace; use this endpoint for initial load and pagination.",
+      "Fetch the user's in-app Notification Center inbox (paginated, tab-filterable) " +
+      "plus per-tab unread counts. Real-time updates arrive via the Socket.IO /notify " +
+      "namespace (notification:new, notification:count_update, notification:deleted); " +
+      "use this endpoint for initial load and pagination. Pagination is a hybrid: " +
+      "`cursor` (createdAt-based, opaque) drives the actual query, while " +
+      "`pagination.currentPage`/`totalPage` are cosmetic — pass `page` back only if " +
+      "you need it echoed, it has no effect on which rows are returned.",
     security: [{ bearerAuth: [] }],
-    parameters: [cursorParam(), limitParam(20)],
+    parameters: [
+      cursorParam(
+        "Opaque cursor — pass back `nextCursor` from the previous response verbatim (ISO createdAt string). Omit for the first page."
+      ),
+      limitParam(20, 100),
+      {
+        name: "type",
+        in: "query" as const,
+        required: false,
+        schema: { $ref: "#/components/schemas/NotificationCategory" },
+        description: "Filter to one tab. Omit or ALL for the mixed feed.",
+      },
+      {
+        name: "page",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1, default: 1 },
+        description:
+          "Echoed back as pagination.currentPage. Does not affect which rows are returned — use `cursor` for actual paging.",
+      },
+    ],
     responses: {
-      ...successResponse("Notifications", "ChatNotificationList"),
+      ...successResponse("Notifications", "ChatNotificationListData"),
       "401": unauthorized,
     },
   },
@@ -1235,18 +1261,39 @@ const notificationRead = {
   post: {
     tags: ["Chat — Notifications"],
     operationId: "markNotificationRead",
-    summary: "Mark notification as read",
+    summary: "Mark notification(s) as read",
+    description:
+      "Accepts either a single `notificationId` or a `notificationIds` array (1-500) " +
+      "so one endpoint covers mark-one and mark-many. Scoped to the caller — a user " +
+      "cannot mark another user's notification read. Relays the refreshed unread " +
+      "count over Socket.IO (notification:read + legacy notification:count_update alias) " +
+      "to every connected device.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
       content: {
         "application/json": {
           schema: { $ref: "#/components/schemas/ChatMarkReadRequest" },
+          examples: {
+            single: {
+              summary: "Mark one notification read",
+              value: { notificationId: "683abc100def000000000099" },
+            },
+            bulk: {
+              summary: "Mark multiple notifications read",
+              value: {
+                notificationIds: [
+                  "683abc100def000000000099",
+                  "683abc100def0000000000a0",
+                ],
+              },
+            },
+          },
         },
       },
     },
     responses: {
-      ...successResponse("Marked as read"),
+      ...successResponse("Marked as read", "ChatMarkReadResponseData"),
       "400": badRequest,
       "401": unauthorized,
     },
@@ -1258,9 +1305,33 @@ const notificationReadAll = {
     tags: ["Chat — Notifications"],
     operationId: "markAllNotificationsRead",
     summary: "Mark all notifications as read",
+    description:
+      "Marks every unread notification read, or only those in one tab when `type` " +
+      "is given (also accepted as a `type` query param for backward compatibility). " +
+      "The returned `unreadCount` is always the total across ALL tabs, so a per-tab " +
+      "Read All correctly leaves other tabs' unreads counted. Relays " +
+      "notification:all-read over Socket.IO with the same authoritative total.",
     security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatMarkAllReadRequest" },
+        },
+      },
+    },
+    parameters: [
+      {
+        name: "type",
+        in: "query" as const,
+        required: false,
+        schema: { $ref: "#/components/schemas/NotificationCategory" },
+        description:
+          "Alternative to passing `type` in the body. Body takes precedence if both are present.",
+      },
+    ],
     responses: {
-      ...successResponse("All marked as read"),
+      ...successResponse("All marked as read", "ChatMarkAllReadResponseData"),
       "401": unauthorized,
     },
   },
@@ -1271,6 +1342,8 @@ const notificationUnreadCount = {
     tags: ["Chat — Notifications"],
     operationId: "getUnreadNotificationCount",
     summary: "Get unread notification count",
+    description:
+      "Total unread count across all tabs (badge count). For per-tab counts use the `counts` block on GET /chat/notifications.",
     security: [{ bearerAuth: [] }],
     responses: {
       ...successResponse("Unread count", "ChatUnreadCountData"),

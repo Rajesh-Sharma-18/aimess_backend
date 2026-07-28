@@ -2620,7 +2620,25 @@ export class CommunityMessageService {
         );
       });
 
-    // Sync to reader's own other devices.
+    // Sync to reader's own other devices. `readerId` + `unreadCount` are what let a SECOND device
+    // actually clear its badge — without them the receiver knows a read happened but not whose or
+    // what the new count is, so the badge never cleared. Private/group have carried both since
+    // day one (see ChatMessageOrchestrator.markRead); community silently omitted them.
+    // try/catch, not .catch() — marking read must never fail because the badge count did, and a
+    // rejected promise is only half the risk (an absent repo method throws synchronously).
+    let unreadAfterRead = 0;
+    try {
+      const counts = await this.messageRepo.countUnreadBulk({
+        userId: params.readerId,
+        thresholds: [{ roomId: params.communityId, afterDate: now }],
+      });
+      unreadAfterRead = counts[params.communityId]?.count ?? 0;
+    } catch (err: unknown) {
+      logger.warn(
+        `CommunityMessageService|markMessageRead|countUnread failed: ${String(err)}`
+      );
+    }
+
     redis
       .publish(
         `user:${params.readerId}`,
@@ -2628,7 +2646,9 @@ export class CommunityMessageService {
           event: "community:read_sync",
           data: {
             communityId: params.communityId,
+            readerId: params.readerId,
             upToMessageId: params.upToMessageId,
+            unreadCount: unreadAfterRead,
             readAt,
           },
         })

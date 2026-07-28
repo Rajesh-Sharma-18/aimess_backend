@@ -84,6 +84,18 @@ export class NotificationController {
       );
   });
 
+  recordAction = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const { id } = req.params as { id: string };
+    const { action, body } = req.body as { action: string; body: string };
+    await this.service.recordAction(id, userId, body, action);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse({}, t("CHAT_NOTIFICATIONS_MARKED_READ", req.locale))
+      );
+  });
+
   getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const unreadCount = await this.service.getUnreadCount(userId);

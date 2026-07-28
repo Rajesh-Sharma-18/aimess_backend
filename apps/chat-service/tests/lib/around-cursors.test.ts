@@ -65,7 +65,7 @@ describe("computeDateAroundCursors (community)", () => {
     { createdAt: new Date(3000), id: "c" },
   ];
 
-  it("returns compound olderCursor + plain-ms newerCursor", async () => {
+  it("returns a compound cursor in BOTH directions", async () => {
     const seen: Array<[string, number, string]> = [];
     const probe = async (
       direction: "before" | "after",
@@ -79,8 +79,10 @@ describe("computeDateAroundCursors (community)", () => {
     expect(out).toEqual({
       hasMoreOlder: true,
       hasMoreNewer: false,
-      olderCursor: "1000_a", // "<ms>_<id>" → before_ts (compound accepted)
-      newerCursor: "3000", // plain epoch-ms → after_ts
+      olderCursor: "1000_a", // "<ms>_<id>" → before_cursor
+      // Compound too: a bare epoch-ms carries no tiebreaker, so forward paging
+      // silently dropped every message sharing the boundary millisecond.
+      newerCursor: "3000_c",
     });
     expect(seen).toEqual([
       ["before", 1000, "a"],

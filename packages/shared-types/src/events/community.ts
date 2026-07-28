@@ -195,7 +195,7 @@ export interface NotificationNavigation {
   communityHandle?: string | null;
   /** Chat room to open. Community rooms carry both this and communityId. */
   roomId?: string;
-  conversationType?: "PRIVATE" | "GROUP" | "COMMUNITY";
+  conversationType?: "PRIVATE" | "PRIVATE_PENDING" | "GROUP" | "COMMUNITY";
   /** Open the chat scrolled to this message (mentions, replies, reports). */
   messageId?: string;
   /** Subject user — profile targets, moderation targets, friend events. */

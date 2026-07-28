@@ -55,6 +55,13 @@ export const friendCopy = {
     title: person(addresseeName),
     body: "Declined your friend request",
   }),
+  // Used to update the ADDRESSEE's own friend.requested row in-place on reject.
+  // Title is intentionally empty — the gRPC handler preserves the existing title
+  // (the requester's name) from the stored notification row.
+  rejectedSelf: (): NotificationCopy => ({
+    title: "",
+    body: "I have declined the friend request.",
+  }),
   cancelled: (requesterName?: string): NotificationCopy => ({
     title: person(requesterName),
     body: "Cancelled their friend request",

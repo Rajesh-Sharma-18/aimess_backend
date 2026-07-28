@@ -374,12 +374,12 @@ describe("Rejoin after unban — respects existing join rules, never auto-restor
 
     expect(result.status).toBe("JOINED");
     // Reactivation is a real membership write triggered by the user's own join
-    // call — never an implicit side effect of unbanMember itself.
+    // call — never an implicit side effect of unbanMember itself. It always
+    // resets to MEMBER regardless of the pre-ban rank on the stale row.
     expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
       CID,
       TARGET,
-      expect.anything(),
-      leftAfterUnban.role
+      expect.anything()
     );
   });
 
@@ -448,8 +448,7 @@ describe("Full ban/unban cycle never restores a previous MODERATOR/ADMIN role (r
     expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
       CID,
       TARGET,
-      expect.anything(),
-      "MEMBER"
+      expect.anything()
     );
   });
 
@@ -477,8 +476,7 @@ describe("Full ban/unban cycle never restores a previous MODERATOR/ADMIN role (r
     expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
       CID,
       TARGET,
-      expect.anything(),
-      "MEMBER"
+      expect.anything()
     );
   });
 });

@@ -48,6 +48,7 @@ jest.mock("../../src/lib/friend-socket.js", () => ({
 }));
 
 import request from "supertest";
+import { ConversationSocketEvents } from "@aimess/shared-types";
 
 import { app } from "../../src/app.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
@@ -57,6 +58,8 @@ import {
   publishFriendAcceptedSafe,
   publishFriendUnfriendedSafe,
 } from "../../src/messaging/publish-friendship.js";
+import { emitFriendEventSafe } from "../../src/lib/friend-socket.js";
+import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
 import {
   TEST_USER_ID,
   bearer,
@@ -69,6 +72,15 @@ const pRepo = userProfileRepository as unknown as { findByUserId: jest.Mock };
 const requested = publishFriendRequestedSafe as unknown as jest.Mock;
 const accepted = publishFriendAcceptedSafe as unknown as jest.Mock;
 const unfriended = publishFriendUnfriendedSafe as unknown as jest.Mock;
+const emitSafe = emitFriendEventSafe as unknown as jest.Mock;
+const grpc = messagingGrpcClient as unknown as {
+  getOrCreatePrivateRooms: jest.Mock;
+};
+
+/** Find every emitFriendEventSafe(...) call for a given conversation:* event name. */
+function conversationEmits(event: string) {
+  return emitSafe.mock.calls.filter(([, e]) => e === event);
+}
 
 const ME = TEST_USER_ID;
 const OTHER = "33333333-3333-4333-8333-333333333333";
@@ -130,6 +142,27 @@ describe("POST /api/v1/users/friends/requests", () => {
     expect(requested).toHaveBeenCalledWith(
       expect.objectContaining({ requesterName: "John Doe" })
     );
+
+    // Pending-conversation row: delivered ONLY to the addressee, carrying a
+    // full synthetic PRIVATE_PENDING conversation the FE can render with no
+    // follow-up fetch.
+    const pendingEmits = conversationEmits(
+      ConversationSocketEvents.PENDING_FRIEND_REQUEST
+    );
+    expect(pendingEmits).toHaveLength(1);
+    const [targetUserId, , payload] = pendingEmits[0];
+    expect(targetUserId).toBe(OTHER);
+    expect(payload).toMatchObject({
+      conversation: {
+        id: `pending:${FRIENDSHIP_ID}`,
+        type: "PRIVATE_PENDING",
+        pendingRequest: true,
+        friendRequestId: FRIENDSHIP_ID,
+        requester: { id: ME, displayName: "John Doe", username: "u_1111" },
+        lastActivity: { type: "FRIEND_REQUEST", text: "Friend Request" },
+      },
+      friendRequest: { id: FRIENDSHIP_ID, status: "PENDING" },
+    });
   });
 
   it("auto-accepts a mutual pending request (they already requested me)", async () => {
@@ -153,6 +186,13 @@ describe("POST /api/v1/users/friends/requests", () => {
     expect(res.status).toBe(201);
     expect(res.body.data.status).toBe("ACCEPTED");
     expect(accepted).toHaveBeenCalledTimes(1);
+
+    // Mutual auto-accept must eagerly create the room (not lazily on first
+    // open) and tell both sides' other devices to drop the pending row.
+    expect(grpc.getOrCreatePrivateRooms).toHaveBeenCalledWith(OTHER, [ME]);
+    expect(
+      conversationEmits(ConversationSocketEvents.FRIEND_REQUEST_ACCEPTED)
+    ).toHaveLength(2);
   });
 
   it("returns 400 when adding yourself", async () => {
@@ -274,6 +314,9 @@ describe("POST /api/v1/users/friends/requests/:id/accept", () => {
       { userId: OTHER, username: "alex", firstName: "Alex", lastName: "Doe" },
       { userId: ME, username: "john", firstName: "John", lastName: "Doe" },
     ]);
+    grpc.getOrCreatePrivateRooms.mockResolvedValueOnce([
+      { peerUserId: ME, roomId: "prv_abc123" },
+    ]);
 
     const res = await request(app)
       .post(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}/accept`)
@@ -288,6 +331,18 @@ describe("POST /api/v1/users/friends/requests/:id/accept", () => {
         addresseeName: "John Doe",
       })
     );
+
+    // Eager room creation (so the pending row swaps for a real, composable
+    // conversation the instant Accept succeeds) + the accepted event reaching
+    // both parties, carrying the freshly created roomId.
+    expect(grpc.getOrCreatePrivateRooms).toHaveBeenCalledWith(OTHER, [ME]);
+    const acceptedEmits = conversationEmits(
+      ConversationSocketEvents.FRIEND_REQUEST_ACCEPTED
+    );
+    expect(acceptedEmits).toHaveLength(2);
+    for (const [, , payload] of acceptedEmits) {
+      expect(payload).toMatchObject({ roomId: "prv_abc123" });
+    }
   });
 
   it("returns 404 when the request is not addressed to me (IDOR guard)", async () => {
@@ -342,6 +397,16 @@ describe("POST /api/v1/users/friends/requests/:id/reject", () => {
 
     expect(res.status).toBe(200);
     expect(fRepo.reject).toHaveBeenCalledWith(FRIENDSHIP_ID);
+
+    const rejectedEmits = conversationEmits(
+      ConversationSocketEvents.FRIEND_REQUEST_REJECTED
+    );
+    expect(rejectedEmits).toHaveLength(2);
+    for (const [, , payload] of rejectedEmits) {
+      expect(payload).toMatchObject({
+        friendRequest: { id: FRIENDSHIP_ID, status: "REJECTED" },
+      });
+    }
   });
 
   it("returns 404 when I am the requester, not the addressee", async () => {

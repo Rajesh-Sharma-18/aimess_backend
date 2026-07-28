@@ -13,14 +13,17 @@
  */
 import { publishChatUserEvent } from "@aimess/redis";
 import { logger } from "@aimess/logger";
-import type { FriendSocketEventType } from "@aimess/shared-types";
+import type {
+  FriendSocketEventType,
+  ConversationSocketEventType,
+} from "@aimess/shared-types";
 
 import { redis } from "../config/redis.js";
 
-/** Publish one realtime friendship event to one user's devices. Never throws. */
+/** Publish one realtime friendship (or conversation) event to one user's devices. Never throws. */
 export function emitFriendEventSafe(
   userId: string,
-  event: FriendSocketEventType,
+  event: FriendSocketEventType | ConversationSocketEventType,
   data: unknown
 ): void {
   void publishChatUserEvent(redis, userId, event, data).catch((error) => {
@@ -33,7 +36,7 @@ export function emitFriendEventSafe(
 export function emitFriendEventToPairSafe(
   userAId: string,
   userBId: string,
-  event: FriendSocketEventType,
+  event: FriendSocketEventType | ConversationSocketEventType,
   dataFor: (targetUserId: string) => unknown
 ): void {
   emitFriendEventSafe(userAId, event, dataFor(userAId));

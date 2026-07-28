@@ -497,6 +497,9 @@ export interface ChatMessageEventInput {
   /** epoch ms server-authoritative time (== sentAt/createdAt) */
   serverTs: number;
   sequenceNumber: number;
+  /** Per-room CHANGE cursor. Required by `messages:catchup`'s `sinceRevision`, which had no way
+   *  to advance because live events never carried it — community emitted it from the start. */
+  revision?: number;
   /** Group lifecycle SYSTEM messages only (messageType=SYSTEM). */
   systemEvent?: string | null;
   systemData?: unknown;
@@ -583,6 +586,7 @@ export function buildChatMessageEvent(
     clientTs: input.clientTs ?? 0,
     serverTs: input.serverTs,
     sequenceNumber: input.sequenceNumber,
+    revision: input.revision ?? 0,
     countInUnread: input.countInUnread ?? true,
     // Group lifecycle system messages (messageType=SYSTEM) carry structured data.
     ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),

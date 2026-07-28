@@ -2,6 +2,8 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
+import { validateBody } from "../middleware/validate-body.js";
+import { reactionBodySchema } from "../validators/private-message.validator.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   privateTimelineV2QuerySchema,
@@ -9,6 +11,7 @@ import {
   chatChangesV2QuerySchema,
   inboxV2QuerySchema,
 } from "../validators/query.validator.js";
+import { deleteMessageQuerySchema } from "../validators/private-message.validator.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
 import type { GroupMessageController } from "../controllers/group-message.controller.js";
 import type { InboxController } from "../controllers/inbox.controller.js";
@@ -47,6 +50,13 @@ export function createPrivateV2Routes(
     messageCtrl.getChanges
   );
 
+  router.post(
+    "/messages/:messageId/react",
+    authenticate,
+    validateBody(reactionBodySchema),
+    messageCtrl.setReactionV2
+  );
+
   return router;
 }
 
@@ -67,6 +77,22 @@ export function createGroupV2Routes(
     authenticate,
     validateQuery(chatChangesV2QuerySchema),
     messageCtrl.getChanges
+  );
+
+  // Group delete in the private/community path shape. V1's
+  // `POST /chat/groups/messages/delete` (body-carried messageId+roomId) stays live.
+  router.delete(
+    "/messages/:messageId",
+    authenticate,
+    validateQuery(deleteMessageQuerySchema),
+    messageCtrl.deleteMessageV2
+  );
+
+  router.post(
+    "/messages/:messageId/react",
+    authenticate,
+    validateBody(reactionBodySchema),
+    messageCtrl.setReactionV2
   );
 
   return router;

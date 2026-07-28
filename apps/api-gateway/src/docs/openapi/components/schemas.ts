@@ -5507,6 +5507,10 @@ export const openApiSchemas = {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
       },
+      notificationsMuted: {
+        type: "boolean",
+        description: "Spec-aligned alias of `isMuted`.",
+      },
       muteUntil: {
         type: "string",
         format: "date-time",
@@ -5869,6 +5873,10 @@ export const openApiSchemas = {
       isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
+      },
+      notificationsMuted: {
+        type: "boolean",
+        description: "Spec-aligned alias of `isMuted`.",
       },
       muteUntil: {
         type: "string",
@@ -9019,88 +9027,247 @@ export const openApiSchemas = {
     },
     required: ["screen", "communityId", "communityName"],
   },
-  ChatNotification: {
+  NotificationType: {
+    type: "string",
+    description:
+      "Free-form event-type string from @aimess/shared-types (no DB enum). " +
+      "Tab bucketing is by prefix, not an allowlist: `friend.*` → FRIENDS, " +
+      "`community.*` (except `community.mention`) → COMMUNITIES, " +
+      "`chat.mention`/`community.mention` → MENTIONS, everything else " +
+      "(auth.*, admin.*, session.*, user.registered, ...) → SYSTEM. " +
+      "Only a subset of possible event types are actually written to the " +
+      "inbox today: friend.requested, friend.accepted, community.member_banned, " +
+      "CALL_MISSED (see notifications-service push allowlist) — the rest are " +
+      "push-only. MENTIONS has no producer yet; reserved for chat/community mentions.",
+    example: "friend.requested",
+  },
+  NotificationCategory: {
+    type: "string",
+    enum: ["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "SYSTEM"],
+    description:
+      "Notification Center tab. ALL means no filter (also the default).",
+  },
+  NotificationActorBlock: {
     type: "object",
     properties: {
       id: { type: "string" },
-      userId: { type: "string" },
-      actorId: { type: "string" },
-      type: {
-        type: "string",
-        description:
-          "Notification type. Known community values: community.join_requested, " +
-          "community.join_request_approved, community.join_request_rejected, " +
-          "community.member_added, community.invite_accepted.",
-      },
-      entity: { type: "object" },
-      actorSnapshot: {
+      displayName: { type: "string" },
+      avatar: {
         type: "object",
         nullable: true,
-        description:
-          "Actor details for notification UI. " +
-          "community.join_requested: { userId, displayName, avatarUrl }. " +
-          "approved/rejected: { userId, displayName }. Absent on other types.",
-        properties: {
-          userId: { type: "string" },
-          displayName: { type: "string" },
-          avatarUrl: { type: "string", nullable: true },
-        },
+        properties: { url: { type: "string" } },
+        required: ["url"],
       },
+    },
+    required: ["id", "displayName", "avatar"],
+  },
+  NotificationCommunityBlock: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      avatar: {
+        type: "object",
+        nullable: true,
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+    required: ["id", "name", "avatar"],
+  },
+  NotificationCounts: {
+    type: "object",
+    description:
+      "Per-tab totals, returned alongside every list response. Client must not recompute these.",
+    properties: {
+      all: { type: "integer", example: 12 },
+      friends: { type: "integer", example: 3 },
+      communities: { type: "integer", example: 6 },
+      mentions: { type: "integer", example: 0 },
+      system: { type: "integer", example: 3 },
+    },
+    required: ["all", "friends", "communities", "mentions", "system"],
+  },
+  ChatNotification: {
+    type: "object",
+    description:
+      "Notification Center row, as returned by GET /chat/notifications " +
+      "(serializeNotification DTO — not the raw Mongo row).",
+    properties: {
+      id: { type: "string" },
+      type: { $ref: "#/components/schemas/NotificationType" },
+      category: { $ref: "#/components/schemas/NotificationCategory" },
+      title: { type: "string" },
+      body: { type: "string" },
+      isRead: { type: "boolean" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       payload: {
         type: "object",
         description:
-          "Structured notification data. payload.data contains type-specific string fields. " +
-          "For community join-request types, payload.data.navigation is a JSON string — " +
-          "parse it to get a NotificationNavigation object.",
+          "Original stored payload, kept for backward compatibility with clients " +
+          "that dig into payload.data directly. Prefer the top-level title/body/" +
+          "actor/community/navigation fields instead.",
         properties: {
           title: { type: "string" },
           body: { type: "string" },
-          data: {
-            type: "object",
-            additionalProperties: { type: "string" },
-            description:
-              "String map of type-specific fields. Community join-request keys: " +
-              "communityId, communityName, communityHandle, communityAvatarUrl, " +
-              "requestId, requesterDisplayName, requesterAvatarUrl, " +
-              "decidedByDisplayName, status (APPROVED|REJECTED), " +
-              "navigation (JSON-stringified NotificationNavigation), actorSnapshot (JSON string).",
-          },
+          data: { type: "object", additionalProperties: { type: "string" } },
         },
+      },
+      actor: {
+        allOf: [{ $ref: "#/components/schemas/NotificationActorBlock" }],
+        description:
+          "Present when the notification has an actor (e.g. friend request). Avatar is freshly resolved at read time.",
+      },
+      community: {
+        allOf: [{ $ref: "#/components/schemas/NotificationCommunityBlock" }],
+        description: "Present for community.* notification types.",
       },
       navigation: {
         $ref: "#/components/schemas/NotificationNavigation",
         description:
-          "Parsed navigation object. Present in notifications:fetch socket ack and " +
-          "notification:new socket event. On REST GET /chat/notifications, parse from payload.data.navigation instead.",
+          "Parsed deep-link target. Present when payload.data.navigation was stored.",
       },
-      isRead: { type: "boolean" },
-      readAt: {
-        type: "integer",
-        format: "int64",
+      referenceId: {
+        type: "string",
+        description:
+          "Id of the underlying entity (e.g. friend request id, community id), from the stored `entity.id`.",
+      },
+      friendship: {
+        type: "object",
         nullable: true,
-        description: "Epoch ms.",
+        description:
+          "Viewer-relative friendship state, resolved at read time for friend.* notification types (drives Accept/Reject button state).",
       },
-      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
-    required: ["id", "userId", "actorId", "type", "isRead", "createdAt"],
+    required: [
+      "id",
+      "type",
+      "category",
+      "title",
+      "body",
+      "isRead",
+      "createdAt",
+    ],
   },
-  ChatNotificationList: {
-    type: "array",
-    items: { $ref: "#/components/schemas/ChatNotification" },
-  },
-  ChatMarkReadRequest: {
+  ChatNotificationListPagination: {
     type: "object",
     properties: {
-      notificationId: { type: "string", minLength: 5 },
+      totalData: {
+        type: "integer",
+        description: "Total rows for the current tab (category).",
+      },
+      totalPage: { type: "integer" },
+      currentPage: { type: "integer" },
+      limit: { type: "integer" },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "createdAt of the last row, ISO string. Pass back as `cursor` for the next page. Null when this is the last page.",
+      },
+      hasMore: { type: "boolean" },
     },
-    required: ["notificationId"],
+    required: [
+      "totalData",
+      "totalPage",
+      "currentPage",
+      "limit",
+      "nextCursor",
+      "hasMore",
+    ],
+  },
+  ChatNotificationListData: {
+    type: "object",
+    properties: {
+      pagination: {
+        $ref: "#/components/schemas/ChatNotificationListPagination",
+      },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatNotification" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Shortcut, same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Shortcut, same value as pagination.nextCursor.",
+      },
+      counts: { $ref: "#/components/schemas/NotificationCounts" },
+      type: { $ref: "#/components/schemas/NotificationCategory" },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor", "counts", "type"],
+  },
+  ChatMarkReadRequest: {
+    oneOf: [
+      {
+        type: "object",
+        properties: {
+          notificationId: { type: "string", minLength: 5, maxLength: 100 },
+        },
+        required: ["notificationId"],
+      },
+      {
+        type: "object",
+        properties: {
+          notificationIds: {
+            type: "array",
+            items: { type: "string", minLength: 5, maxLength: 100 },
+            minItems: 1,
+            maxItems: 500,
+          },
+        },
+        required: ["notificationIds"],
+      },
+    ],
+    description:
+      "Either a single notificationId or a notificationIds array (1-500 ids). Only rows owned by the caller are updated.",
+  },
+  ChatMarkReadResponseData: {
+    type: "object",
+    properties: {
+      updatedCount: { type: "integer", example: 1 },
+      unreadCount: {
+        type: "integer",
+        description:
+          "Authoritative post-op total unread count across all tabs.",
+        example: 4,
+      },
+    },
+    required: ["updatedCount", "unreadCount"],
+  },
+  ChatMarkAllReadRequest: {
+    type: "object",
+    properties: {
+      type: {
+        allOf: [{ $ref: "#/components/schemas/NotificationCategory" }],
+        description:
+          "Restrict to one tab. Omit or ALL marks every notification read (backward-compatible default).",
+      },
+    },
+  },
+  ChatMarkAllReadResponseData: {
+    type: "object",
+    properties: {
+      unreadCount: {
+        type: "integer",
+        description:
+          "Authoritative post-op total unread count across all tabs (not just the marked category).",
+        example: 0,
+      },
+      type: { $ref: "#/components/schemas/NotificationCategory" },
+    },
+    required: ["unreadCount", "type"],
   },
   ChatUnreadCountData: {
     type: "object",
     properties: {
-      count: { type: "integer", example: 5 },
+      unreadCount: { type: "integer", example: 5 },
     },
-    required: ["count"],
+    required: ["unreadCount"],
   },
 
   // --- Community rooms & messages ---

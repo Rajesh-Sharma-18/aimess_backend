@@ -1,4 +1,4 @@
-import { BadRequestError, NotFoundError } from "@aimess/errors";
+import { BadRequestError, NotFoundError, ConflictError } from "@aimess/errors";
 
 import type { UpdateSettingsInput } from "../api/validators/settings.validator.js";
 import { publishSettingsUpdatedSafe } from "../messaging/publish-settings-updated.js";
@@ -144,6 +144,34 @@ export const userSettingsService = {
   async getMySettings(userId: string): Promise<UserSettingsResponse> {
     const bundle = await loadSettingsBundle(userId);
     return mapSettingsBundle(bundle);
+  },
+
+  async listCallAllowedFriends(
+    userId: string,
+    params: { cursor?: string; limit: number }
+  ) {
+    await loadSettingsBundle(userId);
+    return userSettingsRepository.listCallAllowedFriends(userId, params);
+  },
+
+  async addCallAllowedFriend(userId: string, friendId: string): Promise<void> {
+    if (friendId === userId) {
+      throw new BadRequestError("USER_SETTINGS_INVALID_CALL_ALLOW_LIST");
+    }
+
+    const count = await userSettingsRepository.countCallAllowedFriends(userId);
+    if (count >= 500) {
+      throw new ConflictError("CALL_ALLOW_LIST_FULL");
+    }
+
+    await userSettingsRepository.addCallAllowedFriend(userId, friendId);
+  },
+
+  async removeCallAllowedFriend(
+    userId: string,
+    friendId: string
+  ): Promise<void> {
+    await userSettingsRepository.removeCallAllowedFriend(userId, friendId);
   },
 
   async updateMySettings(

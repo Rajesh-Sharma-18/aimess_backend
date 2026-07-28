@@ -59,14 +59,24 @@ export function createLiveKitWebhookRouter(
       const eventType = event.event ?? "";
       const roomName = event.room?.name ?? "";
 
-      // Only `room_finished` matters for Phase 3 correctness. All other events
-      // are dropped after a debug log — we can wire them later for analytics.
-      if (eventType === "room_finished" && roomName) {
+      // `room_finished` and `participant_left` both reconcile the Call for
+      // `roomName` (== callId) through the same idempotent handler.
+      // `room_finished` covers the room emptying; `participant_left` additionally
+      // covers the 1:1 case where one peer drops but the other stays connected —
+      // the room never empties, so `room_finished` never fires, and the row would
+      // otherwise sit IN_PROGRESS keeping BOTH users "busy" until the max-duration
+      // sweep. LiveKit fires `participant_left` only after its own reconnection
+      // grace, so a transient network blip does not trigger it. Other events are
+      // dropped after a debug log — wire them later for analytics.
+      if (
+        (eventType === "room_finished" || eventType === "participant_left") &&
+        roomName
+      ) {
         try {
           await messagingClient.handleLiveKitRoomFinished({ roomName });
         } catch (err) {
           logger.warn(
-            `livekit room_finished reconcile failed for room=${roomName}: ${String(err)}`
+            `livekit ${eventType} reconcile failed for room=${roomName}: ${String(err)}`
           );
           // Fall through to 200 — LiveKit shouldn't retry a business-logic miss.
         }

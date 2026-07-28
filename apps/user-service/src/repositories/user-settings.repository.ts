@@ -234,6 +234,81 @@ export const userSettingsRepository = {
     });
   },
 
+  findCallAllowedIds(ownerId: string): Promise<string[]> {
+    return prisma.callAllowedFriend
+      .findMany({ where: { ownerId }, select: { allowedUserId: true } })
+      .then((rows) => rows.map((r) => r.allowedUserId));
+  },
+
+  async listCallAllowedFriends(
+    ownerId: string,
+    params: { cursor?: string; limit: number }
+  ): Promise<{
+    profiles: {
+      userId: string;
+      username: string;
+      firstName: string;
+      lastName: string;
+      avatarUrl: string | null;
+    }[];
+    nextCursor: string | null;
+  }> {
+    const rows = await prisma.callAllowedFriend.findMany({
+      where: { ownerId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: params.limit + 1,
+      ...(params.cursor ? { skip: 1, cursor: { id: params.cursor } } : {}),
+      select: { id: true, allowedUserId: true },
+    });
+
+    const hasMore = rows.length > params.limit;
+    const page = hasMore ? rows.slice(0, params.limit) : rows;
+    const nextCursor = hasMore ? (page[page.length - 1]?.id ?? null) : null;
+
+    if (page.length === 0) return { profiles: [], nextCursor };
+
+    const profileList = await prisma.userProfile.findMany({
+      where: {
+        userId: { in: page.map((r) => r.allowedUserId) },
+        deletedAt: null,
+      },
+      select: {
+        userId: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        avatarUrl: true,
+      },
+    });
+    const profileMap = new Map(profileList.map((p) => [p.userId, p]));
+
+    const profiles = page
+      .map((r) => profileMap.get(r.allowedUserId))
+      .filter((p): p is NonNullable<typeof p> => p !== undefined);
+
+    return { profiles, nextCursor };
+  },
+
+  async addCallAllowedFriend(ownerId: string, friendId: string): Promise<void> {
+    await prisma.callAllowedFriend.createMany({
+      data: [{ ownerId, allowedUserId: friendId }],
+      skipDuplicates: true,
+    });
+  },
+
+  async removeCallAllowedFriend(
+    ownerId: string,
+    friendId: string
+  ): Promise<void> {
+    await prisma.callAllowedFriend.deleteMany({
+      where: { ownerId, allowedUserId: friendId },
+    });
+  },
+
+  countCallAllowedFriends(ownerId: string): Promise<number> {
+    return prisma.callAllowedFriend.count({ where: { ownerId } });
+  },
+
   updateSettings(
     userId: string,
     data: {

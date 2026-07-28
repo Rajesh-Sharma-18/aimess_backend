@@ -224,7 +224,8 @@ export interface ReactDirectParams {
   userId: string;
   emoji: string;
   /** add = toggle the reaction ON if absent; remove = toggle it OFF if present. */
-  op: "add" | "remove";
+  /** `set` = caller ends up holding exactly this emoji (community REST semantics). */
+  op: "add" | "remove" | "set";
 }
 
 export interface ReactDirectResult {
@@ -360,6 +361,7 @@ export class ChatMessageOrchestrator {
       clientTs,
       serverTs,
       sequenceNumber: msg.sequenceNumber,
+      revision: (msg as unknown as { revision?: number }).revision ?? 0,
       countInUnread: (msg as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -394,6 +396,7 @@ export class ChatMessageOrchestrator {
           clientTs,
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
+          revision: (row as unknown as { revision?: number }).revision ?? 0,
           countInUnread: (row as unknown as { countInUnread?: boolean | null })
             .countInUnread,
         });
@@ -1167,38 +1170,88 @@ export class ChatMessageOrchestrator {
     // Assigned in both branches below before it's read — no initializer needed.
     let readToSeq: number;
     let unreadCount = 0;
+    // The room's CURRENT last-message seq, and every OTHER active
+    // participant/member (the sender(s) whose OWN tick needs to flip to READ) —
+    // mirrors the gRPC `markMessagesRead` handler exactly, see its comments.
+    // Assigned in both branches below before read — no initializer needed.
+    let lastMessageSeq: number;
+    let otherUserIds: string[];
     if (conversationType === "GROUP") {
       ({ readToSeq } = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
         userId: params.readerId,
         upToMessageId: params.upToMessageId,
       }));
+      const [members, lastSeq] = await Promise.all([
+        this.groupMessageService
+          .getActiveMemberIds(params.roomId)
+          .catch(() => [] as string[]),
+        this.groupMessageService
+          .getRoomLastMessageSeq(params.roomId)
+          .catch(() => 0),
+      ]);
+      otherUserIds = members.filter((id) => id !== params.readerId);
+      lastMessageSeq = lastSeq;
     } else {
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
         userId: params.readerId,
         lastMessageId: params.upToMessageId,
-      })) as { unreadCountByUser?: Record<string, number> } | null;
+      })) as {
+        unreadCountByUser?: Record<string, number>;
+        participants?: string[];
+        lastMessageId?: string | null;
+      } | null;
       unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
+      otherUserIds = (room?.participants ?? []).filter(
+        (id) => id !== params.readerId
+      );
       readToSeq = await this.privateMessageService
         .getMessageSequence(params.upToMessageId)
         .catch(() => 0);
+      lastMessageSeq = room?.lastMessageId
+        ? await this.privateMessageService
+            .getMessageSequence(room.lastMessageId)
+            .catch(() => 0)
+        : 0;
     }
+
+    // Authoritative "this reader has now read the room's current newest
+    // message" — the single flag the sender's inbox row keys off, so it never
+    // has to id-match a stale cached boundary.
+    const readsLastMessage =
+      readToSeq > 0 && lastMessageSeq > 0 && readToSeq >= lastMessageSeq;
+
+    const readPayload = JSON.stringify({
+      event: "message:read",
+      data: {
+        conversationId: params.roomId,
+        readerId: params.readerId,
+        upToMessageId: params.upToMessageId,
+        read_to_seq: readToSeq,
+        last_message_seq: lastMessageSeq,
+        readsLastMessage,
+      },
+    });
 
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.
-    await this.redis.publish(
-      `conv:${params.roomId}`,
-      JSON.stringify({
-        event: "message:read",
-        data: {
-          conversationId: params.roomId,
-          readerId: params.readerId,
-          upToMessageId: params.upToMessageId,
-          read_to_seq: readToSeq,
-        },
-      })
-    );
+    await this.redis.publish(`conv:${params.roomId}`, readPayload);
+
+    // ALSO publish directly to every other participant/member's own
+    // `user:<id>` channel — the conversation-LIST view only joins `conv:*`
+    // rooms it's currently rendering, so without this direct delivery a
+    // sender's list row misses the READ tick whenever their sidebar socket
+    // wasn't (yet) joined to this specific room. Mirrors the gRPC handler.
+    for (const otherId of otherUserIds) {
+      void this.redis
+        .publish(`user:${otherId}`, readPayload)
+        .catch((e: unknown) =>
+          logger.warn(
+            `message:read direct publish failed userId=${otherId}: ${String(e)}`
+          )
+        );
+    }
 
     // read_sync to the reader's OWN other devices so their unread badge clears
     // too. Published to user:<readerId> (every device of that user joins this
@@ -1335,9 +1388,13 @@ export class ChatMessageOrchestrator {
       ) ||
         false);
 
-    // 2. Decide whether the op would actually change state.
+    // 2. Decide whether the op would actually change state. "set" always writes:
+    //    it must also clear whatever OTHER emoji the caller currently holds, which
+    //    the `already` probe (single-emoji) cannot rule out.
     const shouldToggle =
-      (params.op === "add" && !already) || (params.op === "remove" && already);
+      params.op === "set" ||
+      (params.op === "add" && !already) ||
+      (params.op === "remove" && already);
 
     // 3a. NO-OP (duplicate add / absent remove): return the already-read state,
     //     avatars resolved for the response — but DO NOT re-read or publish.
@@ -1347,8 +1404,13 @@ export class ChatMessageOrchestrator {
 
     // 3b. State-changing op: CAS-toggle (see PrivateMessageService.reactCas /
     //     GroupMessageService.reactCas), re-read, then broadcast message:reaction
-    //     exactly like the gRPC sendReaction handler.
-    const toggled = await service.reactToMessage({
+    //     exactly like the gRPC sendReaction handler. "set" lands the caller on
+    //     exactly this emoji in ONE write, so no intermediate empty set is observed.
+    const write =
+      params.op === "set"
+        ? service.setReactionDetailed.bind(service)
+        : service.reactToMessage.bind(service);
+    const toggled = await write({
       messageId: params.messageId,
       userId: params.userId,
       emoji: params.emoji,

@@ -43,3 +43,40 @@ export type UserProfileData = {
   avatar: MediaObject;
   updatedAt: string;
 };
+
+/**
+ * Another user's profile as seen by a viewer — `GET /users/:userId`.
+ *
+ * Deliberately NOT a subset of [UserProfileData]: that shape carries `email`,
+ * `account`, `dateOfBirth` and the linked-provider emails, none of which may
+ * ever cross to a third party. Fields the viewer isn't allowed to see are
+ * nulled rather than omitted, so the client contract stays stable.
+ */
+export type PublicUserProfileData = {
+  userId: string;
+  username: string;
+  displayName: string;
+  firstName: string;
+  lastName: string;
+  bio: string | null;
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  avatar: MediaObject;
+  coverImageUrl: string | null;
+  /** Null when the target's `whoCanSeeOnlineStatus` excludes this viewer. */
+  isOnline: boolean | null;
+  lastSeenAt: string | null;
+  /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+  friendsCount: number | null;
+  groupsCount: number | null;
+  communitiesCount: number | null;
+  isDeletedUser: boolean;
+  relationship: {
+    friendshipId: string | null;
+    status: string;
+    direction: string | null;
+    canAccept: boolean;
+    canReject: boolean;
+    canCancel: boolean;
+  };
+};

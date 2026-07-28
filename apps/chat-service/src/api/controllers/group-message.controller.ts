@@ -3,6 +3,8 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
+import { NotFoundError } from "@aimess/errors";
 
 import {
   buildPaginatedResponse,
@@ -10,6 +12,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -115,8 +118,77 @@ export class GroupMessageController {
    * Mirrors the private V2 contract exactly (see `PrivateMessageController`).
    */
   getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessages(req, res, "before_cursor", "after_cursor")
+    this.listMessagesV2(req, res)
   );
+
+  /**
+   * V2 timeline — `before_seq`/`after_seq`/`around` only. Byte-identical contract
+   * to PrivateMessageController.listMessagesV2; the two must not drift.
+   */
+  private async listMessagesV2(req: Request, res: Response) {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
+    const around = req.query.around as string | undefined;
+
+    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            payload,
+            payload.items.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+
+    if (around) {
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const [wire, pinnedMessage] = await Promise.all([
+        this.messageService.enrichForWire(items, userId),
+        this.pinService.getActivePinSummary(roomId, userId),
+      ]);
+      send({
+        ...buildTimelinePageV2(wire, limit, {
+          hasMoreOlder,
+          hasMoreNewer,
+          olderCursor,
+          newerCursor,
+        }),
+        pinnedMessage,
+      });
+      return;
+    }
+
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+
+    const result = await this.messageService.getMessagesSeq({
+      roomId,
+      userId,
+      direction: afterSeq != null ? "after" : "before",
+      seq: afterSeq ?? beforeSeq ?? null,
+      limit,
+    });
+    const [wire, pinnedMessage] = await Promise.all([
+      this.messageService.enrichForWire(result.items, userId),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
+    send({
+      ...buildTimelinePageV2(wire, limit, result.cursors),
+      roomRevision: result.roomRevision,
+      pinnedMessage,
+    });
+  }
 
   /**
    * V2 — `GET /api/v2/chat/group/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
@@ -138,11 +210,11 @@ export class GroupMessageController {
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
+          items: result.items,
           roomRevision: result.roomRevision,
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
-          data: result.items,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -229,13 +301,17 @@ export class GroupMessageController {
         result.items,
         userId
       );
-      const paginated = buildTimelineResponse(
-        wire,
-        totalCount,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      );
+      const paginated = {
+        ...buildTimelineResponse(
+          wire,
+          totalCount,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -270,13 +346,17 @@ export class GroupMessageController {
       limit,
     });
     const wire = await this.messageService.enrichForWire(result.items, userId);
-    const paginated = buildTimelineResponse(
-      wire,
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    const paginated = {
+      ...buildTimelineResponse(
+        wire,
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
@@ -388,12 +468,40 @@ export class GroupMessageController {
   });
 
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
     const { messageId, roomId, type } = req.body as {
       messageId: string;
       roomId: string;
       type?: "forMe" | "forEveryone";
     };
+    await this.runDelete(req, res, messageId, roomId, type);
+  });
+
+  /**
+   * V2 delete — same path shape as private/community (`DELETE /messages/:messageId
+   * ?type=`), so a client needs no per-conversation-type special case. The room is
+   * resolved from the message instead of being passed in the body.
+   */
+  deleteMessageV2 = asyncHandler(async (req: Request, res: Response) => {
+    const messageId = req.params.messageId as string;
+    const message = await this.messageService.findMessageById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.runDelete(
+      req,
+      res,
+      messageId,
+      message.roomId,
+      req.query.type as "forMe" | "forEveryone" | undefined
+    );
+  });
+
+  private async runDelete(
+    req: Request,
+    res: Response,
+    messageId: string,
+    roomId: string,
+    type: "forMe" | "forEveryone" | undefined
+  ) {
+    const { userId } = req.auth;
     // ABSENT `type` === "forEveryone" (backward-compatible with existing clients).
     const scope = type === "forMe" ? "forMe" : "forEveryone";
 
@@ -496,7 +604,7 @@ export class GroupMessageController {
     }
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
-  });
+  }
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
@@ -690,6 +798,24 @@ export class GroupMessageController {
    * toggle-ON + message:reaction broadcast). Returns the updated ChatReactionGroup[]
    * under `{ reactions }`. Idempotent: re-adding an existing reaction is a no-op.
    */
+  /** V2 `POST /messages/:messageId/react` — see PrivateMessageController.setReactionV2. */
+  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { emoji } = req.body as { emoji: string };
+    const message = await this.messageService.findMessageById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "GROUP",
+      roomId: message.roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "set",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
+
   addReaction = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

@@ -1,4 +1,5 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
+import { categoryWhere } from "../lib/notification-category.js";
 
 export class NotificationRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -129,29 +130,16 @@ export class NotificationRepository {
     const [all, friends, communities, mentions, system] = await Promise.all([
       this.prisma.notification.count({ where: base }),
       this.prisma.notification.count({
-        where: { ...base, type: { startsWith: "friend." } },
+        where: { ...base, ...categoryWhere("FRIENDS") },
       }),
       this.prisma.notification.count({
-        where: {
-          ...base,
-          AND: [
-            { type: { startsWith: "community." } },
-            { type: { notIn: ["chat.mention", "community.mention"] } },
-          ],
-        },
+        where: { ...base, ...categoryWhere("COMMUNITIES") },
       }),
       this.prisma.notification.count({
-        where: { ...base, type: { in: ["chat.mention", "community.mention"] } },
+        where: { ...base, ...categoryWhere("MENTIONS") },
       }),
       this.prisma.notification.count({
-        where: {
-          ...base,
-          NOT: [
-            { type: { startsWith: "friend." } },
-            { type: { startsWith: "community." } },
-            { type: { in: ["chat.mention", "community.mention"] } },
-          ],
-        },
+        where: { ...base, ...categoryWhere("SYSTEM") },
       }),
     ]);
     return { all, friends, communities, mentions, system };
@@ -183,6 +171,59 @@ export class NotificationRepository {
         type,
         entity: { path: ["id"], equals: entityId },
       },
+    });
+  }
+
+  async findByTypeAndActor(
+    userId: string,
+    type: string,
+    actorId: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: { userId, type, actorId, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  /**
+   * Persists a user-initiated action on a notification (e.g. "TERMINATE" session,
+   * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
+   * and marks the row read in one write. Owner-scoped (IDOR-safe).
+   */
+  async recordAction(
+    id: string,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<Notification | null> {
+    const existing = await this.prisma.notification.findFirst({
+      where: { id, userId, isDeleted: false },
+    });
+    if (!existing) return null;
+    const existingPayload = (existing.payload ?? {}) as {
+      title?: string;
+      body?: string;
+      data?: Record<string, string>;
+    };
+    const updatedPayload = {
+      ...existingPayload,
+      body,
+      data: { ...(existingPayload.data ?? {}), actionTaken: action },
+    };
+    return this.prisma.notification.update({
+      where: { id },
+      data: { payload: updatedPayload, isRead: true, readAt: new Date() },
+    });
+  }
+
+  async updatePayloadAndType(
+    id: string,
+    type: string,
+    payload: Record<string, unknown>
+  ): Promise<Notification | null> {
+    return this.prisma.notification.update({
+      where: { id },
+      data: { type, payload },
     });
   }
 }

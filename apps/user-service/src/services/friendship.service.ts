@@ -1,6 +1,10 @@
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
-import { FriendSocketEvents } from "@aimess/shared-types";
+import {
+  FriendSocketEvents,
+  ConversationSocketEvents,
+  type PendingFriendRequestConversation,
+} from "@aimess/shared-types";
 
 import {
   publishFriendAcceptedSafe,
@@ -177,6 +181,121 @@ function emitRequestCreated(
   );
 }
 
+/**
+ * Emit `conversation:pending-friend-request` to the addressee ONLY — powers
+ * the Telegram-style pending row in their private-chat conversation list,
+ * live, before any room/message exists. Additive alongside the existing
+ * `friend:request:received` event above (same trigger point, same transport);
+ * this one carries the FULL synthetic conversation-list-row shape the
+ * frontend can render without a follow-up fetch.
+ */
+async function emitConversationPendingFriendRequest(
+  row: FriendshipRow,
+  requesterProfile: PeerBrief & { avatarUrl?: string | null }
+): Promise<void> {
+  const avatarView = await avatarService
+    .resolveViewUrlForClient(requesterProfile.avatarUrl ?? null)
+    .catch(() => null);
+
+  const conversation: PendingFriendRequestConversation = {
+    id: `pending:${row.id}`,
+    type: "PRIVATE_PENDING",
+    pendingRequest: true,
+    friendRequestId: row.id,
+    requester: {
+      id: requesterProfile.userId,
+      displayName: displayName(toPeerBrief(requesterProfile)),
+      username: requesterProfile.username,
+      avatarUrl: avatarView?.url ?? null,
+    },
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    lastActivity: { type: "FRIEND_REQUEST", text: "Friend Request" },
+  };
+
+  emitFriendEventSafe(
+    row.addresseeId,
+    ConversationSocketEvents.PENDING_FRIEND_REQUEST,
+    {
+      conversation,
+      friendRequest: {
+        id: row.id,
+        requesterId: row.requesterId,
+        addresseeId: row.addresseeId,
+        status: "PENDING" as const,
+        createdAt: row.createdAt.toISOString(),
+      },
+    }
+  );
+}
+
+/**
+ * Eagerly create the pair's private room (reusing the same `getOrCreatePrivateRooms`
+ * gRPC path `autoConnectAll` already uses) and emit `conversation:friend-request-accepted`
+ * to both parties, so the pending row on every device swaps for a real, composable
+ * conversation the instant Accept succeeds — no waiting on the lazy first-open room
+ * creation. Best-effort: a room-creation failure still lets the friendship accept
+ * succeed (the room falls back to lazy creation on first open, same as today).
+ */
+async function emitConversationFriendRequestAccepted(
+  row: FriendshipRow
+): Promise<void> {
+  const roomMatches = await messagingGrpcClient.getOrCreatePrivateRooms(
+    row.requesterId,
+    [row.addresseeId]
+  );
+  const roomId = roomMatches[0]?.roomId ?? null;
+
+  const friendRequest = {
+    id: row.id,
+    requesterId: row.requesterId,
+    addresseeId: row.addresseeId,
+    status: "ACCEPTED" as const,
+    acceptedAt: (row.acceptedAt ?? new Date()).toISOString(),
+  };
+
+  emitFriendEventSafe(
+    row.requesterId,
+    ConversationSocketEvents.FRIEND_REQUEST_ACCEPTED,
+    { friendRequest, roomId, peerId: row.addresseeId }
+  );
+  emitFriendEventSafe(
+    row.addresseeId,
+    ConversationSocketEvents.FRIEND_REQUEST_ACCEPTED,
+    { friendRequest, roomId, peerId: row.requesterId }
+  );
+}
+
+/**
+ * Emit `conversation:friend-request-rejected` to both parties so every open
+ * device drops the pending row — used for both an explicit reject (by the
+ * addressee) and a cancel (by the requester, before the addressee responds);
+ * either way the pending row must disappear on both sides.
+ */
+function emitConversationFriendRequestRejected(
+  row: FriendshipRow,
+  status: "REJECTED" | "CANCELLED" = "REJECTED"
+): void {
+  const friendRequest = {
+    id: row.id,
+    requesterId: row.requesterId,
+    addresseeId: row.addresseeId,
+    status,
+    rejectedAt: (row.rejectedAt ?? row.cancelledAt ?? new Date()).toISOString(),
+  };
+
+  emitFriendEventSafe(
+    row.requesterId,
+    ConversationSocketEvents.FRIEND_REQUEST_REJECTED,
+    { friendRequest, peerId: row.addresseeId }
+  );
+  emitFriendEventSafe(
+    row.addresseeId,
+    ConversationSocketEvents.FRIEND_REQUEST_REJECTED,
+    { friendRequest, peerId: row.requesterId }
+  );
+}
+
 /** Emit the same event name to both sides of a friendship row. */
 function emitToPair(
   row: FriendshipRow,
@@ -339,6 +458,7 @@ export const friendshipService = {
           friendship.addresseeId
         );
         emitToPair(friendship, FriendSocketEvents.ACCEPTED);
+        void emitConversationFriendRequestAccepted(friendship);
         return friendship;
       }
 
@@ -356,6 +476,7 @@ export const friendshipService = {
         createdAt: updated.createdAt.toISOString(),
       });
       emitRequestCreated(updated, requesterProfile, addresseeProfile);
+      void emitConversationPendingFriendRequest(updated, requesterProfile);
       return updated;
     }
 
@@ -371,6 +492,7 @@ export const friendshipService = {
       createdAt: friendship.createdAt.toISOString(),
     });
     emitRequestCreated(friendship, requesterProfile, addresseeProfile);
+    void emitConversationPendingFriendRequest(friendship, requesterProfile);
     return friendship;
   },
 
@@ -415,6 +537,7 @@ export const friendshipService = {
       friendship.addresseeId
     );
     emitToPair(updated, FriendSocketEvents.ACCEPTED);
+    void emitConversationFriendRequestAccepted(updated);
 
     return updated;
   },
@@ -445,6 +568,7 @@ export const friendshipService = {
       rejectedAt: updated.rejectedAt!.toISOString(),
     });
     emitToPair(updated, FriendSocketEvents.REJECTED);
+    emitConversationFriendRequestRejected(updated);
     return updated;
   },
 
@@ -474,6 +598,7 @@ export const friendshipService = {
       cancelledAt: updated.cancelledAt!.toISOString(),
     });
     emitToPair(updated, FriendSocketEvents.REQUEST_CANCELLED);
+    emitConversationFriendRequestRejected(updated, "CANCELLED");
     return updated;
   },
 

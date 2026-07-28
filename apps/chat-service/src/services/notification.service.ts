@@ -154,6 +154,38 @@ export class NotificationService {
     return this.notificationRepo.getUnreadCount(userId);
   }
 
+  /**
+   * Persists a user-initiated action (e.g. "TERMINATE" session, "CONFIRM" login)
+   * on a notification: updates the stored body text + marks `actionTaken` in
+   * `payload.data` so the UI renders the resolved state on every reload.
+   * Emits `notification:updated` so open clients refresh without polling.
+   */
+  async recordAction(
+    id: string,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<void> {
+    const updated = await this.notificationRepo.recordAction(
+      id,
+      userId,
+      body,
+      action
+    );
+    if (!updated) return;
+    try {
+      await publishUserSocketEvent(this.redis, userId, "notification:updated", {
+        notificationId: updated.id,
+        userId,
+        type: updated.type,
+        body,
+        isRead: true,
+      });
+    } catch {
+      // best-effort — the DB write already succeeded
+    }
+  }
+
   // Best-effort realtime relay: publishes the named event plus the legacy
   // "notification:count_update" alias, both carrying the same unreadCount.
   private async publishCountEvent(

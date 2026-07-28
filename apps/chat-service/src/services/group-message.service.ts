@@ -32,6 +32,7 @@ import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
+  computeSeqPageCursors,
 } from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
@@ -548,6 +549,8 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const member = await assertGroupMember(
       this.memberRepo,
@@ -555,23 +558,32 @@ export class GroupMessageService {
       params.userId
     );
     const cutoff = getGroupDeletionCutoff(member);
-    const [{ messages: items, hasMore }, total] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        userId: params.userId,
-        roomId: params.roomId,
-        direction: params.direction,
-        ts: params.ts,
-        boundaryId: params.boundaryId ?? null,
-        inclusive: params.inclusive ?? false,
-        limit: params.limit,
-        cutoff,
-      }),
-      this.messageRepo.countTimeline({
-        roomId: params.roomId,
-        userId: params.userId,
-        cutoff,
-      }),
-    ]);
+    const [{ messages: items, hasMore }, total, roomRevision] =
+      await Promise.all([
+        this.messageRepo.findByRoomIdTimeline({
+          userId: params.userId,
+          roomId: params.roomId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          cutoff,
+        }),
+        this.messageRepo.countTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          cutoff,
+        }),
+        this.roomRepo.getRoomRevision(params.roomId),
+      ]);
+
+    const cursors = await this.seqPageCursors(
+      items,
+      params.roomId,
+      params.userId,
+      cutoff
+    );
 
     // The repo returns the page in DB order (before → newest-first, after →
     // oldest-first); the boundary for the next page is the LAST row either way.
@@ -582,7 +594,29 @@ export class GroupMessageService {
     const nextCursor =
       hasMore && last ? `${last.createdAt.getTime()}_${last.id}` : null;
 
-    return { items, hasMore, nextCursor, total };
+    return { items, hasMore, nextCursor, total, cursors, roomRevision };
+  }
+
+  /**
+   * Bidirectional continuation for any page — probes one visible row strictly
+   * beyond each seq edge through the same keyset query the page itself used.
+   */
+  private seqPageCursors(
+    page: GroupMessage[],
+    roomId: string,
+    userId: string,
+    cutoff: Date | undefined
+  ): Promise<AroundCursors> {
+    return computeSeqPageCursors(page, (direction, seq) =>
+      this.messageRepo.findByRoomIdSeq({
+        userId,
+        roomId,
+        direction,
+        seq,
+        limit: 1,
+        cutoff,
+      })
+    );
   }
 
   /**
@@ -592,31 +626,49 @@ export class GroupMessageService {
     roomId: string;
     userId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = newest page. */
+    seq: number | null;
     limit: number;
   }): Promise<{
     items: GroupMessage[];
     hasMore: boolean;
     nextCursor: string | null;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const member = await assertGroupMember(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    const rows = await this.messageRepo.findByRoomIdSeq({
-      userId: params.userId,
-      roomId: params.roomId,
-      direction: params.direction,
-      seq: params.seq,
-      limit: params.limit,
-      cutoff: getGroupDeletionCutoff(member),
-    });
+    const cutoff = getGroupDeletionCutoff(member);
+    const [rows, roomRevision] = await Promise.all([
+      this.messageRepo.findByRoomIdSeq({
+        userId: params.userId,
+        roomId: params.roomId,
+        direction: params.direction,
+        seq: params.seq,
+        limit: params.limit,
+        cutoff,
+      }),
+      this.roomRepo.getRoomRevision(params.roomId),
+    ]);
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
     const last = items[items.length - 1];
     const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
-    return { items, hasMore, nextCursor };
+    const cursors = await this.seqPageCursors(
+      items,
+      params.roomId,
+      params.userId,
+      cutoff
+    );
+    return { items, hasMore, nextCursor, cursors, roomRevision };
+  }
+
+  /** Raw message lookup — the V2 delete route resolves its room from the message. */
+  findMessageById(messageId: string): Promise<GroupMessage | null> {
+    return this.messageRepo.findById(messageId);
   }
 
   /**
@@ -1183,6 +1235,34 @@ export class GroupMessageService {
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const updated = setStoredReaction(raw.reactions, userId, emoji);
     return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+  }
+
+  /** {@link setReaction} in {@link reactToMessage}'s return shape, for the REST orchestrator. */
+  async setReactionDetailed(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const message = await this.setReaction(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return {
+      roomId: message.roomId,
+      added: true,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
   }
 
   /**

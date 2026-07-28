@@ -232,6 +232,14 @@ const CREATOR_STREAM_LOCK_TTL_SEC = 15;
 const PLAYABLE_POLL_INTERVAL_MS = 500;
 const PLAYABLE_POLL_MAX_ATTEMPTS = 10;
 
+// A plain MEMBER cannot go live; only ADMIN/MODERATOR may broadcast. Checked
+// on go-live and re-checked (via forceEndStreamsByCreator) whenever a role
+// changes so an in-progress stream ends the moment the host drops below this.
+const LIVESTREAM_HOST_ROLES = new Set(["ADMIN", "MODERATOR"]);
+export function canStartLivestream(role: string): boolean {
+  return LIVESTREAM_HOST_ROLES.has(role);
+}
+
 /** Map a community-service moderation `errorCode` to the matching AppError subclass. */
 function moderationErrorToAppError(errorCode: string): Error {
   if (!errorCode) return new ForbiddenError("STREAM_MUTE_FORBIDDEN");
@@ -294,6 +302,11 @@ export class LivestreamService {
       // member — going live is a write operation like any other.
       if (membership.isCommunityClosed) {
         throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      }
+      // Only ADMIN/MODERATOR may broadcast — a plain MEMBER cannot start
+      // (or keep) a livestream.
+      if (!canStartLivestream(membership.role)) {
+        throw new ForbiddenError("STREAM_ROLE_NOT_ALLOWED");
       }
     }
 
@@ -590,7 +603,10 @@ export class LivestreamService {
    * active SRS publisher: it's a no-op lookup-then-DELETE, bounded and
    * swallows its own errors (see SrsService.kickStream).
    */
-  private async finalizeAsEnded(stream: Livestream): Promise<Livestream> {
+  private async finalizeAsEnded(
+    stream: Livestream,
+    reason = "HOST_ENDED"
+  ): Promise<Livestream> {
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
       endedAt: new Date(),
@@ -601,8 +617,10 @@ export class LivestreamService {
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
     );
-    await this.publishStatus(updated.id, "ENDED", updated.communityId);
-    void this.publishCommunityStreamEnded(updated, liveStreamCount);
+    await this.publishStatus(updated.id, "ENDED", updated.communityId, {
+      creatorId: stream.creatorId,
+    });
+    void this.publishCommunityStreamEnded(updated, liveStreamCount, reason);
     void this.closeOpenViewerSessions(
       updated.id,
       updated.endedAt ?? new Date()
@@ -615,6 +633,7 @@ export class LivestreamService {
       durationSeconds: computeDurationSeconds(updated),
       peakViewers: updated.peakViewers,
       liveStreamCount,
+      reason,
     });
 
     return updated;
@@ -782,7 +801,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream);
+        await this.finalizeAsEnded(stream, reason);
         endedCount++;
         logger.info(
           `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
@@ -821,7 +840,7 @@ export class LivestreamService {
     let endedCount = 0;
     for (const stream of streams) {
       try {
-        await this.finalizeAsEnded(stream);
+        await this.finalizeAsEnded(stream, reason);
         endedCount++;
         logger.info(
           `forceEndStreamsByCommunity: ended stream=${stream.id} creator=${stream.creatorId} community=${communityId} reason=${reason}`
@@ -2186,13 +2205,15 @@ export class LivestreamService {
     streamId: string,
     status: string,
     communityId: string,
-    // Extra fields included only on LIVE transitions so the gateway can send a
-    // targeted stream:broadcast:live event to the broadcaster's socket.
+    // Extra fields so the gateway can send targeted events to the broadcaster's
+    // socket. For LIVE: includes hlsUrl/flvUrl/startedAt for stream:broadcast:live.
+    // For ENDED: only creatorId is needed so the gateway can find and notify the
+    // broadcaster even if they've already left the stream room (e.g. after a ban kick).
     broadcasterCtx?: {
       creatorId: string;
-      hlsUrl: string | null;
-      flvUrl: string | null;
-      startedAt: number;
+      hlsUrl?: string | null;
+      flvUrl?: string | null;
+      startedAt?: number;
     }
   ): Promise<void> {
     try {
@@ -2351,7 +2372,8 @@ export class LivestreamService {
    */
   private async publishCommunityStreamEnded(
     stream: Livestream,
-    liveStreamCount: number
+    liveStreamCount: number,
+    reason = "HOST_ENDED"
   ): Promise<void> {
     try {
       const host = await this.resolveHost(stream.creatorId);
@@ -2375,6 +2397,7 @@ export class LivestreamService {
             durationSeconds,
             liveStreamCount: cappedCount,
             hasActiveLivestream: cappedCount > 0,
+            reason, // e.g. HOST_ENDED, MEMBER_BANNED, MEMBER_REMOVED, ROLE_UPDATED
           },
         })
       );

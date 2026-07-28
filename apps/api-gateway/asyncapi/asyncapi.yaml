@@ -370,6 +370,8 @@ channels:
       notificationCount: { $ref: "#/components/messages/NotificationCount" }
       notificationCountUpdate:
         { $ref: "#/components/messages/NotificationCountUpdate" }
+      notificationRead: { $ref: "#/components/messages/NotificationRead" }
+      notificationAllRead: { $ref: "#/components/messages/NotificationAllRead" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
       notificationDeleted: { $ref: "#/components/messages/NotificationDeleted" }
@@ -1677,6 +1679,26 @@ operations:
       Client rule: replace the badge value with `count` on receipt.
       Aggregate only — no per-type breakdown in V1.
     messages: [{ $ref: "#/channels/notify/messages/notificationCountUpdate" }]
+  notify.onRead:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:read — specific notification(s) marked read (all devices)"
+    description: |
+      Fired after `POST /chat/notifications/read` or a `notifications:mark_read`
+      socket call with non-empty `notificationIds`, on every connected device
+      for the user (not just the caller). `notification:count_update` follows
+      with the same total.
+    messages: [{ $ref: "#/channels/notify/messages/notificationRead" }]
+  notify.onAllRead:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:all-read — all (or one tab's) notifications marked read (all devices)"
+    description: |
+      Fired after `POST /chat/notifications/read-all` or a
+      `notifications:mark_read` socket call with an empty `notificationIds`
+      array, on every connected device for the user. `unreadCount` is the
+      total across all tabs, not just the marked category.
+    messages: [{ $ref: "#/channels/notify/messages/notificationAllRead" }]
   notify.onForwarded:
     action: receive
     channel: { $ref: "#/channels/notify" }
@@ -4800,6 +4822,45 @@ components:
               communityName: "Photography Club"
               communityAvatarUrl: null
               communityHandle: "photography-club"
+    NotificationRead:
+      name: "notification:read"
+      title: "notification:read"
+      summary: "A subset of notifications was marked read (all devices)"
+      description: |
+        Emitted to `user:<userId>` (all connected devices) after a successful
+        mark-read of one or more specific notifications, from EITHER:
+        - `POST /chat/notifications/read` (REST) — relayed via the
+          `notify:<userId>` Redis channel, or
+        - `notifications:mark_read` (socket, non-empty `notificationIds`) —
+          emitted directly by the gateway.
+        A `notification:count_update` follows with the same total for clients
+        that only listen to the legacy count event.
+      payload: { $ref: "#/components/schemas/NotificationReadPayload" }
+      examples:
+        - name: Two notifications marked read
+          payload:
+            unreadCount: 4
+    NotificationAllRead:
+      name: "notification:all-read"
+      title: "notification:all-read"
+      summary: "Every notification (or one tab) was marked read (all devices)"
+      description: |
+        Emitted to `user:<userId>` (all connected devices) after a successful
+        `POST /chat/notifications/read-all` (REST, relayed via Redis) or a
+        `notifications:mark_read` call with an empty `notificationIds` array
+        (socket, emitted directly by the gateway). `unreadCount` is always the
+        total across ALL tabs — a per-tab Read All still reports the
+        remaining unread in other tabs, not zero. A `notification:count_update`
+        follows with the same total for clients that only listen to the legacy
+        count event.
+      payload: { $ref: "#/components/schemas/NotificationReadPayload" }
+      examples:
+        - name: All notifications read
+          payload:
+            unreadCount: 0
+        - name: Only the FRIENDS tab marked read, other tabs still unread
+          payload:
+            unreadCount: 3
     NotificationDeleted:
       name: "notification:deleted"
       title: "notification:deleted"
@@ -6654,6 +6715,12 @@ components:
       properties:
         count: { type: integer }
       required: [count]
+    NotificationReadPayload:
+      type: object
+      description: "Authoritative post-op total unread count across ALL tabs, following a mark-read / mark-all-read action from any device (REST or socket)."
+      properties:
+        unreadCount: { type: integer }
+      required: [unreadCount]
     NotificationNavigation:
       type: object
       description: "Deep-link routing object on community join-request notifications. Tells the client which screen to open."

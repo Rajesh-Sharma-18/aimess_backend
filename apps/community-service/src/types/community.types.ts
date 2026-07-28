@@ -338,6 +338,8 @@ export type CommunityListItem = {
   lastActivity: CommunityLastActivity;
   /** True when the caller has an active mute-setting row for this community. */
   isMuted: boolean;
+  /** Spec-aligned alias of `isMuted` (Telegram-style "Mute Notifications" toggle). */
+  notificationsMuted: boolean;
   /** ISO-8601; null when not muted or muted indefinitely. */
   muteUntil: string | null;
   streamEnabled: boolean;

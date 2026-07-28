@@ -28,6 +28,7 @@
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "@types/nodemailer": "^8.0.0",
+    "@parse/node-apn": "^8.1.0",
     "amqplib": "^2.0.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

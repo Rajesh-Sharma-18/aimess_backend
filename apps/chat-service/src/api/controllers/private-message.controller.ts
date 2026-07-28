@@ -3,6 +3,8 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
+import { NotFoundError } from "@aimess/errors";
 
 import {
   buildPaginatedResponse,
@@ -10,6 +12,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -118,8 +121,78 @@ export class PrivateMessageController {
    * contract (see `communityTimelineV2QuerySchema`).
    */
   getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessages(req, res, "before_cursor", "after_cursor")
+    this.listMessagesV2(req, res)
   );
+
+  /**
+   * V2 timeline — `before_seq`/`after_seq`/`around` only. The retired timestamp
+   * cursors are rejected by `timelineV2QuerySchema.strict()`, so there is no
+   * fallback branch here: sequence is the single pagination axis.
+   */
+  private async listMessagesV2(req: Request, res: Response) {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
+    const around = req.query.around as string | undefined;
+
+    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            payload,
+            payload.items.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+
+    if (around) {
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const [enriched, pinnedMessage] = await Promise.all([
+        this.messageService.enrichMessages(items, userId),
+        this.pinService.getActivePinSummary(roomId, userId),
+      ]);
+      send({
+        ...buildTimelinePageV2(enriched, limit, {
+          hasMoreOlder,
+          hasMoreNewer,
+          olderCursor,
+          newerCursor,
+        }),
+        pinnedMessage,
+      });
+      return;
+    }
+
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+
+    const result = await this.messageService.getMessagesSeq({
+      roomId,
+      userId,
+      direction: afterSeq != null ? "after" : "before",
+      seq: afterSeq ?? beforeSeq ?? null,
+      limit,
+    });
+    const [enriched, pinnedMessage] = await Promise.all([
+      this.messageService.enrichMessages(result.items, userId),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
+    send({
+      ...buildTimelinePageV2(enriched, limit, result.cursors),
+      roomRevision: result.roomRevision,
+      pinnedMessage,
+    });
+  }
 
   /**
    * V2 — `GET /api/v2/chat/private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
@@ -144,11 +217,11 @@ export class PrivateMessageController {
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
+          items: result.items,
           roomRevision: result.roomRevision,
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
-          data: result.items,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -241,13 +314,17 @@ export class PrivateMessageController {
         result.items,
         userId
       );
-      const paginated = buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      );
+      const paginated = {
+        ...buildTimelineResponse(
+          enriched,
+          totalCount,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -285,13 +362,17 @@ export class PrivateMessageController {
       result.items,
       userId
     );
-    const paginated = buildTimelineResponse(
-      enriched,
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    const paginated = {
+      ...buildTimelineResponse(
+        enriched,
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
@@ -630,6 +711,28 @@ export class PrivateMessageController {
       userId,
       emoji,
       op: "add",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
+
+  /**
+   * V2 `POST /messages/:messageId/react` — single-write SET, matching the community
+   * REST react. The room is resolved from the message, so the offline queue can drain
+   * a reaction with only (messageId, emoji) regardless of conversation type.
+   */
+  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { emoji } = req.body as { emoji: string };
+    const message = await this.messageService.findMessageById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "PRIVATE",
+      roomId: message.roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "set",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
   });
