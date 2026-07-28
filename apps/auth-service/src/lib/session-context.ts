@@ -10,6 +10,10 @@ export type SessionContext = {
   deviceId: string;
   deviceType: DeviceType;
   deviceName: string | null;
+  /** Browser name parsed from the user agent, e.g. "Chrome". */
+  browserName: string | null;
+  /** OS name parsed from the user agent, e.g. "Windows". */
+  osName: string | null;
   osVersion: string | null;
   appVersion: string | null;
   ipAddress: string | null;
@@ -138,6 +142,7 @@ export function buildSessionContext(req: Request): SessionContext {
   const ipAddress = resolveClientIp(req);
   const parser = new UAParser(userAgent);
   const os = parser.getOS();
+  const browser = parser.getBrowser();
 
   const appVersionHeader = req.headers["x-app-version"];
   const appVersion =
@@ -153,6 +158,8 @@ export function buildSessionContext(req: Request): SessionContext {
     deviceId: buildDeviceId(userAgent, ipAddress),
     deviceType,
     deviceName: buildDeviceName(parser),
+    browserName: browser.name?.trim() || null,
+    osName: os.name?.trim() || null,
     osVersion: os.version ?? null,
     appVersion,
     ipAddress,

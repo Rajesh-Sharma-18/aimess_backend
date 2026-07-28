@@ -11,14 +11,19 @@ export class NotificationController {
   constructor(private readonly service: NotificationService) {}
 
   getNotifications = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const category = parseCategory(req.query.type);
     const [notifications, counts] = await Promise.all([
-      this.service.getNotifications(userId, { limit, cursor, category }),
-      this.service.getCounts(userId),
+      this.service.getNotifications(userId, {
+        limit,
+        cursor,
+        category,
+        viewerSessionId: sessionId,
+      }),
+      this.service.getCounts(userId, sessionId),
     ]);
     // totalData reflects the current tab so pagination.totalPage stays
     // meaningful when the client is scoped to one category.
@@ -97,8 +102,8 @@ export class NotificationController {
   });
 
   getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
-    const unreadCount = await this.service.getUnreadCount(userId);
+    const { userId, sessionId } = req.auth;
+    const unreadCount = await this.service.getUnreadCount(userId, sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(

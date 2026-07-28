@@ -136,6 +136,9 @@ export async function issueAuthTokens(
       deviceName: session.deviceName,
       deviceType: session.deviceType,
       ipAddress: session.ipAddress,
+      countryCode: session.countryCode,
+      browser: session.browserName,
+      os: session.osName,
     });
   }
 

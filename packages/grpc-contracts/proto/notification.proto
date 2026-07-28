@@ -25,9 +25,12 @@ message CreateNotificationResponse {
 }
 
 message GetNotificationsRequest {
-  string user_id = 1;
-  string cursor  = 2;
-  int32  limit   = 3;
+  string user_id    = 1;
+  string cursor     = 2;
+  int32  limit      = 3;
+  // The requesting device's own session id — never show a device its own
+  // login-detected notification (list, counts, or badge).
+  string session_id = 4;
 }
 message GetNotificationsResponse {
   repeated NotificationDto notifications = 1;

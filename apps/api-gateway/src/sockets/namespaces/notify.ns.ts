@@ -76,7 +76,7 @@ export function registerNotifyNamespace(
 
     // Emit unread count immediately on connect
     notificationClient
-      .getNotifications({ userId, limit: 1, cursor: "" })
+      .getNotifications({ userId, limit: 1, cursor: "", sessionId })
       .then((res) =>
         socket.emit("notification:count", {
           count: res.unreadCount,
@@ -98,7 +98,7 @@ export function registerNotifyNamespace(
           return;
         }
         notificationClient
-          .getNotifications({ userId, ...r.data })
+          .getNotifications({ userId, sessionId, ...r.data })
           .then((result) =>
             ackOk(callback, "SOCKET_NOTIFICATIONS_FETCHED", locale, result)
           )

@@ -3848,6 +3848,7 @@ export function createNotificationImpl(
             userId?: string;
             cursor?: string;
             limit?: number;
+            sessionId?: string;
           };
           if (!req.userId) {
             callback({
@@ -3861,9 +3862,11 @@ export function createNotificationImpl(
           const rows = await deps.notificationRepo.findByUserId(req.userId, {
             limit,
             cursor: req.cursor || null,
+            viewerSessionId: req.sessionId || null,
           });
           const unreadCount = await deps.notificationRepo.getUnreadCount(
-            req.userId
+            req.userId,
+            req.sessionId || null
           );
 
           const notifications = await Promise.all(

@@ -15,6 +15,8 @@ export interface GetNotificationsParams {
   userId: string;
   cursor?: string;
   limit?: number;
+  /** The requesting device's own session id — never show a device its own login alert. */
+  sessionId?: string;
 }
 export interface GetNotificationsResponse {
   notifications: NotificationDto[];
@@ -90,6 +92,7 @@ export function createNotificationClient(): NotificationClient {
         userId: p.userId,
         cursor: p.cursor ?? "",
         limit: p.limit ?? 20,
+        sessionId: p.sessionId ?? "",
         // int64 created_at arrives as a string (proto-loader longs:String);
         // coerce each notification's epoch-ms timestamp so the
         // notifications:fetch ack matches the notification:new broadcast.

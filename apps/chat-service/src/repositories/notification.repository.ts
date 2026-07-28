@@ -1,6 +1,28 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
 import { categoryWhere } from "../lib/notification-category.js";
 
+/**
+ * A login-detected notification is one shared document per login event, fanned
+ * out to every OTHER active session. The device that just logged in must never
+ * see its own alert — in the list, the counts, or the badge — so every read
+ * path excludes the row whose `loginSessionId` is the viewer's own current
+ * session, regardless of who else it's visible to.
+ *
+ * `loginSessionId` is a scalar mirror of payload.data.sessionId (set only for
+ * "auth.security_new_login" rows, see create() below) rather than a JSON-path
+ * query, because MongoDB's Prisma JSON `path` filter can't be combined with
+ * NOT/OR/AND — confirmed at runtime ("Unknown argument `path`") — it only
+ * works as a bare top-level predicate. A plain scalar `not` filter has no such
+ * restriction and naturally passes through every other notification (whose
+ * loginSessionId is null, which `not: viewerSessionId` always matches).
+ */
+function excludeSelfLoginWhere(
+  viewerSessionId?: string | null
+): Record<string, unknown> {
+  if (!viewerSessionId) return {};
+  return { loginSessionId: { not: viewerSessionId } };
+}
+
 export class NotificationRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -10,6 +32,15 @@ export class NotificationRepository {
     type: string;
     [key: string]: unknown;
   }): Promise<Notification> {
+    const payload = (data.payload as object) ?? {};
+    // Mirror payload.data.sessionId to the scalar loginSessionId column so
+    // excludeSelfLoginWhere can filter on it (see the comment above) — only
+    // meaningful for login-detected rows, null for every other type.
+    const sessionId =
+      data.type === "auth.security_new_login"
+        ? ((payload as { data?: Record<string, string> }).data?.sessionId ??
+          null)
+        : null;
     return this.prisma.notification.create({
       data: {
         userId: data.userId,
@@ -17,7 +48,8 @@ export class NotificationRepository {
         type: data.type,
         entity: (data.entity as object) ?? {},
         actorSnapshot: (data.actorSnapshot as object) ?? {},
-        payload: (data.payload as object) ?? {},
+        payload,
+        loginSessionId: sessionId,
         isRead: (data.isRead as boolean) ?? false,
         readAt: (data.readAt as Date) ?? null,
         isDeleted: (data.isDeleted as boolean) ?? false,
@@ -37,6 +69,8 @@ export class NotificationRepository {
        * existing callers (gRPC list, tests) are unaffected.
        */
       where?: Record<string, unknown>;
+      /** The requesting device's own session id — see excludeSelfLoginWhere. */
+      viewerSessionId?: string | null;
     }
   ): Promise<Notification[]> {
     return this.prisma.notification.findMany({
@@ -46,6 +80,7 @@ export class NotificationRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
+        ...excludeSelfLoginWhere(params.viewerSessionId),
         ...(params.where ?? {}),
       },
       orderBy: { createdAt: "desc" },
@@ -100,9 +135,17 @@ export class NotificationRepository {
     });
   }
 
-  async getUnreadCount(userId: string): Promise<number> {
+  async getUnreadCount(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<number> {
     return this.prisma.notification.count({
-      where: { userId, isRead: false, isDeleted: false },
+      where: {
+        userId,
+        isRead: false,
+        isDeleted: false,
+        ...excludeSelfLoginWhere(viewerSessionId),
+      },
     });
   }
 
@@ -119,28 +162,32 @@ export class NotificationRepository {
    * so the badge decrements live as the user reads rows; the list-page
    * invalidation on `markRead` / `markAllRead` triggers the refetch.
    */
-  async countByCategories(userId: string): Promise<{
+  async countByCategories(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<{
     all: number;
     friends: number;
     communities: number;
     mentions: number;
     system: number;
   }> {
-    const base = { userId, isDeleted: false, isRead: false } as const;
+    const base = {
+      userId,
+      isDeleted: false,
+      isRead: false,
+      ...excludeSelfLoginWhere(viewerSessionId),
+    };
+    const countFor = (cat: Parameters<typeof categoryWhere>[0]) =>
+      this.prisma.notification.count({
+        where: { ...base, ...categoryWhere(cat) },
+      });
     const [all, friends, communities, mentions, system] = await Promise.all([
-      this.prisma.notification.count({ where: base }),
-      this.prisma.notification.count({
-        where: { ...base, ...categoryWhere("FRIENDS") },
-      }),
-      this.prisma.notification.count({
-        where: { ...base, ...categoryWhere("COMMUNITIES") },
-      }),
-      this.prisma.notification.count({
-        where: { ...base, ...categoryWhere("MENTIONS") },
-      }),
-      this.prisma.notification.count({
-        where: { ...base, ...categoryWhere("SYSTEM") },
-      }),
+      countFor("ALL"),
+      countFor("FRIENDS"),
+      countFor("COMMUNITIES"),
+      countFor("MENTIONS"),
+      countFor("SYSTEM"),
     ]);
     return { all, friends, communities, mentions, system };
   }
@@ -183,7 +230,7 @@ export class NotificationRepository {
         userId,
         type: "auth.security_new_login",
         isDeleted: false,
-        payload: { path: ["data", "sessionId"], equals: sessionId },
+        loginSessionId: sessionId,
       },
       orderBy: { createdAt: "desc" },
     });

@@ -86,12 +86,15 @@ export class NotificationService {
       limit: number;
       cursor?: string | null;
       category?: NotificationCategory;
+      /** The requesting device's own session id — never show a device its own login alert. */
+      viewerSessionId?: string | null;
     }
   ): Promise<NotificationDTO[]> {
     const rows = await this.notificationRepo.findByUserId(userId, {
       limit: params.limit,
       cursor: params.cursor,
       where: categoryWhere(params.category ?? "ALL"),
+      viewerSessionId: params.viewerSessionId,
     });
     const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
@@ -100,14 +103,17 @@ export class NotificationService {
   }
 
   /** Per-tab totals shown in the Notification Center header. */
-  async getCounts(userId: string): Promise<{
+  async getCounts(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<{
     all: number;
     friends: number;
     communities: number;
     mentions: number;
     system: number;
   }> {
-    return this.notificationRepo.countByCategories(userId);
+    return this.notificationRepo.countByCategories(userId, viewerSessionId);
   }
 
   // Marks one or more notifications read and relays the refreshed unread
@@ -150,8 +156,11 @@ export class NotificationService {
     return { unreadCount };
   }
 
-  async getUnreadCount(userId: string): Promise<number> {
-    return this.notificationRepo.getUnreadCount(userId);
+  async getUnreadCount(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<number> {
+    return this.notificationRepo.getUnreadCount(userId, viewerSessionId);
   }
 
   /**

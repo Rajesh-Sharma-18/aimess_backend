@@ -508,6 +508,12 @@ model Notification {
   deletedAt     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+  // Mirrors payload.data.sessionId for "auth.security_new_login" rows only.
+  // A scalar copy (not just the JSON blob) because MongoDB's Prisma JSON
+  // `path` filter can't be combined with NOT/OR/AND — it only works as a bare
+  // top-level predicate — so excluding "don't show a device its own login
+  // alert" needs a real indexed field, not a JSON-path query.
+  loginSessionId String?
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, type])
@@ -515,6 +521,7 @@ model Notification {
   // delete and socket connect). The bare isRead/isDeleted indexes never
   // applied: every query is userId-scoped.
   @@index([userId, isRead, isDeleted])
+  @@index([userId, loginSessionId])
   @@map("notifications")
 }
 

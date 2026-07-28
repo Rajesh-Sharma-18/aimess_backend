@@ -312,7 +312,7 @@ export const sessionService = {
       userId,
       sessionId: targetSessionId,
       action: "TRUSTED",
-      body: "Login verified.",
+      body: "This was you.",
     });
   },
 

@@ -164,6 +164,11 @@ export const deviceLinkService = {
       deviceId: randomBytes(16).toString("hex"),
       deviceType: resolveDeviceType(record.device.deviceType),
       deviceName: record.device.deviceName,
+      // DeviceLinkDeviceInfo doesn't persist browser/OS names separately (only
+      // the combined deviceName) — the login-detected copy gracefully degrades
+      // to "a new device" for QR-linked logins, same as any UA it can't parse.
+      browserName: null,
+      osName: null,
       osVersion: record.device.os,
       appVersion: record.device.appVersion,
       ipAddress: record.device.ipAddress,

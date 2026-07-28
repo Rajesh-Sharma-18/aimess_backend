@@ -35,18 +35,26 @@ describe("buildNewLoginNotification", () => {
       deviceName: "Chrome · Windows",
       deviceType: "WEB",
       ipAddress: "203.0.113.42",
+      browser: "Chrome",
+      os: "Windows",
+      countryCode: "IN",
     });
 
     expect(out.userId).toBe("user-1");
     expect(out.type).toBe(AuthEvents.SECURITY_NEW_LOGIN);
     expect(out.bypassSettings).toBe(true);
     expect(out.title).toBe("Login Detected");
-    expect(out.body).toContain("Chrome · Windows");
+    expect(out.body).toBe(
+      "New login detected on a chrome from India. If this wasn't you, Terminate Session"
+    );
     expect(out.data).toMatchObject({
       actionType: "SESSION_CREATED",
       sessionId: "sess-9",
       deviceName: "Chrome · Windows",
       platform: "WEB",
+      browser: "Chrome",
+      os: "Windows",
+      location: "India",
       ip: "203.0.x.x",
       createdAt: "2026-07-14T10:00:00.000Z",
     });
@@ -58,8 +66,10 @@ describe("buildNewLoginNotification", () => {
       at: "2026-07-14T10:00:00.000Z",
     });
 
-    expect(out.body).toContain("a new device");
-    expect(out.data).toEqual({
+    expect(out.body).toBe(
+      "New login detected on a new device. If this wasn't you, Terminate Session"
+    );
+    expect(out.data).toMatchObject({
       actionType: "SESSION_CREATED",
       createdAt: "2026-07-14T10:00:00.000Z",
     });

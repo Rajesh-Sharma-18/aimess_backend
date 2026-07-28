@@ -227,14 +227,12 @@ export const callCopy = {
 };
 
 export const authCopy = {
-  newLogin: (device?: string | null, location?: string | null) => {
-    const where = location
-      ? `${device || "A new device"} · ${location}`
-      : device || "A new device";
-    return {
-      title: "New login",
-      body: `${where}. Not you? Review your devices.`,
-    } satisfies NotificationCopy;
+  newLogin: (browser?: string | null, location?: string | null) => {
+    const onA = browser ? `a ${browser.toLowerCase()}` : "a new device";
+    const body = location
+      ? `New login detected on ${onA} from ${location}. If this wasn't you, Terminate Session`
+      : `New login detected on ${onA}. If this wasn't you, Terminate Session`;
+    return { title: "Login Detected", body } satisfies NotificationCopy;
   },
   passwordChanged: (): NotificationCopy => ({
     title: "Password changed",
