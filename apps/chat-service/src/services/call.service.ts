@@ -286,6 +286,8 @@ export class CallService {
       callerAvatar: callerSnapshot.avatarUrl,
       callType: params.type || CallType.AUDIO,
       initiatedAt: now.getTime(),
+      livekitUrl: calleeCreds.url,
+      token: calleeCreds.token,
     });
 
     return { ...call, livekit: callerCreds };

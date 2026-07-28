@@ -26,6 +26,8 @@ interface CallIncomingPayload {
   callerAvatar: string;
   callType: string;
   initiatedAt: number;
+  livekitUrl?: string;
+  token?: string;
 }
 
 interface CallMissedPayload {
@@ -104,6 +106,11 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
       initiatedAt: String(data.initiatedAt ?? ""),
       idempotencyKey: data.callId,
       deepLink,
+      // Lets a push-woken client join LiveKit without waiting for its socket.
+      // `?? ""` — messages queued by the previous producer lack these, and FCM
+      // rejects non-string data values.
+      livekitUrl: data.livekitUrl ?? "",
+      token: data.token ?? "",
     },
   });
 }
