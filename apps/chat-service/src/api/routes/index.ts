@@ -8,6 +8,7 @@ import { createGroupMessageRoutes } from "./group-message.routes.js";
 import { createGroupMemberRoutes } from "./group-member.routes.js";
 import { createGroupInviteLinkRoutes } from "./group-invite-link.routes.js";
 import { createNotificationRoutes } from "./notification.routes.js";
+import { createUnreadSummaryRoutes } from "./unread-summary.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
 import { createCommunityV2Routes } from "./community-v2.routes.js";
 import {
@@ -28,6 +29,7 @@ import type { GroupMessageController } from "../controllers/group-message.contro
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
 import type { GroupInviteLinkController } from "../controllers/group-invite-link.controller.js";
 import type { NotificationController } from "../controllers/notification.controller.js";
+import type { UnreadSummaryController } from "../controllers/unread-summary.controller.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 import type { CallController } from "../controllers/call.controller.js";
@@ -44,6 +46,7 @@ export interface Controllers {
   groupMemberCtrl: GroupMemberController;
   groupInviteLinkCtrl: GroupInviteLinkController;
   notificationCtrl: NotificationController;
+  unreadSummaryCtrl: UnreadSummaryController;
   communityCtrl: CommunityController;
   communityMessageCtrl: CommunityMessageController;
   callCtrl: CallController;
@@ -87,6 +90,10 @@ export function createRoutes(controllers: Controllers): Router {
   router.use(
     `${basePath}/notifications`,
     createNotificationRoutes(controllers.notificationCtrl)
+  );
+  router.use(
+    `${basePath}/unread-summary`,
+    createUnreadSummaryRoutes(controllers.unreadSummaryCtrl)
   );
   router.use(
     `${basePath}/community`,

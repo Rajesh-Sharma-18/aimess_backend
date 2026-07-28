@@ -31,6 +31,9 @@ import { PrivateMessageReportRepository } from "./repositories/private-message-r
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
 import { InboxService } from "./services/inbox.service.js";
+import { UnreadSummaryService } from "./services/unread-summary.service.js";
+import { registerUnreadSummaryPusher } from "./events/unread-summary-bridge.js";
+import { publishChatUserEvent } from "@aimess/redis";
 import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
@@ -70,6 +73,7 @@ import { GroupMessageController } from "./api/controllers/group-message.controll
 import { GroupMemberController } from "./api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "./api/controllers/group-invite-link.controller.js";
 import { NotificationController } from "./api/controllers/notification.controller.js";
+import { UnreadSummaryController } from "./api/controllers/unread-summary.controller.js";
 import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
 import { CallController } from "./api/controllers/call.controller.js";
@@ -517,6 +521,29 @@ const startServer = async () => {
     // Unified inbox = private rooms + group chats merged by lastMessageAt
     const inboxService = new InboxService(privateRoomService, groupRoomService);
 
+    // Cross-module unread totals for the Chats/Community nav badges.
+    const unreadSummaryService = new UnreadSummaryService(
+      privateRoomService,
+      groupRoomService,
+      communityMessageService
+    );
+    // Wire the bridge (see events/unread-summary-bridge.ts) so every
+    // publishConvUpdated/publishCommunityUpdated call site and the private/
+    // group/community mark-read paths can push a fresh summary without each
+    // needing UnreadSummaryService injected directly.
+    registerUnreadSummaryPusher((userId) => {
+      void unreadSummaryService
+        .getUnreadSummary(userId)
+        .then((summary) =>
+          publishChatUserEvent(redis, userId, "chat:unread_summary", summary)
+        )
+        .catch((err) => {
+          logger.warn(
+            `chat:unread_summary push failed for ${userId}: ${String(err)}`
+          );
+        });
+    });
+
     // V2 §3.3: per-conversation seq-based incremental sync (REST catch-up)
     const syncService = new SyncService(
       privateMessageService,
@@ -587,6 +614,7 @@ const startServer = async () => {
         groupMemberService
       ),
       notificationCtrl: new NotificationController(notificationService),
+      unreadSummaryCtrl: new UnreadSummaryController(unreadSummaryService),
       communityCtrl: new CommunityController(communityRoomService),
       communityMessageCtrl: new CommunityMessageController(
         communityMessageService,

@@ -22,6 +22,7 @@ import {
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
 import {
@@ -856,6 +857,9 @@ export function createMessagingImpl(
             .catch((e: unknown) =>
               logger.warn(`read_sync publish failed: ${String(e)}`)
             );
+
+          // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
+          notifyUnreadChanged(req.readerId);
 
           callback(null, { updatedCount: 1 });
         } catch (err) {

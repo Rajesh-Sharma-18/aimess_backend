@@ -37,6 +37,7 @@ import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { GroupInviteLinkService } from "../../src/services/group-invite-link.service.js";
 import { GroupPinService } from "../../src/services/group-pin.service.js";
 import { NotificationService } from "../../src/services/notification.service.js";
+import { UnreadSummaryService } from "../../src/services/unread-summary.service.js";
 import { CommunityRoomService } from "../../src/services/community-room.service.js";
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
@@ -55,6 +56,7 @@ import { GroupMessageController } from "../../src/api/controllers/group-message.
 import { GroupMemberController } from "../../src/api/controllers/group-member.controller.js";
 import { GroupInviteLinkController } from "../../src/api/controllers/group-invite-link.controller.js";
 import { NotificationController } from "../../src/api/controllers/notification.controller.js";
+import { UnreadSummaryController } from "../../src/api/controllers/unread-summary.controller.js";
 import { CommunityController } from "../../src/api/controllers/community.controller.js";
 import { CommunityMessageController } from "../../src/api/controllers/community-message.controller.js";
 import { CallController } from "../../src/api/controllers/call.controller.js";
@@ -357,6 +359,11 @@ export function buildApp(): BuiltApp {
   );
 
   const inboxService = new InboxService(privateRoomService, groupRoomService);
+  const unreadSummaryService = new UnreadSummaryService(
+    privateRoomService,
+    groupRoomService,
+    communityMessageService
+  );
   const syncService = new SyncService(
     privateMessageService,
     groupMessageService
@@ -398,6 +405,7 @@ export function buildApp(): BuiltApp {
       groupMemberService
     ),
     notificationCtrl: new NotificationController(notificationService),
+    unreadSummaryCtrl: new UnreadSummaryController(unreadSummaryService),
     communityCtrl: new CommunityController(communityRoomService),
     communityMessageCtrl: new CommunityMessageController(
       communityMessageService,

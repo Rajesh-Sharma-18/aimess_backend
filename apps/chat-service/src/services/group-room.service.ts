@@ -574,6 +574,29 @@ export class GroupRoomService {
     ).length;
   }
 
+  /**
+   * Total unread group messages across every group the user's an active
+   * member of — for the Chats nav badge. Same membership lookup + visibility
+   * filter as countUserGroups, summing each membership's already-maintained
+   * `unreadCount` instead of counting rooms.
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return 0;
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const unreadByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.unreadCount])
+    );
+    const rows = await this.roomRepo.findLastMessageAtForRooms([
+      ...clearedByRoom.keys(),
+    ]);
+    return rows
+      .filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)))
+      .reduce((sum, r) => sum + (unreadByRoom.get(r.roomId) ?? 0), 0);
+  }
+
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,

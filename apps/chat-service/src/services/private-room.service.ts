@@ -789,6 +789,10 @@ export class PrivateRoomService {
     return this.privateRoomRepo.countConversations(userId);
   }
 
+  async sumUnreadForUser(userId: string): Promise<number> {
+    return this.privateRoomRepo.sumUnreadForUser(userId);
+  }
+
   async deleteForMe(roomId: string, userId: string): Promise<void> {
     const room = await this.privateRoomRepo.findByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");

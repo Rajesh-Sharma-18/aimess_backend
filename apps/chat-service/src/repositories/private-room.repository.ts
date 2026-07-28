@@ -168,9 +168,7 @@ export class PrivateRoomRepository {
    * no ordering — just enough to walk and call markDeliveredUpTo per room.
    * 500 cap so a whale user's connect never blocks the presence recompute.
    */
-  async findParticipatingRoomHeads(
-    userId: string
-  ): Promise<
+  async findParticipatingRoomHeads(userId: string): Promise<
     Array<{
       roomId: string;
       lastMessageId: string | null;
@@ -240,6 +238,33 @@ export class PrivateRoomRepository {
       select: { deletedFor: true, lastMessageAt: true },
     });
     return rows.filter((r) => isVisibleAfterDeleteForMe(r, userId)).length;
+  }
+
+  /**
+   * Total unread private messages across every room the user's in — for the
+   * Chats nav badge. Same unbounded shape as countConversations (a badge
+   * total must cover every room, not one inbox page) plus the exact
+   * `unreadByUser[userId] ?? 0` read PrivateRoomService.toPrivateItem already
+   * uses per-row, just summed here instead of listed.
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const rows = await this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: {
+        deletedFor: true,
+        lastMessageAt: true,
+        unreadCountByUser: true,
+      },
+    });
+    return rows
+      .filter((r) => isVisibleAfterDeleteForMe(r, userId))
+      .reduce((sum, r) => {
+        const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
+          string,
+          number
+        >;
+        return sum + (unreadByUser[userId] ?? 0);
+      }, 0);
   }
 
   /**

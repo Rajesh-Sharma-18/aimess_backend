@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
 import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
+import { notifyUnreadChanged } from "./unread-summary-bridge.js";
 
 /**
  * WhatsApp/Telegram-style "bump-to-top" fan-out for the inbox/community list.
@@ -224,6 +225,10 @@ export async function publishConvUpdated(
         onlineById && otherParticipant
           ? !(onlineById.get(otherParticipant) ?? false)
           : undefined;
+      // Nav-badge total changed for this recipient — single choke point for
+      // every conv:updated caller (REST controllers, gRPC handlers, system
+      // messages), see unread-summary-bridge.ts.
+      if (unread) notifyUnreadChanged(recipientId);
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -347,6 +352,9 @@ export async function publishCommunityUpdated(
         p.selfPreview && p.subjectUserId && memberId === p.subjectUserId
           ? { ...p.preview, text: p.selfPreview }
           : p.preview;
+      const unread = isSystem ? false : memberId !== p.senderId;
+      // Nav-badge total changed for this member — see unread-summary-bridge.ts.
+      if (unread) notifyUnreadChanged(memberId);
       pipeline.publish(
         `user:${memberId}`,
         JSON.stringify({
@@ -359,7 +367,7 @@ export async function publishCommunityUpdated(
             lastMessageAt: p.lastMessageAt,
             senderId,
             senderName,
-            unread: isSystem ? false : memberId !== p.senderId,
+            unread,
           },
         })
       );

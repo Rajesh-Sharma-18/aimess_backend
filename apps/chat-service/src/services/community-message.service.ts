@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { redis } from "../config/redis.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -795,6 +796,28 @@ export class CommunityMessageService {
    * bulk query per concern — no N+1 (banned rooms' cutoff resolution is the one
    * per-room exception, batched concurrently).
    */
+  /**
+   * Total unread community messages across every community the user's an
+   * ACTIVE member of — for the Community nav badge. Reuses the same
+   * countUnreadBulk primitive getChatSummaries already uses per-community,
+   * just summed instead of returned per-room; no banned-cutoff clamping
+   * since a banned member doesn't contribute to the badge (see
+   * RoomMemberRepository.findActiveByUser).
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const members = await this.memberRepo.findActiveByUser(userId);
+    if (!members.length) return 0;
+    const unreadMap = await this.messageRepo.countUnreadBulk({
+      userId,
+      thresholds: members.map((m) => ({
+        roomId: m.roomId,
+        afterDate: m.lastReadAt ?? new Date(0),
+        beforeDate: null,
+      })),
+    });
+    return Object.values(unreadMap).reduce((sum, u) => sum + u.count, 0);
+  }
+
   async getChatSummaries(params: {
     userId: string;
     communityIds: string[];
@@ -2658,6 +2681,9 @@ export class CommunityMessageService {
           `CommunityMessageService|markMessageRead|redis publish user failed: ${String(err)}`
         );
       });
+
+    // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
+    notifyUnreadChanged(params.readerId);
 
     return { ok: true, communityId: params.communityId, readAt };
   }
