@@ -78,6 +78,9 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     // A ring is worthless once it has stopped ringing — expire with the
     // ringing window rather than sitting in FCM for 24h.
     ttl: env.CALL_RINGING_TIMEOUT_SEC,
+    // Live ring — iOS VOIP tokens get an APNs VoIP push (required for reliable
+    // wake); see PushInput.allowVoip docs for why this must stay opt-in.
+    allowVoip: true,
     // Calls are live events, not Notification Center entries. (CALL_INCOMING
     // is not on the inbox allowlist either — this makes the intent explicit.)
     skipInbox: true,
@@ -170,6 +173,9 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
     priority: "high",
     ttl: 30,
     collapseKey: `call:${data.callId}`,
+    // Dismiss a stale VoIP ring on iOS too — same live-event exception as
+    // handleCallIncoming's allowVoip.
+    allowVoip: true,
     data: {
       type: "CALL_CANCELLED",
       callId: data.callId,

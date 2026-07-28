@@ -8,6 +8,7 @@ import {
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
+import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
 import {
   isCommunityActiveMember,
@@ -160,6 +161,15 @@ export interface PushInput {
    * category with generic community events but must gate on `chatEnabled`).
    */
   communityPrefField?: CommunityPrefField;
+  /**
+   * When true, a recipient's registered VOIP (iOS PushKit) token is sent an
+   * APNs VoIP push instead of being skipped. MUST be true only for an actual
+   * live-ringing event (incoming call / cancel-the-ring) — Apple requires
+   * every VoIP push to trigger CallKit's incoming-call UI, and can revoke the
+   * app's VoIP entitlement if VoIP pushes are used for anything else (missed
+   * call, chat message, etc.).
+   */
+  allowVoip?: boolean;
 }
 
 /**
@@ -191,6 +201,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     showPreviewOverride,
     skipInbox = false,
     dataOnly = false,
+    allowVoip = false,
   } = input;
 
   let body = input.body;
@@ -296,7 +307,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   }
 
   // Load all device tokens for this user.
-  let rawTokens: string[];
+  let rawTokens: { token: string; tokenType: string }[];
   try {
     rawTokens = await deviceTokenService.getTokensForUser(userId);
   } catch (error) {
@@ -307,7 +318,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
-  const tokens = [...new Set(rawTokens)];
+  const tokens = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
 
   // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
   // registered device, so nothing can ever be delivered no matter what the rest
@@ -323,18 +334,28 @@ export async function pushToUser(input: PushInput): Promise<void> {
   );
 
   await Promise.all(
-    tokens.map(async (token) => {
-      const result = await sendPush({
-        token,
-        title,
-        body,
-        data,
-        deepLink,
-        collapseKey,
-        ttl,
-        priority,
-        dataOnly,
-      });
+    tokens.map(async ({ token, tokenType }) => {
+      // VOIP tokens are iOS PushKit tokens registered only for call ringing —
+      // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and
+      // ONLY for an event explicitly marked allowVoip (see PushInput docs).
+      // A VOIP token is not a valid FCM channel either, so anything else for
+      // that token is skipped rather than misdelivered.
+      if (tokenType === "VOIP" && !allowVoip) return;
+
+      const result =
+        tokenType === "VOIP"
+          ? await sendVoipPush({ token, data: data ?? {}, ttl })
+          : await sendPush({
+              token,
+              title,
+              body,
+              data,
+              deepLink,
+              collapseKey,
+              ttl,
+              priority,
+              dataOnly,
+            });
       if (result.invalidToken) {
         try {
           await deviceTokenService.pruneToken(token);

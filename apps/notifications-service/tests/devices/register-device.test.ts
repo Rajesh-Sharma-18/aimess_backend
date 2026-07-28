@@ -64,6 +64,7 @@ describe("POST /v1/devices", () => {
       userId: TEST_USER_ID,
       token: validBody.token,
       platform: "ANDROID",
+      tokenType: "FCM",
       deviceId: "device-001",
     });
   });

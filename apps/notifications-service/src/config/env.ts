@@ -44,6 +44,13 @@ const envSchema = z.object({
   FIREBASE_CLIENT_EMAIL: z.string(),
   FIREBASE_PRIVATE_KEY: z.string(),
 
+  // APNs VoIP push (iOS call ringing) — token-based (.p8) auth.
+  APNS_KEY_ID: z.string(),
+  APNS_TEAM_ID: z.string(),
+  APNS_BUNDLE_ID: z.string(),
+  APNS_PRIVATE_KEY: z.string(),
+  APNS_PRODUCTION: z.coerce.boolean().default(false),
+
   SMTP_HOST: z.string(),
   SMTP_PORT: z.coerce.number(),
   SMTP_USER: z.string(),

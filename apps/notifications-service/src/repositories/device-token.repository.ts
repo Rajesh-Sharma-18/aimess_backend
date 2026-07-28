@@ -1,12 +1,19 @@
 import { prisma } from "../config/prisma.js";
 
 export type DeviceTokenPlatform = "ANDROID" | "IOS" | "WEB";
+export type DeviceTokenType = "FCM" | "VOIP";
 
 export interface UpsertDeviceTokenInput {
   userId: string;
   token: string;
   platform: DeviceTokenPlatform;
+  tokenType: DeviceTokenType;
   deviceId?: string | null;
+}
+
+export interface DeviceTokenRow {
+  token: string;
+  tokenType: string;
 }
 
 export const deviceTokenRepository = {
@@ -20,6 +27,7 @@ export const deviceTokenRepository = {
       update: {
         userId: input.userId,
         platform: input.platform,
+        tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
         lastSeenAt: new Date(),
       },
@@ -27,18 +35,21 @@ export const deviceTokenRepository = {
         token: input.token,
         userId: input.userId,
         platform: input.platform,
+        tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
       },
     });
   },
 
-  /** All active tokens for a user (used to fan a push out across devices). */
-  async findTokensByUserId(userId: string): Promise<string[]> {
-    const rows = await prisma.deviceToken.findMany({
+  /**
+   * All active tokens for a user (used to fan a push out across devices).
+   * Includes `tokenType` so callers can branch VoIP (APNs) vs FCM delivery.
+   */
+  async findTokensByUserId(userId: string): Promise<DeviceTokenRow[]> {
+    return prisma.deviceToken.findMany({
       where: { userId },
-      select: { token: true },
+      select: { token: true, tokenType: true },
     });
-    return rows.map((r) => r.token);
   },
 
   /** Remove a single token (explicit unregister, or pruning a dead FCM token). */

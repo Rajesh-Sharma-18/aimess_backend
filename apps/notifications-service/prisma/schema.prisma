@@ -24,6 +24,9 @@ model DeviceToken {
   userId     String
   token      String   @unique
   platform   String
+  // "FCM" (default) for regular push, "VOIP" for an iOS PushKit token used
+  // only for call-ringing pushes over APNs (never FCM).
+  tokenType  String   @default("FCM")
   deviceId   String?
   lastSeenAt DateTime @default(now())
   createdAt  DateTime @default(now())
