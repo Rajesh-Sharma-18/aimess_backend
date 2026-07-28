@@ -945,27 +945,56 @@ export class PrivateMessageRepository {
     limit: number;
     cutoff?: Date;
   }): Promise<PrivateMessage[]> {
-    const mediaTypes = MEDIA_MESSAGE_TYPES;
     const createdAt: { lt?: Date; gt?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
-    const messages = await this.prisma.privateMessage.findMany({
+    const createdAtFilter = Object.keys(createdAt).length ? { createdAt } : {};
+    const notDeletedFor = (msg: PrivateMessage) =>
+      !(params.userId in ((msg.deletedFor ?? {}) as Record<string, unknown>));
+
+    // "link" = TEXT messages that carry at least one URL — filtered in-memory.
+    // Fetch 5× limit since only a fraction of TEXT messages contain links.
+    if (params.type === "link") {
+      const msgs = await this.prisma.privateMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          isDeleted: false,
+          messageType: "TEXT",
+          ...createdAtFilter,
+        },
+        orderBy: { createdAt: "desc" },
+        take: params.limit * 5,
+      });
+      return msgs
+        .filter(notDeletedFor)
+        .filter((m) => {
+          const urls =
+            ((m.content as Record<string, unknown>)?.urls as unknown[]) ?? [];
+          return urls.length > 0;
+        })
+        .slice(0, params.limit);
+    }
+
+    // Resolve composite aliases → real messageType values stored in MongoDB.
+    const typeFilter = (() => {
+      if (!params.type) return { in: [...MEDIA_MESSAGE_TYPES] };
+      if (params.type === "media")
+        return { in: ["IMAGE", "VIDEO", "GIF", "STICKER"] };
+      if (params.type === "file") return { in: ["DOCUMENT", "AUDIO"] };
+      return params.type; // raw single type (e.g. "IMAGE") — passed through
+    })();
+
+    const msgs = await this.prisma.privateMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
-        messageType: params.type ? params.type : { in: [...mediaTypes] },
-        ...(Object.keys(createdAt).length ? { createdAt } : {}),
+        messageType: typeFilter,
+        ...createdAtFilter,
       },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
     });
-
-    return messages
-      .filter((msg) => {
-        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
-        return !(params.userId in deletedFor);
-      })
-      .slice(0, params.limit);
+    return msgs.filter(notDeletedFor).slice(0, params.limit);
   }
 
   /**
