@@ -40,27 +40,30 @@ function formatUntil(iso: string): string | null {
 
 export const friendCopy = {
   requested: (requesterName?: string): NotificationCopy => ({
-    title: person(requesterName),
-    body: "Sent you a friend request",
+    title: "Friend Request",
+    body: `${person(requesterName)} has sent you a friend request.`,
   }),
   acceptedForRequester: (addresseeName?: string): NotificationCopy => ({
-    title: person(addresseeName),
-    body: "Accepted your friend request",
+    title: "Friend Request",
+    body: `You sent ${person(addresseeName)} a friend request.`,
   }),
+  /** Addressee-side copy after accept. Prefer preserving the existing
+   *  friend.requested card via gRPC in-place update; these strings are the
+   *  fallback when no prior row exists. Resolution text is in `data.resolution`. */
   acceptedForAddressee: (requesterName?: string): NotificationCopy => ({
-    title: person(requesterName),
-    body: "You are now friends!",
+    title: "Friend Request",
+    body: `${person(requesterName)} has sent you a friend request.`,
   }),
   rejected: (addresseeName?: string): NotificationCopy => ({
-    title: person(addresseeName),
-    body: "Declined your friend request",
+    title: "Friend Request",
+    body: `You sent ${person(addresseeName)} a friend request.`,
   }),
   // Used to update the ADDRESSEE's own friend.requested row in-place on reject.
-  // Title is intentionally empty — the gRPC handler preserves the existing title
-  // (the requester's name) from the stored notification row.
-  rejectedSelf: (): NotificationCopy => ({
-    title: "",
-    body: "You have declined the friend request.",
+  // Resolution text is carried in `data.resolution`; title/body fall back here
+  // only when no prior friend.requested row exists to preserve.
+  rejectedSelf: (requesterName?: string): NotificationCopy => ({
+    title: "Friend Request",
+    body: `${person(requesterName)} has sent you a friend request.`,
   }),
   cancelled: (requesterName?: string): NotificationCopy => ({
     title: person(requesterName),

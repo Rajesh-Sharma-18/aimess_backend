@@ -3679,8 +3679,8 @@ export function createNotificationImpl(
             data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
           // For friend.accepted / friend.rejected: update the existing friend.requested
-          // row in-place instead of creating a duplicate. friend.rejected preserves the
-          // original title (requester's name) so the actor display stays correct.
+          // row in-place instead of creating a duplicate. Preserve the Friend Request
+          // card title/body; resolution text lives in payload.data.resolution.
           if (req.type === "friend.rejected" && req.actorId) {
             const existing = await deps.notificationRepo.findByTypeAndActor(
               req.userId,
@@ -3693,13 +3693,16 @@ export function createNotificationImpl(
                 body?: string;
                 data?: Record<string, string>;
               };
-              const preservedTitle = existingPayload.title ?? req.title ?? "";
+              const preservedTitle =
+                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+              const preservedBody =
+                existingPayload.body?.trim() || req.body?.trim() || "";
               const updated = await deps.notificationRepo.updatePayloadAndType(
                 existing.id,
                 req.type,
                 {
                   title: preservedTitle,
-                  body: req.body ?? "",
+                  body: preservedBody,
                   data: { ...(existingPayload.data ?? {}), ...data },
                 }
               );
@@ -3714,7 +3717,7 @@ export function createNotificationImpl(
                       userId: req.userId,
                       type: req.type,
                       title: preservedTitle,
-                      body: req.body ?? "",
+                      body: preservedBody,
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
                       // No navigation on decline — the notification is terminal.
@@ -3739,10 +3742,23 @@ export function createNotificationImpl(
               req.actorId
             );
             if (existing) {
+              const existingPayload = (existing.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const preservedTitle =
+                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+              const preservedBody =
+                existingPayload.body?.trim() || req.body?.trim() || "";
               const updated = await deps.notificationRepo.updatePayloadAndType(
                 existing.id,
                 req.type,
-                { title: req.title ?? "", body: req.body ?? "", data }
+                {
+                  title: preservedTitle,
+                  body: preservedBody,
+                  data: { ...(existingPayload.data ?? {}), ...data },
+                }
               );
               if (updated) {
                 try {
@@ -3754,13 +3770,10 @@ export function createNotificationImpl(
                       notificationId: updated.id,
                       userId: req.userId,
                       type: req.type,
-                      title: req.title ?? "",
-                      body: req.body ?? "",
+                      title: preservedTitle,
+                      body: preservedBody,
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
-                      // Include updated navigation so the frontend can replace the
-                      // cached payload cleanly without rendering both the old body
-                      // ("Sent you a friend request.") and the new one together.
                       ...(parsedNavigation !== undefined
                         ? { navigation: parsedNavigation }
                         : {}),

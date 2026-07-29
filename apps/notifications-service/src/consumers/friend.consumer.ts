@@ -67,15 +67,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink: deepLinkForRequester,
+          resolution: `${p.addresseeName?.trim() || "Someone"} accepted your friend request.`,
           navigation: JSON.stringify({
             screen: "USER_PROFILE",
             userId: p.addresseeId,
           } satisfies NotificationNavigation),
         },
       });
-      // Addressee — the side who just accepted. Their own notification
-      // history entry, distinct copy (they didn't "accept" anything from
-      // their own point of view, they're just now friends).
+      // Addressee — the side who just accepted. Update their friend.requested
+      // inbox row in-place (gRPC) with a resolution line; keep the Friend Request
+      // card title/body intact.
       const deepLinkForAddressee = buildDeepLink("user", p.requesterId);
       await pushToUser({
         userId: p.addresseeId,
@@ -88,6 +89,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink: deepLinkForAddressee,
+          resolution: "You are now friends!",
           navigation: JSON.stringify({
             screen: "USER_PROFILE",
             userId: p.requesterId,
@@ -112,6 +114,8 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink,
+          resolution: "Declined your friend request",
+          resolutionTone: "danger",
           navigation: JSON.stringify({
             screen: "FRIEND_REQUESTS",
             userId: p.addresseeId,
@@ -127,10 +131,12 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        ...friendCopy.rejectedSelf(),
+        ...friendCopy.rejectedSelf(p.requesterName),
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
+          resolution: "I have declined the friend request",
+          resolutionTone: "danger",
         },
       });
       break;
