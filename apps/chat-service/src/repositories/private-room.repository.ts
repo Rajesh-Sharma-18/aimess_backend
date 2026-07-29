@@ -419,8 +419,10 @@ export class PrivateRoomRepository {
       if (currentSeq != null && upToSeq <= currentSeq) return existing;
     }
 
-    // Accurate remaining unread = inbound messages strictly newer than the boundary (reading to a
-    // non-latest message must leave unread > 0, not hard-zero).
+    // Accurate remaining unread = inbound countable messages strictly newer
+    // than the boundary (reading to a non-latest message must leave unread > 0,
+    // not hard-zero). Exclude SYSTEM / countInUnread:false so call-ended and
+    // other non-badge rows cannot leave a phantom unread after a full catch-up.
     const remainingUnread =
       upToSeq != null
         ? await this.prisma.privateMessage.count({
@@ -429,6 +431,9 @@ export class PrivateRoomRepository {
               senderId: { not: userId },
               isDeleted: false,
               sequenceNumber: { gt: upToSeq },
+              NOT: { countInUnread: false },
+              messageType: { not: "SYSTEM" },
+              systemEvent: null,
             },
           })
         : 0;

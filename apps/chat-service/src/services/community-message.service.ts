@@ -1857,6 +1857,12 @@ export class CommunityMessageService {
           newest.id,
           newest.createdAt
         )
+        .then(() => {
+          // Opening the transcript advances lastReadAt — push a fresh nav-badge
+          // summary so communityUnread drops without waiting for an explicit
+          // mark-read REST call (which does notifyUnreadChanged).
+          notifyUnreadChanged(params.userId);
+        })
         .catch((err: unknown) => {
           logger.warn(
             `CommunityMessageService|getConversation|advanceReadPointer failed: ${String(err)}`

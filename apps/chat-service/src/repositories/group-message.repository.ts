@@ -634,6 +634,17 @@ export class GroupMessageRepository {
             isDeleted: false,
             createdAt: { $gt: { $date: effectiveAfter.toISOString() } },
             deletedForUserIds: { $ne: params.userId },
+            // Own messages never count toward the caller's unread — mirrors
+            // community countUnreadBulk (`sentBy: { $ne: userId }`) and private
+            // markReadUpTo (`senderId: { not: userId }`). Without this, mark-read
+            // / getConversation recompute inflated unread whenever the user had
+            // sent anything after the new pointer.
+            senderId: { $ne: params.userId },
+            // Hard-exclude SYSTEM rows even if a legacy doc is missing
+            // countInUnread:false (UNREAD_COUNTABLE_RAW_MATCH treats missing as
+            // countable).
+            messageType: { $ne: "SYSTEM" },
+            systemEvent: null,
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },

@@ -273,8 +273,11 @@ export class PrivateMessageService {
     const isFirstMessage = !roomBefore?.lastMessageAt;
 
     // Update room with last message; unread += one per persisted row.
-    this.roomRepo
-      .updateRoomOnNewMessage({
+    // MUST await before the caller publishes conv:updated / chat:unread_summary —
+    // a fire-and-forget race left the nav badge reading a STALE sum (list +1,
+    // summary still old → private/group badge mismatch).
+    try {
+      await this.roomRepo.updateRoomOnNewMessage({
         roomId: params.roomId,
         message: {
           _id: message.id,
@@ -287,9 +290,8 @@ export class PrivateMessageService {
         },
         receiverId: params.receiverId,
         unreadIncrement,
-      })
-      .then(() => {
-        if (!isFirstMessage || !this.redis) return;
+      });
+      if (isFirstMessage && this.redis) {
         // Tell both participants a real conversation now exists — lets the
         // frontend drop the "friend suggestion" placeholder and insert the
         // room into the conversation list without a manual refresh.
@@ -300,14 +302,14 @@ export class PrivateMessageService {
             participants: [params.senderId, params.receiverId],
           },
         });
-        this.redis!.publish(`user:${params.senderId}`, payload).catch(() => {});
-        this.redis!.publish(`user:${params.receiverId}`, payload).catch(
-          () => {}
-        );
-      })
-      .catch((err: unknown) => {
-        logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
-      });
+        this.redis.publish(`user:${params.senderId}`, payload).catch(() => {});
+        this.redis
+          .publish(`user:${params.receiverId}`, payload)
+          .catch(() => {});
+      }
+    } catch (err: unknown) {
+      logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
+    }
 
     // Presence-aware delivery: if the peer has ANY authenticated socket right
     // now, the message is DELIVERED the moment it's persisted (Telegram/WhatsApp
@@ -726,6 +728,13 @@ export class PrivateMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /** Absolute per-user unread for a private room — used on conv:updated. */
+  async getUnreadCountsByUser(roomId: string): Promise<Record<string, number>> {
+    const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
+    const map = (room?.unreadCountByUser ?? {}) as Record<string, number>;
+    return { ...map };
   }
 
   /**

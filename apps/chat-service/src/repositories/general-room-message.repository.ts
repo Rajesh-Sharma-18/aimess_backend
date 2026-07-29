@@ -946,6 +946,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedBy: { $ne: params.userId },
+            // Own messages never count toward unread (parity with countUnreadBulk).
+            sentBy: { $ne: params.userId },
             // Personal system messages (e.g. "You joined") are informational only.
             visibleToUserId: null,
             // No SYSTEM message (any systemMessageType at all) counts toward

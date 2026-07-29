@@ -317,13 +317,20 @@ export class GroupMessageService {
       })
     ).length;
     if (unreadIncrement > 0) {
-      this.memberRepo
-        .incUnreadForRoom(params.roomId, params.senderId, unreadIncrement)
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
-          );
-        });
+      // Await before the caller fans conv:updated / chat:unread_summary — otherwise
+      // the summary push reads a stale sum and the Chats nav badge desyncs from
+      // the list (classic private/group badge mismatch).
+      try {
+        await this.memberRepo.incUnreadForRoom(
+          params.roomId,
+          params.senderId,
+          unreadIncrement
+        );
+      } catch (err: unknown) {
+        logger.warn(
+          `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
+        );
+      }
     }
 
     // Fire one `message:delivered` per online member so the sender's tick can
@@ -1522,13 +1529,17 @@ export class GroupMessageService {
       });
 
     if (unreadIncrement > 0) {
-      this.memberRepo
-        .incUnreadForRoom(params.targetRoomId, params.senderId, unreadIncrement)
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupMessageService|forwardMessage|incUnreadForRoom failed: ${String(err)}`
-          );
-        });
+      try {
+        await this.memberRepo.incUnreadForRoom(
+          params.targetRoomId,
+          params.senderId,
+          unreadIncrement
+        );
+      } catch (err: unknown) {
+        logger.warn(
+          `GroupMessageService|forwardMessage|incUnreadForRoom failed: ${String(err)}`
+        );
+      }
     }
 
     return withRole(message);
@@ -1642,6 +1653,14 @@ export class GroupMessageService {
     return typeof seq === "number" ? seq : 0;
   }
 
+  /** Absolute per-member unread for a group room — used on conv:updated. */
+  async getUnreadCountsByUser(roomId: string): Promise<Record<string, number>> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    const out: Record<string, number> = {};
+    for (const m of members) out[m.userId] = m.unreadCount ?? 0;
+    return out;
+  }
+
   /**
    * Every OTHER active member's current read high-water mark, as a
    * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
@@ -1687,17 +1706,19 @@ export class GroupMessageService {
     roomId: string;
     userId: string;
     upToMessageId: string;
-  }): Promise<{ readToSeq: number }> {
-    if (!isObjectId(params.upToMessageId)) return { readToSeq: 0 };
+  }): Promise<{ readToSeq: number; remainingUnread: number }> {
+    if (!isObjectId(params.upToMessageId))
+      return { readToSeq: 0, remainingUnread: 0 };
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.userId
     );
-    if (!member) return { readToSeq: 0 };
+    if (!member) return { readToSeq: 0, remainingUnread: 0 };
 
     const message = await this.messageRepo.findById(params.upToMessageId);
-    if (!message || message.roomId !== params.roomId) return { readToSeq: 0 };
+    if (!message || message.roomId !== params.roomId)
+      return { readToSeq: 0, remainingUnread: 0 };
 
     const remainingUnread = await this.messageRepo
       .countUnreadAfter({
@@ -1722,7 +1743,10 @@ export class GroupMessageService {
     );
 
     const seq = (message as { sequenceNumber?: number }).sequenceNumber;
-    return { readToSeq: typeof seq === "number" ? seq : 0 };
+    return {
+      readToSeq: typeof seq === "number" ? seq : 0,
+      remainingUnread,
+    };
   }
 
   async getMessageReactions(params: {

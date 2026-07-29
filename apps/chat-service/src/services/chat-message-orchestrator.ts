@@ -458,12 +458,16 @@ export class ChatMessageOrchestrator {
           ...bumpBase,
           fetchRecipients: () =>
             this.groupMessageService.getActiveMemberIds(params.roomId),
+          resolveUnreadCounts: () =>
+            this.groupMessageService.getUnreadCountsByUser(params.roomId),
         });
       } else {
         publishConvUpdatedSafe({
           ...bumpBase,
           recipientIds: [params.senderId, params.receiverId ?? ""],
           getIsOnline: this.getIsOnline(),
+          resolveUnreadCounts: () =>
+            this.privateMessageService.getUnreadCountsByUser(params.roomId),
         });
       }
 
@@ -1170,7 +1174,7 @@ export class ChatMessageOrchestrator {
 
     // Assigned in both branches below before it's read — no initializer needed.
     let readToSeq: number;
-    let unreadCount = 0;
+    let unreadCount: number;
     // The room's CURRENT last-message seq, and every OTHER active
     // participant/member (the sender(s) whose OWN tick needs to flip to READ) —
     // mirrors the gRPC `markMessagesRead` handler exactly, see its comments.
@@ -1178,11 +1182,13 @@ export class ChatMessageOrchestrator {
     let lastMessageSeq: number;
     let otherUserIds: string[];
     if (conversationType === "GROUP") {
-      ({ readToSeq } = await this.groupMessageService.markReadUpTo({
+      const groupRead = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
         userId: params.readerId,
         upToMessageId: params.upToMessageId,
-      }));
+      });
+      readToSeq = groupRead.readToSeq;
+      unreadCount = groupRead.remainingUnread;
       const [members, lastSeq] = await Promise.all([
         this.groupMessageService
           .getActiveMemberIds(params.roomId)
