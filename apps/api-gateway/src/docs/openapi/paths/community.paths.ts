@@ -676,7 +676,17 @@ export const communityPaths = {
         "where `dateTime` is **epoch milliseconds** and `message` is a list-screen " +
         "preview (text content, or a placeholder like '📷 Photo' for media). If " +
         "chat-service is unavailable the endpoint degrades gracefully (all items " +
-        "get `0` / `null`).",
+        "get `0` / `null`).\n\n" +
+        "**Mute field notes (joined mode `CommunityListItem`):**\n" +
+        "- `isMuted` — caller's self-service **notification mute** (mute-bell / " +
+        '"Mute Notifications"; silences pushes). There is no `notificationsMuted` ' +
+        "alias — use `isMuted` only.\n" +
+        "- `muteUntil` — when that notification mute expires (ISO-8601). " +
+        "`null` = not muted OR muted indefinitely — use `isMuted` to disambiguate.\n" +
+        "- `isMemberMuted` — **moderation mute**: an admin/mod silenced the caller " +
+        "(can still read, cannot post). Not the mute-bell toggle.\n" +
+        "- `memberMutedUntil` — when that moderation mute expires. " +
+        "`null` = indefinite when `isMemberMuted` is true, or not muted.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

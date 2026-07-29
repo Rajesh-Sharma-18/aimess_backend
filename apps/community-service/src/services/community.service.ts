@@ -882,7 +882,6 @@ async function loadMuteMap(
 /** Derive the caller-facing mute + notification-preference fields from a (possibly absent) mute row. */
 function muteFields(muteRow: MuteRowFragment): {
   isMuted: boolean;
-  notificationsMuted: boolean;
   muteUntil: string | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
@@ -891,8 +890,6 @@ function muteFields(muteRow: MuteRowFragment): {
   const muted = isMuteRowActive(muteRow);
   return {
     isMuted: muted,
-    // Alias of `isMuted` for FE clients using the Telegram-style naming.
-    notificationsMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
     streamEnabled: muteRow?.streamEnabled ?? true,
     chatEnabled: muteRow?.chatEnabled ?? true,

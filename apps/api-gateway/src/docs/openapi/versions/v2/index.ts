@@ -15,9 +15,8 @@ const myCommunitiesV2 = {
     operationId: "listMyCommunitiesV2",
     summary: "List my communities (joined) / search — Cursor V2",
     description:
-      "V2 of `GET /api/v1/communities/mine`. **Response body is unchanged** " +
-      "(`MyCommunitiesResponseData` for joined mode, `CommunityDiscoverResponseData` " +
-      "for search mode); only the joined-mode pagination contract changed.\n\n" +
+      "V2 of `GET /api/v1/communities/mine`. Joined-mode pagination uses a " +
+      "gap-safe compound cursor; search mode matches v1.\n\n" +
       "**Joined mode (default, no `q`/`categoryId`)** — communities where you are " +
       "an ACTIVE member, ordered by `lastActivityAt`. Replaces v1's `before_ts`/" +
       "`after_ts` with a single opaque **compound cursor** " +
@@ -26,9 +25,20 @@ const myCommunitiesV2 = {
       "`lastActivityAt` millisecond can no longer skip or duplicate across a page " +
       "edge (the v1 leak). Treat `cursor` as OPAQUE: omit it for the newest page, " +
       "then feed the returned `nextCursor` back verbatim. A bare epoch-ms is also " +
-      "accepted for a coarse first jump.\n\n" +
+      "accepted for a coarse first jump. Returns `MyCommunitiesResponseData` " +
+      "(`CommunityListItem` rows).\n\n" +
       "**Search mode (`q` and/or `categoryId`)** — identical to v1 search mode " +
-      "(PUBLIC + joined PRIVATE, offset/page pagination).",
+      "(PUBLIC + joined PRIVATE, offset/page pagination).\n\n" +
+      "**Mute field notes (`CommunityListItem`):**\n" +
+      "- `isMuted` — caller's self-service **notification mute** (mute-bell / " +
+      '"Mute Notifications"; silences pushes). There is no `notificationsMuted` ' +
+      "alias — use `isMuted` only.\n" +
+      "- `muteUntil` — when that notification mute expires (ISO-8601). " +
+      "`null` = not muted OR muted indefinitely — use `isMuted` to disambiguate.\n" +
+      "- `isMemberMuted` — **moderation mute**: an admin/mod silenced the caller " +
+      "(can still read, cannot post). Not the mute-bell toggle.\n" +
+      "- `memberMutedUntil` — when that moderation mute expires. " +
+      "`null` = indefinite when `isMemberMuted` is true, or not muted.",
     security: [{ bearerAuth: [] }],
     parameters: [
       { $ref: "#/components/parameters/LanguageHeader" },

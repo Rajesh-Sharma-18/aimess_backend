@@ -5458,6 +5458,14 @@ export const openApiSchemas = {
   // ===========================================================================
   CommunityData: {
     type: "object",
+    description:
+      "Full community detail.\n\n" +
+      "**Mute fields (do not confuse these):**\n" +
+      "- `isMuted` / `muteUntil` — caller's self-service **notification mute** " +
+      '("Mute Notifications"; silences pushes). `muteUntil` null = not muted OR ' +
+      "muted indefinitely — use `isMuted` to disambiguate.\n" +
+      "- `isMemberMuted` / `memberMutedUntil` — **moderation mute** (admin/mod " +
+      "silenced the caller; can still read, cannot post). Distinct from `isMuted`.",
     properties: {
       id: { type: "string" },
       name: { type: "string" },
@@ -5505,18 +5513,20 @@ export const openApiSchemas = {
       },
       isMuted: {
         type: "boolean",
-        description: "True if the caller has any mute row for this community.",
-      },
-      notificationsMuted: {
-        type: "boolean",
-        description: "Spec-aligned alias of `isMuted`.",
+        description:
+          "Caller's self-service notification mute for this community " +
+          '("Mute Notifications" — silences push/in-app notifications). ' +
+          "True while an active CommunityMuteSetting mute is in effect. " +
+          "Distinct from `isMemberMuted` (admin/moderator silenced the caller — cannot post).",
       },
       muteUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "When the caller's mute expires; null = not muted OR muted indefinitely (use isMuted to disambiguate).",
+          "When the caller's notification mute (`isMuted`) expires (ISO-8601). " +
+          "null = not muted OR muted indefinitely — use `isMuted` to disambiguate. " +
+          "Not related to moderation mute expiry (`memberMutedUntil`).",
       },
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
@@ -5567,14 +5577,18 @@ export const openApiSchemas = {
       isMemberMuted: {
         type: "boolean",
         description:
-          "True when the CALLER is currently under a moderation mute in this community (admin/moderator silenced them — they can still read but cannot post). Distinct from isMuted which is the caller's notification mute (push silence).",
+          "True when an admin/moderator has silenced the CALLER in this community " +
+          "(can still read, cannot post / send). Distinct from `isMuted`, which is " +
+          "the caller's own notification mute (push silence).",
       },
       memberMutedUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "ISO-8601 expiry of the caller's moderation mute; null = indefinite mute (when isMemberMuted) or not muted.",
+          "When the caller's moderation mute (`isMemberMuted`) expires (ISO-8601). " +
+          "null = indefinite mute when `isMemberMuted` is true, or not muted. " +
+          "Not related to notification mute expiry (`muteUntil`).",
       },
       lastActivity: { $ref: "#/components/schemas/CommunityLastActivity" },
       createdAt: { type: "string", format: "date-time" },
@@ -5838,6 +5852,16 @@ export const openApiSchemas = {
   },
   CommunityListItem: {
     type: "object",
+    description:
+      "Joined-mode row for `GET /communities/mine` (v1 + v2).\n\n" +
+      "**Mute fields (do not confuse these):**\n" +
+      "- `isMuted` / `muteUntil` — caller's self-service **notification mute** " +
+      '("Mute Notifications" / mute-bell UI; silences pushes). `muteUntil` null = ' +
+      "not muted OR muted indefinitely — use `isMuted` to disambiguate.\n" +
+      "- `isMemberMuted` / `memberMutedUntil` — **moderation mute** (admin/mod " +
+      "silenced the caller; can still read, cannot post). Use for the " +
+      "'you are muted by mods' banner — not the mute-bell toggle.\n" +
+      "- `notificationsMuted` was removed; use `isMuted` only.",
     properties: {
       id: { type: "string" },
       name: { type: "string" },
@@ -5872,18 +5896,21 @@ export const openApiSchemas = {
       },
       isMuted: {
         type: "boolean",
-        description: "True if the caller has any mute row for this community.",
-      },
-      notificationsMuted: {
-        type: "boolean",
-        description: "Spec-aligned alias of `isMuted`.",
+        description:
+          "Caller's self-service notification mute for this community " +
+          '("Mute Notifications" — silences push/in-app notifications). ' +
+          "True while an active CommunityMuteSetting mute is in effect. " +
+          "Distinct from `isMemberMuted` (admin/moderator silenced the caller — cannot post). " +
+          "Use this for the mute-bell / mute-notifications UI on the mine list.",
       },
       muteUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "When the caller's mute expires; null = not muted OR muted indefinitely (use isMuted to disambiguate).",
+          "When the caller's notification mute (`isMuted`) expires (ISO-8601). " +
+          "null = not muted OR muted indefinitely — use `isMuted` to disambiguate. " +
+          "Not related to moderation mute expiry (`memberMutedUntil`).",
       },
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
@@ -5923,14 +5950,19 @@ export const openApiSchemas = {
       isMemberMuted: {
         type: "boolean",
         description:
-          "True when the CALLER is currently under a moderation mute in this community. Distinct from isMuted which is the caller's notification mute (push silence).",
+          "True when an admin/moderator has silenced the CALLER in this community " +
+          "(can still read, cannot post / send). Distinct from `isMuted`, which is " +
+          "the caller's own notification mute (push silence). " +
+          "Use this for the 'you are muted by mods' banner — not the mute-bell toggle.",
       },
       memberMutedUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "ISO-8601 expiry of the caller's moderation mute; null = indefinite mute (when isMemberMuted) or not muted.",
+          "When the caller's moderation mute (`isMemberMuted`) expires (ISO-8601). " +
+          "null = indefinite mute when `isMemberMuted` is true, or not muted. " +
+          "Not related to notification mute expiry (`muteUntil`).",
       },
       lastActivity: {
         allOf: [{ $ref: "#/components/schemas/CommunityLastActivity" }],
