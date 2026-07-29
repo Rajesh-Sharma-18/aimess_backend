@@ -162,6 +162,12 @@ const MessageSendSchemaBase = z.object({
 const MessageReadSchemaBase = z.object({
   conversationId: z.string().min(1),
   upToMessageId: z.string().min(1),
+  // Optional claim — chat-service resolves the authoritative type from the
+  // room-id prefix (`grp_` / `prv_`). Kept for legacy unprefixed ids.
+  conversationType: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["private", "group"]).optional()
+  ),
 });
 const MessageReactSchemaBase = z.object({
   messageId: z.string().min(1),

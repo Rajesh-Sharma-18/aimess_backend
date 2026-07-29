@@ -736,10 +736,10 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
 
           let readToSeq = 0;
           let unreadCount = 0;
@@ -755,11 +755,16 @@ export function createMessagingImpl(
           // (no extra query for PRIVATE — the room doc is already in hand).
           let otherUserIds: string[] = [];
           if (conversationType === "GROUP") {
-            ({ readToSeq } = await deps.groupMessageService.markReadUpTo({
+            // Capture remainingUnread so read_sync / chat:unread_summary stay
+            // accurate after a group open — discarding it left the nav badge
+            // stuck while the list was optimistically cleared.
+            const groupRead = await deps.groupMessageService.markReadUpTo({
               roomId: req.conversationId,
               userId: req.readerId,
               upToMessageId: req.upToMessageId,
-            }));
+            });
+            readToSeq = groupRead.readToSeq;
+            unreadCount = groupRead.remainingUnread;
             const [members, lastSeq] = await Promise.all([
               deps.groupMessageService
                 .getActiveMemberIds(req.conversationId)

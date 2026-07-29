@@ -224,6 +224,43 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     );
   });
 
+  it("markMessagesRead routes grp_ rooms to GROUP even when conversationType is missing", async () => {
+    const markReadUpTo = jest.fn(async () => ({
+      readToSeq: 7,
+      remainingUnread: 0,
+    }));
+    const markPrivateRead = jest.fn();
+    const deps = makeDeps({
+      groupMessageService: {
+        markReadUpTo,
+        getActiveMemberIds: jest.fn(async () => ["reader", "peer"]),
+        getRoomLastMessageSeq: jest.fn(async () => 7),
+      },
+      privateMessageService: {
+        markRead: markPrivateRead,
+      },
+    });
+
+    await invoke(createMessagingImpl(deps).markMessagesRead as Handler, {
+      conversationId: "grp_9ksRLM8soItjKho0",
+      readerId: "reader",
+      upToMessageId: "507f1f77bcf86cd799439011",
+      // Client historically omitted this (gateway defaulted to PRIVATE).
+      // Room-id prefix must win so group unread actually clears.
+    });
+
+    expect(markReadUpTo).toHaveBeenCalledWith({
+      roomId: "grp_9ksRLM8soItjKho0",
+      userId: "reader",
+      upToMessageId: "507f1f77bcf86cd799439011",
+    });
+    expect(markPrivateRead).not.toHaveBeenCalled();
+
+    const sync = published("read_sync");
+    expect(sync.data.conversationType).toBe("GROUP");
+    expect(sync.data.unreadCount).toBe(0);
+  });
+
   it("forwardMessage (PRIVATE) → message:new resolves sender avatar + content.files[]", async () => {
     const deps = makeDeps({
       privateMessageService: {
