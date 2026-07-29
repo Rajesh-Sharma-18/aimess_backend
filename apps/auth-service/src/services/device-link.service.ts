@@ -181,10 +181,15 @@ export const deviceLinkService = {
     const scanner = await authRepository.findRoleByUserId(userId);
     const role = scanner?.role === "ADMIN" ? "ADMIN" : "USER";
 
+    // QR linking is self-initiated from an already-authenticated device of the
+    // SAME user (spec §7) — suppress LOGIN_DETECTED / auth.security_new_login.
+    // Session, Linked Devices, audit, and session:list_updated still fire above.
     const { tokens, sessionId } = await issueAuthTokens(
       userId,
       role,
-      syntheticContext
+      syntheticContext,
+      undefined,
+      { notifyNewLogin: false }
     );
 
     // Finalize: SCANNED (just claimed above, same request) -> USED. NOT_SCANNED/

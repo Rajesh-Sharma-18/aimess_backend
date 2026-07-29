@@ -153,13 +153,23 @@ export class NotificationRepository {
    * the Notification Center's per-tab "Read All" only flips rows belonging to
    * the currently-open tab. Omit or pass `undefined` for the historical
    * mark-everything behaviour.
+   *
+   * `before` (optional watermark): only rows with `createdAt <= before` are
+   * marked — so a notification that arrives while the panel is open stays
+   * unread (spec §9.2).
    */
   async markAllRead(
     userId: string,
-    extraWhere?: Record<string, unknown>
+    extraWhere?: Record<string, unknown>,
+    before?: Date | null
   ): Promise<void> {
     await this.prisma.notification.updateMany({
-      where: { userId, isRead: false, ...(extraWhere ?? {}) },
+      where: {
+        userId,
+        isRead: false,
+        ...(before ? { createdAt: { lte: before } } : {}),
+        ...(extraWhere ?? {}),
+      },
       data: { isRead: true, readAt: new Date() },
     });
   }

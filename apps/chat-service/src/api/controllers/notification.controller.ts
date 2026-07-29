@@ -73,12 +73,21 @@ export class NotificationController {
 
   markAllRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    // Accept `type` from body OR querystring so existing callers (no body)
-    // stay on the mark-everything path (backward compatible).
-    const rawType =
-      (req.body as { type?: unknown } | undefined)?.type ?? req.query.type;
+    // Accept `type` / `before` from body OR querystring so existing callers
+    // (no body) stay on the mark-everything path (backward compatible).
+    const body = (req.body ?? {}) as { type?: unknown; before?: unknown };
+    const rawType = body.type ?? req.query.type;
+    const rawBefore = body.before ?? req.query.before;
     const category = parseCategory(rawType);
-    const result = await this.service.markAllRead(userId, category);
+    let before: Date | null = null;
+    if (typeof rawBefore === "number" && Number.isFinite(rawBefore)) {
+      before = new Date(rawBefore);
+    } else if (typeof rawBefore === "string" && rawBefore.trim()) {
+      const asNum = Number(rawBefore);
+      before = Number.isFinite(asNum) ? new Date(asNum) : new Date(rawBefore);
+      if (Number.isNaN(before.getTime())) before = null;
+    }
+    const result = await this.service.markAllRead(userId, category, before);
     res
       .status(HTTP_STATUS.OK)
       .json(

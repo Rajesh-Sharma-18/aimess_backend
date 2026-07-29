@@ -46,9 +46,9 @@ export function createRefreshTokenValue(): string {
 export type IssueAuthTokensOptions = {
   /**
    * Emit the "New login detected" security notification for this new session.
-   * Defaults to true (login / QR device-link / social login). Registration
-   * passes false — the account's very first session has no other devices to
-   * alert and self-notifying is noise.
+   * Defaults to true (password / social login). Registration and QR device-link
+   * pass false — the former has no other devices to alert; the latter is
+   * self-initiated from an already-authenticated same-user session (spec §7).
    */
   notifyNewLogin?: boolean;
 };

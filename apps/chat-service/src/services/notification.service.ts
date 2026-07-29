@@ -147,10 +147,11 @@ export class NotificationService {
    */
   async markAllRead(
     userId: string,
-    category: NotificationCategory = "ALL"
+    category: NotificationCategory = "ALL",
+    before?: Date | null
   ): Promise<{ unreadCount: number }> {
     const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
-    await this.notificationRepo.markAllRead(userId, extraWhere);
+    await this.notificationRepo.markAllRead(userId, extraWhere, before ?? null);
     const unreadCount = await this.notificationRepo.getUnreadCount(userId);
     await this.publishCountEvent(userId, "notification:all-read", unreadCount);
     return { unreadCount };

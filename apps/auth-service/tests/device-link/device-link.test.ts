@@ -223,7 +223,10 @@ describe("POST /api/auth/devices/link/scan (instant login)", () => {
         ipAddress: "203.0.113.9",
         userAgent: "browser-ua-at-initiate",
         countryCode: "IN",
-      })
+      }),
+      undefined,
+      // Spec §7 — QR self-link must not create LOGIN_DETECTED.
+      { notifyNewLogin: false }
     );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
