@@ -70,11 +70,11 @@ describe("POST /api/chat/groups (create)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("EDGE: 400 when memberLimit is below the min (2)", async () => {
+  it("EDGE: 400 when memberLimit is below the min (1)", async () => {
     const res = await request(app)
       .post("/api/chat/groups")
       .set(bearer(makeAccessToken()))
-      .send({ name: "ok", memberLimit: 1 });
+      .send({ name: "ok", memberLimit: 0 });
     expect(res.status).toBe(400);
   });
 
@@ -107,6 +107,7 @@ describe("POST /api/chat/groups (create)", () => {
     mocks.groupRoomRepo.create.mockResolvedValue({
       roomId: "grp_new",
       name: "Devs",
+      avatar: "group-avatars/grp_new/logo.png",
     });
     mocks.groupMemberRepo.create.mockResolvedValue({
       roomId: "grp_new",
@@ -117,15 +118,20 @@ describe("POST /api/chat/groups (create)", () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_new",
       name: "Devs",
+      avatar: "group-avatars/grp_new/logo.png",
       memberCount: 1,
     });
 
     const res = await request(app)
       .post("/api/chat/groups")
       .set(bearer(makeAccessToken()))
-      .send({ name: "Devs" });
+      .send({ name: "Devs", avatar: "group-avatars/grp_new/logo.png" });
 
     expect(res.status).toBe(201);
+    // Create response must resolve the logo — never return a raw object key.
+    expect(res.body.data.room.avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_new/logo.png"
+    );
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,
       expect.stringContaining("group:added")
@@ -133,6 +139,11 @@ describe("POST /api/chat/groups (create)", () => {
     const [, payload] = mocks.redis.publish.mock.calls[0];
     expect(payload).toContain('"roomId":"grp_new"');
     expect(payload).toContain('"role":"OWNER"');
+    // group:added must also carry the resolved download URL (not the raw key).
+    expect(payload).toContain(
+      "https://media.test/aimess-avatars/group-avatars/grp_new/logo.png"
+    );
+    expect(payload).not.toContain('"avatar":"group-avatars/grp_new/logo.png"');
   });
 });
 

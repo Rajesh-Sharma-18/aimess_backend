@@ -18,7 +18,11 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
+import {
+  resolveMediaUrl,
+  resolveMediaUrlMap,
+  urlFromMap,
+} from "../lib/media-resolve.js";
 import type { GroupMember } from "../generated/prisma/index.js";
 
 /** Roster row + the identity fields the FE needs to render a member without extra lookups. */
@@ -189,6 +193,9 @@ export class GroupMemberService {
       const room =
         (await this.roomRepo.findActiveByRoomId(staleRoom.roomId)) ?? null;
       if (!room) return;
+      // Resolve-on-read at the publish boundary — raw object keys must never
+      // land in the member's inbox cache (parity with createGroup / meta:updated).
+      const resolvedAvatar = await resolveMediaUrl(room.avatar);
       await publishChatUserEvent(this.redis, addedUserId, "group:added", {
         type: "GROUP",
         roomId: room.roomId,
@@ -200,7 +207,7 @@ export class GroupMemberService {
         pinnedCount: room.pinnedCount,
         peer: null,
         name: room.name,
-        avatar: room.avatar,
+        avatar: resolvedAvatar,
         description: room.description,
         memberCount: room.memberCount,
         role: member.role,
