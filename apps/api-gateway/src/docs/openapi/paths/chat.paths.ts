@@ -703,6 +703,54 @@ const privateRoomUnmute = {
   },
 };
 
+const privateRoomArchive = {
+  patch: {
+    tags: ["Chat — Private"],
+    operationId: "archivePrivateChat",
+    summary: "Archive a private chat",
+    description:
+      "Archives the conversation for the caller only (per-user). The peer is unaffected. Archived rooms are hidden from the default inbox until unarchived.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat archived", "ChatPrivateRoom"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const privateRoomUnarchive = {
+  patch: {
+    tags: ["Chat — Private"],
+    operationId: "unarchivePrivateChat",
+    summary: "Unarchive a private chat",
+    description:
+      "Restores an archived private conversation to the caller's inbox.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat unarchived", "ChatPrivateRoom"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 const privatePresence = {
   get: {
     tags: ["Chat — Private"],
@@ -873,6 +921,53 @@ const groupDisband = {
   },
 };
 
+const groupArchive = {
+  patch: {
+    tags: ["Chat — Groups"],
+    operationId: "archiveGroup",
+    summary: "Archive a group chat",
+    description:
+      "Archives the group for the caller only (per-user). Other members are unaffected.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Group archived", "ChatGroupRoom"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const groupUnarchive = {
+  patch: {
+    tags: ["Chat — Groups"],
+    operationId: "unarchiveGroup",
+    summary: "Unarchive a group chat",
+    description: "Restores an archived group to the caller's inbox.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Group unarchived", "ChatGroupRoom"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 // =============================================================================
 // Group messages
 // =============================================================================
@@ -1034,6 +1129,140 @@ const groupMemberKick = {
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
+    },
+  },
+};
+
+const groupMemberBan = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "banGroupMember",
+    summary: "Ban member from group",
+    description:
+      "Owner/admin/moderator only (must outrank the target). Sets member status to BANNED. Optional `reason` is stored on the membership.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatBanMemberRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Member banned", "ChatGroupMember"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberUnban = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "unbanGroupMember",
+    summary: "Unban member from group",
+    description:
+      "Owner/admin/moderator only. Clears the ban (status → LEFT). Does **not** re-add the user as an active member — they must rejoin via invite.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatUnbanMemberRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Member unbanned", "ChatGroupMember"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberReport = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "reportGroupMember",
+    summary: "Report a group member",
+    description:
+      "Any active member may report another member in the same group.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReportMemberRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Member reported", "ChatReportMemberResult"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberMute = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "muteGroupChat",
+    summary: "Mute group notifications",
+    description:
+      "Mutes the group for the caller only. Omit or null `muteUntil` to mute indefinitely. Parity with `POST /chat/private/rooms/{roomId}/mute`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatMuteRoomRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Group muted", "ChatGroupMember"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberUnmute = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "unmuteGroupChat",
+    summary: "Unmute group notifications",
+    description: "Removes the caller's mute on the group.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Group unmuted", "ChatGroupMember"),
+      "401": unauthorized,
+      "404": notFound,
     },
   },
 };
@@ -1347,6 +1576,57 @@ const notificationUnreadCount = {
     security: [{ bearerAuth: [] }],
     responses: {
       ...successResponse("Unread count", "ChatUnreadCountData"),
+      "401": unauthorized,
+    },
+  },
+};
+
+const notificationAction = {
+  patch: {
+    tags: ["Chat — Notifications"],
+    operationId: "recordNotificationAction",
+    summary: "Record an action on a notification",
+    description:
+      "Records the caller's decision on an actionable notification (e.g. TERMINATE / CONFIRM / REJECT / ACCEPT) with a short `body` note.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "id",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "Notification id from GET /chat/notifications.",
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            $ref: "#/components/schemas/ChatNotificationActionRequest",
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Action recorded"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const unreadSummary = {
+  get: {
+    tags: ["Chat — Inbox"],
+    operationId: "getChatUnreadSummary",
+    summary: "Get chat unread badge summary",
+    description:
+      "Returns unread counts for private, group, and community surfaces plus `chatUnread` (private + group) for the inbox badge.",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      ...successResponse("Unread summary", "ChatUnreadSummary"),
       "401": unauthorized,
     },
   },
@@ -2442,6 +2722,53 @@ const privateMessageForward = {
   },
 };
 
+const communityMessageForward = {
+  post: {
+    tags: ["Chat — Community"],
+    operationId: "forwardCommunityMessage",
+    summary: "Forward community message",
+    description:
+      "Forwards a community message into another community room. Path `roomId` is the **source** room. Idempotent via optional `clientMessageId`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+        description: "Source community room id.",
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            $ref: "#/components/schemas/ChatCommunityForwardRequest",
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse(
+        "Message forwarded",
+        "ChatCommunityWireMessage",
+        "201"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
 const privateMessageReactions = {
   get: {
     tags: ["Chat — Private"],
@@ -2918,6 +3245,7 @@ const communityMessagePin = {
 export const chatPaths = {
   // Unified inbox
   "/chat/inbox": chatInbox,
+  "/chat/unread-summary": unreadSummary,
 
   // Private messaging
   "/chat/private/conversations": privateConversations,
@@ -2930,6 +3258,8 @@ export const chatPaths = {
   "/chat/private/messages/{messageId}/report": privateMessageReport,
   "/chat/private/rooms/{roomId}/mute": privateRoomMute,
   "/chat/private/rooms/{roomId}/unmute": privateRoomUnmute,
+  "/chat/private/rooms/{roomId}/archive": privateRoomArchive,
+  "/chat/private/rooms/{roomId}/unarchive": privateRoomUnarchive,
   "/chat/private/presence/{userId}": privatePresence,
   "/chat/private/rooms/{roomId}/pins": privatePins,
 
@@ -2938,6 +3268,8 @@ export const chatPaths = {
   "/chat/groups/my-groups": groupMyGroups,
   "/chat/groups/{roomId}": groupById,
   "/chat/groups/{roomId}/disband": groupDisband,
+  "/chat/groups/{roomId}/archive": groupArchive,
+  "/chat/groups/{roomId}/unarchive": groupUnarchive,
   "/chat/groups/{roomId}/messages": groupMessages,
   "/chat/groups/{roomId}/conversation": groupConversation,
   "/chat/groups/{roomId}/media": groupMedia,
@@ -2950,8 +3282,13 @@ export const chatPaths = {
   "/chat/group-members/add": groupMemberAdd,
   "/chat/group-members/{roomId}/leave": groupMemberLeave,
   "/chat/group-members/kick": groupMemberKick,
+  "/chat/group-members/ban": groupMemberBan,
+  "/chat/group-members/unban": groupMemberUnban,
+  "/chat/group-members/report": groupMemberReport,
   "/chat/group-members/role": groupMemberRole,
   "/chat/group-members/{roomId}": groupMembers,
+  "/chat/group-members/{roomId}/mute": groupMemberMute,
+  "/chat/group-members/{roomId}/unmute": groupMemberUnmute,
 
   // Group invite links
   "/chat/invite-links": inviteLinkCreate,
@@ -2965,6 +3302,7 @@ export const chatPaths = {
   "/chat/notifications/read": notificationRead,
   "/chat/notifications/read-all": notificationReadAll,
   "/chat/notifications/unread-count": notificationUnreadCount,
+  "/chat/notifications/{id}/action": notificationAction,
 
   // Community rooms
   "/chat/community/rooms": communityRooms,
@@ -2990,6 +3328,8 @@ export const chatPaths = {
   "/chat/community/rooms/{roomId}/pins/{messageId}": communityUnpinMessage,
   "/chat/community/rooms/{roomId}/messages/{messageId}/context":
     communityMessageContext,
+  "/chat/community/rooms/{roomId}/messages/{messageId}/forward":
+    communityMessageForward,
 
   // Private — forward & reactions
   "/chat/private/rooms/{roomId}/messages/{messageId}/forward":
@@ -3011,14 +3351,4 @@ export const chatPaths = {
   // Calls
   "/chat/calls": callHistory,
   "/chat/calls/{callId}": callById,
-
-  // TODO(notifications): The notifications-service exposes device-token
-  // registration endpoints — `POST /v1/devices` and `DELETE /v1/devices/:token`
-  // (FCM token store + event-driven push). They are intentionally NOT documented
-  // here because the API gateway does not currently proxy notifications-service:
-  // the versioned service registry (apps/api-gateway/src/versioning/registry.ts)
-  // only routes `auth`, `users`, `communities`, and `chat`. Once a
-  // `notifications` segment is added to the registry, document these under a
-  // "Notifications — Devices" tag with the public gateway path (e.g.
-  // `/notifications/v1/devices`).
 };

@@ -11325,4 +11325,228 @@ export const openApiSchemas = {
     },
     required: ["friendshipsDisconnected", "usersAffected"],
   },
+
+  // --- Missing public-web surface schemas (swagger parity) ---
+
+  PublicUserProfileRelationship: {
+    type: "object",
+    description:
+      "Viewer-relative friendship summary on GET /users/{userId}. Coarser than FriendshipStatusView (`FRIEND`/`PENDING`/`NONE`).",
+    properties: {
+      friendshipId: { type: "string", format: "uuid", nullable: true },
+      status: {
+        type: "string",
+        enum: ["FRIEND", "PENDING", "NONE"],
+      },
+      direction: {
+        type: "string",
+        enum: ["OUTGOING", "INCOMING"],
+        nullable: true,
+      },
+      canAccept: { type: "boolean" },
+      canReject: { type: "boolean" },
+      canCancel: { type: "boolean" },
+    },
+    required: [
+      "friendshipId",
+      "status",
+      "direction",
+      "canAccept",
+      "canReject",
+      "canCancel",
+    ],
+  },
+  PublicUserProfileData: {
+    type: "object",
+    description:
+      "Public profile for GET /users/{userId}. Viewer-scoped — bio/counts may be null when privacy blocks them. Not the same as UserProfileData (self profile).",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      bio: { type: "string", nullable: true },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      coverImageUrl: { type: "string", format: "uri", nullable: true },
+      isOnline: { type: "boolean", nullable: true },
+      lastSeenAt: { type: "string", format: "date-time", nullable: true },
+      friendsCount: { type: "integer", nullable: true },
+      groupsCount: { type: "integer", nullable: true },
+      communitiesCount: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      relationship: {
+        $ref: "#/components/schemas/PublicUserProfileRelationship",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "firstName",
+      "lastName",
+      "isDeletedUser",
+      "relationship",
+    ],
+  },
+  FriendshipStatusView: {
+    type: "object",
+    description:
+      "GET /users/friends/status/{userId} — full friendship lifecycle including NONE/BLOCKED plus action flags.",
+    properties: {
+      friendshipId: { type: "string", format: "uuid", nullable: true },
+      status: {
+        type: "string",
+        enum: [
+          "NONE",
+          "PENDING",
+          "ACCEPTED",
+          "REJECTED",
+          "CANCELLED",
+          "UNFRIENDED",
+          "BLOCKED",
+        ],
+      },
+      direction: {
+        type: "string",
+        enum: ["OUTGOING", "INCOMING"],
+        nullable: true,
+      },
+      canAccept: { type: "boolean" },
+      canReject: { type: "boolean" },
+      canCancel: { type: "boolean" },
+    },
+    required: [
+      "friendshipId",
+      "status",
+      "direction",
+      "canAccept",
+      "canReject",
+      "canCancel",
+    ],
+  },
+  CallAllowedFriendProfile: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+    },
+    required: ["userId", "username", "firstName", "lastName"],
+  },
+  CallAllowedFriendsPage: {
+    type: "object",
+    description:
+      "Cursor page of friends allowed to call the user when call visibility is CUSTOM.",
+    properties: {
+      profiles: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CallAllowedFriendProfile" },
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Pass as `cursor` for the next page; null when exhausted.",
+      },
+    },
+    required: ["profiles", "nextCursor"],
+  },
+  ChatUnreadSummary: {
+    type: "object",
+    description:
+      "GET /chat/unread-summary — badge counts for the chat surfaces.",
+    properties: {
+      privateUnread: { type: "integer", minimum: 0 },
+      groupUnread: { type: "integer", minimum: 0 },
+      communityUnread: { type: "integer", minimum: 0 },
+      chatUnread: {
+        type: "integer",
+        minimum: 0,
+        description: "privateUnread + groupUnread (inbox badge).",
+      },
+    },
+    required: ["privateUnread", "groupUnread", "communityUnread", "chatUnread"],
+  },
+  ChatBanMemberRequest: {
+    type: "object",
+    description:
+      "POST /chat/group-members/ban — same shape as kick + optional reason.",
+    properties: {
+      roomId: { type: "string", minLength: 5, maxLength: 100 },
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+      reason: { type: "string", maxLength: 1000 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatUnbanMemberRequest: {
+    type: "object",
+    description:
+      "POST /chat/group-members/unban — clears ban (status → LEFT); does not re-add the member.",
+    properties: {
+      roomId: { type: "string", minLength: 5, maxLength: 100 },
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatReportMemberRequest: {
+    type: "object",
+    description: "POST /chat/group-members/report",
+    properties: {
+      roomId: { type: "string", minLength: 5, maxLength: 100 },
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+      reason: {
+        type: "string",
+        enum: [
+          "SPAM",
+          "HARASSMENT",
+          "HATE_SPEECH",
+          "NUDITY",
+          "VIOLENCE",
+          "SCAM",
+          "OTHER",
+        ],
+      },
+      description: { type: "string", maxLength: 1000, default: "" },
+    },
+    required: ["roomId", "userId", "reason"],
+  },
+  ChatNotificationActionRequest: {
+    type: "object",
+    description: "PATCH /chat/notifications/{id}/action",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["TERMINATE", "CONFIRM", "REJECT", "ACCEPT"],
+      },
+      body: { type: "string", minLength: 1, maxLength: 500 },
+    },
+    required: ["action", "body"],
+  },
+  ChatCommunityForwardRequest: {
+    type: "object",
+    description:
+      "POST /chat/community/rooms/{roomId}/messages/{messageId}/forward — path roomId is the SOURCE room.",
+    properties: {
+      targetCommunityId: { type: "string", minLength: 1 },
+      targetRoomId: { type: "string", minLength: 1 },
+      clientMessageId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        nullable: true,
+      },
+    },
+    required: ["targetCommunityId", "targetRoomId"],
+  },
+  ChatReportMemberResult: {
+    type: "object",
+    properties: {
+      ok: { type: "boolean", enum: [true] },
+    },
+    required: ["ok"],
+  },
 } as const;
