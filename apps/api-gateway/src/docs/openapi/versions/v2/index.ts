@@ -352,6 +352,27 @@ const communityChangesV2 = {
   },
 };
 
+// Private/group share the community changes-feed contract byte-for-byte (same
+// handler, same params, same envelope) — derived rather than duplicated so
+// the three can never drift.
+const privateChangesV2 = {
+  get: {
+    ...communityChangesV2.get,
+    tags: ["Chat — Private"],
+    operationId: "getPrivateRoomChanges",
+    summary: "Private room changes feed — zero-loss mutation catch-up",
+  },
+};
+
+const groupChangesV2 = {
+  get: {
+    ...communityChangesV2.get,
+    tags: ["Chat — Group"],
+    operationId: "getGroupRoomChanges",
+    summary: "Group room changes feed — zero-loss mutation catch-up",
+  },
+};
+
 /** Opaque compound cursor over the `(createdAt, _id)` message keyset. */
 const messageCursorSchema = {
   type: "string" as const,
@@ -549,7 +570,9 @@ export const v2Paths = {
   "/chat/community/rooms/{roomId}/messages": communityMessagesV2,
   "/chat/community/rooms/{roomId}/changes": communityChangesV2,
   "/chat/private/rooms/{roomId}/messages": privateMessagesV2,
+  "/chat/private/rooms/{roomId}/changes": privateChangesV2,
   "/chat/group/rooms/{roomId}/messages": groupMessagesV2,
+  "/chat/group/rooms/{roomId}/changes": groupChangesV2,
   "/chat/inbox": inboxV2,
 };
 

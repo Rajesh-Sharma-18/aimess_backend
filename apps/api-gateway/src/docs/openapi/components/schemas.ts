@@ -2715,6 +2715,37 @@ export const openApiSchemas = {
     },
   },
 
+  StreamPublishCredentials: {
+    type: "object",
+    description:
+      "Owner-only re-fetch of the same publish credentials minted at stream creation — lets a PHONE_CAMERA broadcaster resume after a reload.",
+    properties: {
+      streamKey: {
+        type: "string",
+        example: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+        description:
+          "32-char hex key for SRS WHIP publish. NEVER share with viewers.",
+      },
+      ingest: {
+        type: "object",
+        description: "Publish endpoints for PHONE_CAMERA mode.",
+        properties: {
+          whipUrl: {
+            type: "string",
+            nullable: true,
+            example:
+              "http://srs.example.com:1985/rtc/v1/whip/?app=live&stream=abc123",
+          },
+          rtmpUrl: {
+            type: "string",
+            nullable: true,
+            example: "rtmp://srs.example.com/live/abc123",
+          },
+        },
+      },
+    },
+  },
+
   StreamComment: {
     type: "object",
     description: "A single livestream comment.",

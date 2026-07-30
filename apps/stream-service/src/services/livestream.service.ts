@@ -65,6 +65,12 @@ export interface CreateStreamResult extends StreamView {
   ingest: IngestEndpoints;
 }
 
+/** Owner-only re-fetch of the same publish credentials minted at creation. */
+export interface PublishCredentialsResult {
+  streamKey: string;
+  ingest: IngestEndpoints;
+}
+
 export interface ListStreamsResult {
   items: StreamView[];
   nextCursor: string | null;
@@ -645,6 +651,33 @@ export class LivestreamService {
    * asks SRS to drop the publisher, and broadcasts the ENDED status. SRS will
    * also fire on_unpublish, which is a no-op once ENDED.
    */
+  /**
+   * Owner-only re-fetch of publish credentials — lets a PHONE_CAMERA broadcaster
+   * resume after a page reload with the same `streamKey`/WHIP URL minted at
+   * creation, instead of starting a new stream.
+   */
+  async getPublishCredentials(
+    id: string,
+    requesterId: string
+  ): Promise<PublishCredentialsResult> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.sourceType !== "PHONE_CAMERA") {
+      throw new BadRequestError("STREAM_NOT_PHONE_CAMERA_SOURCE");
+    }
+    if (stream.status === "ENDED") {
+      throw new BadRequestError("STREAM_ALREADY_ENDED");
+    }
+
+    return {
+      streamKey: stream.streamKey,
+      ingest: this.srsService.buildIngestEndpoints(stream.streamKey),
+    };
+  }
+
   async stopStream(id: string, requesterId: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");

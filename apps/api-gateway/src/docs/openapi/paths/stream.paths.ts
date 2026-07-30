@@ -590,6 +590,32 @@ const getViewers = {
 };
 
 // ---------------------------------------------------------------------------
+// GET /streams/{id}/publish-credentials — Re-fetch publish credentials (owner only)
+// ---------------------------------------------------------------------------
+const getPublishCredentials = {
+  get: {
+    tags: ["Streams"],
+    operationId: "getStreamPublishCredentials",
+    summary: "Re-fetch publish credentials",
+    description:
+      "Owner-only. Re-mints the same `streamKey` + WHIP/RTMP ingest URLs that were returned on creation, so a PHONE_CAMERA broadcast can be resumed after a page reload without creating a new stream. 400 if `sourceType` is not `PHONE_CAMERA` or the stream has already ENDED.",
+    security: streamAuth,
+    parameters: [streamIdParam],
+    responses: {
+      "200": streamOk(
+        "Publish credentials",
+        "#/components/schemas/StreamPublishCredentials"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // POST /streams/{id}/ban — Ban a user (owner only)
 // ---------------------------------------------------------------------------
 const banUser = {
@@ -1133,6 +1159,7 @@ export const streamPaths = {
   "/streams/{id}/comments": getComments,
   "/streams/{id}/comment-status": setCommentStatus,
   "/streams/{id}/viewers": getViewers,
+  "/streams/{id}/publish-credentials": getPublishCredentials,
   "/streams/{id}/ban": banUser,
   "/streams/{id}/ban/{userId}": unbanUser,
   "/streams/{id}/bans": listBans,

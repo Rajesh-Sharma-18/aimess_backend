@@ -49,6 +49,11 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     authenticateAccessToken,
     controller.getViewers
   );
+  router.get(
+    "/streams/:id/publish-credentials",
+    authenticateAccessToken,
+    controller.getPublishCredentials
+  );
 
   // Chat toggle — owner-only.
   router.patch(

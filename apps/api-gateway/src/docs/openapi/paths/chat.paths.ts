@@ -896,6 +896,28 @@ const groupById = {
       "403": forbidden,
     },
   },
+  delete: {
+    tags: ["Chat — Groups"],
+    operationId: "clearGroupConversation",
+    summary: "Delete conversation (clear history)",
+    description:
+      "Clears the caller's own message history for this group; the caller " +
+      "remains a member. Does not disband the group or affect other members' history.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Conversation cleared"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
 };
 
 const groupDisband = {
