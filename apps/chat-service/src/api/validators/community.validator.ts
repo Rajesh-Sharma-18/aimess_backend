@@ -43,6 +43,9 @@ export const sendCommunityMessageSchema = z
             width: z.number().optional(),
             height: z.number().optional(),
             durationMs: z.number().nonnegative().optional(),
+            // Sender-uploaded poster frame for videos/animated GIFs — zod strips
+            // unknown keys, so leaving it out dropped it before persistence.
+            thumbnailObjectKey: z.string().max(500).optional(),
           })
         ),
       })
@@ -92,6 +95,9 @@ export const sendCommunityMessageBodySchema = z
             width: z.number().optional(),
             height: z.number().optional(),
             durationMs: z.number().nonnegative().optional(),
+            // Sender-uploaded poster frame for videos/animated GIFs — zod strips
+            // unknown keys, so leaving it out dropped it before persistence.
+            thumbnailObjectKey: z.string().max(500).optional(),
           })
         ),
       })

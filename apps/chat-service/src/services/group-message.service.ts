@@ -53,6 +53,7 @@ import {
   urlFromMap,
   applyUrlMapToFiles,
   fileMediaKey,
+  fileMediaKeys,
   resolveQuoteThumbnail,
   resolveStickerField,
   type MediaFileLike,
@@ -1837,8 +1838,7 @@ export class GroupMessageService {
       const files = (message.content as Record<string, unknown> | null)?.files;
       if (Array.isArray(files)) {
         for (const file of files) {
-          const key = fileMediaKey(file as MediaFileLike);
-          if (key) mediaKeys.push(key);
+          mediaKeys.push(...fileMediaKeys(file as MediaFileLike));
         }
       }
       const sticker = (message.content as Record<string, unknown> | null)
