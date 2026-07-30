@@ -23,6 +23,7 @@ import {
 import {
   buildFriendshipView,
   toSearchRelationship,
+  type FriendshipView,
 } from "../lib/friendship-view.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
@@ -726,6 +727,45 @@ export const friendshipService = {
       skippedUsers,
       friends,
     };
+  },
+
+  /**
+   * Viewer-relative relationship for MANY peers in one round trip — the bulk twin of
+   * `getFriendshipStatus`. Clients that render a list of people (inbox, member pickers) use this
+   * to seed every row's relationship up front instead of issuing one `/status/:userId` per row.
+   * Returns the raw `buildFriendshipView` (so BLOCKED is preserved, unlike `toSearchRelationship`).
+   * Ids the caller has no row with resolve to the NONE view; `self` is skipped.
+   */
+  async relationshipsFor(
+    viewerId: string,
+    userIds: string[]
+  ): Promise<
+    Array<{ userId: string; friendshipId: string | null } & FriendshipView>
+  > {
+    const candidateIds = [...new Set(userIds)].filter((id) => id !== viewerId);
+    if (candidateIds.length === 0) return [];
+
+    const { rows, blockedIds } =
+      await friendshipRepository.findRelationshipsForUser(
+        viewerId,
+        candidateIds
+      );
+
+    const rowByPeer = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      const peerId =
+        row.requesterId === viewerId ? row.addresseeId : row.requesterId;
+      rowByPeer.set(peerId, row);
+    }
+
+    return candidateIds.map((userId) => {
+      const row = rowByPeer.get(userId) ?? null;
+      return {
+        userId,
+        friendshipId: row?.id ?? null,
+        ...buildFriendshipView(viewerId, row, blockedIds.has(userId)),
+      };
+    });
   },
 
   async unfriend(viewerId: string, targetUserId: string): Promise<void> {

@@ -5,9 +5,9 @@ import type {
   Prisma,
 } from "../generated/prisma/index.js";
 import {
-  COMMUNITY_MEDIA_MESSAGE_TYPES,
-  mapCommunityMediaType,
-} from "../constants/media-limits.js";
+  MEDIA_LIST_LINK,
+  communityMediaTypeFilter,
+} from "../lib/media-list-filter.js";
 import {
   PERSONAL_JOIN_SESSION_TYPES,
   HIDDEN_SYSTEM_MESSAGE_TYPES,
@@ -1411,25 +1411,19 @@ export class GeneralRoomMessageRepository {
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
-    // Community enum is lowercase (e.g. "image"); GIF/VIDEO/DOCUMENT are carried
-    // as "custom" today. Map the incoming upper-case filter to its community
-    // storage value (IMAGE→image, VIDEO/GIF/DOCUMENT→custom, …). An unknown
-    // mapped value would never match any stored doc, so we don't fall back to the
-    // full set — that's the bug we're fixing (the filter must actually filter).
-    const mediaTypes = [...COMMUNITY_MEDIA_MESSAGE_TYPES];
-    const mappedType = params.type
-      ? mapCommunityMediaType(params.type)
-      : undefined;
+    // Community enum is lowercase (e.g. "image"); the tab aliases (media/file/
+    // link) expand to their type sets and a concrete upper-case type maps down
+    // (IMAGE→image, …). An unmappable type yields nothing rather than everything.
+    // Community bodies are a plain `message` String, so the link tab filters
+    // directly — no aggregation needed (unlike private/group's JSON content).
+    const isLink = params.type === MEDIA_LIST_LINK;
 
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId: params.roomId,
         deletedForAll: false,
-        messageType: params.type
-          ? // A requested type with no mapping yields no media (empty result)
-            // instead of silently returning everything.
-            (mappedType ?? "__none__")
-          : { in: mediaTypes },
+        messageType: isLink ? "text" : communityMediaTypeFilter(params.type),
+        ...(isLink ? { message: { contains: "http" } } : {}),
         ...(params.cursor || params.readCutoff
           ? {
               createdAt: {

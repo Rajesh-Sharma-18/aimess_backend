@@ -39,15 +39,7 @@ export const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
  * Canonical media-bearing message types (private/group enum, upper-case). Used
  * by the per-room media-list filters so the whitelist lives in one place.
  */
-export const MEDIA_MESSAGE_TYPES = [
-  "IMAGE",
-  "VIDEO",
-  "AUDIO",
-  "GIF",
-  "VOICE",
-  "DOCUMENT",
-  "STICKER",
-] as const;
+export const MEDIA_MESSAGE_TYPES = ["IMAGE", "VIDEO"] as const;
 
 /**
  * Map an incoming (upper-cased) media-list `type` filter to the community

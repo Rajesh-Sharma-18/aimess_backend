@@ -3,7 +3,11 @@
   GroupMessage,
   Prisma,
 } from "../generated/prisma/index.js";
-import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
+import {
+  LINK_TEXT_REGEX,
+  MEDIA_LIST_LINK,
+  mediaTypeFilter,
+} from "../lib/media-list-filter.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
 import { logger } from "@aimess/logger";
 import {
@@ -977,7 +981,7 @@ export class GroupMessageRepository {
   }
 
   /**
-   * List media/document messages in a room, newest first, cursor on createdAt.
+   * List media/document/link messages in a room, newest first, cursor on createdAt.
    * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
    * in memory (Mongo can't $nin a JSON array).
    */
@@ -989,17 +993,25 @@ export class GroupMessageRepository {
     limit: number;
     cutoff?: Date;
   }): Promise<GroupMessage[]> {
-    const mediaTypes = MEDIA_MESSAGE_TYPES;
     const createdAt: { lt?: Date; gt?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
+
+    const ids =
+      params.type === MEDIA_LIST_LINK
+        ? await this.findLinkMessageIds(params)
+        : null;
+    if (ids && ids.length === 0) return [];
+
     const messages = await this.prisma.groupMessage.findMany({
-      where: {
-        roomId: params.roomId,
-        isDeleted: false,
-        messageType: params.type ? params.type : { in: [...mediaTypes] },
-        ...(Object.keys(createdAt).length ? { createdAt } : {}),
-      },
+      where: ids
+        ? { id: { in: ids } }
+        : {
+            roomId: params.roomId,
+            isDeleted: false,
+            messageType: mediaTypeFilter(params.type),
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
     });
@@ -1011,6 +1023,44 @@ export class GroupMessageRepository {
         return !deletedFor.includes(params.userId);
       })
       .slice(0, params.limit);
+  }
+
+  /**
+   * Ids of link-bearing TEXT messages — Mongo Prisma has no JSON-path filter, so
+   * the `content.text` regex runs in an aggregation and the rows are read back
+   * through the typed client.
+   */
+  private async findLinkMessageIds(params: {
+    roomId: string;
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+    cutoff?: Date;
+  }): Promise<string[]> {
+    const createdAt: Record<string, unknown> = {};
+    if (params.cursor)
+      createdAt.$lt = { $date: new Date(params.cursor).toISOString() };
+    if (params.cutoff) createdAt.$gt = { $date: params.cutoff.toISOString() };
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            messageType: "TEXT",
+            deletedForUserIds: { $ne: params.userId },
+            "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" },
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return raw
+      .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+      .filter(Boolean);
   }
 
   /**

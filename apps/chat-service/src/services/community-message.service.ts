@@ -84,7 +84,7 @@ import {
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
-  fileMediaKey,
+  fileMediaKeys,
   resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
@@ -1061,8 +1061,7 @@ export class CommunityMessageService {
       const attachments = m.attachments;
       if (Array.isArray(attachments)) {
         for (const attachment of attachments) {
-          const key = fileMediaKey(attachment as MediaFileLike);
-          if (key) keys.push(key);
+          keys.push(...fileMediaKeys(attachment as MediaFileLike));
         }
       }
       const quote = m.quoteData as Record<string, unknown> | null;
@@ -1579,8 +1578,7 @@ export class CommunityMessageService {
       if (msg.senderAvatar) mediaKeys.push(msg.senderAvatar);
       if (Array.isArray(msg.attachments)) {
         for (const attachment of msg.attachments) {
-          const key = fileMediaKey(attachment as MediaFileLike);
-          if (key) mediaKeys.push(key);
+          mediaKeys.push(...fileMediaKeys(attachment as MediaFileLike));
         }
       }
     }

@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
+import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import {
   refreshQuoteDataForParent,
@@ -933,7 +934,7 @@ export class PrivateMessageRepository {
   }
 
   /**
-   * List media/document messages in a room, newest first, cursor on createdAt.
+   * List media/document/link messages in a room, newest first, cursor on createdAt.
    * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
    * in memory (deletedFor shape: { [userId]: ISO-timestamp }).
    */
@@ -998,6 +999,45 @@ export class PrivateMessageRepository {
       take: params.limit + 10,
     });
     return msgs.filter(notDeletedFor).slice(0, params.limit);
+  }
+
+  /**
+   * Ids of link-bearing TEXT messages. Mongo Prisma has no JSON-path filter, so
+   * the `content.text` regex runs in an aggregation and the rows are then read
+   * back through the typed client (same id-then-findMany shape as
+   * {@link findPreviousVisibleForUser}) — no hand-mapping of raw BSON.
+   */
+  private async findLinkMessageIds(params: {
+    roomId: string;
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+    cutoff?: Date;
+  }): Promise<string[]> {
+    const createdAt: Record<string, unknown> = {};
+    if (params.cursor)
+      createdAt.$lt = { $date: new Date(params.cursor).toISOString() };
+    if (params.cutoff) createdAt.$gt = { $date: params.cutoff.toISOString() };
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            messageType: "TEXT",
+            [`deletedFor.${params.userId}`]: { $exists: false },
+            "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" },
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return raw
+      .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+      .filter(Boolean);
   }
 
   /**

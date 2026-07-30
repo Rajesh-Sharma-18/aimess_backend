@@ -18,6 +18,15 @@ export const unfriendParamsSchema = z.object({
 
 export type UnfriendParams = z.infer<typeof unfriendParamsSchema>;
 
+export const relationshipsBatchSchema = z.object({
+  userIds: z
+    .array(z.string().uuid("User ID is invalid"))
+    .min(1, "userIds must not be empty")
+    .max(200, "userIds must contain at most 200 entries"),
+});
+
+export type RelationshipsBatchInput = z.infer<typeof relationshipsBatchSchema>;
+
 export const listFriendRequestsQuerySchema = z.object({
   direction: z.enum(["incoming", "outgoing", "all"]).default("incoming"),
   page: z.coerce.number().int().positive().default(1),

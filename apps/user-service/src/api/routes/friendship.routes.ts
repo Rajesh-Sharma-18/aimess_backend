@@ -6,6 +6,7 @@ import {
   blockUser,
   cancelFriendRequest,
   getFriendshipStatus,
+  getRelationshipsBatch,
   listFriendRequests,
   makeUsersFriends,
   rejectFriendRequest,
@@ -20,6 +21,7 @@ import { authenticateAccessToken } from "../../middleware/authenticate-access-to
 import {
   friendshipIdParamsSchema,
   listFriendRequestsQuerySchema,
+  relationshipsBatchSchema,
   sendFriendRequestSchema,
   unfriendParamsSchema,
 } from "../validators/friendship.validator.js";
@@ -78,6 +80,13 @@ friendshipRoutes.get(
   authenticateAccessToken,
   validateParams(unfriendParamsSchema),
   getFriendshipStatus
+);
+
+friendshipRoutes.post(
+  "/relationships",
+  authenticateAccessToken,
+  validateBody(relationshipsBatchSchema),
+  getRelationshipsBatch
 );
 
 friendshipRoutes.post(

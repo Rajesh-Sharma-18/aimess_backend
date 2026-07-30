@@ -115,6 +115,11 @@ const FileAttachmentSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   durationMs: z.number().nonnegative().optional(),
+  // Poster frame the sender already generated and uploaded for videos/animated GIFs.
+  // Omitting it here silently STRIPPED it (zod drops unknown keys), so no video was
+  // ever stored with a thumbnail and every receiver had to decode a frame out of the
+  // video itself over HTTP.
+  thumbnailObjectKey: z.string().max(500).optional(),
   // §3.5: instant-preview metadata — blurhash (image/video) renders the bubble
   // at the right aspect ratio before download; waveform (voice) paints the bars.
   blurhash: z.string().max(120).optional(),
