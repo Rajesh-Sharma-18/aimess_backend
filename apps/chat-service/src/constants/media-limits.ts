@@ -36,18 +36,12 @@ export const CHAT_EMOJI_MAX_CHARS = 32;
 export const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 
 /**
- * Canonical media-bearing message types (private/group enum, upper-case). Used
- * by the per-room media-list filters so the whitelist lives in one place.
+ * Message types shown in the shared "Media" tab (private/group enum, upper-case).
+ * Intentionally IMAGE + VIDEO only — stickers, GIFs, voice notes, audio, and
+ * documents each have their own tab (or none) and must not appear in Media.
+ * Used by the per-room media-list filters so the whitelist lives in one place.
  */
-export const MEDIA_MESSAGE_TYPES = [
-  "IMAGE",
-  "VIDEO",
-  "AUDIO",
-  "GIF",
-  "VOICE",
-  "DOCUMENT",
-  "STICKER",
-] as const;
+export const MEDIA_MESSAGE_TYPES = ["IMAGE", "VIDEO"] as const;
 
 /**
  * Map an incoming (upper-cased) media-list `type` filter to the community
@@ -64,17 +58,9 @@ const COMMUNITY_MEDIA_TYPE_MAP: Record<string, string> = {
   DOCUMENT: "document",
 };
 
-/** Distinct community storage values that hold media. */
-export const COMMUNITY_MEDIA_MESSAGE_TYPES = [
-  "image",
-  "voice",
-  "audio",
-  "sticker",
-  "video",
-  "gif",
-  "document",
-  "custom", // kept for backward-compat with messages stored before the type expansion
-] as const;
+/** Community storage values shown in the shared "Media" tab. IMAGE + VIDEO
+ *  only — stickers/GIFs/voice/audio/documents belong in other tabs. */
+export const COMMUNITY_MEDIA_MESSAGE_TYPES = ["image", "video"] as const;
 
 /** Resolve a community media storage value for an incoming `type` filter. */
 export function mapCommunityMediaType(type: string): string | undefined {

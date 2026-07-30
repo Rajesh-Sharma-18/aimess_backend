@@ -993,11 +993,20 @@ export class GroupMessageRepository {
     const createdAt: { lt?: Date; gt?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
+    // Resolve composite aliases (mirrors PrivateMessageRepository). Without
+    // this a `type=media` filter would try to match the literal string "media"
+    // and silently return zero rows for group chats.
+    const typeFilter = (() => {
+      if (!params.type) return { in: [...mediaTypes] };
+      if (params.type === "media") return { in: ["IMAGE", "VIDEO"] };
+      if (params.type === "file") return { in: ["DOCUMENT", "AUDIO"] };
+      return params.type;
+    })();
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
-        messageType: params.type ? params.type : { in: [...mediaTypes] },
+        messageType: typeFilter,
         ...(Object.keys(createdAt).length ? { createdAt } : {}),
       },
       orderBy: { createdAt: "desc" },

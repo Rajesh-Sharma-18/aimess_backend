@@ -981,8 +981,7 @@ export class PrivateMessageRepository {
     // Resolve composite aliases → real messageType values stored in MongoDB.
     const typeFilter = (() => {
       if (!params.type) return { in: [...MEDIA_MESSAGE_TYPES] };
-      if (params.type === "media")
-        return { in: ["IMAGE", "VIDEO", "GIF", "STICKER"] };
+      if (params.type === "media") return { in: ["IMAGE", "VIDEO"] };
       if (params.type === "file") return { in: ["DOCUMENT", "AUDIO"] };
       return params.type; // raw single type (e.g. "IMAGE") — passed through
     })();

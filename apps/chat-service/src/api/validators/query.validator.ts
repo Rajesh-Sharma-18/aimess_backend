@@ -124,7 +124,9 @@ export const messageSearchQuerySchema = z.object({
 });
 
 /** Query schema for the shared media/docs listing endpoints.
- *  Grouped aliases: "media" → IMAGE/VIDEO/GIF/STICKER, "file" → DOCUMENT, "link" → TEXT with URLs. */
+ *  Grouped aliases: "media" → IMAGE/VIDEO (Media tab: photos + videos only,
+ *  no stickers/GIFs/voice/audio/documents), "file" → DOCUMENT/AUDIO,
+ *  "link" → TEXT with URLs. */
 export const mediaListQuerySchema = z.object({
   type: z
     .enum([
