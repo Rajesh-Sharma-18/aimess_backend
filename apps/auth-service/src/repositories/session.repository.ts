@@ -17,7 +17,16 @@ const activeSessionSelect = {
 export const sessionRepository = {
   listActiveByUserId(userId: string) {
     return prisma.session.findMany({
-      where: { userId, revokedAt: null },
+      where: {
+        userId,
+        revokedAt: null,
+        // Session has no expiresAt of its own; a session is only truly
+        // "active" while it still has an unexpired, unrevoked refresh
+        // token to renew it with (see docs/PROJECT_KNOWLEDGE_BASE.md).
+        refreshTokens: {
+          some: { revokedAt: null, expiresAt: { gt: new Date() } },
+        },
+      },
       select: activeSessionSelect,
       orderBy: { lastActiveAt: "desc" },
     });
