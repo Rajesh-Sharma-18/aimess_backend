@@ -127,19 +127,25 @@ model PrivateMessage {
 // PrivateMessagePin
 // -----------------------------------------------------------------------------
 model PrivateMessagePin {
-  id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  roomId            String
-  messageId         String   @db.ObjectId
-  pinnedBy          String
-  pinnedAt          DateTime @default(now())
-  messageCreatedAt  DateTime
-  senderId          String
-  senderDisplayName String   @default("")
-  senderAvatar      String   @default("")
-  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
-  deletedFor        Json     @default("{}")
+  id                       String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId                   String
+  messageId                String    @db.ObjectId
+  pinnedBy                 String
+  pinnedAt                 DateTime  @default(now())
+  unpinnedAt               DateTime? // null = ACTIVE; set = soft-deleted (unpinned) — parity with CommunityMessagePin
+  unpinnedByUserId         String?
+  originalMessageDeletedAt DateTime? // set when the pinned message is deleted for all
+  pinSystemMessageId       String?   // ID of the MESSAGE_PINNED system message
+  messageCreatedAt         DateTime
+  senderId                 String
+  senderDisplayName        String    @default("")
+  senderAvatar              String   @default("")
+  contentPinned            Json      @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  deletedFor               Json      @default("{}")
 
-  @@unique([roomId, messageId, pinnedBy])
+  // No @@unique — same message can be pinned/unpinned/repinned (soft-delete history), parity with Community
+  @@index([roomId, messageId])
+  @@index([roomId, unpinnedAt])       // active-pin lookup: WHERE roomId=X AND unpinnedAt IS NULL
   @@index([roomId, pinnedAt(sort: Desc)])
   @@index([roomId, messageCreatedAt(sort: Desc), pinnedAt(sort: Desc)])
   @@map("private_message_pins")
@@ -318,18 +324,24 @@ model GroupInviteLink {
 // GroupMessagePin
 // -----------------------------------------------------------------------------
 model GroupMessagePin {
-  id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  roomId            String
-  messageId         String   @db.ObjectId
-  pinnedBy          String
-  pinnedAt          DateTime @default(now())
-  messageCreatedAt  DateTime
-  senderId          String
-  senderDisplayName String   @default("")
-  senderAvatar      String   @default("")
-  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  id                       String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId                   String
+  messageId                String    @db.ObjectId
+  pinnedBy                 String
+  pinnedAt                 DateTime  @default(now())
+  unpinnedAt               DateTime? // null = ACTIVE; set = soft-deleted (unpinned) — parity with CommunityMessagePin
+  unpinnedByUserId         String?
+  originalMessageDeletedAt DateTime? // set when the pinned message is deleted for all
+  pinSystemMessageId       String?   // ID of the MESSAGE_PINNED system message
+  messageCreatedAt         DateTime
+  senderId                 String
+  senderDisplayName        String    @default("")
+  senderAvatar             String    @default("")
+  contentPinned            Json      @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
 
-  @@unique([roomId, messageId])
+  // No @@unique — same message can be pinned/unpinned/repinned (soft-delete history), parity with Community
+  @@index([roomId, messageId])
+  @@index([roomId, unpinnedAt])       // active-pin lookup: WHERE roomId=X AND unpinnedAt IS NULL
   @@index([roomId, pinnedAt(sort: Desc)])
   @@map("group_message_pins")
 }

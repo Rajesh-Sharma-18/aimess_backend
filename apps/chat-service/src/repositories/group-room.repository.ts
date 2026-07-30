@@ -328,8 +328,12 @@ export class GroupRoomRepository {
     });
   }
 
-  async incPinnedCount(roomId: string, inc: number): Promise<GroupRoom | null> {
-    return this.prisma.groupRoom.update({
+  async incPinnedCount(
+    roomId: string,
+    inc: number,
+    client: PrismaClient | Prisma.TransactionClient = this.prisma
+  ): Promise<GroupRoom | null> {
+    return client.groupRoom.update({
       where: { roomId },
       data: {
         pinnedCount: { increment: inc },

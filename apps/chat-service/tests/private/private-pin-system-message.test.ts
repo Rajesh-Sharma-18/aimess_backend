@@ -1,7 +1,7 @@
 /**
- * Integration tests — private-room pin/unpin now post a SYSTEM message and
- * gate the inbox lastActivity bump per subtype (pin bumps, unpin does not).
- * Private previously had NO system-message framework outside call lifecycle.
+ * Integration tests — private-room pin posts a SYSTEM message and bumps the
+ * inbox lastActivity (parity with Community: pin posts a line, unpin does
+ * NOT post a line — it retracts the original pin's line instead).
  * Routes (apps/chat-service/src/api/routes/private-message.routes.ts):
  *   POST   /api/chat/private/rooms/:roomId/messages/:messageId/pin
  *   DELETE /api/chat/private/rooms/:roomId/messages/:messageId/pin
@@ -24,8 +24,12 @@ beforeEach(() => {
   mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
     roomId: ROOM,
     participants: [TEST_USER_ID, PEER_ID],
+    pinnedCount: 0,
   });
-  mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(0);
+  mocks.privateMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
+  mocks.privateMessagePinRepo.runTransaction.mockImplementation(
+    async (fn: (tx: unknown) => unknown) => fn({})
+  );
   mocks.privateMessageRepo.findMessageMeta.mockResolvedValue({
     id: MESSAGE_ID,
     senderId: PEER_ID,
@@ -33,6 +37,7 @@ beforeEach(() => {
     createdAt: new Date(),
   });
   mocks.privateMessagePinRepo.createPin.mockResolvedValue({
+    id: "pin_1",
     pinnedAt: new Date(),
   });
   mocks.privateRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 1 });
@@ -55,16 +60,33 @@ describe("POST /api/chat/private/rooms/:roomId/messages/:messageId/pin", () => {
       expect.objectContaining({ systemEvent: "MESSAGE_PINNED" })
     );
     expect(mocks.privateRoomRepo.updateRoomOnNewMessage).toHaveBeenCalled();
+    expect(
+      mocks.privateMessagePinRepo.setPinSystemMessageId
+    ).toHaveBeenCalledWith("pin_1", "sysmsg_1");
   });
 });
 
 describe("DELETE /api/chat/private/rooms/:roomId/messages/:messageId/pin", () => {
-  it("POSITIVE: posts a MESSAGE_UNPINNED system message WITHOUT bumping lastActivity", async () => {
-    mocks.privateMessagePinRepo.deletePin.mockResolvedValue({
-      deletedCount: 1,
+  it("POSITIVE: retracts the pin's system line WITHOUT posting a MESSAGE_UNPINNED message (parity with Community)", async () => {
+    mocks.privateMessagePinRepo.findActivePinByMessageId.mockResolvedValue({
+      id: "pin_1",
+      roomId: ROOM,
+      messageId: MESSAGE_ID,
+      pinSystemMessageId: "sysmsg_1",
+    });
+    mocks.privateMessagePinRepo.softDeletePin.mockResolvedValue({
+      id: "pin_1",
+      roomId: ROOM,
+      messageId: MESSAGE_ID,
+      unpinnedAt: new Date(),
     });
     mocks.privateRoomRepo.incPinnedCount.mockResolvedValue({
       pinnedCount: 0,
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "sysmsg_1",
+      roomId: ROOM,
+      sequenceNumber: 1,
     });
 
     const res = await request(app)
@@ -72,8 +94,13 @@ describe("DELETE /api/chat/private/rooms/:roomId/messages/:messageId/pin", () =>
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ systemEvent: "MESSAGE_UNPINNED" })
+    // No new MESSAGE_UNPINNED system message — the original pin's line is
+    // retracted (hard-deleted) instead, same as Community's "no unpin message" rule.
+    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.deleteForEveryone).toHaveBeenCalledWith(
+      "sysmsg_1",
+      ROOM,
+      TEST_USER_ID
     );
     expect(mocks.privateRoomRepo.updateRoomOnNewMessage).not.toHaveBeenCalled();
   });

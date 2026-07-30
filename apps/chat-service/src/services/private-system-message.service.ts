@@ -2,7 +2,10 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import type { SystemEvent } from "../types/enums.js";
-import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import {
+  buildChatMessageEvent,
+  buildDeletePayload,
+} from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { systemMessageBumpsActivity } from "../lib/system-message-policy.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -43,6 +46,19 @@ export class PrivateSystemMessageService {
   ) {}
 
   async post(params: PostPrivateSystemMessageParams): Promise<void> {
+    await this.postOne(params);
+  }
+
+  /** Like post() but returns the created system message ID (or null on failure) — used by the pin flow to store a retractable back-reference. */
+  async postReturnId(
+    params: PostPrivateSystemMessageParams
+  ): Promise<string | null> {
+    return this.postOne(params);
+  }
+
+  private async postOne(
+    params: PostPrivateSystemMessageParams
+  ): Promise<string | null> {
     const { roomId, actorId, peerId, systemEvent } = params;
     try {
       const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
@@ -141,9 +157,52 @@ export class PrivateSystemMessageService {
           countInUnread: false,
         });
       }
+
+      return message.id;
     } catch (err) {
       logger.warn(
         `PrivateSystemMessageService|post failed event=${systemEvent} room=${roomId}: ${String(err)}`
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Hard-hides a system message this service previously posted — currently
+   * only the MESSAGE_PINNED line tied to a pin that was since undone (unpinned,
+   * or replaced by pinning a different message). Same tombstone mechanism as a
+   * normal message delete-for-everyone; just triggered by pin lifecycle instead
+   * of a user delete action. Mirrors `CommunitySystemMessageService.retractSystemMessage`.
+   * Best-effort: never throws — the pin state change that triggered this must
+   * not roll back on a failure here.
+   */
+  async retractSystemMessage(params: {
+    roomId: string;
+    messageId: string;
+    actorId: string;
+  }): Promise<void> {
+    const { roomId, messageId, actorId } = params;
+    try {
+      const deleted = await this.messageRepo.deleteForEveryone(
+        messageId,
+        roomId,
+        actorId
+      );
+      const tombstone = buildDeletePayload({
+        conversationType: "PRIVATE",
+        messageId: deleted.id,
+        roomId: deleted.roomId,
+        scope: "forEveryone",
+        deletedBy: actorId,
+        sequenceNumber: deleted.sequenceNumber,
+      });
+      await this.redis.publish(
+        `conv:${roomId}`,
+        JSON.stringify({ event: "message:delete", data: tombstone })
+      );
+    } catch (err) {
+      logger.warn(
+        `PrivateSystemMessageService|retractSystemMessage failed messageId=${messageId}: ${String(err)}`
       );
     }
   }

@@ -5,6 +5,7 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
 import { NotFoundError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 
 import {
   buildPaginatedResponse,
@@ -430,6 +431,36 @@ export class PrivateMessageController {
       );
     }
 
+    // When deleted for everyone, check if the message was actively pinned.
+    // If so: mark the pin unavailable and emit pin:updated so the banner reflects it live.
+    if (type === "forEveryone" && result.roomId) {
+      const rId = result.roomId;
+      void this.pinService
+        .handleMessageDeleted(messageId)
+        .then((affectedPin) => {
+          if (!affectedPin) return;
+          return this.redis.publish(
+            `conv:${rId}`,
+            JSON.stringify({
+              event: "pin:updated",
+              data: {
+                roomId: rId,
+                conversationId: rId,
+                messageId,
+                action: "pinned",
+                pinnedCount: null, // unchanged; client uses cached count
+                pin: { ...affectedPin, isAvailable: false },
+              },
+            })
+          );
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `deleteMessage|pin hook failed messageId=${messageId}: ${String(err)}`
+          );
+        });
+    }
+
     // For delete-for-everyone: recalculate and broadcast the new list preview
     // to all participants so the conversation list never shows "Message deleted".
     if (type === "forEveryone" && result.roomId) {
@@ -534,33 +565,53 @@ export class PrivateMessageController {
   });
 
   // V2 §2.5: pin a message and broadcast pin:updated so the pinned banner
-  // updates live for everyone in the room (multi-device consistent).
+  // updates live for everyone in the room (multi-device consistent). Only one
+  // active pin per room (parity with Community) — pinning a 2nd message
+  // replaces the 1st, so a switch also emits the replaced pin's unpin event.
   pin = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const messageId = req.params.messageId as string;
     const result = await this.pinService.pin({ roomId, messageId, userId });
-    const pinnedAt =
-      result.pin.pinnedAt instanceof Date
-        ? result.pin.pinnedAt.getTime()
-        : Date.now();
-    // Published to conv:<roomId> (where clients are joined) so it rides the
-    // gateway's existing conv:* subscription, exactly like message:delete.
-    await this.redis.publish(
-      `conv:${roomId}`,
-      JSON.stringify({
-        event: "pin:updated",
-        data: {
-          roomId,
-          conversationId: roomId,
-          messageId,
-          pinnedBy: userId,
-          pinnedAt,
-          action: "pinned",
-          pinnedCount: result.pinnedCount,
-        },
-      })
-    );
+    if (!result.idempotent) {
+      if (result.replacedPin) {
+        await this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({
+            event: "pin:updated",
+            data: {
+              roomId,
+              conversationId: roomId,
+              messageId: result.replacedPin.messageId,
+              unpinnedBy: userId,
+              action: "unpinned",
+              pinnedCount: null, // unchanged; the pinned event right after carries the settled count
+            },
+          })
+        );
+      }
+      const pinnedAt =
+        result.pin.pinnedAt instanceof Date
+          ? result.pin.pinnedAt.getTime()
+          : Date.now();
+      // Published to conv:<roomId> (where clients are joined) so it rides the
+      // gateway's existing conv:* subscription, exactly like message:delete.
+      await this.redis.publish(
+        `conv:${roomId}`,
+        JSON.stringify({
+          event: "pin:updated",
+          data: {
+            roomId,
+            conversationId: roomId,
+            messageId,
+            pinnedBy: userId,
+            pinnedAt,
+            action: "pinned",
+            pinnedCount: result.pinnedCount,
+          },
+        })
+      );
+    }
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, "Message pinned"));

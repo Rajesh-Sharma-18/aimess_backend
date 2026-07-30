@@ -7,7 +7,10 @@ import {
   resolvePersonDisplayName,
 } from "@aimess/constants";
 import type { SystemEvent } from "../types/enums.js";
-import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import {
+  buildChatMessageEvent,
+  buildDeletePayload,
+} from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -51,6 +54,17 @@ export class GroupSystemMessageService {
   ) {}
 
   async post(params: PostSystemMessageParams): Promise<void> {
+    await this.postOne(params);
+  }
+
+  /** Like post() but returns the created system message ID (or null on failure) — used by the pin flow to store a retractable back-reference. */
+  async postReturnId(params: PostSystemMessageParams): Promise<string | null> {
+    return this.postOne(params);
+  }
+
+  private async postOne(
+    params: PostSystemMessageParams
+  ): Promise<string | null> {
     const { roomId, actorId, systemEvent } = params;
     const inData = params.systemData ?? {};
     const targetUserId =
@@ -218,9 +232,54 @@ export class GroupSystemMessageService {
             `GroupSystemMessageService|publish failed room=${roomId}: ${String(err)}`
           );
         });
+      return message.id;
     } catch (err) {
       logger.warn(
         `GroupSystemMessageService|post failed event=${systemEvent} room=${roomId}: ${String(err)}`
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Hard-hides a system message this service previously posted — currently
+   * only the MESSAGE_PINNED line tied to a pin that was since undone (unpinned,
+   * or replaced by pinning a different message). Same tombstone mechanism as a
+   * normal message delete-for-everyone; just triggered by pin lifecycle instead
+   * of a user delete action. Mirrors `CommunitySystemMessageService.retractSystemMessage`.
+   * Best-effort: never throws — the pin state change that triggered this must
+   * not roll back on a failure here.
+   */
+  async retractSystemMessage(params: {
+    roomId: string;
+    messageId: string;
+    actorId: string;
+  }): Promise<void> {
+    const { roomId, messageId, actorId } = params;
+    try {
+      const deleted = await this.messageRepo.deleteForEveryone(
+        messageId,
+        roomId,
+        actorId,
+        "ADMIN_DELETE"
+      );
+      if (!deleted) return;
+      const tombstone = buildDeletePayload({
+        conversationType: "GROUP",
+        messageId: deleted.id,
+        roomId: deleted.roomId,
+        scope: "forEveryone",
+        deletedBy: actorId,
+        sequenceNumber: deleted.sequenceNumber,
+        deletedType: "ADMIN_DELETE",
+      });
+      await this.redis.publish(
+        `conv:${roomId}`,
+        JSON.stringify({ event: "message:delete", data: tombstone })
+      );
+    } catch (err) {
+      logger.warn(
+        `GroupSystemMessageService|retractSystemMessage failed messageId=${messageId}: ${String(err)}`
       );
     }
   }

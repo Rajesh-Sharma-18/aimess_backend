@@ -596,9 +596,9 @@ export class PrivateRoomRepository {
   async incPinnedCount(
     roomId: string,
     inc: number,
-    _options?: { session?: unknown }
+    client: PrismaClient | Prisma.TransactionClient = this.prisma
   ): Promise<PrivateRoom | null> {
-    return this.prisma.privateRoom.update({
+    return client.privateRoom.update({
       where: { roomId },
       data: {
         pinnedCount: { increment: inc },
