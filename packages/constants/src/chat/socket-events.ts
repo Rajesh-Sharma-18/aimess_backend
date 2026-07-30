@@ -108,6 +108,7 @@ export const SOCKET_OUT = {
   CALL_CANCELLED: "call:cancelled",
   CALL_ENDED: "call:ended",
   CALL_MISSED: "call:missed",
+  CALL_OUTGOING_MIRROR: "call:outgoing_mirror",
 } as const;
 
 export type SocketInEvent = (typeof SOCKET_IN)[keyof typeof SOCKET_IN];

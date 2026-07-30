@@ -381,6 +381,20 @@ export function registerChatNamespace(
             ? `self:${channel.slice("user:".length)}`
             : channel;
 
+        const callData = parsed.data as
+          | { callId?: unknown; reason?: unknown }
+          | null
+          | undefined;
+        const shouldMirrorJoinCallRoom =
+          pattern === "self:*" &&
+          typeof callData?.callId === "string" &&
+          (parsed.event === "call:outgoing_mirror" ||
+            (parsed.event === "call:handled" &&
+              callData.reason === "answered_elsewhere"));
+        if (shouldMirrorJoinCallRoom) {
+          void chat.in(targetChannel).socketsJoin(`call:${callData.callId}`);
+        }
+
         void emitPersonalizedSender(
           chat,
           targetChannel,

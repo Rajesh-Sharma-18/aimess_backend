@@ -118,6 +118,14 @@ describe("CallService.initiateCall gate", () => {
       "self:callee",
       expect.stringContaining("call:incoming")
     );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:caller",
+      expect.stringContaining("call:outgoing_mirror")
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:caller",
+      expect.stringContaining('"calleeName":"Alice"')
+    );
   });
 
   it("persists the derived canonical room when privateRoomId is omitted", async () => {
