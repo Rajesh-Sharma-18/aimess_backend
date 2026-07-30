@@ -52,6 +52,10 @@ export type SecurityNewLoginPayload = {
   ipAddress?: string | null;
   /** ISO country code when geo is available (not populated yet). */
   countryCode?: string | null;
+  /** Browser name parsed from the user agent, e.g. "Chrome". */
+  browser?: string | null;
+  /** OS name parsed from the user agent, e.g. "Windows". */
+  os?: string | null;
 };
 
 export type PasswordChangedPayload = {

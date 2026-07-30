@@ -5,6 +5,7 @@ export type {
   StreamView,
   CreateStreamResult,
   ListStreamsResult,
+  PublishCredentialsResult,
 } from "./livestream.service.js";
 export { LivestreamCommentService } from "./livestream-comment.service.js";
 export type {

@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
+import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import {
   refreshQuoteDataForParent,
@@ -445,12 +446,17 @@ export class PrivateMessageRepository {
     userId: string;
     roomId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = no lower bound, i.e. the newest page. */
+    seq: number | null;
     limit: number;
     cutoff?: Date;
   }): Promise<PrivateMessage[]> {
     const bound =
-      params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
+      params.seq == null
+        ? undefined
+        : params.direction === "before"
+          ? { lt: params.seq }
+          : { gt: params.seq };
     const order = params.direction === "before" ? "desc" : "asc";
     const messages = await this.prisma.privateMessage.findMany({
       where: {
@@ -928,7 +934,7 @@ export class PrivateMessageRepository {
   }
 
   /**
-   * List media/document messages in a room, newest first, cursor on createdAt.
+   * List media/document/link messages in a room, newest first, cursor on createdAt.
    * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
    * in memory (deletedFor shape: { [userId]: ISO-timestamp }).
    */
@@ -940,27 +946,97 @@ export class PrivateMessageRepository {
     limit: number;
     cutoff?: Date;
   }): Promise<PrivateMessage[]> {
-    const mediaTypes = MEDIA_MESSAGE_TYPES;
     const createdAt: { lt?: Date; gt?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
-    const messages = await this.prisma.privateMessage.findMany({
+    const createdAtFilter = Object.keys(createdAt).length ? { createdAt } : {};
+    const notDeletedFor = (msg: PrivateMessage) =>
+      !(params.userId in ((msg.deletedFor ?? {}) as Record<string, unknown>));
+
+    // "link" = TEXT messages that carry at least one URL — filtered in-memory.
+    // Fetch 5× limit since only a fraction of TEXT messages contain links.
+    if (params.type === "link") {
+      const msgs = await this.prisma.privateMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          isDeleted: false,
+          messageType: "TEXT",
+          ...createdAtFilter,
+        },
+        orderBy: { createdAt: "desc" },
+        take: params.limit * 5,
+      });
+      const URL_RE = /https?:\/\/\S+|www\.\S+/i;
+      return msgs
+        .filter(notDeletedFor)
+        .filter((m) => {
+          const content = (m.content as Record<string, unknown>) ?? {};
+          const urls = (content.urls as unknown[]) ?? [];
+          if (urls.length > 0) return true;
+          const text = (content.text as string) ?? "";
+          return URL_RE.test(text);
+        })
+        .slice(0, params.limit);
+    }
+
+    // Resolve composite aliases → real messageType values stored in MongoDB.
+    const typeFilter = (() => {
+      if (!params.type) return { in: [...MEDIA_MESSAGE_TYPES] };
+      if (params.type === "media") return { in: ["IMAGE", "VIDEO"] };
+      if (params.type === "file") return { in: ["DOCUMENT", "AUDIO"] };
+      return params.type; // raw single type (e.g. "IMAGE") — passed through
+    })();
+
+    const msgs = await this.prisma.privateMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
-        messageType: params.type ? params.type : { in: [...mediaTypes] },
-        ...(Object.keys(createdAt).length ? { createdAt } : {}),
+        messageType: typeFilter,
+        ...createdAtFilter,
       },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
     });
+    return msgs.filter(notDeletedFor).slice(0, params.limit);
+  }
 
-    return messages
-      .filter((msg) => {
-        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
-        return !(params.userId in deletedFor);
-      })
-      .slice(0, params.limit);
+  /**
+   * Ids of link-bearing TEXT messages. Mongo Prisma has no JSON-path filter, so
+   * the `content.text` regex runs in an aggregation and the rows are then read
+   * back through the typed client (same id-then-findMany shape as
+   * {@link findPreviousVisibleForUser}) — no hand-mapping of raw BSON.
+   */
+  private async findLinkMessageIds(params: {
+    roomId: string;
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+    cutoff?: Date;
+  }): Promise<string[]> {
+    const createdAt: Record<string, unknown> = {};
+    if (params.cursor)
+      createdAt.$lt = { $date: new Date(params.cursor).toISOString() };
+    if (params.cutoff) createdAt.$gt = { $date: params.cutoff.toISOString() };
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: params.roomId,
+            isDeleted: false,
+            messageType: "TEXT",
+            [`deletedFor.${params.userId}`]: { $exists: false },
+            "content.text": { $regex: LINK_TEXT_REGEX, $options: "i" },
+            ...(Object.keys(createdAt).length ? { createdAt } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return raw
+      .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+      .filter(Boolean);
   }
 
   /**

@@ -86,12 +86,15 @@ export class NotificationService {
       limit: number;
       cursor?: string | null;
       category?: NotificationCategory;
+      /** The requesting device's own session id — never show a device its own login alert. */
+      viewerSessionId?: string | null;
     }
   ): Promise<NotificationDTO[]> {
     const rows = await this.notificationRepo.findByUserId(userId, {
       limit: params.limit,
       cursor: params.cursor,
       where: categoryWhere(params.category ?? "ALL"),
+      viewerSessionId: params.viewerSessionId,
     });
     const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
@@ -100,14 +103,17 @@ export class NotificationService {
   }
 
   /** Per-tab totals shown in the Notification Center header. */
-  async getCounts(userId: string): Promise<{
+  async getCounts(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<{
     all: number;
     friends: number;
     communities: number;
     mentions: number;
     system: number;
   }> {
-    return this.notificationRepo.countByCategories(userId);
+    return this.notificationRepo.countByCategories(userId, viewerSessionId);
   }
 
   // Marks one or more notifications read and relays the refreshed unread
@@ -117,10 +123,12 @@ export class NotificationService {
     notificationIds: string[],
     userId: string
   ): Promise<{ updatedCount: number; unreadCount: number }> {
-    const results = await Promise.all(
-      notificationIds.map((id) => this.notificationRepo.markRead(id, userId))
+    // One updateMany, not a read+write per id — the 500-id cap made this up to
+    // 1000 Mongo ops for a single request.
+    const updatedCount = await this.notificationRepo.markManyRead(
+      notificationIds,
+      userId
     );
-    const updatedCount = results.filter((r) => r !== null).length;
     const unreadCount = await this.notificationRepo.getUnreadCount(userId);
 
     if (updatedCount > 0) {
@@ -139,17 +147,53 @@ export class NotificationService {
    */
   async markAllRead(
     userId: string,
-    category: NotificationCategory = "ALL"
+    category: NotificationCategory = "ALL",
+    before?: Date | null
   ): Promise<{ unreadCount: number }> {
     const extraWhere = category === "ALL" ? undefined : categoryWhere(category);
-    await this.notificationRepo.markAllRead(userId, extraWhere);
+    await this.notificationRepo.markAllRead(userId, extraWhere, before ?? null);
     const unreadCount = await this.notificationRepo.getUnreadCount(userId);
     await this.publishCountEvent(userId, "notification:all-read", unreadCount);
     return { unreadCount };
   }
 
-  async getUnreadCount(userId: string): Promise<number> {
-    return this.notificationRepo.getUnreadCount(userId);
+  async getUnreadCount(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<number> {
+    return this.notificationRepo.getUnreadCount(userId, viewerSessionId);
+  }
+
+  /**
+   * Persists a user-initiated action (e.g. "TERMINATE" session, "CONFIRM" login)
+   * on a notification: updates the stored body text + marks `actionTaken` in
+   * `payload.data` so the UI renders the resolved state on every reload.
+   * Emits `notification:updated` so open clients refresh without polling.
+   */
+  async recordAction(
+    id: string,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<void> {
+    const updated = await this.notificationRepo.recordAction(
+      id,
+      userId,
+      body,
+      action
+    );
+    if (!updated) return;
+    try {
+      await publishUserSocketEvent(this.redis, userId, "notification:updated", {
+        notificationId: updated.id,
+        userId,
+        type: updated.type,
+        body,
+        isRead: true,
+      });
+    } catch {
+      // best-effort — the DB write already succeeded
+    }
   }
 
   // Best-effort realtime relay: publishes the named event plus the legacy

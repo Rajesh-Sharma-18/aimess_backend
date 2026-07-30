@@ -47,6 +47,10 @@ export const v1Tags = [
     description: "1-to-1 private messaging (chat-service)",
   },
   {
+    name: "Chat — Inbox",
+    description: "Unified private + group conversation list and unread summary",
+  },
+  {
     name: "Chat — Groups",
     description:
       "Group rooms, members, messages, pins, and invite links (chat-service)",

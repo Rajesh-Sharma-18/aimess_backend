@@ -95,6 +95,8 @@ export function urlFromMap(
 export interface MediaFileLike {
   objectKey?: string | null;
   url?: string | null;
+  /** Permanent poster-frame key (videos / animated GIFs). */
+  thumbnailObjectKey?: string | null;
   [k: string]: unknown;
 }
 
@@ -107,9 +109,22 @@ export function fileMediaKey(file: MediaFileLike): string {
 }
 
 /**
+ * Every stored key an attachment resolves from: the object itself plus its
+ * poster frame. Collectors must push ALL of these into the page's
+ * {@link resolveMediaUrlMap} batch, or {@link applyUrlMapToFiles} can't stamp
+ * `thumbnailUrl` and the client pays a `/media/download-url` per video tile.
+ */
+export function fileMediaKeys(file: MediaFileLike): string[] {
+  const thumb =
+    typeof file.thumbnailObjectKey === "string" ? file.thumbnailObjectKey : "";
+  return [fileMediaKey(file), thumb].filter(Boolean);
+}
+
+/**
  * Sync variant of {@link resolveContentFiles} using a pre-resolved url map:
- * stamp each attachment's `url` from its objectKey/legacy-url. Returns a new
- * array; entries whose key did not resolve keep their original `url`.
+ * stamp each attachment's `url` from its objectKey/legacy-url, and its
+ * `thumbnailUrl` from `thumbnailObjectKey`. Returns a new array; entries whose
+ * key did not resolve keep their original values.
  */
 export function applyUrlMapToFiles<T extends MediaFileLike>(
   files: T[] | null | undefined,
@@ -118,7 +133,16 @@ export function applyUrlMapToFiles<T extends MediaFileLike>(
   if (!Array.isArray(files) || files.length === 0) return files ?? [];
   return files.map((file) => {
     const url = urlFromMap(urlMap, fileMediaKey(file));
-    return url ? { ...file, url } : file;
+    const thumbnailUrl =
+      typeof file.thumbnailObjectKey === "string"
+        ? urlFromMap(urlMap, file.thumbnailObjectKey)
+        : "";
+    if (!url && !thumbnailUrl) return file;
+    return {
+      ...file,
+      ...(url ? { url } : {}),
+      ...(thumbnailUrl ? { thumbnailUrl } : {}),
+    };
   });
 }
 
@@ -132,14 +156,18 @@ export async function resolveContentFiles<T extends MediaFileLike>(
   files: T[] | null | undefined
 ): Promise<T[]> {
   if (!Array.isArray(files) || files.length === 0) return files ?? [];
-  return Promise.all(
-    files.map(async (file) => {
-      const existing = typeof file.url === "string" ? file.url : "";
-      if (existing && isHttpUrl(existing)) return file;
-      const url = await resolveMediaUrl(file.objectKey ?? existing);
-      return url ? { ...file, url } : file;
-    })
-  );
+  const urlMap = await resolveMediaUrlMap(files.flatMap(fileMediaKeys));
+  return files.map((file) => {
+    const existing = typeof file.url === "string" ? file.url : "";
+    if (existing && isHttpUrl(existing)) {
+      const thumbnailUrl =
+        typeof file.thumbnailObjectKey === "string"
+          ? urlFromMap(urlMap, file.thumbnailObjectKey)
+          : "";
+      return thumbnailUrl ? { ...file, thumbnailUrl } : file;
+    }
+    return applyUrlMapToFiles([file], urlMap)[0]!;
+  });
 }
 
 /**
@@ -208,10 +236,7 @@ export async function resolvePinsMedia<T>(pins: T[]): Promise<T[]> {
     if (typeof avatar === "string" && avatar) keys.push(avatar);
     const files = filesOf(pin);
     if (files) {
-      for (const file of files) {
-        const key = fileMediaKey(file);
-        if (key) keys.push(key);
-      }
+      for (const file of files) keys.push(...fileMediaKeys(file));
     }
   }
   const urlMap = await resolveMediaUrlMap(keys);

@@ -11,14 +11,19 @@ export class NotificationController {
   constructor(private readonly service: NotificationService) {}
 
   getNotifications = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const category = parseCategory(req.query.type);
     const [notifications, counts] = await Promise.all([
-      this.service.getNotifications(userId, { limit, cursor, category }),
-      this.service.getCounts(userId),
+      this.service.getNotifications(userId, {
+        limit,
+        cursor,
+        category,
+        viewerSessionId: sessionId,
+      }),
+      this.service.getCounts(userId, sessionId),
     ]);
     // totalData reflects the current tab so pagination.totalPage stays
     // meaningful when the client is scoped to one category.
@@ -68,12 +73,21 @@ export class NotificationController {
 
   markAllRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    // Accept `type` from body OR querystring so existing callers (no body)
-    // stay on the mark-everything path (backward compatible).
-    const rawType =
-      (req.body as { type?: unknown } | undefined)?.type ?? req.query.type;
+    // Accept `type` / `before` from body OR querystring so existing callers
+    // (no body) stay on the mark-everything path (backward compatible).
+    const body = (req.body ?? {}) as { type?: unknown; before?: unknown };
+    const rawType = body.type ?? req.query.type;
+    const rawBefore = body.before ?? req.query.before;
     const category = parseCategory(rawType);
-    const result = await this.service.markAllRead(userId, category);
+    let before: Date | null = null;
+    if (typeof rawBefore === "number" && Number.isFinite(rawBefore)) {
+      before = new Date(rawBefore);
+    } else if (typeof rawBefore === "string" && rawBefore.trim()) {
+      const asNum = Number(rawBefore);
+      before = Number.isFinite(asNum) ? new Date(asNum) : new Date(rawBefore);
+      if (Number.isNaN(before.getTime())) before = null;
+    }
+    const result = await this.service.markAllRead(userId, category, before);
     res
       .status(HTTP_STATUS.OK)
       .json(
@@ -84,9 +98,21 @@ export class NotificationController {
       );
   });
 
-  getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
+  recordAction = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const unreadCount = await this.service.getUnreadCount(userId);
+    const { id } = req.params as { id: string };
+    const { action, body } = req.body as { action: string; body: string };
+    await this.service.recordAction(id, userId, body, action);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse({}, t("CHAT_NOTIFICATIONS_MARKED_READ", req.locale))
+      );
+  });
+
+  getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
+    const { userId, sessionId } = req.auth;
+    const unreadCount = await this.service.getUnreadCount(userId, sessionId);
     res
       .status(HTTP_STATUS.OK)
       .json(

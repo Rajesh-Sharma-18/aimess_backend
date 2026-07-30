@@ -6,20 +6,17 @@ import {
   type FriendCancelledPayload,
   type FriendRejectedPayload,
   type FriendRequestedPayload,
+  type NotificationNavigation,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { friendCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 // user-service publishes friendship events to a plain durable queue (NOT a
 // topic exchange) — match that. (See user-service publish-friendship.ts.)
 const FRIENDSHIP_QUEUE = "friendship.queue";
-
-/** Display names are optional on the wire (e.g. bulk auto-connect/-disconnect never sends them) — fall back generically. */
-function nameOr(name: string | undefined): string {
-  return name || "Someone";
-}
 
 async function handleFriendEvent(type: string, data: unknown): Promise<void> {
   switch (type) {
@@ -31,13 +28,25 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "New friend request",
-        body: `${nameOr(p.requesterName)} sent you a friend request.`,
+        ...friendCopy.requested(p.requesterName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
+          // Alias of friendshipId — matches the FE's pending-conversation
+          // contract field name (`friendRequestId`), so a tapped push can
+          // open the pending row directly without a name translation.
+          friendRequestId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          navigation: JSON.stringify({
+            // Opens the pending-conversation screen (Accept/Reject only),
+            // not the generic friend-requests list — same deep-link target
+            // as a real private chat, distinguished by conversationType.
+            screen: "PRIVATE_CHAT",
+            userId: p.requesterId,
+            conversationType: "PRIVATE_PENDING",
+            requestId: p.friendshipId,
+          } satisfies NotificationNavigation),
         },
       });
       break;
@@ -52,31 +61,39 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        title: "Friend request accepted",
-        body: `${nameOr(p.addresseeName)} accepted your friend request.`,
+        ...friendCopy.acceptedForRequester(p.addresseeName),
         deepLink: deepLinkForRequester,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink: deepLinkForRequester,
+          resolution: `${p.addresseeName?.trim() || "Someone"} accepted your friend request.`,
+          navigation: JSON.stringify({
+            screen: "USER_PROFILE",
+            userId: p.addresseeId,
+          } satisfies NotificationNavigation),
         },
       });
-      // Addressee — the side who just accepted. Their own notification
-      // history entry, distinct copy (they didn't "accept" anything from
-      // their own point of view, they're just now friends).
+      // Addressee — the side who just accepted. Update their friend.requested
+      // inbox row in-place (gRPC) with a resolution line; keep the Friend Request
+      // card title/body intact.
       const deepLinkForAddressee = buildDeepLink("user", p.requesterId);
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "New friend",
-        body: `You are now friends with ${nameOr(p.requesterName)}.`,
+        ...friendCopy.acceptedForAddressee(p.requesterName),
         deepLink: deepLinkForAddressee,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink: deepLinkForAddressee,
+          resolution: "You are now friends!",
+          navigation: JSON.stringify({
+            screen: "USER_PROFILE",
+            userId: p.requesterId,
+          } satisfies NotificationNavigation),
         },
       });
       break;
@@ -85,18 +102,41 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_REJECTED: {
       const p = data as FriendRejectedPayload;
       const deepLink = buildDeepLink("user", p.addresseeId);
+      // Notify the requester that their request was declined.
       await pushToUser({
         userId: p.requesterId,
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        title: "Friend request declined",
-        body: `${nameOr(p.addresseeName)} declined your friend request.`,
+        ...friendCopy.rejected(p.addresseeName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink,
+          resolution: "Declined your friend request",
+          resolutionTone: "danger",
+          navigation: JSON.stringify({
+            screen: "FRIEND_REQUESTS",
+            userId: p.addresseeId,
+          } satisfies NotificationNavigation),
+        },
+      });
+      // Update the ADDRESSEE's own friend.requested inbox row in-place so it
+      // persists the "I have declined" state across reloads. The gRPC handler
+      // detects type="friend.rejected" and replaces the existing friend.requested
+      // row instead of creating a new notification (mirrors the friend.accepted path).
+      await pushToUser({
+        userId: p.addresseeId,
+        category: "friendRequestEnabled",
+        type,
+        actorId: p.requesterId,
+        ...friendCopy.rejectedSelf(p.requesterName),
+        data: {
+          friendshipId: p.friendshipId,
+          requesterId: p.requesterId,
+          resolution: "I have declined the friend request",
+          resolutionTone: "danger",
         },
       });
       break;
@@ -110,13 +150,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        title: "Friend request cancelled",
-        body: `${nameOr(p.requesterName)} cancelled their friend request.`,
+        ...friendCopy.cancelled(p.requesterName),
         deepLink,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          navigation: JSON.stringify({
+            screen: "FRIEND_REQUESTS",
+            userId: p.requesterId,
+          } satisfies NotificationNavigation),
         },
       });
       break;

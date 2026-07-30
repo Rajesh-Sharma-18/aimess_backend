@@ -164,6 +164,11 @@ export const deviceLinkService = {
       deviceId: randomBytes(16).toString("hex"),
       deviceType: resolveDeviceType(record.device.deviceType),
       deviceName: record.device.deviceName,
+      // DeviceLinkDeviceInfo doesn't persist browser/OS names separately (only
+      // the combined deviceName) — the login-detected copy gracefully degrades
+      // to "a new device" for QR-linked logins, same as any UA it can't parse.
+      browserName: null,
+      osName: null,
       osVersion: record.device.os,
       appVersion: record.device.appVersion,
       ipAddress: record.device.ipAddress,
@@ -176,10 +181,15 @@ export const deviceLinkService = {
     const scanner = await authRepository.findRoleByUserId(userId);
     const role = scanner?.role === "ADMIN" ? "ADMIN" : "USER";
 
+    // QR linking is self-initiated from an already-authenticated device of the
+    // SAME user (spec §7) — suppress LOGIN_DETECTED / auth.security_new_login.
+    // Session, Linked Devices, audit, and session:list_updated still fire above.
     const { tokens, sessionId } = await issueAuthTokens(
       userId,
       role,
-      syntheticContext
+      syntheticContext,
+      undefined,
+      { notifyNewLogin: false }
     );
 
     // Finalize: SCANNED (just claimed above, same request) -> USED. NOT_SCANNED/

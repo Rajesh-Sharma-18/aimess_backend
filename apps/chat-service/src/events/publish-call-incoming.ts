@@ -31,6 +31,9 @@ export interface CallIncomingPayload {
   callType: string;
   /** epoch ms */
   initiatedAt: number;
+  /** Callee's LiveKit creds, so a push-woken client can join without the socket. */
+  livekitUrl: string;
+  token: string;
 }
 
 export interface CallMissedPayload {

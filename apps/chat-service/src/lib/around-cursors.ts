@@ -30,8 +30,12 @@ export const EMPTY_AROUND_CURSORS: AroundCursors = {
   newerCursor: null,
 };
 
-/** One extra row beyond a boundary is enough to prove "there is more". */
-const hasAny = (rows: { length: number }): boolean => rows.length > 0;
+/**
+ * One extra row beyond a boundary is enough to prove "there is more". A probe that
+ * yields nothing at all means no more — a continuation hint must never break a page.
+ */
+const hasAny = (rows: { length: number } | null | undefined): boolean =>
+  (rows?.length ?? 0) > 0;
 
 /**
  * Seq-keyset window (private/group). `probe(direction, seq)` must return the
@@ -45,7 +49,7 @@ export async function computeSeqAroundCursors<
   probe: (
     direction: "before" | "after",
     seq: number
-  ) => Promise<{ length: number }>
+  ) => Promise<{ length: number } | null | undefined>
 ): Promise<AroundCursors> {
   if (items.length === 0) return EMPTY_AROUND_CURSORS;
   const oldest = items[0]!.sequenceNumber;
@@ -63,6 +67,22 @@ export async function computeSeqAroundCursors<
 }
 
 /**
+ * {@link computeSeqAroundCursors} for a page in ARBITRARY order. `before` pages come
+ * back newest-first from the repo, so sort a copy ascending before probing the edges.
+ * The caller's own array is never reordered — wire order stays per-surface.
+ */
+export function computeSeqPageCursors<T extends { sequenceNumber: number }>(
+  page: T[],
+  probe: (
+    direction: "before" | "after",
+    seq: number
+  ) => Promise<{ length: number } | null | undefined>
+): Promise<AroundCursors> {
+  const ordered = [...page].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  return computeSeqAroundCursors(ordered, probe);
+}
+
+/**
  * Date-keyset window (community). `probe(direction, ts, boundaryId)` must return
  * the rows strictly beyond the `(ts, _id)` keyset in that direction (reuse the
  * repo's existing `findByRoomIdTimeline` with `limit: 1`, `inclusive: false`).
@@ -77,7 +97,7 @@ export async function computeDateAroundCursors<
     direction: "before" | "after",
     ts: Date,
     boundaryId: string
-  ) => Promise<{ length: number }>
+  ) => Promise<{ length: number } | null | undefined>
 ): Promise<AroundCursors> {
   if (rows.length === 0) return EMPTY_AROUND_CURSORS;
   const oldest = rows[0]!;

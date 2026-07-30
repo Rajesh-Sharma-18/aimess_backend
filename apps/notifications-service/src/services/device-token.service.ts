@@ -1,6 +1,8 @@
 import {
   deviceTokenRepository,
   type DeviceTokenPlatform,
+  type DeviceTokenRow,
+  type DeviceTokenType,
 } from "../repositories/device-token.repository.js";
 
 export const deviceTokenService = {
@@ -8,6 +10,7 @@ export const deviceTokenService = {
     userId: string;
     token: string;
     platform: DeviceTokenPlatform;
+    tokenType: DeviceTokenType;
     deviceId?: string | null;
   }): Promise<void> {
     return deviceTokenRepository.upsert(input);
@@ -22,7 +25,7 @@ export const deviceTokenService = {
     return deleted > 0;
   },
 
-  getTokensForUser(userId: string): Promise<string[]> {
+  getTokensForUser(userId: string): Promise<DeviceTokenRow[]> {
     return deviceTokenRepository.findTokensByUserId(userId);
   },
 

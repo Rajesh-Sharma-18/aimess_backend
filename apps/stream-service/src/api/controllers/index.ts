@@ -110,6 +110,24 @@ export class StreamController {
       .json(new ApiResponse(result, t("STREAM_WENT_LIVE", req.locale)));
   });
 
+  getPublishCredentials = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.livestreamService.getPublishCredentials(
+      id,
+      req.auth.userId
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("STREAM_PUBLISH_CREDENTIALS_FETCHED", req.locale)
+        )
+      );
+  });
+
   heartbeat = asyncHandler(async (req: Request, res: Response) => {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");

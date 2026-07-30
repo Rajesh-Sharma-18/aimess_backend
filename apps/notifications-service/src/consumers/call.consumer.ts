@@ -26,6 +26,8 @@ interface CallIncomingPayload {
   callerAvatar: string;
   callType: string;
   initiatedAt: number;
+  livekitUrl?: string;
+  token?: string;
 }
 
 interface CallMissedPayload {
@@ -78,6 +80,14 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     // A ring is worthless once it has stopped ringing — expire with the
     // ringing window rather than sitting in FCM for 24h.
     ttl: env.CALL_RINGING_TIMEOUT_SEC,
+    // Live ring — iOS VOIP tokens get an APNs VoIP push (required for reliable
+    // wake); see PushInput.allowVoip docs for why this must stay opt-in.
+    allowVoip: true,
+    // No `notification` block: the client renders its own full-screen CallStyle
+    // ring. Sending one makes Android auto-post a SECOND tray notification
+    // beside it, and a notification-carrying message does not reliably reach
+    // onMessageReceived when the app is killed — which is the whole point.
+    dataOnly: true,
     // Calls are live events, not Notification Center entries. (CALL_INCOMING
     // is not on the inbox allowlist either — this makes the intent explicit.)
     skipInbox: true,
@@ -96,6 +106,11 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
       initiatedAt: String(data.initiatedAt ?? ""),
       idempotencyKey: data.callId,
       deepLink,
+      // Lets a push-woken client join LiveKit without waiting for its socket.
+      // `?? ""` — messages queued by the previous producer lack these, and FCM
+      // rejects non-string data values.
+      livekitUrl: data.livekitUrl ?? "",
+      token: data.token ?? "",
     },
   });
 }
@@ -170,6 +185,9 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
     priority: "high",
     ttl: 30,
     collapseKey: `call:${data.callId}`,
+    // Dismiss a stale VoIP ring on iOS too — same live-event exception as
+    // handleCallIncoming's allowVoip.
+    allowVoip: true,
     data: {
       type: "CALL_CANCELLED",
       callId: data.callId,

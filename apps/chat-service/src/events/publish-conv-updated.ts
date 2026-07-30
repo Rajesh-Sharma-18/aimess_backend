@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
 import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
+import { notifyUnreadChanged } from "./unread-summary-bridge.js";
 
 /**
  * WhatsApp/Telegram-style "bump-to-top" fan-out for the inbox/community list.
@@ -81,6 +82,12 @@ interface PublishConvUpdatedParams {
    * entirely for GROUP (no single "peer") or when not supplied.
    */
   getIsOnline?: (userId: string) => Promise<boolean>;
+  /**
+   * Absolute per-recipient unread after this bump. When set, the client SETs
+   * the row badge to this value instead of blind +1 (albums / multi-row sends
+   * would otherwise desync list badges from chat:unread_summary).
+   */
+  unreadCountByRecipient?: Record<string, number>;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -95,7 +102,7 @@ const EMPTY_BUMP_PREVIEW: BumpPreview = { contentType: "", text: "" };
  */
 type PublishConvUpdatedSafeParams = Omit<
   PublishConvUpdatedParams,
-  "recipientIds" | "recipientOverrides"
+  "recipientIds" | "recipientOverrides" | "unreadCountByRecipient"
 > &
   (
     | { recipientIds: string[]; fetchRecipients?: never }
@@ -106,6 +113,10 @@ type PublishConvUpdatedSafeParams = Omit<
     resolveOverrides?: (
       recipientIds: string[]
     ) => Promise<Map<string, RecipientBump | null>>;
+    /** Lazily resolve absolute unread counts after the unread write has landed. */
+    resolveUnreadCounts?: (
+      recipientIds: string[]
+    ) => Promise<Record<string, number>>;
   };
 
 export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
@@ -124,6 +135,16 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
         );
       }
     }
+    let unreadCountByRecipient: Record<string, number> | undefined;
+    if (p.resolveUnreadCounts) {
+      try {
+        unreadCountByRecipient = await p.resolveUnreadCounts(recipientIds);
+      } catch (err) {
+        logger.warn(
+          `conv:updated unreadCount resolution failed for ${p.roomId}: ${String(err)}`
+        );
+      }
+    }
     await publishConvUpdated({
       redis: p.redis,
       type: p.type,
@@ -139,6 +160,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       countInUnread: p.countInUnread,
       subjectUserId: p.subjectUserId,
       selfPreview: p.selfPreview,
+      unreadCountByRecipient,
     });
   })().catch((error) => {
     logger.warn(
@@ -224,6 +246,11 @@ export async function publishConvUpdated(
         onlineById && otherParticipant
           ? !(onlineById.get(otherParticipant) ?? false)
           : undefined;
+      // Nav-badge total changed for this recipient — single choke point for
+      // every conv:updated caller (REST controllers, gRPC handlers, system
+      // messages), see unread-summary-bridge.ts.
+      if (unread) notifyUnreadChanged(recipientId);
+      const absoluteUnread = p.unreadCountByRecipient?.[recipientId];
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -237,6 +264,9 @@ export async function publishConvUpdated(
             senderId: effectiveSenderId,
             senderName: effectiveSenderName,
             unread,
+            ...(typeof absoluteUnread === "number"
+              ? { unreadCount: Math.max(0, absoluteUnread) }
+              : {}),
             ...(isOffline !== undefined ? { isOffline } : {}),
           },
         })
@@ -347,6 +377,9 @@ export async function publishCommunityUpdated(
         p.selfPreview && p.subjectUserId && memberId === p.subjectUserId
           ? { ...p.preview, text: p.selfPreview }
           : p.preview;
+      const unread = isSystem ? false : memberId !== p.senderId;
+      // Nav-badge total changed for this member — see unread-summary-bridge.ts.
+      if (unread) notifyUnreadChanged(memberId);
       pipeline.publish(
         `user:${memberId}`,
         JSON.stringify({
@@ -359,7 +392,7 @@ export async function publishCommunityUpdated(
             lastMessageAt: p.lastMessageAt,
             senderId,
             senderName,
-            unread: isSystem ? false : memberId !== p.senderId,
+            unread,
           },
         })
       );

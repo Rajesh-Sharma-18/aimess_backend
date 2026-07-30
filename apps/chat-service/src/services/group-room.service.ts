@@ -345,6 +345,15 @@ export class GroupRoomService {
     // original row if the post/read was a no-op.
     const fresh = await this.roomRepo.findActiveByRoomId(roomId);
     const finalRoom = fresh ?? room;
+    if (!finalRoom) {
+      throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    }
+
+    // Resolve the logo object-key → download URL at the wire boundary (never
+    // persist the URL — same contract as getRoom / getInboxGroups /
+    // group:meta:updated). Raw keys must never reach the creator's inbox cache
+    // or the create response, or the FE <img> falls back to the default avatar.
+    const resolvedAvatar = await resolveMediaUrl(finalRoom.avatar ?? "");
 
     // Creator isn't in `conv:<roomId>` yet (joined only via explicit client
     // `conv:join`), so push the new group to their personal `user:<id>` channel
@@ -363,7 +372,7 @@ export class GroupRoomService {
       pinnedCount: finalRoom.pinnedCount,
       peer: null,
       name: finalRoom.name,
-      avatar: finalRoom.avatar,
+      avatar: resolvedAvatar,
       description: finalRoom.description,
       memberCount: finalRoom.memberCount,
       role: member.role,
@@ -375,7 +384,10 @@ export class GroupRoomService {
       );
     });
 
-    return { room: finalRoom, member };
+    return {
+      room: { ...finalRoom, avatar: resolvedAvatar },
+      member,
+    };
   }
 
   async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
@@ -482,7 +494,9 @@ export class GroupRoomService {
       })();
     }
 
-    return updated;
+    // Resolve-on-read for the HTTP response (DB still holds the raw object key).
+    const resolvedAvatar = await resolveMediaUrl(updated.avatar ?? "");
+    return { ...updated, avatar: resolvedAvatar };
   }
 
   async disbandGroup(roomId: string, userId: string): Promise<GroupRoom> {
@@ -572,6 +586,29 @@ export class GroupRoomService {
     return rows.filter((r) =>
       isVisibleAfterClear(r, clearedByRoom.get(r.roomId))
     ).length;
+  }
+
+  /**
+   * Total unread group messages across every group the user's an active
+   * member of — for the Chats nav badge. Same membership lookup + visibility
+   * filter as countUserGroups, summing each membership's already-maintained
+   * `unreadCount` instead of counting rooms.
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    if (!memberships.length) return 0;
+    const clearedByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.clearedAt])
+    );
+    const unreadByRoom = new Map(
+      memberships.map((m) => [m.roomId, m.unreadCount])
+    );
+    const rows = await this.roomRepo.findLastMessageAtForRooms([
+      ...clearedByRoom.keys(),
+    ]);
+    return rows
+      .filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)))
+      .reduce((sum, r) => sum + (unreadByRoom.get(r.roomId) ?? 0), 0);
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {

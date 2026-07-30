@@ -696,19 +696,16 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    },
-    // Role the member held before they LEFT. Callers read this off the
-    // existing (pre-reactivation) row and pass it through so rejoining
-    // preserves rank instead of silently resetting an ADMIN/MODERATOR to
-    // MEMBER. Defaults to MEMBER only for the (should-not-happen) case of no
-    // prior row.
-    priorRole: CommunityMemberRole = CommunityMemberRole.MEMBER
+    }
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: {
         status: CommunityMemberStatus.ACTIVE,
-        role: priorRole,
+        // A new membership cycle never carries forward the previous cycle's
+        // rank — a rejoining ADMIN/MODERATOR always starts over as MEMBER,
+        // regardless of leave/kick/ban+unban path.
+        role: CommunityMemberRole.MEMBER,
         // Rejoin starts a fresh membership: advance joinedAt to now so the member
         // list shows the LATEST join time, not the original (stale) one. joinedAt
         // is @default(now()) which only applies on create, so reactivation must
@@ -862,9 +859,9 @@ export const communityRepository = {
    * Optionally also sets/clears the ban metadata (bannedAt/bannedBy/banReason)
    * in the same write — used by banMember (set) and unbanMember (clear to null).
    * `resetRole`, when passed, downgrades the stored role in the same write —
-   * used by banMember so a banned MODERATOR/ADMIN can never have their rank
-   * silently restored on a later reactivation (reactivateMemberWithSnapshot
-   * reads its priorRole off this row).
+   * used by banMember. Rank is never restored on reactivation regardless
+   * (reactivateMemberWithSnapshot always writes MEMBER), so this is now just
+   * defense in depth for the BANNED row itself.
    * `setUnbannedAt`, when passed, sets/clears `unbannedAt` in the same write —
    * used by unbanMember (set to now, so the mine-list query keeps this specific
    * LEFT row visible) and by banMember/reactivateMemberWithSnapshot (clear, so

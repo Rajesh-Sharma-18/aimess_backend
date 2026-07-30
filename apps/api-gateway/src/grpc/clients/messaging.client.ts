@@ -429,14 +429,22 @@ export function createMessagingClient(): MessagingClient {
   const markReadBreaker = makeBreaker(
     "messaging.markMessagesRead",
     (p: MarkMessagesReadParams) => {
-      const conversationType = String(
-        p.conversationType ?? "private"
-      ).toUpperCase();
+      // Prefer the room-id prefix over a missing/default claim — same rule as
+      // chat-service resolveConversationType. Prevents group opens from being
+      // routed through the private mark-read path when the client omits type.
+      const claimed = String(p.conversationType ?? "").toUpperCase();
+      const fromId = String(p.conversationId ?? "").startsWith("grp_")
+        ? "GROUP"
+        : String(p.conversationId ?? "").startsWith("prv_")
+          ? "PRIVATE"
+          : claimed === "GROUP"
+            ? "GROUP"
+            : "PRIVATE";
       return call<unknown, { updatedCount: number }>("markMessagesRead", {
         conversationId: p.conversationId,
         readerId: p.readerId,
         upToMessageId: p.upToMessageId,
-        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        conversationType: fromId,
       });
     }
   );

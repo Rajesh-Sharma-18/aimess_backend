@@ -1192,6 +1192,228 @@ export const userPaths = {
       },
     },
   },
+  "/users/friends/status/{userId}": {
+    get: {
+      tags: ["Users"],
+      summary: "Get friendship status with a user",
+      operationId: "getFriendshipStatus",
+      description:
+        "Returns the current friendship lifecycle state between the caller and `userId`, including action flags (`canAccept` / `canReject` / `canCancel`). Use before showing Add Friend / Accept / Cancel buttons on a profile.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friendship status",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/FriendshipStatusView",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/users/friends/blocked": {
+    get: {
+      tags: ["Users"],
+      summary: "List blocked users",
+      operationId: "getBlockedUsers",
+      description:
+        "Returns the list of users the caller has blocked, newest first. Each entry includes profile info and the block timestamp.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Blocked users list.",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            userId: {
+                              type: "string",
+                              format: "uuid",
+                            },
+                            username: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            firstName: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            lastName: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            avatarUrl: {
+                              type: "object",
+                              nullable: true,
+                            },
+                            blockedAt: {
+                              type: "string",
+                              format: "date-time",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/users/friends/block/{userId}": {
+    post: {
+      tags: ["Users"],
+      summary: "Block a user",
+      operationId: "blockUser",
+      description:
+        "Blocks `userId`. Ends any active friendship and prevents further friend requests / messaging discovery as enforced by user-service. Idempotent when already blocked. Cannot block yourself.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "User blocked (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "400": _badRequest,
+        "401": unauthorized,
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Unblock a user",
+      operationId: "unblockUser",
+      description:
+        "Removes a block on `userId`. Does not restore a prior friendship — the other user must send a new friend request.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "User unblocked (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "No block exists for this user",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/users/{userId}": {
+    get: {
+      tags: ["Users"],
+      summary: "Get a user's public profile",
+      operationId: "getPublicUserProfile",
+      description:
+        "Viewer-scoped public profile for `userId`. Bio and social counts may be null when privacy settings hide them from the caller. Returns 404 when the user is missing, deleted, or blocked in either direction.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Public profile",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/PublicUserProfileData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "User not found, deleted, or blocked",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/users/settings/me": {
     get: {
       tags: ["Users"],
@@ -1375,6 +1597,121 @@ export const userPaths = {
             },
           },
         },
+      },
+    },
+  },
+  "/users/settings/call-allowed-friends": {
+    get: {
+      tags: ["Users"],
+      summary: "List friends allowed to call me",
+      operationId: "listCallAllowedFriends",
+      description:
+        "Cursor-paginated list of friends on the call allow-list (used when call visibility is CUSTOM). `cursor` is the previous page's `nextCursor` (CallAllowedFriend row id).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "cursor",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "uuid" },
+          description: "Opaque page cursor from the previous response.",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 30 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Allow-list page",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CallAllowedFriendsPage",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/users/settings/call-allowed-friends/{friendId}": {
+    put: {
+      tags: ["Users"],
+      summary: "Add a friend to the call allow-list",
+      operationId: "addCallAllowedFriend",
+      description:
+        "Adds an accepted friend to the call allow-list. Idempotent if already listed. `friendId` must be an ACCEPTED friend.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "friendId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friend added (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "400": _badRequest,
+        "401": unauthorized,
+        "404": {
+          description: "Friend not found / not an accepted friend",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Remove a friend from the call allow-list",
+      operationId: "removeCallAllowedFriend",
+      description: "Removes `friendId` from the call allow-list. Idempotent.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "friendId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friend removed (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
       },
     },
   },
@@ -2012,6 +2349,70 @@ export const userPaths = {
         },
         "400": _badRequest,
         "401": unauthorized,
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Clear all recently viewed User/Group entries",
+      operationId: "clearRecentUserSearches",
+      description:
+        "Deletes every recently-viewed User/Group row for the caller. Idempotent when already empty.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Cleared (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/users/search/recent/{targetId}": {
+    delete: {
+      tags: ["Users"],
+      summary: "Remove one recently viewed User/Group",
+      operationId: "removeRecentUserSearch",
+      description:
+        "Deletes a single recently-viewed row for `(caller, targetType, targetId)`. Defaults `targetType` to `USER` when omitted. Returns 404 if no matching row exists.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "targetId",
+          in: "path",
+          required: true,
+          schema: { type: "string", minLength: 1, maxLength: 64 },
+        },
+        {
+          name: "targetType",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["USER", "GROUP"], default: "USER" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Removed (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "No matching recent-search row",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
       },
     },
   },

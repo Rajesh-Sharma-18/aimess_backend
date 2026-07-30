@@ -993,6 +993,60 @@ export const authPaths = {
       },
     },
   },
+  "/auth/sessions/{sessionId}/trust": {
+    post: {
+      tags: ["Auth"],
+      summary: "Trust this login (It's Me)",
+      operationId: "trustSession",
+      description:
+        'Confirms a new/suspicious login detection for the given session ("It\'s Me"). Marks the related login-detected notification as TRUSTED. The session stays active — this is not a revoke. Pass any `sessionId` from GET /auth/sessions that belongs to the caller.',
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "sessionId",
+          in: "path",
+          required: true,
+          description: "Session ID (sessionId) from GET /auth/sessions.",
+          schema: { type: "string", format: "uuid" },
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Session trusted (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message: "Session trusted",
+                data: null,
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Session not found or not owned by the caller",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Session not found",
+                code: "SESSION_NOT_FOUND",
+              },
+            },
+          },
+        },
+        "502": {
+          ...serviceUnavailable,
+          description: "Auth service unavailable",
+        },
+      },
+    },
+  },
   "/auth/forgot-password/request": {
     post: {
       tags: ["Auth"],

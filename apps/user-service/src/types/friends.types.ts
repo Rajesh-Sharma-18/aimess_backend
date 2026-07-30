@@ -15,6 +15,8 @@ export type FriendListItem = {
   avatar: MediaObject;
   /** Uppercased first letter of firstName, or "#" if non-alphabetic. */
   section: string;
+  /** True when this friend is in the caller's call-allowed list. */
+  isCallAllowed: boolean;
 };
 
 export type FriendsListResult = {

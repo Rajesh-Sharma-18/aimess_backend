@@ -168,9 +168,7 @@ export class PrivateRoomRepository {
    * no ordering — just enough to walk and call markDeliveredUpTo per room.
    * 500 cap so a whale user's connect never blocks the presence recompute.
    */
-  async findParticipatingRoomHeads(
-    userId: string
-  ): Promise<
+  async findParticipatingRoomHeads(userId: string): Promise<
     Array<{
       roomId: string;
       lastMessageId: string | null;
@@ -243,6 +241,33 @@ export class PrivateRoomRepository {
   }
 
   /**
+   * Total unread private messages across every room the user's in — for the
+   * Chats nav badge. Same unbounded shape as countConversations (a badge
+   * total must cover every room, not one inbox page) plus the exact
+   * `unreadByUser[userId] ?? 0` read PrivateRoomService.toPrivateItem already
+   * uses per-row, just summed here instead of listed.
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const rows = await this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId }, lastMessageAt: { not: null } },
+      select: {
+        deletedFor: true,
+        lastMessageAt: true,
+        unreadCountByUser: true,
+      },
+    });
+    return rows
+      .filter((r) => isVisibleAfterDeleteForMe(r, userId))
+      .reduce((sum, r) => {
+        const unreadByUser = (r.unreadCountByUser ?? {}) as Record<
+          string,
+          number
+        >;
+        return sum + (unreadByUser[userId] ?? 0);
+      }, 0);
+  }
+
+  /**
    * Timestamp-bounded conversation fetch for the unified inbox.
    * - direction "before": lastMessageAt <= ts, newest-first (desc).
    * - direction "after" : lastMessageAt >= ts, oldest-first (asc).
@@ -286,10 +311,30 @@ export class PrivateRoomRepository {
     /** How many unread rows this send contributes (albums > 1). */
     unreadIncrement?: number;
   }): Promise<PrivateRoom | null> {
+    // Read-then-write for the Map-based unread fields — wrapped in
+    // withWriteConflictRetry (see db-errors.ts) so a concurrent write to the
+    // same room (e.g. a markReadUpTo racing this send) retries on a fresh read
+    // instead of one writer's update silently clobbering the other's.
+    return withWriteConflictRetry(() => this.doUpdateRoomOnNewMessage(params));
+  }
+
+  private async doUpdateRoomOnNewMessage(params: {
+    roomId: string;
+    message: {
+      _id: string;
+      content: unknown;
+      senderId: string;
+      messageType: string;
+      systemEvent?: string | null;
+      systemData?: unknown;
+      createdAt: Date;
+    };
+    receiverId: string;
+    unreadIncrement?: number;
+  }): Promise<PrivateRoom | null> {
     const { roomId, message, receiverId } = params;
     const now = message.createdAt || new Date();
 
-    // We need to read-then-write for the Map-based fields
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
     });
@@ -360,6 +405,16 @@ export class PrivateRoomRepository {
     userId: string;
     upToMessageId: string;
   }): Promise<PrivateRoom | null> {
+    // See updateRoomOnNewMessage: same read-modify-write race on the JSON
+    // unread fields, same fix.
+    return withWriteConflictRetry(() => this.doMarkReadUpTo(params));
+  }
+
+  private async doMarkReadUpTo(params: {
+    roomId: string;
+    userId: string;
+    upToMessageId: string;
+  }): Promise<PrivateRoom | null> {
     const { roomId, userId, upToMessageId } = params;
     const now = new Date();
 
@@ -394,8 +449,10 @@ export class PrivateRoomRepository {
       if (currentSeq != null && upToSeq <= currentSeq) return existing;
     }
 
-    // Accurate remaining unread = inbound messages strictly newer than the boundary (reading to a
-    // non-latest message must leave unread > 0, not hard-zero).
+    // Accurate remaining unread = inbound countable messages strictly newer
+    // than the boundary (reading to a non-latest message must leave unread > 0,
+    // not hard-zero). Exclude SYSTEM / countInUnread:false so call-ended and
+    // other non-badge rows cannot leave a phantom unread after a full catch-up.
     const remainingUnread =
       upToSeq != null
         ? await this.prisma.privateMessage.count({
@@ -404,6 +461,9 @@ export class PrivateRoomRepository {
               senderId: { not: userId },
               isDeleted: false,
               sequenceNumber: { gt: upToSeq },
+              NOT: { countInUnread: false },
+              messageType: { not: "SYSTEM" },
+              systemEvent: null,
             },
           })
         : 0;
@@ -468,6 +528,18 @@ export class PrivateRoomRepository {
     messageId: string;
     messageCreatedAt: Date;
   }): Promise<void> {
+    // See updateRoomOnNewMessage: same read-modify-write race, same fix.
+    return withWriteConflictRetry(() =>
+      this.doDecrementUnreadForMessage(params)
+    );
+  }
+
+  private async doDecrementUnreadForMessage(params: {
+    roomId: string;
+    recipientId: string;
+    messageId: string;
+    messageCreatedAt: Date;
+  }): Promise<void> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId: params.roomId },
     });
@@ -524,9 +596,9 @@ export class PrivateRoomRepository {
   async incPinnedCount(
     roomId: string,
     inc: number,
-    _options?: { session?: unknown }
+    client: PrismaClient | Prisma.TransactionClient = this.prisma
   ): Promise<PrivateRoom | null> {
-    return this.prisma.privateRoom.update({
+    return client.privateRoom.update({
       where: { roomId },
       data: {
         pinnedCount: { increment: inc },

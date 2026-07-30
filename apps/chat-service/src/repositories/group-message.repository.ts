@@ -447,12 +447,17 @@ export class GroupMessageRepository {
     userId: string;
     roomId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = no lower bound, i.e. the newest page. */
+    seq: number | null;
     limit: number;
     cutoff?: Date;
   }): Promise<GroupMessage[]> {
     const bound =
-      params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
+      params.seq == null
+        ? undefined
+        : params.direction === "before"
+          ? { lt: params.seq }
+          : { gt: params.seq };
     const order = params.direction === "before" ? "desc" : "asc";
     const messages = await this.prisma.groupMessage.findMany({
       where: {
@@ -629,6 +634,17 @@ export class GroupMessageRepository {
             isDeleted: false,
             createdAt: { $gt: { $date: effectiveAfter.toISOString() } },
             deletedForUserIds: { $ne: params.userId },
+            // Own messages never count toward the caller's unread — mirrors
+            // community countUnreadBulk (`sentBy: { $ne: userId }`) and private
+            // markReadUpTo (`senderId: { not: userId }`). Without this, mark-read
+            // / getConversation recompute inflated unread whenever the user had
+            // sent anything after the new pointer.
+            senderId: { $ne: params.userId },
+            // Hard-exclude SYSTEM rows even if a legacy doc is missing
+            // countInUnread:false (UNREAD_COUNTABLE_RAW_MATCH treats missing as
+            // countable).
+            messageType: { $ne: "SYSTEM" },
+            systemEvent: null,
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
@@ -977,11 +993,20 @@ export class GroupMessageRepository {
     const createdAt: { lt?: Date; gt?: Date } = {};
     if (params.cursor) createdAt.lt = new Date(params.cursor);
     if (params.cutoff) createdAt.gt = params.cutoff;
+    // Resolve composite aliases (mirrors PrivateMessageRepository). Without
+    // this a `type=media` filter would try to match the literal string "media"
+    // and silently return zero rows for group chats.
+    const typeFilter = (() => {
+      if (!params.type) return { in: [...mediaTypes] };
+      if (params.type === "media") return { in: ["IMAGE", "VIDEO"] };
+      if (params.type === "file") return { in: ["DOCUMENT", "AUDIO"] };
+      return params.type;
+    })();
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId: params.roomId,
         isDeleted: false,
-        messageType: params.type ? params.type : { in: [...mediaTypes] },
+        messageType: typeFilter,
         ...(Object.keys(createdAt).length ? { createdAt } : {}),
       },
       orderBy: { createdAt: "desc" },

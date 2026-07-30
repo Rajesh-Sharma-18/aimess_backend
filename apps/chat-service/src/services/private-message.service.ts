@@ -33,6 +33,7 @@ import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
+  computeSeqPageCursors,
 } from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
@@ -54,6 +55,7 @@ import {
   urlFromMap,
   applyUrlMapToFiles,
   fileMediaKey,
+  fileMediaKeys,
   resolveQuoteThumbnail,
   resolveStickerField,
   type MediaFileLike,
@@ -118,10 +120,19 @@ export class PrivateMessageService {
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
 
-    const friends = await this.userServiceClient.checkFriendship(
-      params.senderId,
-      params.receiverId
-    );
+    const [friends, blocked] = await Promise.all([
+      this.userServiceClient.checkFriendship(
+        params.senderId,
+        params.receiverId
+      ),
+      this.userServiceClient.isFriendshipBlocked(
+        params.senderId,
+        params.receiverId
+      ),
+    ]);
+    if (blocked) {
+      throw new ForbiddenError("CHAT_BLOCKED");
+    }
     if (!friends) {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }
@@ -272,8 +283,11 @@ export class PrivateMessageService {
     const isFirstMessage = !roomBefore?.lastMessageAt;
 
     // Update room with last message; unread += one per persisted row.
-    this.roomRepo
-      .updateRoomOnNewMessage({
+    // MUST await before the caller publishes conv:updated / chat:unread_summary —
+    // a fire-and-forget race left the nav badge reading a STALE sum (list +1,
+    // summary still old → private/group badge mismatch).
+    try {
+      await this.roomRepo.updateRoomOnNewMessage({
         roomId: params.roomId,
         message: {
           _id: message.id,
@@ -286,9 +300,8 @@ export class PrivateMessageService {
         },
         receiverId: params.receiverId,
         unreadIncrement,
-      })
-      .then(() => {
-        if (!isFirstMessage || !this.redis) return;
+      });
+      if (isFirstMessage && this.redis) {
         // Tell both participants a real conversation now exists — lets the
         // frontend drop the "friend suggestion" placeholder and insert the
         // room into the conversation list without a manual refresh.
@@ -299,14 +312,14 @@ export class PrivateMessageService {
             participants: [params.senderId, params.receiverId],
           },
         });
-        this.redis!.publish(`user:${params.senderId}`, payload).catch(() => {});
-        this.redis!.publish(`user:${params.receiverId}`, payload).catch(
-          () => {}
-        );
-      })
-      .catch((err: unknown) => {
-        logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
-      });
+        this.redis.publish(`user:${params.senderId}`, payload).catch(() => {});
+        this.redis
+          .publish(`user:${params.receiverId}`, payload)
+          .catch(() => {});
+      }
+    } catch (err: unknown) {
+      logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
+    }
 
     // Presence-aware delivery: if the peer has ANY authenticated socket right
     // now, the message is DELIVERED the moment it's persisted (Telegram/WhatsApp
@@ -491,6 +504,8 @@ export class PrivateMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
@@ -499,23 +514,32 @@ export class PrivateMessageService {
     );
     const cutoff = getPrivateDeletionCutoff(room, params.userId);
 
-    const [{ messages: items, hasMore }, total] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        userId: params.userId,
-        roomId: room.roomId,
-        direction: params.direction,
-        ts: params.ts,
-        boundaryId: params.boundaryId ?? null,
-        inclusive: params.inclusive ?? false,
-        limit: params.limit,
-        cutoff,
-      }),
-      this.messageRepo.countTimeline({
-        roomId: room.roomId,
-        userId: params.userId,
-        cutoff,
-      }),
-    ]);
+    const [{ messages: items, hasMore }, total, roomRevision] =
+      await Promise.all([
+        this.messageRepo.findByRoomIdTimeline({
+          userId: params.userId,
+          roomId: room.roomId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          cutoff,
+        }),
+        this.messageRepo.countTimeline({
+          roomId: room.roomId,
+          userId: params.userId,
+          cutoff,
+        }),
+        this.roomRepo.getRoomRevision(room.roomId),
+      ]);
+
+    const cursors = await this.seqPageCursors(
+      items,
+      room.roomId,
+      params.userId,
+      cutoff
+    );
 
     // The repo returns the page in DB order (before → newest-first, after →
     // oldest-first); the boundary for the next page is the LAST row either way.
@@ -526,7 +550,29 @@ export class PrivateMessageService {
     const nextCursor =
       hasMore && last ? `${last.createdAt.getTime()}_${last.id}` : null;
 
-    return { items, hasMore, nextCursor, total };
+    return { items, hasMore, nextCursor, total, cursors, roomRevision };
+  }
+
+  /**
+   * Bidirectional continuation for any page — probes one visible row strictly
+   * beyond each seq edge through the same keyset query the page itself used.
+   */
+  private seqPageCursors(
+    page: PrivateMessage[],
+    roomId: string,
+    userId: string,
+    cutoff: Date | undefined
+  ): Promise<AroundCursors> {
+    return computeSeqPageCursors(page, (direction, seq) =>
+      this.messageRepo.findByRoomIdSeq({
+        userId,
+        roomId,
+        direction,
+        seq,
+        limit: 1,
+        cutoff,
+      })
+    );
   }
 
   /**
@@ -537,32 +583,50 @@ export class PrivateMessageService {
     roomId: string;
     userId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = newest page. */
+    seq: number | null;
     limit: number;
   }): Promise<{
     items: PrivateMessage[];
     hasMore: boolean;
     nextCursor: string | null;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
       params.userId
     );
+    const cutoff = getPrivateDeletionCutoff(room, params.userId);
 
-    const rows = await this.messageRepo.findByRoomIdSeq({
-      userId: params.userId,
-      roomId: room.roomId,
-      direction: params.direction,
-      seq: params.seq,
-      limit: params.limit,
-      cutoff: getPrivateDeletionCutoff(room, params.userId),
-    });
+    const [rows, roomRevision] = await Promise.all([
+      this.messageRepo.findByRoomIdSeq({
+        userId: params.userId,
+        roomId: room.roomId,
+        direction: params.direction,
+        seq: params.seq,
+        limit: params.limit,
+        cutoff,
+      }),
+      this.roomRepo.getRoomRevision(room.roomId),
+    ]);
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
     const last = items[items.length - 1];
     const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
-    return { items, hasMore, nextCursor };
+    const cursors = await this.seqPageCursors(
+      items,
+      room.roomId,
+      params.userId,
+      cutoff
+    );
+    return { items, hasMore, nextCursor, cursors, roomRevision };
+  }
+
+  /** Raw message lookup — the V2 delete/react routes resolve their room from the message. */
+  findMessageById(messageId: string): Promise<PrivateMessage | null> {
+    return this.messageRepo.findById(messageId);
   }
 
   /**
@@ -674,6 +738,13 @@ export class PrivateMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /** Absolute per-user unread for a private room — used on conv:updated. */
+  async getUnreadCountsByUser(roomId: string): Promise<Record<string, number>> {
+    const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
+    const map = (room?.unreadCountByUser ?? {}) as Record<string, number>;
+    return { ...map };
   }
 
   /**
@@ -1135,6 +1206,34 @@ export class PrivateMessageService {
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const updated = setStoredReaction(raw.reactions, userId, emoji);
     return this.messageRepo.addReactions(messageId, raw.roomId, updated);
+  }
+
+  /** {@link setReaction} in {@link reactToMessage}'s return shape, for the REST orchestrator. */
+  async setReactionDetailed(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const message = await this.setReaction(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return {
+      roomId: message.roomId,
+      added: true,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
   }
 
   /**
@@ -1678,8 +1777,7 @@ export class PrivateMessageService {
       const files = (message.content as Record<string, unknown> | null)?.files;
       if (Array.isArray(files)) {
         for (const file of files) {
-          const key = fileMediaKey(file as MediaFileLike);
-          if (key) mediaKeys.push(key);
+          mediaKeys.push(...fileMediaKeys(file as MediaFileLike));
         }
       }
       const sticker = (message.content as Record<string, unknown> | null)

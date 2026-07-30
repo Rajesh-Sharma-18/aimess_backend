@@ -33,6 +33,37 @@ function buildSearchFilter(q: string | undefined): {
 }
 
 export const userProfileRepository = {
+  /**
+   * Full row for a THIRD-PARTY profile read, plus the privacy scopes that gate
+   * it — one query, so the endpoint never does a second round-trip for settings.
+   * Separate from the cached [findByUserId] path: that cache stores only the
+   * self-profile subset (no presence, counts, cover or privacy).
+   */
+  findPublicProfileByUserId(userId: string) {
+    return prisma.userProfile.findUnique({
+      where: { userId },
+      select: {
+        userId: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        bio: true,
+        avatarUrl: true,
+        coverImageUrl: true,
+        isOnline: true,
+        lastSeenAt: true,
+        friendsCount: true,
+        communitiesCount: true,
+        groupsCount: true,
+        status: true,
+        deletedAt: true,
+        privacySettings: {
+          select: { whoCanViewProfile: true, whoCanSeeOnlineStatus: true },
+        },
+      },
+    });
+  },
+
   findByUserId(userId: string) {
     return prisma.userProfile.findUnique({ where: { userId } });
   },

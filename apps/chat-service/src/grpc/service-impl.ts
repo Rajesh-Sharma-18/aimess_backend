@@ -22,6 +22,7 @@ import {
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
 import {
@@ -735,10 +736,10 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
 
           let readToSeq = 0;
           let unreadCount = 0;
@@ -754,11 +755,16 @@ export function createMessagingImpl(
           // (no extra query for PRIVATE — the room doc is already in hand).
           let otherUserIds: string[] = [];
           if (conversationType === "GROUP") {
-            ({ readToSeq } = await deps.groupMessageService.markReadUpTo({
+            // Capture remainingUnread so read_sync / chat:unread_summary stay
+            // accurate after a group open — discarding it left the nav badge
+            // stuck while the list was optimistically cleared.
+            const groupRead = await deps.groupMessageService.markReadUpTo({
               roomId: req.conversationId,
               userId: req.readerId,
               upToMessageId: req.upToMessageId,
-            }));
+            });
+            readToSeq = groupRead.readToSeq;
+            unreadCount = groupRead.remainingUnread;
             const [members, lastSeq] = await Promise.all([
               deps.groupMessageService
                 .getActiveMemberIds(req.conversationId)
@@ -856,6 +862,9 @@ export function createMessagingImpl(
             .catch((e: unknown) =>
               logger.warn(`read_sync publish failed: ${String(e)}`)
             );
+
+          // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
+          notifyUnreadChanged(req.readerId);
 
           callback(null, { updatedCount: 1 });
         } catch (err) {
@@ -1568,7 +1577,14 @@ export function createMessagingImpl(
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
           });
-          callback(null, { callId: result.callId, status: result.status });
+          callback(null, {
+            callId: result.callId,
+            status: result.status,
+            livekit: {
+              url: result.livekit.url,
+              token: result.livekit.token,
+            },
+          });
         } catch (err) {
           logger.error(`gRPC answerCall error: ${String(err)}`);
           callback(toGrpcCallbackError(err));
@@ -3662,6 +3678,118 @@ export function createNotificationImpl(
           const entityId =
             data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
+          // For friend.accepted / friend.rejected: update the existing friend.requested
+          // row in-place instead of creating a duplicate. Preserve the Friend Request
+          // card title/body; resolution text lives in payload.data.resolution.
+          if (req.type === "friend.rejected" && req.actorId) {
+            const existing = await deps.notificationRepo.findByTypeAndActor(
+              req.userId,
+              "friend.requested",
+              req.actorId
+            );
+            if (existing) {
+              const existingPayload = (existing.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const preservedTitle =
+                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+              const preservedBody =
+                existingPayload.body?.trim() || req.body?.trim() || "";
+              const updated = await deps.notificationRepo.updatePayloadAndType(
+                existing.id,
+                req.type,
+                {
+                  title: preservedTitle,
+                  body: preservedBody,
+                  data: { ...(existingPayload.data ?? {}), ...data },
+                }
+              );
+              if (updated) {
+                try {
+                  await publishUserSocketEvent(
+                    redis,
+                    req.userId,
+                    "notification:updated",
+                    {
+                      notificationId: updated.id,
+                      userId: req.userId,
+                      type: req.type,
+                      title: preservedTitle,
+                      body: preservedBody,
+                      isRead: updated.isRead,
+                      createdAt: updated.createdAt.getTime(),
+                      // No navigation on decline — the notification is terminal.
+                      navigation: null,
+                    }
+                  );
+                } catch (err) {
+                  logger.warn(
+                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
+                  );
+                }
+                callback(null, { id: updated.id });
+                return;
+              }
+            }
+          }
+
+          if (req.type === "friend.accepted" && req.actorId) {
+            const existing = await deps.notificationRepo.findByTypeAndActor(
+              req.userId,
+              "friend.requested",
+              req.actorId
+            );
+            if (existing) {
+              const existingPayload = (existing.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const preservedTitle =
+                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+              const preservedBody =
+                existingPayload.body?.trim() || req.body?.trim() || "";
+              const updated = await deps.notificationRepo.updatePayloadAndType(
+                existing.id,
+                req.type,
+                {
+                  title: preservedTitle,
+                  body: preservedBody,
+                  data: { ...(existingPayload.data ?? {}), ...data },
+                }
+              );
+              if (updated) {
+                try {
+                  await publishUserSocketEvent(
+                    redis,
+                    req.userId,
+                    "notification:updated",
+                    {
+                      notificationId: updated.id,
+                      userId: req.userId,
+                      type: req.type,
+                      title: preservedTitle,
+                      body: preservedBody,
+                      isRead: updated.isRead,
+                      createdAt: updated.createdAt.getTime(),
+                      ...(parsedNavigation !== undefined
+                        ? { navigation: parsedNavigation }
+                        : {}),
+                    }
+                  );
+                } catch (err) {
+                  logger.warn(
+                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
+                  );
+                }
+                callback(null, { id: updated.id });
+                return;
+              }
+            }
+          }
+
           const created = await deps.notificationRepo.create({
             userId: req.userId,
             actorId: req.actorId ?? "",
@@ -3701,11 +3829,16 @@ export function createNotificationImpl(
               dto.navigation = parsedNavigation;
             if (parsedActorSnapshot !== undefined)
               dto.actorSnapshot = parsedActorSnapshot;
+            // Strip the internal relay hint; send remaining data to the client.
+            const { excludeSessionId: _excl, ...clientData } = data;
+            if (Object.keys(clientData).length > 0) dto.data = clientData;
             await publishUserSocketEvent(
               redis,
               req.userId,
               "notification:new",
-              dto
+              dto,
+              // Exclude the newly-logged-in device from its own login alert.
+              data.excludeSessionId
             );
             await publishUserSocketEvent(
               redis,
@@ -3737,6 +3870,7 @@ export function createNotificationImpl(
             userId?: string;
             cursor?: string;
             limit?: number;
+            sessionId?: string;
           };
           if (!req.userId) {
             callback({
@@ -3750,9 +3884,11 @@ export function createNotificationImpl(
           const rows = await deps.notificationRepo.findByUserId(req.userId, {
             limit,
             cursor: req.cursor || null,
+            viewerSessionId: req.sessionId || null,
           });
           const unreadCount = await deps.notificationRepo.getUnreadCount(
-            req.userId
+            req.userId,
+            req.sessionId || null
           );
 
           const notifications = await Promise.all(
@@ -3789,6 +3925,9 @@ export function createNotificationImpl(
                 referenceId: entity.id ?? "",
                 isRead: n.isRead,
                 createdAt: n.createdAt.getTime(),
+                // Include the full data map so clients can restore notification
+                // state (e.g. actionTaken="TERMINATED") on page refresh.
+                data: rawData,
               };
               if (navParsed !== undefined) row.navigation = navParsed;
               if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
@@ -3924,6 +4063,82 @@ export function createNotificationImpl(
           callback(null, { deleted, remainingUnread });
         } catch (err) {
           logger.error(`gRPC deleteNotification error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    recordSessionAction: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            sessionId?: string;
+            action?: string;
+            body?: string;
+          };
+          if (!req.userId || !req.sessionId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId and sessionId are required",
+            });
+            return;
+          }
+
+          const notification =
+            await deps.notificationRepo.findByNewLoginSessionId(
+              req.userId,
+              req.sessionId
+            );
+          if (!notification) {
+            callback(null, { notificationId: "", updated: false });
+            return;
+          }
+
+          const updated = await deps.notificationRepo.recordAction(
+            notification.id,
+            req.userId,
+            req.body ?? "",
+            req.action ?? ""
+          );
+
+          if (updated) {
+            const payloadObj = (updated.payload ?? {}) as { title?: string };
+            try {
+              await publishUserSocketEvent(
+                redis,
+                req.userId,
+                "notification:updated",
+                {
+                  notificationId: updated.id,
+                  userId: req.userId,
+                  type: updated.type,
+                  title: payloadObj.title ?? "",
+                  body: req.body ?? "",
+                  isRead: true,
+                  createdAt: updated.createdAt.getTime(),
+                  data: {
+                    actionTaken: req.action ?? "",
+                    sessionId: req.sessionId,
+                  },
+                }
+              );
+            } catch (err) {
+              logger.warn(
+                `recordSessionAction notify:updated publish failed for ${req.userId}: ${String(err)}`
+              );
+            }
+          }
+
+          callback(null, {
+            notificationId: notification.id,
+            updated: !!updated,
+          });
+        } catch (err) {
+          logger.error(`gRPC recordSessionAction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

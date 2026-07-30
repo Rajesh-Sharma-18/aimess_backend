@@ -482,8 +482,9 @@ message AnswerCallRequest {
   string callee_id = 2;
 }
 message AnswerCallResponse {
-  string call_id = 1;
-  string status  = 2;
+  string             call_id = 1;
+  string             status  = 2;
+  LiveKitCredentials livekit = 3;
 }
 message DeclineCallRequest {
   string call_id   = 1;

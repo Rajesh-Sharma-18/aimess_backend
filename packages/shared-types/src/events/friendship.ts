@@ -59,6 +59,8 @@ export type FriendRejectedPayload = {
   addresseeId: string;
   /** Display name of the addressee (rejecter) — the requester's "X declined your friend request" copy. */
   addresseeName?: string;
+  /** Display name of the requester — the addressee's own "I have declined X" inbox copy. */
+  requesterName?: string;
   rejectedAt: string;
 };
 
@@ -103,4 +105,85 @@ export type FriendshipReadModelPayload = {
   userB: string;
   status?: string;
   timestamp: number;
+};
+
+/**
+ * Realtime events for the "pending friend-request conversation row" feature —
+ * lets a private-chat conversation list show an incoming friend request as a
+ * pending entry (Telegram-style) before any room/message exists, and update
+ * live when it's accepted/rejected. Delivered the SAME way as
+ * `FriendSocketEvents` above (`user:<userId>` Redis relay → `/chat` namespace),
+ * additive alongside them — not a replacement.
+ */
+export const ConversationSocketEvents = {
+  PENDING_FRIEND_REQUEST: "conversation:pending-friend-request",
+  FRIEND_REQUEST_ACCEPTED: "conversation:friend-request-accepted",
+  FRIEND_REQUEST_REJECTED: "conversation:friend-request-rejected",
+} as const;
+
+export type ConversationSocketEventType =
+  (typeof ConversationSocketEvents)[keyof typeof ConversationSocketEvents];
+
+export type ConversationRequesterBrief = {
+  id: string;
+  displayName: string;
+  username: string;
+  avatarUrl: string | null;
+};
+
+/** Synthetic conversation-list row for an incoming pending friend request — never backed by a real chat room. */
+export type PendingFriendRequestConversation = {
+  id: string; // `pending:<friendshipId>` — never a real roomId
+  type: "PRIVATE_PENDING";
+  pendingRequest: true;
+  friendRequestId: string;
+  requester: ConversationRequesterBrief;
+  createdAt: string;
+  updatedAt: string;
+  lastActivity: { type: "FRIEND_REQUEST"; text: "Friend Request" };
+};
+
+/** `conversation:pending-friend-request` — delivered ONLY to the addressee (target user). */
+export type ConversationPendingFriendRequestPayload = {
+  conversation: PendingFriendRequestConversation;
+  friendRequest: {
+    id: string;
+    requesterId: string;
+    addresseeId: string;
+    status: "PENDING";
+    createdAt: string;
+  };
+};
+
+/**
+ * `conversation:friend-request-accepted` — delivered to both parties so every
+ * open device drops its pending row; `roomId` is null only if eager room
+ * creation failed (rare — the room still lazily creates on first open).
+ */
+export type ConversationFriendRequestAcceptedPayload = {
+  friendRequest: {
+    id: string;
+    requesterId: string;
+    addresseeId: string;
+    status: "ACCEPTED";
+    acceptedAt: string;
+  };
+  roomId: string | null;
+  peerId: string;
+};
+
+/**
+ * `conversation:friend-request-rejected` — delivered to both parties so every
+ * open device drops the pending row. Fired on an explicit reject (by the
+ * addressee) OR a cancel (by the requester, before the addressee responds).
+ */
+export type ConversationFriendRequestRejectedPayload = {
+  friendRequest: {
+    id: string;
+    requesterId: string;
+    addresseeId: string;
+    status: "REJECTED" | "CANCELLED";
+    rejectedAt: string;
+  };
+  peerId: string;
 };

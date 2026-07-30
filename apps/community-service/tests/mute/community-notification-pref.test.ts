@@ -112,4 +112,49 @@ describe("resolveCommunityNotificationPrefEnabled — ACTIVE membership gate", (
       resolveCommunityNotificationPrefEnabled(CID, UID, "announcementEnabled")
     ).resolves.toBe(false);
   });
+
+  it("ACTIVE + indefinite full mute (mutedUntil=null) → enabled=false regardless of per-field toggles", async () => {
+    findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
+    findMuteByUserAndCommunity.mockResolvedValue({
+      mutedUntil: null,
+      chatEnabled: true,
+      streamEnabled: true,
+      announcementEnabled: true,
+    });
+
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "chatEnabled")
+    ).resolves.toBe(false);
+  });
+
+  it("ACTIVE + full mute still in the future → enabled=false regardless of per-field toggles", async () => {
+    findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
+    findMuteByUserAndCommunity.mockResolvedValue({
+      mutedUntil: new Date(Date.now() + 60_000),
+      chatEnabled: true,
+      streamEnabled: true,
+      announcementEnabled: true,
+    });
+
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "chatEnabled")
+    ).resolves.toBe(false);
+  });
+
+  it("ACTIVE + full mute already expired → lazily falls back to the per-field toggle", async () => {
+    findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
+    findMuteByUserAndCommunity.mockResolvedValue({
+      mutedUntil: new Date(Date.now() - 60_000),
+      chatEnabled: false,
+      streamEnabled: true,
+      announcementEnabled: true,
+    });
+
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "chatEnabled")
+    ).resolves.toBe(false);
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "streamEnabled")
+    ).resolves.toBe(true);
+  });
 });

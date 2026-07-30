@@ -24,6 +24,7 @@ import type {
   CommunityMemberUpdatedPayload,
   CommunityMetaDto,
   CommunityMetaUpdatedPayload,
+  CommunityNotificationSettingUpdatedSocketPayload,
   CommunityReopenedPayload,
   CommunityStatsUpdatedPayload,
   MediaObject,
@@ -55,6 +56,7 @@ import {
   slugifyCategoryName,
 } from "../lib/community-slug.util.js";
 import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
+import { isMuteRowActive } from "../lib/community-notification-pref.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
@@ -885,13 +887,41 @@ function muteFields(muteRow: MuteRowFragment): {
   chatEnabled: boolean;
   announcementEnabled: boolean;
 } {
+  const muted = isMuteRowActive(muteRow);
   return {
-    isMuted: !!muteRow,
+    isMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
     streamEnabled: muteRow?.streamEnabled ?? true,
     chatEnabled: muteRow?.chatEnabled ?? true,
     announcementEnabled: muteRow?.announcementEnabled ?? true,
   };
+}
+
+/**
+ * Notify the caller's OTHER devices/tabs that their own notification-mute
+ * toggle changed for a community — self-service setting, so only the acting
+ * user's `user:<id>` channel gets it (never the community room).
+ */
+function publishNotificationMuteChanged(
+  communityId: string,
+  callerId: string,
+  notificationsMuted: boolean
+): void {
+  const payload: CommunityNotificationSettingUpdatedSocketPayload = {
+    communityId,
+    notificationsMuted,
+    updatedAt: Date.now(),
+  };
+  publishChatUserEvent(
+    redis,
+    callerId,
+    "community:notification-setting-updated",
+    payload
+  ).catch((error) => {
+    logger.warn(
+      `community:notification-setting-updated publish failed for community=${communityId} user=${callerId}: ${String(error)}`
+    );
+  });
 }
 
 /** Platform cap on concurrent LIVE streams per community (see stream-service). */
@@ -2931,6 +2961,16 @@ export const communityService = {
       );
     });
 
+    // A demotion to plain MEMBER drops livestream permission — force-end any
+    // stream they're currently hosting, same pipeline as ban/kick.
+    if (role === CommunityMemberRole.MEMBER) {
+      void getStreamClient().forceEndStreamsByCreator(
+        communityId,
+        targetUserId,
+        "ROLE_UPDATED"
+      );
+    }
+
     return toMemberData(updated);
   },
 
@@ -3134,7 +3174,7 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "COMMUNITY_KICKED"
+      "MEMBER_REMOVED"
     );
 
     return toMemberData(updated);
@@ -3268,7 +3308,7 @@ export const communityService = {
     void getStreamClient().forceEndStreamsByCreator(
       communityId,
       targetUserId,
-      "COMMUNITY_BANNED"
+      "MEMBER_BANNED"
     );
 
     return toMemberData(updated);
@@ -3720,8 +3760,7 @@ export const communityService = {
               snapshotUsername: snap.username,
               snapshotDisplayName: snap.displayName,
               snapshotAvatarKey: snap.avatarObjectKey,
-            },
-            m.role
+            }
           );
           reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
@@ -5233,8 +5272,7 @@ export const communityService = {
         newRow = await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           callerId,
-          snapshotData,
-          existingMember!.role
+          snapshotData
         );
       } else {
         newRow = await communityRepository.createMember({
@@ -6102,8 +6140,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        },
-        targetMember.role
+        }
       );
     } else {
       await communityRepository.createMember({
@@ -6348,8 +6385,7 @@ export const communityService = {
         await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           request.userId,
-          snapshotData,
-          existing.role
+          snapshotData
         );
       } else if (
         !existing ||
@@ -6989,8 +7025,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        },
-        targetMember.role
+        }
       );
     } else {
       await communityRepository.createMember({
@@ -7707,6 +7742,8 @@ export const communityService = {
       mutedUntil
     );
 
+    publishNotificationMuteChanged(communityId, callerId, true);
+
     return {
       communityId,
       mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
@@ -7733,6 +7770,7 @@ export const communityService = {
     }
 
     await communityRepository.clearMute(callerId, communityId);
+    publishNotificationMuteChanged(communityId, callerId, false);
   },
 
   async bulkMute(
@@ -7766,6 +7804,9 @@ export const communityService = {
           ? null
           : new Date(Date.now() + durationMinutes * 60_000);
       await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
+      toMute.forEach((id) =>
+        publishNotificationMuteChanged(id, callerId, true)
+      );
     }
 
     return { muted: toMute, skipped };
@@ -7787,6 +7828,9 @@ export const communityService = {
 
     if (toUnmute.length > 0) {
       await communityRepository.bulkClearMute(callerId, toUnmute);
+      toUnmute.forEach((id) =>
+        publishNotificationMuteChanged(id, callerId, false)
+      );
     }
 
     return { unmuted: toUnmute, skipped };
@@ -8656,8 +8700,7 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          },
-          existing.role
+          }
         );
       } else {
         member = await communityRepository.createMember({

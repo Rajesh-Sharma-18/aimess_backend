@@ -77,6 +77,17 @@ const envSchema = z.object({
   SRS_HLS_BASE: z.string().url().default("http://localhost:8080"),
   /** Base for WHIP (WebRTC) publish URLs minted for phone-camera ingest. */
   SRS_WHIP_BASE: z.string().url().default("http://localhost:1985"),
+  /**
+   * When true, viewer HLS URLs point at the ABR master playlist
+   * (`<key>_master.m3u8`) so hls.js can auto-switch between the source and the
+   * transcoded 480p/360p renditions. Only makes sense where an nginx template
+   * (production) or another mechanism is producing that master file. Leave
+   * false locally — Docker SRS alone doesn't emit `_master.m3u8`.
+   */
+  SRS_HLS_ABR_MASTER: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   /** Shared secret the SRS http_hooks endpoint validates (header, required). */
   SRS_HOOK_SECRET: z.string().min(1),
   /**

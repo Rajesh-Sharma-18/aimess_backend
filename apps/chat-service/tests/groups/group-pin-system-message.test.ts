@@ -1,7 +1,7 @@
 /**
- * Integration tests — group pin/unpin now post a SYSTEM message and gate the
- * inbox lastActivity bump per subtype (pin bumps, unpin does not), matching
- * Community's SYSTEM_MESSAGE_BUMPS_ACTIVITY policy.
+ * Integration tests — group pin posts a SYSTEM message and bumps the inbox
+ * lastActivity (parity with Community: pin posts a line, unpin does NOT post
+ * a line — it retracts the original pin's line instead).
  * Routes (apps/chat-service/src/api/routes/group-message.routes.ts):
  *   POST   /api/chat/groups/:roomId/messages/:messageId/pin
  *   DELETE /api/chat/groups/:roomId/messages/:messageId/pin
@@ -23,7 +23,10 @@ beforeEach(() => {
   mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
     role: "OWNER",
   });
-  mocks.groupMessagePinRepo.countPinsByRoom.mockResolvedValue(0);
+  mocks.groupMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
+  mocks.groupMessagePinRepo.runTransaction.mockImplementation(
+    async (fn: (tx: unknown) => unknown) => fn({})
+  );
   mocks.groupMessageRepo.findById.mockResolvedValue({
     id: MESSAGE_ID,
     roomId: ROOM,
@@ -32,6 +35,7 @@ beforeEach(() => {
     createdAt: new Date(),
   });
   mocks.groupMessagePinRepo.createPin.mockResolvedValue({
+    id: "pin_1",
     pinnedAt: new Date(),
   });
   mocks.groupRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 1 });
@@ -63,21 +67,46 @@ describe("POST /api/chat/groups/:roomId/messages/:messageId/pin", () => {
     );
     // Pin is bump-eligible — the room's lastActivity/preview must move.
     expect(mocks.groupRoomRepo.updateLastMessage).toHaveBeenCalled();
+    expect(
+      mocks.groupMessagePinRepo.setPinSystemMessageId
+    ).toHaveBeenCalledWith("pin_1", "sysmsg_1");
   });
 });
 
 describe("DELETE /api/chat/groups/:roomId/messages/:messageId/pin", () => {
-  it("POSITIVE: posts a MESSAGE_UNPINNED system message WITHOUT bumping lastActivity", async () => {
-    mocks.groupMessagePinRepo.deletePin.mockResolvedValue({ deletedCount: 1 });
+  it("POSITIVE: retracts the pin's system line WITHOUT posting a MESSAGE_UNPINNED message (parity with Community)", async () => {
+    mocks.groupMessagePinRepo.findActivePinByMessageId.mockResolvedValue({
+      id: "pin_1",
+      roomId: ROOM,
+      messageId: MESSAGE_ID,
+      pinSystemMessageId: "sysmsg_1",
+    });
+    mocks.groupMessagePinRepo.softDeletePin.mockResolvedValue({
+      id: "pin_1",
+      roomId: ROOM,
+      messageId: MESSAGE_ID,
+      unpinnedAt: new Date(),
+    });
     mocks.groupRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 0 });
+    mocks.groupMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "sysmsg_1",
+      roomId: ROOM,
+      sequenceNumber: 1,
+    });
 
     const res = await request(app)
       .delete(`/api/chat/groups/${ROOM}/messages/${MESSAGE_ID}/pin`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ systemEvent: "MESSAGE_UNPINNED" })
+    // No new MESSAGE_UNPINNED system message — the original pin's line is
+    // retracted (hard-deleted) instead, same as Community's "no unpin message" rule.
+    expect(mocks.groupMessageRepo.create).not.toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.deleteForEveryone).toHaveBeenCalledWith(
+      "sysmsg_1",
+      ROOM,
+      TEST_USER_ID,
+      "ADMIN_DELETE"
     );
     // Unpin is a low-signal action — Telegram parity: it must NOT reorder the
     // inbox (mirrors Community's UNPINNED_MESSAGE: false).

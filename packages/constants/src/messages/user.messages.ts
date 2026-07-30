@@ -154,6 +154,10 @@ export const USER_MESSAGES = {
     vi: "Bạn chưa chặn người dùng này",
     en: "You have not blocked this user.",
   },
+  USER_BLOCKED_LIST_FETCHED: {
+    vi: "Lấy danh sách người bị chặn thành công",
+    en: "Blocked users retrieved successfully.",
+  },
   FRIEND_DISCONNECT_ALL_CONFIRMATION_REQUIRED: {
     vi: "Yêu cầu xác nhận để ngắt kết nối tất cả bạn bè trên toàn nền tảng",
     en: "Confirmation is required to disconnect every friendship on the platform.",

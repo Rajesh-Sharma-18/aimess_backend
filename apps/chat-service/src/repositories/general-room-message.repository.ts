@@ -946,6 +946,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedBy: { $ne: params.userId },
+            // Own messages never count toward unread (parity with countUnreadBulk).
+            sentBy: { $ne: params.userId },
             // Personal system messages (e.g. "You joined") are informational only.
             visibleToUserId: null,
             // No SYSTEM message (any systemMessageType at all) counts toward
@@ -1415,19 +1417,28 @@ export class GeneralRoomMessageRepository {
     // mapped value would never match any stored doc, so we don't fall back to the
     // full set — that's the bug we're fixing (the filter must actually filter).
     const mediaTypes = [...COMMUNITY_MEDIA_MESSAGE_TYPES];
-    const mappedType = params.type
-      ? mapCommunityMediaType(params.type)
-      : undefined;
+    // Composite aliases from the shared media-list validator: "media" → the
+    // Media tab (IMAGE + VIDEO), "file" → the Files tab (DOCUMENT + AUDIO).
+    // Everything else falls through to the single-type mapping.
+    const aliasFilter: Record<string, string[]> = {
+      media: ["image", "video"],
+      file: ["document", "audio"],
+    };
+    const alias = params.type ? aliasFilter[params.type] : undefined;
+    const mappedType =
+      params.type && !alias ? mapCommunityMediaType(params.type) : undefined;
 
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId: params.roomId,
         deletedForAll: false,
-        messageType: params.type
-          ? // A requested type with no mapping yields no media (empty result)
-            // instead of silently returning everything.
-            (mappedType ?? "__none__")
-          : { in: mediaTypes },
+        messageType: alias
+          ? { in: alias }
+          : params.type
+            ? // A requested type with no mapping yields no media (empty result)
+              // instead of silently returning everything.
+              (mappedType ?? "__none__")
+            : { in: mediaTypes },
         ...(params.cursor || params.readCutoff
           ? {
               createdAt: {

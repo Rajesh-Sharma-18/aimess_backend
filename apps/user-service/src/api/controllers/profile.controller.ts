@@ -30,3 +30,17 @@ export const updateProfile = asyncHandler(
       .json(new ApiResponse(profile, t("USER_PROFILE_UPDATED", req.locale)));
   }
 );
+
+/** `GET /api/v1/users/:userId` — another user's profile, scoped to the viewer. */
+export const getPublicProfile = asyncHandler(
+  async (req: Request, res: Response) => {
+    const profile = await userProfileService.getPublicProfile(
+      req.auth.userId,
+      req.params.userId as string
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(profile, t("USER_PROFILE_FETCHED", req.locale)));
+  }
+);

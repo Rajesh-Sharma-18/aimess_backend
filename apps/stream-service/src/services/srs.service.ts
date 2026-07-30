@@ -65,7 +65,7 @@ export class SrsService {
   buildPlaybackUrls(streamKey: string): PlaybackUrls {
     return {
       flvUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.flv`,
-      hlsUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.m3u8`,
+      hlsUrl: `${env.SRS_HLS_BASE}/live/${streamKey}${env.SRS_HLS_ABR_MASTER ? "_master" : ""}.m3u8`,
       dashUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.mpd`,
     };
   }

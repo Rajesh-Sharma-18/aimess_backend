@@ -12,6 +12,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  buildTimelinePageV2,
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
@@ -21,6 +22,7 @@ import {
   buildAvailableContext,
   buildUnavailableContext,
 } from "../../lib/message-context.js";
+import { toCanonicalMessages } from "../../lib/canonical-message.js";
 import {
   publishCommunityUpdatedSafe,
   type RecipientBump,
@@ -275,22 +277,15 @@ export class CommunityMessageController {
     const around = req.query.around as string | undefined;
 
     if (around) {
-      const {
-        items,
-        total,
-        hasMoreOlder,
-        hasMoreNewer,
-        olderCursor,
-        newerCursor,
-      } = await this.service.getMessagesAround({
-        roomId,
-        userId,
-        messageId: around,
-        limit,
-      });
-      const paginated = buildAroundResponse(
-        items as unknown as Record<string, unknown>[],
-        total,
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.service.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const page = buildTimelinePageV2(
+        toCanonicalMessages(items as unknown as Record<string, unknown>[]),
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
       );
@@ -302,7 +297,7 @@ export class CommunityMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, pinnedMessage, roomRevision },
+            { ...page, roomRevision, pinnedMessage },
             items.length
               ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
@@ -311,95 +306,36 @@ export class CommunityMessageController {
       return;
     }
 
-    // OPT-IN seq keyset — only when the client explicitly sends a seq cursor
-    // (requires a seq backfill; unbackfilled rooms have sequenceNumber 0 and
-    // should use the opaque `cursor` below instead).
     const beforeSeq =
       req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
     const afterSeq =
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
 
-    let result: Awaited<ReturnType<typeof this.service.getMessagesSeqV2>>;
+    const result = await this.service.getMessagesSeqV2({
+      roomId,
+      userId,
+      direction: afterSeq != null ? "after" : "before",
+      seq: afterSeq ?? beforeSeq ?? null,
+      limit,
+    });
 
-    if (beforeSeq != null || afterSeq != null) {
-      const direction = afterSeq != null ? "after" : "before";
-      const seq = afterSeq ?? beforeSeq ?? null;
-      result = await this.service.getMessagesSeqV2({
-        roomId,
-        userId,
-        direction,
-        seq,
-        limit,
-      });
-    } else {
-      // DEFAULT: opaque compound `(createdAt, id)` cursor. `cursor`/`before_ts`
-      // page OLDER (scroll-up); `after_ts` pages newer. Both carry the opaque
-      // `<ms>_<id>` token (a bare epoch-ms is also accepted for a coarse jump).
-      // Canonical V2 names first (before_cursor/after_cursor — identical to private/group), then
-      // the deprecated cursor/before_ts/after_ts aliases for already-shipped clients.
-      const rawOlder =
-        req.query.before_cursor != null
-          ? String(req.query.before_cursor)
-          : req.query.cursor != null
-            ? String(req.query.cursor)
-            : req.query.before_ts != null
-              ? String(req.query.before_ts)
-              : undefined;
-      const rawNewer =
-        req.query.after_cursor != null
-          ? String(req.query.after_cursor)
-          : req.query.after_ts != null
-            ? String(req.query.after_ts)
-            : undefined;
-      const raw = rawNewer ?? rawOlder;
-      const direction = rawNewer != null ? "after" : "before";
-
-      let ts: number | undefined;
-      let boundaryId: string | null = null;
-      if (raw != null && raw !== "") {
-        const sep = raw.indexOf("_");
-        ts = Number(sep === -1 ? raw : raw.slice(0, sep));
-        boundaryId = sep === -1 ? null : raw.slice(sep + 1);
-      }
-      const hasCursor = ts != null;
-
-      result = await this.service.getMessagesTimeline({
-        roomId,
-        userId,
-        direction,
-        ts: new Date(hasCursor ? ts! : Date.now()),
-        boundaryId,
-        // First page (no cursor) includes the newest message; a cursor page is
-        // exclusive so it never re-returns its own boundary row.
-        inclusive: !hasCursor,
-        limit,
-      });
-    }
-
-    // Legacy hasMore/nextCursor stay direction-correct; the bidirectional
-    // continuation is ADDITIVE on every page (jump-to-message scroll-down fix —
-    // BACKEND_BIDIRECTIONAL_CURSOR_INTEGRATION.md Gap B). Cursor format follows
-    // the selected axis: explicit seq pages return seq strings; the default
-    // timestamp branch returns opaque `(createdAt,id)` tokens. Both branches
-    // share the same core, so `cursors`/`roomRevision` are always present.
-    const paginated = {
-      ...buildTimelineResponse(
-        result.items as unknown as Record<string, unknown>[],
-        result.total,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      ),
-      ...result.cursors,
-      roomRevision: result.roomRevision,
-    };
+    const page = buildTimelinePageV2(
+      toCanonicalMessages(result.items as unknown as Record<string, unknown>[]),
+      limit,
+      result.cursors
+    );
     const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
-    const msg = paginated.data.length
+    const msg = page.items.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
+      .json(
+        new ApiResponse(
+          { ...page, roomRevision: result.roomRevision, pinnedMessage },
+          msg
+        )
+      );
   });
 
   /**
@@ -424,12 +360,12 @@ export class CommunityMessageController {
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
+          items: result.items,
           roomRevision: result.roomRevision,
           resetRequired: result.resetRequired,
-          pinnedMessage,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
-          data: result.items,
+          pinnedMessage,
         },
         result.items.length
           ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)

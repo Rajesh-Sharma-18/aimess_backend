@@ -134,6 +134,19 @@ export class RoomMemberRepository {
   }
 
   /**
+   * Every community room a user is an ACTIVE member of — unbounded (no
+   * roomIds filter), for the Community nav badge total. Unlike
+   * findVisibleByUserAndRooms this excludes "banned" rows: a banned member
+   * shouldn't contribute to the badge even though they can still read up to
+   * their cutoff.
+   */
+  async findActiveByUser(userId: string): Promise<RoomMember[]> {
+    return this.prisma.roomMember.findMany({
+      where: { userId, status: "active" },
+    });
+  }
+
+  /**
    * Lightweight read-status projection (userId, lastReadAt, joinedAt) for
    * active members of a room. Kept for callers that still need per-member
    * cursor/joinedAt data; history serializers no longer use this to attach

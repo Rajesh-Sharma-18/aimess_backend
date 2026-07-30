@@ -239,40 +239,66 @@ export class CallService {
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
     // UI in parallel — all three are independent I/O.
     // roomName == callId — generalizes cleanly to group later.
-    const [callerCreds, calleeCreds, callerSnapshot] = await Promise.all([
-      this.livekit.mintToken(callId, params.callerId),
-      this.livekit.mintToken(callId, params.calleeId),
-      this.getUserSnapshot(params.callerId).catch(() => ({
-        displayName: "",
-        avatarUrl: "",
-      })),
-    ]);
+    const [callerCreds, calleeCreds, callerSnapshot, calleeSnapshot] =
+      await Promise.all([
+        this.livekit.mintToken(callId, params.callerId),
+        this.livekit.mintToken(callId, params.calleeId),
+        this.getUserSnapshot(params.callerId).catch(() => ({
+          displayName: "",
+          avatarUrl: "",
+        })),
+        this.getUserSnapshot(params.calleeId).catch(() => ({
+          displayName: "",
+          avatarUrl: "",
+        })),
+      ]);
 
     // Notify callee via Redis `self:<id>` — NOT `user:<id>`. Every peer that
     // presence:subscribed joins Socket.IO `user:<calleeId>`; publishing there
     // leaked call:incoming (and LiveKit tokens) to the caller, who then ran
     // busy auto-decline logic on zombie HMR sockets.
-    await this.redis
-      .publish(
-        `self:${params.calleeId}`,
-        JSON.stringify({
-          event: "call:incoming",
-          data: {
-            callId,
-            callerId: params.callerId,
-            callerName: callerSnapshot.displayName,
-            callerAvatarUrl: callerSnapshot.avatarUrl,
-            callType: params.type || CallType.AUDIO,
-            livekitUrl: calleeCreds.url,
-            token: calleeCreds.token,
-          },
-        })
-      )
-      .catch((err: unknown) => {
-        logger.warn(
-          `CallService|initiateCall|redis publish failed: ${String(err)}`
-        );
-      });
+    await Promise.all([
+      this.redis
+        .publish(
+          `self:${params.calleeId}`,
+          JSON.stringify({
+            event: "call:incoming",
+            data: {
+              callId,
+              callerId: params.callerId,
+              callerName: callerSnapshot.displayName,
+              callerAvatarUrl: callerSnapshot.avatarUrl,
+              callType: params.type || CallType.AUDIO,
+              livekitUrl: calleeCreds.url,
+              token: calleeCreds.token,
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|initiateCall|redis publish incoming failed: ${String(err)}`
+          );
+        }),
+      this.redis
+        .publish(
+          `self:${params.callerId}`,
+          JSON.stringify({
+            event: "call:outgoing_mirror",
+            data: {
+              callId,
+              calleeId: params.calleeId,
+              calleeName: calleeSnapshot.displayName,
+              calleeAvatarUrl: calleeSnapshot.avatarUrl,
+              callType: params.type || CallType.AUDIO,
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|initiateCall|redis publish outgoing_mirror failed: ${String(err)}`
+          );
+        }),
+    ]);
 
     // Push fallback: the Redis/socket path above only reaches a LIVE socket. A
     // callee with the tab backgrounded or closed gets nothing, so also fan out a
@@ -286,6 +312,8 @@ export class CallService {
       callerAvatar: callerSnapshot.avatarUrl,
       callType: params.type || CallType.AUDIO,
       initiatedAt: now.getTime(),
+      livekitUrl: calleeCreds.url,
+      token: calleeCreds.token,
     });
 
     return { ...call, livekit: callerCreds };
@@ -294,13 +322,16 @@ export class CallService {
   async answerCall(params: {
     callId: string;
     calleeId: string;
-  }): Promise<Call> {
+  }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (call.calleeId !== params.calleeId)
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
-    // Idempotent re-answer (double-tap / multi-tab).
-    if (call.status === CallStatus.IN_PROGRESS) return call;
+    const livekit = await this.livekit.mintToken(
+      params.callId,
+      params.calleeId
+    );
+    if (call.status === CallStatus.IN_PROGRESS) return { ...call, livekit };
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
@@ -315,7 +346,8 @@ export class CallService {
     );
     if (!won) {
       const again = await this.callRepo.findByCallId(params.callId);
-      if (again?.status === CallStatus.IN_PROGRESS) return again;
+      if (again?.status === CallStatus.IN_PROGRESS)
+        return { ...again, livekit };
       throw new BadRequestError("CALL_NOT_RINGING");
     }
     const updated: Call = {
@@ -339,7 +371,11 @@ export class CallService {
             `CallService|answerCall|redis publish failed: ${String(err)}`
           );
         }),
-      this.publishCallHandled(params.calleeId, params.callId),
+      this.publishCallHandled(
+        params.calleeId,
+        params.callId,
+        "answered_elsewhere"
+      ),
     ]);
 
     publishCallCancelSafe({
@@ -348,7 +384,7 @@ export class CallService {
       reason: "answered_elsewhere",
     });
 
-    return updated;
+    return { ...updated, livekit };
   }
 
   async declineCall(params: {
@@ -400,7 +436,11 @@ export class CallService {
             `CallService|declineCall|redis publish failed: ${String(err)}`
           );
         }),
-      this.publishCallHandled(params.calleeId, params.callId),
+      this.publishCallHandled(
+        params.calleeId,
+        params.callId,
+        "declined_elsewhere"
+      ),
     ]);
 
     publishCallCancelSafe({
@@ -414,14 +454,15 @@ export class CallService {
 
   private async publishCallHandled(
     calleeId: string,
-    callId: string
+    callId: string,
+    reason: "answered_elsewhere" | "declined_elsewhere"
   ): Promise<void> {
     await this.redis
       .publish(
         `self:${calleeId}`,
         JSON.stringify({
           event: "call:handled",
-          data: { callId },
+          data: { callId, reason },
         })
       )
       .catch((err: unknown) => {
@@ -726,17 +767,74 @@ export class CallService {
   }
 
   /**
-   * Reconcile a Call from a LiveKit `room_finished` webhook. The webhook is
-   * our authoritative "the media session actually ended" signal — protects
-   * against clients that crash/lose network without sending `call:end`.
+   * Reconcile a Call from a LiveKit `room_finished` OR `participant_left` webhook
+   * — the authoritative "the media session for this call is gone" signal. Guards
+   * against clients that crash / lose network without sending `call:end` or
+   * `call:decline`. `participant_left` is what catches the 1:1 case where one peer
+   * drops but the other stays connected: the room never empties, so `room_finished`
+   * never fires, and the row would otherwise sit IN_PROGRESS keeping BOTH users
+   * "busy" until the max-duration sweep. LiveKit fires `participant_left` only after
+   * its own reconnection grace, so a transient blip does not reach here.
    *
-   * Idempotent: only IN_PROGRESS calls transition. RINGING at this point is
-   * unusual (LiveKit never fires room_started for empty rooms), but if it
-   * happens we leave it alone and let the timeout sweep flip it to MISSED.
+   * Idempotent via `claimStatusTransition` (first writer wins, only it publishes):
+   *  - IN_PROGRESS → ENDED, publish `call:ended` to `call:<id>` + chat audit.
+   *  - RINGING → cancel (caller abandoned before answer): ENDED + `call:cancelled`
+   *    to the callee's `self:` channel + push dismiss, mirroring `endCall`'s
+   *    pre-answer branch so the ring stops now instead of at the 60s missed sweep.
+   *    (During RINGING only the caller is in the LiveKit room, so a leave here can
+   *    only be the caller giving up.)
+   *  - anything terminal → no-op.
    */
   async reconcileFromLiveKitRoomFinished(callId: string): Promise<void> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return; // room name wasn't a callId — ignore
+
+    if (call.status === CallStatus.RINGING) {
+      const endedAt = new Date();
+      const { won } = await this.callRepo.claimStatusTransition(
+        callId,
+        CallStatus.RINGING,
+        { status: CallStatus.ENDED, endedAt, endedBy: "SYSTEM_LIVEKIT" }
+      );
+      if (!won) return;
+
+      // Publish to BOTH rooms — mirrors sweepMissedCalls. Unlike endCall's
+      // RINGING branch (where the CALLER initiated the end and already cleared
+      // their own session), this is a server-triggered end: the caller has NOT
+      // done any local teardown, so they must be told too — otherwise their FE
+      // sits with a ghost outgoing ring if their own `RoomEvent.Disconnected`
+      // didn't fire (rare network split where LiveKit sees them leave but the
+      // /chat socket survives). Callee gets it on `self:<id>` (they never joined
+      // `call:<id>` — pre-answer); caller gets it on `call:<id>` (joined at ack).
+      const cancelPayload = JSON.stringify({
+        event: "call:cancelled",
+        data: { callId },
+      });
+      await Promise.all([
+        this.redis
+          .publish(`self:${call.calleeId}`, cancelPayload)
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|reconcile|cancel publish (callee) failed: ${String(err)}`
+            )
+          ),
+        this.redis
+          .publish(`call:${callId}`, cancelPayload)
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|reconcile|cancel publish (call room) failed: ${String(err)}`
+            )
+          ),
+      ]);
+
+      publishCallCancelSafe({
+        calleeId: call.calleeId,
+        callId,
+        reason: "cancelled",
+      });
+      return;
+    }
+
     if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
 
     const endedAt = new Date();

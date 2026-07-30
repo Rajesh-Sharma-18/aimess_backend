@@ -676,7 +676,17 @@ export const communityPaths = {
         "where `dateTime` is **epoch milliseconds** and `message` is a list-screen " +
         "preview (text content, or a placeholder like '📷 Photo' for media). If " +
         "chat-service is unavailable the endpoint degrades gracefully (all items " +
-        "get `0` / `null`).",
+        "get `0` / `null`).\n\n" +
+        "**Mute field notes (joined mode `CommunityListItem`):**\n" +
+        "- `isMuted` — caller's self-service **notification mute** (mute-bell / " +
+        '"Mute Notifications"; silences pushes). There is no `notificationsMuted` ' +
+        "alias — use `isMuted` only.\n" +
+        "- `muteUntil` — when that notification mute expires (ISO-8601). " +
+        "`null` = not muted OR muted indefinitely — use `isMuted` to disambiguate.\n" +
+        "- `isMemberMuted` — **moderation mute**: an admin/mod silenced the caller " +
+        "(can still read, cannot post). Not the mute-bell toggle.\n" +
+        "- `memberMutedUntil` — when that moderation mute expires. " +
+        "`null` = indefinite when `isMemberMuted` is true, or not muted.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1351,6 +1361,59 @@ export const communityPaths = {
         "401": unauthorized,
         "404": {
           description: "Community not found, or you are not an active member",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/me": {
+    delete: {
+      tags: ["Communities"],
+      operationId: "deleteCommunityForSelf",
+      summary: "Remove this community from my list",
+      description:
+        "Removes this community from the caller's own account only. Distinct from `DELETE /communities/{id}` (admin hard-delete of the whole community).\n\n" +
+        "**Rules:**\n" +
+        "- Active non-admin member → same leave workflow as `POST /communities/{id}/leave` (status LEFT, events/audit).\n" +
+        "- Banned member → idempotent success (membership left untouched; community already hidden from `/communities/mine`).\n" +
+        "- Owner/admin → **400** `COMMUNITY_OWNER_CANNOT_DELETE` (transfer ownership or use admin delete).\n" +
+        "- No membership / already left → **404**.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Community removed from caller's list (`data` is null).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Caller owns this community and cannot self-delete it",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description:
+            "Community not found or caller has no removable membership",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -3414,6 +3477,64 @@ export const communityPaths = {
         },
         "404": {
           description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/join-requests/mine": {
+    delete: {
+      tags: ["Communities"],
+      operationId: "cancelMyCommunityJoinRequest",
+      summary: "Cancel my pending join request for this community",
+      description:
+        "Convenience alias for cancelling the caller's own PENDING join request without looking up the request id. Same outcome as `DELETE /communities/{id}/join-requests/{requestId}` when the request belongs to the caller. Returns 404 when no PENDING request exists for the caller.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Join request cancelled",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/JoinRequestData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Request is not pending",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description:
+            "Community not found, or no pending join request for the caller",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

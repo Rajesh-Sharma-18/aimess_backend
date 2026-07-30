@@ -30,6 +30,9 @@ export const sendGroupMessageSchema = z
             width: z.number().nullish(),
             height: z.number().nullish(),
             durationMs: z.number().nonnegative().optional(),
+            // Sender-uploaded poster frame for videos/animated GIFs — zod strips
+            // unknown keys, so leaving it out dropped it before persistence.
+            thumbnailObjectKey: z.string().max(500).optional(),
           })
         )
         .default([]),
@@ -68,6 +71,9 @@ export const sendGroupMessageBodySchema = z
             width: z.number().nullish(),
             height: z.number().nullish(),
             durationMs: z.number().nonnegative().optional(),
+            // Sender-uploaded poster frame for videos/animated GIFs — zod strips
+            // unknown keys, so leaving it out dropped it before persistence.
+            thumbnailObjectKey: z.string().max(500).optional(),
           })
         )
         .default([]),

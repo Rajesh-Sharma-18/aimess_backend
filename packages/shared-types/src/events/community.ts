@@ -164,20 +164,48 @@ export type CommunityClosedNotifyPayload = CommunityEventBase & {
   memberIds: string[];
 };
 
-/** Deep-link navigation object embedded in community notification payloads. */
+/**
+ * Where a notification tap should land. Authoritative for in-app routing —
+ * `deepLink` is only the OS-level fallback. Clients must never derive a
+ * destination from the `type` string.
+ */
+export type NotificationScreen =
+  | "COMMUNITY_CHAT"
+  | "COMMUNITY_DETAILS"
+  | "COMMUNITY_REQUESTS"
+  | "COMMUNITY_MEMBERS"
+  | "COMMUNITY_REPORTS"
+  | "COMMUNITY_LIVESTREAM"
+  | "COMMUNITY_INVITE"
+  | "COMMUNITY_LIST"
+  | "PRIVATE_CHAT"
+  | "GROUP_CHAT"
+  | "USER_PROFILE"
+  | "FRIEND_REQUESTS"
+  | "LINKED_DEVICES"
+  | "ACCOUNT_STATUS"
+  | "NOTIFICATIONS";
+
+/** Navigation object embedded in every notification payload as `data.navigation` (JSON string). */
 export interface NotificationNavigation {
-  screen:
-    | "COMMUNITY_REQUESTS"
-    | "COMMUNITY_DETAILS"
-    | "COMMUNITY_CHAT"
-    | "COMMUNITY_LIVESTREAM";
-  communityId: string;
-  communityName: string;
-  communityAvatarUrl: string | null;
-  communityHandle: string | null;
+  screen: NotificationScreen;
+  communityId?: string;
+  communityName?: string | null;
+  communityAvatarUrl?: string | null;
+  communityHandle?: string | null;
+  /** Chat room to open. Community rooms carry both this and communityId. */
+  roomId?: string;
+  conversationType?: "PRIVATE" | "PRIVATE_PENDING" | "GROUP" | "COMMUNITY";
+  /** Open the chat scrolled to this message (mentions, replies, reports). */
+  messageId?: string;
+  /** Subject user — profile targets, moderation targets, friend events. */
+  userId?: string;
   requestId?: string;
-  /** Set on COMMUNITY_LIVESTREAM navigation — the stream to open. */
   livestreamId?: string;
+  reportId?: string;
+  inviteId?: string;
+  inviteCode?: string;
+  sessionId?: string;
 }
 
 /**

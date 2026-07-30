@@ -32,6 +32,7 @@ import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
   type AroundCursors,
+  computeSeqPageCursors,
 } from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
@@ -52,6 +53,7 @@ import {
   urlFromMap,
   applyUrlMapToFiles,
   fileMediaKey,
+  fileMediaKeys,
   resolveQuoteThumbnail,
   resolveStickerField,
   type MediaFileLike,
@@ -292,20 +294,26 @@ export class GroupMessageService {
     }
 
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
-    this.roomRepo
-      .updateLastMessage(params.roomId, {
+    // Awaited (not fire-and-forget) for the same reason incUnreadForRoom below
+    // is awaited: conv:updated/chat:unread_summary fan out right after this —
+    // firing before the room's lastMessage/lastActivity write actually commits
+    // left the list preview/position stale while the unread badge (which does
+    // commit synchronously) moved on, a real badge/list mismatch under load or
+    // a transient failure.
+    try {
+      await this.roomRepo.updateLastMessage(params.roomId, {
         _id: message.id,
         senderId: message.senderId ?? null,
         senderName: message.senderName,
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
-      })
-      .catch((err: unknown) => {
-        logger.warn(
-          `GroupMessageService|updateLastMessage failed: ${String(err)}`
-        );
       });
+    } catch (err: unknown) {
+      logger.warn(
+        `GroupMessageService|updateLastMessage failed: ${String(err)}`
+      );
+    }
 
     const unreadIncrement = created.filter((m) =>
       shouldCountInUnread({
@@ -316,13 +324,20 @@ export class GroupMessageService {
       })
     ).length;
     if (unreadIncrement > 0) {
-      this.memberRepo
-        .incUnreadForRoom(params.roomId, params.senderId, unreadIncrement)
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
-          );
-        });
+      // Await before the caller fans conv:updated / chat:unread_summary — otherwise
+      // the summary push reads a stale sum and the Chats nav badge desyncs from
+      // the list (classic private/group badge mismatch).
+      try {
+        await this.memberRepo.incUnreadForRoom(
+          params.roomId,
+          params.senderId,
+          unreadIncrement
+        );
+      } catch (err: unknown) {
+        logger.warn(
+          `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
+        );
+      }
     }
 
     // Fire one `message:delivered` per online member so the sender's tick can
@@ -548,6 +563,8 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
     total: number;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const member = await assertGroupMember(
       this.memberRepo,
@@ -555,23 +572,32 @@ export class GroupMessageService {
       params.userId
     );
     const cutoff = getGroupDeletionCutoff(member);
-    const [{ messages: items, hasMore }, total] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        userId: params.userId,
-        roomId: params.roomId,
-        direction: params.direction,
-        ts: params.ts,
-        boundaryId: params.boundaryId ?? null,
-        inclusive: params.inclusive ?? false,
-        limit: params.limit,
-        cutoff,
-      }),
-      this.messageRepo.countTimeline({
-        roomId: params.roomId,
-        userId: params.userId,
-        cutoff,
-      }),
-    ]);
+    const [{ messages: items, hasMore }, total, roomRevision] =
+      await Promise.all([
+        this.messageRepo.findByRoomIdTimeline({
+          userId: params.userId,
+          roomId: params.roomId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          cutoff,
+        }),
+        this.messageRepo.countTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          cutoff,
+        }),
+        this.roomRepo.getRoomRevision(params.roomId),
+      ]);
+
+    const cursors = await this.seqPageCursors(
+      items,
+      params.roomId,
+      params.userId,
+      cutoff
+    );
 
     // The repo returns the page in DB order (before → newest-first, after →
     // oldest-first); the boundary for the next page is the LAST row either way.
@@ -582,7 +608,29 @@ export class GroupMessageService {
     const nextCursor =
       hasMore && last ? `${last.createdAt.getTime()}_${last.id}` : null;
 
-    return { items, hasMore, nextCursor, total };
+    return { items, hasMore, nextCursor, total, cursors, roomRevision };
+  }
+
+  /**
+   * Bidirectional continuation for any page — probes one visible row strictly
+   * beyond each seq edge through the same keyset query the page itself used.
+   */
+  private seqPageCursors(
+    page: GroupMessage[],
+    roomId: string,
+    userId: string,
+    cutoff: Date | undefined
+  ): Promise<AroundCursors> {
+    return computeSeqPageCursors(page, (direction, seq) =>
+      this.messageRepo.findByRoomIdSeq({
+        userId,
+        roomId,
+        direction,
+        seq,
+        limit: 1,
+        cutoff,
+      })
+    );
   }
 
   /**
@@ -592,31 +640,49 @@ export class GroupMessageService {
     roomId: string;
     userId: string;
     direction: "before" | "after";
-    seq: number;
+    /** null = newest page. */
+    seq: number | null;
     limit: number;
   }): Promise<{
     items: GroupMessage[];
     hasMore: boolean;
     nextCursor: string | null;
+    cursors: AroundCursors;
+    roomRevision: number;
   }> {
     const member = await assertGroupMember(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    const rows = await this.messageRepo.findByRoomIdSeq({
-      userId: params.userId,
-      roomId: params.roomId,
-      direction: params.direction,
-      seq: params.seq,
-      limit: params.limit,
-      cutoff: getGroupDeletionCutoff(member),
-    });
+    const cutoff = getGroupDeletionCutoff(member);
+    const [rows, roomRevision] = await Promise.all([
+      this.messageRepo.findByRoomIdSeq({
+        userId: params.userId,
+        roomId: params.roomId,
+        direction: params.direction,
+        seq: params.seq,
+        limit: params.limit,
+        cutoff,
+      }),
+      this.roomRepo.getRoomRevision(params.roomId),
+    ]);
     const hasMore = rows.length > params.limit;
     const items = rows.slice(0, params.limit);
     const last = items[items.length - 1];
     const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
-    return { items, hasMore, nextCursor };
+    const cursors = await this.seqPageCursors(
+      items,
+      params.roomId,
+      params.userId,
+      cutoff
+    );
+    return { items, hasMore, nextCursor, cursors, roomRevision };
+  }
+
+  /** Raw message lookup — the V2 delete route resolves its room from the message. */
+  findMessageById(messageId: string): Promise<GroupMessage | null> {
+    return this.messageRepo.findById(messageId);
   }
 
   /**
@@ -1185,6 +1251,34 @@ export class GroupMessageService {
     return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
 
+  /** {@link setReaction} in {@link reactToMessage}'s return shape, for the REST orchestrator. */
+  async setReactionDetailed(params: {
+    messageId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<{
+    roomId: string;
+    added: boolean;
+    targetUserId: string;
+    targetMessagePreview: string;
+  }> {
+    const message = await this.setReaction(
+      params.messageId,
+      params.userId,
+      params.emoji
+    );
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return {
+      roomId: message.roomId,
+      added: true,
+      targetUserId: message.senderId ?? "",
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        message.content
+      ),
+    };
+  }
+
   /**
    * Authorize a REST react/remove-reaction: the caller MUST be an ACTIVE member
    * of the group. The shared `react()` primitive deliberately does NOT guard (the
@@ -1442,13 +1536,17 @@ export class GroupMessageService {
       });
 
     if (unreadIncrement > 0) {
-      this.memberRepo
-        .incUnreadForRoom(params.targetRoomId, params.senderId, unreadIncrement)
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupMessageService|forwardMessage|incUnreadForRoom failed: ${String(err)}`
-          );
-        });
+      try {
+        await this.memberRepo.incUnreadForRoom(
+          params.targetRoomId,
+          params.senderId,
+          unreadIncrement
+        );
+      } catch (err: unknown) {
+        logger.warn(
+          `GroupMessageService|forwardMessage|incUnreadForRoom failed: ${String(err)}`
+        );
+      }
     }
 
     return withRole(message);
@@ -1562,6 +1660,14 @@ export class GroupMessageService {
     return typeof seq === "number" ? seq : 0;
   }
 
+  /** Absolute per-member unread for a group room — used on conv:updated. */
+  async getUnreadCountsByUser(roomId: string): Promise<Record<string, number>> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    const out: Record<string, number> = {};
+    for (const m of members) out[m.userId] = m.unreadCount ?? 0;
+    return out;
+  }
+
   /**
    * Every OTHER active member's current read high-water mark, as a
    * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
@@ -1607,17 +1713,19 @@ export class GroupMessageService {
     roomId: string;
     userId: string;
     upToMessageId: string;
-  }): Promise<{ readToSeq: number }> {
-    if (!isObjectId(params.upToMessageId)) return { readToSeq: 0 };
+  }): Promise<{ readToSeq: number; remainingUnread: number }> {
+    if (!isObjectId(params.upToMessageId))
+      return { readToSeq: 0, remainingUnread: 0 };
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.userId
     );
-    if (!member) return { readToSeq: 0 };
+    if (!member) return { readToSeq: 0, remainingUnread: 0 };
 
     const message = await this.messageRepo.findById(params.upToMessageId);
-    if (!message || message.roomId !== params.roomId) return { readToSeq: 0 };
+    if (!message || message.roomId !== params.roomId)
+      return { readToSeq: 0, remainingUnread: 0 };
 
     const remainingUnread = await this.messageRepo
       .countUnreadAfter({
@@ -1642,7 +1750,10 @@ export class GroupMessageService {
     );
 
     const seq = (message as { sequenceNumber?: number }).sequenceNumber;
-    return { readToSeq: typeof seq === "number" ? seq : 0 };
+    return {
+      readToSeq: typeof seq === "number" ? seq : 0,
+      remainingUnread,
+    };
   }
 
   async getMessageReactions(params: {
@@ -1727,8 +1838,7 @@ export class GroupMessageService {
       const files = (message.content as Record<string, unknown> | null)?.files;
       if (Array.isArray(files)) {
         for (const file of files) {
-          const key = fileMediaKey(file as MediaFileLike);
-          if (key) mediaKeys.push(key);
+          mediaKeys.push(...fileMediaKeys(file as MediaFileLike));
         }
       }
       const sticker = (message.content as Record<string, unknown> | null)

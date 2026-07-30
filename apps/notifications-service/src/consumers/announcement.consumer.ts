@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { redis } from "../config/redis.js";
 import { env } from "../config/env.js";
@@ -54,7 +55,13 @@ export async function handleAnnouncementBatch(
     title: data.title,
     body: data.body,
     bypassSettings: true,
-    data: { type: kind, announcementId: data.announcementId },
+    data: {
+      type: kind,
+      announcementId: data.announcementId,
+      navigation: JSON.stringify({
+        screen: "NOTIFICATIONS",
+      } satisfies NotificationNavigation),
+    },
   }));
 }
 

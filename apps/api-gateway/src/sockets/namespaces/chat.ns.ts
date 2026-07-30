@@ -115,6 +115,11 @@ const FileAttachmentSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   durationMs: z.number().nonnegative().optional(),
+  // Poster frame the sender already generated and uploaded for videos/animated GIFs.
+  // Omitting it here silently STRIPPED it (zod drops unknown keys), so no video was
+  // ever stored with a thumbnail and every receiver had to decode a frame out of the
+  // video itself over HTTP.
+  thumbnailObjectKey: z.string().max(500).optional(),
   // §3.5: instant-preview metadata — blurhash (image/video) renders the bubble
   // at the right aspect ratio before download; waveform (voice) paints the bars.
   blurhash: z.string().max(120).optional(),
@@ -162,6 +167,12 @@ const MessageSendSchemaBase = z.object({
 const MessageReadSchemaBase = z.object({
   conversationId: z.string().min(1),
   upToMessageId: z.string().min(1),
+  // Optional claim — chat-service resolves the authoritative type from the
+  // room-id prefix (`grp_` / `prv_`). Kept for legacy unprefixed ids.
+  conversationType: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["private", "group"]).optional()
+  ),
 });
 const MessageReactSchemaBase = z.object({
   messageId: z.string().min(1),
@@ -367,13 +378,36 @@ export function registerChatNamespace(
           }
         }
 
-        // Call lifecycle on `user:<id>` must NOT fan out to presence subscribers.
-        // Prefer Redis `self:<id>` (see CallService); keep this rewrite as a
-        // safety net for any remaining user:* call publishes.
+        // Call lifecycle and the chat:unread_summary badge total on `user:<id>`
+        // must NOT fan out to presence subscribers — `presence:subscribe` joins
+        // the SUBSCRIBER's own socket into the peer's `user:<peerId>` room so it
+        // can hear that peer's presence changes, which also relay through this
+        // exact room. Without this rewrite, subscribing to a peer's presence
+        // silently leaks that peer's own badge count (and, for calls, their call
+        // lifecycle) onto the subscriber's client. Redirect to `self:<id>` —
+        // joined only by the owning user's own sockets (see socket.join above) —
+        // instead of the shared identity room.
+        const isSelfOnlyEvent =
+          parsed.event.startsWith("call:") ||
+          parsed.event === "chat:unread_summary";
         const targetChannel =
-          pattern === "user:*" && parsed.event.startsWith("call:")
+          pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
             : channel;
+
+        const callData = parsed.data as
+          | { callId?: unknown; reason?: unknown }
+          | null
+          | undefined;
+        const shouldMirrorJoinCallRoom =
+          pattern === "self:*" &&
+          typeof callData?.callId === "string" &&
+          (parsed.event === "call:outgoing_mirror" ||
+            (parsed.event === "call:handled" &&
+              callData.reason === "answered_elsewhere"));
+        if (shouldMirrorJoinCallRoom) {
+          void chat.in(targetChannel).socketsJoin(`call:${callData.callId}`);
+        }
 
         void emitPersonalizedSender(
           chat,
@@ -1242,7 +1276,12 @@ export function registerChatNamespace(
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
             void socket.join(`call:${result.callId}`);
-            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result);
+            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, {
+              callId: result.callId,
+              status: result.status,
+              livekitUrl: result.livekit?.url,
+              token: result.livekit?.token,
+            });
           })
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);

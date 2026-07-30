@@ -1,4 +1,54 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
+import { categoryWhere } from "../lib/notification-category.js";
+
+/**
+ * A login-detected notification is one shared document per login event, fanned
+ * out to every OTHER active session. The device that just logged in must never
+ * see its own alert — in the list, the counts, or the badge — so every read
+ * path excludes the row whose `loginSessionId` is the viewer's own current
+ * session, regardless of who else it's visible to.
+ *
+ * `loginSessionId` is a scalar mirror of payload.data.sessionId (set only for
+ * "auth.security_new_login" rows, see create() below) rather than a JSON-path
+ * query, because MongoDB's Prisma JSON `path` filter can't be combined with
+ * NOT/OR/AND — confirmed at runtime ("Unknown argument `path`") — it only
+ * works as a bare top-level predicate.
+ *
+ * MUST be `{ isSet: false } OR { not: viewerSessionId }`, not a bare
+ * `{ not: viewerSessionId }` — confirmed by direct testing against the live
+ * DB: Prisma's Mongo `$expr`-compiled `not` filter does NOT match documents
+ * where the field is entirely absent (as every notification created before
+ * this column existed is), only documents where it's explicitly `null`/set.
+ * A bare `not` filter silently hid every pre-existing notification, not just
+ * login-detected ones — this is the fixed, verified-safe form.
+ */
+function excludeSelfLoginWhere(
+  viewerSessionId?: string | null
+): Record<string, unknown> {
+  if (!viewerSessionId) return {};
+  return {
+    OR: [
+      { loginSessionId: { isSet: false } },
+      { loginSessionId: { not: viewerSessionId } },
+    ],
+  };
+}
+
+/**
+ * ANDs multiple Prisma `where` fragments without key collisions — two
+ * fragments both using a top-level `OR` (e.g. excludeSelfLoginWhere +
+ * a SYSTEM/FRIENDS categoryWhere) would silently clobber each other if
+ * object-spread together, since the later spread's `OR` key overwrites
+ * the earlier one.
+ */
+function combineWhere(
+  ...fragments: Record<string, unknown>[]
+): Record<string, unknown> {
+  const nonEmpty = fragments.filter((f) => Object.keys(f).length > 0);
+  if (nonEmpty.length === 0) return {};
+  if (nonEmpty.length === 1) return nonEmpty[0];
+  return { AND: nonEmpty };
+}
 
 export class NotificationRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -9,6 +59,15 @@ export class NotificationRepository {
     type: string;
     [key: string]: unknown;
   }): Promise<Notification> {
+    const payload = (data.payload as object) ?? {};
+    // Mirror payload.data.sessionId to the scalar loginSessionId column so
+    // excludeSelfLoginWhere can filter on it (see the comment above) — only
+    // meaningful for login-detected rows, null for every other type.
+    const sessionId =
+      data.type === "auth.security_new_login"
+        ? ((payload as { data?: Record<string, string> }).data?.sessionId ??
+          null)
+        : null;
     return this.prisma.notification.create({
       data: {
         userId: data.userId,
@@ -16,7 +75,8 @@ export class NotificationRepository {
         type: data.type,
         entity: (data.entity as object) ?? {},
         actorSnapshot: (data.actorSnapshot as object) ?? {},
-        payload: (data.payload as object) ?? {},
+        payload,
+        loginSessionId: sessionId,
         isRead: (data.isRead as boolean) ?? false,
         readAt: (data.readAt as Date) ?? null,
         isDeleted: (data.isDeleted as boolean) ?? false,
@@ -36,6 +96,8 @@ export class NotificationRepository {
        * existing callers (gRPC list, tests) are unaffected.
        */
       where?: Record<string, unknown>;
+      /** The requesting device's own session id — see excludeSelfLoginWhere. */
+      viewerSessionId?: string | null;
     }
   ): Promise<Notification[]> {
     return this.prisma.notification.findMany({
@@ -45,11 +107,27 @@ export class NotificationRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
-        ...(params.where ?? {}),
+        ...combineWhere(
+          excludeSelfLoginWhere(params.viewerSessionId),
+          params.where ?? {}
+        ),
       },
       orderBy: { createdAt: "desc" },
       take: params.limit,
     });
+  }
+
+  /** Owner-scoped bulk mark-read. One query regardless of id count. */
+  async markManyRead(
+    notificationIds: string[],
+    userId: string
+  ): Promise<number> {
+    if (notificationIds.length === 0) return 0;
+    const result = await this.prisma.notification.updateMany({
+      where: { id: { in: notificationIds }, userId, isRead: false },
+      data: { isRead: true, readAt: new Date() },
+    });
+    return result.count;
   }
 
   async markRead(
@@ -75,20 +153,38 @@ export class NotificationRepository {
    * the Notification Center's per-tab "Read All" only flips rows belonging to
    * the currently-open tab. Omit or pass `undefined` for the historical
    * mark-everything behaviour.
+   *
+   * `before` (optional watermark): only rows with `createdAt <= before` are
+   * marked — so a notification that arrives while the panel is open stays
+   * unread (spec §9.2).
    */
   async markAllRead(
     userId: string,
-    extraWhere?: Record<string, unknown>
+    extraWhere?: Record<string, unknown>,
+    before?: Date | null
   ): Promise<void> {
     await this.prisma.notification.updateMany({
-      where: { userId, isRead: false, ...(extraWhere ?? {}) },
+      where: {
+        userId,
+        isRead: false,
+        ...(before ? { createdAt: { lte: before } } : {}),
+        ...(extraWhere ?? {}),
+      },
       data: { isRead: true, readAt: new Date() },
     });
   }
 
-  async getUnreadCount(userId: string): Promise<number> {
+  async getUnreadCount(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<number> {
     return this.prisma.notification.count({
-      where: { userId, isRead: false, isDeleted: false },
+      where: {
+        userId,
+        isRead: false,
+        isDeleted: false,
+        ...excludeSelfLoginWhere(viewerSessionId),
+      },
     });
   }
 
@@ -105,41 +201,31 @@ export class NotificationRepository {
    * so the badge decrements live as the user reads rows; the list-page
    * invalidation on `markRead` / `markAllRead` triggers the refetch.
    */
-  async countByCategories(userId: string): Promise<{
+  async countByCategories(
+    userId: string,
+    viewerSessionId?: string | null
+  ): Promise<{
     all: number;
     friends: number;
     communities: number;
     mentions: number;
     system: number;
   }> {
-    const base = { userId, isDeleted: false, isRead: false } as const;
+    const selfExclusion = excludeSelfLoginWhere(viewerSessionId);
+    const base = { userId, isDeleted: false, isRead: false };
+    const countFor = (cat: Parameters<typeof categoryWhere>[0]) =>
+      this.prisma.notification.count({
+        where: {
+          ...base,
+          ...combineWhere(selfExclusion, categoryWhere(cat)),
+        },
+      });
     const [all, friends, communities, mentions, system] = await Promise.all([
-      this.prisma.notification.count({ where: base }),
-      this.prisma.notification.count({
-        where: { ...base, type: { startsWith: "friend." } },
-      }),
-      this.prisma.notification.count({
-        where: {
-          ...base,
-          AND: [
-            { type: { startsWith: "community." } },
-            { type: { notIn: ["chat.mention", "community.mention"] } },
-          ],
-        },
-      }),
-      this.prisma.notification.count({
-        where: { ...base, type: { in: ["chat.mention", "community.mention"] } },
-      }),
-      this.prisma.notification.count({
-        where: {
-          ...base,
-          NOT: [
-            { type: { startsWith: "friend." } },
-            { type: { startsWith: "community." } },
-            { type: { in: ["chat.mention", "community.mention"] } },
-          ],
-        },
-      }),
+      countFor("ALL"),
+      countFor("FRIENDS"),
+      countFor("COMMUNITIES"),
+      countFor("MENTIONS"),
+      countFor("SYSTEM"),
     ]);
     return { all, friends, communities, mentions, system };
   }
@@ -170,6 +256,74 @@ export class NotificationRepository {
         type,
         entity: { path: ["id"], equals: entityId },
       },
+    });
+  }
+
+  async findByNewLoginSessionId(
+    userId: string,
+    sessionId: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: {
+        userId,
+        type: "auth.security_new_login",
+        isDeleted: false,
+        loginSessionId: sessionId,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async findByTypeAndActor(
+    userId: string,
+    type: string,
+    actorId: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: { userId, type, actorId, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  /**
+   * Persists a user-initiated action on a notification (e.g. "TERMINATE" session,
+   * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
+   * and marks the row read in one write. Owner-scoped (IDOR-safe).
+   */
+  async recordAction(
+    id: string,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<Notification | null> {
+    const existing = await this.prisma.notification.findFirst({
+      where: { id, userId, isDeleted: false },
+    });
+    if (!existing) return null;
+    const existingPayload = (existing.payload ?? {}) as {
+      title?: string;
+      body?: string;
+      data?: Record<string, string>;
+    };
+    const updatedPayload = {
+      ...existingPayload,
+      body,
+      data: { ...(existingPayload.data ?? {}), actionTaken: action },
+    };
+    return this.prisma.notification.update({
+      where: { id },
+      data: { payload: updatedPayload, isRead: true, readAt: new Date() },
+    });
+  }
+
+  async updatePayloadAndType(
+    id: string,
+    type: string,
+    payload: Record<string, unknown>
+  ): Promise<Notification | null> {
+    return this.prisma.notification.update({
+      where: { id },
+      data: { type, payload: payload as object },
     });
   }
 }

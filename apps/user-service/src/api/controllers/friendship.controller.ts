@@ -6,6 +6,7 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 import type {
   FriendshipIdParams,
   ListFriendRequestsQuery,
+  RelationshipsBatchInput,
   SendFriendRequestInput,
   UnfriendParams,
 } from "../validators/friendship.validator.js";
@@ -117,6 +118,18 @@ export const cancelFriendRequest = asyncHandler(
   }
 );
 
+export const getBlockedUsers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const blocked = await friendshipService.getBlockedUsers(req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(blocked, t("USER_BLOCKED_LIST_FETCHED", req.locale))
+      );
+  }
+);
+
 export const blockUser = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.params as unknown as UnfriendParams;
 
@@ -154,6 +167,26 @@ export const getFriendshipStatus = asyncHandler(
       .json(
         new ApiResponse(
           { friendshipId: row?.id ?? null, ...view },
+          t("USER_FRIENDSHIP_STATUS_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
+export const getRelationshipsBatch = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { userIds } = req.body as RelationshipsBatchInput;
+
+    const relationships = await friendshipService.relationshipsFor(
+      req.auth.userId,
+      userIds
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { relationships },
           t("USER_FRIENDSHIP_STATUS_FETCHED", req.locale)
         )
       );

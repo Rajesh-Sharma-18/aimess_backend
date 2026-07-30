@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { redis } from "../config/redis.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -83,7 +84,7 @@ import {
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
-  fileMediaKey,
+  fileMediaKeys,
   resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
@@ -795,6 +796,28 @@ export class CommunityMessageService {
    * bulk query per concern — no N+1 (banned rooms' cutoff resolution is the one
    * per-room exception, batched concurrently).
    */
+  /**
+   * Total unread community messages across every community the user's an
+   * ACTIVE member of — for the Community nav badge. Reuses the same
+   * countUnreadBulk primitive getChatSummaries already uses per-community,
+   * just summed instead of returned per-room; no banned-cutoff clamping
+   * since a banned member doesn't contribute to the badge (see
+   * RoomMemberRepository.findActiveByUser).
+   */
+  async sumUnreadForUser(userId: string): Promise<number> {
+    const members = await this.memberRepo.findActiveByUser(userId);
+    if (!members.length) return 0;
+    const unreadMap = await this.messageRepo.countUnreadBulk({
+      userId,
+      thresholds: members.map((m) => ({
+        roomId: m.roomId,
+        afterDate: m.lastReadAt ?? new Date(0),
+        beforeDate: null,
+      })),
+    });
+    return Object.values(unreadMap).reduce((sum, u) => sum + u.count, 0);
+  }
+
   async getChatSummaries(params: {
     userId: string;
     communityIds: string[];
@@ -1038,8 +1061,7 @@ export class CommunityMessageService {
       const attachments = m.attachments;
       if (Array.isArray(attachments)) {
         for (const attachment of attachments) {
-          const key = fileMediaKey(attachment as MediaFileLike);
-          if (key) keys.push(key);
+          keys.push(...fileMediaKeys(attachment as MediaFileLike));
         }
       }
       const quote = m.quoteData as Record<string, unknown> | null;
@@ -1556,8 +1578,7 @@ export class CommunityMessageService {
       if (msg.senderAvatar) mediaKeys.push(msg.senderAvatar);
       if (Array.isArray(msg.attachments)) {
         for (const attachment of msg.attachments) {
-          const key = fileMediaKey(attachment as MediaFileLike);
-          if (key) mediaKeys.push(key);
+          mediaKeys.push(...fileMediaKeys(attachment as MediaFileLike));
         }
       }
     }
@@ -1834,6 +1855,12 @@ export class CommunityMessageService {
           newest.id,
           newest.createdAt
         )
+        .then(() => {
+          // Opening the transcript advances lastReadAt — push a fresh nav-badge
+          // summary so communityUnread drops without waiting for an explicit
+          // mark-read REST call (which does notifyUnreadChanged).
+          notifyUnreadChanged(params.userId);
+        })
         .catch((err: unknown) => {
           logger.warn(
             `CommunityMessageService|getConversation|advanceReadPointer failed: ${String(err)}`
@@ -2620,7 +2647,25 @@ export class CommunityMessageService {
         );
       });
 
-    // Sync to reader's own other devices.
+    // Sync to reader's own other devices. `readerId` + `unreadCount` are what let a SECOND device
+    // actually clear its badge — without them the receiver knows a read happened but not whose or
+    // what the new count is, so the badge never cleared. Private/group have carried both since
+    // day one (see ChatMessageOrchestrator.markRead); community silently omitted them.
+    // try/catch, not .catch() — marking read must never fail because the badge count did, and a
+    // rejected promise is only half the risk (an absent repo method throws synchronously).
+    let unreadAfterRead = 0;
+    try {
+      const counts = await this.messageRepo.countUnreadBulk({
+        userId: params.readerId,
+        thresholds: [{ roomId: params.communityId, afterDate: now }],
+      });
+      unreadAfterRead = counts[params.communityId]?.count ?? 0;
+    } catch (err: unknown) {
+      logger.warn(
+        `CommunityMessageService|markMessageRead|countUnread failed: ${String(err)}`
+      );
+    }
+
     redis
       .publish(
         `user:${params.readerId}`,
@@ -2628,7 +2673,9 @@ export class CommunityMessageService {
           event: "community:read_sync",
           data: {
             communityId: params.communityId,
+            readerId: params.readerId,
             upToMessageId: params.upToMessageId,
+            unreadCount: unreadAfterRead,
             readAt,
           },
         })
@@ -2638,6 +2685,9 @@ export class CommunityMessageService {
           `CommunityMessageService|markMessageRead|redis publish user failed: ${String(err)}`
         );
       });
+
+    // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
+    notifyUnreadChanged(params.readerId);
 
     return { ok: true, communityId: params.communityId, readAt };
   }

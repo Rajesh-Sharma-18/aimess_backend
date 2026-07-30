@@ -89,9 +89,15 @@ export type CommunityData = {
    */
   joinRequestId: string | null;
   joinRequestStatus: CommunityJoinReqStatus | null;
-  /** True if the caller has a mute row for this community (any state). */
+  /**
+   * Caller's self-service notification mute ("Mute Notifications") — silences
+   * pushes. Distinct from `isMemberMuted` (moderation mute).
+   */
   isMuted: boolean;
-  /** ISO-8601; null when not muted or muted indefinitely. */
+  /**
+   * When the caller's notification mute expires (ISO-8601).
+   * null = not muted OR muted indefinitely — use `isMuted` to disambiguate.
+   */
   muteUntil: string | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
@@ -123,13 +129,13 @@ export type CommunityData = {
   updatedAt: string;
   lastActivity: CommunityLastActivity;
   /**
-   * True when the caller has an active MODERATION mute (silenced by a moderator/admin).
-   * Distinct from `isMuted` which is the notification mute (caller silenced the community).
+   * True when an admin/moderator silenced the CALLER (can still read, cannot
+   * post). Distinct from `isMuted` (notification mute).
    */
   isMemberMuted: boolean;
   /**
-   * ISO-8601 expiry of the caller's moderation mute; null = indefinitely muted or not muted.
-   * Only meaningful when `isMemberMuted` is true.
+   * Expiry of the caller's moderation mute (ISO-8601).
+   * null = indefinite mute when `isMemberMuted` is true, or not muted.
    */
   memberMutedUntil: string | null;
 };
@@ -336,9 +342,15 @@ export type CommunityListItem = {
   firstUnreadMessageId: string | null;
   /** Last activity for this community (denormalized). */
   lastActivity: CommunityLastActivity;
-  /** True when the caller has an active mute-setting row for this community. */
+  /**
+   * Caller's self-service notification mute ("Mute Notifications") for this
+   * community — silences pushes. Distinct from `isMemberMuted` (moderation mute).
+   */
   isMuted: boolean;
-  /** ISO-8601; null when not muted or muted indefinitely. */
+  /**
+   * When the caller's notification mute expires (ISO-8601).
+   * null = not muted OR muted indefinitely — use `isMuted` to disambiguate.
+   */
   muteUntil: string | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
@@ -353,9 +365,15 @@ export type CommunityListItem = {
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
   status: "ACTIVE" | "CLOSED";
-  /** True when the caller has an active MODERATION mute (silenced by a mod/admin). */
+  /**
+   * True when an admin/moderator silenced the CALLER in this community
+   * (can still read, cannot post). Distinct from `isMuted` (notification mute).
+   */
   isMemberMuted: boolean;
-  /** ISO-8601 expiry of the caller's moderation mute; null = indefinite or not muted. */
+  /**
+   * Expiry of the caller's moderation mute (ISO-8601).
+   * null = indefinite mute when `isMemberMuted` is true, or not muted.
+   */
   memberMutedUntil: string | null;
   /**
    * True when the authenticated caller already has a LIVE or RECONNECTING

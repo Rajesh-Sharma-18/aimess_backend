@@ -590,6 +590,32 @@ const getViewers = {
 };
 
 // ---------------------------------------------------------------------------
+// GET /streams/{id}/publish-credentials — Re-fetch publish credentials (owner only)
+// ---------------------------------------------------------------------------
+const getPublishCredentials = {
+  get: {
+    tags: ["Streams"],
+    operationId: "getStreamPublishCredentials",
+    summary: "Re-fetch publish credentials",
+    description:
+      "Owner-only. Re-mints the same `streamKey` + WHIP/RTMP ingest URLs that were returned on creation, so a PHONE_CAMERA broadcast can be resumed after a page reload without creating a new stream. 400 if `sourceType` is not `PHONE_CAMERA` or the stream has already ENDED.",
+    security: streamAuth,
+    parameters: [streamIdParam],
+    responses: {
+      "200": streamOk(
+        "Publish credentials",
+        "#/components/schemas/StreamPublishCredentials"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // POST /streams/{id}/ban — Ban a user (owner only)
 // ---------------------------------------------------------------------------
 const banUser = {
@@ -870,17 +896,281 @@ const listCommentReports = {
   },
 };
 
+const heartbeat = {
+  post: {
+    tags: ["Streams"],
+    operationId: "streamHeartbeat",
+    summary: "Owner keepalive heartbeat",
+    description:
+      "Owner-only keepalive while live. Clients should call about every 30s; missing heartbeats may cause the sweeper to end a stale stream.",
+    security: streamAuth,
+    parameters: [streamIdParam],
+    responses: {
+      "200": {
+        description: "Heartbeat accepted",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    ok: { type: "boolean" as const, enum: [true] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+const muteStreamMember = {
+  post: {
+    tags: ["Streams"],
+    operationId: "muteStreamMember",
+    summary: "Mute a member in the stream/community context",
+    description:
+      "Owner **or** community ADMIN/MODERATOR. Applies a community moderation mute (not stream-local). Optional `durationMinutes`; omit for indefinite.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "userId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            properties: {
+              durationMinutes: {
+                type: "integer" as const,
+                minimum: 1,
+                description: "Mute duration in minutes; omit for indefinite.",
+              },
+              reason: { type: "string" as const, maxLength: 500 },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description: "Member muted",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    muted: { type: "string" as const },
+                    mutedUntil: {
+                      type: "string" as const,
+                      format: "date-time",
+                      nullable: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+const unmuteStreamMember = {
+  delete: {
+    tags: ["Streams"],
+    operationId: "unmuteStreamMember",
+    summary: "Unmute a member in the stream/community context",
+    description:
+      "Owner or community ADMIN/MODERATOR. Clears a community moderation mute.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "userId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Member unmuted",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    unmuted: { type: "string" as const },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+const communityBanStreamMember = {
+  post: {
+    tags: ["Streams"],
+    operationId: "communityBanStreamMember",
+    summary: "Ban a user from the entire community (via stream context)",
+    description:
+      "Community **ADMIN only**. Distinct from stream-local `POST /streams/{id}/ban` — this bans the user from the community, not just this stream.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "userId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            properties: {
+              reason: { type: "string" as const, maxLength: 500 },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description: "User banned from community",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    banned: { type: "string" as const },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+const communityUnbanStreamMember = {
+  delete: {
+    tags: ["Streams"],
+    operationId: "communityUnbanStreamMember",
+    summary: "Unban a user from the community (via stream context)",
+    description: "Community ADMIN only. Lifts a community-wide ban.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "userId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    responses: {
+      "200": {
+        description: "User unbanned from community",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    unbanned: { type: "string" as const },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
 export const streamPaths = {
   "/streams": { ...createStream, ...listStreams },
   "/streams/{id}": { ...getStream, ...updateStream, ...deleteStream },
   "/streams/{id}/stop": stopStream,
   "/streams/{id}/go-live": goLive,
+  "/streams/{id}/heartbeat": heartbeat,
   "/streams/{id}/comments": getComments,
   "/streams/{id}/comment-status": setCommentStatus,
   "/streams/{id}/viewers": getViewers,
+  "/streams/{id}/publish-credentials": getPublishCredentials,
   "/streams/{id}/ban": banUser,
   "/streams/{id}/ban/{userId}": unbanUser,
   "/streams/{id}/bans": listBans,
+  "/streams/{id}/mute/{userId}": {
+    ...muteStreamMember,
+    ...unmuteStreamMember,
+  },
+  "/streams/{id}/community-ban/{userId}": {
+    ...communityBanStreamMember,
+    ...communityUnbanStreamMember,
+  },
   "/streams/{id}/comments/{commentId}/report": reportComment,
   "/streams/{id}/comments/reports": listCommentReports,
 };

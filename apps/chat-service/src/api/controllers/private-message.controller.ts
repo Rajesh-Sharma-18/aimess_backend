@@ -3,6 +3,9 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
+import { NotFoundError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 
 import {
   buildPaginatedResponse,
@@ -10,6 +13,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
+  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -118,8 +122,78 @@ export class PrivateMessageController {
    * contract (see `communityTimelineV2QuerySchema`).
    */
   getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessages(req, res, "before_cursor", "after_cursor")
+    this.listMessagesV2(req, res)
   );
+
+  /**
+   * V2 timeline — `before_seq`/`after_seq`/`around` only. The retired timestamp
+   * cursors are rejected by `timelineV2QuerySchema.strict()`, so there is no
+   * fallback branch here: sequence is the single pagination axis.
+   */
+  private async listMessagesV2(req: Request, res: Response) {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
+    const around = req.query.around as string | undefined;
+
+    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            payload,
+            payload.items.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+
+    if (around) {
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const [enriched, pinnedMessage] = await Promise.all([
+        this.messageService.enrichMessages(items, userId),
+        this.pinService.getActivePinSummary(roomId, userId),
+      ]);
+      send({
+        ...buildTimelinePageV2(enriched, limit, {
+          hasMoreOlder,
+          hasMoreNewer,
+          olderCursor,
+          newerCursor,
+        }),
+        pinnedMessage,
+      });
+      return;
+    }
+
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+
+    const result = await this.messageService.getMessagesSeq({
+      roomId,
+      userId,
+      direction: afterSeq != null ? "after" : "before",
+      seq: afterSeq ?? beforeSeq ?? null,
+      limit,
+    });
+    const [enriched, pinnedMessage] = await Promise.all([
+      this.messageService.enrichMessages(result.items, userId),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
+    send({
+      ...buildTimelinePageV2(enriched, limit, result.cursors),
+      roomRevision: result.roomRevision,
+      pinnedMessage,
+    });
+  }
 
   /**
    * V2 — `GET /api/v2/chat/private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
@@ -144,11 +218,11 @@ export class PrivateMessageController {
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
         {
+          items: result.items,
           roomRevision: result.roomRevision,
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
-          data: result.items,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -241,13 +315,17 @@ export class PrivateMessageController {
         result.items,
         userId
       );
-      const paginated = buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        result.hasMore,
-        result.nextCursor
-      );
+      const paginated = {
+        ...buildTimelineResponse(
+          enriched,
+          totalCount,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -285,13 +363,17 @@ export class PrivateMessageController {
       result.items,
       userId
     );
-    const paginated = buildTimelineResponse(
-      enriched,
-      result.total,
-      limit,
-      result.hasMore,
-      result.nextCursor
-    );
+    const paginated = {
+      ...buildTimelineResponse(
+        enriched,
+        result.total,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      ),
+      ...result.cursors,
+      roomRevision: result.roomRevision,
+    };
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
@@ -347,6 +429,36 @@ export class PrivateMessageController {
         `conv:${result.roomId}`,
         JSON.stringify({ event: "message:delete", data: tombstone })
       );
+    }
+
+    // When deleted for everyone, check if the message was actively pinned.
+    // If so: mark the pin unavailable and emit pin:updated so the banner reflects it live.
+    if (type === "forEveryone" && result.roomId) {
+      const rId = result.roomId;
+      void this.pinService
+        .handleMessageDeleted(messageId)
+        .then((affectedPin) => {
+          if (!affectedPin) return;
+          return this.redis.publish(
+            `conv:${rId}`,
+            JSON.stringify({
+              event: "pin:updated",
+              data: {
+                roomId: rId,
+                conversationId: rId,
+                messageId,
+                action: "pinned",
+                pinnedCount: null, // unchanged; client uses cached count
+                pin: { ...affectedPin, isAvailable: false },
+              },
+            })
+          );
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `deleteMessage|pin hook failed messageId=${messageId}: ${String(err)}`
+          );
+        });
     }
 
     // For delete-for-everyone: recalculate and broadcast the new list preview
@@ -453,33 +565,53 @@ export class PrivateMessageController {
   });
 
   // V2 §2.5: pin a message and broadcast pin:updated so the pinned banner
-  // updates live for everyone in the room (multi-device consistent).
+  // updates live for everyone in the room (multi-device consistent). Only one
+  // active pin per room (parity with Community) — pinning a 2nd message
+  // replaces the 1st, so a switch also emits the replaced pin's unpin event.
   pin = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const messageId = req.params.messageId as string;
     const result = await this.pinService.pin({ roomId, messageId, userId });
-    const pinnedAt =
-      result.pin.pinnedAt instanceof Date
-        ? result.pin.pinnedAt.getTime()
-        : Date.now();
-    // Published to conv:<roomId> (where clients are joined) so it rides the
-    // gateway's existing conv:* subscription, exactly like message:delete.
-    await this.redis.publish(
-      `conv:${roomId}`,
-      JSON.stringify({
-        event: "pin:updated",
-        data: {
-          roomId,
-          conversationId: roomId,
-          messageId,
-          pinnedBy: userId,
-          pinnedAt,
-          action: "pinned",
-          pinnedCount: result.pinnedCount,
-        },
-      })
-    );
+    if (!result.idempotent) {
+      if (result.replacedPin) {
+        await this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({
+            event: "pin:updated",
+            data: {
+              roomId,
+              conversationId: roomId,
+              messageId: result.replacedPin.messageId,
+              unpinnedBy: userId,
+              action: "unpinned",
+              pinnedCount: null, // unchanged; the pinned event right after carries the settled count
+            },
+          })
+        );
+      }
+      const pinnedAt =
+        result.pin.pinnedAt instanceof Date
+          ? result.pin.pinnedAt.getTime()
+          : Date.now();
+      // Published to conv:<roomId> (where clients are joined) so it rides the
+      // gateway's existing conv:* subscription, exactly like message:delete.
+      await this.redis.publish(
+        `conv:${roomId}`,
+        JSON.stringify({
+          event: "pin:updated",
+          data: {
+            roomId,
+            conversationId: roomId,
+            messageId,
+            pinnedBy: userId,
+            pinnedAt,
+            action: "pinned",
+            pinnedCount: result.pinnedCount,
+          },
+        })
+      );
+    }
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, "Message pinned"));
@@ -630,6 +762,28 @@ export class PrivateMessageController {
       userId,
       emoji,
       op: "add",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
+
+  /**
+   * V2 `POST /messages/:messageId/react` — single-write SET, matching the community
+   * REST react. The room is resolved from the message, so the offline queue can drain
+   * a reaction with only (messageId, emoji) regardless of conversation type.
+   */
+  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { emoji } = req.body as { emoji: string };
+    const message = await this.messageService.findMessageById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "PRIVATE",
+      roomId: message.roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "set",
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
   });

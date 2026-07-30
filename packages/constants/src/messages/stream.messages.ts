@@ -31,6 +31,10 @@ export const STREAM_MESSAGES = {
     en: "Stream is now live.",
     vi: "Buổi phát trực tiếp đang bắt đầu.",
   },
+  STREAM_PUBLISH_CREDENTIALS_FETCHED: {
+    en: "Publish credentials fetched successfully.",
+    vi: "Lấy thông tin phát trực tiếp thành công.",
+  },
   STREAM_COMMENTS_FETCHED: {
     en: "Comments fetched successfully.",
     vi: "Lấy danh sách bình luận thành công.",
@@ -84,6 +88,10 @@ export const STREAM_MESSAGES = {
   STREAM_ALREADY_ENDED: {
     en: "This stream has already ended.",
     vi: "Buổi phát trực tiếp này đã kết thúc.",
+  },
+  STREAM_NOT_PHONE_CAMERA_SOURCE: {
+    en: "Publish credentials are only available for phone-camera streams.",
+    vi: "Thông tin phát trực tiếp chỉ khả dụng cho buổi phát từ camera điện thoại.",
   },
   STREAM_CANNOT_BAN_OWNER: {
     en: "You cannot ban the stream owner.",
