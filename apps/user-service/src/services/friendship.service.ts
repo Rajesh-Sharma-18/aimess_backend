@@ -1056,4 +1056,35 @@ export const friendshipService = {
       relationship: toSearchRelationship(unblockedView),
     });
   },
+
+  async getBlockedUsers(blockerId: string) {
+    const blocks = await friendshipRepository.findBlockedByUser(blockerId);
+    if (blocks.length === 0) return [];
+
+    const blockedIds = blocks.map((b) => b.blockedId);
+    const profiles = await userProfileRepository.findByUserIds(blockedIds);
+    const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+
+    return Promise.all(
+      blocks.map(async (b) => {
+        const profile = profileMap.get(b.blockedId);
+        const avatar = profile?.avatarUrl
+          ? await toMediaObject({
+              bucket: env.MINIO_BUCKET_AVATARS,
+              stored: profile.avatarUrl,
+              prefixes: MEDIA_PREFIXES.userAvatars,
+              strategy: mediaUrlStrategy,
+            })
+          : null;
+        return {
+          userId: b.blockedId,
+          username: profile?.username ?? null,
+          firstName: profile?.firstName ?? null,
+          lastName: profile?.lastName ?? null,
+          avatarUrl: avatar,
+          blockedAt: b.createdAt,
+        };
+      })
+    );
+  },
 };

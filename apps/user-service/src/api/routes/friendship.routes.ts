@@ -5,6 +5,7 @@ import {
   autoDisconnectFriends,
   blockUser,
   cancelFriendRequest,
+  getBlockedUsers,
   getFriendshipStatus,
   listFriendRequests,
   makeUsersFriends,
@@ -79,6 +80,8 @@ friendshipRoutes.get(
   validateParams(unfriendParamsSchema),
   getFriendshipStatus
 );
+
+friendshipRoutes.get("/blocked", authenticateAccessToken, getBlockedUsers);
 
 friendshipRoutes.post(
   "/block/:userId",

@@ -1234,6 +1234,69 @@ export const userPaths = {
       },
     },
   },
+  "/users/friends/blocked": {
+    get: {
+      tags: ["Users"],
+      summary: "List blocked users",
+      operationId: "getBlockedUsers",
+      description:
+        "Returns the list of users the caller has blocked, newest first. Each entry includes profile info and the block timestamp.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Blocked users list.",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            userId: {
+                              type: "string",
+                              format: "uuid",
+                            },
+                            username: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            firstName: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            lastName: {
+                              type: "string",
+                              nullable: true,
+                            },
+                            avatarUrl: {
+                              type: "object",
+                              nullable: true,
+                            },
+                            blockedAt: {
+                              type: "string",
+                              format: "date-time",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
   "/users/friends/block/{userId}": {
     post: {
       tags: ["Users"],

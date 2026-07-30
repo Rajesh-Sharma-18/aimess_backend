@@ -119,10 +119,19 @@ export class PrivateMessageService {
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
 
-    const friends = await this.userServiceClient.checkFriendship(
-      params.senderId,
-      params.receiverId
-    );
+    const [friends, blocked] = await Promise.all([
+      this.userServiceClient.checkFriendship(
+        params.senderId,
+        params.receiverId
+      ),
+      this.userServiceClient.isFriendshipBlocked(
+        params.senderId,
+        params.receiverId
+      ),
+    ]);
+    if (blocked) {
+      throw new ForbiddenError("CHAT_BLOCKED");
+    }
     if (!friends) {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }

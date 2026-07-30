@@ -1,6 +1,9 @@
 import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
 import { FriendshipRepository } from "../repositories/friendship.repository.js";
+import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { prisma } from "../config/prisma.js";
+import { buildParticipantsKey } from "../lib/room-id.js";
 
 const FRIENDSHIP_EXCHANGE = "user.events";
 const FRIENDSHIP_QUEUE = "chat-service.friendship";
@@ -22,6 +25,7 @@ export interface FriendshipEvent {
 export class FriendshipEventConsumer {
   private channel: Channel | null = null;
   private friendshipRepo = new FriendshipRepository();
+  private privateRoomRepo = new PrivateRoomRepository(prisma);
 
   async start(connection: ChannelModel): Promise<void> {
     try {
@@ -84,6 +88,8 @@ export class FriendshipEventConsumer {
         case "friendship.deleted":
           await this.friendshipRepo.deleteFriendship(event.userA, event.userB);
           await this.friendshipRepo.deleteFriendship(event.userB, event.userA);
+          // Clear blockedBy on the PrivateRoom (unblock path publishes this)
+          await this.clearBlockedByOnRoom(event.userA, event.userB);
           logger.debug(`Friendship deleted: ${event.userA} ↔ ${event.userB}`);
           break;
 
@@ -94,6 +100,8 @@ export class FriendshipEventConsumer {
             event.userB,
             "BLOCKED"
           );
+          // Also update PrivateRoom.blockedBy so call.service's guard works
+          await this.addBlockedByToRoom(event.userA, event.userB);
           logger.debug(
             `Friendship blocked: ${event.userA} blocked ${event.userB}`
           );
@@ -121,6 +129,50 @@ export class FriendshipEventConsumer {
       logger.error("Error processing friendship event", err);
       // Nack the message (don't requeue to avoid infinite loops)
       this.channel?.nack(msg, false, false);
+    }
+  }
+
+  // ponytail: best-effort room update — no room = no-op (pair may never have chatted)
+  private async addBlockedByToRoom(
+    blockerId: string,
+    blockedId: string
+  ): Promise<void> {
+    try {
+      const key = buildParticipantsKey(blockerId, blockedId);
+      const room = await this.privateRoomRepo.findByParticipantsKey(key);
+      if (!room) return;
+      const current = Array.isArray(room.blockedBy)
+        ? (room.blockedBy as string[])
+        : [];
+      if (current.includes(blockerId)) return;
+      await prisma.privateRoom.update({
+        where: { roomId: room.roomId },
+        data: { blockedBy: [...current, blockerId] },
+      });
+    } catch (err) {
+      logger.warn("Failed to update PrivateRoom.blockedBy on block", err);
+    }
+  }
+
+  private async clearBlockedByOnRoom(
+    userA: string,
+    userB: string
+  ): Promise<void> {
+    try {
+      const key = buildParticipantsKey(userA, userB);
+      const room = await this.privateRoomRepo.findByParticipantsKey(key);
+      if (!room) return;
+      const current = Array.isArray(room.blockedBy)
+        ? (room.blockedBy as string[])
+        : [];
+      const updated = current.filter((id) => id !== userA && id !== userB);
+      if (updated.length === current.length) return;
+      await prisma.privateRoom.update({
+        where: { roomId: room.roomId },
+        data: { blockedBy: updated },
+      });
+    } catch (err) {
+      logger.warn("Failed to clear PrivateRoom.blockedBy on delete", err);
     }
   }
 

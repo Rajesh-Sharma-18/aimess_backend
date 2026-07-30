@@ -259,6 +259,10 @@ export const CHAT_MESSAGES = {
     vi: "Bạn phải là bạn bè để nhắn tin cho người dùng này",
     en: "You must be friends to message this user",
   },
+  CHAT_BLOCKED: {
+    vi: "Không thể gửi tin nhắn cho người dùng bị chặn",
+    en: "Cannot send messages to a blocked user",
+  },
 
   // --- Pins ---
   CHAT_PIN_LIMIT_REACHED: {

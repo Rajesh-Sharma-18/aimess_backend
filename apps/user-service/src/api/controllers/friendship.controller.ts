@@ -117,6 +117,18 @@ export const cancelFriendRequest = asyncHandler(
   }
 );
 
+export const getBlockedUsers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const blocked = await friendshipService.getBlockedUsers(req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(blocked, t("USER_BLOCKED_LIST_FETCHED", req.locale))
+      );
+  }
+);
+
 export const blockUser = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.params as unknown as UnfriendParams;
 

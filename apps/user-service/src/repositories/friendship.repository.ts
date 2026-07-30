@@ -456,6 +456,15 @@ export const friendshipRepository = {
     });
   },
 
+  /** Users that `blockerId` has blocked (outgoing blocks only), newest first. */
+  findBlockedByUser(blockerId: string) {
+    return prisma.block.findMany({
+      where: { blockerId },
+      select: { blockedId: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
   /** Directional lookup — did `blockerId` specifically block `blockedId`? */
   findBlock(blockerId: string, blockedId: string) {
     return prisma.block.findUnique({
