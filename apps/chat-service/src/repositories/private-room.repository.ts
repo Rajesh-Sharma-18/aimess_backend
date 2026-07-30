@@ -311,10 +311,30 @@ export class PrivateRoomRepository {
     /** How many unread rows this send contributes (albums > 1). */
     unreadIncrement?: number;
   }): Promise<PrivateRoom | null> {
+    // Read-then-write for the Map-based unread fields — wrapped in
+    // withWriteConflictRetry (see db-errors.ts) so a concurrent write to the
+    // same room (e.g. a markReadUpTo racing this send) retries on a fresh read
+    // instead of one writer's update silently clobbering the other's.
+    return withWriteConflictRetry(() => this.doUpdateRoomOnNewMessage(params));
+  }
+
+  private async doUpdateRoomOnNewMessage(params: {
+    roomId: string;
+    message: {
+      _id: string;
+      content: unknown;
+      senderId: string;
+      messageType: string;
+      systemEvent?: string | null;
+      systemData?: unknown;
+      createdAt: Date;
+    };
+    receiverId: string;
+    unreadIncrement?: number;
+  }): Promise<PrivateRoom | null> {
     const { roomId, message, receiverId } = params;
     const now = message.createdAt || new Date();
 
-    // We need to read-then-write for the Map-based fields
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
     });
@@ -381,6 +401,16 @@ export class PrivateRoomRepository {
   }
 
   async markReadUpTo(params: {
+    roomId: string;
+    userId: string;
+    upToMessageId: string;
+  }): Promise<PrivateRoom | null> {
+    // See updateRoomOnNewMessage: same read-modify-write race on the JSON
+    // unread fields, same fix.
+    return withWriteConflictRetry(() => this.doMarkReadUpTo(params));
+  }
+
+  private async doMarkReadUpTo(params: {
     roomId: string;
     userId: string;
     upToMessageId: string;
@@ -493,6 +523,18 @@ export class PrivateRoomRepository {
   }
 
   async decrementUnreadForMessage(params: {
+    roomId: string;
+    recipientId: string;
+    messageId: string;
+    messageCreatedAt: Date;
+  }): Promise<void> {
+    // See updateRoomOnNewMessage: same read-modify-write race, same fix.
+    return withWriteConflictRetry(() =>
+      this.doDecrementUnreadForMessage(params)
+    );
+  }
+
+  private async doDecrementUnreadForMessage(params: {
     roomId: string;
     recipientId: string;
     messageId: string;

@@ -373,11 +373,20 @@ export function registerChatNamespace(
           }
         }
 
-        // Call lifecycle on `user:<id>` must NOT fan out to presence subscribers.
-        // Prefer Redis `self:<id>` (see CallService); keep this rewrite as a
-        // safety net for any remaining user:* call publishes.
+        // Call lifecycle and the chat:unread_summary badge total on `user:<id>`
+        // must NOT fan out to presence subscribers — `presence:subscribe` joins
+        // the SUBSCRIBER's own socket into the peer's `user:<peerId>` room so it
+        // can hear that peer's presence changes, which also relay through this
+        // exact room. Without this rewrite, subscribing to a peer's presence
+        // silently leaks that peer's own badge count (and, for calls, their call
+        // lifecycle) onto the subscriber's client. Redirect to `self:<id>` —
+        // joined only by the owning user's own sockets (see socket.join above) —
+        // instead of the shared identity room.
+        const isSelfOnlyEvent =
+          parsed.event.startsWith("call:") ||
+          parsed.event === "chat:unread_summary";
         const targetChannel =
-          pattern === "user:*" && parsed.event.startsWith("call:")
+          pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
             : channel;
 

@@ -293,20 +293,26 @@ export class GroupMessageService {
     }
 
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
-    this.roomRepo
-      .updateLastMessage(params.roomId, {
+    // Awaited (not fire-and-forget) for the same reason incUnreadForRoom below
+    // is awaited: conv:updated/chat:unread_summary fan out right after this —
+    // firing before the room's lastMessage/lastActivity write actually commits
+    // left the list preview/position stale while the unread badge (which does
+    // commit synchronously) moved on, a real badge/list mismatch under load or
+    // a transient failure.
+    try {
+      await this.roomRepo.updateLastMessage(params.roomId, {
         _id: message.id,
         senderId: message.senderId ?? null,
         senderName: message.senderName,
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
-      })
-      .catch((err: unknown) => {
-        logger.warn(
-          `GroupMessageService|updateLastMessage failed: ${String(err)}`
-        );
       });
+    } catch (err: unknown) {
+      logger.warn(
+        `GroupMessageService|updateLastMessage failed: ${String(err)}`
+      );
+    }
 
     const unreadIncrement = created.filter((m) =>
       shouldCountInUnread({

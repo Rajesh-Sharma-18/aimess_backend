@@ -219,6 +219,16 @@ export class CallChatMessageService {
       preview: { contentType: messageType, text },
       countInUnread,
       getIsOnline: this.getIsOnline,
+      // Same absolute-count source as the main send path (chat-message-
+      // orchestrator) — without this, conv:updated here falls back to a bare
+      // `unread: true/false` flag the client must optimistically +1, which can
+      // drift from the room's authoritative unreadCountByUser.
+      resolveUnreadCounts: async () => {
+        const r = await this.roomRepo
+          .findByRoomId(room.roomId)
+          .catch(() => null);
+        return { ...((r?.unreadCountByUser as Record<string, number>) ?? {}) };
+      },
     });
 
     if (!isEnded) {
