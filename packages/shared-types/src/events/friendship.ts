@@ -59,6 +59,8 @@ export type FriendRejectedPayload = {
   addresseeId: string;
   /** Display name of the addressee (rejecter) — the requester's "X declined your friend request" copy. */
   addresseeName?: string;
+  /** Display name of the requester — the addressee's own "I have declined X" inbox copy. */
+  requesterName?: string;
   rejectedAt: string;
 };
 

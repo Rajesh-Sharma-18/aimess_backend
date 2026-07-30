@@ -239,40 +239,66 @@ export class CallService {
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
     // UI in parallel — all three are independent I/O.
     // roomName == callId — generalizes cleanly to group later.
-    const [callerCreds, calleeCreds, callerSnapshot] = await Promise.all([
-      this.livekit.mintToken(callId, params.callerId),
-      this.livekit.mintToken(callId, params.calleeId),
-      this.getUserSnapshot(params.callerId).catch(() => ({
-        displayName: "",
-        avatarUrl: "",
-      })),
-    ]);
+    const [callerCreds, calleeCreds, callerSnapshot, calleeSnapshot] =
+      await Promise.all([
+        this.livekit.mintToken(callId, params.callerId),
+        this.livekit.mintToken(callId, params.calleeId),
+        this.getUserSnapshot(params.callerId).catch(() => ({
+          displayName: "",
+          avatarUrl: "",
+        })),
+        this.getUserSnapshot(params.calleeId).catch(() => ({
+          displayName: "",
+          avatarUrl: "",
+        })),
+      ]);
 
     // Notify callee via Redis `self:<id>` — NOT `user:<id>`. Every peer that
     // presence:subscribed joins Socket.IO `user:<calleeId>`; publishing there
     // leaked call:incoming (and LiveKit tokens) to the caller, who then ran
     // busy auto-decline logic on zombie HMR sockets.
-    await this.redis
-      .publish(
-        `self:${params.calleeId}`,
-        JSON.stringify({
-          event: "call:incoming",
-          data: {
-            callId,
-            callerId: params.callerId,
-            callerName: callerSnapshot.displayName,
-            callerAvatarUrl: callerSnapshot.avatarUrl,
-            callType: params.type || CallType.AUDIO,
-            livekitUrl: calleeCreds.url,
-            token: calleeCreds.token,
-          },
-        })
-      )
-      .catch((err: unknown) => {
-        logger.warn(
-          `CallService|initiateCall|redis publish failed: ${String(err)}`
-        );
-      });
+    await Promise.all([
+      this.redis
+        .publish(
+          `self:${params.calleeId}`,
+          JSON.stringify({
+            event: "call:incoming",
+            data: {
+              callId,
+              callerId: params.callerId,
+              callerName: callerSnapshot.displayName,
+              callerAvatarUrl: callerSnapshot.avatarUrl,
+              callType: params.type || CallType.AUDIO,
+              livekitUrl: calleeCreds.url,
+              token: calleeCreds.token,
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|initiateCall|redis publish incoming failed: ${String(err)}`
+          );
+        }),
+      this.redis
+        .publish(
+          `self:${params.callerId}`,
+          JSON.stringify({
+            event: "call:outgoing_mirror",
+            data: {
+              callId,
+              calleeId: params.calleeId,
+              calleeName: calleeSnapshot.displayName,
+              calleeAvatarUrl: calleeSnapshot.avatarUrl,
+              callType: params.type || CallType.AUDIO,
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CallService|initiateCall|redis publish outgoing_mirror failed: ${String(err)}`
+          );
+        }),
+    ]);
 
     // Push fallback: the Redis/socket path above only reaches a LIVE socket. A
     // callee with the tab backgrounded or closed gets nothing, so also fan out a
@@ -345,7 +371,11 @@ export class CallService {
             `CallService|answerCall|redis publish failed: ${String(err)}`
           );
         }),
-      this.publishCallHandled(params.calleeId, params.callId),
+      this.publishCallHandled(
+        params.calleeId,
+        params.callId,
+        "answered_elsewhere"
+      ),
     ]);
 
     publishCallCancelSafe({
@@ -406,7 +436,11 @@ export class CallService {
             `CallService|declineCall|redis publish failed: ${String(err)}`
           );
         }),
-      this.publishCallHandled(params.calleeId, params.callId),
+      this.publishCallHandled(
+        params.calleeId,
+        params.callId,
+        "declined_elsewhere"
+      ),
     ]);
 
     publishCallCancelSafe({
@@ -420,14 +454,15 @@ export class CallService {
 
   private async publishCallHandled(
     calleeId: string,
-    callId: string
+    callId: string,
+    reason: "answered_elsewhere" | "declined_elsewhere"
   ): Promise<void> {
     await this.redis
       .publish(
         `self:${calleeId}`,
         JSON.stringify({
           event: "call:handled",
-          data: { callId },
+          data: { callId, reason },
         })
       )
       .catch((err: unknown) => {

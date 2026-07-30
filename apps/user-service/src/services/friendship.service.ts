@@ -556,7 +556,7 @@ export const friendshipService = {
     }
 
     const updated = await friendshipRepository.reject(friendshipId);
-    const { addresseeName } = await loadFriendshipNames(
+    const { requesterName, addresseeName } = await loadFriendshipNames(
       friendship.requesterId,
       friendship.addresseeId
     );
@@ -565,6 +565,7 @@ export const friendshipService = {
       requesterId: friendship.requesterId,
       addresseeId: friendship.addresseeId,
       addresseeName,
+      requesterName,
       rejectedAt: updated.rejectedAt!.toISOString(),
     });
     emitToPair(updated, FriendSocketEvents.REJECTED);
