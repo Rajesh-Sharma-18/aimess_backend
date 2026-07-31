@@ -18,10 +18,15 @@ export interface PlaybackUrls {
 /**
  * Rungs of the ABR ladder we advertise to viewers. Must match the FFmpeg
  * transcode pipeline configured on the SRS side (srs.conf `transcode` block) —
- * the strings here are literal URL segments (`{key}_1080p.m3u8`, etc.) and only
+ * the strings here are literal URL segments (`{key}_480p.m3u8`, etc.) and only
  * work if SRS is actually producing those variant playlists.
+ *
+ * Production (fable's ABR setup) produces exactly two renditions: 480p @ 800k
+ * and 360p @ 400k, plus source passthrough as the top tier. Never add 1080p /
+ * 720p here without confirming the server transcode block produces them —
+ * otherwise every viewer request for those URLs 404s.
  */
-export const HLS_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
+export const HLS_QUALITY_LADDER = ["480p", "360p"] as const;
 export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
 
 /**
