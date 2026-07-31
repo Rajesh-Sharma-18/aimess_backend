@@ -211,6 +211,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             hlsUrl: access.hlsUrl ?? "",
             hlsQualities: access.hlsQualities,
             flvUrl: access.flvUrl ?? "",
+            flvQualities: access.flvQualities,
           });
         } catch (err) {
           logger.error(`gRPC checkStreamAccess error: ${String(err)}`);
