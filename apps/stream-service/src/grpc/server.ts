@@ -209,6 +209,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             thumbnail: access.thumbnail ?? "",
             creatorId: access.creatorId,
             hlsUrl: access.hlsUrl ?? "",
+            hlsQualities: access.hlsQualities,
             flvUrl: access.flvUrl ?? "",
           });
         } catch (err) {

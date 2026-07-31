@@ -160,6 +160,7 @@ message CheckStreamAccessResponse {
   string thumbnail     = 9;  // raw object key; "" if none
   string creator_id    = 10;
   string hls_url       = 11; // "" if none (YOUTUBE streams have no SRS ingest)
+  map<string, string> hls_qualities = 13; // ABR variant playlists keyed by rendition ("1080p", "720p", "480p", "360p")
   string flv_url       = 12; // "" if none
 }
 

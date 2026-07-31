@@ -16,6 +16,15 @@ export interface PlaybackUrls {
 }
 
 /**
+ * Rungs of the ABR ladder we advertise to viewers. Must match the FFmpeg
+ * transcode pipeline configured on the SRS side (srs.conf `transcode` block) —
+ * the strings here are literal URL segments (`{key}_1080p.m3u8`, etc.) and only
+ * work if SRS is actually producing those variant playlists.
+ */
+export const HLS_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
+export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
+
+/**
  * SRS (OSSRS) integration helper. Mints the publish/playback URLs handed to a
  * creator/viewer and best-effort terminates a publisher on a manual stop.
  *
@@ -265,4 +274,30 @@ export class SrsService {
       clearTimeout(timeout);
     }
   }
+}
+
+/**
+ * Derive the per-quality HLS variant URLs from a stored master URL.
+ * Returns `{}` when ABR master mode is off (URL is single-quality source), the
+ * URL is null, or it doesn't match the master pattern — we never fabricate
+ * variant URLs that SRS isn't actually producing (they would 404 in the player).
+ *
+ * Kept as a pure function of the STORED `hlsUrl` (not `streamKey` + env) so
+ * that if `SRS_HLS_BASE` changes after a stream is created, the variants stay
+ * consistent with the master URL persisted on the stream row.
+ *
+ * ⚠️ Populated URLs only work when SRS is configured with an FFmpeg transcode
+ * pipeline producing `{key}_{quality}.m3u8` for each rung in HLS_QUALITY_LADDER.
+ * See srs.conf `transcode` block on the production SRS host.
+ */
+export function buildHlsQualityUrls(
+  hlsUrl: string | null
+): Record<string, string> {
+  if (!hlsUrl || !env.SRS_HLS_ABR_MASTER) return {};
+  if (!hlsUrl.endsWith("_master.m3u8")) return {};
+  const map: Record<string, string> = {};
+  for (const q of HLS_QUALITY_LADDER) {
+    map[q] = hlsUrl.replace(/_master\.m3u8$/, `_${q}.m3u8`);
+  }
+  return map;
 }
