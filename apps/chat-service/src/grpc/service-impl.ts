@@ -3681,7 +3681,15 @@ export function createNotificationImpl(
           // For friend.accepted / friend.rejected: update the existing friend.requested
           // row in-place instead of creating a duplicate. Preserve the Friend Request
           // card title/body; resolution text lives in payload.data.resolution.
-          if (req.type === "friend.rejected" && req.actorId) {
+          // Reject and cancel both terminate an existing friend.requested row
+          // the same way: update it in place (no duplicate notification), no
+          // navigation (terminal), Accept/Reject dropped by the FE's adapter
+          // once `type` is no longer "friend.requested".
+          if (
+            (req.type === "friend.rejected" ||
+              req.type === "friend.cancelled") &&
+            req.actorId
+          ) {
             const existing = await deps.notificationRepo.findByTypeAndActor(
               req.userId,
               "friend.requested",

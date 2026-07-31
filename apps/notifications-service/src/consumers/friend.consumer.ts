@@ -185,6 +185,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          // Terminal — the gRPC handler updates the addressee's existing
+          // friend.requested row in place and drops Accept/Reject once it
+          // sees this resolution (mirrors the reject/accept paths).
+          resolution: "The sender cancelled this friend request",
+          resolutionTone: "danger",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,
             displayName: p.requesterName,
