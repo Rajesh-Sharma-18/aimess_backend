@@ -18,11 +18,26 @@ export interface PlaybackUrls {
 /**
  * Rungs of the ABR ladder we advertise to viewers. Must match the FFmpeg
  * transcode pipeline configured on the SRS side (srs.conf `transcode` block) —
- * the strings here are literal URL segments (`{key}_1080p.m3u8`, etc.) and only
+ * the strings here are literal URL segments (`{key}_480p.m3u8`, etc.) and only
  * work if SRS is actually producing those variant playlists.
+ *
+ * Production (fable's ABR setup) produces exactly two renditions: 480p @ 800k
+ * and 360p @ 400k, plus source passthrough as the top tier. Never add 1080p /
+ * 720p here without confirming the server transcode block produces them —
+ * otherwise every viewer request for those URLs 404s.
  */
-export const HLS_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
+export const HLS_QUALITY_LADDER = ["480p", "360p"] as const;
 export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
+
+/**
+ * Rungs of the manual FLV quality picker we advertise to viewers. Same FFmpeg
+ * renditions as {@link HLS_QUALITY_LADDER}, served as standalone HTTP-FLV
+ * streams (`{key}_480p.flv`, `{key}_360p.flv`) by the SRS `abr` vhost. There is
+ * no ABR/auto tier for HTTP-FLV — the source `{key}.flv` is offered as an
+ * explicit "Source" rung instead. Must match the srs.conf `transcode` engines.
+ */
+export const FLV_QUALITY_LADDER = ["480p", "360p"] as const;
+export type FlvQuality = (typeof FLV_QUALITY_LADDER)[number];
 
 /**
  * SRS (OSSRS) integration helper. Mints the publish/playback URLs handed to a
@@ -298,6 +313,32 @@ export function buildHlsQualityUrls(
   const map: Record<string, string> = {};
   for (const q of HLS_QUALITY_LADDER) {
     map[q] = hlsUrl.replace(/_master\.m3u8$/, `_${q}.m3u8`);
+  }
+  return map;
+}
+
+/**
+ * Derive the manual FLV quality URLs from a stored source FLV URL. Returns `{}`
+ * when `flvUrl` is null or `SRS_FLV_ABR` is off (never advertise renditions SRS
+ * isn't producing — they'd 404 in the player), same discipline as
+ * {@link buildHlsQualityUrls}.
+ *
+ * Unlike HLS, the map includes an explicit **"Source"** rung (the untranscoded
+ * `{key}.flv`) — HTTP-FLV has no ABR/auto tier. Pure function of the stored
+ * `flvUrl` so the rungs stay consistent with the URL persisted on the row even
+ * if `SRS_HLS_BASE` later changes.
+ *
+ * ⚠️ Only works when SRS runs the `transcode` block + `abr` vhost producing
+ * `{key}_480p.flv` / `{key}_360p.flv` (see docker/srs/aimess.conf).
+ */
+export function buildFlvQualityUrls(
+  flvUrl: string | null
+): Record<string, string> {
+  if (!flvUrl || !env.SRS_FLV_ABR) return {};
+  if (!flvUrl.endsWith(".flv")) return {};
+  const map: Record<string, string> = { Source: flvUrl };
+  for (const q of FLV_QUALITY_LADDER) {
+    map[q] = flvUrl.replace(/\.flv$/, `_${q}.flv`);
   }
   return map;
 }

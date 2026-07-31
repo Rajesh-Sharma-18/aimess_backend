@@ -75,6 +75,8 @@ export interface CheckStreamAccessResult {
   hlsUrl: string;
   hlsQualities: Record<string, string>;
   flvUrl: string;
+  /** Manual FLV rungs keyed by label ("Source" | "480p" | "360p"); {} when off */
+  flvQualities: Record<string, string>;
 }
 
 export interface DeleteCommentParams {

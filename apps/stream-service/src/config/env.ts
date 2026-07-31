@@ -88,6 +88,18 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
+  /**
+   * When true, viewers are offered manual FLV quality URLs (`<key>_480p.flv`,
+   * `<key>_360p.flv`) alongside the source `<key>.flv`. Independent of
+   * SRS_HLS_ABR_MASTER: FLV renditions need only the SRS `transcode` block +
+   * `abr` vhost (which the local Docker SRS has), NOT an HLS master playlist.
+   * Set true only where SRS is actually transcoding — otherwise the rendition
+   * URLs 404. True on local Docker SRS; production depends on that host's conf.
+   */
+  SRS_FLV_ABR: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   /** Shared secret the SRS http_hooks endpoint validates (header, required). */
   SRS_HOOK_SECRET: z.string().min(1),
   /**

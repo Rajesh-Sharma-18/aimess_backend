@@ -17,7 +17,7 @@ import type {
 } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
-import { buildHlsQualityUrls } from "./srs.service.js";
+import { buildHlsQualityUrls, buildFlvQualityUrls } from "./srs.service.js";
 import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
@@ -56,6 +56,12 @@ export interface StreamView {
    */
   hlsQualities: Record<string, string>;
   flvUrl: string | null;
+  /**
+   * Manual FLV quality URLs keyed by rung ("Source" | "480p" | "360p"). Unlike
+   * `hlsQualities` there is no auto/ABR tier — "Source" is the untranscoded
+   * feed. Empty `{}` when SRS_FLV_ABR is off or the stream has no FLV (YOUTUBE).
+   */
+  flvQualities: Record<string, string>;
   dashUrl: string | null;
   youtubeVideoId: string | null;
   viewerCount: number;
@@ -103,6 +109,7 @@ export interface StreamAccess {
   hlsUrl: string | null;
   hlsQualities: Record<string, string>;
   flvUrl: string | null;
+  flvQualities: Record<string, string>;
 }
 
 /** A ban row as exposed over REST. */
@@ -220,6 +227,7 @@ function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
     hlsUrl: s.hlsUrl,
     hlsQualities: buildHlsQualityUrls(s.hlsUrl),
     flvUrl: s.flvUrl,
+    flvQualities: buildFlvQualityUrls(s.flvUrl),
     dashUrl: s.dashUrl ?? null,
     youtubeVideoId: extractYoutubeVideoId(s.sourceUrl),
     viewerCount: s.viewerCount,
@@ -1590,6 +1598,7 @@ export class LivestreamService {
         hlsUrl: null,
         hlsQualities: {},
         flvUrl: null,
+        flvQualities: {},
       };
     }
 
@@ -1609,6 +1618,7 @@ export class LivestreamService {
         hlsUrl: null,
         hlsQualities: {},
         flvUrl: null,
+        flvQualities: {},
       };
     }
 
@@ -1638,6 +1648,7 @@ export class LivestreamService {
           hlsUrl: null,
           hlsQualities: {},
           flvUrl: null,
+          flvQualities: {},
         };
       }
     } catch (error) {
@@ -1676,6 +1687,7 @@ export class LivestreamService {
       hlsUrl: stream.hlsUrl,
       hlsQualities: buildHlsQualityUrls(stream.hlsUrl),
       flvUrl: stream.flvUrl,
+      flvQualities: buildFlvQualityUrls(stream.flvUrl),
     };
 
     // The owner can always watch their own stream.
