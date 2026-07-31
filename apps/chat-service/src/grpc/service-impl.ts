@@ -3694,7 +3694,9 @@ export function createNotificationImpl(
                 data?: Record<string, string>;
               };
               const preservedTitle =
-                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+                existingPayload.title?.trim() ||
+                req.title?.trim() ||
+                "Friend Request";
               const preservedBody =
                 existingPayload.body?.trim() || req.body?.trim() || "";
               const updated = await deps.notificationRepo.updatePayloadAndType(
@@ -3708,6 +3710,11 @@ export function createNotificationImpl(
               );
               if (updated) {
                 try {
+                  // Strip the internal relay hint before echoing to clients.
+                  const { excludeSessionId: _excl, ...clientData } = {
+                    ...(existingPayload.data ?? {}),
+                    ...data,
+                  };
                   await publishUserSocketEvent(
                     redis,
                     req.userId,
@@ -3720,6 +3727,12 @@ export function createNotificationImpl(
                       body: preservedBody,
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
+                      // Self-describing payload — FE patch merges this in, so
+                      // `resolution` / `resolutionTone` / etc. reach every device
+                      // without depending on the previously-cached data.
+                      ...(Object.keys(clientData).length > 0
+                        ? { data: clientData }
+                        : {}),
                       // No navigation on decline — the notification is terminal.
                       navigation: null,
                     }
@@ -3748,7 +3761,9 @@ export function createNotificationImpl(
                 data?: Record<string, string>;
               };
               const preservedTitle =
-                existingPayload.title?.trim() || req.title?.trim() || "Friend Request";
+                existingPayload.title?.trim() ||
+                req.title?.trim() ||
+                "Friend Request";
               const preservedBody =
                 existingPayload.body?.trim() || req.body?.trim() || "";
               const updated = await deps.notificationRepo.updatePayloadAndType(
@@ -3762,6 +3777,11 @@ export function createNotificationImpl(
               );
               if (updated) {
                 try {
+                  // Strip the internal relay hint before echoing to clients.
+                  const { excludeSessionId: _excl, ...clientData } = {
+                    ...(existingPayload.data ?? {}),
+                    ...data,
+                  };
                   await publishUserSocketEvent(
                     redis,
                     req.userId,
@@ -3774,6 +3794,13 @@ export function createNotificationImpl(
                       body: preservedBody,
                       isRead: updated.isRead,
                       createdAt: updated.createdAt.getTime(),
+                      // Self-describing payload — FE patch merges this in, so
+                      // `resolution` reaches every device without depending on
+                      // the previously-cached data (fixes cross-device sync
+                      // races where a refetch overwrote the type-only patch).
+                      ...(Object.keys(clientData).length > 0
+                        ? { data: clientData }
+                        : {}),
                       ...(parsedNavigation !== undefined
                         ? { navigation: parsedNavigation }
                         : {}),
@@ -3795,7 +3822,10 @@ export function createNotificationImpl(
             actorId: req.actorId ?? "",
             type: req.type,
             entity: entityId ? { id: entityId } : {},
-            actorSnapshot: {},
+            actorSnapshot:
+              parsedActorSnapshot && typeof parsedActorSnapshot === "object"
+                ? parsedActorSnapshot
+                : {},
             payload: {
               title: req.title ?? "",
               body: req.body ?? "",
@@ -3806,9 +3836,10 @@ export function createNotificationImpl(
           // Real-time bridge. The gateway /notify namespace relays Redis
           // `notify:<userId>` messages to the user's connected devices. Without
           // this publish a freshly-created inbox row is invisible until the
-          // client reconnects or manually refetches — and because push.service
-          // suppresses FCM for users with an active socket, an ONLINE recipient
-          // would otherwise receive nothing at all. Best-effort: a relay error
+          // client reconnects or manually refetches (push.service sends FCM
+          // unconditionally regardless of socket state — it does NOT suppress
+          // for online users, so this relay is what keeps the bell/badge live
+          // without waiting on a redundant tray notification). Best-effort: a relay error
           // must never fail the inbox write (the row is the source of truth).
           try {
             const unreadCount = await deps.notificationRepo.getUnreadCount(

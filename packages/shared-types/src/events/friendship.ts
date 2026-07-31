@@ -39,6 +39,8 @@ export type FriendRequestedPayload = {
   addresseeId: string;
   /** Display name of the requester — lets the addressee's push/inbox copy say "X sent you a friend request." */
   requesterName?: string;
+  /** Resolved, client-viewable avatar URL of the requester — for the push tray/actorSnapshot. */
+  requesterAvatarUrl?: string | null;
   createdAt: string;
 };
 
@@ -50,6 +52,10 @@ export type FriendAcceptedPayload = {
   requesterName?: string;
   /** Display name of the addressee (accepter) — the requester's "X accepted your friend request" copy. */
   addresseeName?: string;
+  /** Resolved avatar URL of the requester. */
+  requesterAvatarUrl?: string | null;
+  /** Resolved avatar URL of the addressee (accepter). */
+  addresseeAvatarUrl?: string | null;
   acceptedAt: string;
 };
 
@@ -61,6 +67,10 @@ export type FriendRejectedPayload = {
   addresseeName?: string;
   /** Display name of the requester — the addressee's own "I have declined X" inbox copy. */
   requesterName?: string;
+  /** Resolved avatar URL of the requester. */
+  requesterAvatarUrl?: string | null;
+  /** Resolved avatar URL of the addressee (rejecter). */
+  addresseeAvatarUrl?: string | null;
   rejectedAt: string;
 };
 
@@ -70,6 +80,8 @@ export type FriendCancelledPayload = {
   addresseeId: string;
   /** Display name of the requester (canceller) — the addressee's "X cancelled their friend request" copy. */
   requesterName?: string;
+  /** Resolved avatar URL of the requester (canceller). */
+  requesterAvatarUrl?: string | null;
   cancelledAt: string;
 };
 
