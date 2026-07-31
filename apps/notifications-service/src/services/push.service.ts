@@ -69,6 +69,7 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   FriendshipEvents.FRIEND_REQUESTED,
   FriendshipEvents.FRIEND_ACCEPTED,
   FriendshipEvents.FRIEND_REJECTED,
+  FriendshipEvents.FRIEND_CANCELLED,
   CommunityEvents.MEMBER_BANNED,
   // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
   // missed call is exactly the kind of thing a user wants to find later.

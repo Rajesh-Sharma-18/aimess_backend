@@ -192,3 +192,81 @@ describe("POST /api/v1/users/usernames/validate", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("GET /api/v1/users/usernames/validate", () => {
+  beforeEach(() => {
+    repo.findByUsername.mockResolvedValue(null);
+  });
+
+  it("reports an available username → 200 available:true", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query({ username: "freshhandle" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.available).toBe(true);
+    expect(res.body.data.username).toBe("freshhandle");
+  });
+
+  it("reports a taken username (owned by someone else) → 200 available:false", async () => {
+    repo.findByUsername.mockResolvedValue({ userId: "another-user" });
+
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query({ username: "takenhandle" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.available).toBe(false);
+  });
+
+  it("treats the caller's own current username as available", async () => {
+    repo.findByUsername.mockResolvedValue({
+      userId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query({ username: "myhandle" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.available).toBe(true);
+  });
+
+  it("normalizes uppercase and trims whitespace to canonical lowercase", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query({ username: "  MixedCase  " });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.username).toBe("mixedcase");
+  });
+
+  it.each([
+    ["missing username", {}],
+    ["too short", { username: "ab" }],
+    ["too long", { username: "a".repeat(33) }],
+    ["illegal characters", { username: "bad name!" }],
+  ])("returns 400 on validation failure: %s", async (_label, query) => {
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .set(auth())
+      .query(query);
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/usernames/validate")
+      .query({ username: "freshhandle" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.success).toBe(false);
+  });
+});

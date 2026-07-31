@@ -722,6 +722,7 @@ export function registerStreamNamespace(
               thumbnail: access.thumbnail || null,
               creatorId: access.creatorId,
               hlsUrl: access.hlsUrl || null,
+              hlsQualities: access.hlsQualities,
               flvUrl: access.flvUrl || null,
             },
           });

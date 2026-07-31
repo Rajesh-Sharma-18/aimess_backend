@@ -106,16 +106,32 @@ function displayName(p: PeerBrief): string {
   return `${p.firstName} ${p.lastName}`.trim() || p.username;
 }
 
+/** Resolves a stored avatar object key to a client-viewable URL (null on any failure/absence). */
+async function resolveAvatarUrl(
+  stored: string | null | undefined
+): Promise<string | null> {
+  const view = await avatarService
+    .resolveViewUrlForClient(stored ?? null)
+    .catch(() => null);
+  return view?.url ?? null;
+}
+
 /**
- * Loads both parties' display names for a friendship notification payload.
+ * Loads both parties' display names + resolved avatar URLs for a friendship
+ * notification payload (push actorSnapshot + socket peer brief).
  * `acceptRequest`/`rejectRequest`/`cancelRequest` don't otherwise touch
  * profiles, so this is the one extra query those paths pay — `sendRequest`
- * already has both profiles loaded and computes names inline instead.
+ * already has both profiles loaded and computes this inline instead.
  */
-async function loadFriendshipNames(
+async function loadFriendshipParties(
   requesterId: string,
   addresseeId: string
-): Promise<{ requesterName: string; addresseeName: string }> {
+): Promise<{
+  requesterName: string;
+  addresseeName: string;
+  requesterAvatarUrl: string | null;
+  addresseeAvatarUrl: string | null;
+}> {
   const profiles = await userProfileRepository.findManyByUserIds([
     requesterId,
     addresseeId,
@@ -125,9 +141,15 @@ async function loadFriendshipNames(
     const p = byId.get(userId);
     return p ? displayName(toPeerBrief(p)) : "Someone";
   };
+  const [requesterAvatarUrl, addresseeAvatarUrl] = await Promise.all([
+    resolveAvatarUrl(byId.get(requesterId)?.avatarUrl),
+    resolveAvatarUrl(byId.get(addresseeId)?.avatarUrl),
+  ]);
   return {
     requesterName: nameFor(requesterId),
     addresseeName: nameFor(addresseeId),
+    requesterAvatarUrl,
+    addresseeAvatarUrl,
   };
 }
 
@@ -144,7 +166,8 @@ function friendshipEventData(
   row: FriendshipRow,
   viewerId: string,
   peerId: string,
-  peer?: PeerBrief
+  peer?: PeerBrief,
+  peerAvatarUrl?: string | null
 ) {
   const view = buildFriendshipView(viewerId, row);
   return {
@@ -153,7 +176,9 @@ function friendshipEventData(
     // Alias for the User Search screen's merge-by-id contract (same value
     // as `peerId` — the affected user id from this recipient's viewpoint).
     targetUserId: peerId,
-    ...(peer ? { peer: toPeerBrief(peer) } : {}),
+    ...(peer
+      ? { peer: { ...toPeerBrief(peer), avatarUrl: peerAvatarUrl ?? null } }
+      : {}),
     ...view,
     // Normalized FRIEND/PENDING/NONE shape the search screen merges by
     // `targetUserId` — see `toSearchRelationship` for why this differs from
@@ -165,20 +190,36 @@ function friendshipEventData(
 }
 
 /** Emit the new-request pair: distinct event name per side, same friendship row. */
-function emitRequestCreated(
+async function emitRequestCreated(
   row: FriendshipRow,
-  requesterProfile: PeerBrief,
-  addresseeProfile: PeerBrief
-): void {
+  requesterProfile: PeerBrief & { avatarUrl?: string | null },
+  addresseeProfile: PeerBrief & { avatarUrl?: string | null }
+): Promise<void> {
+  const [requesterAvatarUrl, addresseeAvatarUrl] = await Promise.all([
+    resolveAvatarUrl(requesterProfile.avatarUrl),
+    resolveAvatarUrl(addresseeProfile.avatarUrl),
+  ]);
   emitFriendEventSafe(
     row.requesterId,
     FriendSocketEvents.REQUEST_SENT,
-    friendshipEventData(row, row.requesterId, row.addresseeId, addresseeProfile)
+    friendshipEventData(
+      row,
+      row.requesterId,
+      row.addresseeId,
+      addresseeProfile,
+      addresseeAvatarUrl
+    )
   );
   emitFriendEventSafe(
     row.addresseeId,
     FriendSocketEvents.REQUEST_RECEIVED,
-    friendshipEventData(row, row.addresseeId, row.requesterId, requesterProfile)
+    friendshipEventData(
+      row,
+      row.addresseeId,
+      row.requesterId,
+      requesterProfile,
+      requesterAvatarUrl
+    )
   );
 }
 
@@ -452,6 +493,12 @@ export const friendshipService = {
           addresseeId: friendship.addresseeId,
           requesterName: displayName(toPeerBrief(requesterProfile)),
           addresseeName: displayName(toPeerBrief(addresseeProfile)),
+          requesterAvatarUrl: await resolveAvatarUrl(
+            requesterProfile.avatarUrl
+          ),
+          addresseeAvatarUrl: await resolveAvatarUrl(
+            addresseeProfile.avatarUrl
+          ),
           acceptedAt: friendship.acceptedAt!.toISOString(),
         });
         publishFriendshipCreatedSafe(
@@ -474,9 +521,10 @@ export const friendshipService = {
         requesterId,
         addresseeId,
         requesterName: displayName(toPeerBrief(requesterProfile)),
+        requesterAvatarUrl: await resolveAvatarUrl(requesterProfile.avatarUrl),
         createdAt: updated.createdAt.toISOString(),
       });
-      emitRequestCreated(updated, requesterProfile, addresseeProfile);
+      void emitRequestCreated(updated, requesterProfile, addresseeProfile);
       void emitConversationPendingFriendRequest(updated, requesterProfile);
       return updated;
     }
@@ -490,9 +538,10 @@ export const friendshipService = {
       requesterId,
       addresseeId,
       requesterName: displayName(toPeerBrief(requesterProfile)),
+      requesterAvatarUrl: await resolveAvatarUrl(requesterProfile.avatarUrl),
       createdAt: friendship.createdAt.toISOString(),
     });
-    emitRequestCreated(friendship, requesterProfile, addresseeProfile);
+    void emitRequestCreated(friendship, requesterProfile, addresseeProfile);
     void emitConversationPendingFriendRequest(friendship, requesterProfile);
     return friendship;
   },
@@ -521,7 +570,12 @@ export const friendshipService = {
       userCache.invalidateProfile(friendship.addresseeId),
     ]);
 
-    const { requesterName, addresseeName } = await loadFriendshipNames(
+    const {
+      requesterName,
+      addresseeName,
+      requesterAvatarUrl,
+      addresseeAvatarUrl,
+    } = await loadFriendshipParties(
       friendship.requesterId,
       friendship.addresseeId
     );
@@ -531,6 +585,8 @@ export const friendshipService = {
       addresseeId: friendship.addresseeId,
       requesterName,
       addresseeName,
+      requesterAvatarUrl,
+      addresseeAvatarUrl,
       acceptedAt: updated.acceptedAt!.toISOString(),
     });
     publishFriendshipCreatedSafe(
@@ -557,7 +613,12 @@ export const friendshipService = {
     }
 
     const updated = await friendshipRepository.reject(friendshipId);
-    const { requesterName, addresseeName } = await loadFriendshipNames(
+    const {
+      requesterName,
+      addresseeName,
+      requesterAvatarUrl,
+      addresseeAvatarUrl,
+    } = await loadFriendshipParties(
       friendship.requesterId,
       friendship.addresseeId
     );
@@ -567,6 +628,8 @@ export const friendshipService = {
       addresseeId: friendship.addresseeId,
       addresseeName,
       requesterName,
+      requesterAvatarUrl,
+      addresseeAvatarUrl,
       rejectedAt: updated.rejectedAt!.toISOString(),
     });
     emitToPair(updated, FriendSocketEvents.REJECTED);
@@ -588,7 +651,7 @@ export const friendshipService = {
     }
 
     const updated = await friendshipRepository.cancel(friendshipId);
-    const { requesterName } = await loadFriendshipNames(
+    const { requesterName, requesterAvatarUrl } = await loadFriendshipParties(
       friendship.requesterId,
       friendship.addresseeId
     );
@@ -597,6 +660,7 @@ export const friendshipService = {
       requesterId: friendship.requesterId,
       addresseeId: friendship.addresseeId,
       requesterName,
+      requesterAvatarUrl,
       cancelledAt: updated.cancelledAt!.toISOString(),
     });
     emitToPair(updated, FriendSocketEvents.REQUEST_CANCELLED);
@@ -1072,14 +1136,24 @@ export const friendshipService = {
 
     await friendshipRepository.deleteBlock(blockerId, blockedId);
 
-    // Restore chat-service's read-model to match the real relationship —
-    // usually cleared (block already unfriended on the way in); ACTIVE only
-    // covers the rare case where they re-friended while still blocked.
+    // If the other party independently blocked us, their block survives —
+    // re-publish it so the chat-service read-model (wiped by friendship.deleted)
+    // gets re-established. Without this, the reverse block's call + message
+    // guards silently disappear.
+    const reverseBlock = await friendshipRepository.findBlock(
+      blockedId,
+      blockerId
+    );
+
     const friendship = await friendshipRepository.findByPair(
       blockerId,
       blockedId
     );
-    if (friendship?.status === "ACCEPTED") {
+
+    if (reverseBlock) {
+      publishFriendshipBlockedSafe(blockedId, blockerId);
+      publishFriendshipBlockedSafe(blockerId, blockedId);
+    } else if (friendship?.status === "ACCEPTED") {
       publishFriendshipCreatedSafe(
         friendship.requesterId,
         friendship.addresseeId

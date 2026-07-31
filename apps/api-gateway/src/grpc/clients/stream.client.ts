@@ -73,6 +73,7 @@ export interface CheckStreamAccessResult {
   creatorId: string;
   /** "" if none (e.g. YOUTUBE source type) */
   hlsUrl: string;
+  hlsQualities: Record<string, string>;
   flvUrl: string;
 }
 

@@ -23,6 +23,14 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_REQUESTED: {
       const p = data as FriendRequestedPayload;
       const deepLink = buildDeepLink("user", p.requesterId);
+      // Actor (requester) snapshot — client-side notification UI (Android
+      // largeIcon, web push, in-app toast) reads this to show the requester's
+      // avatar + name, mirroring the pattern established in community.consumer.ts.
+      const actorSnapshot = {
+        userId: p.requesterId,
+        displayName: p.requesterName,
+        avatarUrl: p.requesterAvatarUrl,
+      };
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
@@ -37,6 +45,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           // open the pending row directly without a name translation.
           friendRequestId: p.friendshipId,
           requesterId: p.requesterId,
+          actorSnapshot: JSON.stringify(actorSnapshot),
           deepLink,
           navigation: JSON.stringify({
             // Opens the pending-conversation screen (Accept/Reject only),
@@ -68,6 +77,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           addresseeId: p.addresseeId,
           deepLink: deepLinkForRequester,
           resolution: `${p.addresseeName?.trim() || "Someone"} accepted your friend request.`,
+          actorSnapshot: JSON.stringify({
+            userId: p.addresseeId,
+            displayName: p.addresseeName,
+            avatarUrl: p.addresseeAvatarUrl,
+          }),
           navigation: JSON.stringify({
             screen: "USER_PROFILE",
             userId: p.addresseeId,
@@ -90,6 +104,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           requesterId: p.requesterId,
           deepLink: deepLinkForAddressee,
           resolution: "You are now friends!",
+          actorSnapshot: JSON.stringify({
+            userId: p.requesterId,
+            displayName: p.requesterName,
+            avatarUrl: p.requesterAvatarUrl,
+          }),
           navigation: JSON.stringify({
             screen: "USER_PROFILE",
             userId: p.requesterId,
@@ -116,6 +135,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           deepLink,
           resolution: "Declined your friend request",
           resolutionTone: "danger",
+          actorSnapshot: JSON.stringify({
+            userId: p.addresseeId,
+            displayName: p.addresseeName,
+            avatarUrl: p.addresseeAvatarUrl,
+          }),
           navigation: JSON.stringify({
             screen: "FRIEND_REQUESTS",
             userId: p.addresseeId,
@@ -137,6 +161,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           requesterId: p.requesterId,
           resolution: "I have declined the friend request",
           resolutionTone: "danger",
+          actorSnapshot: JSON.stringify({
+            userId: p.requesterId,
+            displayName: p.requesterName,
+            avatarUrl: p.requesterAvatarUrl,
+          }),
         },
       });
       break;
@@ -156,6 +185,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink,
+          // Terminal — the gRPC handler updates the addressee's existing
+          // friend.requested row in place and drops Accept/Reject once it
+          // sees this resolution (mirrors the reject/accept paths).
+          resolution: "The sender cancelled this friend request",
+          resolutionTone: "danger",
+          actorSnapshot: JSON.stringify({
+            userId: p.requesterId,
+            displayName: p.requesterName,
+            avatarUrl: p.requesterAvatarUrl,
+          }),
           navigation: JSON.stringify({
             screen: "FRIEND_REQUESTS",
             userId: p.requesterId,

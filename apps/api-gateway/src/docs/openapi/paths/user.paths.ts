@@ -287,6 +287,80 @@ export const userPaths = {
     },
   },
   "/users/usernames/validate": {
+    get: {
+      tags: ["Users"],
+      summary: "Check username availability (query param)",
+      operationId: "validateUsernameQuery",
+      description:
+        "Requires access token. Same behavior as the POST variant, exposed as GET for client-side debounced availability checks. Returns whether the username is available (your current username counts as available). Usernames are stored lowercase; checks are case-insensitive.\n\n" +
+        "**Validation rules:** 3–32 characters, alphanumeric + underscore only (`^[a-zA-Z0-9_]+$`).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "username",
+          in: "query",
+          required: true,
+          schema: { type: "string", minLength: 3, maxLength: 32 },
+          description: "Username to check.",
+          example: "john_doe_99",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Availability result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/ValidateUsernameResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+              examples: {
+                available: {
+                  summary: "Username available",
+                  value: {
+                    success: true,
+                    message: "Username available",
+                    data: { username: "john_doe_99", available: true },
+                  },
+                },
+                taken: {
+                  summary: "Username taken",
+                  value: {
+                    success: true,
+                    message: "Username taken",
+                    data: { username: "john_doe_99", available: false },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid username format",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "Username must be 3–32 characters (letters, digits, underscores only)",
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
     post: {
       tags: ["Users"],
       summary: "Check username availability",

@@ -17,6 +17,7 @@ import type {
 } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
+import { buildHlsQualityUrls } from "./srs.service.js";
 import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
@@ -46,6 +47,14 @@ export interface StreamView {
   status: string;
   commentStatus: boolean;
   hlsUrl: string | null;
+  /**
+   * ABR variant playlists keyed by rendition ("1080p" | "720p" | "480p" | "360p").
+   * `hlsUrl` is the master playlist; players that just want auto-switching should
+   * load it directly. This map is for UIs that expose a manual quality picker.
+   * Empty `{}` when the stream has no ABR ladder (YOUTUBE, URL mode with no
+   * transcode, or a local dev environment where SRS_HLS_ABR_MASTER=false).
+   */
+  hlsQualities: Record<string, string>;
   flvUrl: string | null;
   dashUrl: string | null;
   youtubeVideoId: string | null;
@@ -92,6 +101,7 @@ export interface StreamAccess {
   thumbnail: string | null;
   creatorId: string;
   hlsUrl: string | null;
+  hlsQualities: Record<string, string>;
   flvUrl: string | null;
 }
 
@@ -208,6 +218,7 @@ function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
     status: s.status,
     commentStatus: s.commentStatus,
     hlsUrl: s.hlsUrl,
+    hlsQualities: buildHlsQualityUrls(s.hlsUrl),
     flvUrl: s.flvUrl,
     dashUrl: s.dashUrl ?? null,
     youtubeVideoId: extractYoutubeVideoId(s.sourceUrl),
@@ -1577,6 +1588,7 @@ export class LivestreamService {
         thumbnail: null,
         creatorId: "",
         hlsUrl: null,
+        hlsQualities: {},
         flvUrl: null,
       };
     }
@@ -1595,6 +1607,7 @@ export class LivestreamService {
         thumbnail: null,
         creatorId: "",
         hlsUrl: null,
+        hlsQualities: {},
         flvUrl: null,
       };
     }
@@ -1623,6 +1636,7 @@ export class LivestreamService {
           thumbnail: null,
           creatorId: "",
           hlsUrl: null,
+          hlsQualities: {},
           flvUrl: null,
         };
       }
@@ -1660,6 +1674,7 @@ export class LivestreamService {
       thumbnail: stream.thumbnail,
       creatorId: stream.creatorId,
       hlsUrl: stream.hlsUrl,
+      hlsQualities: buildHlsQualityUrls(stream.hlsUrl),
       flvUrl: stream.flvUrl,
     };
 
