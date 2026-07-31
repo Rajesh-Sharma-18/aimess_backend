@@ -25,5 +25,10 @@ export const validateUsernameSchema = z.object({
   username: usernameSchema,
 });
 
+export const validateUsernameQuerySchema = z.object({
+  username: usernameSchema,
+});
+
 export type GenerateUsernameInput = z.infer<typeof generateUsernameSchema>;
 export type ValidateUsernameInput = z.infer<typeof validateUsernameSchema>;
+export type ValidateUsernameQuery = z.infer<typeof validateUsernameQuerySchema>;
