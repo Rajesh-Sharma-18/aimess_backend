@@ -1626,8 +1626,7 @@ export class ChatMessageOrchestrator {
     // still yields a real sender name for the group/private list preview.
     const resolvedName = resolveDisplayName(snap);
     return {
-      senderName:
-        senderName ?? (resolvedName === "Unknown User" ? "" : resolvedName),
+      senderName: senderName ?? resolvedName,
       senderAvatar: senderAvatar ?? ((snap?.avatar as string) || ""),
     };
   }

@@ -1911,7 +1911,7 @@ export class PrivateMessageService {
           : null;
         const memberCount = Number(sd.memberCount ?? 0);
         const token = sd.token ? String(sd.token) : null;
-        const deepLink = String(sd.inviteUrl ?? "");
+        const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
 
         const room = groupId
           ? await this.groupRoomRepo.findActiveByRoomId(groupId)

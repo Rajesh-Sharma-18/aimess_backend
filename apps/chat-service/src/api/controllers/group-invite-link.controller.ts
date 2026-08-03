@@ -49,13 +49,12 @@ export class GroupInviteLinkController {
   bulkSend = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const { userIds, token, inviteUrl } = req.body;
+    const { userIds, token } = req.body;
     const result = await this.service.bulkSend({
       roomId,
       callerId: userId,
       userIds,
       token,
-      inviteUrl,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
