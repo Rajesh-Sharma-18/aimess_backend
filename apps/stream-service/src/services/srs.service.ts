@@ -21,12 +21,11 @@ export interface PlaybackUrls {
  * the strings here are literal URL segments (`{key}_480p.m3u8`, etc.) and only
  * work if SRS is actually producing those variant playlists.
  *
- * Production (fable's ABR setup) produces exactly two renditions: 480p @ 800k
- * and 360p @ 400k, plus source passthrough as the top tier. Never add 1080p /
- * 720p here without confirming the server transcode block produces them —
- * otherwise every viewer request for those URLs 404s.
+ * Target ladder: 1080p, 720p, 480p, 360p — produced by standalone FFmpeg workers
+ * on the server (not SRS in-process transcode). Must match what fable's workers
+ * actually push to I-03; missing rungs 404 in the player.
  */
-export const HLS_QUALITY_LADDER = ["480p", "360p"] as const;
+export const HLS_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
 export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
 
 /**
@@ -36,7 +35,7 @@ export type HlsQuality = (typeof HLS_QUALITY_LADDER)[number];
  * no ABR/auto tier for HTTP-FLV — the source `{key}.flv` is offered as an
  * explicit "Source" rung instead. Must match the srs.conf `transcode` engines.
  */
-export const FLV_QUALITY_LADDER = ["480p", "360p"] as const;
+export const FLV_QUALITY_LADDER = ["1080p", "720p", "480p", "360p"] as const;
 export type FlvQuality = (typeof FLV_QUALITY_LADDER)[number];
 
 /**
