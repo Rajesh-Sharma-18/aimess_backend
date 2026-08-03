@@ -106,22 +106,26 @@ interface MediaLimitViolation {
   message: string;
 }
 
+type FileLimit = { maxBytes: number; tooLargeCode: string };
+
+const DOCUMENT_LIMIT: FileLimit = {
+  maxBytes: MEDIA_LIMITS.DOCUMENT.maxBytes,
+  tooLargeCode: "CHAT_DOCUMENT_TOO_LARGE",
+};
+
 /**
- * Resolve the byte cap + error code for a file inside the GENERIC bucket
- * (DOCUMENT / CUSTOM message types). A generic "attach a file" picker lets a
- * user pick an image/video/audio file just as easily as an actual document —
- * validating every file in that bucket against the flat document cap would
- * wrongly reject e.g. a 40 MB video (under the 100 MB video cap) at the 25 MB
- * document cap. So each file here is reclassified by its OWN detected MIME
- * (never by "came from the file picker") and checked against ITS type's real
- * limit; only a file whose MIME doesn't resolve to image/video/audio falls
- * through to the document cap.
+ * Resolve the byte cap + error code for a file by its OWN detected MIME,
+ * falling back to `fallback` when the mime is missing/empty or doesn't
+ * resolve to a known media type. `mime` on the wire defaults to `""` (see the
+ * send validators' `z.string().default("")`), never `undefined`, so this must
+ * treat falsy the same as unresolvable — it is NOT evidence the file is a
+ * DOCUMENT.
  */
-function resolveGenericFileLimit(mime: string | undefined): {
-  maxBytes: number;
-  tooLargeCode: string;
-} {
-  const detected = mime ? contentTypeFromMime(mime) : "DOCUMENT";
+function resolveFileLimit(
+  mime: string | undefined,
+  fallback: FileLimit
+): FileLimit {
+  const detected = mime ? contentTypeFromMime(mime) : undefined;
   switch (detected) {
     case "IMAGE":
       return {
@@ -143,13 +147,26 @@ function resolveGenericFileLimit(mime: string | undefined): {
         maxBytes: MEDIA_LIMITS.GIF.maxBytes,
         tooLargeCode: "CHAT_FILE_TOO_LARGE",
       };
-    case "DOCUMENT":
     default:
-      return {
-        maxBytes: MEDIA_LIMITS.DOCUMENT.maxBytes,
-        tooLargeCode: "CHAT_DOCUMENT_TOO_LARGE",
-      };
+      return fallback;
   }
+}
+
+/**
+ * Resolve the byte cap + error code for a file inside the GENERIC bucket
+ * (DOCUMENT / CUSTOM message types). A generic "attach a file" picker lets a
+ * user pick an image/video/audio file just as easily as an actual document —
+ * validating every file in that bucket against the flat document cap would
+ * wrongly reject e.g. a 40 MB video (under the 100 MB video cap) at the 25 MB
+ * document cap. So each file here is reclassified by its OWN detected MIME
+ * (never by "came from the file picker") and checked against ITS type's real
+ * limit; only a file whose MIME doesn't resolve to image/video/audio falls
+ * through to the document cap — the correct fallback for THIS bucket, since
+ * an unresolvable file picked via the generic "attach a file" flow really is
+ * most likely a document.
+ */
+function resolveGenericFileLimit(mime: string | undefined): FileLimit {
+  return resolveFileLimit(mime, DOCUMENT_LIMIT);
 }
 
 const TOO_LARGE_MESSAGE: Record<string, string> = {
@@ -174,6 +191,16 @@ function findMediaLimitViolations(
   const violations: MediaLimitViolation[] = [];
 
   switch (type) {
+    // IMAGE and VIDEO are also the two "gallery" picker types (a single
+    // Photos attach can mix images and videos into one album send — see
+    // splitDirectMediaAlbum). The top-level messageType is derived from the
+    // batch as a whole (IMAGE whenever it contains any image), so checking
+    // every file against ONE fixed bucket would validate a video against the
+    // image cap (or vice versa) and reject an otherwise-valid mixed album.
+    // Resolve each file by its OWN mime — same approach as the GIF/DOCUMENT/
+    // CUSTOM bucket below — so a video in an "IMAGE" batch is still checked
+    // against the video cap, and an image in a "VIDEO" batch against the
+    // image cap.
     case "IMAGE": {
       if (list.length > MEDIA_LIMITS.IMAGE.maxCount) {
         violations.push({
@@ -182,10 +209,25 @@ function findMediaLimitViolations(
         });
       }
       for (const f of list) {
-        if ((f.size ?? 0) > MEDIA_LIMITS.IMAGE.maxBytes) {
+        // Falls back to the IMAGE cap (not DOCUMENT) when mime is empty/
+        // unresolvable — matches the pre-fix behavior for a plain image send.
+        const { maxBytes, tooLargeCode } = resolveFileLimit(f.mime, {
+          maxBytes: MEDIA_LIMITS.IMAGE.maxBytes,
+          tooLargeCode: "CHAT_IMAGE_TOO_LARGE",
+        });
+        if ((f.size ?? 0) > maxBytes) {
           violations.push({
-            code: "CHAT_IMAGE_TOO_LARGE",
-            message: TOO_LARGE_MESSAGE.CHAT_IMAGE_TOO_LARGE!,
+            code: tooLargeCode,
+            message: TOO_LARGE_MESSAGE[tooLargeCode]!,
+          });
+        }
+        if (
+          contentTypeFromMime(f.mime ?? "") === "VIDEO" &&
+          (f.durationMs ?? 0) > MEDIA_LIMITS.VIDEO.maxDurationMs
+        ) {
+          violations.push({
+            code: "CHAT_VIDEO_TOO_LONG",
+            message: "Video exceeds the maximum allowed duration",
           });
         }
       }
@@ -193,13 +235,22 @@ function findMediaLimitViolations(
     }
     case "VIDEO": {
       for (const f of list) {
-        if ((f.size ?? 0) > MEDIA_LIMITS.VIDEO.maxBytes) {
+        // Falls back to the VIDEO cap (not DOCUMENT) when mime is empty/
+        // unresolvable — matches the pre-fix behavior for a plain video send.
+        const { maxBytes, tooLargeCode } = resolveFileLimit(f.mime, {
+          maxBytes: MEDIA_LIMITS.VIDEO.maxBytes,
+          tooLargeCode: "CHAT_VIDEO_TOO_LARGE",
+        });
+        if ((f.size ?? 0) > maxBytes) {
           violations.push({
-            code: "CHAT_VIDEO_TOO_LARGE",
-            message: TOO_LARGE_MESSAGE.CHAT_VIDEO_TOO_LARGE!,
+            code: tooLargeCode,
+            message: TOO_LARGE_MESSAGE[tooLargeCode]!,
           });
         }
-        if ((f.durationMs ?? 0) > MEDIA_LIMITS.VIDEO.maxDurationMs) {
+        if (
+          contentTypeFromMime(f.mime ?? "") === "VIDEO" &&
+          (f.durationMs ?? 0) > MEDIA_LIMITS.VIDEO.maxDurationMs
+        ) {
           violations.push({
             code: "CHAT_VIDEO_TOO_LONG",
             message: "Video exceeds the maximum allowed duration",

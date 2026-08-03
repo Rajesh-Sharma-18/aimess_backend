@@ -126,6 +126,60 @@ describe("media-limits — detected-type validation for the generic (DOCUMENT/CU
   });
 });
 
+describe("media-limits — mixed image+video album (splitDirectMediaAlbum batch)", () => {
+  // Root cause: the frontend derives ONE top-level messageType for the whole
+  // gallery-picker batch (IMAGE whenever it contains any image — see
+  // useGroupTranscript.ts's sendMedia), so a batch with both images and
+  // videos is validated as "IMAGE" — every file in it used to be checked
+  // against the flat 25 MB image cap, rejecting a perfectly valid 40 MB video
+  // that the frontend's own picker (100 MB video cap) accepted.
+  it("IMAGE-typed batch: a video file within it is checked against the VIDEO cap, not the image cap", () => {
+    const files = [
+      { size: 5 * MB, mime: "image/jpeg" },
+      { size: 40 * MB, mime: "video/mp4" }, // over 25 MB image cap, under 100 MB video cap
+    ];
+    expect(thrownCode("IMAGE", files)).toBeNull();
+  });
+
+  it("IMAGE-typed batch: the video is still rejected once it exceeds the VIDEO cap", () => {
+    const files = [
+      { size: 5 * MB, mime: "image/jpeg" },
+      { size: 150 * MB, mime: "video/mp4" },
+    ];
+    expect(thrownCode("IMAGE", files)).toBe("CHAT_VIDEO_TOO_LARGE");
+  });
+
+  it("VIDEO-typed batch: an image file within it is checked against the IMAGE cap, not the video cap", () => {
+    const files = [
+      { size: 40 * MB, mime: "video/mp4" },
+      { size: 20 * MB, mime: "image/jpeg" }, // over document-tier caps but under the 25 MB image cap
+    ];
+    expect(thrownCode("VIDEO", files)).toBeNull();
+  });
+
+  it("VIDEO-typed batch: the image is still rejected once it exceeds the IMAGE cap", () => {
+    const files = [
+      { size: 40 * MB, mime: "video/mp4" },
+      { size: 26 * MB, mime: "image/jpeg" },
+    ];
+    expect(thrownCode("VIDEO", files)).toBe("CHAT_IMAGE_TOO_LARGE");
+  });
+
+  it("IMAGE-typed file with empty mime (default wire shape) still uses the IMAGE cap, not DOCUMENT", () => {
+    // mime defaults to "" on the wire (z.string().default("")), never undefined —
+    // must not be misread as "this is a document".
+    expect(thrownCode("IMAGE", [{ size: 25 * MB + 1, mime: "" }])).toBe(
+      "CHAT_IMAGE_TOO_LARGE"
+    );
+  });
+
+  it("VIDEO-typed file with empty mime still uses the VIDEO cap, not DOCUMENT", () => {
+    expect(thrownCode("VIDEO", [{ size: 100 * MB + 1, mime: "" }])).toBe(
+      "CHAT_VIDEO_TOO_LARGE"
+    );
+  });
+});
+
 describe("enforceMediaLimits — Zod superRefine mirrors the same caps", () => {
   it("reports the video-cap violation for a video sent under DOCUMENT, not a document-cap message", () => {
     const issues = collectIssues("DOCUMENT", [
