@@ -83,6 +83,9 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     // Live ring — iOS VOIP tokens get an APNs VoIP push (required for reliable
     // wake); see PushInput.allowVoip docs for why this must stay opt-in.
     allowVoip: true,
+    // iOS shows "Accept" / "Decline" action buttons when the category matches a
+    // registered UNNotificationCategory. iOS side must register "INCOMING_CALL".
+    apnsCategory: "INCOMING_CALL",
     // No `notification` block: the client renders its own full-screen CallStyle
     // ring. Sending one makes Android auto-post a SECOND tray notification
     // beside it, and a notification-carrying message does not reliably reach

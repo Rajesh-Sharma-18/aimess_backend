@@ -23,6 +23,12 @@ interface SendPushParams {
    * notification — the app is woken to own the UI (e.g. full-screen call intent).
    */
   dataOnly?: boolean;
+  /**
+   * APNs notification category identifier. iOS uses this to look up registered
+   * UNNotificationCategory actions (e.g. Accept / Decline buttons on a call
+   * notification). No-op on Android and data-only pushes.
+   */
+  apnsCategory?: string;
 }
 
 /** FCM error codes that mean the token is permanently dead → prune it. */
@@ -49,6 +55,7 @@ export async function sendPush({
   ttl = 86_400,
   priority = "normal",
   dataOnly = false,
+  apnsCategory,
 }: SendPushParams): Promise<SendPushResult> {
   // Merge deepLink into the data map so native clients can read it.
   const enrichedData: Record<string, string> = {
@@ -81,7 +88,12 @@ export async function sendPush({
           "apns-push-type": dataOnly ? "background" : "alert",
         },
         payload: {
-          aps: dataOnly ? { contentAvailable: true } : { sound: "default" },
+          aps: dataOnly
+            ? { contentAvailable: true }
+            : {
+                sound: "default",
+                ...(apnsCategory ? { category: apnsCategory } : {}),
+              },
         },
       },
 

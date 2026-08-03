@@ -172,6 +172,12 @@ export interface PushInput {
    * call, chat message, etc.).
    */
   allowVoip?: boolean;
+  /**
+   * APNs notification category — iOS maps this to registered UNNotificationCategory
+   * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
+   * Ignored on Android and data-only pushes.
+   */
+  apnsCategory?: string;
 }
 
 /**
@@ -204,6 +210,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     skipInbox = false,
     dataOnly = false,
     allowVoip = false,
+    apnsCategory,
   } = input;
 
   let body = input.body;
@@ -374,6 +381,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               ttl,
               priority,
               dataOnly: effectiveDataOnly,
+              apnsCategory,
             });
       if (result.invalidToken) {
         try {
