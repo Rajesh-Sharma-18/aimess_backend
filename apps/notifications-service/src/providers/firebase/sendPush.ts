@@ -76,7 +76,7 @@ export async function sendPush({
       apns: {
         headers: {
           "apns-priority": apnsPriority,
-          ...(dataOnly ? { "apns-push-type": "background" } : {}),
+          "apns-push-type": dataOnly ? "background" : "alert",
         },
         payload: {
           aps: dataOnly ? { contentAvailable: true } : { sound: "default" },
