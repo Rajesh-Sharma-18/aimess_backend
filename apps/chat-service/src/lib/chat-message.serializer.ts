@@ -472,6 +472,78 @@ export function buildCommunityInvitationAction(params: {
   };
 }
 
+export type GroupInvitationStatus =
+  | "ACTIVE"
+  | "EXPIRED"
+  | "REVOKED"
+  | "DELETED";
+
+export interface GroupInvitationSystemAction {
+  type: "GROUP_INVITATION";
+  groupId: string;
+  groupName: string;
+  groupAvatarUrl?: string | null;
+  memberCount?: number;
+  inviteToken?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: GroupInvitationStatus;
+  canOpen: boolean;
+}
+
+/** True for a stored SYSTEM message that carries a GROUP_INVITE card. */
+export function isGroupInvitationMessage(m: {
+  messageType?: string | null;
+  systemEvent?: string | null;
+}): boolean {
+  return (
+    normalizeMessageType(m.messageType) === "SYSTEM" &&
+    m.systemEvent === "GROUP_INVITE"
+  );
+}
+
+/**
+ * The SINGLE builder for a GROUP_INVITE message's `systemAction` card — mirrors
+ * {@link buildCommunityInvitationAction}. Unlike the community variant, group
+ * membership/link state lives in this same service, so callers resolve it via
+ * direct repo reads (no gRPC) both at send time and on historical reads.
+ */
+export function buildGroupInvitationAction(params: {
+  groupId: string;
+  groupName: string;
+  groupAvatarUrl?: string | null;
+  memberCount?: number;
+  inviteToken?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: GroupInvitationStatus;
+}): GroupInvitationSystemAction {
+  const {
+    groupId,
+    groupName,
+    groupAvatarUrl = null,
+    memberCount,
+    inviteToken = null,
+    deepLink,
+    alreadyJoined,
+    status,
+  } = params;
+  const canOpen =
+    status !== "DELETED" && (alreadyJoined || status === "ACTIVE");
+  return {
+    type: "GROUP_INVITATION",
+    groupId,
+    groupName,
+    groupAvatarUrl,
+    memberCount,
+    inviteToken,
+    deepLink,
+    alreadyJoined,
+    status,
+    canOpen,
+  };
+}
+
 export interface ChatMessageEventInput {
   id: string;
   clientMessageId?: string | null;
@@ -503,8 +575,11 @@ export interface ChatMessageEventInput {
   /** Group lifecycle SYSTEM messages only (messageType=SYSTEM). */
   systemEvent?: string | null;
   systemData?: unknown;
-  /** COMMUNITY_INVITE cards only — see {@link buildCommunityInvitationAction}. */
-  systemAction?: CommunityInvitationSystemAction | null;
+  /** COMMUNITY_INVITE / GROUP_INVITE cards only — see {@link buildCommunityInvitationAction} / {@link buildGroupInvitationAction}. */
+  systemAction?:
+    | CommunityInvitationSystemAction
+    | GroupInvitationSystemAction
+    | null;
   countInUnread?: boolean | null;
 }
 

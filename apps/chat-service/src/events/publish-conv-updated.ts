@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
-import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
+import type {
+  CommunityInvitationSystemAction,
+  GroupInvitationSystemAction,
+} from "../lib/chat-message.serializer.js";
 import { notifyUnreadChanged } from "./unread-summary-bridge.js";
 
 /**
@@ -26,7 +29,7 @@ interface BumpPreview {
    * "Invitation" chip and navigate straight to the community without a
    * refetch. Passed straight through into the bumped `lastMessage`.
    */
-  systemAction?: CommunityInvitationSystemAction;
+  systemAction?: CommunityInvitationSystemAction | GroupInvitationSystemAction;
 }
 
 /**

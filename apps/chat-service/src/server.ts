@@ -360,7 +360,10 @@ const startServer = async () => {
       privateMessageReportRepo,
       getCommunityReconcileClient(),
       presenceService,
-      redis
+      redis,
+      groupRoomRepo,
+      groupMemberRepo,
+      groupInviteLinkRepo
     );
     const privateSystemMessageService = new PrivateSystemMessageService(
       privateMessageRepo,
@@ -424,7 +427,12 @@ const startServer = async () => {
     const groupInviteLinkService = new GroupInviteLinkService(
       groupInviteLinkRepo,
       groupRoomRepo,
-      groupMemberRepo
+      groupMemberRepo,
+      privateRoomRepo,
+      privateMessageRepo,
+      userSnapshotService,
+      cacheRepo,
+      redis
     );
     const groupPinService = new GroupPinService(
       groupMessagePinRepo,

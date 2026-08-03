@@ -98,6 +98,8 @@ function redisMock(): any {
     get: jest.fn(async () => null),
     set: jest.fn(async () => "OK"),
     del: jest.fn(async () => 0),
+    incr: jest.fn(async () => 1),
+    expire: jest.fn(async () => 1),
     multi: jest.fn(() => ({
       zremrangebyscore: jest.fn().mockReturnThis(),
       zadd: jest.fn().mockReturnThis(),
@@ -290,7 +292,12 @@ export function buildApp(): BuiltApp {
   const groupInviteLinkService = new GroupInviteLinkService(
     groupInviteLinkRepo,
     groupRoomRepo,
-    groupMemberRepo
+    groupMemberRepo,
+    privateRoomRepo,
+    privateMessageRepo,
+    userSnapshotService,
+    cacheRepo,
+    redis
   );
   const groupPinService = new GroupPinService(
     groupMessagePinRepo,

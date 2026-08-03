@@ -46,6 +46,20 @@ export class GroupInviteLinkController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  bulkSend = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { userIds, token, inviteUrl } = req.body;
+    const result = await this.service.bulkSend({
+      roomId,
+      callerId: userId,
+      userIds,
+      token,
+      inviteUrl,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   getActiveLinks = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

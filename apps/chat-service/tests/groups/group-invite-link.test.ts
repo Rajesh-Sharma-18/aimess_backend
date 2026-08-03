@@ -320,3 +320,103 @@ describe("GET /api/chat/invite-links/room/:roomId", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
+  const RECIPIENT = "user-recipient-1";
+
+  function mockGroupAndCaller() {
+    // Caller is an active member; every OTHER user checked (the recipients)
+    // is not — the per-recipient "already a member?" check must see `null`.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockImplementation(
+      async (_roomId: string, userId: string) =>
+        userId === TEST_USER_ID ? { role: "MEMBER" } : null
+    );
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Devs",
+      avatar: "",
+      memberCount: 3,
+    });
+    mocks.groupInviteLinkRepo.findActiveByRoom.mockResolvedValue([
+      { token: TOKEN, roomId: ROOM },
+    ]);
+  }
+
+  it("POSITIVE: sends an invitation DM to a non-member recipient", async () => {
+    mockGroupAndCaller();
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+    mocks.privateRoomRepo.create.mockResolvedValue({ roomId: "prv_1" });
+    mocks.privateRoomRepo.allocateSequence.mockResolvedValue(1);
+    mocks.privateMessageRepo.findByClientMessageId.mockResolvedValue(null);
+    mocks.privateMessageRepo.createMessage.mockResolvedValue({
+      id: "msg-1",
+      createdAt: new Date(),
+      countInUnread: true,
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [RECIPIENT] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.token).toBe(TOKEN);
+    expect(res.body.data.results).toEqual([
+      { userId: RECIPIENT, status: "SENT" },
+    ]);
+    expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemEvent: "GROUP_INVITE",
+        receiverId: RECIPIENT,
+      })
+    );
+  });
+
+  it("EDGE: skips a recipient who is already an active member", async () => {
+    mockGroupAndCaller();
+    // Both the caller AND the recipient are active members this time.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [RECIPIENT] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.results).toEqual([
+      { userId: RECIPIENT, status: "SKIPPED_ALREADY_MEMBER" },
+    ]);
+    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: 403 when the caller is not a group member", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [RECIPIENT] });
+
+    expect(res.status).toBe(403);
+    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 400 when userIds is empty", async () => {
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [] });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("SECURITY: 401 without a token", async () => {
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .send({ userIds: [RECIPIENT] });
+
+    expect(res.status).toBe(401);
+  });
+});

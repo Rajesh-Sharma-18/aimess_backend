@@ -26,6 +26,8 @@ import {
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
+  isGroupInvitationMessage,
+  buildGroupInvitationAction,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
@@ -51,6 +53,7 @@ import {
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import {
+  resolveMediaUrl,
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
@@ -68,6 +71,9 @@ import type { PrivateMessageReportRepository } from "../repositories/private-mes
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
@@ -96,7 +102,14 @@ export class PrivateMessageService {
     // Optional so existing unit tests that construct the service without these
     // keep working (delivery just stays "sent" until the client ack lands).
     private readonly presenceService?: PresenceService,
-    private readonly redis?: Redis | Cluster | null
+    private readonly redis?: Redis | Cluster | null,
+    // Optional — GROUP_INVITE cards resolve membership/link state directly via
+    // these repos (unlike COMMUNITY_INVITE, group data lives in this same
+    // service, so no gRPC round-trip is needed). Omitted callers just fall
+    // back to the message's own stored data (see enrichMessages).
+    private readonly groupRoomRepo?: GroupRoomRepository,
+    private readonly groupMemberRepo?: GroupMemberRepository,
+    private readonly groupInviteLinkRepo?: GroupInviteLinkRepository
   ) {}
 
   async sendMessage(params: {
@@ -1810,7 +1823,8 @@ export class PrivateMessageService {
     // link may have been revoked/expired/the community deleted.
     const systemActionByMessageId = new Map<
       string,
-      ReturnType<typeof buildCommunityInvitationAction>
+      | ReturnType<typeof buildCommunityInvitationAction>
+      | ReturnType<typeof buildGroupInvitationAction>
     >();
     const inviteMessages = messages.filter(isCommunityInvitationMessage);
     if (inviteMessages.length > 0) {
@@ -1874,6 +1888,66 @@ export class PrivateMessageService {
                 alreadyJoined: false,
                 status: "ACTIVE",
               })
+        );
+      }
+    }
+
+    // Resolve `systemAction` for every GROUP_INVITE card — in-process (no
+    // gRPC): group membership/link state lives in this same service, so each
+    // card is re-checked directly against the current row, unlike
+    // COMMUNITY_INVITE which needs the batched gRPC round-trip above.
+    const groupInviteMessages = messages.filter(isGroupInvitationMessage);
+    if (
+      groupInviteMessages.length > 0 &&
+      this.groupRoomRepo &&
+      this.groupMemberRepo
+    ) {
+      for (const m of groupInviteMessages) {
+        const sd = (m.systemData ?? {}) as Record<string, unknown>;
+        const groupId = String(sd.groupId ?? "");
+        const groupName = String(sd.groupName ?? "");
+        const groupAvatarUrl = sd.groupAvatarUrl
+          ? String(sd.groupAvatarUrl)
+          : null;
+        const memberCount = Number(sd.memberCount ?? 0);
+        const token = sd.token ? String(sd.token) : null;
+        const deepLink = String(sd.inviteUrl ?? "");
+
+        const room = groupId
+          ? await this.groupRoomRepo.findActiveByRoomId(groupId)
+          : null;
+        const alreadyJoined =
+          Boolean(room) && viewerId
+            ? Boolean(
+                await this.groupMemberRepo.findActiveByRoomAndUser(
+                  groupId,
+                  viewerId
+                )
+              )
+            : false;
+        const link = token
+          ? await this.groupInviteLinkRepo?.findActiveByToken(token)
+          : null;
+        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
+          ? "DELETED"
+          : token && !link
+            ? "REVOKED"
+            : "ACTIVE";
+
+        systemActionByMessageId.set(
+          m.id,
+          buildGroupInvitationAction({
+            groupId,
+            groupName: room?.name ?? groupName,
+            groupAvatarUrl: room
+              ? await resolveMediaUrl(room.avatar)
+              : groupAvatarUrl,
+            memberCount: room?.memberCount ?? memberCount,
+            inviteToken: token,
+            deepLink,
+            alreadyJoined,
+            status,
+          })
         );
       }
     }

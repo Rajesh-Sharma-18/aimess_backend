@@ -24,6 +24,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<SystemEvent, boolean> = {
   ADMIN_REMOVED: true,
   DESCRIPTION_CHANGED: true,
   INVITE_LINK_CREATED: false,
+  GROUP_INVITE: true,
   CALL_STARTED: true,
   CALL_ENDED: true,
   MESSAGE_PINNED: true,
