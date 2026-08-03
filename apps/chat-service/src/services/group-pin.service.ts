@@ -8,7 +8,10 @@ import type { GroupMessageRepository } from "../repositories/group-message.repos
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
@@ -106,7 +109,7 @@ export class GroupPinService {
             pinnedAt: new Date(),
             messageCreatedAt: msg.createdAt,
             senderId: msg.senderId || "",
-            senderDisplayName: (senderSnap.displayName as string) || "",
+            senderDisplayName: resolveDisplayName(senderSnap),
             senderAvatar: (senderSnap.avatar as string) || "",
             contentPinned: msg.content as object,
           },

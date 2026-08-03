@@ -16,7 +16,10 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
   resolveMediaUrl,
@@ -581,7 +584,7 @@ export class GroupMemberService {
       >;
       return {
         ...member,
-        displayName: (snap.displayName as string) || "",
+        displayName: resolveDisplayName(snap),
         username: (snap.memberId as string) || "",
         avatarUrl: urlFromMap(urlMap, (snap.avatar as string) || ""),
         isDeletedUser: snap.isDeletedUser === true,
