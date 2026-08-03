@@ -56,7 +56,9 @@ export async function sendPush({
     ...(deepLink ? { deepLink } : {}),
   };
 
-  const apnsPriority = priority === "high" ? "10" : "5";
+  // Background pushes must always be priority 5 — Apple silently drops or
+  // delays background notifications sent with priority 10.
+  const apnsPriority = dataOnly ? "5" : priority === "high" ? "10" : "5";
   const webUrgency = priority === "high" ? "high" : "normal";
 
   try {
@@ -76,7 +78,7 @@ export async function sendPush({
       apns: {
         headers: {
           "apns-priority": apnsPriority,
-          ...(dataOnly ? { "apns-push-type": "background" } : {}),
+          "apns-push-type": dataOnly ? "background" : "alert",
         },
         payload: {
           aps: dataOnly ? { contentAvailable: true } : { sound: "default" },
