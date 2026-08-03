@@ -28,7 +28,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
-import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
@@ -65,7 +65,10 @@ import type { GroupMessageRepository } from "../repositories/group-message.repos
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type { GroupMessage } from "../generated/prisma/index.js";
@@ -538,7 +541,7 @@ export class GroupMessageService {
       beforeTimestamp,
       params.limit,
       params.userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -572,7 +575,7 @@ export class GroupMessageService {
       params.roomId,
       params.userId
     );
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const [{ messages: items, hasMore }, total, roomRevision] =
       await Promise.all([
         this.messageRepo.findByRoomIdTimeline({
@@ -656,7 +659,7 @@ export class GroupMessageService {
       params.roomId,
       params.userId
     );
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const [rows, roomRevision] = await Promise.all([
       this.messageRepo.findByRoomIdSeq({
         userId: params.userId,
@@ -702,7 +705,7 @@ export class GroupMessageService {
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: params.roomId,
@@ -744,7 +747,7 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
 
     const beforeMs = params.timestamp ?? Date.now();
     const skip = (params.pageNumber - 1) * params.limit;
@@ -823,7 +826,7 @@ export class GroupMessageService {
       params.limit,
       params.userId,
       params.skip ?? 0,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -847,7 +850,7 @@ export class GroupMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
-      cutoff: getGroupDeletionCutoff(member),
+      cutoff: getGroupVisibilityCutoff(member),
     });
   }
 
@@ -868,7 +871,7 @@ export class GroupMessageService {
       roomId,
       query,
       userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -1009,7 +1012,7 @@ export class GroupMessageService {
     const prev = await this.messageRepo.findPreviousVisibleForUser(
       roomId,
       userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1355,7 +1358,7 @@ export class GroupMessageService {
     );
     const changes = await this.resolveChanges({
       ...params,
-      cutoff: getGroupDeletionCutoff(member),
+      cutoff: getGroupVisibilityCutoff(member),
     });
     const items = await this.enrichForWire(changes.messages, params.userId);
 
@@ -1441,7 +1444,7 @@ export class GroupMessageService {
     ) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
@@ -1629,7 +1632,7 @@ export class GroupMessageService {
       };
     }
 
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
 
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
@@ -1769,7 +1772,7 @@ export class GroupMessageService {
         roomId: params.roomId,
         userId: params.userId,
         afterDate: message.createdAt,
-        cutoff: getGroupDeletionCutoff(member),
+        cutoff: getGroupVisibilityCutoff(member),
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -1845,8 +1848,7 @@ export class GroupMessageService {
           const snap = snapshots.get(uid) ?? {};
           return {
             userId: uid,
-            displayName:
-              (snap.displayName as string) ?? (snap.memberId as string) ?? "",
+            displayName: resolveDisplayName(snap),
             avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
           };
         }),

@@ -58,6 +58,55 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
+  // A member must never see history from before they joined the group — the
+  // timeline read path clamps to createdAt > max(joinedAt, clearedAt).
+  it("VISIBILITY: passes the member's joinedAt as the timeline cutoff", async () => {
+    const joinedAt = new Date("2026-07-01T00:00:00Z");
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+      joinedAt,
+      clearedAt: null,
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.groupMessageRepo.findByRoomIdTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ cutoff: joinedAt })
+    );
+  });
+
+  // A rejoin re-stamps joinedAt — even if the member cleared their history
+  // earlier, the LATER joinedAt (from rejoining) is the effective cutoff.
+  it("VISIBILITY: joinedAt (rejoin) wins over an earlier clearedAt", async () => {
+    const clearedAt = new Date("2026-01-01T00:00:00Z");
+    const joinedAt = new Date("2026-07-01T00:00:00Z"); // rejoined after clearing
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+      joinedAt,
+      clearedAt,
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.groupMessageRepo.findByRoomIdTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ cutoff: joinedAt })
+    );
+  });
+
   // Resolve-on-read: the denormalized senderAvatar key AND attachment objectKeys
   // must surface as full download URLs (mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves senderAvatar + content.files object keys in history", async () => {
