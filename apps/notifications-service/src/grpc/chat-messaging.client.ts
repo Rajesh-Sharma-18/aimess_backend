@@ -30,8 +30,26 @@ const MUTE_FAIL_OPEN: CheckPrivateMuteResult = {
   mutedUntil: 0,
 };
 
+export interface CheckGroupMuteParams {
+  roomId: string;
+  userId: string;
+}
+
+export interface CheckGroupMuteResult {
+  isMuted: boolean;
+  /** epoch ms; 0 = indefinite mute or not muted */
+  mutedUntil: number;
+}
+
+/** Fail-open value: a muted-check failure must NEVER suppress a notification. */
+const GROUP_MUTE_FAIL_OPEN: CheckGroupMuteResult = {
+  isMuted: false,
+  mutedUntil: 0,
+};
+
 export interface ChatMessagingClient {
   checkPrivateMute(p: CheckPrivateMuteParams): Promise<CheckPrivateMuteResult>;
+  checkGroupMute(p: CheckGroupMuteParams): Promise<CheckGroupMuteResult>;
 }
 
 export function createChatMessagingClient(): ChatMessagingClient {
@@ -62,8 +80,19 @@ export function createChatMessagingClient(): ChatMessagingClient {
   );
   muteBreaker.fallback(() => MUTE_FAIL_OPEN);
 
+  const groupMuteBreaker = makeBreaker(
+    "chat.checkGroupMute",
+    (p: CheckGroupMuteParams) =>
+      makeGrpcCall<unknown, CheckGroupMuteResult>(client, "checkGroupMute", {
+        roomId: p.roomId,
+        userId: p.userId,
+      })
+  );
+  groupMuteBreaker.fallback(() => GROUP_MUTE_FAIL_OPEN);
+
   return {
     checkPrivateMute: (p) => muteBreaker.fire(p),
+    checkGroupMute: (p) => groupMuteBreaker.fire(p),
   };
 }
 

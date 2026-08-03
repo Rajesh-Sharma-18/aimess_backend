@@ -86,6 +86,25 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Mirrors CommunityMessageRepository/GeneralRoomMessageRepository's addReport. */
+  async addReport(
+    messageId: string,
+    report: { userReportId: string; userReportReason: string }
+  ): Promise<GroupMessage | null> {
+    const existing = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+    });
+    if (!existing) return null;
+
+    const reports = (existing.reports ?? []) as Array<Record<string, unknown>>;
+    reports.push({ ...report, reportedAt: new Date() });
+
+    return this.prisma.groupMessage.update({
+      where: { id: messageId },
+      data: { reports: reports as unknown as Prisma.InputJsonValue },
+    });
+  }
+
   /** Batch findById — used to resolve a page's own-last-message read ticks in one query. */
   async findManyByIds(ids: string[]): Promise<GroupMessage[]> {
     const validIds = [...new Set(ids)].filter((id) =>

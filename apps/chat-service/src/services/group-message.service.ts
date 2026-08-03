@@ -27,6 +27,7 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { isObjectId } from "../lib/object-id.js";
 import {
@@ -1287,6 +1288,42 @@ export class GroupMessageService {
    */
   async assertMember(roomId: string, userId: string): Promise<void> {
     await assertGroupMember(this.memberRepo, roomId, userId);
+  }
+
+  /**
+   * Mirrors CommunityMessageService.report() (inline reports array), plus
+   * forwards to the admin moderation pipeline the way PrivateMessageService.
+   * reportMessage() does — community's report() never wired that forward, so
+   * a community report never reached backoffice; group's does.
+   * ponytail: no dedicated report model/unique-per-reporter constraint, so a
+   * user CAN report the same message twice — add PrivateMessageReport's
+   * (messageId, reporterId) unique index here if duplicate-report noise
+   * becomes a real moderation problem.
+   */
+  async report(params: {
+    messageId: string;
+    reporterId: string;
+    reportReason: string;
+  }): Promise<GroupMessage | null> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await assertGroupMember(this.memberRepo, message.roomId, params.reporterId);
+    const updated = await this.messageRepo.addReport(params.messageId, {
+      userReportId: params.reporterId,
+      userReportReason: params.reportReason,
+    });
+    publishAdminReportIngestSafe({
+      type: "message",
+      targetId: params.messageId,
+      reporterId: params.reporterId,
+      reason: params.reportReason,
+      details: null,
+      communityId: null,
+      reportedUserId: message.senderId ?? null,
+      eventAt: new Date().toISOString(),
+      sourceReportId: `group:${params.messageId}:${params.reporterId}`,
+    });
+    return updated;
   }
 
   /** Deep-gap horizon — same value and rule as community and private. */

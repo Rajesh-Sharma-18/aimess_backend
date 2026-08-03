@@ -9,6 +9,7 @@ import {
   deleteGroupMessageSchema,
   forwardGroupMessageSchema,
   editGroupMessageSchema,
+  reportGroupMessageSchema,
   sendGroupMessageBodySchema,
   markGroupReadBodySchema,
   reactionBodySchema,
@@ -101,6 +102,15 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     authenticate,
     sendLimit,
     ctrl.unpin
+  );
+
+  // Report a group message
+  router.post(
+    "/:roomId/messages/:messageId/report",
+    authenticate,
+    sendLimit,
+    validateBody(reportGroupMessageSchema),
+    ctrl.reportMessage
   );
 
   // Forward a group message

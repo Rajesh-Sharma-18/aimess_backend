@@ -1793,6 +1793,50 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Mirror of checkPrivateMute, for group rooms. `notificationSettings` is
+     * per-membership (GroupMember row), not per-room — same indefinite/expiry
+     * logic as private: muted with no muteUntil = indefinite, muteUntil in
+     * the future = still muted, muteUntil in the past = expired.
+     */
+    checkGroupMute: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId?: string; userId?: string };
+          const roomId = req.roomId ?? "";
+          const userId = req.userId ?? "";
+          if (!roomId || !userId) {
+            callback(null, { isMuted: false, mutedUntil: 0 });
+            return;
+          }
+
+          const member = await deps.groupMemberRepo.findByRoomAndUser(
+            roomId,
+            userId
+          );
+          const settings = (member?.notificationSettings ?? {}) as {
+            mute?: boolean;
+            muteUntil?: string | null;
+          };
+          const muteUntilMs = settings.muteUntil
+            ? new Date(settings.muteUntil).getTime()
+            : null;
+          const isMuted =
+            settings.mute === true &&
+            (muteUntilMs == null || muteUntilMs > Date.now());
+
+          callback(null, { isMuted, mutedUntil: muteUntilMs ?? 0 });
+        } catch (err) {
+          // Fail-open: an oracle failure must never suppress a push.
+          logger.warn(`gRPC checkGroupMute error: ${String(err)}`);
+          callback(null, { isMuted: false, mutedUntil: 0 });
+        }
+      })();
+    },
+
     catchupRoom: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

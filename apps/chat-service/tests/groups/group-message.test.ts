@@ -654,3 +654,70 @@ describe("pins + forward + reactions", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("POST /:roomId/messages/:messageId/report", () => {
+  it("POSITIVE: an active member reports a message → 201 + persisted report", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.addReport.mockResolvedValue({
+      id: "g1",
+      reports: [{ userReportId: TEST_USER_ID, userReportReason: "SPAM" }],
+    });
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.groupMessageRepo.addReport).toHaveBeenCalledWith("g1", {
+      userReportId: TEST_USER_ID,
+      userReportReason: "SPAM",
+    });
+  });
+
+  it("SECURITY: IDOR — 403 reporting a message in a group you're not a member of", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMessageRepo.addReport).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 404 reporting a message that doesn't exist", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/missing/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("NEGATIVE: 400 when reportReason is missing", async () => {
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+});

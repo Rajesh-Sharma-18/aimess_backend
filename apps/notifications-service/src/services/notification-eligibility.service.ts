@@ -43,6 +43,23 @@ export async function isPrivateRoomMutedBy(
 }
 
 /**
+ * True when `recipientId` has muted group room `roomId` — i.e. this message
+ * must not generate a push for them. Fail-open, same as `isPrivateRoomMutedBy`:
+ * an oracle outage must never suppress a push.
+ */
+export async function isGroupMemberMuted(
+  recipientId: string,
+  roomId: string
+): Promise<boolean> {
+  return (
+    await chatMessagingClient.checkGroupMute({
+      roomId,
+      userId: recipientId,
+    })
+  ).isMuted;
+}
+
+/**
  * True only when `userId` is an ACTIVE member of `communityId`. Fail-closed:
  * transport / breaker failures resolve to false so former members never get
  * community FCM or inbox pushes during an oracle outage.

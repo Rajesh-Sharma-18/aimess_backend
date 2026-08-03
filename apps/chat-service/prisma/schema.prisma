@@ -232,6 +232,9 @@ model GroupMessage {
   deletedAt          DateTime?
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
+  // Message-level "Report" action, mirroring CommunityMessage's inline reports
+  // array (as opposed to Private's dedicated PrivateMessageReport model).
+  reports            Json      @default("[]")
   sequenceNumber     Int       @default(0)
   // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
   revision           Int       @default(0)

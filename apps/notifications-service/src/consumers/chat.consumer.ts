@@ -9,6 +9,7 @@ import { pushToUsers } from "../services/push.service.js";
 import {
   filterToActiveCommunityMembers,
   isCommunityActorMuted,
+  isGroupMemberMuted,
   isPrivateRoomMutedBy,
 } from "../services/notification-eligibility.service.js";
 
@@ -84,6 +85,22 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length < before) {
       logger.info(
         `Suppressing private push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
+
+  // Group-room mute gate: mirror of the private-room gate above, but the mute
+  // setting lives on the GroupMember row (per-membership) rather than the room.
+  if (data.conversationType === "GROUP") {
+    const muteChecks = await Promise.all(
+      recipients.map((id) => isGroupMemberMuted(id, data.conversationId))
+    );
+    const before = recipients.length;
+    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    if (recipients.length < before) {
+      logger.info(
+        `Suppressing group push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
       );
     }
     if (recipients.length === 0) return;
