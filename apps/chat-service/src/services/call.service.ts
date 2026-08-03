@@ -449,6 +449,14 @@ export class CallService {
       reason: "declined",
     });
 
+    await this.postCallChatMessageSafe(
+      updated,
+      "DECLINED",
+      endedAt,
+      0,
+      params.calleeId
+    );
+
     return updated;
   }
 
@@ -545,6 +553,14 @@ export class CallService {
         callId: params.callId,
         reason: "ended",
       });
+
+      await this.postCallChatMessageSafe(
+        updated,
+        "CANCELLED",
+        endedAt,
+        0,
+        params.userId
+      );
     } else {
       await this.redis
         .publish(
@@ -832,6 +848,14 @@ export class CallService {
         callId,
         reason: "cancelled",
       });
+
+      await this.postCallChatMessageSafe(
+        call,
+        "CANCELLED",
+        endedAt,
+        0,
+        "SYSTEM_LIVEKIT"
+      );
       return;
     }
 

@@ -162,7 +162,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
 
-  it("RINGING → cancels (caller abandoned before answer): RINGING→ENDED + call:cancelled to BOTH rooms, no chat row", async () => {
+  it("RINGING → cancels (caller abandoned before answer): RINGING→ENDED + call:cancelled to BOTH rooms + CANCELLED chat row", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
@@ -191,8 +191,10 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       "call:c1",
       expect.stringContaining("call:cancelled")
     );
-    // Pre-answer cancel posts no ENDED audit row — mirrors endCall's wasRinging.
-    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    // Pre-answer cancel posts a CANCELLED audit row — mirrors endCall's wasRinging.
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "c1", outcome: "CANCELLED" })
+    );
   });
 
   it("RINGING with a lost claim (raced by decline/sweep) publishes nothing", async () => {
@@ -255,7 +257,7 @@ describe("CallService.endCall chat messages", () => {
     );
   });
 
-  it("does not post a chat row when the caller cancels before answer", async () => {
+  it("posts a CANCELLED chat row when the caller cancels before answer", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
@@ -269,7 +271,13 @@ describe("CallService.endCall chat messages", () => {
 
     await service.endCall({ callId: "c1", userId: "u1" });
 
-    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "c1",
+        outcome: "CANCELLED",
+        durationSec: 0,
+      })
+    );
     expect(stubs.redis.publish).toHaveBeenCalledWith(
       "self:u2",
       expect.stringContaining("call:cancelled")

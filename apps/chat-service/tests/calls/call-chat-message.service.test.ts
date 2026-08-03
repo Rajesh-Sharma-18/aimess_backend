@@ -123,6 +123,73 @@ describe("CallChatMessageService", () => {
     expect(stubs.getUserSnapshot).toHaveBeenCalledWith("caller");
   });
 
+  it("persists a declined call as a non-unread SYSTEM row naming the callee as endedBy", async () => {
+    const { service, stubs } = buildService();
+
+    await service.post({
+      ...base,
+      outcome: "DECLINED",
+      endedBy: "callee",
+    });
+
+    expect(stubs.messageRepo.createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senderId: "",
+        receiverId: "callee",
+        messageType: "SYSTEM",
+        systemEvent: "CALL_ENDED",
+        systemData: expect.objectContaining({
+          callId: "call-1",
+          status: "DECLINED",
+          durationSec: 0,
+          endedBy: "callee",
+        }),
+        countInUnread: false,
+        clientMessageId: "call:call-1:declined",
+        content: expect.objectContaining({
+          text: "Voice call declined",
+          call: expect.objectContaining({ outcome: "DECLINED" }),
+        }),
+      })
+    );
+    expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ unreadIncrement: 0 })
+    );
+    // Sender-less rows never fan out a message:sent push — only the caller-visible
+    // MISSED row does. Confirming this here catches a stray push notification
+    // regression if the `!isSystemOutcome` gate is ever narrowed by mistake.
+    expect(stubs.getUserSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("persists a cancelled (pre-answer abandon) call as a non-unread SYSTEM row", async () => {
+    const { service, stubs } = buildService();
+
+    await service.post({
+      ...base,
+      callType: "VIDEO",
+      outcome: "CANCELLED",
+      endedBy: "caller",
+    });
+
+    expect(stubs.messageRepo.createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senderId: "",
+        messageType: "SYSTEM",
+        systemEvent: "CALL_ENDED",
+        systemData: expect.objectContaining({
+          status: "CANCELLED",
+          durationSec: 0,
+        }),
+        countInUnread: false,
+        clientMessageId: "call:call-1:cancelled",
+        content: expect.objectContaining({
+          text: "Video call cancelled",
+          call: expect.objectContaining({ outcome: "CANCELLED" }),
+        }),
+      })
+    );
+  });
+
   it("deduplicates a retry before allocating another sequence or broadcasting", async () => {
     const { service, stubs } = buildService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue({
