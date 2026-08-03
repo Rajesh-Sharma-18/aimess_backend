@@ -235,7 +235,7 @@ function toConversationListItem(
  * fields. Timestamps are epoch ms (private-chat convention), not the ISO
  * strings community uses.
  */
-export interface PrivateRoomDetailsData {
+export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   id: string;
   roomId: string;
   participants: string[];
@@ -457,6 +457,7 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
+      ...toPeerFriendshipRelationship(enriched.friendship),
     };
   }
 
