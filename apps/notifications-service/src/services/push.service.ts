@@ -172,6 +172,12 @@ export interface PushInput {
    * call, chat message, etc.).
    */
   allowVoip?: boolean;
+  /**
+   * APNs notification category — iOS maps this to registered UNNotificationCategory
+   * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
+   * Ignored on Android and data-only pushes.
+   */
+  apnsCategory?: string;
 }
 
 /**
@@ -204,6 +210,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     skipInbox = false,
     dataOnly = false,
     allowVoip = false,
+    apnsCategory,
   } = input;
 
   let body = input.body;
@@ -309,7 +316,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   }
 
   // Load all device tokens for this user.
-  let rawTokens: { token: string; tokenType: string }[];
+  let rawTokens: { token: string; tokenType: string; platform: string }[];
   try {
     rawTokens = await deviceTokenService.getTokensForUser(userId);
   } catch (error) {
@@ -335,14 +342,31 @@ export async function pushToUser(input: PushInput): Promise<void> {
     `[push:deliver] user=${userId} type=${type} tokens=${tokens.length}`
   );
 
+  // If there is at least one VoIP token, CallKit will handle the call ring on
+  // iOS. When there is none, we fall back to a notification-bearing FCM push
+  // so the user sees at least a banner on a killed iOS app.
+  const hasVoipToken = tokens.some((t) => t.tokenType === "VOIP");
+
   await Promise.all(
-    tokens.map(async ({ token, tokenType }) => {
+    tokens.map(async ({ token, tokenType, platform }) => {
       // VOIP tokens are iOS PushKit tokens registered only for call ringing —
       // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and
       // ONLY for an event explicitly marked allowVoip (see PushInput docs).
       // A VOIP token is not a valid FCM channel either, so anything else for
       // that token is skipped rather than misdelivered.
       if (tokenType === "VOIP" && !allowVoip) return;
+
+      // ponytail: iOS without a VoIP token gets a notification-carrying FCM
+      // push for call rings so a killed app shows a banner. When a VoIP token
+      // exists, CallKit handles it and we keep dataOnly to avoid a double ring.
+      const effectiveDataOnly =
+        dataOnly &&
+        !(
+          tokenType === "FCM" &&
+          platform === "IOS" &&
+          allowVoip &&
+          !hasVoipToken
+        );
 
       const result =
         tokenType === "VOIP"
@@ -356,7 +380,8 @@ export async function pushToUser(input: PushInput): Promise<void> {
               collapseKey,
               ttl,
               priority,
-              dataOnly,
+              dataOnly: effectiveDataOnly,
+              apnsCategory,
             });
       if (result.invalidToken) {
         try {
