@@ -43,6 +43,10 @@ service MessagingService {
   // `user:<id>` socket room without requiring anyone to conv:join first.
   // Read-only, single query (ids only) — no N+1.
   rpc GetRoomParticipantIds   (GetRoomParticipantIdsRequest)   returns (GetRoomParticipantIdsResponse);
+  // Mirror of community.proto's CheckCommunityMute, for private 1-to-1 rooms.
+  // notifications-service calls this before FCM/APNs fan-out to suppress
+  // push for a recipient who has muted this conversation.
+  rpc CheckPrivateMute        (CheckPrivateMuteRequest)        returns (CheckPrivateMuteResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
   // Admin Group Management: list/detail/members (owned by chat-service).
@@ -650,4 +654,15 @@ message GetRoomParticipantIdsRequest {
 }
 message GetRoomParticipantIdsResponse {
   repeated string user_ids = 1;
+}
+
+// ---- CheckPrivateMute ----
+message CheckPrivateMuteRequest {
+  string room_id = 1;
+  // The recipient whose mute setting on this room should be checked.
+  string user_id = 2;
+}
+message CheckPrivateMuteResponse {
+  bool  is_muted    = 1;
+  int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
 }

@@ -47,6 +47,8 @@ jest.mock("../../src/services/notification-eligibility.service.js", () => ({
   filterToActiveCommunityMembers: jest.fn(
     async (_communityId: string, userIds: string[]) => userIds
   ),
+  // Default: recipient has NOT muted the private room.
+  isPrivateRoomMutedBy: jest.fn(async () => false),
 }));
 
 import { startChatConsumer } from "../../src/consumers/chat.consumer.js";
@@ -54,11 +56,13 @@ import { pushToUsers } from "../../src/services/push.service.js";
 import {
   filterToActiveCommunityMembers,
   isCommunityActorMuted,
+  isPrivateRoomMutedBy,
 } from "../../src/services/notification-eligibility.service.js";
 
 const pushMany = pushToUsers as jest.Mock;
 const isMutedMock = isCommunityActorMuted as jest.Mock;
 const filterActiveMock = filterToActiveCommunityMembers as jest.Mock;
+const isPrivateMutedMock = isPrivateRoomMutedBy as jest.Mock;
 
 type ConsumeCallback = (msg: { content: Buffer } | null) => void;
 
@@ -110,6 +114,8 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     filterActiveMock.mockImplementation(
       async (_communityId: string, userIds: string[]) => userIds
     );
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false); // default: not muted
   });
 
   it("COMMUNITY → category:communityEnabled + communityId in FCM data", async () => {
@@ -228,6 +234,8 @@ describe("startChatConsumer — community mute suppression", () => {
     filterActiveMock.mockImplementation(
       async (_communityId: string, userIds: string[]) => userIds
     );
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false); // default: not muted
   });
 
   // (1) POSITIVE CORE — muted sender in a COMMUNITY → fan-out fully suppressed,
@@ -267,8 +275,10 @@ describe("startChatConsumer — community mute suppression", () => {
     expect(recipients).toEqual(["recipient-uuid"]); // sender excluded
   });
 
-  // (3) NEGATIVE — PRIVATE never invokes the mute gate; fan-out unchanged.
-  it("PRIVATE → mute gate NEVER called; push still sent", async () => {
+  // (3) PRIVATE invokes the community mute gate never (that's COMMUNITY-only);
+  // the private mute gate (isPrivateRoomMutedBy) is exercised in the
+  // dedicated "private mute suppression" describe block below.
+  it("PRIVATE → community mute gate NEVER called; push still sent when not muted", async () => {
     consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
     await flush();
 
@@ -411,5 +421,99 @@ describe("startChatConsumer — community mute suppression", () => {
     await flush();
 
     expect(pushMany).toHaveBeenCalledTimes(0);
+  });
+});
+
+/**
+ * Private 1-to-1 mute must suppress push notifications ONLY — this consumer
+ * is the sole push-decision chokepoint (see chat.consumer.ts), so gating here
+ * is sufficient; persistence, unread counts, ordering, and socket events all
+ * happen upstream in chat-service and are unaffected by this consumer.
+ */
+describe("startChatConsumer — private room mute suppression", () => {
+  let consume: ConsumeCallback;
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    pushMany.mockClear();
+    channelMock.ack.mockClear();
+    channelMock.nack.mockClear();
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+  });
+
+  it("PRIVATE + recipient muted the room → pushToUsers NOT called, message still ACKed", async () => {
+    isPrivateMutedMock.mockResolvedValue(true);
+    const msg = makeMsg({ ...BASE, conversationType: "PRIVATE" });
+    consume(msg);
+    await flush();
+
+    expect(isPrivateMutedMock).toHaveBeenCalledWith(
+      "recipient-uuid",
+      BASE.conversationId
+    );
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.ack).toHaveBeenCalledWith(msg);
+    expect(channelMock.nack).not.toHaveBeenCalled();
+  });
+
+  it("PRIVATE + recipient did NOT mute the room → push still sent", async () => {
+    isPrivateMutedMock.mockResolvedValue(false);
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("PRIVATE, multiple recipients — only the muted one is dropped from fan-out", async () => {
+    isPrivateMutedMock.mockImplementation(
+      async (userId: string) => userId === "muted-user"
+    );
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "PRIVATE",
+        recipientIds: ["muted-user", "unmuted-user"],
+      })
+    );
+    await flush();
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients] = pushMany.mock.calls[0] as [string[], unknown];
+    expect(recipients).toEqual(["unmuted-user"]);
+  });
+
+  it("GROUP → private mute gate never invoked (private-only check)", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "GROUP" }));
+    await flush();
+
+    expect(isPrivateMutedMock).not.toHaveBeenCalled();
+    expect(pushMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("FAIL-OPEN: oracle resolves not-muted on outage → push still sent (not dropped)", async () => {
+    isPrivateMutedMock.mockResolvedValue(false); // fail-open value from the gRPC client
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("unmute (mute gate flips back to false) → very next message resumes push, no restart needed", async () => {
+    isPrivateMutedMock.mockResolvedValue(true);
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE", messageId: "m1" }));
+    await flush();
+    expect(pushMany).not.toHaveBeenCalled();
+
+    // User unmutes — the gate is re-evaluated live on the next message, no
+    // cache to invalidate and no reconnect/restart required.
+    isPrivateMutedMock.mockResolvedValue(false);
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE", messageId: "m2" }));
+    await flush();
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
   });
 });

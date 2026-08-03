@@ -9,6 +9,7 @@ import { pushToUsers } from "../services/push.service.js";
 import {
   filterToActiveCommunityMembers,
   isCommunityActorMuted,
+  isPrivateRoomMutedBy,
 } from "../services/notification-eligibility.service.js";
 
 /**
@@ -69,6 +70,24 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     (id) => id && id !== data.senderId
   );
   if (recipients.length === 0) return;
+
+  // Private-room mute gate: a recipient who has muted this 1-to-1 conversation
+  // must not receive a push for it. Everything else (persistence, unread
+  // counts, socket events, ordering) is unaffected — this consumer only
+  // decides push delivery. Fail-open on oracle outage (see chatMessagingClient).
+  if (data.conversationType === "PRIVATE") {
+    const muteChecks = await Promise.all(
+      recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
+    );
+    const before = recipients.length;
+    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    if (recipients.length < before) {
+      logger.info(
+        `Suppressing private push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
 
   // Authoritative ACTIVE-roster filter: chat-service's RoomMember mirror can
   // lag behind leave/kick/ban, so a LEFT user may still appear in recipientIds.

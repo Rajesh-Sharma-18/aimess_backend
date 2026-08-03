@@ -1752,6 +1752,47 @@ export function createMessagingImpl(
       })();
     },
 
+    /**
+     * Mirror of community-service's checkCommunityMute, for private 1-to-1
+     * rooms. Same expiry logic as `enrichConversations`'s `isMuted` in
+     * private-room.service.ts: muted with no muteUntil = indefinite,
+     * muteUntil in the future = still muted, muteUntil in the past = expired.
+     */
+    checkPrivateMute: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId?: string; userId?: string };
+          const roomId = req.roomId ?? "";
+          const userId = req.userId ?? "";
+          if (!roomId || !userId) {
+            callback(null, { isMuted: false, mutedUntil: 0 });
+            return;
+          }
+
+          const room = await deps.privateRoomRepo.findByRoomId(roomId);
+          const mutedBy = (room?.mutedBy ?? {}) as Record<
+            string,
+            { muteUntil?: string | null }
+          >;
+          const myMute = mutedBy[userId];
+          const muteUntilMs = myMute?.muteUntil
+            ? new Date(myMute.muteUntil).getTime()
+            : null;
+          const isMuted =
+            myMute != null && (muteUntilMs == null || muteUntilMs > Date.now());
+
+          callback(null, { isMuted, mutedUntil: muteUntilMs ?? 0 });
+        } catch (err) {
+          // Fail-open: an oracle failure must never suppress a push.
+          logger.warn(`gRPC checkPrivateMute error: ${String(err)}`);
+          callback(null, { isMuted: false, mutedUntil: 0 });
+        }
+      })();
+    },
+
     catchupRoom: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
