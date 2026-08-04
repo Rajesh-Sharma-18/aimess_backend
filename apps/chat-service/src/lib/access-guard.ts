@@ -93,6 +93,43 @@ export async function assertGroupReadAccess(
 }
 
 /**
+ * True when the group member row carries an effective moderation mute.
+ * Lazy expiry: a timed mute (`moderationMutedUntil`) auto-lifts the instant it
+ * passes — no sweeper needed. An indefinite mute has `moderationMuted=true`
+ * with `moderationMutedUntil=null`. Mirrors {@link isCommunityMemberMuted};
+ * unlike community's cross-service mirror, group membership is a single row
+ * chat-service already owns, so no separate mute model/sync is needed.
+ */
+export function isGroupMemberMuted(
+  member:
+    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
+    | null
+    | undefined
+): boolean {
+  if (!member?.moderationMuted) return false;
+  if (member.moderationMutedUntil == null) return true; // indefinite
+  return member.moderationMutedUntil.getTime() > Date.now();
+}
+
+/**
+ * Group WRITE gate for moderation mute: a muted member cannot send/react
+ * (they keep full read access). Call AFTER the membership guard that loads
+ * the member row, reusing it — zero extra I/O.
+ *
+ * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
+ */
+export function assertGroupMemberNotMuted(
+  member:
+    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
+    | null
+    | undefined
+): void {
+  if (isGroupMemberMuted(member)) {
+    throw new ForbiddenError("CHAT_MUTED_IN_GROUP");
+  }
+}
+
+/**
  * Live role lookup against community-service's AUTHORITATIVE
  * `CommunityMember.role` — NOT chat-service's locally-mirrored `RoomMember.role`,
  * which is a one-way, async, best-effort sync (`events/community-room-sync.consumer.ts`)

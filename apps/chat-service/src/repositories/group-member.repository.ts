@@ -176,6 +176,36 @@ export class GroupMemberRepository {
     });
   }
 
+  /** Moderator-imposed mute (distinct from `setMuted`'s self-notification mute). */
+  async setModerationMute(
+    roomId: string,
+    userId: string,
+    params: { mutedBy: string; mutedUntil: Date | null }
+  ): Promise<GroupMember | null> {
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        moderationMuted: true,
+        moderationMutedUntil: params.mutedUntil,
+        moderationMutedBy: params.mutedBy,
+      },
+    });
+  }
+
+  async clearModerationMute(
+    roomId: string,
+    userId: string
+  ): Promise<GroupMember | null> {
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        moderationMuted: false,
+        moderationMutedUntil: null,
+        moderationMutedBy: null,
+      },
+    });
+  }
+
   /**
    * Personal (per-member) notification mute — mirrors PrivateRoomRepository's
    * setMuted/setUnmuted, but stored on the GroupMember row itself since group

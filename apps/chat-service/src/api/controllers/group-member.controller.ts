@@ -113,6 +113,33 @@ export class GroupMemberController {
       .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
   });
 
+  muteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: mutedBy } = req.auth;
+    const { roomId, userId, mutedUntil } = req.body as {
+      roomId: string;
+      userId: string;
+      mutedUntil?: string | null;
+    };
+    const result = await this.service.muteMember({
+      roomId,
+      targetUserId: userId,
+      mutedBy,
+      mutedUntil: mutedUntil ? new Date(mutedUntil) : null,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  unmuteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: actorId } = req.auth;
+    const { roomId, userId } = req.body as { roomId: string; userId: string };
+    const result = await this.service.unmuteMember({
+      roomId,
+      targetUserId: userId,
+      actorId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   getMembers = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 50;

@@ -29,6 +29,7 @@ import {
 import {
   assertGroupMember,
   assertGroupReadAccess,
+  assertGroupMemberNotMuted,
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
@@ -120,6 +121,7 @@ export class GroupMessageService {
       params.senderId
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    assertGroupMemberNotMuted(member);
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.

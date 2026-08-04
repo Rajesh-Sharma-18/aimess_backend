@@ -41,6 +41,19 @@ export const muteGroupSchema = z.object({
   muteUntil: z.string().datetime().nullish(),
 });
 
+// Moderator-imposed mute on ANOTHER member — distinct from muteGroupSchema
+// (self-notification mute for the caller's own membership).
+export const muteMemberSchema = z.object({
+  roomId: z.string().min(5).max(100),
+  userId: z.string().min(5).max(100),
+  mutedUntil: z.string().datetime().nullish(),
+});
+
+export const unmuteMemberSchema = z.object({
+  roomId: z.string().min(5).max(100),
+  userId: z.string().min(5).max(100),
+});
+
 // Same reason vocabulary as private message reports — both flow into the same
 // backoffice ingest queue, so keeping the enum aligned avoids downstream
 // normalization.

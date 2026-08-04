@@ -10,6 +10,8 @@ import {
   unbanMemberSchema,
   updateRoleSchema,
   muteGroupSchema,
+  muteMemberSchema,
+  unmuteMemberSchema,
   reportMemberSchema,
 } from "../validators/group-member.validator.js";
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
@@ -60,6 +62,21 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     ctrl.muteRoom
   );
   router.post("/:roomId/unmute", authenticate, ctrl.unmuteRoom);
+
+  // Moderator-imposed mute on ANOTHER member (distinct from the self-notification
+  // mute above) — OWNER/ADMIN/MODERATOR only, same role gate as kick.
+  router.post(
+    "/mute-member",
+    authenticate,
+    validateBody(muteMemberSchema),
+    ctrl.muteMember
+  );
+  router.post(
+    "/unmute-member",
+    authenticate,
+    validateBody(unmuteMemberSchema),
+    ctrl.unmuteMember
+  );
 
   return router;
 }

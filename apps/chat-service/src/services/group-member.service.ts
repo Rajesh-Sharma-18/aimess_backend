@@ -10,7 +10,7 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import { SystemEvent } from "../types/enums.js";
-import { assertGroupMember } from "../lib/access-guard.js";
+import { assertGroupMember, isGroupMemberMuted } from "../lib/access-guard.js";
 import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -34,6 +34,7 @@ export type EnrichedGroupMember = GroupMember & {
   username: string;
   avatarUrl: string;
   isDeletedUser: boolean;
+  isMuted: boolean;
 };
 
 /**
@@ -340,6 +341,69 @@ export class GroupMemberService {
   }
 
   /**
+   * Moderator-imposed mute — same role gate as kick (OWNER/ADMIN on anyone
+   * lower; MODERATOR on MEMBER only), so a muted member cannot send/react
+   * (enforced in GroupMessageService.sendMessage via assertGroupMemberNotMuted)
+   * while keeping full read access. Distinct from `muteRoom` (self-notification
+   * mute) — this is a moderation action performed BY someone else ON a member.
+   */
+  async muteMember(params: {
+    roomId: string;
+    targetUserId: string;
+    mutedBy: string;
+    mutedUntil?: Date | null;
+  }): Promise<GroupMember | null> {
+    const actor = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.mutedBy
+    );
+    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+
+    const target = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.targetUserId
+    );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+
+    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
+      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+    }
+
+    return this.memberRepo.setModerationMute(
+      params.roomId,
+      params.targetUserId,
+      {
+        mutedBy: params.mutedBy,
+        mutedUntil: params.mutedUntil ?? null,
+      }
+    );
+  }
+
+  async unmuteMember(params: {
+    roomId: string;
+    targetUserId: string;
+    actorId: string;
+  }): Promise<GroupMember | null> {
+    const actor = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.actorId
+    );
+    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+
+    return this.memberRepo.clearModerationMute(
+      params.roomId,
+      params.targetUserId
+    );
+  }
+
+  /**
    * Ban a member: same permission/role-order rules as `kick`, but the target's
    * `status` becomes `"BANNED"` (not `"KICKED"`) and `bannedAt`/`bannedBy` are
    * populated — those two Prisma columns previously existed on the schema but
@@ -607,7 +671,10 @@ export class GroupMemberService {
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     const members = await this.memberRepo.findActiveMembers(roomId, params);
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
-      return members;
+      return members.map((member) => ({
+        ...member,
+        isMuted: isGroupMemberMuted(member),
+      }));
     }
     const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
       members.map((m) => m.userId),
@@ -630,6 +697,7 @@ export class GroupMemberService {
         username: (snap.memberId as string) || "",
         avatarUrl: urlFromMap(urlMap, (snap.avatar as string) || ""),
         isDeletedUser: snap.isDeletedUser === true,
+        isMuted: isGroupMemberMuted(member),
       };
     });
   }

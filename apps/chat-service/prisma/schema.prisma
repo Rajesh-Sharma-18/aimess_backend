@@ -283,6 +283,15 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Moderator-imposed mute (distinct from `notificationSettings.mute`, which is
+  // the member's OWN notification preference). A muted member keeps full read
+  // access but cannot send/react — mirrors community's CommunityMemberMute,
+  // collapsed onto this row since chat-service is already the sole source of
+  // truth for group membership (no cross-service mirror needed here).
+  // `moderationMutedUntil` null + `moderationMuted` true = indefinite.
+  moderationMuted       Boolean   @default(false)
+  moderationMutedUntil  DateTime?
+  moderationMutedBy     String?
   // Per-user "delete conversation" cutoff (Telegram-style): messages created
   // at/before this instant are hidden from this member, even after new
   // messages restore the group to their inbox. Distinct from `leftAt` — the
