@@ -524,25 +524,26 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
-
-          if (conversationType === "GROUP") {
-            callback({
-              code: grpc.status.UNIMPLEMENTED,
-              message: "EditMessage not supported for GROUP conversations",
-            });
-            return;
-          }
+          // Authoritative: derived from the room id, NOT req.conversationType —
+          // same rationale as sendMessage above (see resolveConversationType).
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
 
           const content = parseMessageContent(req);
-          const updated = await deps.privateMessageService.editMessage({
-            messageId: req.messageId,
-            userId: req.editorId,
-            content,
-          });
+          const updated =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.editMessage({
+                  messageId: req.messageId,
+                  userId: req.editorId,
+                  content,
+                })
+              : await deps.privateMessageService.editMessage({
+                  messageId: req.messageId,
+                  userId: req.editorId,
+                  content,
+                });
 
           const editedAtMs =
             updated.editedAt instanceof Date
@@ -582,9 +583,17 @@ export function createMessagingImpl(
                 id: updated.id,
                 clientMessageId: (updatedFull.clientMessageId as string) ?? "",
                 roomId: req.conversationId,
-                conversationType: "PRIVATE",
+                conversationType,
                 senderId: updated.senderId ?? "",
-                receiverId: (updatedFull.receiverId as string) ?? "",
+                // GROUP denormalizes senderName/senderAvatar on the row (same
+                // fields the REST edit controller reads); PRIVATE has no
+                // equivalent and keeps its receiverId instead.
+                ...(conversationType === "GROUP"
+                  ? {
+                      senderName: (updatedFull.senderName as string) ?? "",
+                      senderAvatar: (updatedFull.senderAvatar as string) ?? "",
+                    }
+                  : { receiverId: (updatedFull.receiverId as string) ?? "" }),
                 messageType: updated.messageType,
                 content: editedContent ?? null,
                 parentMessageId: (updatedFull.parentMessageId as string) || "",
