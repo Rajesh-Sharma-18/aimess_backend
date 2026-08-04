@@ -13,6 +13,7 @@ import {
 import { PLACEHOLDER_DATE_OF_BIRTH } from "../lib/profile-fields.util.js";
 import {
   discoverableWhere,
+  type ViewerGraph,
   PRIVACY_SCOPE_SELECT,
 } from "../lib/privacy-scope.js";
 
@@ -43,21 +44,18 @@ function buildSearchFilter(q: string | undefined): {
  * `where` for any viewer-facing user listing: the text filter AND the
  * `whoCanFindMe` discovery gate.
  *
- * `viewerFriendIds` is REQUIRED on every discovery query rather than defaulting
- * to `[]` — a forgotten argument must be a type error, not a silent
+ * `viewer` is REQUIRED on every discovery query rather than defaulting to an
+ * empty graph — a forgotten argument must be a type error, not a silent
  * privacy-leaking open search.
  */
 function buildDiscoveryWhere(
   q: string | undefined,
-  viewerFriendIds: string[]
+  viewer: ViewerGraph
 ): Prisma.UserProfileWhereInput {
   // Both clauses land in AND — `buildSearchFilter` already owns that key, so
   // concatenate instead of spreading (a spread would silently drop the search).
   return {
-    AND: [
-      ...(buildSearchFilter(q).AND ?? []),
-      discoverableWhere(viewerFriendIds),
-    ],
+    AND: [...(buildSearchFilter(q).AND ?? []), discoverableWhere(viewer)],
   };
 }
 
@@ -119,12 +117,12 @@ export const userProfileRepository = {
    * backs the block list and internal enrichment, where a user who hid
    * themselves from search must NOT vanish from the viewer's own block list.
    */
-  findDiscoverableByUserIds(userIds: string[], viewerFriendIds: string[]) {
+  findDiscoverableByUserIds(userIds: string[], viewer: ViewerGraph) {
     return prisma.userProfile.findMany({
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...discoverableWhere(viewerFriendIds),
+        ...discoverableWhere(viewer),
       },
       select: DISCOVERY_SELECT,
     });
@@ -209,13 +207,13 @@ export const userProfileRepository = {
     q: string | undefined,
     skip: number,
     take: number,
-    viewerFriendIds: string[]
+    viewer: ViewerGraph
   ) {
     return prisma.userProfile.findMany({
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewerFriendIds),
+        ...buildDiscoveryWhere(q, viewer),
       },
       select: DISCOVERY_SELECT,
       skip,
@@ -227,13 +225,13 @@ export const userProfileRepository = {
   countUsersInList(
     userIds: string[],
     q: string | undefined,
-    viewerFriendIds: string[]
+    viewer: ViewerGraph
   ) {
     return prisma.userProfile.count({
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewerFriendIds),
+        ...buildDiscoveryWhere(q, viewer),
       },
     });
   },
@@ -243,13 +241,13 @@ export const userProfileRepository = {
     q: string | undefined,
     skip: number,
     take: number,
-    viewerFriendIds: string[]
+    viewer: ViewerGraph
   ) {
     return prisma.userProfile.findMany({
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewerFriendIds),
+        ...buildDiscoveryWhere(q, viewer),
       },
       select: DISCOVERY_SELECT,
       skip,
@@ -261,13 +259,13 @@ export const userProfileRepository = {
   countUsersNotInList(
     excludeIds: string[],
     q: string | undefined,
-    viewerFriendIds: string[]
+    viewer: ViewerGraph
   ) {
     return prisma.userProfile.count({
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewerFriendIds),
+        ...buildDiscoveryWhere(q, viewer),
       },
     });
   },

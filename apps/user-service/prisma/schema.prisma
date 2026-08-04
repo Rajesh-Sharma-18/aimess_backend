@@ -288,6 +288,9 @@ enum PrivacyScope {
 }
 
 enum CallPrivacyScope {
+  // Anyone may ring this user, friend or not — the ONLY scope that lets a
+  // non-friend start a call. chat-service's friendship gate is skipped for it.
+  EVERYONE
   FRIENDS
   SELECTED_FRIENDS
   NO_ONE

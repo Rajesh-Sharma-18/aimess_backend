@@ -276,22 +276,27 @@ export const userProfileService = {
       }),
     ]);
 
+    const viewProfileScope =
+      profile.privacySettings?.whoCanViewProfile ??
+      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
+    // Only `whoCanViewProfile` offers FRIENDS_OF_FRIENDS here, and the lookup
+    // is two indexed queries — so resolve the mutual-friend edge only when that
+    // exact scope is set and the cheaper isSelf/isFriend answers do not settle it.
+    const isFriendOfFriend =
+      viewProfileScope === "FRIENDS_OF_FRIENDS" && !isSelf && !isFriend
+        ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
+        : false;
+    const relation = { isSelf, isFriend, isFriendOfFriend };
+
     const canViewProfile =
-      !isDeletedUser &&
-      scopeAdmits(
-        profile.privacySettings?.whoCanViewProfile ??
-          SCHEMA_DEFAULT_SCOPE.whoCanViewProfile,
-        isSelf,
-        isFriend
-      );
+      !isDeletedUser && scopeAdmits(viewProfileScope, relation);
     const canSeePresence =
       canViewProfile &&
       scopeAdmits(
         // Missing row → FRIENDS (the schema default), NOT EVERYONE.
         profile.privacySettings?.whoCanSeeOnlineStatus ??
           SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
-        isSelf,
-        isFriend
+        relation
       );
 
     return {

@@ -6,6 +6,11 @@
  */
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
+    resolveViewerGraph: jest.fn(async () => ({
+      friendIds: [],
+      friendOfFriendIds: [],
+    })),
+    hasMutualFriend: jest.fn(async () => false),
     findByPair: jest.fn(),
     findById: jest.fn(),
     findActivePair: jest.fn(),

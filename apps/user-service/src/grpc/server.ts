@@ -141,8 +141,12 @@ export function startUserGrpcServer(): grpc.Server {
                 // Missing row → FRIENDS (the schema default), NOT EVERYONE.
                 scopeByUserId.get(peerId) ??
                   SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
-                peerId === viewerId,
-                friendSet.has(peerId)
+                // Presence has no FRIENDS_OF_FRIENDS option, so the one-hop
+                // graph is never consulted here.
+                {
+                  isSelf: peerId === viewerId,
+                  isFriend: friendSet.has(peerId),
+                }
               )
             ),
           });

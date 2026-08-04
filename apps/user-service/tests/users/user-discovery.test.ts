@@ -8,6 +8,11 @@
  */
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
+    resolveViewerGraph: jest.fn(async () => ({
+      friendIds: [],
+      friendOfFriendIds: [],
+    })),
+    hasMutualFriend: jest.fn(async () => false),
     findAcceptedFriends: jest.fn(async () => []),
     findAllForUser: jest.fn(async () => []),
     findAllBlocks: jest.fn(async () => []),
@@ -130,14 +135,14 @@ describe("GET /api/v1/users — split mode (no type)", () => {
       "alice",
       0,
       5,
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
     expect(pRepo.findUsersNotInList).toHaveBeenCalledWith(
       expect.any(Array),
       "alice",
       0,
       5,
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
   });
 
@@ -288,7 +293,7 @@ describe("GET /api/v1/users?type=friends", () => {
       "alice",
       4,
       2,
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
   });
 
@@ -365,7 +370,7 @@ describe("GET /api/v1/users?type=others", () => {
       "bob",
       1,
       1,
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
   });
 
@@ -408,7 +413,7 @@ describe("GET /api/v1/users — validation", () => {
       '{"$ne":null}',
       expect.any(Number),
       expect.any(Number),
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
   });
 });

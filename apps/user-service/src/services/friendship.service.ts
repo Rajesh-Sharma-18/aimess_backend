@@ -482,7 +482,14 @@ export const friendshipService = {
       // Already-friends is impossible here (that throws below), so "is a
       // friend" can only mean an ACCEPTED row — which FRIENDS/FoF admits.
       const alreadyFriends = existing?.status === "ACCEPTED";
-      if (!scopeAdmits(scope, false, alreadyFriends)) {
+      // FRIENDS_OF_FRIENDS = at least one mutual friend. The lookup is two
+      // indexed queries, so only run it when the scope actually depends on the
+      // answer — EVERYONE and NO_ONE decide without touching the graph.
+      const isFriendOfFriend =
+        scope === "FRIENDS_OF_FRIENDS" && !alreadyFriends
+          ? await friendshipRepository.hasMutualFriend(requesterId, addresseeId)
+          : false;
+      if (!scopeAdmits(scope, { isFriend: alreadyFriends, isFriendOfFriend })) {
         throw new BadRequestError("FRIEND_REQUEST_NOT_ALLOWED");
       }
     }

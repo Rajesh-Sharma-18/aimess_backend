@@ -125,7 +125,7 @@ async function toUserItem(
     avatar,
     // `whoCanSeeOnlineStatus` — a denied viewer sees `false`, indistinguishable
     // from genuinely offline. Never leak the real flag here.
-    isOnline: visibleIsOnline(profile, relationship.isFriend),
+    isOnline: visibleIsOnline(profile, { isFriend: relationship.isFriend }),
     roomId,
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
@@ -208,6 +208,11 @@ export const userSearchService = {
     );
     const relationshipOf = buildRelationshipLookup(viewerId, relationships);
     const viewerFriendIds = getFriendPeerIds(viewerId, relationships);
+    // FRIENDS_OF_FRIENDS needs the one-hop expansion, not just direct friends.
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      viewerFriendIds
+    );
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -225,7 +230,7 @@ export const userSearchService = {
         recentUserIds.length
           ? userProfileRepository.findDiscoverableByUserIds(
               recentUserIds,
-              viewerFriendIds
+              viewerGraph
             )
           : Promise.resolve([]),
         recentGroupIds.length
@@ -296,6 +301,12 @@ export const userSearchService = {
     const friendIds = getFriendPeerIds(viewerId, relationships).filter(
       (id) => !blockedIds.has(id)
     );
+    // Resolved once and reused by both buckets — a FRIENDS_OF_FRIENDS target is
+    // discoverable when the viewer shares at least one mutual friend with them.
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      friendIds
+    );
 
     // ---------------------------------------------------------------------
     // Chat — max 10: accepted friends (isFriend === true), regardless of
@@ -309,7 +320,7 @@ export const userSearchService = {
             q,
             0,
             CHAT_LIMIT,
-            friendIds
+            viewerGraph
           )
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
@@ -363,7 +374,7 @@ export const userSearchService = {
         q,
         skip,
         otherTake,
-        friendIds
+        viewerGraph
       ),
       messagingGrpcClient.listOtherGroups(
         viewerId,

@@ -4,14 +4,12 @@
  * presence gRPC gate all route through here so a scope can never be enforced
  * on one surface and forgotten on another.
  *
- * `FRIENDS_OF_FRIENDS` is deliberately evaluated as `FRIENDS`: the mutual-friend
- * graph query does not exist yet, and over-restricting is the safe failure. When
- * that query lands, only `scopeAdmits` changes.
+ * `FRIENDS_OF_FRIENDS` means EXACTLY ONE hop past a direct friend: the viewer
+ * and the target must share at least one mutual friend (A↔B↔C admits C to A).
+ * Two hops (A↔B↔C↔D) is NOT friend-of-friend. Direct friends also satisfy it —
+ * the scope widens `FRIENDS`, it does not replace it.
  */
 import type { Prisma } from "../generated/prisma/client.js";
-
-/** Scopes that admit friends but not strangers. */
-const FRIEND_SCOPES = ["FRIENDS", "FRIENDS_OF_FRIENDS"] as const;
 
 /**
  * Per-field fallback when a user has NO `privacy_settings` row.
@@ -33,6 +31,22 @@ export const SCHEMA_DEFAULT_SCOPE = {
 } as const;
 
 /**
+ * How the viewer is related to the profile being evaluated.
+ *
+ * `isFriendOfFriend` defaults to false so a caller that has not resolved the
+ * mutual-friend graph over-restricts rather than over-shares. Every surface
+ * where `FRIENDS_OF_FRIENDS` is a selectable option MUST pass it — search,
+ * friend requests and profile reads all do.
+ */
+export type ViewerRelation = {
+  isSelf?: boolean;
+  /** Direct ACCEPTED friendship with the viewer. */
+  isFriend: boolean;
+  /** At least one mutual friend. Only consulted for `FRIENDS_OF_FRIENDS`. */
+  isFriendOfFriend?: boolean;
+};
+
+/**
  * Does `scope` let this viewer through? Self always passes.
  *
  * An absent scope falls through to `EVERYONE`. Callers whose field defaults to
@@ -42,16 +56,18 @@ export const SCHEMA_DEFAULT_SCOPE = {
  */
 export function scopeAdmits(
   scope: string | null | undefined,
-  isSelf: boolean,
-  isFriend: boolean
+  relation: ViewerRelation
 ): boolean {
-  if (isSelf) return true;
+  if (relation.isSelf) return true;
   switch (scope) {
     case "NO_ONE":
       return false;
     case "FRIENDS":
+      return relation.isFriend;
+    // A direct friend trivially shares the friendship edge, so FRIENDS_OF_FRIENDS
+    // admits them too — it is strictly wider than FRIENDS, never narrower.
     case "FRIENDS_OF_FRIENDS":
-      return isFriend;
+      return relation.isFriend || relation.isFriendOfFriend === true;
     default:
       return true; // EVERYONE, or unset
   }
@@ -70,17 +86,34 @@ export function scopeAdmits(
  *
  * The viewer's OWN row is not special-cased here — callers already exclude
  * self, and a user searching for themself is not a discovery decision.
+ *
+ * `friendOfFriendIds` is the pre-resolved one-hop expansion of the viewer's
+ * friend list (see `friendshipRepository.findFriendsOfFriendIds`). It is passed
+ * in rather than resolved here because a Prisma `where` fragment cannot express
+ * a graph traversal — and because the same set is reused to mask profile fields
+ * on the rows that come back, so it costs one query per request, not per row.
  */
+export type ViewerGraph = {
+  friendIds: string[];
+  /** One-hop expansion of `friendIds`, excluding self and direct friends. */
+  friendOfFriendIds: string[];
+};
+
 export function discoverableWhere(
-  viewerFriendIds: string[]
+  viewer: ViewerGraph
 ): Prisma.UserProfileWhereInput {
   return {
     OR: [
       { privacySettings: { is: null } },
       { privacySettings: { whoCanFindMe: "EVERYONE" } },
       {
-        privacySettings: { whoCanFindMe: { in: [...FRIEND_SCOPES] } },
-        userId: { in: viewerFriendIds },
+        privacySettings: { whoCanFindMe: "FRIENDS" },
+        userId: { in: viewer.friendIds },
+      },
+      {
+        privacySettings: { whoCanFindMe: "FRIENDS_OF_FRIENDS" },
+        // Direct friends qualify too — FoF widens FRIENDS, never narrows it.
+        userId: { in: [...viewer.friendIds, ...viewer.friendOfFriendIds] },
       },
     ],
   };
@@ -106,13 +139,14 @@ type ScopeCarrier = {
  */
 export function visibleIsOnline(
   profile: ScopeCarrier & { isOnline: boolean },
-  isFriend: boolean
+  relation: ViewerRelation
 ): boolean {
+  // `whoCanSeeOnlineStatus` has no FRIENDS_OF_FRIENDS option (see
+  // settings.validator.ts), so presence never consults the mutual-friend graph.
   return scopeAdmits(
     profile.privacySettings?.whoCanSeeOnlineStatus ??
       SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
-    false,
-    isFriend
+    relation
   )
     ? profile.isOnline
     : false;
@@ -121,12 +155,11 @@ export function visibleIsOnline(
 /** Does this viewer get the gated profile fields (bio, cover, counts)? */
 export function canViewProfile(
   profile: ScopeCarrier,
-  isFriend: boolean
+  relation: ViewerRelation
 ): boolean {
   return scopeAdmits(
     profile.privacySettings?.whoCanViewProfile ??
       SCHEMA_DEFAULT_SCOPE.whoCanViewProfile,
-    false,
-    isFriend
+    relation
   );
 }

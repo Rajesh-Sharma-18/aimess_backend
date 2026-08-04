@@ -1,7 +1,7 @@
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
-import { friendsRepository } from "../repositories/friends.repository.js";
+import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { visibleIsOnline } from "../lib/privacy-scope.js";
 import { recentSearchRepository } from "../repositories/recent-search.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
@@ -63,14 +63,14 @@ export const recentSearchService = {
     // `whoCanFindMe` to NO_ONE/FRIENDS must drop out of it, not linger as a
     // permanently-cached way around the setting. Rows whose profile is filtered
     // out fall through to the existing "profile deleted" QUERY fallback below.
-    const viewerFriendIds =
+    const viewerGraph =
       userIds.length > 0
-        ? await friendsRepository.listAcceptedFriendIds(userId)
-        : [];
+        ? await friendshipRepository.resolveViewerGraph(userId)
+        : { friendIds: [], friendOfFriendIds: [] };
     if (userIds.length > 0) {
       const profiles = await userProfileRepository.findDiscoverableByUserIds(
         userIds,
-        viewerFriendIds
+        viewerGraph
       );
       for (const p of profiles) profileMap.set(p.userId, p);
     }
@@ -103,10 +103,9 @@ export const recentSearchService = {
               avatarUrl: url,
               avatarUrlExpiresIn: expiresIn,
               avatar,
-              isOnline: visibleIsOnline(
-                profile,
-                viewerFriendIds.includes(profile.userId)
-              ),
+              isOnline: visibleIsOnline(profile, {
+                isFriend: viewerGraph.friendIds.includes(profile.userId),
+              }),
             },
             createdAt: row.createdAt,
           };

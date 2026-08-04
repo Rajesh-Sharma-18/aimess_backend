@@ -16,6 +16,11 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
 }));
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
+    resolveViewerGraph: jest.fn(async () => ({
+      friendIds: [],
+      friendOfFriendIds: [],
+    })),
+    hasMutualFriend: jest.fn(async () => false),
     findAllBlocks: jest.fn(async () => []),
     findAllForUser: jest.fn(async () => []),
   },
@@ -579,7 +584,7 @@ describe("GET /api/v1/users/search", () => {
       "jane",
       expect.any(Number),
       expect.any(Number),
-      expect.any(Array)
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
     expect(grpc.listOtherGroups).toHaveBeenCalledWith(
       TEST_USER_ID,

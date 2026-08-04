@@ -17,9 +17,12 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
     countUsersNotInList: jest.fn(async () => 0),
   },
 }));
-jest.mock("../../src/repositories/friends.repository.js", () => ({
-  friendsRepository: {
-    listAcceptedFriendIds: jest.fn(async () => []),
+jest.mock("../../src/repositories/friendship.repository.js", () => ({
+  friendshipRepository: {
+    resolveViewerGraph: jest.fn(async () => ({
+      friendIds: [],
+      friendOfFriendIds: [],
+    })),
   },
 }));
 jest.mock("../../src/services/avatar.service.js", () => ({
@@ -151,7 +154,7 @@ describe("GET /api/v1/users/recent-searches", () => {
     expect(pRepo.findDiscoverableByUserIds).toHaveBeenCalledTimes(1);
     expect(pRepo.findDiscoverableByUserIds).toHaveBeenCalledWith(
       expect.arrayContaining([PEER_ID, PEER_B]),
-      expect.any(Array) // viewer's friend ids, for the whoCanFindMe gate
+      expect.objectContaining({ friendIds: expect.any(Array) })
     );
   });
 
