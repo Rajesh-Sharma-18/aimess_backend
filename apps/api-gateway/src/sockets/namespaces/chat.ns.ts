@@ -85,7 +85,16 @@ const withCommunityAliases = <T extends z.ZodTypeAny>(schema: T) =>
 
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const ConvJoinSchema = withCommunityAliases(
-  z.object({ conversationId: z.string().min(1) })
+  z.object({
+    conversationId: z.string().min(1),
+    // Additive/optional: legacy clients that omit it join unchecked (private
+    // DM behavior, unchanged). GROUP join is membership-gated — see the
+    // handler below.
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).optional()
+    ),
+  })
 );
 const ConvLeaveSchema = withCommunityAliases(
   z.object({ conversationId: z.string().min(1) })
@@ -682,10 +691,38 @@ export function registerChatNamespace(
           return;
         }
         // Idempotent: re-joining an already-tracked room is a no-op in Socket.IO.
-        // NOT_FOUND / FORBIDDEN are enforced downstream at message:send time via
-        // the gRPC call to messaging-service — not at join time, because the
-        // gateway has no membership oracle for arbitrary conversation IDs.
-        // CONFLICT (already joined) is treated as success, not an error.
+        // PRIVATE (default/omitted type): NOT_FOUND / FORBIDDEN stay enforced
+        // downstream at message:send time — a fixed 2-participant room has no
+        // "left" state to leak.
+        // GROUP: membership-gated HERE, before the join, using the same
+        // ACTIVE-roster oracle typing already resolves through
+        // (getRoomParticipantIds) — mirrors community.ns.ts's community:join
+        // gate. Without this, ANY stale join (a client bug, a connection that
+        // predates a leave, a future regression) leaves a former member sitting
+        // in conv:<roomId> forever, since nothing else re-checks membership on
+        // an already-open Socket.IO room.
+        if (r.data.conversationType === "group") {
+          void (async () => {
+            try {
+              const { userIds } = await messagingClient.getRoomParticipantIds({
+                conversationId: r.data.conversationId,
+                conversationType: "group",
+              });
+              if (!userIds.includes(userId)) {
+                ackError(callback, "FORBIDDEN", locale);
+                return;
+              }
+              void socket.join(`conv:${r.data.conversationId}`);
+              ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
+            } catch (err) {
+              logger.warn(
+                `/chat conv:join group membership check failed roomId=${r.data.conversationId}: ${String(err)}`
+              );
+              ackError(callback, "FORBIDDEN", locale);
+            }
+          })();
+          return;
+        }
         void socket.join(`conv:${r.data.conversationId}`);
         ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
       }
