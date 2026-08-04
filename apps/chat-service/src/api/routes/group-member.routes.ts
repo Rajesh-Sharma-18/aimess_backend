@@ -4,6 +4,7 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
   addMemberSchema,
+  leaveGroupSchema,
   kickMemberSchema,
   banMemberSchema,
   unbanMemberSchema,
@@ -22,7 +23,12 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     validateBody(addMemberSchema),
     ctrl.addMember
   );
-  router.post("/:roomId/leave", authenticate, ctrl.leave);
+  router.post(
+    "/:roomId/leave",
+    authenticate,
+    validateBody(leaveGroupSchema),
+    ctrl.leave
+  );
   router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
   router.post("/ban", authenticate, validateBody(banMemberSchema), ctrl.ban);
   router.post(

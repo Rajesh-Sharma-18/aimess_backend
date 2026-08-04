@@ -23,7 +23,8 @@ export class GroupMemberController {
   leave = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const result = await this.service.leave(roomId, userId);
+    const { reason } = req.body as { reason?: string };
+    const result = await this.service.leave(roomId, userId, reason);
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_GROUP_LEFT", req.locale)));

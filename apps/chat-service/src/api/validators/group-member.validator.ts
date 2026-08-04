@@ -5,6 +5,10 @@ export const addMemberSchema = z.object({
   userId: z.string().min(5).max(100),
 });
 
+export const leaveGroupSchema = z.object({
+  reason: z.string().max(100).optional(),
+});
+
 export const kickMemberSchema = z.object({
   roomId: z.string().min(5).max(100),
   userId: z.string().min(5).max(100),

@@ -255,7 +255,11 @@ export class GroupMemberService {
     });
   }
 
-  async leave(roomId: string, userId: string): Promise<GroupMember | null> {
+  async leave(
+    roomId: string,
+    userId: string,
+    reason?: string
+  ): Promise<GroupMember | null> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
       userId
@@ -275,6 +279,10 @@ export class GroupMemberService {
       roomId,
       actorId: userId,
       systemEvent: SystemEvent.MEMBER_LEFT,
+      // Self-reported reason, shown only in moderator/admin surfaces — not
+      // persisted as its own GroupMember column since kick/ban don't get one
+      // either beyond kickReason; the system message is the audit trail.
+      ...(reason ? { systemData: { reason } } : {}),
     });
     this.emitGroupRemoved(roomId, userId, "LEAVE");
 
