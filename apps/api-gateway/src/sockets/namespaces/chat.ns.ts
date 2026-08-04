@@ -445,6 +445,38 @@ export function registerChatNamespace(
             })();
           }
         }
+
+        // Mirror of the group:added auto-join above, in reverse: force every
+        // live socket of a member who just left/was kicked/was banned OUT of
+        // conv:<roomId>. Without this, a socket that had already called
+        // conv:join keeps sitting in the Socket.IO room forever — nothing else
+        // ever calls conv:leave for them — so they'd keep receiving live
+        // message:new/recording broadcasts for a group they can no longer read
+        // or write to.
+        if (parsed.event === "group:left") {
+          const leftData = parsed.data as
+            | { roomId?: string }
+            | null
+            | undefined;
+          const leftRoomId = leftData?.roomId;
+          if (leftRoomId) {
+            void (async () => {
+              try {
+                const sockets = await chat.in(channel).fetchSockets();
+                await Promise.all(
+                  sockets.map((s) => s.leave(`conv:${leftRoomId}`))
+                );
+                logger.debug(
+                  `/chat evicted conv:${leftRoomId} for ${sockets.length} socket(s) of userId=${channel.slice("user:".length)}`
+                );
+              } catch (leaveErr) {
+                logger.warn(
+                  `/chat evict conv room on group:left failed roomId=${leftRoomId}: ${String(leaveErr)}`
+                );
+              }
+            })();
+          }
+        }
       } catch (err) {
         logger.warn(
           `/chat Redis message parse error on ${channel}: ${String(err)}`

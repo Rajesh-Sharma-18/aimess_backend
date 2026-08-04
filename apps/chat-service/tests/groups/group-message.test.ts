@@ -31,7 +31,8 @@ beforeEach(() => {
 
 describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   it("POSITIVE: an active member gets a message page", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
     });
     mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
@@ -62,7 +63,8 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   // timeline read path clamps to createdAt > max(joinedAt, clearedAt).
   it("VISIBILITY: passes the member's joinedAt as the timeline cutoff", async () => {
     const joinedAt = new Date("2026-07-01T00:00:00Z");
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
       joinedAt,
       clearedAt: null,
@@ -87,7 +89,8 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   it("VISIBILITY: joinedAt (rejoin) wins over an earlier clearedAt", async () => {
     const clearedAt = new Date("2026-01-01T00:00:00Z");
     const joinedAt = new Date("2026-07-01T00:00:00Z"); // rejoined after clearing
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
       joinedAt,
       clearedAt,
@@ -110,7 +113,8 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   // Resolve-on-read: the denormalized senderAvatar key AND attachment objectKeys
   // must surface as full download URLs (mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves senderAvatar + content.files object keys in history", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
     });
     mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
