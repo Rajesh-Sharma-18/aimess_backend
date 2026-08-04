@@ -662,7 +662,7 @@ export class GroupMessageService {
     cursors: AroundCursors;
     roomRevision: number;
   }> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
@@ -676,6 +676,7 @@ export class GroupMessageService {
         seq: params.seq,
         limit: params.limit,
         cutoff,
+        readCutoffBefore,
       }),
       this.roomRepo.getRoomRevision(params.roomId),
     ]);
@@ -687,7 +688,8 @@ export class GroupMessageService {
       items,
       params.roomId,
       params.userId,
-      cutoff
+      cutoff,
+      readCutoffBefore
     );
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
@@ -706,7 +708,7 @@ export class GroupMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: GroupMessage[]; anchorSeq: number } & AroundCursors> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
@@ -720,6 +722,7 @@ export class GroupMessageService {
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
       cutoff,
+      readCutoffBefore,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -731,6 +734,7 @@ export class GroupMessageService {
         seq,
         limit: 1,
         cutoff,
+        readCutoffBefore,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };

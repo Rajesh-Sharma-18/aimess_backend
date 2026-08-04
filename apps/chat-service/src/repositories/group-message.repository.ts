@@ -528,6 +528,8 @@ export class GroupMessageRepository {
     anchorSeq: number;
     limit: number;
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
     const keep = (msg: GroupMessage): boolean => {
@@ -535,9 +537,17 @@ export class GroupMessageRepository {
       const deletedFor = (raw.deletedForUserIds ?? []) as string[];
       return !deletedFor.includes(params.userId);
     };
-    const cutoffWhere = params.cutoff
-      ? { createdAt: { gt: params.cutoff } }
-      : {};
+    const cutoffWhere =
+      params.cutoff || params.readCutoffBefore
+        ? {
+            createdAt: {
+              ...(params.cutoff ? { gt: params.cutoff } : {}),
+              ...(params.readCutoffBefore
+                ? { lte: params.readCutoffBefore }
+                : {}),
+            },
+          }
+        : {};
     const [before, anchorAndAfter] = await Promise.all([
       this.prisma.groupMessage.findMany({
         where: {

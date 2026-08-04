@@ -225,25 +225,34 @@ export class GroupMemberService {
   }
 
   /**
-   * `group:left` → the FORMER member's own `user:<id>` channel — the api-gateway
-   * reacts by force-`leave()`-ing every one of their live sockets out of
-   * `conv:<roomId>`, mirroring the `group:added` auto-JOIN this same channel
-   * already drives. Without this, a socket that called `conv:join` while still
-   * ACTIVE keeps sitting in that Socket.IO room forever (nothing else ever
-   * calls `conv:leave` for them), so they'd keep receiving live message:new /
-   * typing / recording broadcasts for a group they're no longer in. Covers
-   * leave, kick, and ban alike — the target's own socket must never keep
-   * hearing a room it can no longer read or write to. Fire-and-forget: never
-   * blocks or fails the membership-status change itself.
+   * `group:removed` → the FORMER member's own `user:<id>` channel. The frontend
+   * (`GroupRemovedPayload`/`handleGroupRemoved` in MessageThreadsContext.tsx)
+   * already had this exact contract wired up for multi-device sync — it was
+   * simply never published from anywhere server-side until now. The
+   * api-gateway ALSO reacts to it by force-`leave()`-ing every one of the
+   * target's live sockets out of `conv:<roomId>`, mirroring the `group:added`
+   * auto-JOIN this same channel already drives. Without this, a socket that
+   * called `conv:join` while still ACTIVE keeps sitting in that Socket.IO
+   * room forever (nothing else ever calls `conv:leave` for them), so they'd
+   * keep receiving live message:new/typing/recording broadcasts for a group
+   * they're no longer in. Covers leave, kick, and ban alike — the target's
+   * own socket must never keep hearing a room it can no longer read or write
+   * to. Fire-and-forget: never blocks or fails the membership-status change.
    */
-  private emitGroupLeft(roomId: string, userId: string): void {
-    publishChatUserEvent(this.redis, userId, "group:left", { roomId }).catch(
-      (err: unknown) => {
-        logger.warn(
-          `GroupMemberService|group:left publish failed room=${roomId} user=${userId}: ${String(err)}`
-        );
-      }
-    );
+  private emitGroupRemoved(
+    roomId: string,
+    userId: string,
+    reason: "LEAVE" | "KICK" | "BAN"
+  ): void {
+    publishChatUserEvent(this.redis, userId, "group:removed", {
+      roomId,
+      reason,
+      removedAt: new Date().toISOString(),
+    }).catch((err: unknown) => {
+      logger.warn(
+        `GroupMemberService|group:removed publish failed room=${roomId} user=${userId} reason=${reason}: ${String(err)}`
+      );
+    });
   }
 
   async leave(roomId: string, userId: string): Promise<GroupMember | null> {
@@ -267,7 +276,7 @@ export class GroupMemberService {
       actorId: userId,
       systemEvent: SystemEvent.MEMBER_LEFT,
     });
-    this.emitGroupLeft(roomId, userId);
+    this.emitGroupRemoved(roomId, userId, "LEAVE");
 
     return updated;
   }
@@ -317,7 +326,7 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: { targetUserId: params.targetUserId },
     });
-    this.emitGroupLeft(params.roomId, params.targetUserId);
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
 
     return updated;
   }
@@ -377,7 +386,7 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: { targetUserId: params.targetUserId },
     });
-    this.emitGroupLeft(params.roomId, params.targetUserId);
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
 
     return updated;
   }

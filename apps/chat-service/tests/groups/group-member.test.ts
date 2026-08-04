@@ -159,6 +159,18 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
 
     expect(res.status).toBe(200);
     expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalled();
+    // group:removed(reason:LEAVE) on the caller's own channel — the gateway
+    // uses this to evict their live sockets from conv:<roomId> and to sync
+    // the read-only state to their other devices (MessageThreadsContext's
+    // handleGroupRemoved).
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"event":"group:removed"')
+    );
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"reason":"LEAVE"')
+    );
   });
 
   it("NEGATIVE: 400 when the OWNER tries to leave", async () => {

@@ -453,25 +453,67 @@ export function registerChatNamespace(
         // ever calls conv:leave for them — so they'd keep receiving live
         // message:new/recording broadcasts for a group they can no longer read
         // or write to.
-        if (parsed.event === "group:left") {
-          const leftData = parsed.data as
+        if (parsed.event === "group:removed") {
+          const removedData = parsed.data as
             | { roomId?: string }
             | null
             | undefined;
-          const leftRoomId = leftData?.roomId;
-          if (leftRoomId) {
+          const removedRoomId = removedData?.roomId;
+          if (removedRoomId) {
+            const removedUserId = channel.slice("user:".length);
             void (async () => {
               try {
                 const sockets = await chat.in(channel).fetchSockets();
                 await Promise.all(
-                  sockets.map((s) => s.leave(`conv:${leftRoomId}`))
+                  sockets.map((s) => s.leave(`conv:${removedRoomId}`))
                 );
                 logger.debug(
-                  `/chat evicted conv:${leftRoomId} for ${sockets.length} socket(s) of userId=${channel.slice("user:".length)}`
+                  `/chat evicted conv:${removedRoomId} for ${sockets.length} socket(s) of userId=${removedUserId}`
                 );
               } catch (leaveErr) {
                 logger.warn(
-                  `/chat evict conv room on group:left failed roomId=${leftRoomId}: ${String(leaveErr)}`
+                  `/chat evict conv room on group:removed failed roomId=${removedRoomId}: ${String(leaveErr)}`
+                );
+              }
+            })();
+
+            // Clear any stale typing/recording indicator the removed member
+            // left behind — mirrors community.ns.ts's evict-on-removal. Group
+            // typing is delivered DIRECTLY to each remaining member's
+            // user:<id> (room-independent, see the typing handler below), so
+            // clearing it needs the roster; recording rides conv:<roomId>
+            // directly, which the still-subscribed remaining members are in.
+            void (async () => {
+              try {
+                const stopPayload = buildTypingBroadcast(
+                  removedUserId,
+                  {
+                    userId: removedUserId,
+                    username: "",
+                    displayName: "",
+                    avatarUrl: null,
+                  },
+                  removedRoomId,
+                  Date.now(),
+                  {}
+                );
+                chat
+                  .to(`conv:${removedRoomId}`)
+                  .emit("recording:stop", stopPayload);
+
+                const { userIds } = await messagingClient.getRoomParticipantIds(
+                  {
+                    conversationId: removedRoomId,
+                    conversationType: "group",
+                  }
+                );
+                for (const uid of userIds) {
+                  if (uid === removedUserId) continue;
+                  chat.to(`user:${uid}`).emit("typing:stop", stopPayload);
+                }
+              } catch (stopErr) {
+                logger.warn(
+                  `/chat clear typing/recording on group:removed failed roomId=${removedRoomId}: ${String(stopErr)}`
                 );
               }
             })();
