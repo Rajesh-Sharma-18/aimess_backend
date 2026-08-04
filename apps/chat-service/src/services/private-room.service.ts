@@ -27,6 +27,7 @@ import {
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
+import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 
@@ -293,7 +294,10 @@ export class PrivateRoomService {
         callerId: string,
         candidateIds: string[]
       ): Promise<Map<string, ChatFriendshipInfo>>;
-    }
+    },
+    // ponytail: optional — omitted in existing unit tests; pin clearing on
+    // delete just becomes a no-op (matches the pre-existing behavior).
+    private readonly pinService?: PrivatePinService
   ) {}
 
   /**
@@ -802,6 +806,37 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     await this.privateRoomRepo.setDeletedFor(roomId, userId);
+
+    // The pin belongs to the room, not either user — clear it so a stale
+    // pin doesn't resurface if the room becomes visible again later (e.g.
+    // a new message arrives after this delete). Best-effort: must not fail
+    // the delete itself.
+    const clearedPin = await this.pinService
+      ?.clearActivePin(roomId, userId)
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateRoomService|deleteForMe: clearActivePin failed: ${String(err)}`
+        );
+        return null;
+      });
+    if (clearedPin) {
+      this.redis
+        .publish(
+          `conv:${roomId}`,
+          JSON.stringify({
+            event: "pin:updated",
+            data: {
+              roomId,
+              conversationId: roomId,
+              messageId: clearedPin.messageId,
+              unpinnedBy: userId,
+              action: "unpinned",
+              pinnedCount: 0,
+            },
+          })
+        )
+        .catch(() => {});
+    }
 
     // Notify the user that the conversation was deleted from their view.
     this.redis

@@ -225,25 +225,6 @@ export function buildApp(): BuiltApp {
     privateRoomRepo
   );
 
-  const privateRoomService = new PrivateRoomService(
-    privateRoomRepo,
-    privateMessageRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    redis,
-    presenceService,
-    friendshipGrpcClient
-  );
-  const privateMessageService = new PrivateMessageService(
-    privateMessageRepo,
-    privateRoomRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    privateMessageReportRepo,
-    communityClient
-  );
   const privateSystemMessageService = new PrivateSystemMessageService(
     privateMessageRepo,
     privateRoomRepo,
@@ -258,6 +239,27 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService,
     privateSystemMessageService
+  );
+
+  const privateRoomService = new PrivateRoomService(
+    privateRoomRepo,
+    privateMessageRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    redis,
+    presenceService,
+    friendshipGrpcClient,
+    privatePinService
+  );
+  const privateMessageService = new PrivateMessageService(
+    privateMessageRepo,
+    privateRoomRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    privateMessageReportRepo,
+    communityClient
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(
