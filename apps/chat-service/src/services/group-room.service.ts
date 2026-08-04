@@ -51,6 +51,9 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
   unreadCount: number;
   role: string;
+  /** True when the caller voluntarily left this group — kept in the inbox
+   *  read-only (history intact, `isJoined: false`), WhatsApp-style. */
+  hasLeft: boolean;
   /**
    * Telegram-style tick for the last message, but ONLY meaningful when the
    * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
@@ -574,7 +577,10 @@ export class GroupRoomService {
   }
 
   async countUserGroups(userId: string, q?: string): Promise<number> {
-    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    // Matches getInboxGroups' membership source (ACTIVE + LEFT) so this total
+    // stays consistent with what the inbox page actually returns.
+    const memberships =
+      await this.memberRepo.getActiveOrLeftMemberships(userId);
     if (!memberships.length) return 0;
     const clearedByRoom = new Map(
       memberships.map((m) => [m.roomId, m.clearedAt])
@@ -666,7 +672,7 @@ export class GroupRoomService {
     inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedGroupRoom[]> {
-    const memberships = await this.memberRepo.getActiveMemberships(
+    const memberships = await this.memberRepo.getActiveOrLeftMemberships(
       params.userId
     );
     if (!memberships.length) return [];
@@ -711,14 +717,17 @@ export class GroupRoomService {
         settings.mute === true ||
         (settings.muteUntil != null &&
           new Date(settings.muteUntil).getTime() > now);
-      const isJoined = membership != null;
+      const isJoined = membership?.status === "ACTIVE";
+      const hasLeft = membership?.status === "LEFT";
       return {
         ...room,
         avatar: urlFromMap(avatarUrls, room.avatar),
         isMuted,
-        unreadCount: membership?.unreadCount ?? 0,
+        // A left member accrues no unread — their cursor is frozen at leftAt.
+        unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
         role: membership?.role ?? "MEMBER",
         isJoined,
+        hasLeft,
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });

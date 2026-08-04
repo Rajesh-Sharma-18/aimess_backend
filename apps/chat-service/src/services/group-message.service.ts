@@ -26,7 +26,10 @@ import {
   toWireMessage,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
-import { assertGroupMember } from "../lib/access-guard.js";
+import {
+  assertGroupMember,
+  assertGroupReadAccess,
+} from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import { isObjectId } from "../lib/object-id.js";
@@ -570,7 +573,7 @@ export class GroupMessageService {
     cursors: AroundCursors;
     roomRevision: number;
   }> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
@@ -587,11 +590,13 @@ export class GroupMessageService {
           inclusive: params.inclusive ?? false,
           limit: params.limit,
           cutoff,
+          readCutoffBefore,
         }),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
           cutoff,
+          readCutoffBefore,
         }),
         this.roomRepo.getRoomRevision(params.roomId),
       ]);
@@ -600,7 +605,8 @@ export class GroupMessageService {
       items,
       params.roomId,
       params.userId,
-      cutoff
+      cutoff,
+      readCutoffBefore
     );
 
     // The repo returns the page in DB order (before → newest-first, after →
@@ -623,7 +629,8 @@ export class GroupMessageService {
     page: GroupMessage[],
     roomId: string,
     userId: string,
-    cutoff: Date | undefined
+    cutoff: Date | undefined,
+    readCutoffBefore?: Date
   ): Promise<AroundCursors> {
     return computeSeqPageCursors(page, (direction, seq) =>
       this.messageRepo.findByRoomIdSeq({
@@ -633,6 +640,7 @@ export class GroupMessageService {
         seq,
         limit: 1,
         cutoff,
+        readCutoffBefore,
       })
     );
   }

@@ -70,6 +70,29 @@ export async function assertGroupMember(
 }
 
 /**
+ * Group READ access: an ACTIVE member reads everything; a member who
+ * voluntarily LEFT keeps read access to history up to (and including) the
+ * moment they left (WhatsApp-style — the chat stays visible, read-only, no
+ * new messages). Kicked/banned/never-a-member callers are denied, same as
+ * {@link assertGroupMember} — this only widens the LEFT case.
+ *
+ * @throws ForbiddenError `CHAT_NOT_A_MEMBER` for anyone who isn't currently
+ *   active or a past voluntary leaver (kicked/banned/no row).
+ */
+export async function assertGroupReadAccess(
+  memberRepo: Pick<GroupMemberRepository, "findByRoomAndUser">,
+  roomId: string,
+  userId: string
+): Promise<{ member: GroupMember; readCutoffBefore?: Date }> {
+  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+  if (member?.status === "ACTIVE") return { member };
+  if (member?.status === "LEFT" && member.leftAt) {
+    return { member, readCutoffBefore: member.leftAt };
+  }
+  throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+}
+
+/**
  * Live role lookup against community-service's AUTHORITATIVE
  * `CommunityMember.role` — NOT chat-service's locally-mirrored `RoomMember.role`,
  * which is a one-way, async, best-effort sync (`events/community-room-sync.consumer.ts`)
