@@ -402,7 +402,12 @@ export function registerChatNamespace(
           // A user's own privacy/notification settings. MUST stay self-only —
           // `user:<id>` is joined by presence subscribers, i.e. the very peers
           // some of these settings exist to hide things from.
-          parsed.event === "settings:updated";
+          parsed.event === "settings:updated" ||
+          // A conversation the user deleted-for-me/cleared from their own
+          // view. MUST stay self-only — otherwise a peer merely watching this
+          // user's presence would learn they deleted a conversation (and its
+          // roomId, which may be with a third party entirely).
+          parsed.event === "conv:deleted";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
