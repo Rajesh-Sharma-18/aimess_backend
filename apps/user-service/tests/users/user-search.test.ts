@@ -7,6 +7,7 @@ jest.mock("../../src/repositories/recent-user-search.repository.js", () => ({
 jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
     findByUserIds: jest.fn(async () => []),
+    findDiscoverableByUserIds: jest.fn(async () => []),
     findUsersInList: jest.fn(async () => []),
     countUsersInList: jest.fn(async () => 0),
     findUsersNotInList: jest.fn(async () => []),
@@ -95,7 +96,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   recentRepo.findByUserId.mockResolvedValue([]);
   recentRepo.upsert.mockResolvedValue(undefined);
-  pRepo.findByUserIds.mockResolvedValue([]);
+  pRepo.findDiscoverableByUserIds.mockResolvedValue([]);
   pRepo.findUsersInList.mockResolvedValue([]);
   pRepo.findUsersNotInList.mockResolvedValue([]);
   friendRepo.findAllBlocks.mockResolvedValue([]);
@@ -220,7 +221,7 @@ describe("GET /api/v1/users/search", () => {
 
   it("returns a Recent USER entry with roomId resolved dynamically", async () => {
     recentRepo.findByUserId.mockResolvedValue([recentUserRow()]);
-    pRepo.findByUserIds.mockResolvedValue([profile(PEER_ID)]);
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(PEER_ID)]);
     grpc.resolvePrivateRooms.mockResolvedValue([
       { peerUserId: PEER_ID, roomId: "room_abc" },
     ]);
@@ -272,7 +273,7 @@ describe("GET /api/v1/users/search", () => {
 
   it("excludes a blocked user from Recent even if it was viewed before", async () => {
     recentRepo.findByUserId.mockResolvedValue([recentUserRow()]);
-    pRepo.findByUserIds.mockResolvedValue([profile(PEER_ID)]);
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(PEER_ID)]);
     friendRepo.findAllBlocks.mockResolvedValue([
       { blockerId: TEST_USER_ID, blockedId: PEER_ID },
     ]);
@@ -577,7 +578,8 @@ describe("GET /api/v1/users/search", () => {
       expect.any(Array),
       "jane",
       expect.any(Number),
-      expect.any(Number)
+      expect.any(Number),
+      expect.any(Array)
     );
     expect(grpc.listOtherGroups).toHaveBeenCalledWith(
       TEST_USER_ID,

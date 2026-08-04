@@ -27,6 +27,7 @@ import type {
   SignInProvider,
 } from "../types/auth-account.types.js";
 import { isProfileComplete } from "../lib/profile-completion.util.js";
+import { SCHEMA_DEFAULT_SCOPE, scopeAdmits } from "../lib/privacy-scope.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type {
@@ -225,28 +226,6 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   return profile;
 }
 
-/**
- * Does `scope` admit this viewer? `FRIENDS_OF_FRIENDS` is treated as FRIENDS —
- * the graph query it would need does not exist yet and over-sharing is the
- * worse failure. Self always passes.
- */
-function scopeAdmits(
-  scope: string | null | undefined,
-  isSelf: boolean,
-  isFriend: boolean
-): boolean {
-  if (isSelf) return true;
-  switch (scope) {
-    case "NO_ONE":
-      return false;
-    case "FRIENDS":
-    case "FRIENDS_OF_FRIENDS":
-      return isFriend;
-    default:
-      return true; // EVERYONE, or unset (the schema default)
-  }
-}
-
 export const userProfileService = {
   /**
    * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
@@ -299,11 +278,18 @@ export const userProfileService = {
 
     const canViewProfile =
       !isDeletedUser &&
-      scopeAdmits(profile.privacySettings?.whoCanViewProfile, isSelf, isFriend);
+      scopeAdmits(
+        profile.privacySettings?.whoCanViewProfile ??
+          SCHEMA_DEFAULT_SCOPE.whoCanViewProfile,
+        isSelf,
+        isFriend
+      );
     const canSeePresence =
       canViewProfile &&
       scopeAdmits(
-        profile.privacySettings?.whoCanSeeOnlineStatus,
+        // Missing row → FRIENDS (the schema default), NOT EVERYONE.
+        profile.privacySettings?.whoCanSeeOnlineStatus ??
+          SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
         isSelf,
         isFriend
       );

@@ -9,6 +9,7 @@ import {
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
+import { visibleIsOnline } from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { recentUserSearchRepository } from "../repositories/recent-user-search.repository.js";
 import { RecentSearchTargetType } from "../generated/prisma/client.js";
@@ -85,6 +86,10 @@ type BasicProfile = {
   lastName: string;
   avatarUrl: string | null;
   isOnline: boolean;
+  privacySettings?: {
+    whoCanSeeOnlineStatus?: string | null;
+    whoCanViewProfile?: string | null;
+  } | null;
 };
 
 async function resolveAvatar(stored: string | null) {
@@ -118,7 +123,9 @@ async function toUserItem(
     avatarUrl: url,
     avatarUrlExpiresIn: expiresIn,
     avatar,
-    isOnline: profile.isOnline,
+    // `whoCanSeeOnlineStatus` — a denied viewer sees `false`, indistinguishable
+    // from genuinely offline. Never leak the real flag here.
+    isOnline: visibleIsOnline(profile, relationship.isFriend),
     roomId,
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
@@ -200,6 +207,7 @@ export const userSearchService = {
       blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
     );
     const relationshipOf = buildRelationshipLookup(viewerId, relationships);
+    const viewerFriendIds = getFriendPeerIds(viewerId, relationships);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -215,7 +223,10 @@ export const userSearchService = {
     const [recentProfiles, recentGroups, recentRoomMatches] = await Promise.all(
       [
         recentUserIds.length
-          ? userProfileRepository.findByUserIds(recentUserIds)
+          ? userProfileRepository.findDiscoverableByUserIds(
+              recentUserIds,
+              viewerFriendIds
+            )
           : Promise.resolve([]),
         recentGroupIds.length
           ? messagingGrpcClient.getGroupsByIds(viewerId, recentGroupIds)
@@ -293,7 +304,13 @@ export const userSearchService = {
     // ---------------------------------------------------------------------
     const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
       friendIds.length
-        ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
+        ? userProfileRepository.findUsersInList(
+            friendIds,
+            q,
+            0,
+            CHAT_LIMIT,
+            friendIds
+          )
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
     ]);
@@ -345,7 +362,8 @@ export const userSearchService = {
         excludeUserIds,
         q,
         skip,
-        otherTake
+        otherTake,
+        friendIds
       ),
       messagingGrpcClient.listOtherGroups(
         viewerId,

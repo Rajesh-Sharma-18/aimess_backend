@@ -398,7 +398,11 @@ export function registerChatNamespace(
         // instead of the shared identity room.
         const isSelfOnlyEvent =
           parsed.event.startsWith("call:") ||
-          parsed.event === "chat:unread_summary";
+          parsed.event === "chat:unread_summary" ||
+          // A user's own privacy/notification settings. MUST stay self-only —
+          // `user:<id>` is joined by presence subscribers, i.e. the very peers
+          // some of these settings exist to hide things from.
+          parsed.event === "settings:updated";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
@@ -1005,10 +1009,23 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        for (const peerId of r.data.peerIds) {
-          void socket.join(`user:${peerId}`);
-        }
-        ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale);
+        // `whoCanSeeOnlineStatus` gate. Joining `user:<peerId>` is what makes a
+        // peer's presence (and every other broadcast to that room) reachable,
+        // so the filter has to happen BEFORE the join — masking on emit would
+        // be too late. Denied peers are silently dropped rather than erroring:
+        // a per-peer rejection would itself disclose the setting.
+        void (async () => {
+          const visible = await userClient.filterVisiblePresence(
+            userId,
+            r.data.peerIds
+          );
+          for (const peerId of visible) {
+            void socket.join(`user:${peerId}`);
+          }
+          ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale, {
+            subscribedCount: visible.length,
+          });
+        })();
       }
     );
 

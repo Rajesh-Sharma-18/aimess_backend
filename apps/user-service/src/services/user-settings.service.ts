@@ -1,6 +1,7 @@
 import { BadRequestError, NotFoundError, ConflictError } from "@aimess/errors";
 
 import type { UpdateSettingsInput } from "../api/validators/settings.validator.js";
+import { emitSettingsUpdatedSafe } from "../lib/friend-socket.js";
 import { publishSettingsUpdatedSafe } from "../messaging/publish-settings-updated.js";
 import {
   type NotificationSettingsUpdate,
@@ -165,6 +166,7 @@ export const userSettingsService = {
     }
 
     await userSettingsRepository.addCallAllowedFriend(userId, friendId);
+    await this.broadcastSettings(userId);
   },
 
   async removeCallAllowedFriend(
@@ -172,6 +174,17 @@ export const userSettingsService = {
     friendId: string
   ): Promise<void> {
     await userSettingsRepository.removeCallAllowedFriend(userId, friendId);
+    await this.broadcastSettings(userId);
+  },
+
+  /**
+   * Re-read and push the current settings to the user's other devices. The
+   * Selected-Friends allow-list is edited one friend at a time, so each
+   * add/remove is its own authorization change and has to sync on its own.
+   */
+  async broadcastSettings(userId: string): Promise<void> {
+    const bundle = await loadSettingsBundle(userId);
+    emitSettingsUpdatedSafe(userId, mapSettingsBundle(bundle));
   },
 
   async updateMySettings(
@@ -208,6 +221,7 @@ export const userSettingsService = {
     });
 
     const updated = await loadSettingsBundle(userId);
+    const response = mapSettingsBundle(updated);
 
     // Let notifications-service bust its cached notification-settings entry.
     publishSettingsUpdatedSafe({
@@ -215,6 +229,12 @@ export const userSettingsService = {
       updatedAt: new Date().toISOString(),
     });
 
-    return mapSettingsBundle(updated);
+    // Push the full new state to this user's OTHER logged-in devices (web /
+    // Android / iOS) so nothing has to poll or re-login to converge. Carries
+    // the same DTO `GET /settings/me` returns, so a client can swap its cache
+    // wholesale instead of patching field-by-field.
+    emitSettingsUpdatedSafe(userId, response);
+
+    return response;
   },
 };

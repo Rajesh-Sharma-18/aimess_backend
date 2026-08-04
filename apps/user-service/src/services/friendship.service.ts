@@ -25,8 +25,10 @@ import {
   toSearchRelationship,
   type FriendshipView,
 } from "../lib/friendship-view.js";
+import { scopeAdmits } from "../lib/privacy-scope.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { userCache } from "../lib/user-cache.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { env } from "../config/env.js";
@@ -467,6 +469,23 @@ export const friendshipService = {
       requesterId,
       addresseeId
     );
+
+    // `whoCanSendFriendRequests` — enforced here, the single funnel every
+    // client (REST, socket, QR deep-link) reaches. Skipped when a PENDING row
+    // already exists in the OTHER direction: that path only auto-accepts the
+    // addressee's own outstanding request, which their setting cannot forbid.
+    const isMutualAccept =
+      existing?.status === "PENDING" && existing.requesterId === addresseeId;
+    if (!isMutualAccept) {
+      const scope =
+        await userSettingsRepository.findFriendRequestPrivacy(addresseeId);
+      // Already-friends is impossible here (that throws below), so "is a
+      // friend" can only mean an ACCEPTED row — which FRIENDS/FoF admits.
+      const alreadyFriends = existing?.status === "ACCEPTED";
+      if (!scopeAdmits(scope, false, alreadyFriends)) {
+        throw new BadRequestError("FRIEND_REQUEST_NOT_ALLOWED");
+      }
+    }
 
     if (existing) {
       if (existing.status === "ACCEPTED") {

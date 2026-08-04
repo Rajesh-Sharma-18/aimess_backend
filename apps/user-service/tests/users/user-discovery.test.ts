@@ -129,13 +129,15 @@ describe("GET /api/v1/users — split mode (no type)", () => {
       expect.any(Array),
       "alice",
       0,
-      5
+      5,
+      expect.any(Array)
     );
     expect(pRepo.findUsersNotInList).toHaveBeenCalledWith(
       expect.any(Array),
       "alice",
       0,
-      5
+      5,
+      expect.any(Array)
     );
   });
 
@@ -285,7 +287,8 @@ describe("GET /api/v1/users?type=friends", () => {
       expect.any(Array),
       "alice",
       4,
-      2
+      2,
+      expect.any(Array)
     );
   });
 
@@ -361,7 +364,8 @@ describe("GET /api/v1/users?type=others", () => {
       expect.any(Array),
       "bob",
       1,
-      1
+      1,
+      expect.any(Array)
     );
   });
 
@@ -403,7 +407,8 @@ describe("GET /api/v1/users — validation", () => {
       expect.any(Array),
       '{"$ne":null}',
       expect.any(Number),
-      expect.any(Number)
+      expect.any(Number),
+      expect.any(Array)
     );
   });
 });

@@ -10,10 +10,16 @@ jest.mock("../../src/repositories/recent-search.repository.js", () => ({
 jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
     findByUserIds: jest.fn(async () => []),
+    findDiscoverableByUserIds: jest.fn(async () => []),
     findUsersInList: jest.fn(async () => []),
     countUsersInList: jest.fn(async () => 0),
     findUsersNotInList: jest.fn(async () => []),
     countUsersNotInList: jest.fn(async () => 0),
+  },
+}));
+jest.mock("../../src/repositories/friends.repository.js", () => ({
+  friendsRepository: {
+    listAcceptedFriendIds: jest.fn(async () => []),
   },
 }));
 jest.mock("../../src/services/avatar.service.js", () => ({
@@ -81,7 +87,7 @@ beforeEach(() => {
   repo.upsert.mockResolvedValue(undefined);
   repo.deleteById.mockResolvedValue({ count: 1 });
   repo.clearAll.mockResolvedValue({ count: 0 });
-  pRepo.findByUserIds.mockResolvedValue([]);
+  pRepo.findDiscoverableByUserIds.mockResolvedValue([]);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -101,7 +107,7 @@ describe("GET /api/v1/users/recent-searches", () => {
 
   it("returns a USER type entry with enriched profile", async () => {
     repo.findByUserId.mockResolvedValue([makeUserRow()]);
-    pRepo.findByUserIds.mockResolvedValue([profile(PEER_ID)]);
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(PEER_ID)]);
 
     const res = await request(app)
       .get("/api/v1/users/recent-searches")
@@ -135,19 +141,23 @@ describe("GET /api/v1/users/recent-searches", () => {
       makeUserRow({ id: "id1", searchedUserId: PEER_ID }),
       makeUserRow({ id: "id2", searchedUserId: PEER_B }),
     ]);
-    pRepo.findByUserIds.mockResolvedValue([profile(PEER_ID), profile(PEER_B)]);
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([
+      profile(PEER_ID),
+      profile(PEER_B),
+    ]);
 
     await request(app).get("/api/v1/users/recent-searches").set(auth());
 
-    expect(pRepo.findByUserIds).toHaveBeenCalledTimes(1);
-    expect(pRepo.findByUserIds).toHaveBeenCalledWith(
-      expect.arrayContaining([PEER_ID, PEER_B])
+    expect(pRepo.findDiscoverableByUserIds).toHaveBeenCalledTimes(1);
+    expect(pRepo.findDiscoverableByUserIds).toHaveBeenCalledWith(
+      expect.arrayContaining([PEER_ID, PEER_B]),
+      expect.any(Array) // viewer's friend ids, for the whoCanFindMe gate
     );
   });
 
   it("gracefully falls back to QUERY type when profile is deleted", async () => {
     repo.findByUserId.mockResolvedValue([makeUserRow()]);
-    pRepo.findByUserIds.mockResolvedValue([]); // profile gone
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([]); // profile gone
 
     const res = await request(app)
       .get("/api/v1/users/recent-searches")

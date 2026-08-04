@@ -11,6 +11,7 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
+import { SCHEMA_DEFAULT_SCOPE, scopeAdmits } from "../lib/privacy-scope.js";
 import { avatarService } from "../services/avatar.service.js";
 import {
   buildFriendshipView,
@@ -100,6 +101,53 @@ export function startUserGrpcServer(): grpc.Server {
           callback(null, row);
         } catch (err) {
           logger.error(`gRPC getCallPrivacy error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Viewer-scoped presence filter for the gateway's `presence:subscribe`
+    // gate. Returns only the peers whose `whoCanSeeOnlineStatus` admits this
+    // viewer; on any error the caller must fail CLOSED (empty list), never open.
+    filterVisiblePresence: (
+      call: grpc.ServerUnaryCall<
+        { viewerId: string; peerIds: string[] },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<{ visiblePeerIds: string[] }>
+    ) => {
+      void (async () => {
+        try {
+          const viewerId = call.request.viewerId ?? "";
+          const peerIds = [...new Set(call.request.peerIds ?? [])].slice(
+            0,
+            500
+          );
+          if (!viewerId || peerIds.length === 0) {
+            callback(null, { visiblePeerIds: [] });
+            return;
+          }
+          const [friendIds, scopeByUserId] = await Promise.all([
+            friendshipRepository.findAcceptedFriendIdsForUser(
+              viewerId,
+              peerIds
+            ),
+            userSettingsRepository.findOnlineVisibilityScopes(peerIds),
+          ]);
+          const friendSet = new Set(friendIds);
+          callback(null, {
+            visiblePeerIds: peerIds.filter((peerId) =>
+              scopeAdmits(
+                // Missing row → FRIENDS (the schema default), NOT EVERYONE.
+                scopeByUserId.get(peerId) ??
+                  SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
+                peerId === viewerId,
+                friendSet.has(peerId)
+              )
+            ),
+          });
+        } catch (err) {
+          logger.error(`gRPC filterVisiblePresence error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

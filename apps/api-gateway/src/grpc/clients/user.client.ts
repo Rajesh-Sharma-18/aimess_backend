@@ -19,6 +19,12 @@ export interface UserSnapshotRecord {
 }
 export type UserClient = {
   bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[] | null>;
+  /**
+   * The subset of `peerIds` whose `whoCanSeeOnlineStatus` admits `viewerId`.
+   * Returns `[]` — never the input list — when user-service is unreachable or
+   * the breaker is open: presence is a privacy decision, so it fails CLOSED.
+   */
+  filterVisiblePresence(viewerId: string, peerIds: string[]): Promise<string[]>;
 };
 
 export function createUserClient(): UserClient {
@@ -53,8 +59,21 @@ export function createUserClient(): UserClient {
       ).then((r) => r.users ?? [])
   );
 
+  const presenceBreaker = makeBreaker(
+    "user.filterVisiblePresence",
+    (p: { viewerId: string; peerIds: string[] }) =>
+      call<typeof p, { visiblePeerIds: string[] }>(
+        "filterVisiblePresence",
+        p
+      ).then((r) => r.visiblePeerIds ?? [])
+  );
+
   return {
     bulkGetUserSnapshots: (userIds) =>
       bulkBreaker.fire({ userIds }).catch(() => null),
+    filterVisiblePresence: (viewerId, peerIds) =>
+      peerIds.length === 0
+        ? Promise.resolve([])
+        : presenceBreaker.fire({ viewerId, peerIds }).catch(() => []),
   };
 }
