@@ -118,6 +118,7 @@ export class GroupMemberRepository {
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
       status: string;
+      leftAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -129,6 +130,7 @@ export class GroupMemberRepository {
         notificationSettings: true,
         clearedAt: true,
         status: true,
+        leftAt: true,
       },
     });
   }
