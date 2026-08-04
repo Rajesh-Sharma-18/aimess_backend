@@ -1562,13 +1562,20 @@ export function createMessagingImpl(
             calleeId?: string;
             type?: string;
             privateRoomId?: string;
+            groupId?: string;
           };
-          const result = await deps.callService.initiateCall({
-            callerId: req.callerId ?? "",
-            calleeId: req.calleeId ?? "",
-            type: req.type ?? "AUDIO",
-            privateRoomId: req.privateRoomId ?? null,
-          });
+          const result = req.groupId
+            ? await deps.callService.initiateGroupCall({
+                callerId: req.callerId ?? "",
+                groupId: req.groupId,
+                type: req.type ?? "AUDIO",
+              })
+            : await deps.callService.initiateCall({
+                callerId: req.callerId ?? "",
+                calleeId: req.calleeId ?? "",
+                type: req.type ?? "AUDIO",
+                privateRoomId: req.privateRoomId ?? null,
+              });
 
           callback(null, {
             callId: result.callId,

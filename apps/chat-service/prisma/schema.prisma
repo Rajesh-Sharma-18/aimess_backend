@@ -596,10 +596,19 @@ model Call {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   callId        String    @unique
   callerId      String
+  // 1:1 calls: the single callee. Group calls: "" — the real roster lives in
+  // calleeIds. Kept scalar (not nullable) rather than removed so every
+  // existing 1:1 callerId/calleeId query stays a plain equality check.
   calleeId      String
   type          String    @default("AUDIO")
   status        String    @default("RINGING")
   privateRoomId String?
+  // Set only for a GROUP call — the chat-service group roomId the call was
+  // started from. null for 1:1 calls.
+  groupId       String?
+  // GROUP calls only: every rung member (excludes the caller). Empty for 1:1
+  // calls, where calleeId alone is authoritative.
+  calleeIds     String[]  @default([])
   initiatedAt   DateTime  @default(now())
   answeredAt    DateTime?
   endedAt       DateTime?
@@ -610,6 +619,7 @@ model Call {
 
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
+  @@index([groupId, status])
   @@index([status])
   // Busy-gate lookups filter by participant + status. ponytail: [status] alone
   // works at dev scale; these compound indexes keep the query cheap as call

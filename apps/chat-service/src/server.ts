@@ -489,7 +489,9 @@ const startServer = async () => {
       resolveCallUserSnapshot,
       callChatMessageService,
       // Platform-wide calling kill-switch (admin panel). Fails open.
-      callFlagService
+      callFlagService,
+      // GROUP call membership authorization + roster resolution.
+      groupMemberRepo
     );
 
     const communityRoomService = new CommunityRoomService(

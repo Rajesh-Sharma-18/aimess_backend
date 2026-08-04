@@ -612,11 +612,18 @@ export function registerChatNamespace(
   const PresenceSubscribeSchema = z.object({
     peerIds: z.array(z.string().min(1)).max(500),
   });
-  const CallInitiateSchema = z.object({
-    calleeId: z.string().min(1),
-    callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
-    privateRoomId: z.string().optional(),
-  });
+  // Exactly one of calleeId (1:1) / groupId (group call) must be present —
+  // the group branch has no privateRoomId concept, so a caller can't send both.
+  const CallInitiateSchema = z
+    .object({
+      calleeId: z.string().min(1).optional(),
+      groupId: z.string().min(1).optional(),
+      callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
+      privateRoomId: z.string().optional(),
+    })
+    .refine((v) => Boolean(v.calleeId) !== Boolean(v.groupId), {
+      message: "exactly one of calleeId or groupId is required",
+    });
   const CallAnswerSchema = z.object({ callId: z.string().min(1) });
   // `intentional: true` is required so stale HMR/zombie socket listeners that
   // still auto-emit `{ callId }` (old busy auto-decline) cannot kill a live ring.
@@ -1383,9 +1390,10 @@ export function registerChatNamespace(
         messagingClient
           .initiateCall({
             callerId: userId,
-            calleeId: r.data.calleeId,
+            calleeId: r.data.calleeId ?? "",
             type: r.data.callType,
             privateRoomId: r.data.privateRoomId,
+            groupId: r.data.groupId,
           })
           .then((result) => {
             // Join the caller's socket to `call:<callId>` so lifecycle events

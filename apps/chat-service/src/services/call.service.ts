@@ -12,6 +12,7 @@ import type { Call } from "../generated/prisma/index.js";
 import type { CallRepository } from "../repositories/call.repository.js";
 import type { FriendshipRepository } from "../repositories/friendship.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { LiveKitCredentials, LiveKitService } from "./livekit.service.js";
 import type {
   CallChatMessageService,
@@ -58,8 +59,32 @@ export class CallService {
      * Platform-wide calling kill-switch. Optional so existing call sites and
      * tests that predate it construct unchanged — when absent, calling is on.
      */
-    private readonly callFlags?: Pick<CallFlagService, "isCallingEnabled">
+    private readonly callFlags?: Pick<CallFlagService, "isCallingEnabled">,
+    /** Optional so pre-existing 1:1-only construction sites/tests keep compiling. */
+    private readonly groupMemberRepo?: Pick<
+      GroupMemberRepository,
+      "findActiveByRoomAndUser" | "findActiveMembers"
+    >
   ) {}
+
+  /**
+   * GROUP calls only: the full rung roster. 1:1 calls: the single calleeId.
+   * `calleeIds` defaults to `[]` in the schema but pre-migration rows (and
+   * hand-built test fixtures) may still lack it entirely — treat missing the
+   * same as empty rather than throwing.
+   */
+  private ringTargets(call: Pick<Call, "calleeId" | "calleeIds">): string[] {
+    const ids = call.calleeIds ?? [];
+    return ids.length > 0 ? ids : [call.calleeId];
+  }
+
+  /** True if `userId` is a callee on this call — 1:1's calleeId OR a GROUP roster member. */
+  private isCallee(
+    call: Pick<Call, "calleeId" | "calleeIds">,
+    userId: string
+  ): boolean {
+    return call.calleeId === userId || (call.calleeIds ?? []).includes(userId);
+  }
 
   async initiateCall(params: {
     callerId: string;
@@ -319,13 +344,170 @@ export class CallService {
     return { ...call, livekit: callerCreds };
   }
 
+  /**
+   * GROUP call — MVP scope, deliberately simpler than {@link initiateCall}'s
+   * 1:1 gating:
+   *  - Authorization is group ACTIVE-membership, not friendship/privacy (the
+   *    group itself is the trust boundary the caller and every rung member
+   *    already crossed by being members).
+   *  - Busy-gate is "is the CALLER already on a call" + "is there already an
+   *    active call for this group" — no per-callee busy/glare checking across
+   *    the whole roster (that's real N-party call-state work, out of scope
+   *    for this MVP; a busy member's own answerCall attempt just never
+   *    succeeds if they end up double-booked).
+   *  - No CallChatMessageService audit trail yet (see postCallChatMessageSafe).
+   *  - No friendship/privacy gates — group membership already implies consent.
+   */
+  async initiateGroupCall(params: {
+    callerId: string;
+    groupId: string;
+    type: string;
+  }): Promise<Call & { livekit: LiveKitCredentials }> {
+    if (!this.groupMemberRepo) {
+      throw new ForbiddenError("CALLING_DISABLED");
+    }
+    if (this.callFlags && !(await this.callFlags.isCallingEnabled())) {
+      throw new ForbiddenError("CALLING_DISABLED");
+    }
+
+    const caller = await this.groupMemberRepo.findActiveByRoomAndUser(
+      params.groupId,
+      params.callerId
+    );
+    if (!caller) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+
+    const members = await this.groupMemberRepo.findActiveMembers(
+      params.groupId
+    );
+    const calleeIds = members
+      .map((m) => m.userId)
+      .filter((id) => id !== params.callerId);
+    if (calleeIds.length === 0) {
+      throw new BadRequestError("CALL_SELF_NOT_ALLOWED");
+    }
+
+    const now = new Date();
+    const freshCutoff = new Date(
+      now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
+    );
+    const liveCutoff = new Date(
+      now.getTime() - env.CALL_MAX_DURATION_SEC * 1000
+    );
+
+    // Caller busy-gate — reuses the same "genuinely active" predicate as 1:1.
+    const callerActive = await this.callRepo.findActiveByParticipant(
+      [params.callerId],
+      freshCutoff,
+      liveCutoff
+    );
+    if (callerActive.length > 0) {
+      throw new ConflictError("CALL_ALREADY_IN_CALL");
+    }
+
+    // Group busy-gate — one call per group at a time (MVP policy).
+    const activeGroupCall = await this.callRepo.findActiveByGroup(
+      params.groupId,
+      freshCutoff,
+      liveCutoff
+    );
+    if (activeGroupCall) {
+      throw new ConflictError("CALL_USER_BUSY");
+    }
+
+    const callId = randomUUID();
+    const call = await this.callRepo.create({
+      callId,
+      callerId: params.callerId,
+      calleeId: "",
+      type: params.type || CallType.AUDIO,
+      status: CallStatus.RINGING,
+      groupId: params.groupId,
+      calleeIds,
+    });
+
+    const callerSnapshot = await this.getUserSnapshot(params.callerId).catch(
+      () => ({ displayName: "", avatarUrl: "" })
+    );
+
+    // Mint one LiveKit token per rung member (all join the SAME room = callId
+    // — LiveKit itself needs no group-specific handling) + the caller's own,
+    // then fan out the ring. Same self:<id> channel/shape 1:1 uses, just
+    // looped over the roster.
+    const calleeCredsList = await Promise.all(
+      calleeIds.map((id) => this.livekit.mintToken(callId, id))
+    );
+    const callerCreds = await this.livekit.mintToken(callId, params.callerId);
+
+    await Promise.all(
+      calleeIds.map((calleeId, i) =>
+        this.redis
+          .publish(
+            `self:${calleeId}`,
+            JSON.stringify({
+              event: "call:incoming",
+              data: {
+                callId,
+                callerId: params.callerId,
+                callerName: callerSnapshot.displayName,
+                callerAvatarUrl: callerSnapshot.avatarUrl,
+                callType: params.type || CallType.AUDIO,
+                groupId: params.groupId,
+                livekitUrl: calleeCredsList[i]!.url,
+                token: calleeCredsList[i]!.token,
+              },
+            })
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `CallService|initiateGroupCall|redis publish incoming failed calleeId=${calleeId}: ${String(err)}`
+            );
+          })
+      )
+    );
+
+    await this.redis
+      .publish(
+        `self:${params.callerId}`,
+        JSON.stringify({
+          event: "call:outgoing_mirror",
+          data: {
+            callId,
+            groupId: params.groupId,
+            calleeIds,
+            callType: params.type || CallType.AUDIO,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `CallService|initiateGroupCall|redis publish outgoing_mirror failed: ${String(err)}`
+        );
+      });
+
+    for (let i = 0; i < calleeIds.length; i++) {
+      publishCallIncomingSafe({
+        callId,
+        calleeId: calleeIds[i]!,
+        callerId: params.callerId,
+        callerName: callerSnapshot.displayName,
+        callerAvatar: callerSnapshot.avatarUrl,
+        callType: params.type || CallType.AUDIO,
+        initiatedAt: now.getTime(),
+        livekitUrl: calleeCredsList[i]!.url,
+        token: calleeCredsList[i]!.token,
+      });
+    }
+
+    return { ...call, livekit: callerCreds };
+  }
+
   async answerCall(params: {
     callId: string;
     calleeId: string;
   }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
-    if (call.calleeId !== params.calleeId)
+    if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
     const livekit = await this.livekit.mintToken(
       params.callId,
@@ -393,11 +575,84 @@ export class CallService {
   }): Promise<Call> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
-    if (call.calleeId !== params.calleeId)
+    if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
     // Idempotent / stale-UI: already left RINGING — succeed without error so
     // double-taps don't trip the gateway circuit breaker.
     if (call.status !== CallStatus.RINGING) return call;
+
+    // GROUP: one member declining must NOT kill the ring for the rest of the
+    // roster (unlike 1:1, where the single callee declining IS the whole
+    // call). Drop them from calleeIds and tell the caller; only transition
+    // the call to DECLINED once the last rung member has declined.
+    if (call.groupId && call.calleeIds.length > 0) {
+      const updated = await this.callRepo.removeGroupCallee(
+        params.callId,
+        params.calleeId
+      );
+      if (!updated) throw new NotFoundError("CALL_NOT_FOUND");
+
+      await Promise.all([
+        this.redis
+          .publish(
+            `call:${params.callId}`,
+            JSON.stringify({
+              event: "call:member_declined",
+              data: { callId: params.callId, userId: params.calleeId },
+            })
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `CallService|declineCall(group)|redis publish failed: ${String(err)}`
+            );
+          }),
+        this.publishCallHandled(
+          params.calleeId,
+          params.callId,
+          "declined_elsewhere"
+        ),
+      ]);
+      publishCallCancelSafe({
+        calleeId: params.calleeId,
+        callId: params.callId,
+        reason: "declined",
+      });
+
+      if (updated.calleeIds.length > 0) return updated;
+
+      // Last rung member declined — end the call for the caller too, same
+      // terminal shape as 1:1's single-callee decline.
+      const endedAt = new Date();
+      const { won } = await this.callRepo.claimStatusTransition(
+        params.callId,
+        CallStatus.RINGING,
+        { status: CallStatus.DECLINED, endedAt, endedBy: params.calleeId }
+      );
+      if (won) {
+        await this.redis
+          .publish(
+            `call:${params.callId}`,
+            JSON.stringify({
+              event: "call:declined",
+              data: { callId: params.callId },
+            })
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `CallService|declineCall(group)|final publish failed: ${String(err)}`
+            );
+          });
+      }
+      const again = await this.callRepo.findByCallId(params.callId);
+      return (
+        again ?? {
+          ...updated,
+          status: CallStatus.DECLINED,
+          endedAt,
+          endedBy: params.calleeId,
+        }
+      );
+    }
 
     const endedAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
@@ -484,7 +739,10 @@ export class CallService {
   }): Promise<Call & { durationSec: number }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
-    if (call.callerId !== params.userId && call.calleeId !== params.userId) {
+    if (
+      call.callerId !== params.userId &&
+      !this.isCallee(call, params.userId)
+    ) {
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
     }
     const activeStatuses: string[] = [
@@ -531,28 +789,37 @@ export class CallService {
       updatedAt: endedAt,
     };
 
-    // Pre-answer cancel: callee never joined `call:<id>` room, reach them via
-    // their personal `self:<id>` channel with `call:cancelled` instead.
+    // Pre-answer cancel: rung callee(s) never joined `call:<id>` room, reach
+    // them via their personal `self:<id>` channel with `call:cancelled`
+    // instead. GROUP calls loop the whole rung roster; 1:1 is the same single
+    // publish it always was.
     if (wasRinging) {
-      await this.redis
-        .publish(
-          `self:${call.calleeId}`,
-          JSON.stringify({
-            event: "call:cancelled",
-            data: { callId: params.callId },
-          })
+      const targets = this.ringTargets(call);
+      await Promise.all(
+        targets.map((calleeId) =>
+          this.redis
+            .publish(
+              `self:${calleeId}`,
+              JSON.stringify({
+                event: "call:cancelled",
+                data: { callId: params.callId },
+              })
+            )
+            .catch((err: unknown) => {
+              logger.warn(
+                `CallService|endCall|cancel publish failed calleeId=${calleeId}: ${String(err)}`
+              );
+            })
         )
-        .catch((err: unknown) => {
-          logger.warn(
-            `CallService|endCall|cancel publish failed: ${String(err)}`
-          );
-        });
+      );
 
-      publishCallCancelSafe({
-        calleeId: call.calleeId,
-        callId: params.callId,
-        reason: "ended",
-      });
+      for (const calleeId of targets) {
+        publishCallCancelSafe({
+          calleeId,
+          callId: params.callId,
+          reason: "ended",
+        });
+      }
 
       await this.postCallChatMessageSafe(
         updated,
@@ -599,7 +866,7 @@ export class CallService {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return null;
     // IDOR guard: only the caller or callee may read a call's details (AUDIT H8).
-    if (call.callerId !== requesterId && call.calleeId !== requesterId) {
+    if (call.callerId !== requesterId && !this.isCallee(call, requesterId)) {
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
     }
     return call;
@@ -654,7 +921,9 @@ export class CallService {
         event: "call:missed",
         data: { callId: call.callId },
       });
-      // Fire both publishes in parallel — non-fatal if either fails.
+      // Fire both publishes in parallel — non-fatal if either fails. GROUP
+      // calls loop the whole rung roster on the self:<id> side.
+      const targets = this.ringTargets(call);
       await Promise.all([
         this.redis
           .publish(`call:${call.callId}`, payload)
@@ -663,34 +932,40 @@ export class CallService {
               `CallService|sweep|publish call room failed: ${String(err)}`
             )
           ),
-        this.redis
-          .publish(`self:${call.calleeId}`, payload)
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|sweep|publish user room failed: ${String(err)}`
+        ...targets.map((calleeId) =>
+          this.redis
+            .publish(`self:${calleeId}`, payload)
+            .catch((err: unknown) =>
+              logger.warn(
+                `CallService|sweep|publish user room failed calleeId=${calleeId}: ${String(err)}`
+              )
             )
-          ),
+        ),
       ]);
-      publishCallCancelSafe({
-        calleeId: call.calleeId,
-        callId: call.callId,
-        reason: "missed",
-      });
+      for (const calleeId of targets) {
+        publishCallCancelSafe({
+          calleeId,
+          callId: call.callId,
+          reason: "missed",
+        });
+      }
       await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
 
       // Push fallback: the two Redis publishes above only reach a LIVE socket.
       // A callee whose tab is backgrounded or closed would otherwise never learn
       // they missed a call — this is the one place that tells them afterward.
       const callerSnapshot = await snapshotPromise;
-      publishCallMissedSafe({
-        callId: call.callId,
-        calleeId: call.calleeId,
-        callerId: call.callerId,
-        callerName: callerSnapshot.displayName,
-        callerAvatar: callerSnapshot.avatarUrl,
-        callType: call.type,
-        missedAt: now.getTime(),
-      });
+      for (const calleeId of targets) {
+        publishCallMissedSafe({
+          callId: call.callId,
+          calleeId,
+          callerId: call.callerId,
+          callerName: callerSnapshot.displayName,
+          callerAvatar: callerSnapshot.avatarUrl,
+          callType: call.type,
+          missedAt: now.getTime(),
+        });
+      }
     }
     if (flipped > 0) {
       logger.info(`CallService|sweep|flipped ${flipped} call(s) to MISSED`);
@@ -826,14 +1101,17 @@ export class CallService {
         event: "call:cancelled",
         data: { callId },
       });
+      const targets = this.ringTargets(call);
       await Promise.all([
-        this.redis
-          .publish(`self:${call.calleeId}`, cancelPayload)
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|reconcile|cancel publish (callee) failed: ${String(err)}`
+        ...targets.map((calleeId) =>
+          this.redis
+            .publish(`self:${calleeId}`, cancelPayload)
+            .catch((err: unknown) =>
+              logger.warn(
+                `CallService|reconcile|cancel publish (callee=${calleeId}) failed: ${String(err)}`
+              )
             )
-          ),
+        ),
         this.redis
           .publish(`call:${callId}`, cancelPayload)
           .catch((err: unknown) =>
@@ -843,11 +1121,9 @@ export class CallService {
           ),
       ]);
 
-      publishCallCancelSafe({
-        calleeId: call.calleeId,
-        callId,
-        reason: "cancelled",
-      });
+      for (const calleeId of targets) {
+        publishCallCancelSafe({ calleeId, callId, reason: "cancelled" });
+      }
 
       await this.postCallChatMessageSafe(
         call,
@@ -911,7 +1187,11 @@ export class CallService {
     durationSec: number,
     endedBy: string
   ): Promise<void> {
-    if (!this.callChatMessages) return;
+    // GROUP calls have no calleeId-shaped chat-message audit yet — CallChatMessageService
+    // is built around a single caller/callee pair. Skip rather than post a
+    // misleading 1:1-shaped system message; a group-call variant is a
+    // follow-up, not part of this MVP.
+    if (!this.callChatMessages || call.groupId) return;
     try {
       await this.callChatMessages.post({
         callId: call.callId,

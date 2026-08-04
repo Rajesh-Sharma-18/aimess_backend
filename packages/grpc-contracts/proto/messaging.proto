@@ -484,6 +484,9 @@ message InitiateCallRequest {
   string callee_id       = 2;
   string type            = 3;
   string private_room_id = 4;
+  // GROUP call: set instead of callee_id — the server resolves the ring
+  // roster from the group's active membership. Empty for 1:1 calls.
+  string group_id        = 5;
 }
 message AnswerCallRequest {
   string call_id   = 1;
