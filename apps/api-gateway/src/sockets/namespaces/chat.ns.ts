@@ -1178,9 +1178,18 @@ export function registerChatNamespace(
     });
 
     // ── Voice recording presence ────────────────────────────────────────────
-    // Same shared engine, room-based delivery — deliberately UNCHANGED in
-    // behaviour and identical to /community's recording indicator, which also
-    // stayed room-based when typing moved to direct delivery.
+    // Same shared engine, room-based delivery — identical to /community's
+    // recording indicator, which also stayed room-based when typing moved to
+    // direct delivery.
+    //
+    // isAuthorized mirrors community's isAuthorizedForCommunity: a cheap sync
+    // check that the sender's OWN socket currently sits in conv:<id>. Without
+    // it, socket.to(room) would happily broadcast (and accept) a recording
+    // indicator for a group the sender left or was never in — conv:join is
+    // membership-gated for groups and group:removed force-leaves the room on
+    // leave/kick/ban (see conv:join handler above), so "currently in the room"
+    // is already the authoritative membership signal; no extra gRPC call
+    // needed here.
     const recordingNames = new Map<string, string | undefined>();
 
     const recording = createPresenceIndicator({
@@ -1198,6 +1207,8 @@ export function registerChatNamespace(
             Date.now(),
             { senderName: recordingNames.get(conversationId) }
           ),
+        isAuthorized: (conversationId) =>
+          socket.rooms.has(`conv:${conversationId}`),
       }),
     });
 
