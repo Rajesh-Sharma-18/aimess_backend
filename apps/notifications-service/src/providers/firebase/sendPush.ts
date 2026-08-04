@@ -11,9 +11,14 @@ interface SendPushParams {
   deepLink?: string;
   /**
    * FCM collapse key — multiple pending notifications with the same key are
-   * collapsed into one on the device. Useful for chat threads.
+   * collapsed into one on the device. Useful for chat threads (Android).
    */
   collapseKey?: string;
+  /**
+   * APNs thread-id for grouping notifications on iOS. All notifications with
+   * the same thread-id are grouped together. Format: type_id.
+   */
+  apnsThreadId?: string;
   /** Message TTL in seconds. Default: 86 400 (24 h). */
   ttl?: number;
   /** FCM delivery priority. Use 'high' for calls/time-sensitive events. */
@@ -52,6 +57,7 @@ export async function sendPush({
   data,
   deepLink,
   collapseKey,
+  apnsThreadId,
   ttl = 86_400,
   priority = "normal",
   dataOnly = false,
@@ -86,6 +92,7 @@ export async function sendPush({
         headers: {
           "apns-priority": apnsPriority,
           "apns-push-type": dataOnly ? "background" : "alert",
+          ...(apnsThreadId ? { "apns-thread-id": apnsThreadId } : {}),
         },
         payload: {
           aps: dataOnly
@@ -111,6 +118,14 @@ export async function sendPush({
         headers: {
           Urgency: webUrgency,
           TTL: String(ttl),
+          // Web Push's own collapse mechanism (mirrors android.collapseKey
+          // above) — a queued message for an offline client is replaced by
+          // the next one carrying the same Topic instead of stacking. Without
+          // this, a reconnecting Web client could receive a stale queued
+          // "incoming call" push delivered after (or instead of) its
+          // already-sent CALL_CANCELLED, showing a ring for a call that's
+          // already been handled elsewhere.
+          ...(collapseKey ? { Topic: collapseKey } : {}),
         },
       },
 

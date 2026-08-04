@@ -43,6 +43,7 @@ import {
 import { redis } from "../../src/config/redis.js";
 import { PrivateMessageService } from "../../src/services/private-message.service.js";
 import { GroupMessageService } from "../../src/services/group-message.service.js";
+import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
 
 const AVATARS = "aimess-avatars";
 const CHAT = "aimess-chat-test";
@@ -426,6 +427,52 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     const users = data.reactions[0].users;
     expect(users[0].avatarUrl).toBe(url(AVATARS, "avatars/u2/b.png"));
     expect(users[1].avatarUrl).toBe("https://cdn.example.com/cat.png");
+  });
+});
+
+describe("createMessagingImpl — sendMessage resolves senderName server-side (regression, AIMESS_BACKEND_NOTIFICATIONS.md §2)", () => {
+  it("sendMessage with senderName:'' resolves the push senderName from the user snapshot, not 'New message'", async () => {
+    const pubPush = publishMessageSentSafe as jest.Mock;
+    pubPush.mockClear();
+
+    const deps = makeDeps({
+      privateMessageService: {
+        sendMessage: jest.fn(async () => ({
+          id: "m3",
+          messageType: "TEXT",
+          content: { text: "hy" },
+          createdAt: new Date(),
+          sequenceNumber: 1,
+        })),
+      },
+      userSnapshotService: {
+        getUserSnapshotsMap: jest.fn(
+          async () =>
+            new Map([["u1", { displayName: "Himanshu Vasu", avatar: "" }]])
+        ),
+      },
+      cacheRepo: {},
+    });
+
+    await invoke(createMessagingImpl(deps).sendMessage as Handler, {
+      conversationId: "conv1",
+      senderId: "u1",
+      receiverId: "u2",
+      contentText: "hy",
+      contentType: "TEXT",
+      mediaKey: "",
+      contentJson: "",
+      repliedToId: "",
+      clientMessageId: "c3",
+      conversationType: "PRIVATE",
+      senderName: "",
+      senderAvatar: "",
+      clientTs: 0,
+    });
+
+    expect(pubPush.mock.calls[0][0]).toMatchObject({
+      senderName: "Himanshu Vasu",
+    });
   });
 });
 

@@ -50,6 +50,7 @@ import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
+import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import {
   buildChatMessageEvent,
   buildCanonicalQuote,
@@ -292,12 +293,24 @@ export function createMessagingImpl(
             req.conversationType
           );
           const content = parseMessageContent(req);
+          // Server-side resolution — req.senderName/Avatar are optional,
+          // client-supplied fields that arrive empty over the socket path.
+          const {
+            senderName: resolvedSenderName,
+            senderAvatar: resolvedSenderAvatar,
+          } = await resolveSenderIdentity(
+            deps.userSnapshotService,
+            deps.cacheRepo,
+            req.senderId,
+            req.senderName || undefined,
+            req.senderAvatar || undefined
+          );
           if (conversationType === "GROUP") {
             msg = await deps.groupMessageService.sendMessage({
               roomId: req.conversationId,
               senderId: req.senderId,
-              senderName: req.senderName || "",
-              senderAvatar: req.senderAvatar || "",
+              senderName: resolvedSenderName,
+              senderAvatar: resolvedSenderAvatar,
               content,
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
@@ -331,7 +344,7 @@ export function createMessagingImpl(
                 ? msg.createdAt.getTime()
                 : Date.now();
             const [bcastAvatar] = await Promise.all([
-              resolveMediaUrl(req.senderAvatar || ""),
+              resolveMediaUrl(resolvedSenderAvatar),
             ]);
             const albumRows = getAlbumMessages(msg);
             for (const row of albumRows) {
@@ -350,7 +363,7 @@ export function createMessagingImpl(
                 conversationType:
                   conversationType === "GROUP" ? "GROUP" : "PRIVATE",
                 senderId: req.senderId,
-                senderName: req.senderName,
+                senderName: resolvedSenderName,
                 senderAvatar: bcastAvatar,
                 senderRole:
                   (row as { senderRole?: string }).senderRole ?? msg.senderRole,
@@ -457,8 +470,8 @@ export function createMessagingImpl(
               messageId: msg.id,
               clientMessageId: req.clientMessageId || "",
               senderId: req.senderId,
-              senderName: req.senderName || "",
-              senderAvatar: req.senderAvatar || "",
+              senderName: resolvedSenderName,
+              senderAvatar: resolvedSenderAvatar,
               preview: buildPushPreview(msg.messageType, pushText),
               messageType: msg.messageType,
               sentAt: pushSentAt,
@@ -2501,13 +2514,15 @@ export function createCommunityImpl(
             attachments = [{ objectKey: req.mediaKey }];
           }
 
-          const snaps = await deps.userSnapshotService.getUserSnapshotsMap(
-            [req.senderId],
-            deps.cacheRepo
-          );
-          const snap = snaps.get(req.senderId);
-          const senderName = (snap?.displayName as string) || "";
-          const senderAvatar = (snap?.avatar as string) || "";
+          const [{ senderName, senderAvatar }, room] = await Promise.all([
+            resolveSenderIdentity(
+              deps.userSnapshotService,
+              deps.cacheRepo,
+              req.senderId
+            ),
+            deps.generalRoomRepo?.findRoomById(req.roomId),
+          ]);
+          const communityName = room?.name ?? "";
 
           const saved = await deps.communityMessageService.sendMessage({
             roomId: req.roomId,
@@ -2670,6 +2685,7 @@ export function createCommunityImpl(
               conversationId: req.communityId,
               conversationType: "COMMUNITY",
               communityId: req.communityId,
+              communityName,
               messageId: saved.id,
               clientMessageId: req.clientMessageId ?? "",
               senderId: req.senderId,

@@ -133,12 +133,21 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     expect(pushMany).toHaveBeenCalledTimes(1);
     const [, builderFn] = pushMany.mock.calls[0] as [
       string[],
-      (id: string) => { category: string; data: Record<string, string> },
+      (id: string) => {
+        category: string;
+        data: Record<string, string>;
+        apnsThreadId?: string;
+        chatType?: string;
+      },
     ];
     const push = builderFn("recipient-uuid");
     expect(push.category).toBe("communityEnabled");
     expect(push.data.communityId).toBe("comm1");
     expect(push.data.conversationType).toBe("COMMUNITY");
+    // Regression: conversation-based grouping (thread-id) keyed by communityId,
+    // NOT senderId — every community member's message groups under one thread.
+    expect(push.apnsThreadId).toBe("community_comm1");
+    expect(push.chatType).toBe("COMMUNITY");
   });
 
   it("PRIVATE → category:chatEnabled, no communityId in data map", async () => {
@@ -148,11 +157,22 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     expect(pushMany).toHaveBeenCalledTimes(1);
     const [, builderFn] = pushMany.mock.calls[0] as [
       string[],
-      (id: string) => { category: string; data: Record<string, string> },
+      (id: string) => {
+        category: string;
+        data: Record<string, string>;
+        apnsThreadId?: string;
+        chatType?: string;
+      },
     ];
     const push = builderFn("recipient-uuid");
     expect(push.category).toBe("chatEnabled");
     expect(push.data.communityId).toBeUndefined();
+    // Regression: personal chat thread-id is keyed by conversationId, stable
+    // across every message in the conversation regardless of sender.
+    expect(push.apnsThreadId).toBe("chat_conv1");
+    // Wire conversationType "PRIVATE" maps to chatType "PERSONAL" per the
+    // documented grouping contract (chat_{conversationId} thread-id family).
+    expect(push.chatType).toBe("PERSONAL");
   });
 
   it("GROUP → category:chatEnabled", async () => {
@@ -162,10 +182,18 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     expect(pushMany).toHaveBeenCalledTimes(1);
     const [, builderFn] = pushMany.mock.calls[0] as [
       string[],
-      (id: string) => { category: string },
+      (id: string) => {
+        category: string;
+        apnsThreadId?: string;
+        chatType?: string;
+      },
     ];
     const push = builderFn("recipient-uuid");
     expect(push.category).toBe("chatEnabled");
+    // Regression: group thread-id is keyed by conversationId (groupId), stable
+    // regardless of which member sends the message.
+    expect(push.apnsThreadId).toBe("group_conv1");
+    expect(push.chatType).toBe("GROUP");
   });
 
   it("skips push when all recipientIds are filtered out (sender === recipient)", async () => {

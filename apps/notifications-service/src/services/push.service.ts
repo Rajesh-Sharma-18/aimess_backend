@@ -119,6 +119,18 @@ export interface PushInput {
   deepLink?: string;
   /** FCM collapse key — collapse multiple notifs for same conversation. */
   collapseKey?: string;
+  /**
+   * APNs thread-id for notification grouping (iOS). Stable identifier shared by
+   * all notifications belonging to the same conversation. Format: type_id
+   * (e.g. chat_conv123, group_group789, community_comm456).
+   */
+  apnsThreadId?: string;
+  /**
+   * Chat/conversation type for client-side foreground suppression and navigation.
+   * Used to determine notification grouping and enable clients to suppress
+   * duplicate banners when user is already viewing the conversation.
+   */
+  chatType?: "PERSONAL" | "GROUP" | "COMMUNITY";
   /** FCM message TTL in seconds (default 86400 = 24h). */
   ttl?: number;
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
@@ -203,6 +215,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     data,
     deepLink,
     collapseKey,
+    apnsThreadId,
     ttl,
     priority,
     bypassSettings = false,
@@ -378,6 +391,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               data,
               deepLink,
               collapseKey,
+              apnsThreadId,
               ttl,
               priority,
               dataOnly: effectiveDataOnly,

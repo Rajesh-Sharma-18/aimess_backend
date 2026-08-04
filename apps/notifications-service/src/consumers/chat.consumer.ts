@@ -5,6 +5,7 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { chatCopy } from "../lib/notification-copy.js";
+import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
   filterToActiveCommunityMembers,
@@ -158,6 +159,15 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     isCommunity ? data.communityName : undefined
   );
 
+  // Map PRIVATE → PERSONAL for thread-id generation (internal vs wire protocol naming)
+  const chatType =
+    data.conversationType === "PRIVATE" ? "PERSONAL" : data.conversationType;
+  const threadId = generateThreadId(
+    chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
+    data.conversationId,
+    communityId
+  );
+
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
@@ -171,6 +181,8 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     actorId: data.senderId,
     deepLink,
     collapseKey: `conv:${data.conversationId}`,
+    apnsThreadId: threadId,
+    chatType: chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
     showPreviewOverride,
     // Chat messages must never create a Notification Center entry — see
     // PushInput.skipInbox. Push (this call) and per-conversation unread

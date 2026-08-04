@@ -3,6 +3,7 @@ import amqp from "amqplib";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { generateEventThreadId } from "../lib/thread-id.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -73,6 +74,8 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     deepLink,
     // One ring per call — a re-publish must replace, never stack.
     collapseKey: `call:${data.callId}`,
+    // Group all call-related notifications together
+    apnsThreadId: generateEventThreadId("CALL_INCOMING"),
     // Calls are time-critical: wake the device immediately and keep the
     // notification on screen (sendPush maps high → requireInteraction on web,
     // apns-priority 10, android priority high).
