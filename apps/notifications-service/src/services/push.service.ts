@@ -10,6 +10,7 @@ import { createChatNotificationClient } from "../grpc/chat-notification.client.j
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
+import type { DeviceTokenRow } from "../repositories/device-token.repository.js";
 import {
   isCommunityActiveMember,
   isCommunityNotificationEnabled,
@@ -110,6 +111,12 @@ export interface PushInput {
   type: string;
   title: string;
   body: string;
+  /**
+   * Notification-Center heading. `null` = render the row with NO heading (the
+   * body is already a self-describing sentence). `undefined` = reuse `title`.
+   * Never affects the FCM tray notification, which always needs a title.
+   */
+  inboxTitle?: string | null;
   /** Actor that triggered the notification (optional). */
   actorId?: string;
   /** Extra string→string context (entity ids, roster, etc.). */
@@ -172,6 +179,11 @@ export interface PushInput {
    * call, chat message, etc.).
    */
   allowVoip?: boolean;
+  /**
+   * Skip the device that originated the action. The read-dismiss push uses it so the device
+   * where the conversation was read is not told to dismiss what it already cleared.
+   */
+  excludeDeviceId?: string;
 }
 
 /**
@@ -204,6 +216,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     skipInbox = false,
     dataOnly = false,
     allowVoip = false,
+    excludeDeviceId,
   } = input;
 
   let body = input.body;
@@ -294,13 +307,21 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // important-events-only, everything else stays FCM+realtime-only.
   if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
+      const { inboxTitle } = input;
       await chatNotificationClient.createNotification({
         userId,
         actorId,
         type,
         title,
         body,
-        data,
+        data: {
+          ...(data ?? {}),
+          ...(inboxTitle === null
+            ? { suppressTitle: "true" }
+            : inboxTitle
+              ? { inboxTitle }
+              : {}),
+        },
       });
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
@@ -309,7 +330,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   }
 
   // Load all device tokens for this user.
-  let rawTokens: { token: string; tokenType: string }[];
+  let rawTokens: DeviceTokenRow[];
   try {
     rawTokens = await deviceTokenService.getTokensForUser(userId);
   } catch (error) {
@@ -320,7 +341,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
-  const tokens = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
+  const deduped = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
+  const tokens = excludeDeviceId
+    ? deduped.filter((t) => t.deviceId !== excludeDeviceId)
+    : deduped;
 
   // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
   // registered device, so nothing can ever be delivered no matter what the rest
@@ -336,7 +360,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   );
 
   await Promise.all(
-    tokens.map(async ({ token, tokenType }) => {
+    tokens.map(async ({ token, tokenType, platform }) => {
       // VOIP tokens are iOS PushKit tokens registered only for call ringing —
       // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and
       // ONLY for an event explicitly marked allowVoip (see PushInput docs).
@@ -357,6 +381,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               ttl,
               priority,
               dataOnly,
+              platform,
             });
       if (result.invalidToken) {
         try {

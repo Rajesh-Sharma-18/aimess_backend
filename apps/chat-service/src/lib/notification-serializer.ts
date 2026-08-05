@@ -20,10 +20,24 @@ export interface NotificationDTO {
   id: string;
   type: string;
   category: "FRIENDS" | "COMMUNITIES" | "MENTIONS" | "SYSTEM";
-  title: string;
+  /** Null when the body already carries the subject — the client renders no heading. */
+  title: string | null;
   body: string;
   isRead: boolean;
   createdAt: Date;
+  /** Last-mutation timestamp; the delta-sync cursor and the LWW tiebreaker. */
+  updatedAt: Date;
+  /** Monotonic revision — clients drop any frame older than what they hold. */
+  version: number;
+  /** Stable identity of the underlying entity/action. */
+  groupKey: string | null;
+  /** True for tombstones returned by delta sync so clients can drop the row. */
+  isDeleted: boolean;
+  /** Terminal outcome line for a resolved action ("You are now friends!"). */
+  resolution?: string;
+  resolutionTone?: string;
+  /** Action the viewer already took on this row ("TERMINATED" | "TRUSTED"). */
+  actionTaken?: string;
   /** Kept for backward compatibility with clients that dug into it. */
   payload: Record<string, unknown>;
   actor?: {
@@ -142,14 +156,32 @@ export async function serializeNotification(
     data.friendshipId
   );
 
+  const body = payloadObj.body ?? "";
+  const rawTitle = nonEmpty(data.inboxTitle) ?? nonEmpty(payloadObj.title);
+  const title =
+    data.suppressTitle === "true" ||
+    !rawTitle ||
+    (body.length > 0 && body.includes(rawTitle))
+      ? null
+      : rawTitle;
+
   return {
     id: row.id,
     type: row.type,
     category: categorize(row.type),
-    title: payloadObj.title ?? "",
-    body: payloadObj.body ?? "",
+    title,
+    body,
     isRead: row.isRead,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    version: row.version ?? 1,
+    groupKey: row.groupKey ?? null,
+    isDeleted: row.isDeleted,
+    ...(nonEmpty(data.resolution) ? { resolution: data.resolution } : {}),
+    ...(nonEmpty(data.resolutionTone)
+      ? { resolutionTone: data.resolutionTone }
+      : {}),
+    ...(nonEmpty(data.actionTaken) ? { actionTaken: data.actionTaken } : {}),
     payload: payloadObj as Record<string, unknown>,
     ...(actor ? { actor } : {}),
     ...(community ? { community } : {}),

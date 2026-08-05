@@ -1385,6 +1385,15 @@ export class GroupMessageService {
     };
   }
 
+  /** Name + avatar for a group push, so the tray entry titles on the group not the sender. */
+  async getPushHeader(
+    roomId: string
+  ): Promise<{ name: string; avatar: string } | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return null;
+    return { name: room.name ?? "", avatar: room.avatar ?? "" };
+  }
+
   async getMessageContext(
     roomId: string,
     messageId: string,

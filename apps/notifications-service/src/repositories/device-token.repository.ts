@@ -14,6 +14,8 @@ export interface UpsertDeviceTokenInput {
 export interface DeviceTokenRow {
   token: string;
   tokenType: string;
+  platform: string;
+  deviceId: string | null;
 }
 
 export const deviceTokenRepository = {
@@ -48,7 +50,7 @@ export const deviceTokenRepository = {
   async findTokensByUserId(userId: string): Promise<DeviceTokenRow[]> {
     return prisma.deviceToken.findMany({
       where: { userId },
-      select: { token: true, tokenType: true },
+      select: { token: true, tokenType: true, platform: true, deviceId: true },
     });
   },
 

@@ -101,7 +101,7 @@ describe("FRIEND_ACCEPTED", () => {
     const toRequester = push.mock.calls.find(
       (c) => c[0].userId === REQUESTER
     )?.[0];
-    expect(toRequester.title).toBe("Friend Request");
+    expect(toRequester.title).toBe("Alex");
     expect(toRequester.body).toBe("You sent Alex a friend request.");
     expect(toRequester.data.resolution).toBe(
       "Alex accepted your friend request."
@@ -110,8 +110,8 @@ describe("FRIEND_ACCEPTED", () => {
     const toAddressee = push.mock.calls.find(
       (c) => c[0].userId === ADDRESSEE
     )?.[0];
-    expect(toAddressee.title).toBe("Friend Request");
-    expect(toAddressee.body).toBe("John has sent you a friend request.");
+    expect(toAddressee.title).toBe("John");
+    expect(toAddressee.body).toBe("John sent you a friend request.");
     expect(toAddressee.data.resolution).toBe("You are now friends!");
   });
 });

@@ -8,6 +8,7 @@ import { startAdminUserConsumer } from "./consumers/admin-user.consumer.js";
 import { startAnnouncementConsumer } from "./consumers/announcement.consumer.js";
 import { startCallConsumer } from "./consumers/call.consumer.js";
 import { startChatConsumer } from "./consumers/chat.consumer.js";
+import { startReadConsumer } from "./consumers/read.consumer.js";
 import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startGroupConsumer } from "./consumers/group.consumer.js";
 import { startConsumer } from "./consumers/notification.consumer.js";
@@ -55,6 +56,7 @@ async function start() {
     await startConsumerSafe("notification consumer", startConsumer);
     await startConsumerSafe("chat push consumer", startChatConsumer);
     await startConsumerSafe("call push consumer", startCallConsumer);
+    await startConsumerSafe("read dismiss consumer", startReadConsumer);
     await startConsumerSafe("community consumer", startCommunityConsumer);
     await startConsumerSafe("group consumer", startGroupConsumer);
     await startConsumerSafe("friend consumer", startFriendConsumer);

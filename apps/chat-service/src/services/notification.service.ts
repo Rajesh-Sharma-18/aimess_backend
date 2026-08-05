@@ -102,6 +102,40 @@ export class NotificationService {
     );
   }
 
+  /**
+   * Delta sync: every row whose `updatedAt` moved after `since`, oldest-first,
+   * INCLUDING soft-deleted tombstones. This is what a client drains after a
+   * reconnect / cold start instead of refetching the whole feed — it converges
+   * creates, updates, reads and deletes made on any other device in one call.
+   */
+  async syncSince(
+    userId: string,
+    params: {
+      since: Date;
+      limit: number;
+      viewerSessionId?: string | null;
+    }
+  ): Promise<{
+    notifications: NotificationDTO[];
+    nextSince: number;
+    hasMore: boolean;
+  }> {
+    const rows = await this.notificationRepo.findUpdatedSince(
+      userId,
+      params.since,
+      { limit: params.limit, viewerSessionId: params.viewerSessionId }
+    );
+    const refresh = await resolveAvatarRefresh(rows);
+    const notifications = await Promise.all(
+      rows.map((n) => serializeNotification(n, userId, refresh))
+    );
+    const hasMore = rows.length === params.limit;
+    const nextSince = rows.length
+      ? rows[rows.length - 1].updatedAt.getTime()
+      : params.since.getTime();
+    return { notifications, nextSince, hasMore };
+  }
+
   /** Per-tab totals shown in the Notification Center header. */
   async getCounts(
     userId: string,
@@ -132,7 +166,9 @@ export class NotificationService {
     const unreadCount = await this.notificationRepo.getUnreadCount(userId);
 
     if (updatedCount > 0) {
-      await this.publishCountEvent(userId, "notification:read", unreadCount);
+      await this.publishCountEvent(userId, "notification:read", unreadCount, {
+        notificationIds,
+      });
     }
     return { updatedCount, unreadCount };
   }
@@ -201,10 +237,14 @@ export class NotificationService {
   private async publishCountEvent(
     userId: string,
     event: string,
-    unreadCount: number
+    unreadCount: number,
+    extra: Record<string, unknown> = {}
   ): Promise<void> {
     try {
-      await publishUserSocketEvent(this.redis, userId, event, { unreadCount });
+      await publishUserSocketEvent(this.redis, userId, event, {
+        unreadCount,
+        ...extra,
+      });
       await publishUserSocketEvent(
         this.redis,
         userId,

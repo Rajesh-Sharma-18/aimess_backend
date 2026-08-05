@@ -28,6 +28,12 @@ export interface MessageSentPayload {
   senderId: string;
   senderName: string;
   senderAvatar: string;
+  /** Display name of the group — a GROUP push must title on the group, not the sender. */
+  groupName?: string;
+  /** Group/community avatar for the notification's large icon. */
+  conversationAvatar?: string;
+  /** False when the room is read-only for the recipient — hides the Reply action. */
+  canReply?: boolean;
   /** Short, render-ready preview text (already truncated). */
   preview: string;
   messageType: string;
