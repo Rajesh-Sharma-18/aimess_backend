@@ -65,6 +65,7 @@ export function createPrivateMessageRoutes(
 
   // Delete conversation for me
   router.delete("/rooms/:roomId", authenticate, roomCtrl.deleteForMe);
+  router.post("/rooms/:roomId/clear", authenticate, roomCtrl.clearChat);
 
   // Mute / unmute a conversation
   router.post(

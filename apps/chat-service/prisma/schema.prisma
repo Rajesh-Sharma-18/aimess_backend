@@ -39,6 +39,7 @@ model PrivateRoom {
   lastUnreadPreviewByUser   Json     @default("{}")
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
+  clearFor                  Json     @default("{}")
   mutedBy                   Json     @default("{}")
   archivedBy                Json     @default("{}")
   pinnedCount               Int      @default(0)
@@ -297,6 +298,7 @@ model GroupMember {
   // messages restore the group to their inbox. Distinct from `leftAt` — the
   // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
   clearedAt            DateTime?
+  clearChatAt          DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)

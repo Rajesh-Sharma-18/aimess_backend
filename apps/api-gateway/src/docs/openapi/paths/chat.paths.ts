@@ -511,6 +511,31 @@ const privateRoomDelete = {
   },
 };
 
+const privateRoomClear = {
+  post: {
+    tags: ["Chat â€” Private"],
+    operationId: "clearPrivateChat",
+    summary: "Clear chat for me",
+    description:
+      "Clears all previous private messages for the authenticated user only. " +
+      "The conversation remains in the inbox, peers keep their history, and new messages remain visible.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat cleared"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 const privateMessages = {
   get: {
     tags: ["Chat — Private"],
@@ -914,6 +939,31 @@ const groupById = {
     ],
     responses: {
       ...successResponse("Conversation cleared"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const groupClear = {
+  post: {
+    tags: ["Chat â€” Groups"],
+    operationId: "clearGroupChat",
+    summary: "Clear chat for me",
+    description:
+      "Clears all previous group messages for the authenticated user only. " +
+      "The user remains a member, other members keep their history, and new messages remain visible.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat cleared"),
       "401": unauthorized,
       "404": notFound,
     },
@@ -3273,6 +3323,7 @@ export const chatPaths = {
   "/chat/private/conversations": privateConversations,
   "/chat/private/rooms/{peerId}": privateRoomByPeer,
   "/chat/private/rooms/{roomId}": privateRoomDelete,
+  "/chat/private/rooms/{roomId}/clear": privateRoomClear,
   "/chat/private/rooms/{roomId}/messages": privateMessages,
   "/chat/private/rooms/{roomId}/media": privateMedia,
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
@@ -3289,6 +3340,7 @@ export const chatPaths = {
   "/chat/groups": groupCreate,
   "/chat/groups/my-groups": groupMyGroups,
   "/chat/groups/{roomId}": groupById,
+  "/chat/groups/{roomId}/clear": groupClear,
   "/chat/groups/{roomId}/disband": groupDisband,
   "/chat/groups/{roomId}/archive": groupArchive,
   "/chat/groups/{roomId}/unarchive": groupUnarchive,

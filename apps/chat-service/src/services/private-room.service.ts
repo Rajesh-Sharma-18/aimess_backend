@@ -18,6 +18,7 @@ import {
   type VisibilitySource,
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -696,16 +697,22 @@ export class PrivateRoomService {
       const rawLm = perUserFallback.has(room.roomId)
         ? (perUserFallback.get(room.roomId) ?? null)
         : room.lastMessage;
-      const lastMessage = (rawLm && typeof rawLm === "object"
-        ? toWireMessage(rawLm as { messageType?: string | null })
-        : (rawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
+      const cutoff = getPrivateDeletionCutoff(room, userId);
+      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
+      const visibleRawLm =
+        cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
+          ? null
+          : rawLm;
+      const lastMessage = (visibleRawLm && typeof visibleRawLm === "object"
+        ? toWireMessage(visibleRawLm as { messageType?: string | null })
+        : (visibleRawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
 
       // Community-style normalized lastActivity — same {type,userId,username,
       // preview,dateTime} shape as CommunityLastActivity. `username` mirrors
       // the sender's live display name (peer if they sent it; empty when the
       // caller sent it themselves — the client already knows its own name and
       // renders "You:", matching how the community list defers self-labeling).
-      const lmRecord = rawLm as Record<string, unknown> | null;
+      const lmRecord = visibleRawLm as Record<string, unknown> | null;
       const lmSenderId = (lmRecord?.senderId as string) ?? null;
       const lmMessageType = normalizeMessageType(
         (lmRecord?.messageType as string) ?? "TEXT"
@@ -845,6 +852,26 @@ export class PrivateRoomService {
         JSON.stringify({
           event: "conv:deleted",
           data: { roomId, deletedBy: userId },
+        })
+      )
+      .catch(() => {});
+  }
+
+  async clearChat(roomId: string, userId: string): Promise<void> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const isParticipant = room.participants?.includes(userId);
+    if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    await this.privateRoomRepo.setClearFor(roomId, userId);
+
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:cleared",
+          data: { roomId, clearedBy: userId, type: "PRIVATE" },
         })
       )
       .catch(() => {});

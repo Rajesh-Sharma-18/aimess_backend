@@ -167,6 +167,10 @@ export const CHAT_MESSAGES = {
     vi: "Đã xóa cuộc trò chuyện",
     en: "Conversation deleted",
   },
+  CHAT_CLEARED: {
+    vi: "Chat cleared",
+    en: "Chat cleared",
+  },
   CHAT_MESSAGE_DELETED_FOR_YOU: {
     vi: "Đã xóa tin nhắn cho bạn",
     en: "Message deleted for you",

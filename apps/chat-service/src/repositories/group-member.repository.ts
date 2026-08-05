@@ -90,6 +90,7 @@ export class GroupMemberRepository {
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
+      clearChatAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -100,6 +101,7 @@ export class GroupMemberRepository {
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
+        clearChatAt: true,
       },
     });
   }
@@ -117,6 +119,7 @@ export class GroupMemberRepository {
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
+      clearChatAt: Date | null;
       status: string;
       leftAt: Date | null;
     }>
@@ -129,6 +132,7 @@ export class GroupMemberRepository {
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
+        clearChatAt: true,
         status: true,
         leftAt: true,
       },
@@ -145,6 +149,17 @@ export class GroupMemberRepository {
       where: { roomId, userId, status: "ACTIVE" },
       data: {
         clearedAt: new Date(),
+        unreadCount: 0,
+        lastReadAt: new Date(),
+      },
+    });
+  }
+
+  async setClearChatAt(roomId: string, userId: string): Promise<void> {
+    await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      data: {
+        clearChatAt: new Date(),
         unreadCount: 0,
         lastReadAt: new Date(),
       },

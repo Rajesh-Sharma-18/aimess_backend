@@ -207,6 +207,7 @@ export class PrivateRoomRepository {
         lastUnreadPreviewByUser: (data.lastUnreadPreviewByUser as object) ?? {},
         blockedBy: (data.blockedBy as object) ?? [],
         deletedFor: (data.deletedFor as object) ?? {},
+        clearFor: (data.clearFor as object) ?? {},
         pinnedCount: (data.pinnedCount as number) ?? 0,
         lastPinnedAt: (data.lastPinnedAt as Date) ?? null,
       },
@@ -738,6 +739,52 @@ export class PrivateRoomRepository {
       where: { roomId },
       data: {
         deletedFor,
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        firstUnreadMessageIdByUser:
+          firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async setClearFor(roomId: string, userId: string): Promise<void> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return;
+
+    const clearFor = (existing.clearFor ?? {}) as Record<string, string>;
+    clearFor[userId] = new Date().toISOString();
+
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[userId] = 0;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = false;
+    const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    firstUnreadMessageIdByUser[userId] = null;
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    lastUnreadMessageIdByUser[userId] = null;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    lastUnreadPreviewByUser[userId] = null;
+
+    await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: {
+        clearFor,
         unreadCountByUser:
           unreadCountByUser as unknown as Prisma.InputJsonValue,
         hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,

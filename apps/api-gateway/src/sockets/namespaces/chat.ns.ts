@@ -407,7 +407,8 @@ export function registerChatNamespace(
           // view. MUST stay self-only — otherwise a peer merely watching this
           // user's presence would learn they deleted a conversation (and its
           // roomId, which may be with a third party entirely).
-          parsed.event === "conv:deleted";
+          parsed.event === "conv:deleted" ||
+          parsed.event === "conv:cleared";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
