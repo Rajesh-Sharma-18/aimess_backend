@@ -523,12 +523,37 @@ describe("startChatConsumer — private room mute suppression", () => {
     expect(recipients).toEqual(["unmuted-user"]);
   });
 
-  it("GROUP → private mute gate never invoked (private-only check)", async () => {
+  it("GROUP → mute gate IS invoked (a muted group must not push)", async () => {
     consume(makeMsg({ ...BASE, conversationType: "GROUP" }));
     await flush();
 
-    expect(isPrivateMutedMock).not.toHaveBeenCalled();
+    expect(isPrivateMutedMock).toHaveBeenCalled();
     expect(pushMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("GROUP, muted recipient → dropped from fan-out", async () => {
+    isPrivateMutedMock.mockImplementation(
+      async (userId: string) => userId === "muted-user"
+    );
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        recipientIds: ["muted-user", "unmuted-user"],
+      })
+    );
+    await flush();
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients] = pushMany.mock.calls[0] as [string[], unknown];
+    expect(recipients).toEqual(["unmuted-user"]);
+  });
+
+  it("COMMUNITY → per-room mute gate not invoked (community mute is its own gate)", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "COMMUNITY" }));
+    await flush();
+
+    expect(isPrivateMutedMock).not.toHaveBeenCalled();
   });
 
   it("FAIL-OPEN: oracle resolves not-muted on outage → push still sent (not dropped)", async () => {

@@ -17,7 +17,9 @@ export async function resolveSenderIdentity(
   senderName?: string,
   senderAvatar?: string
 ): Promise<{ senderName: string; senderAvatar: string }> {
-  if (senderName !== undefined && senderAvatar !== undefined) {
+  // A BLANK name must not short-circuit the lookup — socket callers routinely pass "" for
+  // their own identity, and returning it verbatim renders the push as "Someone".
+  if (senderName && senderAvatar) {
     return { senderName, senderAvatar };
   }
   const snaps = await userSnapshotService.getUserSnapshotsMap(
@@ -27,7 +29,10 @@ export async function resolveSenderIdentity(
   const snap = snaps.get(senderId);
   const resolvedName = resolveDisplayName(snap);
   return {
-    senderName: senderName ?? resolvedName,
-    senderAvatar: senderAvatar ?? ((snap?.avatar as string) || ""),
+    // "Unknown User" stays empty on the wire so each client renders its own localized
+    // fallback instead of a hardcoded English string.
+    senderName:
+      senderName || (resolvedName === "Unknown User" ? "" : resolvedName),
+    senderAvatar: senderAvatar || (snap?.avatar as string) || "",
   };
 }

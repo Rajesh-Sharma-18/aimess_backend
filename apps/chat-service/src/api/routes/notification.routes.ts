@@ -13,6 +13,7 @@ export function createNotificationRoutes(ctrl: NotificationController): Router {
   const router = Router();
 
   router.get("/", authenticate, ctrl.getNotifications);
+  router.get("/sync", authenticate, ctrl.syncNotifications);
   router.post(
     "/read",
     authenticate,

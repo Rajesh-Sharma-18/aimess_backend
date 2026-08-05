@@ -56,6 +56,9 @@ export function parseCategory(raw: unknown): NotificationCategory {
 }
 
 export function categorize(type: string): Exclude<NotificationCategory, "ALL"> {
+  // Same policy as an unrecognized type below — a missing one must not throw
+  // and abort the notification publish.
+  if (typeof type !== "string" || !type) return "SYSTEM";
   // Mentions checked before COMMUNITIES so `community.mention` doesn't get
   // swallowed by the `community.` prefix branch.
   if ((MENTION_TYPES as readonly string[]).includes(type)) return "MENTIONS";

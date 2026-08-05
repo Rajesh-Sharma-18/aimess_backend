@@ -194,6 +194,15 @@ export function buildApp(): BuiltApp {
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();
+  // The list endpoint reads per-tab counts alongside the rows; without a default
+  // every notifications spec would 500 on an undefined counts object.
+  notificationRepo.countByCategories.mockResolvedValue({
+    all: 0,
+    friends: 0,
+    communities: 0,
+    mentions: 0,
+    system: 0,
+  });
   const callRepo = repoMock();
 
   // -- Peers / collaborators --

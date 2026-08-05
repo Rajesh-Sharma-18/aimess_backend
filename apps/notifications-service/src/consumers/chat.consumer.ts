@@ -39,6 +39,10 @@ interface MessageSentPayload {
   senderId: string;
   senderName: string;
   senderAvatar: string;
+  groupName?: string;
+  conversationAvatar?: string;
+  canReply?: boolean;
+  unreadCount?: number;
   preview: string;
   messageType: string;
   sentAt: number;
@@ -77,7 +81,10 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   // must not receive a push for it. Everything else (persistence, unread
   // counts, socket events, ordering) is unaffected — this consumer only
   // decides push delivery. Fail-open on oracle outage (see chatMessagingClient).
-  if (data.conversationType === "PRIVATE") {
+  if (
+    data.conversationType === "PRIVATE" ||
+    data.conversationType === "GROUP"
+  ) {
     const muteChecks = await Promise.all(
       recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
     );
@@ -85,7 +92,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     recipients = recipients.filter((_, i) => !muteChecks[i]);
     if (recipients.length < before) {
       logger.info(
-        `Suppressing private push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+        `Suppressing ${data.conversationType} push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
       );
     }
     if (recipients.length === 0) return;
@@ -201,6 +208,14 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       senderId: data.senderId,
       senderName: data.senderName ?? "",
       senderAvatar: data.senderAvatar ?? "",
+      ...(data.groupName ? { groupName: data.groupName } : {}),
+      ...(data.conversationAvatar
+        ? { conversationAvatar: data.conversationAvatar }
+        : {}),
+      canReply: data.canReply === false ? "false" : "true",
+      ...(typeof data.unreadCount === "number"
+        ? { unreadCount: String(data.unreadCount) }
+        : {}),
       contentType: data.messageType ?? "",
       preview: data.preview ?? "",
       sentAt: String(data.sentAt ?? ""),

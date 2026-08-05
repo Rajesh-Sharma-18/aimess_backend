@@ -11,6 +11,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import {
@@ -497,8 +498,16 @@ export class ChatMessageOrchestrator {
         sentAt: serverTs,
       };
       if (conversationType === "GROUP") {
+        const header = await this.groupMessageService
+          .getPushHeader(params.roomId)
+          .catch(() => null);
+        const groupAvatar = header?.avatar
+          ? await resolveMediaUrl(header.avatar).catch(() => "")
+          : "";
         publishMessageSentSafe({
           ...pushBase,
+          ...(header?.name ? { groupName: header.name } : {}),
+          ...(groupAvatar ? { conversationAvatar: groupAvatar } : {}),
           fetchRecipients: () =>
             this.groupMessageService.getActiveMemberIds(params.roomId),
         });
@@ -1296,6 +1305,15 @@ export class ChatMessageOrchestrator {
 
     // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
     notifyUnreadChanged(params.readerId);
+
+    // Dismiss this conversation's tray notification on the reader's other devices. read_sync
+    // above only reaches live sockets; a backgrounded device needs a push to clear.
+    publishConversationReadSafe({
+      readerId: params.readerId,
+      conversationId: params.roomId,
+      conversationType,
+      readAt: Date.now(),
+    });
 
     return { readToSeq };
   }

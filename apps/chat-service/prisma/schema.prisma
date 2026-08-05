@@ -541,6 +541,15 @@ model Notification {
   // alert" needs a real indexed field, not a JSON-path query.
   loginSessionId String?
 
+  // Stable identity of the underlying entity/action (see lib/notification-identity.ts).
+  // Two events for the same real-world thing share a groupKey, so the second one
+  // transitions the existing row instead of creating a duplicate.
+  groupKey String?
+  // Monotonic per-row revision. Every mutation bumps it; clients apply an
+  // incoming frame only when its version is >= the version they hold, which is
+  // what makes socket/API/local-DB convergence order-independent.
+  version Int @default(1)
+
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, type])
   // Covers the unread count — the hottest query here (every create, read,
@@ -548,6 +557,8 @@ model Notification {
   // applied: every query is userId-scoped.
   @@index([userId, isRead, isDeleted])
   @@index([userId, loginSessionId])
+  @@index([userId, groupKey])
+  @@index([userId, updatedAt(sort: Desc)])
   @@map("notifications")
 }
 

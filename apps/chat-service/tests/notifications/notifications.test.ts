@@ -44,7 +44,13 @@ describe("GET /api/chat/notifications (list)", () => {
       },
     ];
     mocks.notificationRepo.findByUserId.mockResolvedValue(rows);
-    mocks.notificationRepo.countByUserId.mockResolvedValue(2);
+    mocks.notificationRepo.countByCategories.mockResolvedValue({
+      all: 2,
+      friends: 0,
+      communities: 0,
+      mentions: 0,
+      system: 0,
+    });
 
     const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
 
@@ -63,7 +69,6 @@ describe("GET /api/chat/notifications (list)", () => {
 
   it("EDGE: empty list still returns 200 with empty data array", async () => {
     mocks.notificationRepo.findByUserId.mockResolvedValue([]);
-    mocks.notificationRepo.countByUserId.mockResolvedValue(0);
 
     const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
 
@@ -116,8 +121,8 @@ describe("GET /api/chat/notifications (list)", () => {
 
 describe("POST /api/chat/notifications/read", () => {
   it("POSITIVE: marks a notification read, scoped to the caller", async () => {
-    const updated = { id: "notif-1", isRead: true, readAt: new Date(5000) };
-    mocks.notificationRepo.markRead.mockResolvedValue(updated);
+    mocks.notificationRepo.markManyRead.mockResolvedValue(1);
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -126,10 +131,10 @@ describe("POST /api/chat/notifications/read", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.isRead).toBe(true);
-    // AUDIT H6 — repo update MUST be scoped to (id, callerUserId), not id alone.
-    expect(mocks.notificationRepo.markRead).toHaveBeenCalledWith(
-      "notif-1",
+    expect(res.body.data).toMatchObject({ updatedCount: 1, unreadCount: 3 });
+    // AUDIT H6 — repo update MUST be scoped to (ids, callerUserId), not ids alone.
+    expect(mocks.notificationRepo.markManyRead).toHaveBeenCalledWith(
+      ["notif-1"],
       TEST_USER_ID
     );
   });
@@ -137,7 +142,8 @@ describe("POST /api/chat/notifications/read", () => {
   // AUDIT H6 — another user's notification id can't be flipped: scoped to userId,
   // so the repo matches 0 rows and returns null (no mutation, no leak).
   it("SECURITY: IDOR — marking a foreign notification is scoped out (null result)", async () => {
-    mocks.notificationRepo.markRead.mockResolvedValue(null);
+    mocks.notificationRepo.markManyRead.mockResolvedValue(0);
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(3);
 
     const res = await request(app)
       .post(`${BASE}/read`)
@@ -145,9 +151,10 @@ describe("POST /api/chat/notifications/read", () => {
       .send({ notificationId: "someone-elses-id" });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toBeNull();
-    expect(mocks.notificationRepo.markRead).toHaveBeenCalledWith(
-      "someone-elses-id",
+    // Scoped to userId, so the repo matches 0 rows — no mutation, no leak.
+    expect(res.body.data.updatedCount).toBe(0);
+    expect(mocks.notificationRepo.markManyRead).toHaveBeenCalledWith(
+      ["someone-elses-id"],
       TEST_USER_ID
     );
   });
@@ -159,7 +166,7 @@ describe("POST /api/chat/notifications/read", () => {
       .set(bearer(makeAccessToken()))
       .send({});
     expect(res.status).toBe(400);
-    expect(mocks.notificationRepo.markRead).not.toHaveBeenCalled();
+    expect(mocks.notificationRepo.markManyRead).not.toHaveBeenCalled();
   });
 
   it("NEGATIVE: 400 when notificationId is too short (<5 chars)", async () => {
@@ -189,7 +196,9 @@ describe("POST /api/chat/notifications/read-all", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(mocks.notificationRepo.markAllRead).toHaveBeenCalledWith(
-      TEST_USER_ID
+      TEST_USER_ID,
+      undefined,
+      null
     );
   });
 
@@ -208,9 +217,10 @@ describe("GET /api/chat/notifications/unread-count", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.count).toBe(7);
+    expect(res.body.data.unreadCount).toBe(7);
     expect(mocks.notificationRepo.getUnreadCount).toHaveBeenCalledWith(
-      TEST_USER_ID
+      TEST_USER_ID,
+      expect.anything()
     );
   });
 

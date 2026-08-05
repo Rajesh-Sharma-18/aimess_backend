@@ -51,6 +51,9 @@ message NotificationDto {
   // actionTaken ("TERMINATED" | "TRUSTED") for login-detected notifications after
   // the user acts on them, so the client can restore state on page refresh.
   map<string, string> data  = 9;
+  int64  updated_at         = 10;
+  int32  version            = 11;
+  string group_key          = 12;
 }
 message MarkNotificationsReadRequest {
   string          user_id          = 1;
