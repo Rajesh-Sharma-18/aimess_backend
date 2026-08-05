@@ -108,10 +108,10 @@ export class FriendshipEventConsumer {
           await this.friendshipRepo.deleteFriendship(event.userA, event.userB);
           await this.friendshipRepo.deleteFriendship(event.userB, event.userA);
           await this.clearBlockedByOnRoom(event.userA, event.userB);
-          await this.postFriendshipSystemMessage(
-            event,
-            SystemEvent.FRIENDSHIP_DELETED
-          );
+          // No system message: "X removed you" / "You removed X" is noise in
+          // the conversation, and firing for block's own internal unfriend
+          // step also leaked "removed" bubbles into what should be a silent
+          // block.
           logger.debug(`Friendship deleted: ${event.userA} <-> ${event.userB}`);
           break;
 
@@ -122,10 +122,9 @@ export class FriendshipEventConsumer {
             "BLOCKED"
           );
           await this.addBlockedByToRoom(event.userA, event.userB);
-          await this.postFriendshipSystemMessage(
-            event,
-            SystemEvent.FRIENDSHIP_BLOCKED
-          );
+          // No system message: blocking must stay silent to the blocked
+          // party (see friendship.service.ts blockUser) — posting a shared
+          // chat bubble would tell them "X blocked you" regardless.
           logger.debug(
             `Friendship blocked: ${event.userA} blocked ${event.userB}`
           );
