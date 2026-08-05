@@ -361,9 +361,17 @@ export const friendshipRepository = {
 
   /**
    * Friendship rows between `callerId` and any of `candidateIds` (either
-   * direction), plus the block rows touching `callerId` — the two reads the
-   * gRPC `CheckFriendships` relationship contract needs. Bounded by caller
-   * (candidateIds is capped upstream, same as {@link findAcceptedFriendIdsForUser}).
+   * direction), plus the ids `callerId` has personally blocked — the two
+   * reads the gRPC `CheckFriendships` relationship contract needs. Bounded by
+   * caller (candidateIds is capped upstream, same as
+   * {@link findAcceptedFriendIdsForUser}).
+   *
+   * `blockedIds` is directional (`callerId` → candidate) ONLY — it feeds
+   * `buildFriendshipView`'s `isBlockedByViewer`, which must answer "did THIS
+   * viewer block them", never "is there a block somewhere in this pair".
+   * Including the reverse direction (candidate blocked callerId) would make
+   * the blocked party's own relationship view come back BLOCKED too, which is
+   * exactly the symmetric-block bug this method must not reintroduce.
    */
   async findRelationshipsForUser(
     callerId: string,
@@ -381,18 +389,11 @@ export const friendshipRepository = {
         select: FRIENDSHIP_SELECT,
       }),
       prisma.block.findMany({
-        where: {
-          OR: [
-            { blockerId: callerId, blockedId: { in: candidateIds } },
-            { blockedId: callerId, blockerId: { in: candidateIds } },
-          ],
-        },
-        select: { blockerId: true, blockedId: true },
+        where: { blockerId: callerId, blockedId: { in: candidateIds } },
+        select: { blockedId: true },
       }),
     ]);
-    const blockedIds = new Set(
-      blocks.map((b) => (b.blockerId === callerId ? b.blockedId : b.blockerId))
-    );
+    const blockedIds = new Set(blocks.map((b) => b.blockedId));
     return { rows, blockedIds };
   },
 

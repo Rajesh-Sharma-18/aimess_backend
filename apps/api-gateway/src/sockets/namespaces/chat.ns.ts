@@ -1220,8 +1220,27 @@ export function registerChatNamespace(
             Date.now(),
             { senderName: recordingNames.get(conversationId) }
           ),
-        isAuthorized: (conversationId) =>
-          socket.rooms.has(`conv:${conversationId}`),
+        // PRIVATE rooms additionally consult the same block-aware roster
+        // typing uses: getRoomParticipantIds returns an empty roster once
+        // either side has blocked the other, so a blocked DM never leaks a
+        // "recording…" indicator in either direction. GROUP stays the cheap
+        // sync room check — blocking has no group-recording equivalent.
+        isAuthorized: async (conversationId) => {
+          if (!socket.rooms.has(`conv:${conversationId}`)) return false;
+          if (typingHints.get(conversationId)?.kind === "group") return true;
+          try {
+            const { userIds } = await messagingClient.getRoomParticipantIds({
+              conversationId,
+              conversationType: "private",
+            });
+            return userIds.includes(userId);
+          } catch (err) {
+            logger.warn(
+              `/chat recording: failed to resolve participants conversationId=${conversationId}: ${String(err)}`
+            );
+            return false;
+          }
+        },
       }),
     });
 
@@ -1229,6 +1248,7 @@ export function registerChatNamespace(
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
       recordingNames.set(r.data.conversationId, r.data.senderName);
+      rememberTypingHint(r.data);
       recording.start(r.data.conversationId);
     });
 
@@ -1236,6 +1256,7 @@ export function registerChatNamespace(
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
       recordingNames.set(r.data.conversationId, r.data.senderName);
+      rememberTypingHint(r.data);
       recording.stop(r.data.conversationId);
     });
 

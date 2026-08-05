@@ -1766,9 +1766,18 @@ export function createMessagingImpl(
           // empty roster and stop being delivered. The fallback costs one
           // extra indexed lookup only in that legacy-group case.
           const room = await deps.privateRoomRepo.findByRoomId(conversationId);
-          const userIds = room
-            ? (room.participants ?? [])
-            : await deps.groupMessageService.getActiveMemberIds(conversationId);
+          // A one-directional block still suppresses typing for BOTH sides of
+          // the DM: the blocker's client shouldn't leak "typing…" to someone
+          // it doesn't want to hear from, and the blocked party shouldn't see
+          // the blocker's presence either. Empty roster == nobody delivered to.
+          const blockedBy = Array.isArray(room?.blockedBy)
+            ? (room.blockedBy as string[])
+            : [];
+          const userIds = !room
+            ? await deps.groupMessageService.getActiveMemberIds(conversationId)
+            : blockedBy.length > 0
+              ? []
+              : (room.participants ?? []);
 
           callback(null, { userIds });
         } catch (err) {

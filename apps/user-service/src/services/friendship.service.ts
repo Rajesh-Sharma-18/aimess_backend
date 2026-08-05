@@ -1134,10 +1134,11 @@ export const friendshipService = {
 
     await friendshipRepository.createBlock(blockerId, blockedId);
 
-    // Symmetric — activates chat-service's `friendship.blocked` consumer
-    // branch for both directions so neither side can message the other.
+    // Directional only — a block is one-way (blockerId → blockedId). Publishing
+    // the reverse direction too would make chat-service's replica treat the
+    // blocked party as if THEY had also blocked the blocker (symmetric ban),
+    // which breaks messaging/call permission direction.
     publishFriendshipBlockedSafe(blockerId, blockedId);
-    publishFriendshipBlockedSafe(blockedId, blockerId);
 
     // Blocking is silent to the blocked party — same product policy this
     // codebase already applies to FRIEND_UNFRIENDED (notifications-service
@@ -1177,8 +1178,10 @@ export const friendshipService = {
     );
 
     if (reverseBlock) {
+      // Only the surviving direction (blockedId still blocks blockerId) —
+      // blockerId no longer blocks anyone here, so re-publishing that
+      // direction would wrongly re-symmetrize the relationship.
       publishFriendshipBlockedSafe(blockedId, blockerId);
-      publishFriendshipBlockedSafe(blockerId, blockedId);
     } else if (friendship?.status === "ACCEPTED") {
       publishFriendshipCreatedSafe(
         friendship.requesterId,
