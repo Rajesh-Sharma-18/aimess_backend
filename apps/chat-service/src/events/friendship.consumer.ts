@@ -10,6 +10,7 @@ import { buildParticipantsKey } from "../lib/room-id.js";
 import { PrivateSystemMessageService } from "../services/private-system-message.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { SystemEvent } from "../types/enums.js";
+import { buildDeletePayload } from "../lib/chat-message.serializer.js";
 
 const FRIENDSHIP_EXCHANGE = "user.events";
 const FRIENDSHIP_QUEUE = "chat-service.friendship";
@@ -97,6 +98,14 @@ export class FriendshipEventConsumer {
             event.userA,
             event.status || "ACTIVE"
           );
+          // An unfriend->re-friend cycle would otherwise stack a fresh "now
+          // friends" bubble on top of every earlier one — remove any prior
+          // FRIENDSHIP_CREATED system messages in this room first so only the
+          // latest ever shows.
+          await this.deleteStaleFriendshipCreatedMessages(
+            event.userA,
+            event.userB
+          );
           await this.postFriendshipSystemMessage(
             event,
             SystemEvent.FRIENDSHIP_CREATED
@@ -179,6 +188,52 @@ export class FriendshipEventConsumer {
     } catch (err) {
       logger.warn(
         `FriendshipEventConsumer|system message failed type=${event.type}: ${String(err)}`
+      );
+    }
+  }
+
+  private async deleteStaleFriendshipCreatedMessages(
+    userA: string,
+    userB: string
+  ): Promise<void> {
+    try {
+      const room = await this.privateRoomRepo.findByParticipantsKey(
+        buildParticipantsKey(userA, userB)
+      );
+      if (!room) return;
+      const stale = await prisma.privateMessage.findMany({
+        where: {
+          roomId: room.roomId,
+          messageType: "SYSTEM",
+          systemEvent: SystemEvent.FRIENDSHIP_CREATED,
+          isDeleted: false,
+        },
+        select: { id: true, sequenceNumber: true },
+      });
+      for (const msg of stale) {
+        const deleted = await this.privateMessageRepo.deleteForEveryone(
+          msg.id,
+          room.roomId,
+          userA
+        );
+        const tombstone = buildDeletePayload({
+          conversationType: "PRIVATE",
+          messageId: deleted.id,
+          roomId: room.roomId,
+          scope: "forEveryone",
+          deletedBy: userA,
+          sequenceNumber: msg.sequenceNumber,
+        });
+        await redis
+          .publish(
+            `conv:${room.roomId}`,
+            JSON.stringify({ event: "message:delete", data: tombstone })
+          )
+          .catch(() => {});
+      }
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|deleteStaleFriendshipCreatedMessages failed: ${String(err)}`
       );
     }
   }
