@@ -233,6 +233,12 @@ export interface GetRoomParticipantIdsParams {
 }
 export interface GetRoomParticipantIdsResult {
   userIds: string[];
+  /**
+   * Subset of `userIds` currently under a moderation mute (GROUP only; always
+   * empty for PRIVATE). Optional so a chat-service that predates the field
+   * still type-checks — an absent list simply gates nobody.
+   */
+  mutedUserIds?: string[];
 }
 
 export interface GetMessageReactionsParams {

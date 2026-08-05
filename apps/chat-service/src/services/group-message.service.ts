@@ -30,6 +30,7 @@ import {
   assertGroupMember,
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
+  isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
@@ -75,7 +76,7 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
-import type { GroupMessage } from "../generated/prisma/index.js";
+import type { GroupMember, GroupMessage } from "../generated/prisma/index.js";
 
 export class GroupMessageService {
   constructor(
@@ -469,6 +470,22 @@ export class GroupMessageService {
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return members.map((m) => m.userId);
+  }
+
+  /**
+   * {@link getActiveMemberIds} plus the subset currently moderation-muted, from
+   * the SAME query — the gateway's typing/recording gate needs both and would
+   * otherwise pay a second round trip per keystroke. Lazy expiry is applied
+   * (`isGroupMemberMuted`), so a lapsed timed mute never appears here.
+   */
+  async getActiveRoster(
+    roomId: string
+  ): Promise<{ userIds: string[]; mutedUserIds: string[] }> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    return {
+      userIds: members.map((m) => m.userId),
+      mutedUserIds: members.filter(isGroupMemberMuted).map((m) => m.userId),
+    };
   }
 
   /**
@@ -986,6 +1003,9 @@ export class GroupMessageService {
       userId
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    // Parity with CommunityMessageService.deleteForMe — a muted member cannot
+    // mutate their own view of room content either.
+    assertGroupMemberNotMuted(member);
 
     return this.messageRepo.deleteForMe(messageId, userId);
   }
@@ -1083,6 +1103,11 @@ export class GroupMessageService {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       deletedType = "ADMIN_DELETE";
+    } else {
+      // Mirrors CommunityMessageService.deleteForAll: a muted member cannot
+      // delete their OWN message, but an admin/mod deleting someone else's is
+      // moderation and stays allowed even while that admin is muted.
+      assertGroupMemberNotMuted(member);
     }
 
     const deleted = await this.messageRepo.deleteForEveryone(
@@ -1139,7 +1164,13 @@ export class GroupMessageService {
     // authorize the caller as an ACTIVE member of THAT room before any sender/
     // type/window check. A non-member (or someone not in the message's room)
     // must not mutate it — NotFound so existence isn't leaked. (cross-room IDOR)
-    await this.assertActiveMemberOfMessageRoom(message, params.userId);
+    const editor = await this.assertActiveMemberOfMessageRoom(
+      message,
+      params.userId
+    );
+    // A muted member cannot mutate room content (Telegram: editing needs send).
+    // Mirrors CommunityMessageService.editMessage.
+    assertGroupMemberNotMuted(editor);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -1305,6 +1336,20 @@ export class GroupMessageService {
    */
   async assertMember(roomId: string, userId: string): Promise<void> {
     await assertGroupMember(this.memberRepo, roomId, userId);
+  }
+
+  /**
+   * {@link assertMember} plus the moderation-mute gate — for WRITE boundaries
+   * only (react / remove-reaction). Kept separate from `assertMember` because
+   * that one also guards pure READS (getMessageReactions, message context),
+   * which a muted member keeps full access to. Mirrors Community, where the
+   * react path calls `assertRoomMemberActive` + `assertCommunityMemberNotMuted`.
+   *
+   * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
+   */
+  async assertCanWrite(roomId: string, userId: string): Promise<void> {
+    const member = await assertGroupMember(this.memberRepo, roomId, userId);
+    assertGroupMemberNotMuted(member);
   }
 
   /**
@@ -1486,12 +1531,13 @@ export class GroupMessageService {
   private async assertActiveMemberOfMessageRoom(
     message: GroupMessage,
     userId: string
-  ): Promise<void> {
+  ): Promise<GroupMember> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       message.roomId,
       userId
     );
     if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return member;
   }
 
   async forwardMessage(params: {

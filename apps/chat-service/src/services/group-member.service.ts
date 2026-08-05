@@ -341,11 +341,94 @@ export class GroupMemberService {
   }
 
   /**
+   * Broadcasts a moderation MUTE/UNMUTE state change to every consumer that
+   * needs it — the single source of truth for "this group member's mute
+   * changed", and the direct counterpart of community-service's
+   * `_publishMuteStateChange`:
+   *
+   *   1. `group:member:muted` / `group:member:unmuted` into `conv:<roomId>` so
+   *      every member's roster badge updates live, AND onto the affected
+   *      member's own `user:<id>` channel so EVERY logged-in device (web,
+   *      Android, iOS) enables/disables its composer with no refetch — the
+   *      `user:<id>` leg is what makes multi-device sync work for a member who
+   *      never called `conv:join` (sitting on the chat list, app backgrounded).
+   *   2. on MUTE only, a `typing:stop` / `recording:stop` for the target so a
+   *      member muted mid-keystroke does not leave a stuck indicator on every
+   *      peer's screen.
+   *
+   * Used by manual mute, manual unmute AND the auto-unmute sweep, so the wire
+   * payload is byte-identical regardless of trigger. Best-effort: a Redis
+   * hiccup never fails the originating moderation request.
+   *
+   * @param actorId the admin/moderator who acted; "" for an automatic expiry.
+   */
+  private async publishMuteStateChange(args: {
+    roomId: string;
+    targetUserId: string;
+    isMuted: boolean;
+    mutedUntil: Date | null;
+    actorId: string;
+  }): Promise<void> {
+    const { roomId, targetUserId, isMuted, mutedUntil, actorId } = args;
+    const event = isMuted ? "group:member:muted" : "group:member:unmuted";
+    // Epoch ms on the wire, matching community's mute payload exactly.
+    const payload = {
+      roomId,
+      conversationType: "GROUP" as const,
+      memberId: targetUserId,
+      isMuted,
+      mutedUntil: isMuted && mutedUntil ? mutedUntil.getTime() : null,
+      actorId,
+      updatedAt: Date.now(),
+    };
+
+    try {
+      await Promise.all([
+        this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({ event, data: payload })
+        ),
+        publishChatUserEvent(this.redis, targetUserId, event, payload),
+      ]);
+
+      // Scenario 1: muted mid-typing — retract the indicator immediately
+      // instead of waiting out the 6 s presence TTL.
+      if (isMuted) {
+        const stop = {
+          conversationId: roomId,
+          conversationType: "GROUP" as const,
+          userId: targetUserId,
+          timestamp: Date.now(),
+        };
+        await this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({ event: "recording:stop", data: stop })
+        );
+        const roster = await this.memberRepo.findActiveMembers(roomId, {
+          limit: 500,
+        });
+        await Promise.all(
+          roster
+            .filter((m) => m.userId !== targetUserId)
+            .map((m) =>
+              publishChatUserEvent(this.redis, m.userId, "typing:stop", stop)
+            )
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        `GroupMemberService|${event} broadcast failed room=${roomId} target=${targetUserId}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
    * Moderator-imposed mute — same role gate as kick (OWNER/ADMIN on anyone
-   * lower; MODERATOR on MEMBER only), so a muted member cannot send/react
-   * (enforced in GroupMessageService.sendMessage via assertGroupMemberNotMuted)
-   * while keeping full read access. Distinct from `muteRoom` (self-notification
-   * mute) — this is a moderation action performed BY someone else ON a member.
+   * lower; MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
+   * delete/pin (enforced across every group write path via
+   * `assertGroupMemberNotMuted`) while keeping full read access. Distinct from
+   * `muteRoom` (self-notification mute) — this is a moderation action performed
+   * BY someone else ON a member. Mirrors community-service's `muteMember`.
    */
   async muteMember(params: {
     roomId: string;
@@ -353,6 +436,12 @@ export class GroupMemberService {
     mutedBy: string;
     mutedUntil?: Date | null;
   }): Promise<GroupMember | null> {
+    // Parity with community's "you cannot mute yourself" rule; without it an
+    // OWNER outranks nobody and would fall through the role-order check below.
+    if (params.mutedBy === params.targetUserId) {
+      throw new BadRequestError("CHAT_CANNOT_MUTE_SELF");
+    }
+
     const actor = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.mutedBy
@@ -373,14 +462,26 @@ export class GroupMemberService {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
 
-    return this.memberRepo.setModerationMute(
+    const mutedUntil = params.mutedUntil ?? null;
+    const updated = await this.memberRepo.setModerationMute(
       params.roomId,
       params.targetUserId,
-      {
-        mutedBy: params.mutedBy,
-        mutedUntil: params.mutedUntil ?? null,
-      }
+      { mutedBy: params.mutedBy, mutedUntil }
     );
+
+    await this.publishMuteStateChange({
+      roomId: params.roomId,
+      targetUserId: params.targetUserId,
+      isMuted: true,
+      mutedUntil,
+      actorId: params.mutedBy,
+    });
+
+    logger.info(
+      `Group member muted: room=${params.roomId} by=${params.mutedBy} target=${params.targetUserId} until=${mutedUntil?.toISOString() ?? "(indefinite)"}`
+    );
+
+    return updated;
   }
 
   async unmuteMember(params: {
@@ -397,10 +498,76 @@ export class GroupMemberService {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
-    return this.memberRepo.clearModerationMute(
+    const target = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.targetUserId
     );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    // Community parity: unmuting someone who isn't muted is a 404, and a
+    // fully-expired timed mute counts as not muted (lazy expiry).
+    if (!isGroupMemberMuted(target)) {
+      throw new NotFoundError("CHAT_MEMBER_NOT_MUTED");
+    }
+
+    const updated = await this.memberRepo.clearModerationMute(
+      params.roomId,
+      params.targetUserId
+    );
+
+    await this.publishMuteStateChange({
+      roomId: params.roomId,
+      targetUserId: params.targetUserId,
+      isMuted: false,
+      mutedUntil: null,
+      actorId: params.actorId,
+    });
+
+    logger.info(
+      `Group member unmuted: room=${params.roomId} by=${params.actorId} target=${params.targetUserId}`
+    );
+
+    return updated;
+  }
+
+  /**
+   * Auto-unmute sweep — called on an interval by the group mute sweeper.
+   *
+   * Enforcement correctness does NOT depend on this: `isGroupMemberMuted`
+   * applies lazy expiry the instant `moderationMutedUntil` passes, so posting
+   * rights come back on their own. The sweep exists to deliver the REALTIME
+   * signal (`group:member:unmuted` → composer re-enables on every device with
+   * no refresh) and to clear the stale flag. Exactly-once across instances via
+   * the atomic per-row claim. Mirrors community's `expireDueMutes`.
+   *
+   * @returns how many mutes were actually expired this call (drain until short).
+   */
+  async expireDueModerationMutes(limit: number): Promise<number> {
+    const now = new Date();
+    const rows = await this.memberRepo.findExpiredModerationMutes({
+      now,
+      limit,
+    });
+    if (rows.length === 0) return 0;
+
+    let expired = 0;
+    for (const row of rows) {
+      // Only the instance that wins the claim fires the side-effects.
+      const claimed = await this.memberRepo.claimExpiredModerationMute(
+        row.id,
+        now
+      );
+      if (claimed !== 1) continue;
+      expired++;
+      // actorId "" — an automatic expiry has no acting moderator.
+      await this.publishMuteStateChange({
+        roomId: row.roomId,
+        targetUserId: row.userId,
+        isMuted: false,
+        mutedUntil: null,
+        actorId: "",
+      });
+    }
+    return expired;
   }
 
   /**

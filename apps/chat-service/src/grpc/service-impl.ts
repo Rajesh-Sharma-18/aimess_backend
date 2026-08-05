@@ -236,9 +236,14 @@ function publishRealtimeSafe(
 function publishMessageNewToParticipants(
   recipientIds: string[],
   payload: unknown,
-  context: string
+  context: string,
+  excludeUserId: string
 ): void {
   for (const userId of new Set(recipientIds.filter(Boolean))) {
+    // Skip the sender: their socket is already in `conv:<roomId>` (from
+    // sending) and gets the room broadcast above, so a personal-channel copy
+    // on top of that double-delivers `message:new` to just them.
+    if (userId === excludeUserId) continue;
     publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
   }
 }
@@ -396,7 +401,8 @@ export function createMessagingImpl(
                     publishMessageNewToParticipants(
                       ids,
                       rowPayload,
-                      bcastContext
+                      bcastContext,
+                      req.senderId
                     )
                   )
                   .catch((err: unknown) => {
@@ -408,7 +414,8 @@ export function createMessagingImpl(
                 publishMessageNewToParticipants(
                   [req.senderId, req.receiverId],
                   rowPayload,
-                  bcastContext
+                  bcastContext,
+                  req.senderId
                 );
               }
             }
@@ -1066,7 +1073,9 @@ export function createMessagingImpl(
           // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
-            await deps.groupMessageService.assertMember(
+            // Write boundary — also rejects a moderation-muted member
+            // (CHAT_MUTED_IN_GROUP), same as the community react path.
+            await deps.groupMessageService.assertCanWrite(
               req.conversationId,
               req.userId
             );
@@ -1747,14 +1756,17 @@ export function createMessagingImpl(
           };
           const conversationId = req.conversationId ?? "";
           if (!conversationId) {
-            callback(null, { userIds: [] });
+            callback(null, { userIds: [], mutedUserIds: [] });
             return;
           }
 
           if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
-            const userIds =
-              await deps.groupMessageService.getActiveMemberIds(conversationId);
-            callback(null, { userIds });
+            // Roster + the moderation-muted subset in ONE query, so the
+            // gateway can drop a muted member's typing/recording indicator
+            // without a second per-keystroke round trip.
+            const roster =
+              await deps.groupMessageService.getActiveRoster(conversationId);
+            callback(null, roster);
             return;
           }
 
@@ -1773,19 +1785,25 @@ export function createMessagingImpl(
           const blockedBy = Array.isArray(room?.blockedBy)
             ? (room.blockedBy as string[])
             : [];
-          const userIds = !room
-            ? await deps.groupMessageService.getActiveMemberIds(conversationId)
-            : blockedBy.length > 0
-              ? []
-              : (room.participants ?? []);
+          if (!room) {
+            // Legacy-client group fallback — resolve the muted subset too, so
+            // an old client that omits conversationType is gated identically.
+            callback(
+              null,
+              await deps.groupMessageService.getActiveRoster(conversationId)
+            );
+            return;
+          }
+          const userIds = blockedBy.length > 0 ? [] : (room.participants ?? []);
 
-          callback(null, { userIds });
+          // PRIVATE has no moderation mute — always an empty muted list.
+          callback(null, { userIds, mutedUserIds: [] });
         } catch (err) {
           // Fail-closed: an empty roster suppresses the indicator rather than
           // leaking it. Typing is presence-only, so a dropped event is
           // strictly better than an unauthorized broadcast or a socket error.
           logger.warn(`gRPC getRoomParticipantIds error: ${String(err)}`);
-          callback(null, { userIds: [] });
+          callback(null, { userIds: [], mutedUserIds: [] });
         }
       })();
     },

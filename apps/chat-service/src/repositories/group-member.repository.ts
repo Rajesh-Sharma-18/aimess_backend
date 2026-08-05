@@ -122,6 +122,8 @@ export class GroupMemberRepository {
       clearChatAt: Date | null;
       status: string;
       leftAt: Date | null;
+      moderationMuted: boolean;
+      moderationMutedUntil: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -135,6 +137,11 @@ export class GroupMemberRepository {
         clearChatAt: true,
         status: true,
         leftAt: true,
+        // Moderation mute — surfaced on every inbox row so a client that was
+        // offline when the mute landed restores the disabled composer on its
+        // first list fetch, with no extra request.
+        moderationMuted: true,
+        moderationMutedUntil: true,
       },
     });
   }
@@ -219,6 +226,48 @@ export class GroupMemberRepository {
         moderationMutedBy: null,
       },
     });
+  }
+
+  /**
+   * TIMED moderation mutes whose `moderationMutedUntil` has already passed —
+   * feeds the auto-unmute sweep. Indefinite mutes (`moderationMutedUntil: null`)
+   * are never returned. Mirrors community's `findExpiredMemberMutes`.
+   */
+  async findExpiredModerationMutes(params: {
+    now: Date;
+    limit: number;
+  }): Promise<Array<{ id: string; roomId: string; userId: string }>> {
+    return this.prisma.groupMember.findMany({
+      where: {
+        moderationMuted: true,
+        moderationMutedUntil: { not: null, lte: params.now },
+      },
+      select: { id: true, roomId: true, userId: true },
+      take: params.limit,
+    });
+  }
+
+  /**
+   * ATOMIC claim of one expired mute: clears the mute only while it is still
+   * expired-and-set, so exactly ONE sweeper instance (or RabbitMQ redelivery)
+   * runs the unmute side-effects. Returns the number of rows changed — 1 means
+   * this caller owns the expiry, 0 means someone else already handled it.
+   * Mirrors community's `claimExpiredMemberMute`.
+   */
+  async claimExpiredModerationMute(id: string, now: Date): Promise<number> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: {
+        id,
+        moderationMuted: true,
+        moderationMutedUntil: { not: null, lte: now },
+      },
+      data: {
+        moderationMuted: false,
+        moderationMutedUntil: null,
+        moderationMutedBy: null,
+      },
+    });
+    return count;
   }
 
   /**

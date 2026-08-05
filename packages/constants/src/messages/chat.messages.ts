@@ -261,6 +261,14 @@ export const CHAT_MESSAGES = {
     vi: "Bạn đang bị tắt tiếng trong nhóm này và không thể gửi tin nhắn",
     en: "You are muted in this group and cannot post messages",
   },
+  CHAT_MEMBER_NOT_MUTED: {
+    vi: "Thành viên này hiện không bị tắt tiếng",
+    en: "This member is not currently muted",
+  },
+  CHAT_CANNOT_MUTE_SELF: {
+    vi: "Bạn không thể tự tắt tiếng chính mình",
+    en: "You cannot mute yourself",
+  },
 
   // --- Friendship gate ---
   CHAT_FRIENDSHIP_REQUIRED: {

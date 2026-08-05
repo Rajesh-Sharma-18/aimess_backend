@@ -17,6 +17,7 @@ import {
   type VisibleLast,
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
+import { isGroupMemberMuted } from "../lib/access-guard.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -30,6 +31,16 @@ import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
   isJoined: boolean;
+  /**
+   * True when an admin/moderator silenced the CALLER — they can still read
+   * everything but cannot send/react/edit/pin. Distinct from `isMuted`, which
+   * is the caller's own NOTIFICATION mute. Same names community's detail
+   * payload uses. Optional so the list endpoints that don't resolve it keep
+   * compiling unchanged.
+   */
+  isMemberMuted?: boolean;
+  /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
+  memberMutedUntil?: string | null;
 };
 
 /**
@@ -472,12 +483,29 @@ export class GroupRoomService {
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
     // Any authenticated user can fetch a group's detail, so isJoined genuinely
     // varies: true only when the caller has an ACTIVE membership row.
-    const isJoined = userId
-      ? (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) !== null
-      : false;
+    const membership = userId
+      ? await this.memberRepo.findActiveByRoomAndUser(roomId, userId)
+      : null;
+    const isJoined = membership !== null;
     // Resolve the room logo object key → download URL on read (never persisted).
     const avatar = await resolveMediaUrl(room.avatar);
-    return { ...room, avatar, isJoined };
+    // Caller's OWN moderation-mute state, so a client that reconnects (or opens
+    // the group cold) restores the disabled composer without waiting for a
+    // `group:member:muted` socket event it may have missed while offline —
+    // Scenario 4. Named exactly like community's detail payload
+    // (`isMemberMuted`/`memberMutedUntil`); distinct from `isMuted`, which is
+    // the caller's own NOTIFICATION mute.
+    const isMemberMuted = isGroupMemberMuted(membership);
+    return {
+      ...room,
+      avatar,
+      isJoined,
+      isMemberMuted,
+      memberMutedUntil:
+        isMemberMuted && membership?.moderationMutedUntil
+          ? membership.moderationMutedUntil.toISOString()
+          : null,
+    };
   }
 
   async updateRoom(
@@ -823,10 +851,16 @@ export class GroupRoomService {
           new Date(settings.muteUntil).getTime() > now);
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = membership?.status === "LEFT";
+      const isMemberMuted = isGroupMemberMuted(membership);
       return {
         ...room,
         avatar: urlFromMap(avatarUrls, room.avatar),
         isMuted,
+        isMemberMuted,
+        memberMutedUntil:
+          isMemberMuted && membership?.moderationMutedUntil
+            ? membership.moderationMutedUntil.toISOString()
+            : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
         role: membership?.role ?? "MEMBER",
