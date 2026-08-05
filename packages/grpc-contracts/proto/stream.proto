@@ -252,6 +252,11 @@ message AdminStreamRow {
   // which is a raw join-attempt/checkAccess-call counter that double-counts
   // reconnects) whenever a viewer count must match the admin viewer list.
   int64  unique_viewer_count = 19;
+  // Last known quality snapshot (self-reported by browser WHIP, or polled
+  // from SRS for OBS/RTMP) — "" / 0 if none reported yet.
+  string resolution     = 20; // e.g. "1280x720"
+  int64  bitrate_kbps   = 21;
+  int64  fps            = 22;
 }
 
 message AdminListStreamsRequest {

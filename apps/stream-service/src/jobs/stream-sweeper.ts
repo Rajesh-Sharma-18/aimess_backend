@@ -23,6 +23,12 @@ export function startStreamSweeper(
     void livestreamService.sweepStaleStreams().catch((err: unknown) => {
       logger.warn(`Stream sweeper tick failed: ${String(err)}`);
     });
+    // Piggyback the OBS quality poll on the same tick — no browser client
+    // exists for OBS streams to self-report quality, so this is the only
+    // source for it.
+    void livestreamService.pollObsStreamQuality().catch((err: unknown) => {
+      logger.warn(`OBS quality poll tick failed: ${String(err)}`);
+    });
   }, SWEEP_INTERVAL_MS);
 
   return () => {

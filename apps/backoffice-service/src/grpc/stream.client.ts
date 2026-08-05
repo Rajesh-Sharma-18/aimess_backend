@@ -102,6 +102,10 @@ export interface AdminStreamRow {
   createdAt: number;
   /** Distinct-user count from LivestreamViewerSession — matches AdminListViewerSessions' total. */
   uniqueViewerCount: number;
+  /** Last known quality snapshot — "" / 0 if none reported yet. */
+  resolution: string;
+  bitrateKbps: number;
+  fps: number;
 }
 
 /** Raw wire row (longs arrive as strings under longs:String). */
@@ -125,6 +129,9 @@ interface RawAdminStreamRow {
   endedAt: string | number;
   createdAt: string | number;
   uniqueViewerCount: string | number;
+  resolution: string;
+  bitrateKbps: string | number;
+  fps: string | number;
 }
 
 interface RawAdminListStreamsRes {
@@ -179,6 +186,9 @@ function toAdminStreamRow(r: RawAdminStreamRow): AdminStreamRow {
     endedAt: Number(r.endedAt ?? 0),
     createdAt: Number(r.createdAt ?? 0),
     uniqueViewerCount: Number(r.uniqueViewerCount ?? 0),
+    resolution: r.resolution ?? "",
+    bitrateKbps: Number(r.bitrateKbps ?? 0),
+    fps: Number(r.fps ?? 0),
   };
 }
 

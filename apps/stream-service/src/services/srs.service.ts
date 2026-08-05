@@ -127,6 +127,51 @@ export class SrsService {
   }
 
   /**
+   * Live video quality for `streamKey` as SRS currently sees it — resolution
+   * and 30s-average ingest bitrate. Scans every API base (OBS/RTMP streams may
+   * land on the separate ingest instance, see {@link apiBases}) and returns
+   * the first match. Returns `null` on any failure or if the stream isn't
+   * currently publishing — never throws, so a poll tick can just skip it.
+   */
+  async getStreamStats(
+    streamKey: string
+  ): Promise<{ width: number; height: number; bitrateKbps: number } | null> {
+    for (const apiBase of this.apiBases()) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const res = await fetch(`${apiBase}/api/v1/streams/`, {
+          method: "GET",
+          headers: this.apiAuthHeaders,
+          signal: controller.signal,
+        });
+        if (!res.ok) continue;
+        const body = (await res.json()) as {
+          streams?: Array<{
+            name?: string;
+            video?: { width?: number; height?: number };
+            kbps?: { recv_30s?: number };
+          }>;
+        };
+        const match = (body.streams ?? []).find((s) => s.name === streamKey);
+        if (!match?.video?.width || !match.video.height) continue;
+        return {
+          width: match.video.width,
+          height: match.video.height,
+          bitrateKbps: match.kbps?.recv_30s ?? 0,
+        };
+      } catch (error) {
+        logger.warn(
+          `SRS getStreamStats failed for ${apiBase} key=${streamKey}: ${String(error)}`
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    return null;
+  }
+
+  /**
    * Every distinct SRS HTTP API base this deployment talks to. One entry on
    * local Docker SRS (single all-in-one instance); two on the hosted topology
    * where OBS_RTMP lands on the ingest instance (SRS_INGEST_API_URL / I-01) and
