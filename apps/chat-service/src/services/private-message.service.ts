@@ -75,6 +75,7 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { personalizePrivateSystemMessageForViewer } from "@aimess/constants";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type {
@@ -1988,27 +1989,50 @@ export class PrivateMessageService {
       // and the sticker sub-object (content.sticker) — the latter lives
       // outside `files[]` and is otherwise never resolve-on-read.
       const content = wire.content as Record<string, unknown> | null;
-      const resolvedContent = content
+      let contentForWire = content;
+      if (
+        viewerId &&
+        String(wire.contentType).toUpperCase() === "SYSTEM" &&
+        message.systemEvent
+      ) {
+        const systemData = (message.systemData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const thirdPersonText = String(content?.text ?? "");
+        const personalized = personalizePrivateSystemMessageForViewer(
+          message.systemEvent,
+          systemData,
+          thirdPersonText,
+          viewerId
+        );
+        if (personalized !== thirdPersonText && content) {
+          contentForWire = { ...content, text: personalized };
+        }
+      }
+
+      const resolvedContent = contentForWire
         ? {
-            ...content,
-            ...(Array.isArray(content.files)
+            ...contentForWire,
+            ...(Array.isArray(contentForWire.files)
               ? {
                   files: applyUrlMapToFiles(
-                    content.files as MediaFileLike[],
+                    contentForWire.files as MediaFileLike[],
                     urlMap
                   ),
                 }
               : {}),
-            ...(content.sticker && typeof content.sticker === "object"
+            ...(contentForWire.sticker &&
+            typeof contentForWire.sticker === "object"
               ? {
                   sticker: resolveStickerField(
-                    content.sticker as MediaFileLike,
+                    contentForWire.sticker as MediaFileLike,
                     urlMap
                   ),
                 }
               : {}),
           }
-        : content;
+        : contentForWire;
 
       // Canonical client-facing reaction shape (FE reads `reactionGroups[]`; the
       // legacy `reactions` map carried by `...wire` is deprecated).

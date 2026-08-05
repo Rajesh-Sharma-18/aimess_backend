@@ -2,8 +2,14 @@ import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
 import { FriendshipRepository } from "../repositories/friendship.repository.js";
 import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { PrivateMessageRepository } from "../repositories/private-message.repository.js";
+import { CacheRepository } from "../repositories/cache.repository.js";
 import { prisma } from "../config/prisma.js";
+import { redis } from "../config/redis.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import { PrivateSystemMessageService } from "../services/private-system-message.service.js";
+import { UserSnapshotService } from "../services/user-snapshot.service.js";
+import { SystemEvent } from "../types/enums.js";
 
 const FRIENDSHIP_EXCHANGE = "user.events";
 const FRIENDSHIP_QUEUE = "chat-service.friendship";
@@ -26,6 +32,19 @@ export class FriendshipEventConsumer {
   private channel: Channel | null = null;
   private friendshipRepo = new FriendshipRepository();
   private privateRoomRepo = new PrivateRoomRepository(prisma);
+  private privateMessageRepo = new PrivateMessageRepository(
+    prisma,
+    this.privateRoomRepo
+  );
+  private cacheRepo = new CacheRepository(redis);
+  private userSnapshotService = new UserSnapshotService();
+  private privateSystemMessageService = new PrivateSystemMessageService(
+    this.privateMessageRepo,
+    this.privateRoomRepo,
+    this.userSnapshotService,
+    this.cacheRepo,
+    redis
+  );
 
   async start(connection: ChannelModel): Promise<void> {
     try {
@@ -35,13 +54,11 @@ export class FriendshipEventConsumer {
         throw new Error("Failed to create channel");
       }
 
-      // Declare exchange and queue
       await this.channel.assertExchange(FRIENDSHIP_EXCHANGE, "topic", {
         durable: true,
       });
       await this.channel.assertQueue(FRIENDSHIP_QUEUE, { durable: true });
 
-      // Bind queue to exchange for each routing key
       for (const key of ROUTING_KEYS) {
         await this.channel.bindQueue(
           FRIENDSHIP_QUEUE,
@@ -50,7 +67,6 @@ export class FriendshipEventConsumer {
         );
       }
 
-      // Start consuming
       await this.channel.consume(
         FRIENDSHIP_QUEUE,
         (msg: ConsumeMessage | null) => this.handleMessage(msg)
@@ -76,43 +92,54 @@ export class FriendshipEventConsumer {
             event.userB,
             event.status || "ACTIVE"
           );
-          // Also create the reverse relationship (bidirectional)
           await this.friendshipRepo.createFriendship(
             event.userB,
             event.userA,
             event.status || "ACTIVE"
           );
-          logger.debug(`Friendship created: ${event.userA} ↔ ${event.userB}`);
+          await this.postFriendshipSystemMessage(
+            event,
+            SystemEvent.FRIENDSHIP_CREATED
+          );
+          logger.debug(`Friendship created: ${event.userA} <-> ${event.userB}`);
           break;
 
         case "friendship.deleted":
           await this.friendshipRepo.deleteFriendship(event.userA, event.userB);
           await this.friendshipRepo.deleteFriendship(event.userB, event.userA);
-          // Clear blockedBy on the PrivateRoom (unblock path publishes this)
           await this.clearBlockedByOnRoom(event.userA, event.userB);
-          logger.debug(`Friendship deleted: ${event.userA} ↔ ${event.userB}`);
+          await this.postFriendshipSystemMessage(
+            event,
+            SystemEvent.FRIENDSHIP_DELETED
+          );
+          logger.debug(`Friendship deleted: ${event.userA} <-> ${event.userB}`);
           break;
 
         case "friendship.blocked":
-          // When userA blocks userB, we mark it as BLOCKED
           await this.friendshipRepo.updateFriendshipStatus(
             event.userA,
             event.userB,
             "BLOCKED"
           );
-          // Also update PrivateRoom.blockedBy so call.service's guard works
           await this.addBlockedByToRoom(event.userA, event.userB);
+          await this.postFriendshipSystemMessage(
+            event,
+            SystemEvent.FRIENDSHIP_BLOCKED
+          );
           logger.debug(
             `Friendship blocked: ${event.userA} blocked ${event.userB}`
           );
           break;
 
         case "friendship.banned":
-          // When userA bans userB, we mark it as BANNED
           await this.friendshipRepo.updateFriendshipStatus(
             event.userA,
             event.userB,
             "BANNED"
+          );
+          await this.postFriendshipSystemMessage(
+            event,
+            SystemEvent.FRIENDSHIP_BANNED
           );
           logger.debug(
             `Friendship banned: ${event.userA} banned ${event.userB}`
@@ -123,16 +150,40 @@ export class FriendshipEventConsumer {
           logger.warn(`Unknown friendship event type: ${event.type}`);
       }
 
-      // Acknowledge the message
       this.channel?.ack(msg);
     } catch (err) {
       logger.error("Error processing friendship event", err);
-      // Nack the message (don't requeue to avoid infinite loops)
       this.channel?.nack(msg, false, false);
     }
   }
 
-  // ponytail: best-effort room update — no room = no-op (pair may never have chatted)
+  private async postFriendshipSystemMessage(
+    event: FriendshipEvent,
+    systemEvent: SystemEvent
+  ): Promise<void> {
+    try {
+      const room = await this.privateRoomRepo.findByParticipantsKey(
+        buildParticipantsKey(event.userA, event.userB)
+      );
+      if (!room) return;
+      await this.privateSystemMessageService.post({
+        roomId: room.roomId,
+        actorId: event.userA,
+        peerId: event.userB,
+        systemEvent,
+        systemData: {
+          friendshipEventType: event.type,
+          friendshipStatus: event.status ?? "",
+          eventTs: event.timestamp,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|system message failed type=${event.type}: ${String(err)}`
+      );
+    }
+  }
+
   private async addBlockedByToRoom(
     blockerId: string,
     blockedId: string
