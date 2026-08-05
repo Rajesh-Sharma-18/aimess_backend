@@ -45,6 +45,8 @@ interface CallCancelPayload {
   callId: string;
   calleeId: string;
   reason: string;
+  callerId?: string;
+  callerName?: string;
 }
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
@@ -106,15 +108,12 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
       type: "CALL_INCOMING",
       callId: data.callId,
       callerId: data.callerId,
-      callerName: data.callerName ?? "",
+      callerName: data.callerName || "Someone",
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       initiatedAt: String(data.initiatedAt ?? ""),
       idempotencyKey: data.callId,
       deepLink,
-      // Lets a push-woken client join LiveKit without waiting for its socket.
-      // `?? ""` — messages queued by the previous producer lack these, and FCM
-      // rejects non-string data values.
       livekitUrl: data.livekitUrl ?? "",
       token: data.token ?? "",
     },
@@ -198,6 +197,8 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
       type: "CALL_CANCELLED",
       callId: data.callId,
       reason: data.reason ?? "",
+      callerId: data.callerId ?? "",
+      callerName: data.callerName ?? "",
     },
   });
 }

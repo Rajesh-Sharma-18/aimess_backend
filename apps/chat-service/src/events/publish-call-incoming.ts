@@ -53,6 +53,9 @@ export interface CallCancelPayload {
   calleeId: string;
   callId: string;
   reason: string;
+  /** Included so the device can resolve caller identity from its local cache. */
+  callerId?: string;
+  callerName?: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

@@ -482,3 +482,78 @@ describe("CallService.initiateCall — platform-wide calling kill-switch", () =>
     expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("CallService.answerCall busy gate (cross-caller race)", () => {
+  // Build a service + stub an existing RINGING call that can be answered.
+  function buildAnswerService() {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+
+    // The call being answered — RINGING, callee = "callee".
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      status: "RINGING",
+      type: "AUDIO",
+    });
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "tk" });
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: true });
+    // Default: callee has no other active call.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([]);
+
+    return { service, stubs };
+  }
+
+  it("allows answer when callee has no other active call", async () => {
+    const { service } = buildAnswerService();
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).resolves.toMatchObject({ livekit: { url: "ws://lk", token: "tk" } });
+  });
+
+  it("BUSY: callee already IN_PROGRESS on a DIFFERENT call → CALL_USER_BUSY", async () => {
+    const { service, stubs } = buildAnswerService();
+    // Simulate the cross-caller race: callee answered another call first.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "c2", // different call — the one being answered is "c1"
+        callerId: "caller2",
+        calleeId: "callee",
+        status: "IN_PROGRESS",
+      },
+    ]);
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).rejects.toThrow(/CALL_USER_BUSY/);
+  });
+
+  it("ANTI-REGRESSION: callee IN_PROGRESS on the SAME call → idempotent re-answer succeeds", async () => {
+    // This is the reconnect / second-device case. The busy guard must skip the
+    // call being answered (same id), not treat it as a blocking concurrent call.
+    const { service, stubs } = buildAnswerService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      status: "IN_PROGRESS", // already answered
+      type: "AUDIO",
+    });
+    // No other active call — the findActiveByParticipant result with c1 excluded
+    // is empty, so the guard passes, and the idempotent IN_PROGRESS early-return fires.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "c1", // same call being answered — excluded by the busy guard
+        callerId: "caller",
+        calleeId: "callee",
+        status: "IN_PROGRESS",
+      },
+    ]);
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).resolves.toMatchObject({ livekit: { url: "ws://lk", token: "tk" } });
+  });
+});
