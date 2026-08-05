@@ -260,10 +260,17 @@ export class ChatMessageOrchestrator {
     private readonly presenceService?: PresenceService
   ) {}
 
-  /** Reused by every PRIVATE conv:updated publish — undefined skips isOffline entirely. */
-  private getIsOnline(): ((userId: string) => Promise<boolean>) | undefined {
+  /**
+   * Reused by every PRIVATE conv:updated publish — undefined skips isOffline
+   * entirely. Viewer-scoped on purpose: `isOffline` is presence, so it goes
+   * through the same `whoCanSeeOnlineStatus` gate as every other read.
+   */
+  private getIsOnline():
+    | ((viewerId: string, subjectId: string) => Promise<boolean>)
+    | undefined {
     return this.presenceService
-      ? (userId: string) => this.presenceService!.getIsOnline(userId)
+      ? (viewerId: string, subjectId: string) =>
+          this.presenceService!.getPresenceFor(viewerId, subjectId)
       : undefined;
   }
 
@@ -413,9 +420,12 @@ export class ChatMessageOrchestrator {
         // (join happens on `conversation:join`), so a recipient on the chat list or in
         // the background never saw the message and never sent a delivery receipt —
         // leaving the sender stuck on a single tick. Mirrors the gRPC send path.
-        // Clients dedupe by serverMessageId, so a double-receive is a no-op.
+        // Excludes the sender: their own socket is already in `conv:<roomId>` (from
+        // sending) and gets the message via the ack, so a personal-channel copy on
+        // top of the room broadcast double-delivers `message:new` to just them.
         const fanOut = (ids: string[]) => {
           for (const userId of new Set(ids.filter(Boolean))) {
+            if (userId === params.senderId) continue;
             publishRealtimeSafe(
               this.redis,
               `user:${userId}`,
@@ -1327,7 +1337,11 @@ export class ChatMessageOrchestrator {
 
     // Authorize the caller at the REST boundary (same rule as the read paths).
     if (conversationType === "GROUP") {
-      await this.groupMessageService.assertMember(params.roomId, params.userId);
+      // Write boundary — also rejects a moderation-muted member.
+      await this.groupMessageService.assertCanWrite(
+        params.roomId,
+        params.userId
+      );
     } else {
       await this.privateMessageService.assertParticipant(
         params.roomId,

@@ -564,8 +564,10 @@ export class PrivateRoomService {
     // Real-time presence — reuses PresenceService (same `presence:user:<id>`
     // Redis source conv:updated reads) rather than the user-snapshot's
     // `isOnline` field, which user-service never populates (always false).
+    // Viewer-scoped: a peer whose `whoCanSeeOnlineStatus` excludes this caller
+    // reads as offline here, exactly as they do on every other surface.
     const onlineByPeer = this.presenceService
-      ? await this.presenceService.getPresenceMany(peerIds)
+      ? await this.presenceService.getPresenceManyFor(userId, peerIds)
       : new Map<string, boolean>();
 
     // Resolve peer avatar object keys → full download URLs (resolve on read).

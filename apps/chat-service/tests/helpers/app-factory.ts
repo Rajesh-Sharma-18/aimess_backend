@@ -219,10 +219,23 @@ export function buildApp(): BuiltApp {
   // Constructed early (before privateRoomService/orchestrator) to mirror
   // server.ts's DI order — presenceService is the single real-time source
   // both REST (isOnline/isOffline) and conv:updated read.
+  // whoCanSeeOnlineStatus gate — defaults to "everyone may see" so specs that
+  // aren't about privacy read presence as before; a privacy spec overrides
+  // `presenceVisibilityGate.filterVisiblePresence` to deny.
+  const presenceVisibilityGate: any = {
+    filterVisiblePresence: jest.fn(
+      async (_viewerId: string, peerIds: string[]) => new Set(peerIds)
+    ),
+    filterPresenceViewers: jest.fn(
+      async (_subjectId: string, viewerIds: string[]) => new Set(viewerIds)
+    ),
+  };
   const presenceService = new PresenceService(
     cacheRepo,
     redis,
-    privateRoomRepo
+    privateRoomRepo,
+    undefined,
+    presenceVisibilityGate
   );
 
   const privateSystemMessageService = new PrivateSystemMessageService(
@@ -459,6 +472,7 @@ export function buildApp(): BuiltApp {
       redis,
       userSnapshotService,
       presenceService,
+      presenceVisibilityGate,
     },
   };
 }

@@ -273,6 +273,94 @@ describe("CallService.initiateCall gate", () => {
   });
 });
 
+describe("CallService.initiateGroupCall — whoCanCallMe=NO_ONE opt-out", () => {
+  /** `buildService` stubs plus a group-member repo (arg 10). */
+  function buildGroupService(privacyByUser: Record<string, string>): {
+    service: CallService;
+    stubs: Stubs;
+  } {
+    const { stubs } = buildService();
+    stubs.getCallPrivacy.mockImplementation(async (userId: string) => ({
+      whoCanCallMe: (privacyByUser[userId] ?? "FRIENDS") as never,
+      allowedUserIds: [],
+    }));
+    stubs.callRepo.findActiveByGroup = jest.fn().mockResolvedValue(null);
+    const groupMemberRepo = {
+      findActiveByRoomAndUser: jest
+        .fn()
+        .mockResolvedValue({ userId: "caller" }),
+      findActiveMembers: jest
+        .fn()
+        .mockResolvedValue([
+          { userId: "caller" },
+          { userId: "m1" },
+          { userId: "m2" },
+        ]),
+    };
+    const service = new CallService(
+      stubs.callRepo as never,
+      stubs.privateRoomRepo as never,
+      stubs.redis as never,
+      stubs.livekit as never,
+      stubs.friendshipRepo as never,
+      stubs.getCallPrivacy,
+      stubs.getUserSnapshot,
+      undefined,
+      undefined,
+      groupMemberRepo as never
+    );
+    return { service, stubs };
+  }
+
+  const groupParams = { callerId: "caller", groupId: "grp-1", type: "AUDIO" };
+
+  it("does not ring a member who chose NO_ONE, but rings the rest", async () => {
+    const { service, stubs } = buildGroupService({ m1: "NO_ONE" });
+
+    await service.initiateGroupCall(groupParams);
+
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m2"] })
+    );
+    expect(stubs.redis.publish).not.toHaveBeenCalledWith(
+      "self:m1",
+      expect.anything()
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:m2",
+      expect.stringContaining("call:incoming")
+    );
+  });
+
+  it("rings everyone when nobody opted out", async () => {
+    const { service, stubs } = buildGroupService({});
+    await service.initiateGroupCall(groupParams);
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m1", "m2"] })
+    );
+  });
+
+  it("EDGE: every member opted out → no call at all", async () => {
+    const { service, stubs } = buildGroupService({
+      m1: "NO_ONE",
+      m2: "NO_ONE",
+    });
+    await expect(service.initiateGroupCall(groupParams)).rejects.toThrow(
+      /CALL_SELF_NOT_ALLOWED/
+    );
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("FAIL-OPEN: a privacy lookup error must not silence the group call", async () => {
+    const { service, stubs } = buildGroupService({});
+    stubs.getCallPrivacy.mockRejectedValue(new Error("user-service down"));
+    await service.initiateGroupCall(groupParams);
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m1", "m2"] })
+    );
+  });
+});
+
 describe("CallService.initiateCall busy gate", () => {
   it("BUSY: callee already IN_PROGRESS → CALL_USER_BUSY, no call row", async () => {
     const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });

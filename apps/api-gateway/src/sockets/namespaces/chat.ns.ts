@@ -333,6 +333,41 @@ export function registerChatNamespace(
   const chat: Namespace = io.of("/chat");
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
+  /**
+   * Re-run the `presence:subscribe` authorization for everyone already watching
+   * `subjectId`, and drop the sockets that no longer qualify. Called when the
+   * subject's privacy settings change or a friendship they had is removed —
+   * i.e. exactly when a previously-granted subscription can turn stale.
+   *
+   * The subject's OWN sockets are never evicted (they are in `user:<self>` for
+   * their own events, not as watchers). `filterVisiblePresence` fails CLOSED,
+   * so a user-service outage during this pass drops watchers rather than
+   * keeping them — the client can re-subscribe, which is the safe direction.
+   */
+  const revokeStalePresenceWatchers = async (
+    subjectId: string
+  ): Promise<void> => {
+    try {
+      const watchers = await chat.in(`user:${subjectId}`).fetchSockets();
+      await Promise.all(
+        watchers.map(async (watcher) => {
+          const watcherId = watcher.data?.userId as string | undefined;
+          if (!watcherId || watcherId === subjectId) return;
+          const visible = await userClient.filterVisiblePresence(watcherId, [
+            subjectId,
+          ]);
+          if (!visible.includes(subjectId)) {
+            void watcher.leave(`user:${subjectId}`);
+          }
+        })
+      );
+    } catch (err) {
+      logger.warn(
+        `/chat presence re-authorization failed for ${subjectId}: ${String(err)}`
+      );
+    }
+  };
+
   // Dedicated subscriber for conversation, call, and user channels.
   // Backend services publish: { event: "message:new"|"message:edited"|..., data: {...} }
   // to the matching Redis channel. V2 events (pin:updated, read_sync) ride the
@@ -426,6 +461,34 @@ export function registerChatNamespace(
               callData.reason === "answered_elsewhere"));
         if (shouldMirrorJoinCallRoom) {
           void chat.in(targetChannel).socketsJoin(`call:${callData.callId}`);
+        }
+
+        // Presence subscriptions are authorized at `presence:subscribe` time,
+        // so a socket that joined `user:<subjectId>` while it was allowed keeps
+        // hearing that user's presence forever — including after they set
+        // whoCanSeeOnlineStatus to NO_ONE/FRIENDS, or unfriended/blocked the
+        // watcher. Both of those changes already publish on `user:<subjectId>`,
+        // so re-authorize the room's watchers here: the revocation lands on the
+        // same event that caused it, with no client action needed.
+        if (
+          pattern === "user:*" &&
+          (parsed.event === "settings:updated" ||
+            parsed.event === "friend:removed" ||
+            parsed.event === "friend:blocked")
+        ) {
+          void revokeStalePresenceWatchers(channel.slice("user:".length));
+          // `friend:blocked` is published to the BLOCKER only (blocking is
+          // silent to the blocked party), but it ends the friendship in both
+          // directions — so the blocked user's own watcher list has to be
+          // re-authorized too, or the blocker keeps seeing their presence.
+          const targetUserId = (parsed.data as { targetUserId?: unknown })
+            ?.targetUserId;
+          if (
+            parsed.event === "friend:blocked" &&
+            typeof targetUserId === "string"
+          ) {
+            void revokeStalePresenceWatchers(targetUserId);
+          }
         }
 
         void emitPersonalizedSender(
@@ -1144,11 +1207,20 @@ export function registerChatNamespace(
         senderId: userId,
         resolveRoster: async (conversationId) => {
           try {
-            const { userIds } = await messagingClient.getRoomParticipantIds({
-              conversationId,
-              conversationType:
-                typingHints.get(conversationId)?.kind ?? "private",
-            });
+            const { userIds, mutedUserIds } =
+              await messagingClient.getRoomParticipantIds({
+                conversationId,
+                conversationType:
+                  typingHints.get(conversationId)?.kind ?? "private",
+              });
+            // A GROUP member under a moderation mute cannot send, so they must
+            // not be able to broadcast "…is typing" either (Scenario 1).
+            // Returning an empty roster drops the event: createDirectRosterBroadcast
+            // treats roster-membership as the sender's authorization. The muted
+            // member is NOT removed from `userIds` for anyone else's broadcast,
+            // so they keep RECEIVING peers' indicators — mute restricts sending
+            // only. `mutedUserIds` is always empty for PRIVATE.
+            if (mutedUserIds?.includes(userId)) return [];
             return userIds;
           } catch (err) {
             logger.warn(
@@ -1220,20 +1292,28 @@ export function registerChatNamespace(
             Date.now(),
             { senderName: recordingNames.get(conversationId) }
           ),
-        // PRIVATE rooms additionally consult the same block-aware roster
-        // typing uses: getRoomParticipantIds returns an empty roster once
-        // either side has blocked the other, so a blocked DM never leaks a
-        // "recording…" indicator in either direction. GROUP stays the cheap
-        // sync room check — blocking has no group-recording equivalent.
+        // Both kinds consult the same roster typing uses. PRIVATE: it returns
+        // an empty roster once either side has blocked the other, so a blocked
+        // DM never leaks a "recording…" indicator in either direction. GROUP:
+        // membership is already proven by the conv:<id> room check, but the
+        // roster also reports who is moderation-muted — a muted member must
+        // not advertise recording, since they cannot send the voice note.
+        // One gRPC call per recording start/stop (not per keystroke).
         isAuthorized: async (conversationId) => {
           if (!socket.rooms.has(`conv:${conversationId}`)) return false;
-          if (typingHints.get(conversationId)?.kind === "group") return true;
+          const kind = typingHints.get(conversationId)?.kind ?? "private";
           try {
-            const { userIds } = await messagingClient.getRoomParticipantIds({
-              conversationId,
-              conversationType: "private",
-            });
-            return userIds.includes(userId);
+            const { userIds, mutedUserIds } =
+              await messagingClient.getRoomParticipantIds({
+                conversationId,
+                conversationType: kind,
+              });
+            // Voice-note recording is a send action — a muted member must not
+            // advertise it (GROUP only; mutedUserIds is empty for PRIVATE).
+            if (mutedUserIds?.includes(userId)) return false;
+            // GROUP membership is already proven by the conv:<id> room check
+            // above; only PRIVATE needs the block-aware roster membership test.
+            return kind === "group" || userIds.includes(userId);
           } catch (err) {
             logger.warn(
               `/chat recording: failed to resolve participants conversationId=${conversationId}: ${String(err)}`

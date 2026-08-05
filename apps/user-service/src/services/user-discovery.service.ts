@@ -3,7 +3,11 @@ import type { MediaObject } from "@aimess/shared-types";
 
 import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
-import { canViewProfile, visibleIsOnline } from "../lib/privacy-scope.js";
+import {
+  canViewProfile,
+  visibleIdentity,
+  visibleIsOnline,
+} from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
@@ -14,8 +18,9 @@ export type RelationshipStatus = "FRIEND" | "PENDING" | "NONE";
 export type UserDiscoveryResult = {
   userId: string;
   username: string;
-  firstName: string;
-  lastName: string;
+  /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+  firstName: string | null;
+  lastName: string | null;
   bio: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
@@ -133,20 +138,21 @@ export const userDiscoveryService = {
 
     const resolved = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
         const isFriend = acceptedFriendIds.has(p.userId);
+        const relation = {
+          isFriend,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         const base = {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: canViewProfile(p, {
-            isFriend,
-            isFriendOfFriend: fofIds.has(p.userId),
-          })
-            ? p.bio
-            : null,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
@@ -233,14 +239,16 @@ export const userDiscoveryService = {
 
     const users = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        // NO_ONE applies even to accepted friends — name and avatar go with it.
+        const identity = visibleIdentity(p, { isFriend: true });
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          // Every row here is an accepted friend, but NO_ONE still applies.
+          firstName: identity.firstName,
+          lastName: identity.lastName,
           bio: canViewProfile(p, { isFriend: true }) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
@@ -325,20 +333,21 @@ export const userDiscoveryService = {
           friendshipId = pending.friendshipId;
           requesterId = pending.isRequester ? viewerId : p.userId;
         }
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        // Non-friends by construction (accepted friends are excluded above).
+        const relation = {
+          isFriend: false,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          // Non-friends by construction (accepted friends are excluded above).
-          bio: canViewProfile(p, {
-            isFriend: false,
-            isFriendOfFriend: fofIds.has(p.userId),
-          })
-            ? p.bio
-            : null,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
@@ -398,20 +407,21 @@ export const userDiscoveryService = {
 
     const users = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
         const isFriend = friendIdSet.has(p.userId);
+        const relation = {
+          isFriend,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: canViewProfile(p, {
-            isFriend,
-            isFriendOfFriend: fofIds.has(p.userId),
-          })
-            ? p.bio
-            : null,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,

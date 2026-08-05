@@ -62,13 +62,16 @@ async function main() {
       });
 
       const probeIds = [ids.everyone, ids.friendsScoped, ids.noOne, ids.unset];
-      const search = async (viewerFriendIds: string[]) =>
+      // FRIENDS_OF_FRIENDS discovery is proven separately, against a real
+      // friendship graph, by verify-friend-of-friend.ts — here the one-hop set
+      // is always empty so these cases isolate EVERYONE/FRIENDS/NO_ONE.
+      const search = async (friendIds: string[]) =>
         (
           await tx.userProfile.findMany({
             where: {
               userId: { in: probeIds },
               deletedAt: null,
-              ...discoverableWhere(viewerFriendIds),
+              ...discoverableWhere({ friendIds, friendOfFriendIds: [] }),
             },
             select: { userId: true },
           })
@@ -111,7 +114,7 @@ async function main() {
           userId: { in: probeIds },
           deletedAt: null,
           AND: [{ normalizedUsername: { contains: "everyone" } }],
-          ...discoverableWhere([]),
+          ...discoverableWhere({ friendIds: [], friendOfFriendIds: [] }),
         },
         select: { userId: true },
       });

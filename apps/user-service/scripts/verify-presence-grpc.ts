@@ -113,6 +113,49 @@ async function main() {
     `visible: ${JSON.stringify(selfRes.visiblePeerIds)}`,
   ]);
 
+  // Same wire test for the INVERSE RPC (one subject, many viewers) that
+  // chat-service uses on the fan-out side. Its field names differ
+  // (subject_id/viewer_ids/allowed_viewer_ids), so it needs its own round trip.
+  const viewersRes = await new Promise<{ allowedViewerIds?: string[] }>(
+    (resolve, reject) => {
+      client.FilterPresenceViewers(
+        { subjectId: VIEWER, viewerIds: PEERS },
+        meta,
+        (err: grpc.ServiceError | null, r: { allowedViewerIds?: string[] }) =>
+          err ? reject(err) : resolve(r)
+      );
+    }
+  );
+  checks.push(
+    [
+      "FilterPresenceViewers responds and maps allowedViewerIds",
+      Array.isArray(viewersRes.allowedViewerIds),
+      `got ${typeof viewersRes.allowedViewerIds}`,
+    ],
+    [
+      "non-friend viewers are DENIED the subject's presence (defaults to FRIENDS)",
+      viewersRes.allowedViewerIds?.length === 0,
+      `allowed: ${JSON.stringify(viewersRes.allowedViewerIds)}`,
+    ]
+  );
+
+  const selfViewerRes = await new Promise<{ allowedViewerIds?: string[] }>(
+    (resolve, reject) => {
+      client.FilterPresenceViewers(
+        { subjectId: VIEWER, viewerIds: [VIEWER] },
+        meta,
+        (err: grpc.ServiceError | null, r: { allowedViewerIds?: string[] }) =>
+          err ? reject(err) : resolve(r)
+      );
+    }
+  );
+  checks.push([
+    "request fields arrived (self echoes back → subjectId/viewerIds mapped)",
+    selfViewerRes.allowedViewerIds?.length === 1 &&
+      selfViewerRes.allowedViewerIds[0] === VIEWER,
+    `allowed: ${JSON.stringify(selfViewerRes.allowedViewerIds)}`,
+  ]);
+
   for (const [name, ok, detail] of checks) {
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}  (${detail})`);
   }

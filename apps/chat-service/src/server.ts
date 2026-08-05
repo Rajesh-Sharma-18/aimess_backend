@@ -338,7 +338,11 @@ const startServer = async () => {
     const presenceService = new PresenceService(
       cacheRepo,
       redis,
-      privateRoomRepo
+      privateRoomRepo,
+      undefined,
+      // whoCanSeeOnlineStatus gate — without it every presence read here would
+      // bypass the setting the socket `presence:subscribe` path already honors.
+      userGrpcClient
     );
 
     const privateSystemMessageService = new PrivateSystemMessageService(
