@@ -26,8 +26,13 @@ import {
   toWireMessage,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
-import { assertGroupMember } from "../lib/access-guard.js";
-import { getGroupDeletionCutoff } from "../lib/deletion-cutoff.js";
+import {
+  assertGroupMember,
+  assertGroupReadAccess,
+  assertGroupMemberNotMuted,
+} from "../lib/access-guard.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
@@ -64,7 +69,10 @@ import type { GroupMessageRepository } from "../repositories/group-message.repos
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type { GroupMessage } from "../generated/prisma/index.js";
@@ -113,6 +121,7 @@ export class GroupMessageService {
       params.senderId
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    assertGroupMemberNotMuted(member);
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.
@@ -537,7 +546,7 @@ export class GroupMessageService {
       beforeTimestamp,
       params.limit,
       params.userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -566,12 +575,12 @@ export class GroupMessageService {
     cursors: AroundCursors;
     roomRevision: number;
   }> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const [{ messages: items, hasMore }, total, roomRevision] =
       await Promise.all([
         this.messageRepo.findByRoomIdTimeline({
@@ -583,11 +592,13 @@ export class GroupMessageService {
           inclusive: params.inclusive ?? false,
           limit: params.limit,
           cutoff,
+          readCutoffBefore,
         }),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
           cutoff,
+          readCutoffBefore,
         }),
         this.roomRepo.getRoomRevision(params.roomId),
       ]);
@@ -596,7 +607,8 @@ export class GroupMessageService {
       items,
       params.roomId,
       params.userId,
-      cutoff
+      cutoff,
+      readCutoffBefore
     );
 
     // The repo returns the page in DB order (before → newest-first, after →
@@ -619,7 +631,8 @@ export class GroupMessageService {
     page: GroupMessage[],
     roomId: string,
     userId: string,
-    cutoff: Date | undefined
+    cutoff: Date | undefined,
+    readCutoffBefore?: Date
   ): Promise<AroundCursors> {
     return computeSeqPageCursors(page, (direction, seq) =>
       this.messageRepo.findByRoomIdSeq({
@@ -629,6 +642,7 @@ export class GroupMessageService {
         seq,
         limit: 1,
         cutoff,
+        readCutoffBefore,
       })
     );
   }
@@ -650,12 +664,12 @@ export class GroupMessageService {
     cursors: AroundCursors;
     roomRevision: number;
   }> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const [rows, roomRevision] = await Promise.all([
       this.messageRepo.findByRoomIdSeq({
         userId: params.userId,
@@ -664,6 +678,7 @@ export class GroupMessageService {
         seq: params.seq,
         limit: params.limit,
         cutoff,
+        readCutoffBefore,
       }),
       this.roomRepo.getRoomRevision(params.roomId),
     ]);
@@ -675,7 +690,8 @@ export class GroupMessageService {
       items,
       params.roomId,
       params.userId,
-      cutoff
+      cutoff,
+      readCutoffBefore
     );
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
@@ -694,20 +710,21 @@ export class GroupMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: GroupMessage[]; anchorSeq: number } & AroundCursors> {
-    const member = await assertGroupMember(
+    const { member, readCutoffBefore } = await assertGroupReadAccess(
       this.memberRepo,
       params.roomId,
       params.userId
     );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     const items = await this.messageRepo.findAroundSeq({
       userId: params.userId,
       roomId: params.roomId,
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
       cutoff,
+      readCutoffBefore,
     });
     // Bidirectional continuation: probe one row strictly beyond each window edge
     // (reusing the seq keyset paging query), so the client can page up AND down.
@@ -719,6 +736,7 @@ export class GroupMessageService {
         seq,
         limit: 1,
         cutoff,
+        readCutoffBefore,
       })
     );
     return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
@@ -743,7 +761,7 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
 
     const beforeMs = params.timestamp ?? Date.now();
     const skip = (params.pageNumber - 1) * params.limit;
@@ -822,7 +840,7 @@ export class GroupMessageService {
       params.limit,
       params.userId,
       params.skip ?? 0,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -846,7 +864,7 @@ export class GroupMessageService {
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
-      cutoff: getGroupDeletionCutoff(member),
+      cutoff: getGroupVisibilityCutoff(member),
     });
   }
 
@@ -867,7 +885,7 @@ export class GroupMessageService {
       roomId,
       query,
       userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
   }
 
@@ -1008,7 +1026,7 @@ export class GroupMessageService {
     const prev = await this.messageRepo.findPreviousVisibleForUser(
       roomId,
       userId,
-      getGroupDeletionCutoff(member)
+      getGroupVisibilityCutoff(member)
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
@@ -1289,6 +1307,42 @@ export class GroupMessageService {
     await assertGroupMember(this.memberRepo, roomId, userId);
   }
 
+  /**
+   * Mirrors CommunityMessageService.report() (inline reports array), plus
+   * forwards to the admin moderation pipeline the way PrivateMessageService.
+   * reportMessage() does — community's report() never wired that forward, so
+   * a community report never reached backoffice; group's does.
+   * ponytail: no dedicated report model/unique-per-reporter constraint, so a
+   * user CAN report the same message twice — add PrivateMessageReport's
+   * (messageId, reporterId) unique index here if duplicate-report noise
+   * becomes a real moderation problem.
+   */
+  async report(params: {
+    messageId: string;
+    reporterId: string;
+    reportReason: string;
+  }): Promise<GroupMessage | null> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await assertGroupMember(this.memberRepo, message.roomId, params.reporterId);
+    const updated = await this.messageRepo.addReport(params.messageId, {
+      userReportId: params.reporterId,
+      userReportReason: params.reportReason,
+    });
+    publishAdminReportIngestSafe({
+      type: "message",
+      targetId: params.messageId,
+      reporterId: params.reporterId,
+      reason: params.reportReason,
+      details: null,
+      communityId: null,
+      reportedUserId: message.senderId ?? null,
+      eventAt: new Date().toISOString(),
+      sourceReportId: `group:${params.messageId}:${params.reporterId}`,
+    });
+    return updated;
+  }
+
   /** Deep-gap horizon — same value and rule as community and private. */
   private readonly REVISION_RESET_HORIZON = 10_000;
 
@@ -1318,7 +1372,7 @@ export class GroupMessageService {
     );
     const changes = await this.resolveChanges({
       ...params,
-      cutoff: getGroupDeletionCutoff(member),
+      cutoff: getGroupVisibilityCutoff(member),
     });
     const items = await this.enrichForWire(changes.messages, params.userId);
 
@@ -1413,7 +1467,7 @@ export class GroupMessageService {
     ) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
     if (cutoff && message.createdAt <= cutoff) {
       throw new GoneError("CHAT_MESSAGE_DELETED");
     }
@@ -1601,7 +1655,7 @@ export class GroupMessageService {
       };
     }
 
-    const cutoff = getGroupDeletionCutoff(member);
+    const cutoff = getGroupVisibilityCutoff(member);
 
     if (p.sinceRevision != null) {
       const changes = await this.resolveChanges({
@@ -1741,7 +1795,7 @@ export class GroupMessageService {
         roomId: params.roomId,
         userId: params.userId,
         afterDate: message.createdAt,
-        cutoff: getGroupDeletionCutoff(member),
+        cutoff: getGroupVisibilityCutoff(member),
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -1817,8 +1871,7 @@ export class GroupMessageService {
           const snap = snapshots.get(uid) ?? {};
           return {
             userId: uid,
-            displayName:
-              (snap.displayName as string) ?? (snap.memberId as string) ?? "",
+            displayName: resolveDisplayName(snap),
             avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
           };
         }),

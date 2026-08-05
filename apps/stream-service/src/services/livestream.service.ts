@@ -157,6 +157,10 @@ export interface AdminStreamRow {
   createdAt: Date;
   /** Distinct-user count from LivestreamViewerSession — matches AdminListViewerSessions' total. */
   uniqueViewerCount: number;
+  /** Last known quality snapshot (self-reported or SRS-polled) — null until the first report arrives. */
+  lastKnownResolution: string | null;
+  lastKnownBitrateKbps: number | null;
+  lastKnownFps: number | null;
 }
 
 /**
@@ -200,6 +204,9 @@ function toAdminRow(s: Livestream): AdminStreamRow {
     createdAt: s.createdAt,
     // Populated by the caller (needs a DB round-trip); toAdminRow stays pure.
     uniqueViewerCount: 0,
+    lastKnownResolution: s.lastKnownResolution,
+    lastKnownBitrateKbps: s.lastKnownBitrateKbps,
+    lastKnownFps: s.lastKnownFps,
   };
 }
 
@@ -1044,6 +1051,80 @@ export class LivestreamService {
       throw new BadRequestError("STREAM_NOT_LIVE");
     }
     await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
+  }
+
+  /**
+   * Persist a video-quality snapshot and relay it to viewers over the same
+   * `stream:<id>` Redis channel `publishStatus`/`updateStream` already use
+   * (the gateway fans any `stream:*` event straight to the room, so no
+   * gateway change is needed for a new event name).
+   *
+   * Two callers, one method: the browser (WHIP) self-reports via
+   * `POST /streams/:id/quality` (`requesterId` set, owner-checked like
+   * {@link recordHeartbeat}); the OBS sweeper poll (see
+   * {@link pollObsStreamQuality}) calls it system-side with no requester.
+   */
+  async reportQuality(
+    id: string,
+    quality: { resolution: string; bitrateKbps: number; fps?: number },
+    opts?: { requesterId?: string }
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (opts?.requesterId && stream.creatorId !== opts.requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status !== "LIVE") throw new BadRequestError("STREAM_NOT_LIVE");
+
+    await this.streamRepo.updateById(id, {
+      lastKnownResolution: quality.resolution,
+      lastKnownBitrateKbps: quality.bitrateKbps,
+      lastKnownFps: quality.fps ?? null,
+      qualityUpdatedAt: new Date(),
+    });
+
+    try {
+      await this.redis.publish(
+        `stream:${id}`,
+        JSON.stringify({
+          event: "stream:quality",
+          data: {
+            streamId: id,
+            resolution: quality.resolution,
+            bitrateKbps: quality.bitrateKbps,
+            fps: quality.fps ?? null,
+          },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `quality broadcast failed for stream=${id}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * System-side counterpart of {@link reportQuality} for OBS/RTMP streams —
+   * there is no browser peer connection to self-report from, so this polls
+   * SRS's own stats directly. Called from the stream sweeper's existing 30s
+   * tick (see `jobs/stream-sweeper.ts`); best-effort, never throws.
+   */
+  async pollObsStreamQuality(): Promise<void> {
+    const streams = await this.streamRepo.findLiveBySourceType("OBS_RTMP");
+    for (const stream of streams) {
+      try {
+        const stats = await this.srsService.getStreamStats(stream.streamKey);
+        if (!stats) continue;
+        await this.reportQuality(stream.id, {
+          resolution: `${stats.width}x${stats.height}`,
+          bitrateKbps: stats.bitrateKbps,
+        });
+      } catch (error) {
+        logger.warn(
+          `pollObsStreamQuality failed for stream=${stream.id}: ${String(error)}`
+        );
+      }
+    }
   }
 
   /**

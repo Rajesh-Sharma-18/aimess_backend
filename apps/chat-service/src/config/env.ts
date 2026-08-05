@@ -80,6 +80,11 @@ const envSchema = z.object({
 
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 
+  // Same var as community-service's — the shared HTTPS host for both community
+  // (`/+<code>`, `/<handle>`) and group (`/g/<token>`) invite links. Falls back
+  // to the bare token/code when unset (local/dev).
+  INVITE_LINK_BASE_URL: z.string().url().optional(),
+
   // LiveKit (self-hosted). See Docs/calls/CALLS-LIVEKIT.md.
   // LIVEKIT_URL is the WS URL clients connect to (ws://localhost:7880 dev,
   // wss://livekit.example.com in prod). API key/secret must match the

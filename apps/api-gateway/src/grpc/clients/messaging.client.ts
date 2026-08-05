@@ -267,6 +267,8 @@ export interface InitiateCallParams {
   calleeId: string;
   type?: string;
   privateRoomId?: string;
+  /** GROUP call: set instead of calleeId — server resolves the ring roster. */
+  groupId?: string;
 }
 export interface CallStatusResult {
   callId: string;
@@ -631,9 +633,10 @@ export function createMessagingClient(): MessagingClient {
     (p: InitiateCallParams) =>
       call<unknown, CallStatusResult>("initiateCall", {
         callerId: p.callerId,
-        calleeId: p.calleeId,
+        calleeId: p.calleeId ?? "",
         type: p.type ?? "AUDIO",
         privateRoomId: p.privateRoomId ?? "",
+        groupId: p.groupId ?? "",
       })
   );
 

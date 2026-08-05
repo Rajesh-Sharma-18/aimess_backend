@@ -62,6 +62,8 @@ export interface InboxItem {
   role: string | null;
   /** GROUP-only: true when the caller is an active member; null for PRIVATE rows. */
   isJoined: boolean | null;
+  /** GROUP-only: true when the caller voluntarily left; null for PRIVATE rows. */
+  hasLeft: boolean | null;
 }
 
 export interface InboxResult {
@@ -198,6 +200,7 @@ export class InboxService {
       memberCount: null,
       role: null,
       isJoined: null,
+      hasLeft: null,
     };
   }
 
@@ -232,6 +235,7 @@ export class InboxService {
       memberCount: room.memberCount,
       role: room.role,
       isJoined: room.isJoined,
+      hasLeft: room.hasLeft,
     };
   }
 }

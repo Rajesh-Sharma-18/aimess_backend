@@ -18,6 +18,14 @@ function pendingRequestsWhere(
   };
 }
 
+/**
+ * Max direct friends used as seeds when expanding the friend-of-friend set.
+ * Bounds the worst-case row count of a single one-hop expansion; a viewer with
+ * more friends than this gets FoF resolved from their first N friendships,
+ * which can only ever UNDER-admit (never leak).
+ */
+const FRIEND_EXPANSION_CAP = 1000;
+
 const FRIENDSHIP_SELECT = {
   id: true,
   requesterId: true,
@@ -413,6 +421,99 @@ export const friendshipRepository = {
       friends.add(r.requesterId === callerId ? r.addresseeId : r.requesterId);
     }
     return [...friends];
+  },
+
+  /**
+   * Does `userA` share at least one mutual friend with `userB`?
+   *
+   * This is the `FRIENDS_OF_FRIENDS` predicate: exactly one hop past a direct
+   * friend (A↔M↔B). Two hops is NOT friend-of-friend.
+   *
+   * Pairwise, so it stops at the first mutual friend rather than materialising
+   * the whole one-hop set — use this for single-target decisions (friend
+   * request, profile read). For filtering a LIST of candidates, use
+   * {@link findFriendsOfFriendIds} instead; calling this per row is an N+1.
+   */
+  async hasMutualFriend(userA: string, userB: string): Promise<boolean> {
+    const aRows = await this.findAcceptedFriends(userA);
+    const aFriendIds = aRows.map((f) =>
+      f.requesterId === userA ? f.addresseeId : f.requesterId
+    );
+    if (aFriendIds.length === 0) return false;
+    const mutual = await prisma.friendship.findFirst({
+      where: {
+        status: "ACCEPTED",
+        OR: [
+          { requesterId: userB, addresseeId: { in: aFriendIds } },
+          { addresseeId: userB, requesterId: { in: aFriendIds } },
+        ],
+      },
+      select: { id: true },
+    });
+    return mutual !== null;
+  },
+
+  /**
+   * One-hop expansion of `viewerFriendIds`: every user who is a friend of one of
+   * the viewer's friends, excluding the viewer and their direct friends (those
+   * are already known and are handled by the FRIENDS branch).
+   *
+   * ponytail: expands the whole set in one indexed query and de-dupes in memory.
+   * At 500 friends × 500 friends each that is 250k rows — fine at current scale,
+   * and `FRIEND_EXPANSION_CAP` bounds the worst case. If the friend graph grows
+   * past that, move this to a recursive CTE or a materialised FoF table rather
+   * than paging this query.
+   */
+  async findFriendsOfFriendIds(
+    viewerId: string,
+    viewerFriendIds: string[]
+  ): Promise<string[]> {
+    if (viewerFriendIds.length === 0) return [];
+    const seeds = viewerFriendIds.slice(0, FRIEND_EXPANSION_CAP);
+    const rows = await prisma.friendship.findMany({
+      where: {
+        status: "ACCEPTED",
+        OR: [{ requesterId: { in: seeds } }, { addresseeId: { in: seeds } }],
+      },
+      select: { requesterId: true, addresseeId: true },
+    });
+
+    const directFriends = new Set(viewerFriendIds);
+    const friendsOfFriends = new Set<string>();
+    for (const r of rows) {
+      // A row can have BOTH sides in the seed set (two of the viewer's friends
+      // are friends with each other) — then neither side is a new FoF.
+      if (directFriends.has(r.requesterId)) friendsOfFriends.add(r.addresseeId);
+      if (directFriends.has(r.addresseeId)) friendsOfFriends.add(r.requesterId);
+    }
+    friendsOfFriends.delete(viewerId);
+    for (const id of directFriends) friendsOfFriends.delete(id);
+    return [...friendsOfFriends];
+  },
+
+  /**
+   * The viewer's friend graph as every discovery query needs it: direct friends
+   * plus their one-hop expansion.
+   *
+   * Pass `knownFriendIds` when the caller has already loaded them (most search
+   * paths have), so this costs ONE extra query per request rather than two.
+   */
+  async resolveViewerGraph(
+    viewerId: string,
+    knownFriendIds?: string[]
+  ): Promise<{ friendIds: string[]; friendOfFriendIds: string[] }> {
+    let friendIds = knownFriendIds;
+    if (!friendIds) {
+      const rows = await this.findAcceptedFriends(viewerId);
+      friendIds = rows.map((f) =>
+        f.requesterId === viewerId ? f.addresseeId : f.requesterId
+      );
+    }
+    const friendOfFriendIds = await this.findFriendsOfFriendIds(
+      viewerId,
+      friendIds
+    );
+    return { friendIds, friendOfFriendIds };
   },
 
   /** Pending requests for a user, paginated, newest first. */

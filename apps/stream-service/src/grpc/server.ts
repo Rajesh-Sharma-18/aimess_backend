@@ -34,6 +34,9 @@ function toAdminStreamWire(r: AdminStreamRow): Record<string, unknown> {
     endedAt: r.endedAt ? r.endedAt.getTime() : 0,
     createdAt: r.createdAt.getTime(),
     uniqueViewerCount: r.uniqueViewerCount,
+    resolution: r.lastKnownResolution ?? "",
+    bitrateKbps: r.lastKnownBitrateKbps ?? 0,
+    fps: r.lastKnownFps ?? 0,
   };
 }
 

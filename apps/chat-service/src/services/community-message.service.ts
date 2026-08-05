@@ -271,6 +271,12 @@ export class CommunityMessageService {
     };
   }
 
+  /** Community display name, mirrored locally on GeneralRoom.name. Empty string on a miss. */
+  async getRoomName(roomId: string): Promise<string> {
+    const room = await this.roomRepo.findRoomById(roomId);
+    return room?.name ?? "";
+  }
+
   async sendMessage(params: {
     roomId: string;
     sentBy: string;

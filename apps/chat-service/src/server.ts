@@ -341,30 +341,6 @@ const startServer = async () => {
       privateRoomRepo
     );
 
-    const privateRoomService = new PrivateRoomService(
-      privateRoomRepo,
-      privateMessageRepo,
-      cacheRepo,
-      userSnapshotService,
-      userServiceClient,
-      redis,
-      presenceService,
-      userGrpcClient
-    );
-    const privateMessageService = new PrivateMessageService(
-      privateMessageRepo,
-      privateRoomRepo,
-      cacheRepo,
-      userSnapshotService,
-      userServiceClient,
-      privateMessageReportRepo,
-      getCommunityReconcileClient(),
-      presenceService,
-      redis,
-      groupRoomRepo,
-      groupMemberRepo,
-      groupInviteLinkRepo
-    );
     const privateSystemMessageService = new PrivateSystemMessageService(
       privateMessageRepo,
       privateRoomRepo,
@@ -379,6 +355,32 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       privateSystemMessageService
+    );
+
+    const privateRoomService = new PrivateRoomService(
+      privateRoomRepo,
+      privateMessageRepo,
+      cacheRepo,
+      userSnapshotService,
+      userServiceClient,
+      redis,
+      presenceService,
+      userGrpcClient,
+      privatePinService
+    );
+    const privateMessageService = new PrivateMessageService(
+      privateMessageRepo,
+      privateRoomRepo,
+      cacheRepo,
+      userSnapshotService,
+      userServiceClient,
+      privateMessageReportRepo,
+      getCommunityReconcileClient(),
+      presenceService,
+      redis,
+      groupRoomRepo,
+      groupMemberRepo,
+      groupInviteLinkRepo
     );
 
     const groupSystemMessageService = new GroupSystemMessageService(
@@ -487,7 +489,9 @@ const startServer = async () => {
       resolveCallUserSnapshot,
       callChatMessageService,
       // Platform-wide calling kill-switch (admin panel). Fails open.
-      callFlagService
+      callFlagService,
+      // GROUP call membership authorization + roster resolution.
+      groupMemberRepo
     );
 
     const communityRoomService = new CommunityRoomService(

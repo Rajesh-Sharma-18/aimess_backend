@@ -11,6 +11,8 @@ export class CallRepository {
     type: string;
     status: string;
     privateRoomId?: string | null;
+    groupId?: string | null;
+    calleeIds?: string[];
   }): Promise<Call> {
     return this.prisma.call.create({
       data: {
@@ -20,6 +22,8 @@ export class CallRepository {
         type: data.type,
         status: data.status,
         privateRoomId: data.privateRoomId ?? null,
+        groupId: data.groupId ?? null,
+        calleeIds: data.calleeIds ?? [],
       },
     });
   }
@@ -116,11 +120,31 @@ export class CallRepository {
   ): Promise<Call[]> {
     return this.prisma.call.findMany({
       where: {
-        OR: [{ callerId: userId }, { calleeId: userId }],
+        OR: [
+          { callerId: userId },
+          { calleeId: userId },
+          { calleeIds: { has: userId } },
+        ],
         ...(cursor ? { initiatedAt: { lt: new Date(cursor) } } : {}),
       },
       orderBy: { initiatedAt: "desc" },
       take: limit,
+    });
+  }
+
+  /**
+   * Group busy-gate: is there already a genuinely active (RINGING within the
+   * fresh window, or IN_PROGRESS within the live window) call for this group?
+   * MVP policy — one call per group at a time, no per-member roster overlap
+   * checking (unlike 1:1's full N-way busy/glare handling).
+   */
+  async findActiveByGroup(
+    groupId: string,
+    freshCutoff: Date,
+    liveCutoff: Date
+  ): Promise<Call | null> {
+    return this.prisma.call.findFirst({
+      where: { groupId, AND: [this.activeWhere(freshCutoff, liveCutoff)] },
     });
   }
 
@@ -182,6 +206,22 @@ export class CallRepository {
         AND: [this.activeWhere(freshCutoff, liveCutoff)],
       },
     });
+  }
+
+  /**
+   * GROUP calls only: atomically drop one rung member from the roster (they
+   * declined, or left before answering). Non-atomic read-then-write is an
+   * acceptable MVP gap — a lost concurrent decline just leaves that id in the
+   * roster one extra read, never duplicates or corrupts it.
+   */
+  async removeGroupCallee(
+    callId: string,
+    userId: string
+  ): Promise<Call | null> {
+    const call = await this.prisma.call.findUnique({ where: { callId } });
+    if (!call) return null;
+    const calleeIds = call.calleeIds.filter((id) => id !== userId);
+    return this.prisma.call.update({ where: { callId }, data: { calleeIds } });
   }
 
   /**

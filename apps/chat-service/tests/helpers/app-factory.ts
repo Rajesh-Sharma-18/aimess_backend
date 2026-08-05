@@ -194,6 +194,15 @@ export function buildApp(): BuiltApp {
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();
+  // The list endpoint reads per-tab counts alongside the rows; without a default
+  // every notifications spec would 500 on an undefined counts object.
+  notificationRepo.countByCategories.mockResolvedValue({
+    all: 0,
+    friends: 0,
+    communities: 0,
+    mentions: 0,
+    system: 0,
+  });
   const callRepo = repoMock();
 
   // -- Peers / collaborators --
@@ -225,25 +234,6 @@ export function buildApp(): BuiltApp {
     privateRoomRepo
   );
 
-  const privateRoomService = new PrivateRoomService(
-    privateRoomRepo,
-    privateMessageRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    redis,
-    presenceService,
-    friendshipGrpcClient
-  );
-  const privateMessageService = new PrivateMessageService(
-    privateMessageRepo,
-    privateRoomRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    privateMessageReportRepo,
-    communityClient
-  );
   const privateSystemMessageService = new PrivateSystemMessageService(
     privateMessageRepo,
     privateRoomRepo,
@@ -258,6 +248,27 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService,
     privateSystemMessageService
+  );
+
+  const privateRoomService = new PrivateRoomService(
+    privateRoomRepo,
+    privateMessageRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    redis,
+    presenceService,
+    friendshipGrpcClient,
+    privatePinService
+  );
+  const privateMessageService = new PrivateMessageService(
+    privateMessageRepo,
+    privateRoomRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    privateMessageReportRepo,
+    communityClient
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(

@@ -468,6 +468,20 @@ export class GroupMessageController {
       .json(new ApiResponse(editedEvent, t("CHAT_MESSAGE_EDITED", req.locale)));
   });
 
+  reportMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { reportReason } = req.body as { reportReason: string };
+    const result = await this.messageService.report({
+      messageId,
+      reporterId: userId,
+      reportReason,
+    });
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_REPORTED", req.locale)));
+  });
+
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
     const { messageId, roomId, type } = req.body as {
       messageId: string;

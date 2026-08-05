@@ -9,6 +9,7 @@ import {
   createStreamSchema,
   listStreamsQuerySchema,
   updateStreamSchema,
+  reportQualitySchema,
   commentsQuerySchema,
   banUserSchema,
   setCommentStatusSchema,
@@ -133,6 +134,19 @@ export class StreamController {
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
     await this.livestreamService.recordHeartbeat(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
+
+  reportQuality = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = reportQualitySchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.reportQuality(id, parsed.data, {
+      requesterId: req.auth.userId,
+    });
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
   });
 

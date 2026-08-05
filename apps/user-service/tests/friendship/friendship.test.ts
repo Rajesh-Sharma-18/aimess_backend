@@ -6,6 +6,11 @@
  */
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
+    resolveViewerGraph: jest.fn(async () => ({
+      friendIds: [],
+      friendOfFriendIds: [],
+    })),
+    hasMutualFriend: jest.fn(async () => false),
     findByPair: jest.fn(),
     findById: jest.fn(),
     findActivePair: jest.fn(),
@@ -19,6 +24,13 @@ jest.mock("../../src/repositories/friendship.repository.js", () => ({
     reject: jest.fn(),
     cancel: jest.fn(),
     unfriendWithCounters: jest.fn(),
+  },
+}));
+// `whoCanSendFriendRequests` gate. null → no settings row → EVERYONE, which is
+// the pre-privacy behaviour every existing case in this file assumes.
+jest.mock("../../src/repositories/user-settings.repository.js", () => ({
+  userSettingsRepository: {
+    findFriendRequestPrivacy: jest.fn(async () => null),
   },
 }));
 jest.mock("../../src/repositories/user-profile.repository.js", () => ({
@@ -53,6 +65,7 @@ import { ConversationSocketEvents } from "@aimess/shared-types";
 import { app } from "../../src/app.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
+import { userSettingsRepository } from "../../src/repositories/user-settings.repository.js";
 import {
   publishFriendRequestedSafe,
   publishFriendAcceptedSafe,
@@ -69,6 +82,9 @@ import {
 
 const fRepo = friendshipRepository as unknown as Record<string, jest.Mock>;
 const pRepo = userProfileRepository as unknown as { findByUserId: jest.Mock };
+const settingsRepo = userSettingsRepository as unknown as {
+  findFriendRequestPrivacy: jest.Mock;
+};
 const requested = publishFriendRequestedSafe as unknown as jest.Mock;
 const accepted = publishFriendAcceptedSafe as unknown as jest.Mock;
 const unfriended = publishFriendUnfriendedSafe as unknown as jest.Mock;
@@ -123,6 +139,7 @@ describe("POST /api/v1/users/friends/requests", () => {
     fRepo.findAllBlocks.mockResolvedValue([]);
     fRepo.findByPair.mockResolvedValue(null);
     fRepo.create.mockResolvedValue(friendshipRow());
+    settingsRepo.findFriendRequestPrivacy.mockResolvedValue(null); // EVERYONE
   });
 
   it("sends a friend request → 201 and publishes friend.requested", async () => {
@@ -163,6 +180,40 @@ describe("POST /api/v1/users/friends/requests", () => {
       },
       friendRequest: { id: FRIENDSHIP_ID, status: "PENDING" },
     });
+  });
+
+  it("rejects the request when the addressee's whoCanSendFriendRequests is NO_ONE", async () => {
+    settingsRepo.findFriendRequestPrivacy.mockResolvedValue("NO_ONE");
+
+    const res = await request(app)
+      .post("/api/v1/users/friends/requests")
+      .set(auth())
+      .send({ addresseeId: OTHER });
+
+    expect(res.status).toBe(400);
+    // Nothing is written and nothing is announced — a request that was never
+    // allowed must not leave a row or a notification behind.
+    expect(fRepo.create).not.toHaveBeenCalled();
+    expect(requested).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-friend under FRIENDS but still allows a friend's request", async () => {
+    settingsRepo.findFriendRequestPrivacy.mockResolvedValue("FRIENDS");
+
+    const denied = await request(app)
+      .post("/api/v1/users/friends/requests")
+      .set(auth())
+      .send({ addresseeId: OTHER });
+    expect(denied.status).toBe(400);
+
+    // An ACCEPTED row means they ARE friends — the scope admits them (the
+    // already-friends conflict is a separate, later check).
+    fRepo.findByPair.mockResolvedValue(friendshipRow({ status: "ACCEPTED" }));
+    const allowed = await request(app)
+      .post("/api/v1/users/friends/requests")
+      .set(auth())
+      .send({ addresseeId: OTHER });
+    expect(allowed.status).not.toBe(400);
   });
 
   it("auto-accepts a mutual pending request (they already requested me)", async () => {

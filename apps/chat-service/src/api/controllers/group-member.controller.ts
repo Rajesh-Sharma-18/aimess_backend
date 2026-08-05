@@ -23,7 +23,8 @@ export class GroupMemberController {
   leave = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const result = await this.service.leave(roomId, userId);
+    const { reason } = req.body as { reason?: string };
+    const result = await this.service.leave(roomId, userId, reason);
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_GROUP_LEFT", req.locale)));
@@ -110,6 +111,33 @@ export class GroupMemberController {
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
+  });
+
+  muteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: mutedBy } = req.auth;
+    const { roomId, userId, mutedUntil } = req.body as {
+      roomId: string;
+      userId: string;
+      mutedUntil?: string | null;
+    };
+    const result = await this.service.muteMember({
+      roomId,
+      targetUserId: userId,
+      mutedBy,
+      mutedUntil: mutedUntil ? new Date(mutedUntil) : null,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  unmuteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: actorId } = req.auth;
+    const { roomId, userId } = req.body as { roomId: string; userId: string };
+    const result = await this.service.unmuteMember({
+      roomId,
+      targetUserId: userId,
+      actorId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
   getMembers = asyncHandler(async (req: Request, res: Response) => {

@@ -47,6 +47,10 @@ service MessagingService {
   // notifications-service calls this before FCM/APNs fan-out to suppress
   // push for a recipient who has muted this conversation.
   rpc CheckPrivateMute        (CheckPrivateMuteRequest)        returns (CheckPrivateMuteResponse);
+  // Mirror of CheckPrivateMute, for group rooms. notifications-service calls
+  // this before FCM/APNs fan-out to suppress push for a member who has muted
+  // this group.
+  rpc CheckGroupMute          (CheckGroupMuteRequest)          returns (CheckGroupMuteResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
   // Admin Group Management: list/detail/members (owned by chat-service).
@@ -480,6 +484,9 @@ message InitiateCallRequest {
   string callee_id       = 2;
   string type            = 3;
   string private_room_id = 4;
+  // GROUP call: set instead of callee_id — the server resolves the ring
+  // roster from the group's active membership. Empty for 1:1 calls.
+  string group_id        = 5;
 }
 message AnswerCallRequest {
   string call_id   = 1;
@@ -663,6 +670,17 @@ message CheckPrivateMuteRequest {
   string user_id = 2;
 }
 message CheckPrivateMuteResponse {
+  bool  is_muted    = 1;
+  int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
+}
+
+// ---- CheckGroupMute ----
+message CheckGroupMuteRequest {
+  string room_id = 1;
+  // The member whose mute setting on this group should be checked.
+  string user_id = 2;
+}
+message CheckGroupMuteResponse {
   bool  is_muted    = 1;
   int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
 }

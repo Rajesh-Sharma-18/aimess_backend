@@ -85,7 +85,16 @@ const withCommunityAliases = <T extends z.ZodTypeAny>(schema: T) =>
 
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const ConvJoinSchema = withCommunityAliases(
-  z.object({ conversationId: z.string().min(1) })
+  z.object({
+    conversationId: z.string().min(1),
+    // Additive/optional: legacy clients that omit it join unchecked (private
+    // DM behavior, unchanged). GROUP join is membership-gated — see the
+    // handler below.
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).optional()
+    ),
+  })
 );
 const ConvLeaveSchema = withCommunityAliases(
   z.object({ conversationId: z.string().min(1) })
@@ -389,7 +398,16 @@ export function registerChatNamespace(
         // instead of the shared identity room.
         const isSelfOnlyEvent =
           parsed.event.startsWith("call:") ||
-          parsed.event === "chat:unread_summary";
+          parsed.event === "chat:unread_summary" ||
+          // A user's own privacy/notification settings. MUST stay self-only —
+          // `user:<id>` is joined by presence subscribers, i.e. the very peers
+          // some of these settings exist to hide things from.
+          parsed.event === "settings:updated" ||
+          // A conversation the user deleted-for-me/cleared from their own
+          // view. MUST stay self-only — otherwise a peer merely watching this
+          // user's presence would learn they deleted a conversation (and its
+          // roomId, which may be with a third party entirely).
+          parsed.event === "conv:deleted";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
@@ -440,6 +458,80 @@ export function registerChatNamespace(
               } catch (joinErr) {
                 logger.warn(
                   `/chat auto-join conv room on group:added failed roomId=${newRoomId}: ${String(joinErr)}`
+                );
+              }
+            })();
+          }
+        }
+
+        // Mirror of the group:added auto-join above, in reverse: force every
+        // live socket of a member who just left/was kicked/was banned OUT of
+        // conv:<roomId>. Without this, a socket that had already called
+        // conv:join keeps sitting in the Socket.IO room forever — nothing else
+        // ever calls conv:leave for them — so they'd keep receiving live
+        // message:new/recording broadcasts for a group they can no longer read
+        // or write to.
+        if (parsed.event === "group:removed") {
+          const removedData = parsed.data as
+            | { roomId?: string }
+            | null
+            | undefined;
+          const removedRoomId = removedData?.roomId;
+          if (removedRoomId) {
+            const removedUserId = channel.slice("user:".length);
+            void (async () => {
+              try {
+                const sockets = await chat.in(channel).fetchSockets();
+                await Promise.all(
+                  sockets.map((s) => s.leave(`conv:${removedRoomId}`))
+                );
+                logger.debug(
+                  `/chat evicted conv:${removedRoomId} for ${sockets.length} socket(s) of userId=${removedUserId}`
+                );
+              } catch (leaveErr) {
+                logger.warn(
+                  `/chat evict conv room on group:removed failed roomId=${removedRoomId}: ${String(leaveErr)}`
+                );
+              }
+            })();
+
+            // Clear any stale typing/recording indicator the removed member
+            // left behind — mirrors community.ns.ts's evict-on-removal. Group
+            // typing is delivered DIRECTLY to each remaining member's
+            // user:<id> (room-independent, see the typing handler below), so
+            // clearing it needs the roster; recording rides conv:<roomId>
+            // directly, which the still-subscribed remaining members are in.
+            void (async () => {
+              try {
+                const stopPayload = buildTypingBroadcast(
+                  removedUserId,
+                  {
+                    userId: removedUserId,
+                    username: "",
+                    displayName: "",
+                    avatarUrl: null,
+                  },
+                  removedRoomId,
+                  Date.now(),
+                  {}
+                );
+                chat
+                  .to(`conv:${removedRoomId}`)
+                  .emit("recording:stop", stopPayload);
+
+                const { userIds } = await messagingClient.getRoomParticipantIds(
+                  {
+                    conversationId: removedRoomId,
+                    conversationType: "group",
+                  }
+                );
+                for (const uid of userIds) {
+                  if (uid === removedUserId) continue;
+                  chat.to(`user:${uid}`).emit("typing:stop", stopPayload);
+                }
+              } catch (stopErr) {
+                logger.warn(
+                  `/chat clear typing/recording on group:removed failed roomId=${removedRoomId}: ${String(stopErr)}`
                 );
               }
             })();
@@ -520,11 +612,18 @@ export function registerChatNamespace(
   const PresenceSubscribeSchema = z.object({
     peerIds: z.array(z.string().min(1)).max(500),
   });
-  const CallInitiateSchema = z.object({
-    calleeId: z.string().min(1),
-    callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
-    privateRoomId: z.string().optional(),
-  });
+  // Exactly one of calleeId (1:1) / groupId (group call) must be present —
+  // the group branch has no privateRoomId concept, so a caller can't send both.
+  const CallInitiateSchema = z
+    .object({
+      calleeId: z.string().min(1).optional(),
+      groupId: z.string().min(1).optional(),
+      callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
+      privateRoomId: z.string().optional(),
+    })
+    .refine((v) => Boolean(v.calleeId) !== Boolean(v.groupId), {
+      message: "exactly one of calleeId or groupId is required",
+    });
   const CallAnswerSchema = z.object({ callId: z.string().min(1) });
   // `intentional: true` is required so stale HMR/zombie socket listeners that
   // still auto-emit `{ callId }` (old busy auto-decline) cannot kill a live ring.
@@ -608,10 +707,38 @@ export function registerChatNamespace(
           return;
         }
         // Idempotent: re-joining an already-tracked room is a no-op in Socket.IO.
-        // NOT_FOUND / FORBIDDEN are enforced downstream at message:send time via
-        // the gRPC call to messaging-service — not at join time, because the
-        // gateway has no membership oracle for arbitrary conversation IDs.
-        // CONFLICT (already joined) is treated as success, not an error.
+        // PRIVATE (default/omitted type): NOT_FOUND / FORBIDDEN stay enforced
+        // downstream at message:send time — a fixed 2-participant room has no
+        // "left" state to leak.
+        // GROUP: membership-gated HERE, before the join, using the same
+        // ACTIVE-roster oracle typing already resolves through
+        // (getRoomParticipantIds) — mirrors community.ns.ts's community:join
+        // gate. Without this, ANY stale join (a client bug, a connection that
+        // predates a leave, a future regression) leaves a former member sitting
+        // in conv:<roomId> forever, since nothing else re-checks membership on
+        // an already-open Socket.IO room.
+        if (r.data.conversationType === "group") {
+          void (async () => {
+            try {
+              const { userIds } = await messagingClient.getRoomParticipantIds({
+                conversationId: r.data.conversationId,
+                conversationType: "group",
+              });
+              if (!userIds.includes(userId)) {
+                ackError(callback, "FORBIDDEN", locale);
+                return;
+              }
+              void socket.join(`conv:${r.data.conversationId}`);
+              ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
+            } catch (err) {
+              logger.warn(
+                `/chat conv:join group membership check failed roomId=${r.data.conversationId}: ${String(err)}`
+              );
+              ackError(callback, "FORBIDDEN", locale);
+            }
+          })();
+          return;
+        }
         void socket.join(`conv:${r.data.conversationId}`);
         ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
       }
@@ -894,10 +1021,23 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        for (const peerId of r.data.peerIds) {
-          void socket.join(`user:${peerId}`);
-        }
-        ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale);
+        // `whoCanSeeOnlineStatus` gate. Joining `user:<peerId>` is what makes a
+        // peer's presence (and every other broadcast to that room) reachable,
+        // so the filter has to happen BEFORE the join — masking on emit would
+        // be too late. Denied peers are silently dropped rather than erroring:
+        // a per-peer rejection would itself disclose the setting.
+        void (async () => {
+          const visible = await userClient.filterVisiblePresence(
+            userId,
+            r.data.peerIds
+          );
+          for (const peerId of visible) {
+            void socket.join(`user:${peerId}`);
+          }
+          ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale, {
+            subscribedCount: visible.length,
+          });
+        })();
       }
     );
 
@@ -1050,9 +1190,18 @@ export function registerChatNamespace(
     });
 
     // ── Voice recording presence ────────────────────────────────────────────
-    // Same shared engine, room-based delivery — deliberately UNCHANGED in
-    // behaviour and identical to /community's recording indicator, which also
-    // stayed room-based when typing moved to direct delivery.
+    // Same shared engine, room-based delivery — identical to /community's
+    // recording indicator, which also stayed room-based when typing moved to
+    // direct delivery.
+    //
+    // isAuthorized mirrors community's isAuthorizedForCommunity: a cheap sync
+    // check that the sender's OWN socket currently sits in conv:<id>. Without
+    // it, socket.to(room) would happily broadcast (and accept) a recording
+    // indicator for a group the sender left or was never in — conv:join is
+    // membership-gated for groups and group:removed force-leaves the room on
+    // leave/kick/ban (see conv:join handler above), so "currently in the room"
+    // is already the authoritative membership signal; no extra gRPC call
+    // needed here.
     const recordingNames = new Map<string, string | undefined>();
 
     const recording = createPresenceIndicator({
@@ -1070,6 +1219,8 @@ export function registerChatNamespace(
             Date.now(),
             { senderName: recordingNames.get(conversationId) }
           ),
+        isAuthorized: (conversationId) =>
+          socket.rooms.has(`conv:${conversationId}`),
       }),
     });
 
@@ -1239,9 +1390,10 @@ export function registerChatNamespace(
         messagingClient
           .initiateCall({
             callerId: userId,
-            calleeId: r.data.calleeId,
+            calleeId: r.data.calleeId ?? "",
             type: r.data.callType,
             privateRoomId: r.data.privateRoomId,
+            groupId: r.data.groupId,
           })
           .then((result) => {
             // Join the caller's socket to `call:<callId>` so lifecycle events

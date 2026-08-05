@@ -212,6 +212,40 @@ export class PrivatePinService {
   }
 
   /**
+   * Called when a participant deletes the conversation (deleteForMe). The
+   * active pin belongs to the room, not either user, so it must be cleared
+   * regardless of who pinned it — otherwise it resurfaces once the room
+   * becomes visible again (e.g. a new message arrives after the delete).
+   * Best-effort by design: the caller must not fail the delete over this.
+   */
+  async clearActivePin(
+    roomId: string,
+    actorId: string
+  ): Promise<PrivateMessagePin | null> {
+    const activePin = await this.pinRepo.findActivePinByRoom(roomId);
+    if (!activePin) return null;
+
+    const cleared = await this.pinRepo.softDeletePin(
+      activePin.id,
+      actorId,
+      new Date()
+    );
+    await this.roomRepo.incPinnedCount(roomId, -1);
+
+    if (activePin.pinSystemMessageId) {
+      await this.sysMsg
+        .retractSystemMessage({
+          roomId,
+          messageId: activePin.pinSystemMessageId,
+          actorId,
+        })
+        .catch(() => {});
+    }
+
+    return cleared;
+  }
+
+  /**
    * Called when a message is hard-deleted. Marks the active pin (if any)
    * unavailable and returns it so the caller can emit a pin:updated event.
    */

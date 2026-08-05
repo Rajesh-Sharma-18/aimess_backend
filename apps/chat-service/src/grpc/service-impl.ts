@@ -14,7 +14,6 @@ import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
-import { resolveDisplayName } from "../services/user-snapshot.service.js";
 import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
@@ -51,6 +50,7 @@ import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
+import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import {
   buildChatMessageEvent,
   buildCanonicalQuote,
@@ -299,12 +299,24 @@ export function createMessagingImpl(
             req.conversationType
           );
           const content = parseMessageContent(req);
+          // Server-side resolution — req.senderName/Avatar are optional,
+          // client-supplied fields that arrive empty over the socket path.
+          const {
+            senderName: resolvedSenderName,
+            senderAvatar: resolvedSenderAvatar,
+          } = await resolveSenderIdentity(
+            deps.userSnapshotService,
+            deps.cacheRepo,
+            req.senderId,
+            req.senderName || undefined,
+            req.senderAvatar || undefined
+          );
           if (conversationType === "GROUP") {
             msg = await deps.groupMessageService.sendMessage({
               roomId: req.conversationId,
               senderId: req.senderId,
-              senderName: req.senderName || "",
-              senderAvatar: req.senderAvatar || "",
+              senderName: resolvedSenderName,
+              senderAvatar: resolvedSenderAvatar,
               content,
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
@@ -338,7 +350,7 @@ export function createMessagingImpl(
                 ? msg.createdAt.getTime()
                 : Date.now();
             const [bcastAvatar] = await Promise.all([
-              resolveMediaUrl(req.senderAvatar || ""),
+              resolveMediaUrl(resolvedSenderAvatar),
             ]);
             const albumRows = getAlbumMessages(msg);
             for (const row of albumRows) {
@@ -357,7 +369,7 @@ export function createMessagingImpl(
                 conversationType:
                   conversationType === "GROUP" ? "GROUP" : "PRIVATE",
                 senderId: req.senderId,
-                senderName: req.senderName,
+                senderName: resolvedSenderName,
                 senderAvatar: bcastAvatar,
                 senderRole:
                   (row as { senderRole?: string }).senderRole ?? msg.senderRole,
@@ -456,33 +468,6 @@ export function createMessagingImpl(
                 : Date.now();
             const pushText =
               ((msg.content as Record<string, unknown>)?.text as string) ?? "";
-            // Socket clients do not send their own display identity, so req.senderName is
-            // usually empty — resolve it here or the push renders as "Someone".
-            let pushSenderName = req.senderName || "";
-            let pushSenderAvatar = req.senderAvatar || "";
-            if (!pushSenderName || !pushSenderAvatar) {
-              try {
-                const senderSnaps =
-                  await deps.userSnapshotService?.getUserSnapshotsMap(
-                    [req.senderId],
-                    deps.cacheRepo
-                  );
-                const senderSnap = senderSnaps?.get(req.senderId);
-                const resolved = resolveDisplayName(senderSnap);
-                if (!pushSenderName && resolved !== "Unknown User") {
-                  pushSenderName = resolved;
-                }
-                // Raw object key is fine — publishMessageSentSafe resolves it at the
-                // publish boundary, and resolveMediaUrl passes full URLs through unchanged.
-                if (!pushSenderAvatar) {
-                  pushSenderAvatar = (senderSnap?.avatar as string) || "";
-                }
-              } catch (e) {
-                logger.warn(
-                  `push sender identity resolve failed: ${String(e)}`
-                );
-              }
-            }
             const pushBase = {
               conversationId: req.conversationId,
               conversationType: (conversationType === "GROUP"
@@ -491,8 +476,8 @@ export function createMessagingImpl(
               messageId: msg.id,
               clientMessageId: req.clientMessageId || "",
               senderId: req.senderId,
-              senderName: pushSenderName,
-              senderAvatar: pushSenderAvatar,
+              senderName: resolvedSenderName,
+              senderAvatar: resolvedSenderAvatar,
               preview: buildPushPreview(msg.messageType, pushText),
               messageType: msg.messageType,
               sentAt: pushSentAt,
@@ -545,25 +530,26 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
-
-          if (conversationType === "GROUP") {
-            callback({
-              code: grpc.status.UNIMPLEMENTED,
-              message: "EditMessage not supported for GROUP conversations",
-            });
-            return;
-          }
+          // Authoritative: derived from the room id, NOT req.conversationType —
+          // same rationale as sendMessage above (see resolveConversationType).
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
 
           const content = parseMessageContent(req);
-          const updated = await deps.privateMessageService.editMessage({
-            messageId: req.messageId,
-            userId: req.editorId,
-            content,
-          });
+          const updated =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.editMessage({
+                  messageId: req.messageId,
+                  userId: req.editorId,
+                  content,
+                })
+              : await deps.privateMessageService.editMessage({
+                  messageId: req.messageId,
+                  userId: req.editorId,
+                  content,
+                });
 
           const editedAtMs =
             updated.editedAt instanceof Date
@@ -603,9 +589,17 @@ export function createMessagingImpl(
                 id: updated.id,
                 clientMessageId: (updatedFull.clientMessageId as string) ?? "",
                 roomId: req.conversationId,
-                conversationType: "PRIVATE",
+                conversationType,
                 senderId: updated.senderId ?? "",
-                receiverId: (updatedFull.receiverId as string) ?? "",
+                // GROUP denormalizes senderName/senderAvatar on the row (same
+                // fields the REST edit controller reads); PRIVATE has no
+                // equivalent and keeps its receiverId instead.
+                ...(conversationType === "GROUP"
+                  ? {
+                      senderName: (updatedFull.senderName as string) ?? "",
+                      senderAvatar: (updatedFull.senderAvatar as string) ?? "",
+                    }
+                  : { receiverId: (updatedFull.receiverId as string) ?? "" }),
                 messageType: updated.messageType,
                 content: editedContent ?? null,
                 parentMessageId: (updatedFull.parentMessageId as string) || "",
@@ -1574,13 +1568,20 @@ export function createMessagingImpl(
             calleeId?: string;
             type?: string;
             privateRoomId?: string;
+            groupId?: string;
           };
-          const result = await deps.callService.initiateCall({
-            callerId: req.callerId ?? "",
-            calleeId: req.calleeId ?? "",
-            type: req.type ?? "AUDIO",
-            privateRoomId: req.privateRoomId ?? null,
-          });
+          const result = req.groupId
+            ? await deps.callService.initiateGroupCall({
+                callerId: req.callerId ?? "",
+                groupId: req.groupId,
+                type: req.type ?? "AUDIO",
+              })
+            : await deps.callService.initiateCall({
+                callerId: req.callerId ?? "",
+                calleeId: req.calleeId ?? "",
+                type: req.type ?? "AUDIO",
+                privateRoomId: req.privateRoomId ?? null,
+              });
 
           callback(null, {
             callId: result.callId,
@@ -1848,6 +1849,50 @@ export function createMessagingImpl(
         } catch (err) {
           // Fail-open: an oracle failure must never suppress a push.
           logger.warn(`gRPC checkPrivateMute error: ${String(err)}`);
+          callback(null, { isMuted: false, mutedUntil: 0 });
+        }
+      })();
+    },
+
+    /**
+     * Mirror of checkPrivateMute, for group rooms. `notificationSettings` is
+     * per-membership (GroupMember row), not per-room — same indefinite/expiry
+     * logic as private: muted with no muteUntil = indefinite, muteUntil in
+     * the future = still muted, muteUntil in the past = expired.
+     */
+    checkGroupMute: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId?: string; userId?: string };
+          const roomId = req.roomId ?? "";
+          const userId = req.userId ?? "";
+          if (!roomId || !userId) {
+            callback(null, { isMuted: false, mutedUntil: 0 });
+            return;
+          }
+
+          const member = await deps.groupMemberRepo.findByRoomAndUser(
+            roomId,
+            userId
+          );
+          const settings = (member?.notificationSettings ?? {}) as {
+            mute?: boolean;
+            muteUntil?: string | null;
+          };
+          const muteUntilMs = settings.muteUntil
+            ? new Date(settings.muteUntil).getTime()
+            : null;
+          const isMuted =
+            settings.mute === true &&
+            (muteUntilMs == null || muteUntilMs > Date.now());
+
+          callback(null, { isMuted, mutedUntil: muteUntilMs ?? 0 });
+        } catch (err) {
+          // Fail-open: an oracle failure must never suppress a push.
+          logger.warn(`gRPC checkGroupMute error: ${String(err)}`);
           callback(null, { isMuted: false, mutedUntil: 0 });
         }
       })();
@@ -2517,13 +2562,15 @@ export function createCommunityImpl(
             attachments = [{ objectKey: req.mediaKey }];
           }
 
-          const snaps = await deps.userSnapshotService.getUserSnapshotsMap(
-            [req.senderId],
-            deps.cacheRepo
-          );
-          const snap = snaps.get(req.senderId);
-          const senderName = (snap?.displayName as string) || "";
-          const senderAvatar = (snap?.avatar as string) || "";
+          const [{ senderName, senderAvatar }, room] = await Promise.all([
+            resolveSenderIdentity(
+              deps.userSnapshotService,
+              deps.cacheRepo,
+              req.senderId
+            ),
+            deps.generalRoomRepo?.findRoomById(req.roomId),
+          ]);
+          const communityName = room?.name ?? "";
 
           const saved = await deps.communityMessageService.sendMessage({
             roomId: req.roomId,
@@ -2686,6 +2733,7 @@ export function createCommunityImpl(
               conversationId: req.communityId,
               conversationType: "COMMUNITY",
               communityId: req.communityId,
+              communityName,
               messageId: saved.id,
               clientMessageId: req.clientMessageId ?? "",
               senderId: req.senderId,

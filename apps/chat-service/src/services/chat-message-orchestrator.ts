@@ -42,7 +42,7 @@ import type { GroupMessageService } from "./group-message.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import { resolveDisplayName } from "./user-snapshot.service.js";
+import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
@@ -726,13 +726,16 @@ export class ChatMessageOrchestrator {
 
       // FCM push — community messages need the same offline-wake push as
       // private/group. fetchRecipients is lazy so the DB call only runs when
-      // RabbitMQ is configured. communityName is forwarded when the REST caller
-      // supplies it so the consumer can set it as the push title.
+      // RabbitMQ is configured. communityName falls back to the locally-mirrored
+      // GeneralRoom.name when the caller omits it, so the consumer always has a
+      // real community name for the push title (not the sender's name).
       publishMessageSentSafe({
         conversationId: params.communityId,
         conversationType: "COMMUNITY",
         communityId: params.communityId,
-        communityName: params.communityName,
+        communityName:
+          params.communityName ||
+          (await this.communityMessageService.getRoomName(params.roomId)),
         messageId: saved.id,
         clientMessageId,
         senderId: params.senderId,
@@ -1631,25 +1634,13 @@ export class ChatMessageOrchestrator {
     senderName?: string,
     senderAvatar?: string
   ): Promise<{ senderName: string; senderAvatar: string }> {
-    // A BLANK name must not short-circuit the snapshot lookup — callers routinely pass "" for
-    // an unknown sender, and returning it verbatim renders the push as "Someone".
-    if (senderName && senderAvatar !== undefined) {
-      return { senderName, senderAvatar };
-    }
-    const snaps = await this.userSnapshotService.getUserSnapshotsMap(
-      [senderId],
-      this.cacheRepo
+    return resolveSenderIdentity(
+      this.userSnapshotService,
+      this.cacheRepo,
+      senderId,
+      senderName,
+      senderAvatar
     );
-    const snap = snaps.get(senderId);
-    // Use the shared fullName → displayName → username → memberId → "Unknown User"
-    // fallback chain so an empty computed displayName (profile with blank first/last)
-    // still yields a real sender name for the group/private list preview.
-    const resolvedName = resolveDisplayName(snap);
-    return {
-      senderName:
-        senderName || (resolvedName === "Unknown User" ? "" : resolvedName),
-      senderAvatar: senderAvatar || (snap?.avatar as string) || "",
-    };
   }
 
   /**

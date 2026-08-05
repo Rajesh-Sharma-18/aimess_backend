@@ -27,6 +27,7 @@ import type {
   SignInProvider,
 } from "../types/auth-account.types.js";
 import { isProfileComplete } from "../lib/profile-completion.util.js";
+import { SCHEMA_DEFAULT_SCOPE, scopeAdmits } from "../lib/privacy-scope.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type {
@@ -225,28 +226,6 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   return profile;
 }
 
-/**
- * Does `scope` admit this viewer? `FRIENDS_OF_FRIENDS` is treated as FRIENDS —
- * the graph query it would need does not exist yet and over-sharing is the
- * worse failure. Self always passes.
- */
-function scopeAdmits(
-  scope: string | null | undefined,
-  isSelf: boolean,
-  isFriend: boolean
-): boolean {
-  if (isSelf) return true;
-  switch (scope) {
-    case "NO_ONE":
-      return false;
-    case "FRIENDS":
-    case "FRIENDS_OF_FRIENDS":
-      return isFriend;
-    default:
-      return true; // EVERYONE, or unset (the schema default)
-  }
-}
-
 export const userProfileService = {
   /**
    * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
@@ -297,15 +276,27 @@ export const userProfileService = {
       }),
     ]);
 
+    const viewProfileScope =
+      profile.privacySettings?.whoCanViewProfile ??
+      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
+    // Only `whoCanViewProfile` offers FRIENDS_OF_FRIENDS here, and the lookup
+    // is two indexed queries — so resolve the mutual-friend edge only when that
+    // exact scope is set and the cheaper isSelf/isFriend answers do not settle it.
+    const isFriendOfFriend =
+      viewProfileScope === "FRIENDS_OF_FRIENDS" && !isSelf && !isFriend
+        ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
+        : false;
+    const relation = { isSelf, isFriend, isFriendOfFriend };
+
     const canViewProfile =
-      !isDeletedUser &&
-      scopeAdmits(profile.privacySettings?.whoCanViewProfile, isSelf, isFriend);
+      !isDeletedUser && scopeAdmits(viewProfileScope, relation);
     const canSeePresence =
       canViewProfile &&
       scopeAdmits(
-        profile.privacySettings?.whoCanSeeOnlineStatus,
-        isSelf,
-        isFriend
+        // Missing row → FRIENDS (the schema default), NOT EVERYONE.
+        profile.privacySettings?.whoCanSeeOnlineStatus ??
+          SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
+        relation
       );
 
     return {

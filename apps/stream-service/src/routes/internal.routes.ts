@@ -90,7 +90,7 @@ export function createInternalRoutes(
       // via RTMP and trigger hooks too — allow them through without a DB lookup.
       // Must match HLS_QUALITY_LADDER in srs.service.ts — production only
       // produces these two rungs.
-      const QUALITY_SUFFIXES = ["_480p", "_360p"];
+      const QUALITY_SUFFIXES = ["_1080p", "_720p", "_480p", "_360p"];
       if (QUALITY_SUFFIXES.some((s) => streamKey.endsWith(s))) {
         res.json(0);
         return;

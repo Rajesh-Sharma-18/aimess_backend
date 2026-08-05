@@ -39,6 +39,11 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     authenticateAccessToken,
     controller.heartbeat
   );
+  router.post(
+    "/streams/:id/quality",
+    authenticateAccessToken,
+    controller.reportQuality
+  );
   router.get(
     "/streams/:id/comments",
     authenticateAccessToken,

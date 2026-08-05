@@ -105,6 +105,37 @@ export class GroupMemberRepository {
   }
 
   /**
+   * Same as {@link getActiveMemberships} plus rooms the user voluntarily LEFT —
+   * feeds the inbox listing so a left group stays visible (read-only, history
+   * intact) instead of vanishing, WhatsApp-style. Kicked/banned rows are still
+   * excluded (out of scope for the voluntary-leave read-access feature).
+   */
+  async getActiveOrLeftMemberships(userId: string): Promise<
+    Array<{
+      roomId: string;
+      role: string;
+      unreadCount: number;
+      notificationSettings: GroupMember["notificationSettings"];
+      clearedAt: Date | null;
+      status: string;
+      leftAt: Date | null;
+    }>
+  > {
+    return this.prisma.groupMember.findMany({
+      where: { userId, status: { in: ["ACTIVE", "LEFT"] } },
+      select: {
+        roomId: true,
+        role: true,
+        unreadCount: true,
+        notificationSettings: true,
+        clearedAt: true,
+        status: true,
+        leftAt: true,
+      },
+    });
+  }
+
+  /**
    * "Delete Conversation" for a group: the member stays ACTIVE (unlike Leave)
    * but hides all history up to now — mirrors PrivateRoomRepository.setDeletedFor.
    * Also zeroes unread state so a phantom count doesn't survive the cutoff.
@@ -142,6 +173,36 @@ export class GroupMemberRepository {
     return this.prisma.groupMember.update({
       where: { roomId_userId: { roomId, userId } },
       data: { role },
+    });
+  }
+
+  /** Moderator-imposed mute (distinct from `setMuted`'s self-notification mute). */
+  async setModerationMute(
+    roomId: string,
+    userId: string,
+    params: { mutedBy: string; mutedUntil: Date | null }
+  ): Promise<GroupMember | null> {
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        moderationMuted: true,
+        moderationMutedUntil: params.mutedUntil,
+        moderationMutedBy: params.mutedBy,
+      },
+    });
+  }
+
+  async clearModerationMute(
+    roomId: string,
+    userId: string
+  ): Promise<GroupMember | null> {
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        moderationMuted: false,
+        moderationMutedUntil: null,
+        moderationMutedBy: null,
+      },
     });
   }
 

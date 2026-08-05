@@ -24,6 +24,7 @@ interface Stubs {
   privateRoomRepo: {
     findByRoomId: jest.Mock;
     findByParticipantsKey: jest.Mock;
+    create: jest.Mock;
   };
   redis: Redis;
   livekit: { mintToken: jest.Mock };
@@ -65,6 +66,11 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
       }),
       findByParticipantsKey: jest.fn().mockResolvedValue({
         roomId: "derived-room",
+        participants: ["caller", "callee"],
+        blockedBy: [],
+      }),
+      create: jest.fn().mockResolvedValue({
+        roomId: "opened-room",
         participants: ["caller", "callee"],
         blockedBy: [],
       }),
@@ -147,7 +153,10 @@ describe("CallService.initiateCall gate", () => {
     );
     expect(stubs.callRepo.create).not.toHaveBeenCalled();
     expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
-    expect(stubs.getCallPrivacy).not.toHaveBeenCalled();
+    // `getCallPrivacy` IS called first now — the friendship gate has to know
+    // whether the callee chose EVERYONE before it can reject. What still must
+    // not happen is any side effect: no call row, no LiveKit token, no room.
+    expect(stubs.privateRoomRepo.create).not.toHaveBeenCalled();
   });
 
   it("NEGATIVE: whoCanCallMe=NO_ONE → PRIVACY_BLOCKED", async () => {
@@ -178,6 +187,70 @@ describe("CallService.initiateCall gate", () => {
       /PRIVACY_BLOCKED/
     );
     expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+
+  // `whoCanCallMe = EVERYONE` is the ONLY scope that admits a non-friend. It is
+  // also the only one that can open a DM room, because room creation is
+  // otherwise friendship-gated and a stranger has none.
+  describe("whoCanCallMe=EVERYONE", () => {
+    it("lets a NON-FRIEND through the friendship gate", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.areFriends.mockResolvedValue(false);
+
+      await expect(service.initiateCall(params)).resolves.toBeDefined();
+      expect(stubs.callRepo.create).toHaveBeenCalled();
+    });
+
+    it("opens a room for a stranger who has none, instead of 404ing", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.areFriends.mockResolvedValue(false);
+      stubs.privateRoomRepo.findByRoomId.mockResolvedValue(null);
+      stubs.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+
+      await expect(
+        service.initiateCall({ ...params, privateRoomId: null })
+      ).resolves.toBeDefined();
+      expect(stubs.privateRoomRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ participants: ["callee", "caller"] })
+      );
+    });
+
+    it("does NOT open a room when the caller is a friend (existing room reused)", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.areFriends.mockResolvedValue(true);
+
+      await service.initiateCall(params);
+      expect(stubs.privateRoomRepo.create).not.toHaveBeenCalled();
+    });
+
+    it("still rejects a blocked caller", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.areFriends.mockResolvedValue(false);
+      stubs.privateRoomRepo.findByRoomId.mockResolvedValue({
+        participants: ["caller", "callee"],
+        blockedBy: ["caller"],
+      });
+
+      await expect(service.initiateCall(params)).rejects.toThrow(
+        /CALL_BLOCKED/
+      );
+      expect(stubs.callRepo.create).not.toHaveBeenCalled();
+    });
+  });
+
+  it("REGRESSION: a non-friend is still rejected under every other scope", async () => {
+    for (const whoCanCallMe of ["FRIENDS", "SELECTED_FRIENDS"] as const) {
+      const { service, stubs } = buildService({
+        whoCanCallMe,
+        // Allow-listed, to prove the friendship check is what rejects here.
+        allowedUserIds: ["caller"],
+      });
+      stubs.friendshipRepo.areFriends.mockResolvedValue(false);
+      await expect(service.initiateCall(params)).rejects.toThrow(
+        /FRIENDSHIP_REQUIRED/
+      );
+      expect(stubs.privateRoomRepo.create).not.toHaveBeenCalled();
+    }
   });
 
   it("NEGATIVE: caller=callee → CALL_SELF_NOT_ALLOWED (never touches privacy)", async () => {

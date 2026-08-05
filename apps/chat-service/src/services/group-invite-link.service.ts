@@ -6,6 +6,7 @@ import {
 import { nanoid } from "nanoid";
 import { logger } from "@aimess/logger";
 
+import { env } from "../config/env.js";
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
@@ -32,6 +33,20 @@ import { GroupMemberService } from "./group-member.service.js";
 export interface GroupBulkInviteResult {
   userId: string;
   status: "SENT" | "SKIPPED_ALREADY_MEMBER";
+}
+
+/** Shareable HTTPS invite URL for a group token: `https://aimess.me/g/<token>`
+ * (mirrors community's `buildInviteUrl`). Falls back to the bare token when no
+ * base URL is configured (local/dev). */
+function buildGroupInviteUrl(token: string): string {
+  return env.INVITE_LINK_BASE_URL
+    ? `${env.INVITE_LINK_BASE_URL}/g/${token}`
+    : token;
+}
+
+/** App deep-link for a group invite token: `aimess://join-group?token=<token>`. */
+function buildGroupInviteDeepLink(token: string): string {
+  return `aimess://join-group?token=${encodeURIComponent(token)}`;
 }
 
 export class GroupInviteLinkService {
@@ -193,13 +208,11 @@ export class GroupInviteLinkService {
     callerId: string;
     userIds: string[];
     token?: string;
-    /** Client-constructed join URL/deep link for the shared token (FE owns the scheme). */
-    inviteUrl?: string;
   }): Promise<{
     token: string;
     results: GroupBulkInviteResult[];
   }> {
-    const { roomId, callerId, token, inviteUrl } = params;
+    const { roomId, callerId, token } = params;
     if (
       !this.privateRoomRepo ||
       !this.privateMessageRepo ||
@@ -265,7 +278,6 @@ export class GroupInviteLinkService {
         groupAvatarUrl,
         memberCount: room.memberCount,
         token: link.token,
-        inviteUrl,
         shareNonce,
       });
       results.push({ userId: recipientId, status: "SENT" });
@@ -310,7 +322,6 @@ export class GroupInviteLinkService {
     groupAvatarUrl: string;
     memberCount: number;
     token: string;
-    inviteUrl?: string;
     shareNonce: string;
   }): Promise<void> {
     const {
@@ -322,7 +333,6 @@ export class GroupInviteLinkService {
       groupAvatarUrl,
       memberCount,
       token,
-      inviteUrl,
       shareNonce,
     } = params;
     const privateRoomRepo = this.privateRoomRepo!;
@@ -350,13 +360,21 @@ export class GroupInviteLinkService {
       ? `Invitation to join ${groupName}`
       : "Group invitation";
     const content = { text: previewText };
+    // Server-derived, canonical URL/deep-link — mirrors community's
+    // buildInviteUrl/buildInviteDeepLink. The client-supplied `inviteUrl` (if
+    // any) was the root cause of "Join Now" doing nothing: it was optional and
+    // routinely omitted, leaving the card's deepLink empty. Always compute
+    // both here so the card is actionable regardless of what the client sent.
+    const resolvedInviteUrl = buildGroupInviteUrl(token);
+    const inviteDeepLink = buildGroupInviteDeepLink(token);
     const systemData: Record<string, unknown> = {
       groupId,
       groupName,
       groupAvatarUrl,
       memberCount,
       token,
-      inviteUrl,
+      inviteUrl: resolvedInviteUrl,
+      inviteDeepLink,
       inviterId,
       inviterName,
     };
@@ -413,7 +431,7 @@ export class GroupInviteLinkService {
       groupAvatarUrl,
       memberCount,
       inviteToken: token,
-      deepLink: inviteUrl ?? "",
+      deepLink: inviteDeepLink,
       alreadyJoined: false,
       status: "ACTIVE",
     });

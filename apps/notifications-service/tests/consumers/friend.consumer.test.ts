@@ -68,7 +68,7 @@ describe("FRIEND_REQUESTED", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(ADDRESSEE);
-    expect(arg.body).toBe("John sent you a friend request.");
+    expect(arg.body).toBe("John sent you a friend request");
   });
 
   it("falls back to 'Someone' when requesterName is absent", async () => {
@@ -80,7 +80,7 @@ describe("FRIEND_REQUESTED", () => {
     });
 
     expect(push.mock.calls[0][0].body).toBe(
-      "Someone sent you a friend request."
+      "Someone sent you a friend request"
     );
   });
 });
@@ -102,7 +102,7 @@ describe("FRIEND_ACCEPTED", () => {
       (c) => c[0].userId === REQUESTER
     )?.[0];
     expect(toRequester.title).toBe("Alex");
-    expect(toRequester.body).toBe("You sent Alex a friend request.");
+    expect(toRequester.body).toBe("Alex accepted your friend request");
     expect(toRequester.data.resolution).toBe(
       "Alex accepted your friend request."
     );
@@ -111,33 +111,46 @@ describe("FRIEND_ACCEPTED", () => {
       (c) => c[0].userId === ADDRESSEE
     )?.[0];
     expect(toAddressee.title).toBe("John");
-    expect(toAddressee.body).toBe("John sent you a friend request.");
+    expect(toAddressee.body).toBe("You and John are now friends");
     expect(toAddressee.data.resolution).toBe("You are now friends!");
   });
 });
 
 describe("FRIEND_REJECTED", () => {
-  it("pushes to the requester", async () => {
+  it("pushes to the requester and settles the addressee's own row", async () => {
     await deliver(FriendshipEvents.FRIEND_REJECTED, {
       friendshipId: FRIENDSHIP_ID,
       requesterId: REQUESTER,
       addresseeId: ADDRESSEE,
+      requesterName: "John",
       addresseeName: "Alex",
       rejectedAt: "2026-07-17T10:05:00.000Z",
     });
 
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Friend Request");
-    expect(arg.body).toBe("You sent Alex a friend request.");
-    expect(arg.data.resolution).toBe("Declined your friend request");
-    expect(arg.data.resolutionTone).toBe("danger");
+    expect(push).toHaveBeenCalledTimes(2);
+
+    const toRequester = push.mock.calls.find(
+      (c) => c[0].userId === REQUESTER
+    )?.[0];
+    expect(toRequester.title).toBe("Alex");
+    expect(toRequester.body).toBe("Alex declined your friend request");
+    expect(toRequester.data.resolution).toBe("Declined your friend request");
+    expect(toRequester.data.resolutionTone).toBe("danger");
+
+    // The decliner's own copy of the request must settle in place across their
+    // devices rather than linger as a still-actionable card.
+    const toAddressee = push.mock.calls.find(
+      (c) => c[0].userId === ADDRESSEE
+    )?.[0];
+    expect(toAddressee.data.resurface).toBe("false");
+    expect(toAddressee.data.resolution).toBe(
+      "You declined this friend request"
+    );
   });
 });
 
 describe("FRIEND_CANCELLED", () => {
-  it("pushes to the addressee", async () => {
+  it("silently removes the row on BOTH sides", async () => {
     await deliver(FriendshipEvents.FRIEND_CANCELLED, {
       friendshipId: FRIENDSHIP_ID,
       requesterId: REQUESTER,
@@ -146,10 +159,18 @@ describe("FRIEND_CANCELLED", () => {
       cancelledAt: "2026-07-17T10:05:00.000Z",
     });
 
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.userId).toBe(ADDRESSEE);
-    expect(arg.body).toBe("John cancelled their friend request.");
+    // A withdrawn request must leave no card behind on either side — including
+    // the requester's own other devices.
+    expect(push).toHaveBeenCalledTimes(2);
+    const toAddressee = push.mock.calls.find(
+      (c) => c[0].userId === ADDRESSEE
+    )?.[0];
+    expect(toAddressee.body).toBe("John cancelled their friend request");
+    // Silent: announcing a cancellation would contradict the row disappearing.
+    expect(toAddressee.dataOnly).toBe(true);
+    expect(
+      push.mock.calls.find((c) => c[0].userId === REQUESTER)?.[0].dataOnly
+    ).toBe(true);
   });
 });
 

@@ -86,6 +86,25 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Mirrors CommunityMessageRepository/GeneralRoomMessageRepository's addReport. */
+  async addReport(
+    messageId: string,
+    report: { userReportId: string; userReportReason: string }
+  ): Promise<GroupMessage | null> {
+    const existing = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+    });
+    if (!existing) return null;
+
+    const reports = (existing.reports ?? []) as Array<Record<string, unknown>>;
+    reports.push({ ...report, reportedAt: new Date() });
+
+    return this.prisma.groupMessage.update({
+      where: { id: messageId },
+      data: { reports: reports as unknown as Prisma.InputJsonValue },
+    });
+  }
+
   /** Batch findById — used to resolve a page's own-last-message read ticks in one query. */
   async findManyByIds(ids: string[]): Promise<GroupMessage[]> {
     const validIds = [...new Set(ids)].filter((id) =>
@@ -219,18 +238,26 @@ export class GroupMessageRepository {
     userId: string;
     /** Per-user "delete conversation" cutoff — excludes everything at/before it. */
     cutoff?: Date;
+    /** A member who left keeps read access only up to (inclusive of) this instant. */
+    readCutoffBefore?: Date;
   }): Record<string, unknown> {
     const core = {
       roomId: params.roomId,
       deletedForUserIds: { $ne: params.userId },
     };
-    if (!params.cutoff) return core;
-    return {
-      $and: [
-        core,
-        { createdAt: { $gt: { $date: params.cutoff.toISOString() } } },
-      ],
-    };
+    const bounds: Record<string, unknown>[] = [];
+    if (params.cutoff) {
+      bounds.push({
+        createdAt: { $gt: { $date: params.cutoff.toISOString() } },
+      });
+    }
+    if (params.readCutoffBefore) {
+      bounds.push({
+        createdAt: { $lte: { $date: params.readCutoffBefore.toISOString() } },
+      });
+    }
+    if (bounds.length === 0) return core;
+    return { $and: [core, ...bounds] };
   }
 
   /**
@@ -262,12 +289,15 @@ export class GroupMessageRepository {
     limit: number;
     /** Per-user "delete conversation" cutoff — see {@link timelineMatch}. */
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<{ messages: GroupMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
       cutoff: params.cutoff,
+      readCutoffBefore: params.readCutoffBefore,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -429,6 +459,7 @@ export class GroupMessageRepository {
     roomId: string;
     userId: string;
     cutoff?: Date;
+    readCutoffBefore?: Date;
   }): Promise<number> {
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -451,6 +482,8 @@ export class GroupMessageRepository {
     seq: number | null;
     limit: number;
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const bound =
       params.seq == null
@@ -463,7 +496,16 @@ export class GroupMessageRepository {
       where: {
         roomId: params.roomId,
         sequenceNumber: bound,
-        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
+        ...(params.cutoff || params.readCutoffBefore
+          ? {
+              createdAt: {
+                ...(params.cutoff ? { gt: params.cutoff } : {}),
+                ...(params.readCutoffBefore
+                  ? { lte: params.readCutoffBefore }
+                  : {}),
+              },
+            }
+          : {}),
       },
       orderBy: { sequenceNumber: order },
       take: params.limit + 1 + 10,
@@ -486,6 +528,8 @@ export class GroupMessageRepository {
     anchorSeq: number;
     limit: number;
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
     const keep = (msg: GroupMessage): boolean => {
@@ -493,9 +537,17 @@ export class GroupMessageRepository {
       const deletedFor = (raw.deletedForUserIds ?? []) as string[];
       return !deletedFor.includes(params.userId);
     };
-    const cutoffWhere = params.cutoff
-      ? { createdAt: { gt: params.cutoff } }
-      : {};
+    const cutoffWhere =
+      params.cutoff || params.readCutoffBefore
+        ? {
+            createdAt: {
+              ...(params.cutoff ? { gt: params.cutoff } : {}),
+              ...(params.readCutoffBefore
+                ? { lte: params.readCutoffBefore }
+                : {}),
+            },
+          }
+        : {};
     const [before, anchorAndAfter] = await Promise.all([
       this.prisma.groupMessage.findMany({
         where: {

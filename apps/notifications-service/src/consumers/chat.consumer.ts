@@ -5,10 +5,12 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { chatCopy } from "../lib/notification-copy.js";
+import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
   filterToActiveCommunityMembers,
   isCommunityActorMuted,
+  isGroupMemberMuted,
   isPrivateRoomMutedBy,
 } from "../services/notification-eligibility.service.js";
 
@@ -96,6 +98,22 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
+  // Group-room mute gate: mirror of the private-room gate above, but the mute
+  // setting lives on the GroupMember row (per-membership) rather than the room.
+  if (data.conversationType === "GROUP") {
+    const muteChecks = await Promise.all(
+      recipients.map((id) => isGroupMemberMuted(id, data.conversationId))
+    );
+    const before = recipients.length;
+    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    if (recipients.length < before) {
+      logger.info(
+        `Suppressing group push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
+
   // Authoritative ACTIVE-roster filter: chat-service's RoomMember mirror can
   // lag behind leave/kick/ban, so a LEFT user may still appear in recipientIds.
   // Intersect with community-service's live ACTIVE ids before any FCM send.
@@ -148,6 +166,15 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     isCommunity ? data.communityName : undefined
   );
 
+  // Map PRIVATE → PERSONAL for thread-id generation (internal vs wire protocol naming)
+  const chatType =
+    data.conversationType === "PRIVATE" ? "PERSONAL" : data.conversationType;
+  const threadId = generateThreadId(
+    chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
+    data.conversationId,
+    communityId
+  );
+
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
@@ -161,6 +188,8 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     actorId: data.senderId,
     deepLink,
     collapseKey: `conv:${data.conversationId}`,
+    apnsThreadId: threadId,
+    chatType: chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
     showPreviewOverride,
     // Chat messages must never create a Notification Center entry — see
     // PushInput.skipInbox. Push (this call) and per-conversation unread

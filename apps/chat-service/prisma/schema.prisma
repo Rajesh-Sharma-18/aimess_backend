@@ -232,6 +232,9 @@ model GroupMessage {
   deletedAt          DateTime?
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
+  // Message-level "Report" action, mirroring CommunityMessage's inline reports
+  // array (as opposed to Private's dedicated PrivateMessageReport model).
+  reports            Json      @default("[]")
   sequenceNumber     Int       @default(0)
   // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
   revision           Int       @default(0)
@@ -280,6 +283,15 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Moderator-imposed mute (distinct from `notificationSettings.mute`, which is
+  // the member's OWN notification preference). A muted member keeps full read
+  // access but cannot send/react — mirrors community's CommunityMemberMute,
+  // collapsed onto this row since chat-service is already the sole source of
+  // truth for group membership (no cross-service mirror needed here).
+  // `moderationMutedUntil` null + `moderationMuted` true = indefinite.
+  moderationMuted       Boolean   @default(false)
+  moderationMutedUntil  DateTime?
+  moderationMutedBy     String?
   // Per-user "delete conversation" cutoff (Telegram-style): messages created
   // at/before this instant are hidden from this member, even after new
   // messages restore the group to their inbox. Distinct from `leftAt` — the
@@ -595,10 +607,19 @@ model Call {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   callId        String    @unique
   callerId      String
+  // 1:1 calls: the single callee. Group calls: "" — the real roster lives in
+  // calleeIds. Kept scalar (not nullable) rather than removed so every
+  // existing 1:1 callerId/calleeId query stays a plain equality check.
   calleeId      String
   type          String    @default("AUDIO")
   status        String    @default("RINGING")
   privateRoomId String?
+  // Set only for a GROUP call — the chat-service group roomId the call was
+  // started from. null for 1:1 calls.
+  groupId       String?
+  // GROUP calls only: every rung member (excludes the caller). Empty for 1:1
+  // calls, where calleeId alone is authoritative.
+  calleeIds     String[]  @default([])
   initiatedAt   DateTime  @default(now())
   answeredAt    DateTime?
   endedAt       DateTime?
@@ -609,6 +630,7 @@ model Call {
 
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
+  @@index([groupId, status])
   @@index([status])
   // Busy-gate lookups filter by participant + status. ponytail: [status] alone
   // works at dev scale; these compound indexes keep the query cheap as call

@@ -43,6 +43,7 @@ import {
 import { redis } from "../../src/config/redis.js";
 import { PrivateMessageService } from "../../src/services/private-message.service.js";
 import { GroupMessageService } from "../../src/services/group-message.service.js";
+import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
 
 const AVATARS = "aimess-avatars";
 const CHAT = "aimess-chat-test";
@@ -429,6 +430,52 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
   });
 });
 
+describe("createMessagingImpl — sendMessage resolves senderName server-side (regression, AIMESS_BACKEND_NOTIFICATIONS.md §2)", () => {
+  it("sendMessage with senderName:'' resolves the push senderName from the user snapshot, not 'New message'", async () => {
+    const pubPush = publishMessageSentSafe as jest.Mock;
+    pubPush.mockClear();
+
+    const deps = makeDeps({
+      privateMessageService: {
+        sendMessage: jest.fn(async () => ({
+          id: "m3",
+          messageType: "TEXT",
+          content: { text: "hy" },
+          createdAt: new Date(),
+          sequenceNumber: 1,
+        })),
+      },
+      userSnapshotService: {
+        getUserSnapshotsMap: jest.fn(
+          async () =>
+            new Map([["u1", { displayName: "Himanshu Vasu", avatar: "" }]])
+        ),
+      },
+      cacheRepo: {},
+    });
+
+    await invoke(createMessagingImpl(deps).sendMessage as Handler, {
+      conversationId: "conv1",
+      senderId: "u1",
+      receiverId: "u2",
+      contentText: "hy",
+      contentType: "TEXT",
+      mediaKey: "",
+      contentJson: "",
+      repliedToId: "",
+      clientMessageId: "c3",
+      conversationType: "PRIVATE",
+      senderName: "",
+      senderAvatar: "",
+      clientTs: 0,
+    });
+
+    expect(pubPush.mock.calls[0][0]).toMatchObject({
+      senderName: "Himanshu Vasu",
+    });
+  });
+});
+
 describe("createCommunityImpl — broadcast media resolve-on-read", () => {
   it("sendCommunityMessage → community:message:new resolves sender avatar + attachment URLs", async () => {
     const deps = makeDeps({
@@ -752,13 +799,20 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
   /** Build a minimal notificationRepo stub. */
   function makeNotifRepo(overrides: Record<string, unknown> = {}) {
     return {
-      create: jest.fn(async () => ({
+      // Echo what the caller asked to persist — the serialized DTO reads
+      // type/entity/payload back off the created row.
+      create: jest.fn(async (input: Record<string, unknown> = {}) => ({
         id: "notif-1",
         createdAt: new Date("2026-06-17T10:00:00.000Z"),
+        updatedAt: new Date("2026-06-17T10:00:00.000Z"),
+        ...input,
       })),
       getUnreadCount: jest.fn(async () => 3),
       findByUserId: jest.fn(async () => []),
       markAllRead: jest.fn(async () => undefined),
+      // Grouped notifications look for a live row to update in place before
+      // creating a new one; no match here, so every case takes the create path.
+      findActiveByGroupKey: jest.fn(async () => null),
       ...overrides,
     };
   }
@@ -901,6 +955,7 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
           entity: { id: "c1" },
           actorSnapshot: {},
           createdAt: new Date("2026-06-17T10:00:00.000Z"),
+          updatedAt: new Date("2026-06-17T10:00:00.000Z"),
           payload: {
             title: "Approved",
             body: "Your request was approved",

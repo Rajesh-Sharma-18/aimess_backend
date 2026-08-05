@@ -26,7 +26,8 @@ interface BulkSnapshotsResult {
 }
 
 export interface CallPrivacy {
-  whoCanCallMe: "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
+  /** `EVERYONE` is the only scope that admits a non-friend caller. */
+  whoCanCallMe: "EVERYONE" | "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
   allowedUserIds: string[];
 }
 

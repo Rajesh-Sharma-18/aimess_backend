@@ -26,6 +26,10 @@ export function resolveGroupKey(
   const explicit = nonEmpty(data.groupKey);
   if (explicit) return explicit;
 
+  // An untyped notification simply has no group — never let a missing type throw
+  // and take the whole notification publish down with it.
+  if (!nonEmpty(type)) return null;
+
   if (FRIEND_TYPES.has(type)) {
     const friendshipId = nonEmpty(data.friendshipId);
     if (friendshipId) return `friend:${friendshipId}`;

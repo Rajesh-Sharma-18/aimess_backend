@@ -11,6 +11,11 @@ import {
   buildNormalizedFullName,
 } from "../lib/user-search.util.js";
 import { PLACEHOLDER_DATE_OF_BIRTH } from "../lib/profile-fields.util.js";
+import {
+  discoverableWhere,
+  type ViewerGraph,
+  PRIVACY_SCOPE_SELECT,
+} from "../lib/privacy-scope.js";
 
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
 const AUTO_CONNECT_USER_LIMIT = 10_000;
@@ -23,6 +28,9 @@ const DISCOVERY_SELECT = {
   bio: true,
   avatarUrl: true,
   isOnline: true,
+  // Carried so the mapper can mask presence / gated fields per viewer without a
+  // second query — see `visibleIsOnline` / `canViewProfile`.
+  privacySettings: PRIVACY_SCOPE_SELECT,
 } as const;
 
 function buildSearchFilter(q: string | undefined): {
@@ -30,6 +38,25 @@ function buildSearchFilter(q: string | undefined): {
 } {
   if (!q) return {};
   return { AND: buildUserSearchFilter(q) };
+}
+
+/**
+ * `where` for any viewer-facing user listing: the text filter AND the
+ * `whoCanFindMe` discovery gate.
+ *
+ * `viewer` is REQUIRED on every discovery query rather than defaulting to an
+ * empty graph — a forgotten argument must be a type error, not a silent
+ * privacy-leaking open search.
+ */
+function buildDiscoveryWhere(
+  q: string | undefined,
+  viewer: ViewerGraph
+): Prisma.UserProfileWhereInput {
+  // Both clauses land in AND — `buildSearchFilter` already owns that key, so
+  // concatenate instead of spreading (a spread would silently drop the search).
+  return {
+    AND: [...(buildSearchFilter(q).AND ?? []), discoverableWhere(viewer)],
+  };
 }
 
 export const userProfileRepository = {
@@ -80,6 +107,24 @@ export const userProfileRepository = {
         avatarUrl: true,
         isOnline: true,
       },
+    });
+  },
+
+  /**
+   * Like {@link findByUserIds}, but applies the `whoCanFindMe` gate — for
+   * viewer-facing surfaces (recent searches, pickers). Deliberately a SEPARATE
+   * method rather than an optional flag on `findByUserIds`: that one still
+   * backs the block list and internal enrichment, where a user who hid
+   * themselves from search must NOT vanish from the viewer's own block list.
+   */
+  findDiscoverableByUserIds(userIds: string[], viewer: ViewerGraph) {
+    return prisma.userProfile.findMany({
+      where: {
+        userId: { in: userIds },
+        deletedAt: null,
+        ...discoverableWhere(viewer),
+      },
+      select: DISCOVERY_SELECT,
     });
   },
 
@@ -161,37 +206,14 @@ export const userProfileRepository = {
     userIds: string[],
     q: string | undefined,
     skip: number,
-    take: number
+    take: number,
+    viewer: ViewerGraph
   ) {
-    const searchFilter = buildSearchFilter(q);
-    return prisma.userProfile.findMany({
-      where: { userId: { in: userIds }, deletedAt: null, ...searchFilter },
-      select: DISCOVERY_SELECT,
-      skip,
-      take,
-      orderBy: { firstName: "asc" },
-    });
-  },
-
-  countUsersInList(userIds: string[], q: string | undefined) {
-    const searchFilter = buildSearchFilter(q);
-    return prisma.userProfile.count({
-      where: { userId: { in: userIds }, deletedAt: null, ...searchFilter },
-    });
-  },
-
-  findUsersNotInList(
-    excludeIds: string[],
-    q: string | undefined,
-    skip: number,
-    take: number
-  ) {
-    const searchFilter = buildSearchFilter(q);
     return prisma.userProfile.findMany({
       where: {
-        userId: { notIn: excludeIds },
+        userId: { in: userIds },
         deletedAt: null,
-        ...searchFilter,
+        ...buildDiscoveryWhere(q, viewer),
       },
       select: DISCOVERY_SELECT,
       skip,
@@ -200,13 +222,50 @@ export const userProfileRepository = {
     });
   },
 
-  countUsersNotInList(excludeIds: string[], q: string | undefined) {
-    const searchFilter = buildSearchFilter(q);
+  countUsersInList(
+    userIds: string[],
+    q: string | undefined,
+    viewer: ViewerGraph
+  ) {
+    return prisma.userProfile.count({
+      where: {
+        userId: { in: userIds },
+        deletedAt: null,
+        ...buildDiscoveryWhere(q, viewer),
+      },
+    });
+  },
+
+  findUsersNotInList(
+    excludeIds: string[],
+    q: string | undefined,
+    skip: number,
+    take: number,
+    viewer: ViewerGraph
+  ) {
+    return prisma.userProfile.findMany({
+      where: {
+        userId: { notIn: excludeIds },
+        deletedAt: null,
+        ...buildDiscoveryWhere(q, viewer),
+      },
+      select: DISCOVERY_SELECT,
+      skip,
+      take,
+      orderBy: { firstName: "asc" },
+    });
+  },
+
+  countUsersNotInList(
+    excludeIds: string[],
+    q: string | undefined,
+    viewer: ViewerGraph
+  ) {
     return prisma.userProfile.count({
       where: {
         userId: { notIn: excludeIds },
         deletedAt: null,
-        ...searchFilter,
+        ...buildDiscoveryWhere(q, viewer),
       },
     });
   },

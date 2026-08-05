@@ -12,6 +12,10 @@ import {
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 
+export const reportGroupMessageSchema = z.object({
+  reportReason: z.string().min(1).max(200).trim(),
+});
+
 export const sendGroupMessageSchema = z
   .object({
     roomId: z.string().min(5).max(100),

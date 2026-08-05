@@ -138,6 +138,13 @@ export const USER_MESSAGES = {
     vi: "Không thể gửi lời mời kết bạn cho người dùng này",
     en: "Unable to send a friend request to this user.",
   },
+  // whoCanSendFriendRequests denied the sender. Deliberately worded the same
+  // as FRIEND_BLOCKED so the response can't be used to probe someone's privacy
+  // setting (or infer that they blocked you).
+  FRIEND_REQUEST_NOT_ALLOWED: {
+    vi: "Không thể gửi lời mời kết bạn cho người dùng này",
+    en: "Unable to send a friend request to this user.",
+  },
   FRIEND_USER_BLOCKED: {
     vi: "Đã chặn người dùng",
     en: "User blocked.",
