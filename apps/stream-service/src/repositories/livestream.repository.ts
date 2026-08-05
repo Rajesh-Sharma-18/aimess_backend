@@ -88,10 +88,15 @@ export class LivestreamRepository {
   }
 
   /**
-   * Cursor-paginated list (id desc). When `cursor` is given, returns rows with
-   * id < cursor (older). Fetches `limit + 1` to derive `hasMore` in the service.
-   * When `status` is omitted, only PENDING/LIVE streams are returned — pass an
-   * explicit `status` (e.g. "ENDED") to see past streams.
+   * Cursor-paginated list. When `status` is omitted, only PENDING/LIVE/
+   * RECONNECTING streams are returned, oldest-first (id asc) — this is the
+   * "Server N" tab strip, where index 0 must be the longest-running (Primary)
+   * stream and a newly-started stream must append at the end, not displace
+   * it. Pass an explicit `status` (e.g. "ENDED") to browse past streams,
+   * which stays newest-first (id desc) for history-scrolling UX. `cursor`
+   * follows the same direction: `gt` (fetch newer) when ascending, `lt`
+   * (fetch older) when descending. Fetches `limit + 1` to derive `hasMore`
+   * in the service.
    */
   async listByCommunity(params: {
     communityId?: string;
@@ -100,16 +105,17 @@ export class LivestreamRepository {
     cursor?: string;
   }): Promise<Livestream[]> {
     const { communityId, status, limit, cursor } = params;
+    const isActiveOnly = !status;
     const where: Prisma.LivestreamWhereInput = {
       ...(communityId ? { communityId } : {}),
       // No explicit status filter → only currently-relevant streams (PENDING/LIVE).
       // Ended streams must be requested explicitly via ?status=.
-      ...(status ? { status } : { status: { in: [...ACTIVE_STATUSES] } }),
-      ...(cursor ? { id: { lt: cursor } } : {}),
+      ...(isActiveOnly ? { status: { in: [...ACTIVE_STATUSES] } } : { status }),
+      ...(cursor ? { id: isActiveOnly ? { gt: cursor } : { lt: cursor } } : {}),
     };
     return this.prisma.livestream.findMany({
       where,
-      orderBy: { id: "desc" },
+      orderBy: { id: isActiveOnly ? "asc" : "desc" },
       take: limit,
     });
   }
@@ -325,6 +331,17 @@ export class LivestreamRepository {
         communityId,
         status: { in: [...ACTIVE_STATUSES] },
       },
+    });
+  }
+
+  /**
+   * LIVE streams of one sourceType — backs the OBS server-side quality poll
+   * (no browser client exists to self-report for these, so the sweeper polls
+   * SRS directly on the same tick it checks for stale streams).
+   */
+  async findLiveBySourceType(sourceType: string): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: { status: "LIVE", sourceType },
     });
   }
 

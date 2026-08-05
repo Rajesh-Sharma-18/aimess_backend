@@ -32,6 +32,17 @@ export const updateStreamSchema = z
     "At least one field is required"
   );
 
+/**
+ * POST /streams/:id/quality body — broadcaster (browser WHIP) self-reports
+ * its current outbound video quality, read off the live RTCPeerConnection
+ * stats. fps is best-effort (not every browser exposes it).
+ */
+export const reportQualitySchema = z.object({
+  resolution: z.string().min(1).max(32),
+  bitrateKbps: z.number().int().nonnegative(),
+  fps: z.number().int().nonnegative().optional(),
+});
+
 /** GET /streams/:id/comments query — newest-first cursor page. */
 export const commentsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(30),
@@ -95,6 +106,7 @@ export const reportsQuerySchema = z.object({
 export type CreateStreamInput = z.infer<typeof createStreamSchema>;
 export type ListStreamsQuery = z.infer<typeof listStreamsQuerySchema>;
 export type UpdateStreamInput = z.infer<typeof updateStreamSchema>;
+export type ReportQualityInput = z.infer<typeof reportQualitySchema>;
 export type CommentsQuery = z.infer<typeof commentsQuerySchema>;
 export type BanUserInput = z.infer<typeof banUserSchema>;
 export type SetCommentStatusInput = z.infer<typeof setCommentStatusSchema>;
