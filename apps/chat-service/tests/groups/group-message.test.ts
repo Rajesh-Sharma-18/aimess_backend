@@ -186,14 +186,19 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([
-      {
-        id: "g1",
-        senderId: "u",
-        content: { text: "hello" },
-        createdAt: new Date(1),
-      },
-    ]);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [
+        {
+          id: "g1",
+          senderId: "u",
+          content: { text: "hello" },
+          createdAt: new Date(1),
+        },
+      ],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
     mocks.groupMessageRepo.countSearchResults.mockResolvedValue(1);
 
     const res = await request(app)
@@ -206,48 +211,51 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
-  // Regression: `page` was parsed but never converted to a DB skip, so page 2
-  // silently returned the exact same window as page 1 and any match beyond
-  // the first `limit` results was unreachable.
-  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+  it("REGRESSION: forwards the keyset cursor, never a skip offset", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
 
     await request(app)
-      .get(`${BASE}/${ROOM}/messages/search?q=hello&page=2&limit=10`)
+      .get(
+        `${BASE}/${ROOM}/messages/search?q=hello&limit=10&cursor=1700000000000_abc`
+      )
       .set(bearer(makeAccessToken()));
 
-    expect(mocks.groupMessageRepo.searchByText).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      10,
-      expect.any(String),
-      10,
-      undefined
-    );
+    const args = mocks.groupMessageRepo.searchByText.mock.calls[0][0];
+    expect(args).toMatchObject({
+      roomId: ROOM,
+      query: "hello",
+      limit: 10,
+      cursor: "1700000000000_abc",
+    });
+    expect(args).not.toHaveProperty("skip");
   });
 
-  it("REGRESSION: countSearchResults is scoped to the requesting user (deleted-for-me parity)", async () => {
+  it("REGRESSION: surfaces hasMore/nextCursor so the client pages without duplicates", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: true,
+      nextCursor: "1700000000000_abc",
+    });
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages/search?q=hello`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.countSearchResults).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      expect.any(String),
-      undefined
-    );
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
   // AUDIT H2 — search must be gated on active membership (IDOR).

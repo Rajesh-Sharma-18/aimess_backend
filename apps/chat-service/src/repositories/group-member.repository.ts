@@ -70,6 +70,14 @@ export class GroupMemberRepository {
     });
   }
 
+  /** Rows flagged muted — callers still drop expired windows via isGroupMemberMuted. */
+  async findMutedMembers(roomId: string): Promise<GroupMember[]> {
+    return this.prisma.groupMember.findMany({
+      where: { roomId, status: "ACTIVE", moderationMuted: true },
+      orderBy: { joinedAt: "asc" },
+    });
+  }
+
   async getActiveRoomIds(userId: string): Promise<string[]> {
     const members = await this.prisma.groupMember.findMany({
       where: { userId, status: "ACTIVE" },

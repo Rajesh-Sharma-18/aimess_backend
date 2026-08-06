@@ -640,16 +640,21 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue([
-      {
-        id: "m1",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "hello",
-        messageType: "text",
-        createdAt: new Date(1),
-      },
-    ]);
+    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "hello",
+          messageType: "text",
+          createdAt: new Date(1),
+        },
+      ],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
     mocks.generalRoomMessageRepo.countSearchResults.mockResolvedValue(1);
 
     const res = await request(app)
@@ -663,49 +668,51 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
   // Regression: `page` was parsed but never converted to a DB skip, so page 2
   // silently returned the exact same window as page 1 and any match beyond
   // the first `limit` results was unreachable.
-  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+  it("REGRESSION: forwards the keyset cursor, never a skip offset", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.generalRoomMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
 
     await request(app)
-      .get(`${BASE}/rooms/${ROOM}/messages/search?q=hello&page=2&limit=10`)
+      .get(
+        `${BASE}/rooms/${ROOM}/messages/search?q=hello&limit=10&cursor=1700000000000_abc`
+      )
       .set(bearer(makeAccessToken()));
 
-    expect(mocks.generalRoomMessageRepo.searchByText).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      10,
-      expect.any(String),
-      expect.anything(),
-      10,
-      undefined
-    );
+    const args = mocks.generalRoomMessageRepo.searchByText.mock.calls[0][0];
+    expect(args).toMatchObject({
+      roomId: ROOM,
+      query: "hello",
+      limit: 10,
+      cursor: "1700000000000_abc",
+    });
+    expect(args).not.toHaveProperty("skip");
   });
 
-  it("REGRESSION: countSearchResults reflects the requesting user's visibility, not a raw room count", async () => {
+  it("REGRESSION: surfaces hasMore/nextCursor so the client pages without duplicates", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.generalRoomMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: true,
+      nextCursor: "1700000000000_abc",
+    });
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/messages/search?q=hello`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(
-      mocks.generalRoomMessageRepo.countSearchResults
-    ).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      expect.any(String),
-      expect.anything(),
-      undefined
-    );
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
   // AUDIT H2 — community search must be gated on active membership (IDOR).

@@ -42,29 +42,6 @@ export class GroupMemberController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
-  ban = asyncHandler(async (req: Request, res: Response) => {
-    const { userId: bannedBy } = req.auth;
-    const { roomId, userId, reason } = req.body;
-    const result = await this.service.ban({
-      roomId,
-      targetUserId: userId,
-      bannedBy,
-      reason,
-    });
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
-  });
-
-  unban = asyncHandler(async (req: Request, res: Response) => {
-    const { userId: unbannedBy } = req.auth;
-    const { roomId, userId } = req.body;
-    const result = await this.service.unban({
-      roomId,
-      targetUserId: userId,
-      unbannedBy,
-    });
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
-  });
-
   reportMember = asyncHandler(async (req: Request, res: Response) => {
     const { userId: reporterId } = req.auth;
     const { roomId, userId, reason, description } = req.body;
@@ -138,6 +115,14 @@ export class GroupMemberController {
       actorId,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  getMutedMembers = asyncHandler(async (req: Request, res: Response) => {
+    const members = await this.service.getMutedMembers(
+      req.params.roomId as string,
+      req.auth.userId
+    );
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ data: members }));
   });
 
   getMembers = asyncHandler(async (req: Request, res: Response) => {

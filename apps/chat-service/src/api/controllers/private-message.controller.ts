@@ -9,7 +9,6 @@ import { logger } from "@aimess/logger";
 
 import {
   buildPaginatedResponse,
-  buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
@@ -645,32 +644,43 @@ export class PrivateMessageController {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const query = ((req.query.q as string) ?? "").trim();
-    const limit = Number(req.query.limit) || 30;
-    const page = Number(req.query.page) || 1;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+    const cursor =
+      req.query.cursor != null ? String(req.query.cursor) : undefined;
     if (!query) {
-      const empty = buildListResponse([], 0, page, limit);
       res
         .status(HTTP_STATUS.OK)
-        .json(new ApiResponse(empty, t("CHAT_NO_MESSAGES_FOUND", req.locale)));
+        .json(
+          new ApiResponse(
+            { data: [], hasMore: false, nextCursor: null },
+            t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
       return;
     }
-    const skip = (page - 1) * limit;
-    const [messages, totalCount] = await Promise.all([
-      this.messageService.searchMessages({
-        roomId,
-        userId,
-        query,
-        limit,
-        skip,
-      }),
-      this.messageService.countSearchResults(roomId, query, userId),
-    ]);
-    const enriched = await this.messageService.enrichMessages(messages);
-    const paginated = buildListResponse(enriched, totalCount, page, limit);
-    const msg = paginated.data.length
+    const result = await this.messageService.searchMessages({
+      roomId,
+      userId,
+      query,
+      limit,
+      cursor,
+    });
+    const enriched = await this.messageService.enrichMessages(result.messages);
+    const data = enriched.map((m) => ({
+      ...m,
+      searchScore: result.scores.get((m as { id: string }).id) ?? 0,
+    }));
+    const msg = data.length
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
+          msg
+        )
+      );
   });
 
   forwardMessage = asyncHandler(async (req: Request, res: Response) => {

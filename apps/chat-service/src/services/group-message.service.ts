@@ -827,21 +827,26 @@ export class GroupMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<GroupMessage[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: GroupMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const member = await assertGroupMember(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    return this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      params.skip ?? 0,
-      getGroupVisibilityCutoff(member)
-    );
+    return this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      cursor: params.cursor,
+      cutoff: getGroupVisibilityCutoff(member),
+    });
   }
 
   async listMedia(params: {
@@ -1816,6 +1821,84 @@ export class GroupMessageService {
     return {
       readToSeq: typeof seq === "number" ? seq : 0,
       remainingUnread,
+    };
+  }
+
+  /**
+   * "Viewed list" for one group message — every active member (excluding the
+   * sender) whose read cursor has reached this message's sequenceNumber.
+   * Same high-water-mark rule as getMemberReadCursors, just inverted per message.
+   */
+  async getMessageReadBy(params: {
+    roomId: string;
+    messageId: string;
+    requesterId: string;
+  }): Promise<{
+    readBy: {
+      userId: string;
+      displayName: string;
+      avatar: string;
+      readAt: number | null;
+    }[];
+    totalMembers: number;
+  }> {
+    const requester = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.requesterId
+    );
+    if (!requester) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message || message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const messageSeq =
+      (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
+
+    const members = await this.memberRepo.findActiveMembers(params.roomId);
+    const candidates = members.filter(
+      (m) => m.userId !== message.senderId && m.lastReadMessageId
+    );
+
+    const seqById = new Map<string, number>();
+    await Promise.all(
+      [...new Set(candidates.map((m) => m.lastReadMessageId as string))].map(
+        async (id) => {
+          seqById.set(id, await this.getMessageSequence(id));
+        }
+      )
+    );
+
+    const readers = candidates.filter((m) => {
+      const seq = seqById.get(m.lastReadMessageId as string) ?? 0;
+      return messageSeq > 0
+        ? seq >= messageSeq
+        : !!m.lastReadAt && m.lastReadAt >= message.createdAt;
+    });
+
+    const snapshots =
+      readers.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            readers.map((m) => m.userId),
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const urlMap = await resolveMediaUrlMap(
+      [...snapshots.values()].map((s) => (s.avatar as string) || "")
+    );
+
+    return {
+      readBy: readers.map((m) => {
+        const snap = snapshots.get(m.userId) ?? {};
+        return {
+          userId: m.userId,
+          displayName: resolveDisplayName(snap),
+          avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
+          readAt: m.lastReadAt ? new Date(m.lastReadAt).getTime() : null,
+        };
+      }),
+      totalMembers: members.filter((m) => m.userId !== message.senderId).length,
     };
   }
 

@@ -86,9 +86,10 @@ export class GroupMemberService {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
-    // Authorize the actor: only an active OWNER/ADMIN may add members (mirrors
-    // the kick/updateRole guards). Without this, any authenticated user could
-    // inject themselves or others into a private group (AUDIT H3).
+    // Authorize the actor: only active staff may add members. Without this, any
+    // authenticated user could inject themselves or others into a private group
+    // (AUDIT H3). MODERATOR is included — adding is a growth action, not a
+    // destructive one, so it stays below the kick/updateRole bar (OWNER/ADMIN).
     if (!opts?.skipActorAuthz) {
       if (!params.invitedBy) {
         throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
@@ -98,7 +99,7 @@ export class GroupMemberService {
         params.roomId,
         params.invitedBy,
         {
-          roles: ["OWNER", "ADMIN"],
+          roles: ["OWNER", "ADMIN", "MODERATOR"],
         }
       );
     }
@@ -130,12 +131,8 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // A banned member cannot rejoin (mirrors community's assertNotBanned join
-    // gate) — without this, `ban` had no effect since upsert would silently
-    // reactivate them on the next add/invite-link redemption.
-    if (existing && existing.status === "BANNED") {
-      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
-    }
+    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
+    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -404,110 +401,6 @@ export class GroupMemberService {
   }
 
   /**
-   * Ban a member: same permission/role-order rules as `kick`, but the target's
-   * `status` becomes `"BANNED"` (not `"KICKED"`) and `bannedAt`/`bannedBy` are
-   * populated — those two Prisma columns previously existed on the schema but
-   * were never written or checked anywhere, so a "banned" group member was
-   * functionally identical to an active one. `findActiveByRoomAndUser`'s
-   * `status: "ACTIVE"` filter (used by every send/read/access-guard check)
-   * already excludes non-ACTIVE members, so this closes both the write/read
-   * gate AND (via `addMember`'s new check above) the rejoin gate, matching
-   * community's hardened ban enforcement.
-   */
-  async ban(params: {
-    roomId: string;
-    targetUserId: string;
-    bannedBy: string;
-    reason?: string;
-  }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.bannedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    const target = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
-    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
-    }
-
-    const updated = await this.memberRepo.updateStatus(
-      params.roomId,
-      params.targetUserId,
-      "BANNED",
-      {
-        bannedAt: new Date(),
-        bannedBy: params.bannedBy,
-        kickReason: params.reason || null,
-      }
-    );
-    await this.roomRepo.incMemberCount(params.roomId, -1);
-
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.bannedBy,
-      systemEvent: SystemEvent.MEMBER_BANNED,
-      systemData: { targetUserId: params.targetUserId },
-    });
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
-
-    return updated;
-  }
-
-  /**
-   * Lift a ban. Actor must be OWNER/ADMIN/MODERATOR (same gate as `ban`). Does
-   * NOT re-add the user as a member — it only clears the ban so a future
-   * add/invite-link redemption is no longer rejected by `addMember`'s check.
-   */
-  async unban(params: {
-    roomId: string;
-    targetUserId: string;
-    unbannedBy: string;
-  }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.unbannedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    const target = await this.memberRepo.findByRoomAndUser(
-      params.roomId,
-      params.targetUserId
-    );
-    if (!target || target.status !== "BANNED") {
-      throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    }
-
-    const updated = await this.memberRepo.updateStatus(
-      params.roomId,
-      params.targetUserId,
-      "LEFT",
-      { bannedAt: null, bannedBy: null }
-    );
-
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: params.unbannedBy,
-      systemEvent: SystemEvent.MEMBER_UNBANNED,
-      systemData: { targetUserId: params.targetUserId },
-    });
-
-    return updated;
-  }
-
-  /**
    * Report a member of this group. Best-effort forwards a normalized row to
    * backoffice via the shared admin.report.ingest queue (same publisher as
    * private message reports). No local dedupe row is persisted — backoffice
@@ -669,7 +562,26 @@ export class GroupMemberService {
     roomId: string,
     params?: { limit?: number; cursor?: string | null }
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
-    const members = await this.memberRepo.findActiveMembers(roomId, params);
+    return this.enrich(await this.memberRepo.findActiveMembers(roomId, params));
+  }
+
+  /** Muted roster — expired mute windows are dropped, matching isGroupMemberMuted. */
+  async getMutedMembers(
+    roomId: string,
+    requesterId: string
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
+    await assertGroupMember(this.memberRepo, roomId, requesterId, {
+      roles: ["OWNER", "ADMIN", "MODERATOR"],
+    });
+    const muted = (await this.memberRepo.findMutedMembers(roomId)).filter(
+      isGroupMemberMuted
+    );
+    return this.enrich(muted);
+  }
+
+  private async enrich(
+    members: GroupMember[]
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
       return members.map((member) => ({
         ...member,
