@@ -565,6 +565,26 @@ export class CallService {
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
+    // Busy re-check: callee may already be IN_PROGRESS on a different call
+    // (race: two callers initiated before either row existed, bypassing the
+    // create-time busy gate). Exclude the call being answered.
+    const now = new Date();
+    const freshCutoff = new Date(
+      now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
+    );
+    const liveCutoff = new Date(
+      now.getTime() - env.CALL_MAX_DURATION_SEC * 1000
+    );
+    const calleeConcurrent = await this.callRepo.findActiveByParticipant(
+      [params.calleeId],
+      freshCutoff,
+      liveCutoff
+    );
+    const alreadyBusy = calleeConcurrent.some(
+      (c) => c.callId !== params.callId && c.status === CallStatus.IN_PROGRESS
+    );
+    if (alreadyBusy) throw new ConflictError("CALL_USER_BUSY");
+
     const answeredAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
@@ -612,6 +632,7 @@ export class CallService {
       calleeId: params.calleeId,
       callId: params.callId,
       reason: "answered_elsewhere",
+      callerId: call.callerId,
     });
 
     return { ...updated, livekit };
@@ -664,6 +685,7 @@ export class CallService {
         calleeId: params.calleeId,
         callId: params.callId,
         reason: "declined",
+        callerId: call.callerId,
       });
 
       if (updated.calleeIds.length > 0) return updated;
@@ -750,6 +772,7 @@ export class CallService {
       calleeId: params.calleeId,
       callId: params.callId,
       reason: "declined",
+      callerId: call.callerId,
     });
 
     await this.postCallChatMessageSafe(
@@ -866,6 +889,7 @@ export class CallService {
           calleeId,
           callId: params.callId,
           reason: "ended",
+          callerId: call.callerId,
         });
       }
 
@@ -995,6 +1019,7 @@ export class CallService {
           calleeId,
           callId: call.callId,
           reason: "missed",
+          callerId: call.callerId,
         });
       }
       await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
@@ -1170,7 +1195,12 @@ export class CallService {
       ]);
 
       for (const calleeId of targets) {
-        publishCallCancelSafe({ calleeId, callId, reason: "cancelled" });
+        publishCallCancelSafe({
+          calleeId,
+          callId,
+          reason: "cancelled",
+          callerId: call.callerId,
+        });
       }
 
       await this.postCallChatMessageSafe(
