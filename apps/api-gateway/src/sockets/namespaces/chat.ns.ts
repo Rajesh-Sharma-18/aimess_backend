@@ -338,21 +338,42 @@ export function registerChatNamespace(
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
   /**
-   * Re-run the `presence:subscribe` authorization for everyone already watching
-   * `subjectId`, and drop the sockets that no longer qualify. Called when the
-   * subject's privacy settings change or a friendship they had is removed —
-   * i.e. exactly when a previously-granted subscription can turn stale.
+   * Re-run the `presence:subscribe` authorization for every socket that asked
+   * to watch `subjectId`, in BOTH directions, and tell each one what it should
+   * now believe. Called when the subject's privacy settings change or a
+   * friendship of theirs changes — i.e. exactly when a granted subscription can
+   * turn stale, or a denied one can become legitimate.
    *
-   * The subject's OWN sockets are never evicted (they are in `user:<self>` for
-   * their own events, not as watchers). `filterVisiblePresence` fails CLOSED,
-   * so a user-service outage during this pass drops watchers rather than
-   * keeping them — the client can re-subscribe, which is the safe direction.
+   * Two things make this instant rather than "correct on next reconnect":
+   *
+   *  - Revoked watchers are pushed an explicit `presence:status` **offline**
+   *    before they leave the room. Dropping them silently is safe but leaves a
+   *    green dot on screen forever, since the room they just left is the only
+   *    thing that would ever have corrected it. Reporting the subject as
+   *    offline is not a disclosure — it is precisely what a denied viewer is
+   *    entitled to see.
+   *  - Newly-allowed watchers are joined and pushed the subject's CURRENT
+   *    status. Widening used to require the client to re-subscribe, because a
+   *    denied socket never joined the room and nothing tracked that it wanted
+   *    to; `presence-intent:<subjectId>` is that missing record.
+   *
+   * The subject's OWN sockets are skipped (they are in `user:<self>` for their
+   * own events, not as watchers). `filterVisiblePresence` fails CLOSED, so a
+   * user-service outage during this pass revokes rather than grants.
    */
-  const revokeStalePresenceWatchers = async (
-    subjectId: string
-  ): Promise<void> => {
+  const resyncPresenceWatchers = async (subjectId: string): Promise<void> => {
     try {
-      const watchers = await chat.in(`user:${subjectId}`).fetchSockets();
+      const watchers = await chat
+        .in(`presence-intent:${subjectId}`)
+        .fetchSockets();
+      if (watchers.length === 0) return;
+
+      // One Redis read for the whole pass — `user:online:<id>` is the same key
+      // the gateway maintains on connect/heartbeat, so it needs no new RPC.
+      const isOnline =
+        (await redisPub.exists(`user:online:${subjectId}`).catch(() => 0)) ===
+        1;
+
       await Promise.all(
         watchers.map(async (watcher) => {
           const watcherId = watcher.data?.userId as string | undefined;
@@ -360,7 +381,24 @@ export function registerChatNamespace(
           const visible = await userClient.filterVisiblePresence(watcherId, [
             subjectId,
           ]);
-          if (!visible.includes(subjectId)) {
+          const allowed = visible.includes(subjectId);
+          const subscribed = watcher.rooms.has(`user:${subjectId}`);
+
+          if (allowed && !subscribed) {
+            void watcher.join(`user:${subjectId}`);
+            watcher.emit("presence:status", {
+              userId: subjectId,
+              isOnline,
+              lastSeen: null,
+            });
+            return;
+          }
+          if (!allowed && subscribed) {
+            watcher.emit("presence:status", {
+              userId: subjectId,
+              isOnline: false,
+              lastSeen: null,
+            });
             void watcher.leave(`user:${subjectId}`);
           }
         })
@@ -447,7 +485,14 @@ export function registerChatNamespace(
           // user's presence would learn they deleted a conversation (and its
           // roomId, which may be with a third party entirely).
           parsed.event === "conv:deleted" ||
-          parsed.event === "conv:cleared";
+          parsed.event === "conv:cleared" ||
+          // The inbox bump. Published per-recipient on `user:<recipientId>`,
+          // but that room is ALSO joined by every peer watching this user's
+          // presence — so each bump leaked one participant's room id, preview
+          // and unread state to unrelated watchers, and made their clients
+          // invalidate an inbox they have no row for. Self-only, like the two
+          // above.
+          parsed.event === "conv:updated";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
@@ -478,20 +523,36 @@ export function registerChatNamespace(
           pattern === "user:*" &&
           (parsed.event === "settings:updated" ||
             parsed.event === "friend:removed" ||
-            parsed.event === "friend:blocked")
+            parsed.event === "friend:blocked" ||
+            // Widening halves of the same coin: under a FRIENDS scope, becoming
+            // friends (or being unblocked) GRANTS presence that was previously
+            // denied. Without these the new friend stays grey until they
+            // reconnect — the mirror image of the stale-green-dot bug.
+            parsed.event === "friend:accepted" ||
+            parsed.event === "friend:unblocked")
         ) {
-          void revokeStalePresenceWatchers(channel.slice("user:".length));
-          // `friend:blocked` is published to the BLOCKER only (blocking is
-          // silent to the blocked party), but it ends the friendship in both
-          // directions — so the blocked user's own watcher list has to be
-          // re-authorized too, or the blocker keeps seeing their presence.
-          const targetUserId = (parsed.data as { targetUserId?: unknown })
-            ?.targetUserId;
-          if (
-            parsed.event === "friend:blocked" &&
-            typeof targetUserId === "string"
-          ) {
-            void revokeStalePresenceWatchers(targetUserId);
+          void resyncPresenceWatchers(channel.slice("user:".length));
+          // Friendship changes are symmetric: they move BOTH users' visibility,
+          // but the event lands on one channel per publish (and `friend:blocked`
+          // is published to the BLOCKER only, since blocking is silent to the
+          // blocked party). Resync the counterpart from the payload too, or one
+          // side of every pair keeps a stale view.
+          const peer = parsed.data as {
+            targetUserId?: unknown;
+            otherUserId?: unknown;
+            requesterId?: unknown;
+            addresseeId?: unknown;
+          } | null;
+          const subjectId = channel.slice("user:".length);
+          for (const candidate of [
+            peer?.targetUserId,
+            peer?.otherUserId,
+            peer?.requesterId,
+            peer?.addresseeId,
+          ]) {
+            if (typeof candidate === "string" && candidate !== subjectId) {
+              void resyncPresenceWatchers(candidate);
+            }
           }
         }
 
@@ -1148,6 +1209,14 @@ export function registerChatNamespace(
         // be too late. Denied peers are silently dropped rather than erroring:
         // a per-peer rejection would itself disclose the setting.
         void (async () => {
+          // Record the INTENT to watch each peer, allowed or not. Nothing is
+          // ever published to `presence-intent:*` — it exists so a later
+          // widening (NO_ONE → EVERYONE, or becoming friends) can find the
+          // sockets that asked and grant them, without the client
+          // re-subscribing. Authorization still lives entirely in `user:*`.
+          for (const peerId of r.data.peerIds) {
+            void socket.join(`presence-intent:${peerId}`);
+          }
           const visible = await userClient.filterVisiblePresence(
             userId,
             r.data.peerIds
@@ -1172,6 +1241,9 @@ export function registerChatNamespace(
         }
         for (const peerId of r.data.peerIds) {
           void socket.leave(`user:${peerId}`);
+          // Drop the intent too, or a later widening would silently re-grant a
+          // subscription the client explicitly gave up.
+          void socket.leave(`presence-intent:${peerId}`);
         }
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED", locale);
       }
@@ -1187,6 +1259,10 @@ export function registerChatNamespace(
           if (room.startsWith("user:") && room !== `user:${userId}`) {
             void socket.leave(room);
             unsubscribedCount++;
+          }
+          // Intents go with them — see `presence:unsubscribe`.
+          if (room.startsWith("presence-intent:")) {
+            void socket.leave(room);
           }
         }
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED_ALL", locale, {
