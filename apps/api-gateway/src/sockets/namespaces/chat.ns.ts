@@ -310,7 +310,11 @@ export function normalizeCatchupEvent(
     roomId: event.conversationId,
     conversationType: conversationType.toUpperCase(),
     content,
-    reactions: [],
+    // Canonical grouped reaction state carried by the catch-up protobuf event —
+    // without this a reaction applied live vanished the next time the client
+    // caught up (reopen room, reload, reconnect), since reconnect hydration
+    // never re-sent the plain `message:reaction` broadcast.
+    reactions: event.reactions ?? [],
     sequenceNumber: Number(event.sequenceNumber),
     // int64 arrives as a string via proto-loader (longs: String).
     revision: Number(event.revision ?? 0),

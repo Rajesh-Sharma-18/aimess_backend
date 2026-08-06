@@ -36,6 +36,8 @@ import {
   toggleStoredReaction,
   // setStoredReaction,
   reactionUserIdMap,
+  buildReactionGroups,
+  type ReactionGroup,
   type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
@@ -109,6 +111,8 @@ type CommunityMessageWire = Omit<
   contentType: string;
   /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
   isPersonal?: boolean;
+  /** Canonical reaction shape — see `toWire`. */
+  reactionGroups?: ReactionGroup[];
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -1199,6 +1203,16 @@ export class CommunityMessageService {
       }
       wire.reactions = out;
     }
+
+    // Canonical client-facing reaction shape (FE reads `reactionGroups[]`,
+    // matching the live `community:message:reaction` broadcast) — history reads
+    // were only renaming the raw `reactions` map's avatar key, never emitting
+    // this, so a reaction applied live vanished on the next history fetch/reload.
+    wire.reactionGroups = buildReactionGroups(
+      m.reactions,
+      (key) => (urlMap ? urlFromMap(urlMap, key) : ""),
+      resolveReactionUser
+    );
 
     // Normalize editedAt → epoch ms and derive isEdited so all list/timeline
     // surfaces are consistent with the edit socket event and sync API.

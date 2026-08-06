@@ -2009,6 +2009,12 @@ export function createMessagingImpl(
               sequenceNumber: e.sequenceNumber,
               isDeleted: e.isDeleted,
               deletedType: deletedType ?? "",
+              // Mirrors communityCatchup — reconnect/reload hydration must carry
+              // reaction state, else a reaction applied live vanishes the next
+              // time the client catches up (reopen room, reload, reconnect).
+              reactions: groupStoredReactions(
+                (e as { reactions?: unknown }).reactions
+              ),
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
               systemEvent: systemEvent ?? "",
               systemData: systemData ? JSON.stringify(systemData) : "",
