@@ -799,13 +799,20 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
   /** Build a minimal notificationRepo stub. */
   function makeNotifRepo(overrides: Record<string, unknown> = {}) {
     return {
-      create: jest.fn(async () => ({
+      // Echo what the caller asked to persist — the serialized DTO reads
+      // type/entity/payload back off the created row.
+      create: jest.fn(async (input: Record<string, unknown> = {}) => ({
         id: "notif-1",
         createdAt: new Date("2026-06-17T10:00:00.000Z"),
+        updatedAt: new Date("2026-06-17T10:00:00.000Z"),
+        ...input,
       })),
       getUnreadCount: jest.fn(async () => 3),
       findByUserId: jest.fn(async () => []),
       markAllRead: jest.fn(async () => undefined),
+      // Grouped notifications look for a live row to update in place before
+      // creating a new one; no match here, so every case takes the create path.
+      findActiveByGroupKey: jest.fn(async () => null),
       ...overrides,
     };
   }
@@ -948,6 +955,7 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
           entity: { id: "c1" },
           actorSnapshot: {},
           createdAt: new Date("2026-06-17T10:00:00.000Z"),
+          updatedAt: new Date("2026-06-17T10:00:00.000Z"),
           payload: {
             title: "Approved",
             body: "Your request was approved",

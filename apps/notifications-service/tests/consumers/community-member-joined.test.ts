@@ -8,7 +8,7 @@
  *   - Assertions are on the mocked pushToUser / pushToUsers + publishUserSocketEvent.
  *
  * Verifies:
- *   4.1 MEMBER_JOINED → pushToUser the joiner (userId), title "Joined a community",
+ *   4.1 MEMBER_JOINED → pushToUser the joiner (userId), title = communityName,
  *       body contains communityName.
  *   4.2 MEMBER_ADDED via self_join → does NOT send a welcome push to the joiner
  *       (MEMBER_JOINED owns the welcome copy) but DOES fan to mods.
@@ -111,7 +111,7 @@ describe("MEMBER_JOINED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(USER_ID);
-    expect(arg.title).toBe("Joined a community");
+    expect(arg.title).toBe("Cool Community");
   });
 
   it("4.1 push body contains the community name", async () => {
@@ -228,6 +228,6 @@ describe("MEMBER_ADDED via self_join — no duplicate welcome push", () => {
     // Non-self_join / non-join_request_approved path DOES welcome the joiner.
     expect(push).toHaveBeenCalledTimes(1);
     expect(push.mock.calls[0][0].userId).toBe(USER_ID);
-    expect(push.mock.calls[0][0].title).toBe("Welcome to the community");
+    expect(push.mock.calls[0][0].title).toBe("Cool Community");
   });
 });

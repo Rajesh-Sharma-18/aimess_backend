@@ -27,7 +27,11 @@ import type {
   SignInProvider,
 } from "../types/auth-account.types.js";
 import { isProfileComplete } from "../lib/profile-completion.util.js";
-import { SCHEMA_DEFAULT_SCOPE, scopeAdmits } from "../lib/privacy-scope.js";
+import {
+  SCHEMA_DEFAULT_SCOPE,
+  scopeAdmits,
+  visibleIdentity,
+} from "../lib/privacy-scope.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type {
@@ -266,16 +270,6 @@ export const userProfileService = {
     const isFriend = view.status === "ACCEPTED";
     const isDeletedUser = profile.status === ProfileStatus.DELETED;
 
-    const [avatarView, avatar] = await Promise.all([
-      avatarService.resolveViewUrlForClient(profile.avatarUrl),
-      toMediaObject({
-        bucket: env.MINIO_BUCKET_AVATARS,
-        stored: profile.avatarUrl,
-        prefixes: MEDIA_PREFIXES.userAvatars,
-        strategy: mediaUrlStrategy,
-      }),
-    ]);
-
     const viewProfileScope =
       profile.privacySettings?.whoCanViewProfile ??
       SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
@@ -290,6 +284,25 @@ export const userProfileService = {
 
     const canViewProfile =
       !isDeletedUser && scopeAdmits(viewProfileScope, relation);
+
+    // Name + avatar are the most identifying parts of the profile, so NO_ONE
+    // has to cover them too — masking only bio/cover/counts left the card fully
+    // recognizable. `username` survives so the row stays addressable. Resolving
+    // a null key yields the same "no avatar" shape as a user who never set one,
+    // so a denied viewer cannot tell the two apart.
+    const identity = visibleIdentity(profile, relation);
+    const [avatarView, avatar] = await Promise.all([
+      avatarService.resolveViewUrlForClient(
+        identity.avatarAllowed ? profile.avatarUrl : null
+      ),
+      toMediaObject({
+        bucket: env.MINIO_BUCKET_AVATARS,
+        stored: identity.avatarAllowed ? profile.avatarUrl : null,
+        prefixes: MEDIA_PREFIXES.userAvatars,
+        strategy: mediaUrlStrategy,
+      }),
+    ]);
+
     const canSeePresence =
       canViewProfile &&
       scopeAdmits(
@@ -302,9 +315,11 @@ export const userProfileService = {
     return {
       userId: profile.userId,
       username: profile.username,
-      displayName: buildDisplayName(profile.firstName, profile.lastName),
-      firstName: profile.firstName,
-      lastName: profile.lastName,
+      displayName: identity.fullName
+        ? buildDisplayName(profile.firstName, profile.lastName)
+        : null,
+      firstName: identity.firstName,
+      lastName: identity.lastName,
       bio: canViewProfile ? profile.bio : null,
       avatarUrl: avatarView?.url ?? null,
       avatarUrlExpiresIn: avatarView?.expiresIn ?? null,

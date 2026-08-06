@@ -6,43 +6,48 @@
 import { buildGroupSystemFallbackText } from "@aimess/constants";
 
 describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
-  it("POSITIVE: promotion (MEMBER -> ADMIN) reads as a promotion, not a generic role change", () => {
+  it("POSITIVE: admin role change renders as resulting state", () => {
     const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
       actorName: "Rajesh",
       targetName: "Peter Parker",
       oldRole: "MEMBER",
       newRole: "ADMIN",
     });
-    expect(text).toBe("Rajesh promoted Peter Parker to Admin");
+    expect(text).toBe("Peter Parker is now an admin");
   });
 
-  it("POSITIVE: demotion (ADMIN -> MEMBER) reads as a demotion", () => {
+  it("POSITIVE: member role change renders as resulting state", () => {
     const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
       actorName: "Rajesh",
       targetName: "Peter Parker",
       oldRole: "ADMIN",
       newRole: "MEMBER",
     });
-    expect(text).toBe("Rajesh demoted Peter Parker to Member");
+    expect(text).toBe("Peter Parker is now a member");
   });
 
-  it("POSITIVE: transfer to OWNER reads as an ownership transfer regardless of oldRole", () => {
+  it("POSITIVE: owner role change renders as resulting state", () => {
     const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
       actorName: "Rajesh",
       targetName: "Peter Parker",
       oldRole: "ADMIN",
       newRole: "OWNER",
     });
-    expect(text).toBe("Rajesh made Peter Parker the group owner");
+    expect(text).toBe("Peter Parker is now the group owner");
   });
 
-  it("EDGE: falls back to the generic form when oldRole is unknown", () => {
-    const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
-      actorName: "Rajesh",
-      targetName: "Peter Parker",
-      newRole: "MODERATOR",
-    });
-    expect(text).toBe("Rajesh changed Peter Parker's role to MODERATOR");
+  it("POSITIVE: target viewer sees Community-style self copy", () => {
+    const text = buildGroupSystemFallbackText(
+      "ROLE_CHANGED",
+      {
+        actorName: "Rajesh",
+        targetName: "Peter Parker",
+        targetUserId: "target-1",
+        newRole: "MODERATOR",
+      },
+      "target-1"
+    );
+    expect(text).toBe("You are now a moderator");
   });
 });
 

@@ -99,6 +99,11 @@ import {
 
 let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
+let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
+
+/** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
+ *  remainder drains on the next tick. Mirrors community's sweeper. */
+const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
 
 const startServer = async () => {
   logger.info("Chat service starting...");
@@ -338,7 +343,11 @@ const startServer = async () => {
     const presenceService = new PresenceService(
       cacheRepo,
       redis,
-      privateRoomRepo
+      privateRoomRepo,
+      undefined,
+      // whoCanSeeOnlineStatus gate — without it every presence read here would
+      // bypass the setting the socket `presence:subscribe` path already honors.
+      userGrpcClient
     );
 
     const privateSystemMessageService = new PrivateSystemMessageService(
@@ -719,6 +728,33 @@ const startServer = async () => {
     if (typeof callTimeoutSweepHandle.unref === "function") {
       callTimeoutSweepHandle.unref();
     }
+
+    // Group auto-unmute sweep — the counterpart of community-service's
+    // mute-sweeper job. Correctness does NOT depend on it (mute enforcement
+    // applies lazy expiry the instant `moderationMutedUntil` passes); it exists
+    // to emit `group:member:unmuted` so the composer re-enables on every device
+    // without a refresh, and to clear the stale flag. Exactly-once across nodes
+    // via the atomic per-row claim, so no distributed lock is needed. Drains in
+    // pages so one tick can never monopolise the DB.
+    groupMuteSweepHandle = setInterval(() => {
+      void (async () => {
+        try {
+          for (let i = 0; i < GROUP_MUTE_SWEEP_MAX_BATCHES; i++) {
+            const n = await groupMemberService.expireDueModerationMutes(
+              env.GROUP_MUTE_SWEEP_BATCH
+            );
+            if (n > 0)
+              logger.info(`Group auto-unmute sweep expired ${n} mute(s)`);
+            if (n < env.GROUP_MUTE_SWEEP_BATCH) break; // drained
+          }
+        } catch (err) {
+          logger.warn(`groupMuteSweep failed: ${String(err)}`);
+        }
+      })();
+    }, env.GROUP_MUTE_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof groupMuteSweepHandle.unref === "function") {
+      groupMuteSweepHandle.unref();
+    }
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);
@@ -732,6 +768,11 @@ async function shutdown(signal: string): Promise<void> {
   if (callTimeoutSweepHandle) {
     clearInterval(callTimeoutSweepHandle);
     callTimeoutSweepHandle = undefined;
+  }
+
+  if (groupMuteSweepHandle) {
+    clearInterval(groupMuteSweepHandle);
+    groupMuteSweepHandle = undefined;
   }
 
   await new Promise<void>((resolve) => {

@@ -9,7 +9,7 @@ import {
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
-import { visibleIsOnline } from "../lib/privacy-scope.js";
+import { visibleIdentity, visibleIsOnline } from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { recentUserSearchRepository } from "../repositories/recent-user-search.repository.js";
 import { RecentSearchTargetType } from "../generated/prisma/client.js";
@@ -31,9 +31,10 @@ export type SearchUserItem = {
   type: "USER";
   userId: string;
   username: string;
-  firstName: string;
-  lastName: string;
-  fullName: string;
+  /** Null when `whoCanViewProfile` denies this viewer — see `visibleIdentity`. */
+  firstName: string | null;
+  lastName: string | null;
+  fullName: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   avatar: MediaObject;
@@ -110,16 +111,25 @@ async function resolveAvatar(stored: string | null) {
 async function toUserItem(
   profile: BasicProfile,
   roomId: string | null,
-  relationship: PeerRelationship
+  relationship: PeerRelationship,
+  friendOfFriendIds: ReadonlySet<string>
 ): Promise<SearchUserItem> {
-  const { url, expiresIn, avatar } = await resolveAvatar(profile.avatarUrl);
+  // `whoCanViewProfile` — a denied viewer keeps the handle (the row must stay
+  // actionable) but gets no real name and no photo.
+  const identity = visibleIdentity(profile, {
+    isFriend: relationship.isFriend,
+    isFriendOfFriend: friendOfFriendIds.has(profile.userId),
+  });
+  const { url, expiresIn, avatar } = await resolveAvatar(
+    identity.avatarAllowed ? profile.avatarUrl : null
+  );
   return {
     type: "USER",
     userId: profile.userId,
     username: profile.username,
-    firstName: profile.firstName,
-    lastName: profile.lastName,
-    fullName: `${profile.firstName} ${profile.lastName}`.trim(),
+    firstName: identity.firstName,
+    lastName: identity.lastName,
+    fullName: identity.fullName,
     avatarUrl: url,
     avatarUrlExpiresIn: expiresIn,
     avatar,
@@ -213,6 +223,9 @@ export const userSearchService = {
       viewerId,
       viewerFriendIds
     );
+    // Reused for `whoCanViewProfile` masking on every row below — the same
+    // one-hop set discovery already paid for, never a second traversal.
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -259,7 +272,8 @@ export const userSearchService = {
             recentRoomByUserId.get(profile.userId) ??
               peerRoomByUserId.get(profile.userId) ??
               null,
-            relationshipOf(profile.userId)
+            relationshipOf(profile.userId),
+            fofIds
           )
         );
       } else {
@@ -307,6 +321,8 @@ export const userSearchService = {
       viewerId,
       friendIds
     );
+    // Reused for `whoCanViewProfile` masking on every row below.
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
 
     // ---------------------------------------------------------------------
     // Chat — max 10: accepted friends (isFriend === true), regardless of
@@ -341,7 +357,8 @@ export const userSearchService = {
         await toUserItem(
           p,
           peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId)
+          relationshipOf(p.userId),
+          fofIds
         )
       );
     }
@@ -391,7 +408,8 @@ export const userSearchService = {
         await toUserItem(
           p,
           peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId)
+          relationshipOf(p.userId),
+          fofIds
         )
       );
     }

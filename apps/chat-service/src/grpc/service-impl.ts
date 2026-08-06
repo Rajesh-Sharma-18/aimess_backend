@@ -70,6 +70,12 @@ import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import { serializeNotification } from "../lib/notification-serializer.js";
+import {
+  resolveGroupKey,
+  resolveTransition,
+  isTerminalRemoval,
+} from "../lib/notification-identity.js";
 import { resolveNotificationFriendship } from "../lib/notification-friendship.enricher.js";
 
 /**
@@ -236,9 +242,14 @@ function publishRealtimeSafe(
 function publishMessageNewToParticipants(
   recipientIds: string[],
   payload: unknown,
-  context: string
+  context: string,
+  excludeUserId: string
 ): void {
   for (const userId of new Set(recipientIds.filter(Boolean))) {
+    // Skip the sender: their socket is already in `conv:<roomId>` (from
+    // sending) and gets the room broadcast above, so a personal-channel copy
+    // on top of that double-delivers `message:new` to just them.
+    if (userId === excludeUserId) continue;
     publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
   }
 }
@@ -396,7 +407,8 @@ export function createMessagingImpl(
                     publishMessageNewToParticipants(
                       ids,
                       rowPayload,
-                      bcastContext
+                      bcastContext,
+                      req.senderId
                     )
                   )
                   .catch((err: unknown) => {
@@ -408,7 +420,8 @@ export function createMessagingImpl(
                 publishMessageNewToParticipants(
                   [req.senderId, req.receiverId],
                   rowPayload,
-                  bcastContext
+                  bcastContext,
+                  req.senderId
                 );
               }
             }
@@ -1066,7 +1079,9 @@ export function createMessagingImpl(
           // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
-            await deps.groupMessageService.assertMember(
+            // Write boundary — also rejects a moderation-muted member
+            // (CHAT_MUTED_IN_GROUP), same as the community react path.
+            await deps.groupMessageService.assertCanWrite(
               req.conversationId,
               req.userId
             );
@@ -1747,14 +1762,17 @@ export function createMessagingImpl(
           };
           const conversationId = req.conversationId ?? "";
           if (!conversationId) {
-            callback(null, { userIds: [] });
+            callback(null, { userIds: [], mutedUserIds: [] });
             return;
           }
 
           if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
-            const userIds =
-              await deps.groupMessageService.getActiveMemberIds(conversationId);
-            callback(null, { userIds });
+            // Roster + the moderation-muted subset in ONE query, so the
+            // gateway can drop a muted member's typing/recording indicator
+            // without a second per-keystroke round trip.
+            const roster =
+              await deps.groupMessageService.getActiveRoster(conversationId);
+            callback(null, roster);
             return;
           }
 
@@ -1766,17 +1784,32 @@ export function createMessagingImpl(
           // empty roster and stop being delivered. The fallback costs one
           // extra indexed lookup only in that legacy-group case.
           const room = await deps.privateRoomRepo.findByRoomId(conversationId);
-          const userIds = room
-            ? (room.participants ?? [])
-            : await deps.groupMessageService.getActiveMemberIds(conversationId);
+          // A one-directional block still suppresses typing for BOTH sides of
+          // the DM: the blocker's client shouldn't leak "typing…" to someone
+          // it doesn't want to hear from, and the blocked party shouldn't see
+          // the blocker's presence either. Empty roster == nobody delivered to.
+          const blockedBy = Array.isArray(room?.blockedBy)
+            ? (room.blockedBy as string[])
+            : [];
+          if (!room) {
+            // Legacy-client group fallback — resolve the muted subset too, so
+            // an old client that omits conversationType is gated identically.
+            callback(
+              null,
+              await deps.groupMessageService.getActiveRoster(conversationId)
+            );
+            return;
+          }
+          const userIds = blockedBy.length > 0 ? [] : (room.participants ?? []);
 
-          callback(null, { userIds });
+          // PRIVATE has no moderation mute — always an empty muted list.
+          callback(null, { userIds, mutedUserIds: [] });
         } catch (err) {
           // Fail-closed: an empty roster suppresses the indicator rather than
           // leaking it. Typing is presence-only, so a dropped event is
           // strictly better than an unauthorized broadcast or a socket error.
           logger.warn(`gRPC getRoomParticipantIds error: ${String(err)}`);
-          callback(null, { userIds: [] });
+          callback(null, { userIds: [], mutedUserIds: [] });
         }
       })();
     },
@@ -1802,18 +1835,44 @@ export function createMessagingImpl(
           }
 
           const room = await deps.privateRoomRepo.findByRoomId(roomId);
-          const mutedBy = (room?.mutedBy ?? {}) as Record<
-            string,
-            { muteUntil?: string | null }
-          >;
-          const myMute = mutedBy[userId];
-          const muteUntilMs = myMute?.muteUntil
-            ? new Date(myMute.muteUntil).getTime()
-            : null;
-          const isMuted =
-            myMute != null && (muteUntilMs == null || muteUntilMs > Date.now());
+          if (room) {
+            const mutedBy = (room.mutedBy ?? {}) as Record<
+              string,
+              { muteUntil?: string | null }
+            >;
+            const myMute = mutedBy[userId];
+            const muteUntilMs = myMute?.muteUntil
+              ? new Date(myMute.muteUntil).getTime()
+              : null;
+            const isMuted =
+              myMute != null &&
+              (muteUntilMs == null || muteUntilMs > Date.now());
+            callback(null, { isMuted, mutedUntil: muteUntilMs ?? 0 });
+            return;
+          }
 
-          callback(null, { isMuted, mutedUntil: muteUntilMs ?? 0 });
+          // Not a private room — fall through to GroupMember.notificationSettings, which
+          // stores the same {mute, muteUntil} shape. Without this a user who muted a group
+          // chat still received every push for it.
+          const member = await deps.groupMemberRepo.findByRoomAndUser(
+            roomId,
+            userId
+          );
+          const settings = (member?.notificationSettings ?? {}) as {
+            mute?: boolean;
+            muteUntil?: string | null;
+          };
+          const groupMuteUntilMs = settings.muteUntil
+            ? new Date(settings.muteUntil).getTime()
+            : null;
+          const groupMuted =
+            settings.mute === true &&
+            (groupMuteUntilMs == null || groupMuteUntilMs > Date.now());
+
+          callback(null, {
+            isMuted: groupMuted,
+            mutedUntil: groupMuteUntilMs ?? 0,
+          });
         } catch (err) {
           // Fail-open: an oracle failure must never suppress a push.
           logger.warn(`gRPC checkPrivateMute error: ${String(err)}`);
@@ -3795,218 +3854,174 @@ export function createNotificationImpl(
           const entityId =
             data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
-          // For friend.accepted / friend.rejected: update the existing friend.requested
-          // row in-place instead of creating a duplicate. Preserve the Friend Request
-          // card title/body; resolution text lives in payload.data.resolution.
-          // Reject and cancel both terminate an existing friend.requested row
-          // the same way: update it in place (no duplicate notification), no
-          // navigation (terminal), Accept/Reject dropped by the FE's adapter
-          // once `type` is no longer "friend.requested".
-          if (
-            (req.type === "friend.rejected" ||
-              req.type === "friend.cancelled") &&
-            req.actorId
-          ) {
-            const existing = await deps.notificationRepo.findByTypeAndActor(
-              req.userId,
-              "friend.requested",
-              req.actorId
-            );
-            if (existing) {
-              const existingPayload = (existing.payload ?? {}) as {
-                title?: string;
-                body?: string;
-                data?: Record<string, string>;
-              };
-              const preservedTitle =
-                existingPayload.title?.trim() ||
-                req.title?.trim() ||
-                "Friend Request";
-              const preservedBody =
-                existingPayload.body?.trim() || req.body?.trim() || "";
-              const updated = await deps.notificationRepo.updatePayloadAndType(
-                existing.id,
-                req.type,
-                {
-                  title: preservedTitle,
-                  body: preservedBody,
-                  data: { ...(existingPayload.data ?? {}), ...data },
-                }
+          const rowActorId = req.actorId ?? "";
+          const rowActorSnapshot =
+            parsedActorSnapshot && typeof parsedActorSnapshot === "object"
+              ? parsedActorSnapshot
+              : {};
+
+          // Stable identity of the underlying entity/action. Two events about
+          // the same real-world thing (request → accepted, duplicate redelivery
+          // of one event) share a groupKey, so the second one transitions the
+          // existing row instead of stacking a second card. This replaces the
+          // per-type friend.accepted / friend.rejected / friend.cancelled
+          // special-cases that used to live here.
+          const groupKey = resolveGroupKey(req.type, req.actorId, data);
+          const existing = groupKey
+            ? await deps.notificationRepo.findActiveByGroupKey(
+                req.userId,
+                groupKey
+              )
+            : null;
+
+          const publishRow = async (
+            event: string,
+            row: Awaited<ReturnType<typeof deps.notificationRepo.create>>
+          ) => {
+            try {
+              const unreadCount = await deps.notificationRepo.getUnreadCount(
+                req.userId as string
               );
-              if (updated) {
+              const dto = await serializeNotification(
+                row,
+                req.userId as string
+              );
+              const { excludeSessionId: _excl, ...clientData } = data;
+              await publishUserSocketEvent(
+                redis,
+                req.userId as string,
+                event,
+                {
+                  ...dto,
+                  notificationId: row.id,
+                  userId: req.userId,
+                  createdAt: row.createdAt.getTime(),
+                  updatedAt: row.updatedAt.getTime(),
+                  ...(parsedNavigation !== undefined
+                    ? { navigation: parsedNavigation }
+                    : {}),
+                  ...(Object.keys(clientData).length > 0
+                    ? { data: clientData }
+                    : {}),
+                  unreadCount,
+                },
+                data.excludeSessionId
+              );
+              await publishUserSocketEvent(
+                redis,
+                req.userId as string,
+                "notification:count_update",
+                { count: unreadCount, unreadCount }
+              );
+            } catch (err) {
+              logger.warn(
+                `notify realtime publish failed for ${req.userId}: ${String(err)}`
+              );
+            }
+          };
+
+          if (existing) {
+            const plan = resolveTransition(existing.type, req.type, data);
+            const existingPayload = (existing.payload ?? {}) as {
+              title?: string;
+              body?: string;
+              data?: Record<string, string>;
+            };
+
+            if (plan.action === "DELETE") {
+              const { count } = await deps.notificationRepo.deleteById(
+                existing.id,
+                req.userId
+              );
+              if (count > 0) {
+                const remainingUnread =
+                  await deps.notificationRepo.getUnreadCount(req.userId);
                 try {
-                  // Strip the internal relay hint before echoing to clients.
-                  const { excludeSessionId: _excl, ...clientData } = {
-                    ...(existingPayload.data ?? {}),
-                    ...data,
-                  };
                   await publishUserSocketEvent(
                     redis,
                     req.userId,
-                    "notification:updated",
+                    "notification:deleted",
                     {
-                      notificationId: updated.id,
-                      userId: req.userId,
-                      type: req.type,
-                      title: preservedTitle,
-                      body: preservedBody,
-                      isRead: updated.isRead,
-                      createdAt: updated.createdAt.getTime(),
-                      // Self-describing payload — FE patch merges this in, so
-                      // `resolution` / `resolutionTone` / etc. reach every device
-                      // without depending on the previously-cached data.
-                      ...(Object.keys(clientData).length > 0
-                        ? { data: clientData }
-                        : {}),
-                      // No navigation on decline — the notification is terminal.
-                      navigation: null,
+                      notificationId: existing.id,
+                      groupKey,
+                      unreadCount: remainingUnread,
                     }
+                  );
+                  await publishUserSocketEvent(
+                    redis,
+                    req.userId,
+                    "notification:count_update",
+                    { count: remainingUnread, unreadCount: remainingUnread }
                   );
                 } catch (err) {
                   logger.warn(
-                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
+                    `notify:deleted publish failed for ${req.userId}: ${String(err)}`
                   );
                 }
-                callback(null, { id: updated.id });
-                return;
               }
+              callback(null, { id: existing.id });
+              return;
             }
+
+            const mergedData = { ...(existingPayload.data ?? {}), ...data };
+            // A resolved card states its CURRENT state in one sentence — the newest
+            // copy always wins. Stacking an outcome line under the original request
+            // ("X has sent you a friend request" / "You are now friends!") is what
+            // made every resolved row read as two contradictory sentences.
+            const nextTitle =
+              req.title?.trim() || existingPayload.title?.trim() || "";
+            const nextBody =
+              req.body?.trim() || existingPayload.body?.trim() || "";
+
+            const updated = await deps.notificationRepo.applyStateTransition(
+              existing.id,
+              {
+                type: req.type,
+                actorId: rowActorId || existing.actorId,
+                actorSnapshot:
+                  Object.keys(rowActorSnapshot).length > 0
+                    ? rowActorSnapshot
+                    : ((existing.actorSnapshot as object) ?? {}),
+                entity: entityId
+                  ? { id: entityId }
+                  : ((existing.entity as object) ?? {}),
+                payload: {
+                  title: nextTitle,
+                  body: nextBody,
+                  data: mergedData,
+                },
+                resurface: plan.resurface,
+              }
+            );
+            await publishRow("notification:updated", updated);
+            callback(null, { id: updated.id });
+            return;
           }
 
-          if (req.type === "friend.accepted" && req.actorId) {
-            const existing = await deps.notificationRepo.findByTypeAndActor(
-              req.userId,
-              "friend.requested",
-              req.actorId
-            );
-            if (existing) {
-              const existingPayload = (existing.payload ?? {}) as {
-                title?: string;
-                body?: string;
-                data?: Record<string, string>;
-              };
-              const preservedTitle =
-                existingPayload.title?.trim() ||
-                req.title?.trim() ||
-                "Friend Request";
-              const preservedBody =
-                existingPayload.body?.trim() || req.body?.trim() || "";
-              const updated = await deps.notificationRepo.updatePayloadAndType(
-                existing.id,
-                req.type,
-                {
-                  title: preservedTitle,
-                  body: preservedBody,
-                  data: { ...(existingPayload.data ?? {}), ...data },
-                }
-              );
-              if (updated) {
-                try {
-                  // Strip the internal relay hint before echoing to clients.
-                  const { excludeSessionId: _excl, ...clientData } = {
-                    ...(existingPayload.data ?? {}),
-                    ...data,
-                  };
-                  await publishUserSocketEvent(
-                    redis,
-                    req.userId,
-                    "notification:updated",
-                    {
-                      notificationId: updated.id,
-                      userId: req.userId,
-                      type: req.type,
-                      title: preservedTitle,
-                      body: preservedBody,
-                      isRead: updated.isRead,
-                      createdAt: updated.createdAt.getTime(),
-                      // Self-describing payload — FE patch merges this in, so
-                      // `resolution` reaches every device without depending on
-                      // the previously-cached data (fixes cross-device sync
-                      // races where a refetch overwrote the type-only patch).
-                      ...(Object.keys(clientData).length > 0
-                        ? { data: clientData }
-                        : {}),
-                      ...(parsedNavigation !== undefined
-                        ? { navigation: parsedNavigation }
-                        : {}),
-                    }
-                  );
-                } catch (err) {
-                  logger.warn(
-                    `notify:updated publish failed for ${req.userId}: ${String(err)}`
-                  );
-                }
-                callback(null, { id: updated.id });
-                return;
-              }
-            }
+          // A terminal-removal event with nothing to remove is a no-op, never a new
+          // card. Otherwise cancelling a request the recipient already actioned (or
+          // a redelivered cancel) would MATERIALISE a "cancelled" notification out of
+          // nothing — the exact duplicate-on-state-change this design exists to kill.
+          if (isTerminalRemoval(req.type)) {
+            callback(null, { id: "" });
+            return;
           }
 
           const created = await deps.notificationRepo.create({
             userId: req.userId,
-            actorId: req.actorId ?? "",
+            actorId: rowActorId,
             type: req.type,
             entity: entityId ? { id: entityId } : {},
-            actorSnapshot:
-              parsedActorSnapshot && typeof parsedActorSnapshot === "object"
-                ? parsedActorSnapshot
-                : {},
+            actorSnapshot: rowActorSnapshot,
             payload: {
               title: req.title ?? "",
               body: req.body ?? "",
               data,
             },
+            groupKey,
           });
 
-          // Real-time bridge. The gateway /notify namespace relays Redis
-          // `notify:<userId>` messages to the user's connected devices. Without
-          // this publish a freshly-created inbox row is invisible until the
-          // client reconnects or manually refetches (push.service sends FCM
-          // unconditionally regardless of socket state — it does NOT suppress
-          // for online users, so this relay is what keeps the bell/badge live
-          // without waiting on a redundant tray notification). Best-effort: a relay error
-          // must never fail the inbox write (the row is the source of truth).
-          try {
-            const unreadCount = await deps.notificationRepo.getUnreadCount(
-              req.userId
-            );
-            const dto: Record<string, unknown> = {
-              notificationId: created.id,
-              userId: req.userId,
-              type: req.type,
-              title: req.title ?? "",
-              body: req.body ?? "",
-              referenceId: entityId,
-              isRead: false,
-              createdAt: created.createdAt.getTime(),
-              unreadCount,
-            };
-            if (parsedNavigation !== undefined)
-              dto.navigation = parsedNavigation;
-            if (parsedActorSnapshot !== undefined)
-              dto.actorSnapshot = parsedActorSnapshot;
-            // Strip the internal relay hint; send remaining data to the client.
-            const { excludeSessionId: _excl, ...clientData } = data;
-            if (Object.keys(clientData).length > 0) dto.data = clientData;
-            await publishUserSocketEvent(
-              redis,
-              req.userId,
-              "notification:new",
-              dto,
-              // Exclude the newly-logged-in device from its own login alert.
-              data.excludeSessionId
-            );
-            await publishUserSocketEvent(
-              redis,
-              req.userId,
-              "notification:count_update",
-              { count: unreadCount, unreadCount }
-            );
-          } catch (err) {
-            logger.warn(
-              `notify realtime publish failed for ${req.userId}: ${String(err)}`
-            );
-          }
+          await publishRow("notification:new", created);
 
           callback(null, { id: created.id });
         } catch (err) {
@@ -4081,6 +4096,9 @@ export function createNotificationImpl(
                 referenceId: entity.id ?? "",
                 isRead: n.isRead,
                 createdAt: n.createdAt.getTime(),
+                updatedAt: n.updatedAt.getTime(),
+                version: n.version ?? 1,
+                groupKey: n.groupKey ?? "",
                 // Include the full data map so clients can restore notification
                 // state (e.g. actionTaken="TERMINATED") on page refresh.
                 data: rawData,
@@ -4143,12 +4161,12 @@ export function createNotificationImpl(
             updatedCount = await deps.notificationRepo.getUnreadCount(userId);
             await deps.notificationRepo.markAllRead(userId);
           } else {
-            // markRead is owner-scoped (IDOR-safe): a non-owning id returns null
-            // and does not count toward updatedCount.
-            const results = await Promise.all(
-              ids.map((id) => deps.notificationRepo.markRead(id, userId))
+            // One owner-scoped updateMany, not N round-trips — a full-screen
+            // "everything visible is now read" batch is a single Mongo op.
+            updatedCount = await deps.notificationRepo.markManyRead(
+              ids,
+              userId
             );
-            updatedCount = results.filter((r) => r !== null).length;
           }
 
           const remainingUnread =

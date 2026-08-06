@@ -20,7 +20,7 @@ import type {
 } from "./call-chat-message.service.js";
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
 import type { CallFlagService } from "./call-flag.service.js";
-import { buildParticipantsKey } from "../lib/room-id.js";
+import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import {
   publishCallIncomingSafe,
   publishCallMissedSafe,
@@ -105,22 +105,29 @@ export class CallService {
       throw new ForbiddenError("CALLING_DISABLED");
     }
 
-    // Gate 1: friendship. Local Prisma read on chat-service's event-sourced
-    // Friendship replica — no gRPC hop. Blocks non-friends AND ex-friends
-    // (the shared-DM-room check below is a defense-in-depth, not this).
-    const areFriends = await this.friendshipRepo.areFriends(
-      params.callerId,
-      params.calleeId
-    );
-    if (!areFriends) throw new ForbiddenError("FRIENDSHIP_REQUIRED");
-
-    // Gate 2: callee's `whoCanCallMe` privacy setting (user-service).
-    // FRIENDS is already satisfied by gate 1; NO_ONE always rejects; and
-    // SELECTED_FRIENDS requires the caller to be in the callee's allow-list.
+    // Gate 1: callee's `whoCanCallMe` privacy setting (user-service). Read
+    // BEFORE friendship, because EVERYONE is the one scope that deliberately
+    // admits a non-friend — running the friendship gate first would reject
+    // those callers with FRIENDSHIP_REQUIRED and make EVERYONE unreachable.
     const privacy = await this.getCallPrivacy(params.calleeId);
     if (privacy.whoCanCallMe === "NO_ONE") {
       throw new ForbiddenError("PRIVACY_BLOCKED");
     }
+
+    // Gate 2: friendship, waived ONLY by EVERYONE. Local Prisma read on
+    // chat-service's event-sourced Friendship replica — no gRPC hop. Blocks
+    // non-friends AND ex-friends (the shared-DM-room check below is a
+    // defense-in-depth, not this).
+    if (privacy.whoCanCallMe !== "EVERYONE") {
+      const areFriends = await this.friendshipRepo.areFriends(
+        params.callerId,
+        params.calleeId
+      );
+      if (!areFriends) throw new ForbiddenError("FRIENDSHIP_REQUIRED");
+    }
+
+    // SELECTED_FRIENDS additionally requires the caller to be in the allow-list
+    // (friendship itself was already enforced by gate 2).
     if (
       privacy.whoCanCallMe === "SELECTED_FRIENDS" &&
       !privacy.allowedUserIds.includes(params.callerId)
@@ -133,13 +140,29 @@ export class CallService {
     // by supplying a fabricated/omitted privateRoomId. When the client omits
     // privateRoomId, derive the canonical room for this pair instead of
     // trusting an unrelated calleeId outright.
-    const room = params.privateRoomId
+    const participantsKey = buildParticipantsKey(
+      params.callerId,
+      params.calleeId
+    );
+    let room = params.privateRoomId
       ? await this.privateRoomRepo.findByRoomId(params.privateRoomId, {
           projection: { participants: 1, blockedBy: 1 },
         })
-      : await this.privateRoomRepo.findByParticipantsKey(
-          buildParticipantsKey(params.callerId, params.calleeId)
-        );
+      : await this.privateRoomRepo.findByParticipantsKey(participantsKey);
+    // whoCanCallMe=EVERYONE means a stranger may ring — and a stranger has no
+    // DM room yet, so requiring one would silently re-impose the friendship
+    // gate this scope exists to waive. Open the canonical room for the pair,
+    // exactly as the first message between them would.
+    // ponytail: no conv:created fan-out here (the ringing UI is the client's
+    // signal); add it if an empty room ever needs to appear in the inbox
+    // before the call is answered.
+    if (!room && privacy.whoCanCallMe === "EVERYONE" && !params.privateRoomId) {
+      room = await this.privateRoomRepo.create({
+        roomId: generateRoomId("prv"),
+        participants: [params.callerId, params.calleeId].sort(),
+        participantsKey,
+      });
+    }
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     const participants = Array.isArray(room.participants)
@@ -356,7 +379,9 @@ export class CallService {
    *    for this MVP; a busy member's own answerCall attempt just never
    *    succeeds if they end up double-booked).
    *  - No CallChatMessageService audit trail yet (see postCallChatMessageSafe).
-   *  - No friendship/privacy gates — group membership already implies consent.
+   *  - No friendship gate, and only the `whoCanCallMe = NO_ONE` opt-out from
+   *    the privacy gate — group membership implies consent to be rung by the
+   *    group, but never overrides an explicit "nobody may call me".
    */
   async initiateGroupCall(params: {
     callerId: string;
@@ -379,9 +404,32 @@ export class CallService {
     const members = await this.groupMemberRepo.findActiveMembers(
       params.groupId
     );
-    const calleeIds = members
+    const rosterIds = members
       .map((m) => m.userId)
       .filter((id) => id !== params.callerId);
+    // `whoCanCallMe = NO_ONE` is a hard opt-out from ringing, and it holds
+    // inside groups too — a member who chose it must get no call:incoming, no
+    // push and no VoIP wake, even though group membership is otherwise the
+    // trust boundary here. FRIENDS / SELECTED_FRIENDS are deliberately NOT
+    // applied: group members frequently aren't friends, and enforcing those
+    // would break group calling for everyone rather than honor an opt-out.
+    // Fails OPEN per member: a user-service blip must not silence a whole
+    // group call, and NO_ONE is still enforced on the callee's own answer path.
+    const optedOut = new Set(
+      (
+        await Promise.all(
+          rosterIds.map(async (id) => {
+            try {
+              const p = await this.getCallPrivacy(id);
+              return p.whoCanCallMe === "NO_ONE" ? id : null;
+            } catch {
+              return null;
+            }
+          })
+        )
+      ).filter((id): id is string => id !== null)
+    );
+    const calleeIds = rosterIds.filter((id) => !optedOut.has(id));
     if (calleeIds.length === 0) {
       throw new BadRequestError("CALL_SELF_NOT_ALLOWED");
     }

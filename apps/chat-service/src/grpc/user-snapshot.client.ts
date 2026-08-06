@@ -134,6 +134,30 @@ const checkFriendshipsBreaker: Breaker<
     )
 );
 
+const filterVisiblePresenceBreaker: Breaker<
+  { viewerId: string; peerIds: string[] },
+  { visiblePeerIds: string[] }
+> = makeBreaker(
+  "user.filterVisiblePresence",
+  (args: { viewerId: string; peerIds: string[] }) =>
+    call<typeof args, { visiblePeerIds: string[] }>(
+      "filterVisiblePresence",
+      args
+    )
+);
+
+const filterPresenceViewersBreaker: Breaker<
+  { subjectId: string; viewerIds: string[] },
+  { allowedViewerIds: string[] }
+> = makeBreaker(
+  "user.filterPresenceViewers",
+  (args: { subjectId: string; viewerIds: string[] }) =>
+    call<typeof args, { allowedViewerIds: string[] }>(
+      "filterPresenceViewers",
+      args
+    )
+);
+
 const getFriendshipViewBreaker: Breaker<
   { friendshipId: string; viewerId: string },
   FriendshipViewRecord
@@ -197,6 +221,43 @@ export const userGrpcClient = {
       );
     } catch {
       return new Map();
+    }
+  },
+
+  /**
+   * Which of `peerIds` this viewer may see the online status of
+   * (`whoCanSeeOnlineStatus`). Unlike the display-metadata lookups above this
+   * fails CLOSED — an empty list on any transport failure — because a
+   * fail-open here discloses presence the user asked us to hide. A blip
+   * therefore shows peers as offline, never as leaked-online.
+   */
+  async filterVisiblePresence(
+    viewerId: string,
+    peerIds: string[]
+  ): Promise<Set<string>> {
+    if (peerIds.length === 0) return new Set();
+    try {
+      const r = await filterVisiblePresenceBreaker.fire({ viewerId, peerIds });
+      return new Set(r.visiblePeerIds ?? []);
+    } catch {
+      return new Set();
+    }
+  },
+
+  /** Inverse of {@link filterVisiblePresence}: one subject, many viewers. Same fail-CLOSED policy. */
+  async filterPresenceViewers(
+    subjectId: string,
+    viewerIds: string[]
+  ): Promise<Set<string>> {
+    if (viewerIds.length === 0) return new Set();
+    try {
+      const r = await filterPresenceViewersBreaker.fire({
+        subjectId,
+        viewerIds,
+      });
+      return new Set(r.allowedViewerIds ?? []);
+    } catch {
+      return new Set();
     }
   },
 

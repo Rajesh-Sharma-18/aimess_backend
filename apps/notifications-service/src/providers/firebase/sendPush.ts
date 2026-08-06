@@ -28,6 +28,9 @@ interface SendPushParams {
    * notification — the app is woken to own the UI (e.g. full-screen call intent).
    */
   dataOnly?: boolean;
+  /** Token platform ("ANDROID" | "IOS" | "WEB"). Decides whether the tray entry is
+   *  drawn by the OS or by the app — see the Android note in the body below. */
+  platform?: string;
   /**
    * APNs notification category identifier. iOS uses this to look up registered
    * UNNotificationCategory actions (e.g. Accept / Decline buttons on a call
@@ -61,6 +64,7 @@ export async function sendPush({
   ttl = 86_400,
   priority = "normal",
   dataOnly = false,
+  platform,
   apnsCategory,
 }: SendPushParams): Promise<SendPushResult> {
   // Merge deepLink into the data map so native clients can read it.
@@ -69,21 +73,33 @@ export async function sendPush({
     ...(deepLink ? { deepLink } : {}),
   };
 
+  const isAndroid = String(platform ?? "").toUpperCase() === "ANDROID";
+  // A `notification` block makes this a NOTIFICATION message on Android: when the app is
+  // backgrounded or killed the OS draws the tray entry itself and onMessageReceived is never
+  // called — so the client cannot group by conversation, attach avatars, or offer Reply.
+  // Android message pushes therefore go data-only and the app owns the presentation.
+  // iOS keeps the block (no Notification Service Extension to rebuild it there).
+  const androidOwnsRendering = isAndroid && enrichedData.type === "MESSAGE";
+  const omitNotification = dataOnly || androidOwnsRendering;
+
   // Background pushes must always be priority 5 — Apple silently drops or
   // delays background notifications sent with priority 10.
   const apnsPriority = dataOnly ? "5" : priority === "high" ? "10" : "5";
   const webUrgency = priority === "high" ? "high" : "normal";
+  // A data-only Android push is only woken promptly at high priority; at normal it is held
+  // until the device leaves Doze, which would make messages arrive minutes late.
+  const androidPriority =
+    priority === "high" || androidOwnsRendering ? "high" : "normal";
 
   try {
     const messageId = await messaging.send({
       token,
-      // Data-only omits `notification` so the OS wakes the app instead of drawing
-      // a tray notification (client owns the full-screen call intent).
-      ...(dataOnly ? {} : { notification: { title, body } }),
+      ...(omitNotification ? {} : { notification: { title, body } }),
 
       // ── Android ──────────────────────────────────────────────────────────
       android: {
-        priority: priority === "high" ? "high" : "normal",
+        priority: androidPriority,
+        ttl: ttl * 1000,
         ...(collapseKey ? { collapseKey } : {}),
       },
 
@@ -92,6 +108,7 @@ export async function sendPush({
         headers: {
           "apns-priority": apnsPriority,
           "apns-push-type": dataOnly ? "background" : "alert",
+          "apns-expiration": String(Math.floor(Date.now() / 1000) + ttl),
           ...(apnsThreadId ? { "apns-thread-id": apnsThreadId } : {}),
         },
         payload: {

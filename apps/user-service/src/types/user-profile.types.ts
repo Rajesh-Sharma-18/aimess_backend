@@ -55,9 +55,14 @@ export type UserProfileData = {
 export type PublicUserProfileData = {
   userId: string;
   username: string;
-  displayName: string;
-  firstName: string;
-  lastName: string;
+  /**
+   * Null when the target's `whoCanViewProfile` excludes this viewer — the
+   * handle (`username`) and `userId` still resolve so the profile stays
+   * addressable and actionable.
+   */
+  displayName: string | null;
+  firstName: string | null;
+  lastName: string | null;
   bio: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;

@@ -163,3 +163,43 @@ export function canViewProfile(
     relation
   );
 }
+
+/**
+ * Real name + avatar as this viewer may see them, for the surfaces that serve a
+ * PROFILE CARD: the profile endpoint, search results, discovery lists and
+ * recent searches. `NO_ONE` there means "only the owner sees the complete
+ * profile", and a name and photo are the most identifying parts of it — masking
+ * only bio/cover/counts left the card recognizable, which is the whole thing
+ * the setting is meant to prevent.
+ *
+ * `userId` and `username` deliberately survive: the row must stay actionable
+ * (send a request, block, open the chat) and the handle is already public
+ * everywhere the user is addressable. Presence is masked separately by
+ * {@link visibleIsOnline} — it has its own scope.
+ *
+ * NOT applied to conversation surfaces (chat headers, group/community member
+ * lists, mentions, message senders). Those show who you are already talking to,
+ * and blanking them would render existing chats nameless rather than private.
+ * See `avatarAllowed` for the avatar: call sites resolve the stored key through
+ * their own media resolver with `null` so a denied viewer gets the identical
+ * "no avatar" shape as a user who never set one.
+ */
+export function visibleIdentity(
+  profile: ScopeCarrier & { firstName: string; lastName: string },
+  relation: ViewerRelation
+): {
+  avatarAllowed: boolean;
+  firstName: string | null;
+  lastName: string | null;
+  fullName: string | null;
+} {
+  const allowed = canViewProfile(profile, relation);
+  return {
+    avatarAllowed: allowed,
+    firstName: allowed ? profile.firstName : null,
+    lastName: allowed ? profile.lastName : null,
+    fullName: allowed
+      ? `${profile.firstName} ${profile.lastName}`.trim()
+      : null,
+  };
+}

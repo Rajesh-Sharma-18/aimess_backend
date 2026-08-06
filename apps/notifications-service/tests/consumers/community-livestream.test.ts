@@ -8,7 +8,7 @@
  * on the mocked push.service (`pushToUsers`).
  *
  * Verifies:
- *   - host-named copy ("{host} started a livestream." / "ended … (1h 24m).")
+ *   - host-named copy ("{host} is live in {community}" / "ended … after 1h 24m")
  *   - title = community name; category = liveStreamEnabled (dedicated toggle)
  *   - navigation screen COMMUNITY_LIVESTREAM carries the livestreamId
  *   - empty recipient list → no push
@@ -91,7 +91,7 @@ describe("LIVESTREAM_STARTED branch", () => {
     const input = build(U1);
     expect(input.userId).toBe(U1);
     expect(input.title).toBe("Cool Community");
-    expect(input.body).toBe("Jane Doe started a livestream.");
+    expect(input.body).toBe("Jane Doe is live in Cool Community");
     expect(input.category).toBe("liveStreamEnabled");
     expect(input.type).toBe(CommunityEvents.LIVESTREAM_STARTED);
     expect(input.data).toMatchObject({
@@ -129,7 +129,9 @@ describe("LIVESTREAM_ENDED branch", () => {
     expect(recipients).toEqual([U1, U2]);
 
     const input = build(U2);
-    expect(input.body).toBe("Jane Doe ended the livestream (1h 24m).");
+    expect(input.body).toBe(
+      "Jane Doe ended the livestream in Cool Community after 1h 24m"
+    );
     expect(input.category).toBe("liveStreamEnabled");
     expect(input.type).toBe(CommunityEvents.LIVESTREAM_ENDED);
     expect(input.data).toMatchObject({
