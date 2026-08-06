@@ -492,7 +492,20 @@ export function registerChatNamespace(
           // and unread state to unrelated watchers, and made their clients
           // invalidate an inbox they have no row for. Self-only, like the two
           // above.
-          parsed.event === "conv:updated";
+          parsed.event === "conv:updated" ||
+          // Friendship state, published per affected user on `user:<userId>`
+          // (see `emitFriendEventSafe`). Same leak shape: any peer who called
+          // presence:subscribe on this user — which the web client does for
+          // EVERY DM peer — was receiving their friend requests, accepts and
+          // rejects. A third party's client would show the request as if it
+          // were its own. Both parties still get their copy, because
+          // user-service publishes to each of them separately.
+          parsed.event.startsWith("friend:") ||
+          // The pending-friend-request conversation row. Worse than the
+          // above: the payload carries the requester's name, username and
+          // avatar plus a synthetic sidebar row, so a watcher rendered a
+          // pending request that was never addressed to them.
+          parsed.event.startsWith("conversation:");
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
