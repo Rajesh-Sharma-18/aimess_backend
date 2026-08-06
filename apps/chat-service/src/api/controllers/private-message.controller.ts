@@ -20,6 +20,7 @@ import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildDeletePayload,
   groupStoredReactions,
@@ -706,6 +707,7 @@ export class PrivateMessageController {
       isForwarded: true,
       serverTs: result.createdAt?.getTime() ?? Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      ...autoDeleteWireFields(result),
     });
     await this.redis.publish(
       `conv:${targetRoomId}`,
@@ -852,6 +854,9 @@ export class PrivateMessageController {
           ? result.createdAt.getTime()
           : Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      // §4 — an edit does not restart the timer; the deadline rides along so an
+      // edited bubble keeps showing the same countdown instead of losing it.
+      ...autoDeleteWireFields(result),
     });
     if (result.roomId) {
       await this.redis.publish(

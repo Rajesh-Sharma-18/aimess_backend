@@ -21,9 +21,9 @@
 export const AUTO_DELETE_MODES = ["OFF", "TIMER", "AFTER_VIEWING"] as const;
 export type AutoDeleteMode = (typeof AUTO_DELETE_MODES)[number];
 
-/** Presets the clients surface (1 hour / 1 day / 1 week / 1 month). Any other
- *  value inside the bounds below is a valid "Custom" timer. */
-export const AUTO_DELETE_PRESET_SECONDS = [3600, 86400, 604800, 2592000];
+/** Presets the clients surface — WhatsApp's set (24 hours / 7 days / 90 days).
+ *  Any other value inside the bounds below is a valid "Custom" timer. */
+export const AUTO_DELETE_PRESET_SECONDS = [86400, 604800, 7776000];
 
 /**
  * Grace period between the recipient's read receipt and an "After Viewing"
@@ -147,14 +147,29 @@ export function validateAutoDeleteInput(input: {
   return null;
 }
 
-/** Human label for the system message / toast — "1 day", "3 hours", "90 minutes". */
+/**
+ * Human label for the system message / gear menu — "24 hours", "7 days".
+ *
+ * The three presets are spelled EXACTLY as the picker spells them (WhatsApp's
+ * wording), because this label is what the system message quotes back: a menu
+ * reading "90 Days" followed by "…set messages to auto-delete after 3 months"
+ * looks like the setting didn't take. Anything else is a custom timer and gets
+ * the generic humanization.
+ */
+const AUTO_DELETE_PRESET_LABELS: Record<number, string> = {
+  86400: "24 hours",
+  604800: "7 days",
+  7776000: "90 days",
+};
+
 export function formatAutoDeleteDuration(ttlSeconds: number | null): string {
   const s = Number(ttlSeconds ?? 0);
   if (!s || s <= 0) return "";
+  const preset = AUTO_DELETE_PRESET_LABELS[s];
+  if (preset) return preset;
+
   const plural = (n: number, unit: string) =>
     `${n} ${unit}${n === 1 ? "" : "s"}`;
-  if (s % 2592000 === 0) return plural(s / 2592000, "month");
-  if (s % 604800 === 0) return plural(s / 604800, "week");
   if (s % 86400 === 0) return plural(s / 86400, "day");
   if (s % 3600 === 0) return plural(s / 3600, "hour");
   if (s % 60 === 0) return plural(s / 60, "minute");

@@ -176,16 +176,19 @@ export class AutoDeleteService {
    */
   async sweepDue(now: Date, batchSize: number): Promise<number> {
     const due = await this.messageRepo.findDueAutoDeletes(now, batchSize);
+    // One participants lookup per ROOM per sweep, not per message.
+    const participantsByRoom = new Map<string, string[]>();
     for (const row of due) {
       if (!row.senderId) continue; // system messages are never stamped
       try {
-        await this.orchestrator.deleteDirect({
+        const { tombstone } = await this.orchestrator.deleteDirect({
           conversationType: "PRIVATE",
           roomId: row.roomId,
           messageId: row.id,
           userId: row.senderId,
           scope: "forEveryone",
         });
+        await this.fanOutTombstone(row.roomId, tombstone, participantsByRoom);
         await this.clearPin(row.roomId, row.id);
       } catch (err) {
         // Already deleted by another node / a manual delete that beat us — both
@@ -196,6 +199,46 @@ export class AutoDeleteService {
       }
     }
     return due.length;
+  }
+
+  /**
+   * Deliver the tombstone to BOTH participants' personal channels as well as the
+   * room channel `deleteDirect` already published on.
+   *
+   * `conv:<roomId>` only reaches sockets that ran `conversation:join` — i.e. a
+   * client with that chat OPEN. For a user-initiated delete that is usually
+   * fine, but a SWEEP fires with nobody guaranteed to be looking: the client
+   * then keeps rendering a message the server has already deleted, with a
+   * countdown frozen at zero, until something forces a refetch. Mirrors the
+   * personal fan-out `message:new` already does for the same reason.
+   *
+   * Duplicate delivery to a client that IS joined is harmless — the tombstone
+   * handler removes by id and is idempotent.
+   */
+  private async fanOutTombstone(
+    roomId: string,
+    tombstone: Record<string, unknown>,
+    cache: Map<string, string[]>
+  ): Promise<void> {
+    try {
+      let participants = cache.get(roomId);
+      if (!participants) {
+        const room = await this.roomRepo.findByRoomId(roomId);
+        participants = (room?.participants ?? []).filter(Boolean);
+        cache.set(roomId, participants);
+      }
+      const payload = JSON.stringify({
+        event: "message:delete",
+        data: tombstone,
+      });
+      for (const userId of participants) {
+        await this.redis.publish(`user:${userId}`, payload);
+      }
+    } catch (err) {
+      logger.warn(
+        `AutoDeleteService|tombstone fan-out failed room=${roomId}: ${String(err)}`
+      );
+    }
   }
 
   /** §4 — a pinned message that auto-deletes must stop showing in the pin banner. */

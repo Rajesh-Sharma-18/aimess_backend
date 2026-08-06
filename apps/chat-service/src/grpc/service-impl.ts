@@ -52,6 +52,7 @@ import type { NotificationRepository } from "../repositories/notification.reposi
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildCanonicalQuote,
   groupStoredReactions,
@@ -390,6 +391,11 @@ export function createMessagingImpl(
                 countInUnread: (
                   row as unknown as { countInUnread?: boolean | null }
                 ).countInUnread,
+                // Without this the socket send path — the one the web/mobile
+                // clients actually use — broadcasts a message with no auto-delete
+                // deadline, so no countdown shows until a refetch reveals one
+                // that has already expired.
+                ...autoDeleteWireFields(row),
               });
               const bcastContext = `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
               publishRealtimeSafe(

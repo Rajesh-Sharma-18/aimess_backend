@@ -169,8 +169,42 @@ async function preflight(): Promise<void> {
     }
   }
 
-  // 2. Timestamps are epoch-ms numbers, not ISO strings. If this ever flips,
+  // 2. USER_B must have no live client. A real client auto-reads incoming
+  //    messages within ~0.5s, which ARMS "After Viewing" behind this script's
+  //    back and makes correct behaviour look like a failure. Only the RECIPIENT
+  //    of the After-Viewing message can do that — nothing asserts on when A
+  //    reads — so USER_A being online is a note, not an abort.
+  const isOnline = async (token: string, userId: string): Promise<boolean> => {
+    const p = await api(
+      token,
+      "GET",
+      `/chat/private/presence/${userId}`,
+      undefined,
+      null
+    );
+    return (
+      p.status === 200 && (p.body?.data as Wire | undefined)?.isOnline === true
+    );
+  };
+
+  if (await isOnline(TA, B)) {
+    fatal(
+      `USER_B (${B}) has a LIVE client connected. It will read messages ` +
+        `automatically and arm After-Viewing timers before this script can ` +
+        `assert they are still unarmed. Pick a room whose USER_B is offline.`
+    );
+  }
+  if (await isOnline(TB, A)) {
+    console.warn(
+      `  note: USER_A (${A}) has a live client. Harmless — no assertion ` +
+        `depends on when A reads — but expect extra read receipts server-side.`
+    );
+  }
+
+  // 3. Timestamps are epoch-ms numbers, not ISO strings. If this ever flips,
   //    every duration assertion below silently becomes NaN-vs-NaN.
+  //    Runs LAST: it is the only preflight step that WRITES, and an earlier
+  //    abort must not leave a stray "preflight …" message in a real chat.
   const probe = await send(TA, B, `preflight ${Date.now()}`);
   await sleep(400);
   const m = findMsg(rows(await history(TA)), sentId(probe));
@@ -179,32 +213,6 @@ async function preflight(): Promise<void> {
     fatal(
       `expected createdAt to be epoch ms, got ${typeof m.createdAt} (${String(m.createdAt)}) — update ms()`
     );
-  }
-
-  // 3. Neither participant has a live client. A real client auto-reads incoming
-  //    messages within ~0.5s, which ARMS "After Viewing" behind the harness's
-  //    back and makes correct behaviour look like a failure.
-  for (const [label, token, other] of [
-    ["USER_A", TB, A],
-    ["USER_B", TA, B],
-  ] as const) {
-    const p = await api(
-      token,
-      "GET",
-      `/chat/private/presence/${other}`,
-      undefined,
-      null
-    );
-    if (
-      p.status === 200 &&
-      (p.body?.data as Wire | undefined)?.isOnline === true
-    ) {
-      fatal(
-        `${label} (${other}) has a LIVE client connected. It will read messages ` +
-          `automatically and arm After-Viewing timers. Pick a room whose ` +
-          `participants are both offline and re-run.`
-      );
-    }
   }
 }
 
@@ -312,7 +320,12 @@ console.log("\n5. Both sides configured — per-sender timers");
 console.log("\n6. Changing the timer re-stamps pending messages (§8.8)");
 {
   const r = await setAD(TA, { mode: "TIMER", ttlSeconds: 604800 });
-  check("label '1 week'", (r.body?.data as Wire)?.label === "1 week");
+  // WhatsApp wording — the presets read exactly as the picker labels them.
+  check(
+    "label '7 days'",
+    (r.body?.data as Wire)?.label === "7 days",
+    String((r.body?.data as Wire)?.label)
+  );
   await sleep(600);
   const list = rows(await history(TA));
   check(
@@ -353,7 +366,15 @@ console.log("\n7. Turning it OFF (§7)");
 
 console.log("\n8. After Viewing arms on the recipient's read receipt (§3.4)");
 let avMsgId: string;
+let plainId: string;
+let unreadId: string;
 {
+  // Control 1 — sent with the feature OFF, so it must never gain a deadline.
+  // Created BEFORE the mode flip on purpose: a mode change re-stamps messages
+  // that already have a timer, and this one must be shown to be exempt.
+  await setAD(TA, { mode: "OFF" });
+  plainId = sentId(await send(TA, B, "no timer — must survive"));
+
   await setAD(TA, { mode: "AFTER_VIEWING" });
   const r = (await getAD(TA)).body?.data as Wire;
   check("mode AFTER_VIEWING", r?.mode === "AFTER_VIEWING");
@@ -383,26 +404,18 @@ let avMsgId: string;
     grace > -2000 && grace < 15000,
     `${grace}ms`
   );
+
+  // Control 2 — an After-Viewing message the recipient never reads. Sent AFTER
+  // B's read receipt above, because a receipt arms every such message already
+  // waiting in the room, not just the one it names.
+  unreadId = sentId(await send(TA, B, "unread after-viewing — must survive"));
 }
 
 console.log("\n9. The sweeper deletes ONLY what is due");
 {
-  // Controls sent while the feature is off / unread — these must SURVIVE. This
-  // is the case the shipped null-matching bug destroyed, so it is asserted
-  // explicitly rather than inferred from the absence of complaints.
-  await setAD(TA, { mode: "OFF" });
-  const plainId = sentId(await send(TA, B, "no timer — must survive"));
-  await setAD(TA, { mode: "AFTER_VIEWING" });
-  const unreadId = sentId(
-    await send(TA, B, "unread after-viewing — must survive")
-  );
-  await setAD(TA, { mode: "OFF" });
-
-  check(
-    "armed message still present before the sweep window",
-    Boolean(findMsg(rows(await history(TA)), avMsgId)?.autoDeleteAt)
-  );
-
+  // NOTE: no setAD() from here until the assertions are done. Changing the mode
+  // re-stamps pending messages — correct behaviour, but it disarms the very
+  // message this section is waiting to see swept.
   let swept = false;
   for (let i = 0; i < 15 && !swept; i++) {
     await sleep(3000);

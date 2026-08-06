@@ -133,11 +133,15 @@ describe("effective timer resolution", () => {
   });
 
   it("labels durations for the system message", () => {
+    // The three presets read EXACTLY as the picker labels them, so the system
+    // message never contradicts the option the user just tapped.
+    expect(formatAutoDeleteDuration(86400)).toBe("24 hours");
+    expect(formatAutoDeleteDuration(604800)).toBe("7 days");
+    expect(formatAutoDeleteDuration(7776000)).toBe("90 days");
+    // Custom timers fall back to generic humanization.
     expect(formatAutoDeleteDuration(3600)).toBe("1 hour");
-    expect(formatAutoDeleteDuration(86400)).toBe("1 day");
-    expect(formatAutoDeleteDuration(604800)).toBe("1 week");
-    expect(formatAutoDeleteDuration(2592000)).toBe("1 month");
     expect(formatAutoDeleteDuration(10800)).toBe("3 hours");
+    expect(formatAutoDeleteDuration(172800)).toBe("2 days");
     expect(formatAutoDeleteDuration(null)).toBe("");
   });
 });
@@ -161,7 +165,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.body.data.mode).toBe("TIMER");
     expect(res.body.data.ttlSeconds).toBe(86400);
     expect(res.body.data.isEnabled).toBe(true);
-    expect(res.body.data.label).toBe("1 day");
+    expect(res.body.data.label).toBe("24 hours");
   });
 
   it("notifies BOTH participants' devices with conv:auto_delete:updated", async () => {
