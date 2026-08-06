@@ -9,6 +9,7 @@ import {
   visibleIsOnline,
 } from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import { splitBlocks } from "../lib/block-visibility.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
@@ -30,6 +31,12 @@ export type UserDiscoveryResult = {
    */
   avatar: MediaObject;
   isOnline: boolean;
+  /**
+   * The VIEWER blocked this user. Blocks are one-way, so the blocker keeps
+   * seeing (and can unblock) them; users who blocked the viewer never appear at
+   * all, so this is never true in the other direction.
+   */
+  isBlockedByMe?: boolean;
   relationshipStatus?: RelationshipStatus;
   friendshipId?: string | null;
   /** Who sent the PENDING request; null/absent when FRIEND/NONE. */
@@ -112,12 +119,8 @@ export const userDiscoveryService = {
       }
     }
 
-    const blockedIds = new Set<string>(
-      allBlocks.map((b) =>
-        b.blockerId === viewerId ? b.blockedId : b.blockerId
-      )
-    );
-    const excludeIds = [viewerId, ...Array.from(blockedIds)];
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
+    const excludeIds = [viewerId, ...hiddenIds];
     const viewerFriendIds = Array.from(acceptedFriendIds);
     const viewerGraph = await friendshipRepository.resolveViewerGraph(
       viewerId,
@@ -157,6 +160,7 @@ export const userDiscoveryService = {
           avatarUrlExpiresIn: expiresIn,
           avatar,
           isOnline: visibleIsOnline(p, { isFriend }),
+          isBlockedByMe: blockedByMe.has(p.userId),
         };
 
         if (isFriend) {
@@ -276,7 +280,6 @@ export const userDiscoveryService = {
     ]);
 
     const acceptedFriendIds = new Set<string>();
-    const blockedUserIds = new Set<string>();
     const pendingRelMap = new Map<
       string,
       { friendshipId: string; isRequester: boolean }
@@ -294,10 +297,7 @@ export const userDiscoveryService = {
       }
     }
 
-    for (const b of allBlocks) {
-      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
-      blockedUserIds.add(otherId);
-    }
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
 
     const viewerFriendIds = Array.from(acceptedFriendIds);
     const viewerGraph = await friendshipRepository.resolveViewerGraph(
@@ -305,11 +305,7 @@ export const userDiscoveryService = {
       viewerFriendIds
     );
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
-    const excludeIds = [
-      viewerId,
-      ...viewerFriendIds,
-      ...Array.from(blockedUserIds),
-    ];
+    const excludeIds = [viewerId, ...viewerFriendIds, ...hiddenIds];
 
     const [profiles, total] = await Promise.all([
       userProfileRepository.findUsersNotInList(
@@ -352,6 +348,7 @@ export const userDiscoveryService = {
           avatarUrlExpiresIn: expiresIn,
           avatar,
           isOnline: visibleIsOnline(p, { isFriend: false }),
+          isBlockedByMe: blockedByMe.has(p.userId),
           relationshipStatus,
           friendshipId,
           requesterId,
@@ -374,12 +371,7 @@ export const userDiscoveryService = {
       friendshipRepository.findAllBlocks(viewerId),
       friendshipRepository.findAcceptedFriends(viewerId),
     ]);
-    const blockedUserIds = new Set<string>();
-
-    for (const b of allBlocks) {
-      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
-      blockedUserIds.add(otherId);
-    }
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
 
     const friendIdSet = new Set(
       friendships.map((f) =>
@@ -392,7 +384,7 @@ export const userDiscoveryService = {
       viewerFriendIds
     );
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
-    const excludeIds = [viewerId, ...Array.from(blockedUserIds)];
+    const excludeIds = [viewerId, ...hiddenIds];
 
     const [profiles, total] = await Promise.all([
       userProfileRepository.findUsersNotInList(
@@ -426,6 +418,7 @@ export const userDiscoveryService = {
           avatarUrlExpiresIn: expiresIn,
           avatar,
           isOnline: visibleIsOnline(p, { isFriend }),
+          isBlockedByMe: blockedByMe.has(p.userId),
         };
       })
     );

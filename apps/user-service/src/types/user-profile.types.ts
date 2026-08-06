@@ -76,6 +76,14 @@ export type PublicUserProfileData = {
   groupsCount: number | null;
   communitiesCount: number | null;
   isDeletedUser: boolean;
+  /**
+   * The VIEWER blocked this user. Blocks are one-way, so the blocker still
+   * resolves the profile; the reverse direction 404s before this is built, so
+   * it never reports the target's block. `relationship.status` collapses BLOCKED
+   * to NONE (search vocabulary), so this is the flag clients branch on to show
+   * "Unblock" instead of "Add friend".
+   */
+  isBlockedByMe: boolean;
   relationship: {
     friendshipId: string | null;
     status: string;

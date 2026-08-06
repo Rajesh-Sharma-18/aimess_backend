@@ -254,8 +254,11 @@ export const userProfileService = {
     ]);
 
     if (!profile || profile.deletedAt) throw notFound();
-    // Either direction hides the account entirely — same policy search already
-    // applies via `findAllBlocks`.
+    // One-way, matching search (`lib/block-visibility.ts`): the TARGET's block
+    // hides them from this viewer. The viewer's OWN block does not — a blocker
+    // has to be able to open the profile of someone they blocked to review and
+    // undo it. `blockedByViewer` is still carried into the relationship view
+    // below so the client renders "Blocked" instead of an add-friend action.
     if (blockedByTarget) throw notFound();
 
     const isSelf = viewerId === targetUserId;
@@ -334,6 +337,7 @@ export const userProfileService = {
       groupsCount: canViewProfile ? profile.groupsCount : null,
       communitiesCount: canViewProfile ? profile.communitiesCount : null,
       isDeletedUser,
+      isBlockedByMe: Boolean(blockedByViewer),
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {

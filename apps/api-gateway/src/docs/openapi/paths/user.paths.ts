@@ -1350,8 +1350,12 @@ export const userPaths = {
                               nullable: true,
                             },
                             avatarUrl: {
-                              type: "object",
+                              allOf: [
+                                { $ref: "#/components/schemas/MediaObject" },
+                              ],
                               nullable: true,
+                              description:
+                                "Resolved avatar media object — read `downloadUrl`.",
                             },
                             blockedAt: {
                               type: "string",
