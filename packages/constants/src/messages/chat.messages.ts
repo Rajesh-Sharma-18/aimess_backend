@@ -155,6 +155,22 @@ export const CHAT_MESSAGES = {
     vi: "Đã lưu trữ cuộc trò chuyện",
     en: "Conversation archived",
   },
+  CHAT_AUTO_DELETE_FETCHED: {
+    vi: "Lấy cài đặt tự động xóa tin nhắn thành công",
+    en: "Auto-delete setting fetched successfully",
+  },
+  CHAT_AUTO_DELETE_UPDATED: {
+    vi: "Đã cập nhật cài đặt tự động xóa tin nhắn",
+    en: "Auto-delete setting updated",
+  },
+  CHAT_AUTO_DELETE_INVALID_MODE: {
+    vi: "Chế độ tự động xóa không hợp lệ",
+    en: "Invalid auto-delete mode",
+  },
+  CHAT_AUTO_DELETE_INVALID_TTL: {
+    vi: "Thời gian tự động xóa không hợp lệ",
+    en: "Invalid auto-delete duration",
+  },
   CHAT_ROOM_UNARCHIVED: {
     vi: "Đã bỏ lưu trữ cuộc trò chuyện",
     en: "Conversation unarchived",

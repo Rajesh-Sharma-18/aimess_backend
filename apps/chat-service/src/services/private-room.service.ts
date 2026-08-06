@@ -19,6 +19,7 @@ import {
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -262,6 +263,8 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   createdAt: number;
   updatedAt: number;
   friendship: WireFriendship;
+  /** Auto-delete (disappearing messages) state — see lib/auto-delete.ts#buildAutoDeleteWire. */
+  autoDelete: Record<string, unknown>;
 }
 
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
@@ -462,6 +465,11 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
+      autoDelete: buildAutoDeleteWire(
+        parseAutoDeleteMap(enriched.autoDeleteBy),
+        userId,
+        enriched.peerId
+      ),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };
   }

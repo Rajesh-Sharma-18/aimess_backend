@@ -45,6 +45,7 @@ import { ChatMessageOrchestrator } from "../../src/services/chat-message-orchest
 import { UserSnapshotService } from "../../src/services/user-snapshot.service.js";
 import { CallService } from "../../src/services/call.service.js";
 import { PresenceService } from "../../src/services/presence.service.js";
+import { AutoDeleteService } from "../../src/services/auto-delete.service.js";
 
 // -- Real controllers --
 import { PrivateRoomController } from "../../src/api/controllers/private-room.controller.js";
@@ -139,6 +140,9 @@ export interface BuiltMocks {
   userSnapshotService: UserSnapshotService;
   // services (handy for spies in a few specs)
   presenceService: PresenceService;
+  privateMessageService: PrivateMessageService;
+  chatMessageOrchestrator: ChatMessageOrchestrator;
+  autoDeleteService: AutoDeleteService;
 }
 
 export interface BuiltApp {
@@ -411,10 +415,21 @@ export function buildApp(): BuiltApp {
     groupPinService,
     presenceService
   );
+  const autoDeleteService = new AutoDeleteService(
+    privateRoomRepo,
+    privateMessageRepo,
+    privateSystemMessageService,
+    privatePinService,
+    chatMessageOrchestrator,
+    redis
+  );
 
   // -- Real controllers --
   const controllers: Controllers = {
-    privateRoomCtrl: new PrivateRoomController(privateRoomService),
+    privateRoomCtrl: new PrivateRoomController(
+      privateRoomService,
+      autoDeleteService
+    ),
     inboxCtrl: new InboxController(inboxService),
     syncCtrl: new SyncController(syncService),
     privateMessageCtrl: new PrivateMessageController(
@@ -482,6 +497,9 @@ export function buildApp(): BuiltApp {
       userSnapshotService,
       presenceService,
       presenceVisibilityGate,
+      privateMessageService,
+      chatMessageOrchestrator,
+      autoDeleteService,
     },
   };
 }

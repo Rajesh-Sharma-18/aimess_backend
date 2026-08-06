@@ -112,6 +112,14 @@ const envSchema = z.object({
   GROUP_MUTE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(60),
   GROUP_MUTE_SWEEP_BATCH: z.coerce.number().positive().default(200),
 
+  // Auto-delete (disappearing messages) sweeper for private chats. UNLIKE the
+  // mute sweep, correctness DOES depend on this one: it is what actually
+  // deletes a due message, on the server, whether or not either client is
+  // online (§5.2/§8.4). 30s keeps "After Viewing" feeling immediate without
+  // polling hard. Multi-node safe (a lost race is a no-op).
+  AUTO_DELETE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(30),
+  AUTO_DELETE_SWEEP_BATCH: z.coerce.number().positive().default(200),
+
   // Hard ceiling on an IN_PROGRESS call. Without it a client that dies before
   // sending `call:end` (crash, force-kill, dead network) leaves the row active
   // forever and BOTH participants are permanently "busy" — no future call can

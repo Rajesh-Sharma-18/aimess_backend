@@ -838,6 +838,42 @@ export class PrivateRoomRepository {
     });
   }
 
+  /**
+   * Write ONE participant's auto-delete setting onto the per-user `autoDeleteBy`
+   * map (same read-modify-write shape as `setMuted`). `mode: "OFF"` removes the
+   * entry entirely so "never configured" and "explicitly turned off" stay one
+   * state — the effective-timer resolution only ever asks "is there an entry".
+   */
+  async setAutoDelete(
+    roomId: string,
+    userId: string,
+    setting: { mode: string; ttlSeconds: number | null } | null
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const autoDeleteBy = (existing.autoDeleteBy ?? {}) as Record<
+      string,
+      unknown
+    >;
+    if (!setting || setting.mode === "OFF") {
+      delete autoDeleteBy[userId];
+    } else {
+      autoDeleteBy[userId] = {
+        mode: setting.mode,
+        ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
+        setAt: new Date().toISOString(),
+      };
+    }
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { autoDeleteBy: autoDeleteBy as unknown as Prisma.InputJsonValue },
+    });
+  }
+
   async setArchived(
     roomId: string,
     userId: string

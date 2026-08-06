@@ -28,6 +28,7 @@ export const ChatSystemMessageType = {
   FRIENDSHIP_DELETED: "FRIENDSHIP_DELETED",
   FRIENDSHIP_BLOCKED: "FRIENDSHIP_BLOCKED",
   FRIENDSHIP_BANNED: "FRIENDSHIP_BANNED",
+  AUTO_DELETE_UPDATED: "AUTO_DELETE_UPDATED",
 } as const;
 
 export type ChatSystemMessageType =
@@ -67,6 +68,9 @@ export const CHAT_SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   FRIENDSHIP_DELETED: true,
   FRIENDSHIP_BLOCKED: true,
   FRIENDSHIP_BANNED: false,
+  // A privacy setting change is chat-relevant enough to reorder the inbox — it
+  // tells the other side their next message will disappear.
+  AUTO_DELETE_UPDATED: true,
 };
 
 export function chatSystemMessageBumpsActivity(event: string): boolean {
@@ -264,6 +268,20 @@ export function buildPrivateSystemFallbackText(
       if (isActor) return `You banned ${target}`;
       if (isTarget) return `${actor} banned you`;
       return `${actor} banned ${target}`;
+
+    case "AUTO_DELETE_UPDATED": {
+      // `durationLabel` is prebuilt by the caller (see chat-service
+      // `lib/auto-delete.ts#formatAutoDeleteDuration`) so this stays formatting-free.
+      const mode = String(data.mode ?? "OFF").toUpperCase();
+      const who = isActor ? "You" : actor;
+      if (mode === "OFF") return `${who} turned off automatic message deletion`;
+      if (mode === "AFTER_VIEWING")
+        return `${who} set messages to delete after viewing`;
+      const label = String(data.durationLabel ?? "").trim();
+      return label
+        ? `${who} set messages to auto-delete after ${label}`
+        : `${who} turned on automatic message deletion`;
+    }
 
     default:
       if (isActor) return "You updated the chat";
