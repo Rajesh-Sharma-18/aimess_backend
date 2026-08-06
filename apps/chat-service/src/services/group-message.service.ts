@@ -1781,6 +1781,44 @@ export class GroupMessageService {
   }
 
   /**
+   * Every other member's DELIVERED watermark, the parallel signal to
+   * {@link getMemberReadCursors} for the grey ✓✓ tier. `GroupMessage.deliveredTo`
+   * is already persisted (presence at insert + presence-connect backfill + the
+   * client ack below), but the history serializer strips it off the wire — without
+   * this the sender's group ticks collapse to a single ✓ on every relaunch, exactly
+   * the bug memberReadSeq fixed for the blue tier.
+   */
+  async getMemberDeliveredCursors(
+    roomId: string,
+    userId: string
+  ): Promise<Record<string, number>> {
+    return this.messageRepo.getMemberDeliveredSeqs(roomId, userId);
+  }
+
+  /**
+   * Client-initiated delivery ack for a group room (socket `message:delivered`).
+   * The presence paths cover "member was online at send" and "member reconnected";
+   * this covers the recipient confirming receipt itself. Same repo primitive, so
+   * all three converge on one forward-only `deliveredTo` append.
+   */
+  async markDelivered(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[] }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.recipientId
+    );
+    if (!member) return { count: 0, messageIds: [] };
+    return this.messageRepo.markDeliveredUpTo(
+      params.roomId,
+      params.recipientId,
+      params.upToMessageId
+    );
+  }
+
+  /**
    * Every OTHER active member's current read high-water mark, as a
    * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
    * read-count state on the INITIAL page load (group has no single "peer" —

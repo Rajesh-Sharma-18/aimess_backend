@@ -697,6 +697,59 @@ export function registerChatNamespace(
     intentional: z.literal(true),
   });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
+  const CallRejoinSchema = z.object({ callId: z.string().min(1) });
+
+  // A killed app (force-quit, OOM, crash) never sends `call:end`, and for a call
+  // still RINGING the caller has not joined the LiveKit room yet — so LiveKit's
+  // `participant_left` webhook cannot fire either and the row would sit open
+  // until the 60s missed sweep. Detect the participant's transport disconnect
+  // here, wait out a short reconnection grace, and finalize through the SAME
+  // idempotent `endCall` the explicit hang-up uses.
+  const CALL_DISCONNECT_GRACE_MS = Number(
+    process.env.CALL_DISCONNECT_GRACE_MS ?? 15_000
+  );
+  const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
+  const pendingCallCleanups = new Map<string, NodeJS.Timeout>();
+
+  const rememberCallMember = (callId: string, userId: string): void => {
+    redisPub
+      .set(`call:member:${callId}:${userId}`, "1", "EX", CALL_MEMBER_TTL_SEC)
+      .catch((err: unknown) =>
+        logger.warn(`/chat call member set failed ${callId}: ${String(err)}`)
+      );
+  };
+
+  const cancelCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    const timer = pendingCallCleanups.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingCallCleanups.delete(key);
+  };
+
+  const scheduleCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    if (pendingCallCleanups.has(key)) return;
+    const timer = setTimeout(() => {
+      pendingCallCleanups.delete(key);
+      void (async () => {
+        try {
+          // Adapter-aware, so a reconnect landing on ANOTHER gateway node still
+          // counts as present and cancels the cleanup.
+          const sockets = await chat.in(`call:${callId}`).fetchSockets();
+          if (sockets.some((s) => s.data.userId === userId)) return;
+          await messagingClient.endCall({ callId, userId });
+          logger.info(
+            `/chat call cleanup after disconnect callId=${callId} userId=${userId}`
+          );
+        } catch (err: unknown) {
+          logger.warn(`/chat call cleanup failed ${callId}: ${String(err)}`);
+        }
+      })();
+    }, CALL_DISCONNECT_GRACE_MS);
+    timer.unref();
+    pendingCallCleanups.set(key, timer);
+  };
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
@@ -1501,6 +1554,7 @@ export function registerChatNamespace(
             // Join the caller's socket to `call:<callId>` so lifecycle events
             // (call:answered / call:declined / call:ended) reach them.
             void socket.join(`call:${result.callId}`);
+            rememberCallMember(result.callId, userId);
             ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
               callId: result.callId,
               status: result.status,
@@ -1530,6 +1584,7 @@ export function registerChatNamespace(
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
             void socket.join(`call:${result.callId}`);
+            rememberCallMember(result.callId, userId);
             ackOk(callback, "SOCKET_CALL_ANSWERED", locale, {
               callId: result.callId,
               status: result.status,
@@ -1592,6 +1647,33 @@ export function registerChatNamespace(
             const { code, detailKey } = resolveGrpcAckError(err);
             ackError(callback, code, locale, detailKey);
           });
+      }
+    );
+
+    // Re-entry into `call:<id>` after a transport reconnect. Authorized against
+    // the membership key written when this user initiated/answered THAT call, so
+    // no new callId is minted and no peer can join a call they were never in.
+    socket.on(
+      "call:rejoin",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CallRejoinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        const { callId } = r.data;
+        void (async () => {
+          const isMember = await redisPub
+            .get(`call:member:${callId}:${userId}`)
+            .catch(() => null);
+          if (!isMember) {
+            ackError(callback, "FORBIDDEN", locale);
+            return;
+          }
+          cancelCallCleanup(callId, userId);
+          void socket.join(`call:${callId}`);
+          ackOk(callback, "SOCKET_CALL_REJOINED", locale, { callId });
+        })();
       }
     );
 
@@ -1768,6 +1850,16 @@ export function registerChatNamespace(
         })();
       }
     );
+
+    // `socket.rooms` is already emptied by the time `disconnect` fires, so the
+    // call rooms this participant was in must be read here.
+    socket.on("disconnecting", () => {
+      if (!userId) return;
+      for (const room of socket.rooms) {
+        if (!room.startsWith("call:")) continue;
+        scheduleCallCleanup(room.slice("call:".length), userId);
+      }
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/chat disconnected userId=${userId} reason=${reason}`);

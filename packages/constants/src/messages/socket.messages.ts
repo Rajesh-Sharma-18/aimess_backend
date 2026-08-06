@@ -127,6 +127,10 @@ export const SOCKET_MESSAGES = {
     vi: "Đã trả lời cuộc gọi",
     en: "Call answered successfully",
   },
+  SOCKET_CALL_REJOINED: {
+    vi: "Đã tham gia lại cuộc gọi",
+    en: "Rejoined the call successfully",
+  },
   SOCKET_CALL_DECLINED: {
     vi: "Đã từ chối cuộc gọi",
     en: "Call declined",

@@ -119,6 +119,7 @@ export const syncQuerySchema = z.object({
 
 export const messageSearchQuerySchema = z.object({
   q: z.string().max(100).optional(),
+  page: z.coerce.number().int().min(1).optional(),
   cursor: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });

@@ -137,12 +137,23 @@ export class PrivateMessageController {
     const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
     const around = req.query.around as string | undefined;
 
+    // The peer's READ and DELIVERED watermarks. The serializer strips
+    // `readBy`/`deliveredTo` off every message, so these room-level cursors are
+    // the only thing that keeps a sender's own ticks alive across a relaunch.
+    // V1 `listMessages` has shipped both since they existed; this V2 handler
+    // (the one every current client calls) never did — the exact omission that
+    // collapsed group ticks, mirrored on the private side.
+    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getPeerReadSeq(roomId, userId).catch(() => 0),
+      this.messageService.getPeerDeliveredSeq(roomId, userId).catch(() => 0),
+    ]);
+
     const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
       res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            payload,
+            { ...payload, peerReadSeq, peerDeliveredSeq },
             payload.items.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -209,12 +220,19 @@ export class PrivateMessageController {
     const sinceRevision = Number(req.query.since_revision) || 0;
     const limit = Number(req.query.limit) || 100;
 
-    const result = await this.messageService.getChanges({
-      roomId,
-      userId,
-      sinceRevision,
-      limit,
-    });
+    // Receipts move without bumping `revision`, so the changes feed alone would
+    // never tell a reconnecting sender that the peer read or received anything
+    // while they were away. Resolved alongside the page; both best-effort.
+    const [result, peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getChanges({
+        roomId,
+        userId,
+        sinceRevision,
+        limit,
+      }),
+      this.messageService.getPeerReadSeq(roomId, userId).catch(() => 0),
+      this.messageService.getPeerDeliveredSeq(roomId, userId).catch(() => 0),
+    ]);
 
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
@@ -224,6 +242,8 @@ export class PrivateMessageController {
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
+          peerReadSeq,
+          peerDeliveredSeq,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)
