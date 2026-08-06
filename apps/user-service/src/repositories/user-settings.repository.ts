@@ -141,8 +141,10 @@ export const userSettingsRepository = {
 
   /**
    * Callee-scoped call-privacy read for the chat-service `initiateCall` gate.
-   * Returns default FRIENDS + empty allow-list when no row exists yet (matches
-   * the Prisma-schema default so unset users still receive calls from friends).
+   * Returns FRIENDS + an empty allow-list when no row exists yet. This is
+   * deliberately STRICTER than the column default (EVERYONE): profile creation
+   * always writes the row, so a missing one means something went wrong, and a
+   * failure must not hand strangers the ability to ring the user.
    */
   async findCallPrivacy(
     userId: string

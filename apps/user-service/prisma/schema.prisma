@@ -127,7 +127,7 @@ model PrivacySettings {
   whoCanSendFriendRequests PrivacyScope     @default(EVERYONE)
   whoCanSeeOnlineStatus    PrivacyScope     @default(FRIENDS)
   whoCanViewProfile        PrivacyScope     @default(EVERYONE)
-  whoCanCallMe             CallPrivacyScope @default(FRIENDS)
+  whoCanCallMe             CallPrivacyScope @default(EVERYONE)
 
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

@@ -15,10 +15,12 @@ import type { Prisma } from "../generated/prisma/client.js";
  * Per-field fallback when a user has NO `privacy_settings` row.
  *
  * These MUST mirror the `@default(...)` values in `prisma/schema.prisma` — they
- * are not all `EVERYONE`. Presence and calls default to `FRIENDS`, so a blanket
- * "unset means public" fallback would expose online status to strangers for any
- * profile whose settings row is missing. (`findCallPrivacy` already defaults to
- * `FRIENDS` for exactly this reason; this keeps the rest consistent with it.)
+ * are not all `EVERYONE`. Presence defaults to `FRIENDS`, so a blanket "unset
+ * means public" fallback would expose online status to strangers for any
+ * profile whose settings row is missing. (`whoCanCallMe` is not listed here —
+ * it lives in `findCallPrivacy`, which deliberately falls back to `FRIENDS`
+ * even though the COLUMN default is now `EVERYONE`: a missing row is an
+ * anomaly, and an anomaly must not open ringing to strangers.)
  *
  * Profile creation writes all five settings rows in one transaction, so an
  * absent row is defensive-only today — but the default has to be safe anyway.
