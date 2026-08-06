@@ -159,6 +159,25 @@ const startServer = async () => {
 
     await waitForMongoWritablePrimary();
 
+    for (const stale of [
+      {
+        collection: "private_messages",
+        name: "private_messages_content_text_idx",
+      },
+      { collection: "group_messages", name: "group_messages_content_text_idx" },
+      {
+        collection: "general_room_messages",
+        name: "general_room_messages_message_idx",
+      },
+    ]) {
+      try {
+        await dropMongoIndexIfExists(prisma, stale.collection, stale.name);
+      } catch (err) {
+        logger.warn(`Failed to drop stale text index ${stale.name}`);
+        logger.warn(err);
+      }
+    }
+
     const textIndexes: {
       collection: string;
       key: Record<string, 1 | -1 | "text">;
@@ -167,17 +186,17 @@ const startServer = async () => {
       {
         collection: "private_messages",
         key: { "content.text": "text" },
-        name: "private_messages_content_text_idx",
+        name: "private_messages_content_text_v2_idx",
       },
       {
         collection: "group_messages",
         key: { "content.text": "text" },
-        name: "group_messages_content_text_idx",
+        name: "group_messages_content_text_v2_idx",
       },
       {
         collection: "general_room_messages",
         key: { message: "text" },
-        name: "general_room_messages_message_idx",
+        name: "general_room_messages_message_v2_idx",
       },
     ];
     for (const idx of textIndexes) {
@@ -185,6 +204,7 @@ const startServer = async () => {
         await ensureMongoIndex(prisma, idx.collection, {
           key: idx.key,
           name: idx.name,
+          defaultLanguage: "none",
         });
       } catch (err) {
         logger.warn(`Failed to create text index ${idx.name} — continuing`);

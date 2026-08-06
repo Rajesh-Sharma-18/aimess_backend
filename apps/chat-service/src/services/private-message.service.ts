@@ -706,21 +706,26 @@ export class PrivateMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<PrivateMessage[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: PrivateMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
       params.userId
     );
-    return this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      params.skip ?? 0,
-      getPrivateDeletionCutoff(room, params.userId)
-    );
+    return this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      cursor: params.cursor,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
   }
 
   async listMedia(params: {

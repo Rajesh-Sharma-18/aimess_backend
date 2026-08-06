@@ -22,6 +22,13 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import {
+  buildSearchCursor,
+  buildTextSearchPipeline,
+  orderByIds,
+  parseSearchCursor,
+  readTextSearchPage,
+} from "./message-search.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -109,6 +116,8 @@ function isLatestPersonalJoinSessionForUser(
   }
   return true;
 }
+
+const SEARCH_VISIBILITY_ROUNDS = 3;
 
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -1194,43 +1203,79 @@ export class GeneralRoomMessageRepository {
     return stale.map((m) => m.id);
   }
 
-  async searchByText(
-    roomId: string,
-    query: string,
-    limit: number,
-    userId: string,
-    viewerIsActiveMember = true,
-    skip = 0,
-    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
-    readCutoff?: Date | null
-  ): Promise<GeneralRoomMessage[]> {
-    // `message` is a top-level String field, so a case-insensitive `contains`
-    // works directly. Per-user visibility (deletedBy/isVisibleToUser) can only
-    // be applied in memory (see isVisibleToUser above), so we over-fetch a
-    // window covering `skip + limit` plus a margin for filtered-out rows, then
-    // slice the requested page out of the survivors — NOT `take: limit` alone,
-    // which would silently drop every page beyond the first.
-    const OVERFETCH_MARGIN = 10;
-    const messages = await this.prisma.generalRoomMessage.findMany({
-      where: {
-        roomId,
-        deletedForAll: false,
-        message: { contains: query, mode: "insensitive" },
-        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
-      },
-      orderBy: { createdAt: "desc" },
-      take: skip + limit + OVERFETCH_MARGIN,
-    });
+  async searchByText(params: {
+    roomId: string;
+    query: string;
+    limit: number;
+    userId: string;
+    viewerIsActiveMember?: boolean;
+    cursor?: string | null;
+    readCutoff?: Date | null;
+  }): Promise<{
+    messages: GeneralRoomMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const activeMember = params.viewerIsActiveMember ?? true;
+    const collected: GeneralRoomMessage[] = [];
+    const scores = new Map<string, number>();
+    let cursor = params.cursor ?? null;
+    let hasMore = false;
+    let nextCursor: string | null = null;
 
-    return messages
-      .filter((msg) => {
+    for (let round = 0; round < SEARCH_VISIBILITY_ROUNDS; round += 1) {
+      const pipeline = buildTextSearchPipeline({
+        match: {
+          roomId: params.roomId,
+          deletedForAll: false,
+          ...(params.readCutoff
+            ? {
+                createdAt: { $lte: { $date: params.readCutoff.toISOString() } },
+              }
+            : {}),
+        },
+        query: params.query,
+        cursor: parseSearchCursor(cursor),
+        limit: params.limit,
+      });
+
+      const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+        pipeline: pipeline as unknown as Prisma.InputJsonValue[],
+      })) as unknown as Parameters<typeof readTextSearchPage>[0];
+      const page = readTextSearchPage(raw ?? [], params.limit);
+      hasMore = page.hasMore;
+      nextCursor = page.nextCursor;
+      if (!page.ids.length) break;
+
+      const rows = await this.prisma.generalRoomMessage.findMany({
+        where: { id: { in: page.ids } },
+      });
+      const visible = orderByIds(rows, page.ids).filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
         return (
-          !deletedBy.includes(userId) &&
-          isVisibleToUser(msg, userId, viewerIsActiveMember)
+          !deletedBy.includes(params.userId) &&
+          isVisibleToUser(msg, params.userId, activeMember)
         );
-      })
-      .slice(skip, skip + limit);
+      });
+      for (const msg of visible) {
+        if (collected.length >= params.limit) break;
+        collected.push(msg);
+        const score = page.scores.get(msg.id);
+        if (score !== undefined) scores.set(msg.id, score);
+      }
+      if (collected.length >= params.limit || !page.hasMore) break;
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+
+    if (collected.length >= params.limit && collected.length > 0) {
+      const last = collected[collected.length - 1]!;
+      nextCursor = buildSearchCursor(last.createdAt, last.id);
+      hasMore = true;
+    }
+
+    return { messages: collected, scores, hasMore, nextCursor };
   }
 
   async countSearchResults(

@@ -379,14 +379,19 @@ describe("GET /rooms/:roomId/messages/search", () => {
       roomId: ROOM,
       participants: [TEST_USER_ID, "peer"],
     });
-    mocks.privateMessageRepo.searchByText.mockResolvedValue([
-      {
-        id: "m1",
-        senderId: "peer",
-        content: { text: "hello world" },
-        createdAt: new Date(1),
-      },
-    ]);
+    mocks.privateMessageRepo.searchByText.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          senderId: "peer",
+          content: { text: "hello world" },
+          createdAt: new Date(1),
+        },
+      ],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
     mocks.privateMessageRepo.countSearchResults.mockResolvedValue(1);
 
     const res = await request(app)
@@ -402,49 +407,53 @@ describe("GET /rooms/:roomId/messages/search", () => {
   // Regression: `page` was parsed but never converted to a DB skip, so page 2
   // silently returned the exact same window as page 1 and any match beyond
   // the first `limit` results was unreachable.
-  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+  it("REGRESSION: forwards the keyset cursor, never a skip offset", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
       roomId: ROOM,
       participants: [TEST_USER_ID, "peer"],
     });
-    mocks.privateMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.privateMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.privateMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
 
     await request(app)
       .get(
-        `/api/chat/private/rooms/${ROOM}/messages/search?q=hello&page=2&limit=10`
+        `/api/chat/private/rooms/${ROOM}/messages/search?q=hello&limit=10&cursor=1700000000000_abc`
       )
       .set(bearer(makeAccessToken()));
 
-    expect(mocks.privateMessageRepo.searchByText).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      10,
-      expect.any(String),
-      10,
-      undefined
-    );
+    const args = mocks.privateMessageRepo.searchByText.mock.calls[0][0];
+    expect(args).toMatchObject({
+      roomId: ROOM,
+      query: "hello",
+      limit: 10,
+      cursor: "1700000000000_abc",
+    });
+    expect(args).not.toHaveProperty("skip");
   });
 
-  it("REGRESSION: countSearchResults is scoped to the requesting user (deleted-for-me parity)", async () => {
+  it("REGRESSION: surfaces hasMore/nextCursor so the client pages without duplicates", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
       roomId: ROOM,
       participants: [TEST_USER_ID, "peer"],
     });
-    mocks.privateMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.privateMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.privateMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: true,
+      nextCursor: "1700000000000_abc",
+    });
 
     const res = await request(app)
       .get(`/api/chat/private/rooms/${ROOM}/messages/search?q=hello`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.privateMessageRepo.countSearchResults).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      expect.any(String),
-      undefined
-    );
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
   // AUDIT H2 — search must be gated on participation (IDOR on history).

@@ -11,6 +11,12 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import {
+  buildTextSearchPipeline,
+  orderByIds,
+  parseSearchCursor,
+  readTextSearchPage,
+} from "./message-search.js";
 import type { PrivateRoomRepository } from "./private-room.repository.js";
 
 /**
@@ -549,49 +555,55 @@ export class PrivateMessageRepository {
     return new Set(rows.map((r) => r.id));
   }
 
-  async searchByText(
-    roomId: string,
-    query: string,
-    limit: number,
-    userId: string,
-    skip = 0,
-    cutoff?: Date
-  ): Promise<PrivateMessage[]> {
-    // content.text lives inside a Json column, which Prisma's `contains` can't
-    // target — use a raw regex query to find matching ids, then re-fetch via
-    // the typed client so results have the normal message shape. `deletedFor.
-    // <userId>` mirrors the exact filter findPreviousVisibleForUser/the main
-    // timeline reads use to hide messages this user deleted-for-me — without
-    // it, search resurrects messages the user can no longer see anywhere else.
-    // `cutoff` (delete-conversation) is the same idea at the whole-room level.
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const raw = (await this.prisma.privateMessage.findRaw({
-      filter: {
-        roomId,
+  async searchByText(params: {
+    roomId: string;
+    query: string;
+    limit: number;
+    userId: string;
+    cursor?: string | null;
+    cutoff?: Date;
+  }): Promise<{
+    messages: PrivateMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const pipeline = buildTextSearchPipeline({
+      match: {
+        roomId: params.roomId,
         isDeleted: false,
-        [`deletedFor.${userId}`]: { $exists: false },
-        "content.text": { $regex: escaped, $options: "i" },
-        ...(cutoff
-          ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+        [`deletedFor.${params.userId}`]: { $exists: false },
+        ...(params.cutoff
+          ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
           : {}),
       },
-      options: { sort: { createdAt: -1 }, skip, limit },
-    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+      query: params.query,
+      cursor: parseSearchCursor(params.cursor),
+      limit: params.limit,
+    });
 
-    const ids = raw
-      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
-      .filter((id): id is string => Boolean(id));
-    if (!ids.length) return [];
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: pipeline as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Parameters<typeof readTextSearchPage>[0];
+    const page = readTextSearchPage(raw ?? [], params.limit);
+    if (!page.ids.length) {
+      return {
+        messages: [],
+        scores: page.scores,
+        hasMore: false,
+        nextCursor: null,
+      };
+    }
 
     const rows = await this.prisma.privateMessage.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: page.ids } },
     });
-    // findRaw already returned the correctly ordered/paged id window — the
-    // typed re-fetch above is an unordered `IN` lookup, so re-apply that same
-    // order here rather than re-sorting by createdAt (which would silently
-    // undo the pagination window on same-timestamp rows).
-    const order = new Map(ids.map((id, i) => [id, i]));
-    return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+    return {
+      messages: orderByIds(rows, page.ids),
+      scores: page.scores,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
   }
 
   async addReactions(

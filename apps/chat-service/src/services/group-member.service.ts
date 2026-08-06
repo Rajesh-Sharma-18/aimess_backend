@@ -85,8 +85,8 @@ export class GroupMemberService {
       actorId?: string;
       /**
        * Invite-link self-join: the joining user is authorized by possessing a
-       * valid link, so skip the ADMIN actor check. Default (false) means
-       * a direct add MUST be performed by an active ADMIN.
+       * valid link, so skip the staff actor check. Default (false) means
+       * a direct add MUST be performed by an active ADMIN/MODERATOR.
        */
       skipActorAuthz?: boolean;
     }
@@ -94,9 +94,10 @@ export class GroupMemberService {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
-    // Authorize the actor: only an active ADMIN may add members (mirrors
-    // the kick/updateRole guards). Without this, any authenticated user could
-    // inject themselves or others into a private group (AUDIT H3).
+    // Authorize the actor: only active staff may add members. Without this, any
+    // authenticated user could inject themselves or others into a private group
+    // (AUDIT H3). MODERATOR is included — adding is a growth action, not a
+    // destructive one, so it stays below the updateRole bar (ADMIN only).
     if (!opts?.skipActorAuthz) {
       if (!params.invitedBy) {
         throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
@@ -106,7 +107,7 @@ export class GroupMemberService {
         params.roomId,
         params.invitedBy,
         {
-          roles: ["ADMIN"],
+          roles: ["ADMIN", "MODERATOR"],
         }
       );
     }
@@ -138,12 +139,8 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // A banned member cannot rejoin (mirrors community's assertNotBanned join
-    // gate) — without this, `ban` had no effect since upsert would silently
-    // reactivate them on the next add/invite-link redemption.
-    if (existing && existing.status === "BANNED") {
-      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
-    }
+    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
+    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -991,7 +988,26 @@ export class GroupMemberService {
     if (requesterId) {
       await assertGroupReadAccess(this.memberRepo, roomId, requesterId);
     }
-    const members = await this.memberRepo.findActiveMembers(roomId, params);
+    return this.enrich(await this.memberRepo.findActiveMembers(roomId, params));
+  }
+
+  /** Muted roster — expired mute windows are dropped, matching isGroupMemberMuted. */
+  async getMutedMembers(
+    roomId: string,
+    requesterId: string
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
+    await assertGroupMember(this.memberRepo, roomId, requesterId, {
+      roles: ["ADMIN", "MODERATOR"],
+    });
+    const muted = (await this.memberRepo.findMutedMembers(roomId)).filter(
+      isGroupMemberMuted
+    );
+    return this.enrich(muted);
+  }
+
+  private async enrich(
+    members: GroupMember[]
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
       return members.map((member) => ({
         ...member,
