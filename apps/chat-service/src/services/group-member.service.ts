@@ -85,8 +85,8 @@ export class GroupMemberService {
       actorId?: string;
       /**
        * Invite-link self-join: the joining user is authorized by possessing a
-       * valid link, so skip the OWNER/ADMIN actor check. Default (false) means
-       * a direct add MUST be performed by an active OWNER/ADMIN.
+       * valid link, so skip the ADMIN actor check. Default (false) means
+       * a direct add MUST be performed by an active ADMIN.
        */
       skipActorAuthz?: boolean;
     }
@@ -94,7 +94,7 @@ export class GroupMemberService {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
-    // Authorize the actor: only an active OWNER/ADMIN may add members (mirrors
+    // Authorize the actor: only an active ADMIN may add members (mirrors
     // the kick/updateRole guards). Without this, any authenticated user could
     // inject themselves or others into a private group (AUDIT H3).
     if (!opts?.skipActorAuthz) {
@@ -106,7 +106,7 @@ export class GroupMemberService {
         params.roomId,
         params.invitedBy,
         {
-          roles: ["OWNER", "ADMIN"],
+          roles: ["ADMIN"],
         }
       );
     }
@@ -117,7 +117,7 @@ export class GroupMemberService {
 
     // Friend-gate direct adds — parity with private DM's friendship check.
     // Skipped for invite-link self-joins (skipActorAuthz) and for the
-    // OWNER-onboards-themselves creation path (invitedBy == userId).
+    // creator-onboards-themselves creation path (invitedBy == userId).
     if (
       !opts?.skipActorAuthz &&
       params.invitedBy &&
@@ -329,7 +329,7 @@ export class GroupMemberService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    if (member.role === "OWNER") {
+    if (member.role === "ADMIN") {
       throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
     }
 
@@ -370,7 +370,7 @@ export class GroupMemberService {
       params.kickedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -381,7 +381,7 @@ export class GroupMemberService {
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
     // Cannot kick someone with equal or higher role
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -521,8 +521,8 @@ export class GroupMemberService {
   }
 
   /**
-   * Moderator-imposed mute — same role gate as kick (OWNER/ADMIN on anyone
-   * lower; MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
+   * Moderator-imposed mute — same role gate as kick (ADMIN on anyone lower;
+   * MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
    * delete/pin (enforced across every group write path via
    * `assertGroupMemberNotMuted`) while keeping full read access. Distinct from
    * `muteRoom` (self-notification mute) — this is a moderation action performed
@@ -535,7 +535,7 @@ export class GroupMemberService {
     mutedUntil?: Date | null;
   }): Promise<GroupMember | null> {
     // Parity with community's "you cannot mute yourself" rule; without it an
-    // OWNER outranks nobody and would fall through the role-order check below.
+    // ADMIN outranks nobody and would fall through the role-order check below.
     if (params.mutedBy === params.targetUserId) {
       throw new BadRequestError("CHAT_CANNOT_MUTE_SELF");
     }
@@ -545,7 +545,7 @@ export class GroupMemberService {
       params.mutedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -555,7 +555,7 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -592,7 +592,7 @@ export class GroupMemberService {
       params.actorId
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -690,7 +690,7 @@ export class GroupMemberService {
       params.bannedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -700,7 +700,7 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -736,7 +736,7 @@ export class GroupMemberService {
   }
 
   /**
-   * Lift a ban. Actor must be OWNER/ADMIN/MODERATOR (same gate as `ban`). Does
+   * Lift a ban. Actor must be ADMIN/MODERATOR (same gate as `ban`). Does
    * NOT re-add the user as a member — it only clears the ban so a future
    * add/invite-link redemption is no longer rejected by `addMember`'s check.
    */
@@ -750,7 +750,7 @@ export class GroupMemberService {
       params.unbannedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -865,64 +865,73 @@ export class GroupMemberService {
     newRole: string;
     actorUserId: string;
   }): Promise<GroupMember | null> {
+    // Parity with muteMember's CHAT_CANNOT_MUTE_SELF — the caller is always
+    // the sole ADMIN by the gate below, so a self-target would be either a
+    // no-op or (for newRole="ADMIN") a pointless self-handoff.
+    if (params.actorUserId === params.targetUserId) {
+      throw new BadRequestError("CHAT_CANNOT_CHANGE_OWN_ROLE");
+    }
+
     const actor = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.actorUserId
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    // Owner can set any role, admin can only set moderator/member
-    if (actor.role !== "OWNER" && ["OWNER", "ADMIN"].includes(params.newRole)) {
+    // Only the sole ADMIN may change roles at all (mirrors community: a
+    // MODERATOR can never promote/demote/hand off admin).
+    if (actor.role !== "ADMIN") {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
     // Captured before the write so the system-message text can distinguish a
-    // promotion from a demotion (and an ownership transfer) instead of a
+    // promotion from a demotion (and an admin hand-off) instead of a
     // generic "role changed to X" line.
     const target = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.targetUserId
     );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Ownership transfer: promoting a member to OWNER auto-demotes the current
-    // OWNER to ADMIN and emits OWNERSHIP_TRANSFERRED instead of ROLE_CHANGED.
-    // Guarded above (only actor.role === OWNER may set OWNER), so `actor` IS
-    // the current owner.
-    if (params.newRole === "OWNER") {
+    // "Make Admin" — full admin hand-off (this is also what used to be the
+    // separate "Transfer Ownership" action; there is exactly one ADMIN per
+    // group, so promoting anyone to ADMIN necessarily demotes the caller to
+    // MEMBER in the same call). Mirrors community-service's `transferAdmin`.
+    if (params.newRole === "ADMIN") {
       await this.memberRepo.updateRole(
         params.roomId,
         params.actorUserId,
-        "ADMIN"
+        "MEMBER"
       );
       const updated = await this.memberRepo.updateRole(
         params.roomId,
         params.targetUserId,
-        "OWNER"
+        "ADMIN"
       );
       await this.sysMsg.post({
         roomId: params.roomId,
         actorId: params.actorUserId,
-        systemEvent: SystemEvent.OWNERSHIP_TRANSFERRED,
-        systemData: { targetUserId: params.targetUserId },
+        systemEvent: SystemEvent.ROLE_CHANGED,
+        systemData: {
+          targetUserId: params.targetUserId,
+          oldRole: target.role,
+          newRole: "ADMIN",
+        },
       });
-      // Two rows changed — the new OWNER and the demoted-to-ADMIN old owner —
+      // Two rows changed — the new ADMIN and the demoted-to-MEMBER old admin —
       // so both need their own event or one side's permissions stay stale.
       await this.publishRosterChange({
         roomId: params.roomId,
         event: "group:member:updated",
         memberId: params.targetUserId,
         actorId: params.actorUserId,
-        extra: { role: "OWNER", previousRole: target?.role ?? "" },
+        extra: { role: "ADMIN", previousRole: target.role },
       });
       await this.publishRosterChange({
         roomId: params.roomId,
         event: "group:member:updated",
         memberId: params.actorUserId,
         actorId: params.actorUserId,
-        extra: { role: "ADMIN", previousRole: "OWNER" },
+        extra: { role: "MEMBER", previousRole: "ADMIN" },
       });
       return updated;
     }

@@ -64,7 +64,7 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
   router.post("/:roomId/unmute", authenticate, ctrl.unmuteRoom);
 
   // Moderator-imposed mute on ANOTHER member (distinct from the self-notification
-  // mute above) — OWNER/ADMIN/MODERATOR only, same role gate as kick.
+  // mute above) — ADMIN/MODERATOR only, same role gate as kick.
   router.post(
     "/mute-member",
     authenticate,

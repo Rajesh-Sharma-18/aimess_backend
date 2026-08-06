@@ -115,16 +115,27 @@ export class GroupMemberController {
 
   muteMember = asyncHandler(async (req: Request, res: Response) => {
     const { userId: mutedBy } = req.auth;
-    const { roomId, userId, mutedUntil } = req.body as {
+    const { roomId, userId, durationMinutes, mutedUntil } = req.body as {
       roomId: string;
       userId: string;
+      durationMinutes?: number | null;
       mutedUntil?: string | null;
     };
+    // `durationMinutes` (server clock) wins over a client-computed absolute
+    // `mutedUntil` — mirrors community's setMemberMuteSchema handling.
+    const resolvedMutedUntil =
+      durationMinutes !== undefined
+        ? durationMinutes == null
+          ? null
+          : new Date(Date.now() + durationMinutes * 60_000)
+        : mutedUntil
+          ? new Date(mutedUntil)
+          : null;
     const result = await this.service.muteMember({
       roomId,
       targetUserId: userId,
       mutedBy,
-      mutedUntil: mutedUntil ? new Date(mutedUntil) : null,
+      mutedUntil: resolvedMutedUntil,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });

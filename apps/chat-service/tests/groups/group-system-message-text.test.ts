@@ -6,14 +6,33 @@
 import { buildGroupSystemFallbackText } from "@aimess/constants";
 
 describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
-  it("POSITIVE: admin role change renders as resulting state", () => {
+  // Admin promotion is a full hand-off — there is exactly ONE admin per
+  // group, so it's phrased as "the group admin" (mirrors community's "the
+  // community admin"), same as what used to be a separate "Transfer
+  // Ownership" action.
+  it("POSITIVE: admin hand-off renders as resulting state", () => {
     const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
       actorName: "Rajesh",
       targetName: "Peter Parker",
       oldRole: "MEMBER",
       newRole: "ADMIN",
     });
-    expect(text).toBe("Peter Parker is now an admin");
+    expect(text).toBe("Peter Parker is now the group admin");
+  });
+
+  it("POSITIVE: target viewer sees the self form of an admin hand-off", () => {
+    const text = buildGroupSystemFallbackText(
+      "ROLE_CHANGED",
+      {
+        actorName: "Rajesh",
+        targetName: "Peter Parker",
+        targetUserId: "target-1",
+        oldRole: "MEMBER",
+        newRole: "ADMIN",
+      },
+      "target-1"
+    );
+    expect(text).toBe("You are now the group admin");
   });
 
   it("POSITIVE: member role change renders as resulting state", () => {
@@ -24,16 +43,6 @@ describe("buildGroupSystemFallbackText — ROLE_CHANGED", () => {
       newRole: "MEMBER",
     });
     expect(text).toBe("Peter Parker is now a member");
-  });
-
-  it("POSITIVE: owner role change renders as resulting state", () => {
-    const text = buildGroupSystemFallbackText("ROLE_CHANGED", {
-      actorName: "Rajesh",
-      targetName: "Peter Parker",
-      oldRole: "ADMIN",
-      newRole: "OWNER",
-    });
-    expect(text).toBe("Peter Parker is now the group owner");
   });
 
   it("POSITIVE: target viewer sees Community-style self copy", () => {

@@ -81,7 +81,6 @@ export function chatSystemMessageBumpsActivity(event: string): boolean {
 
 function groupRoleArticleForm(role: string): string {
   const r = role.toUpperCase();
-  if (r === "OWNER") return "the group owner";
   if (r === "ADMIN") return "an admin";
   if (r === "MODERATOR") return "a moderator";
   return "a member";
@@ -147,7 +146,22 @@ export function buildGroupSystemFallbackText(
       return `${actor} transferred ownership to ${target}`;
 
     case "ROLE_CHANGED": {
-      const newRole = (data.newRole as string) || "";
+      const newRole = ((data.newRole as string) || "").toUpperCase();
+      const oldRole = ((data.oldRole as string) || "").toUpperCase();
+      // Admin promotion is a full hand-off — there is exactly ONE admin per
+      // group (mirrors community's "the community admin" phrasing), and it
+      // also covers what used to be the separate "Transfer Ownership" action.
+      if (newRole === "ADMIN") {
+        if (isTarget) return "You are now the group admin";
+        return `${target} is now the group admin`;
+      }
+      if (
+        newRole === "MEMBER" &&
+        (oldRole === "ADMIN" || oldRole === "MODERATOR")
+      ) {
+        if (isTarget) return "You are now a member";
+        return `${target} is now a member`;
+      }
       const role = groupRoleArticleForm(newRole);
       if (isTarget) return `You are now ${role}`;
       return `${target} is now ${role}`;

@@ -56,7 +56,7 @@ beforeEach(() => {
   mocks.groupMemberRepo.findActiveByRoomAndUser.mockImplementation(
     async (_roomId: string, userId: string) =>
       userId === TEST_USER_ID
-        ? { userId: TEST_USER_ID, role: "OWNER" }
+        ? { userId: TEST_USER_ID, role: "ADMIN" }
         : { userId: TARGET, role: "MEMBER" }
   );
 });
@@ -125,24 +125,24 @@ describe("POST /api/chat/group-members/role", () => {
     });
   });
 
-  it("REALTIME: an ownership transfer announces BOTH changed rows", async () => {
+  it("REALTIME: an admin hand-off (Make Admin) announces BOTH changed rows", async () => {
     mocks.groupMemberRepo.updateRole.mockResolvedValue({
       userId: TARGET,
-      role: "OWNER",
+      role: "ADMIN",
     });
 
     const res = await request(app)
       .post("/api/chat/group-members/role")
       .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: TARGET, role: "OWNER" });
+      .send({ roomId: ROOM, userId: TARGET, role: "ADMIN" });
 
     expect(res.status).toBe(200);
     const updates = publishes().filter(
       (p) => p.event === "group:member:updated" && p.channel === `conv:${ROOM}`
     );
     expect(updates.map((u) => [u.data.memberId, u.data.role])).toEqual([
-      [TARGET, "OWNER"],
-      [TEST_USER_ID, "ADMIN"],
+      [TARGET, "ADMIN"],
+      [TEST_USER_ID, "MEMBER"],
     ]);
   });
 });

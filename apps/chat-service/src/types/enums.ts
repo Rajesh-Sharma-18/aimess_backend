@@ -27,7 +27,6 @@ export type CommunityMessageType =
 
 /** Group member roles */
 export const GroupRole = {
-  OWNER: "OWNER",
   ADMIN: "ADMIN",
   MODERATOR: "MODERATOR",
   MEMBER: "MEMBER",

@@ -331,24 +331,28 @@ export const CHAT_MESSAGES = {
     en: "Group member limit reached",
   },
   CHAT_OWNER_CANNOT_LEAVE: {
-    vi: "Chủ nhóm không thể rời đi. Hãy chuyển quyền hoặc giải tán nhóm.",
-    en: "Owner cannot leave. Transfer ownership or disband the group.",
+    vi: "Quản trị viên không thể rời đi. Hãy chỉ định quản trị viên khác hoặc giải tán nhóm.",
+    en: "Admin cannot leave. Make someone else admin or disband the group.",
   },
   CHAT_CANNOT_KICK_HIGHER_ROLE: {
     vi: "Không thể loại thành viên có vai trò bằng hoặc cao hơn",
     en: "Cannot remove a member with an equal or higher role",
+  },
+  CHAT_CANNOT_CHANGE_OWN_ROLE: {
+    vi: "Bạn không thể tự thay đổi vai trò của mình",
+    en: "You cannot change your own role",
   },
   CHAT_INSUFFICIENT_PERMISSIONS: {
     vi: "Bạn không có đủ quyền để thực hiện hành động này",
     en: "Insufficient permissions to perform this action",
   },
   CHAT_ONLY_OWNER_ADMIN_UPDATE: {
-    vi: "Chỉ chủ nhóm hoặc quản trị viên mới có thể cập nhật nhóm",
-    en: "Only the owner or an admin can update the group",
+    vi: "Chỉ quản trị viên mới có thể cập nhật nhóm",
+    en: "Only the admin can update the group",
   },
   CHAT_ONLY_OWNER_DISBAND: {
-    vi: "Chỉ chủ nhóm mới có thể giải tán nhóm",
-    en: "Only the owner can disband the group",
+    vi: "Chỉ quản trị viên mới có thể giải tán nhóm",
+    en: "Only the admin can disband the group",
   },
 
   // --- Invite links ---

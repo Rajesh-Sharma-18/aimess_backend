@@ -48,7 +48,7 @@ beforeEach(() => {
   ]);
 });
 
-/** Actor = OWNER (the authenticated caller), target = plain MEMBER. */
+/** Actor = ADMIN (the authenticated caller), target = plain MEMBER. */
 function programRoles(
   target: Record<string, unknown> = {
     userId: TARGET,
@@ -59,12 +59,12 @@ function programRoles(
 ): void {
   mocks.groupMemberRepo.findActiveByRoomAndUser.mockImplementation(
     async (_roomId: string, userId: string) =>
-      userId === TEST_USER_ID ? { userId: TEST_USER_ID, role: "OWNER" } : target
+      userId === TEST_USER_ID ? { userId: TEST_USER_ID, role: "ADMIN" } : target
   );
 }
 
 describe("POST /api/chat/group-members/mute-member", () => {
-  it("POSITIVE: an OWNER mutes a MEMBER and the mute is persisted", async () => {
+  it("POSITIVE: an ADMIN mutes a MEMBER and the mute is persisted", async () => {
     programRoles();
     mocks.groupMemberRepo.setModerationMute.mockResolvedValue({
       userId: TARGET,

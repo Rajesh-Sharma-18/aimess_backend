@@ -11,6 +11,8 @@
     "backfill:seq": "tsx scripts/backfill-sequence-numbers.ts",
     "backfill:revision": "tsx scripts/backfill-revisions.ts",
     "db:backfill:normalized-group-name": "tsx scripts/backfill-normalized-group-name.ts",
+    "db:backfill:group-owner-to-admin": "tsx scripts/backfill-group-owner-to-admin.ts",
+    "db:backfill:single-group-admin": "tsx scripts/backfill-single-group-admin.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "lint": "eslint .",

@@ -410,7 +410,7 @@ export class GroupRoomService {
     const member = await this.memberRepo.create({
       roomId,
       userId: params.createdBy,
-      role: "OWNER",
+      role: "ADMIN",
       status: "ACTIVE",
       joinedAt: new Date(),
     });
@@ -523,7 +523,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN"].includes(member.role)) {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
     }
 
@@ -610,7 +610,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (member.role !== "OWNER") {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
     }
 

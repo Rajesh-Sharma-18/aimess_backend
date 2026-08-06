@@ -106,7 +106,7 @@ export class GroupInviteLinkService {
       link.roomId,
       userId
     );
-    if (!member || !["OWNER", "ADMIN"].includes(member.role)) {
+    if (!member || member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -177,7 +177,7 @@ export class GroupInviteLinkService {
         systemEvent: SystemEvent.MEMBER_JOINED,
         actorId: userId,
         // Self-join: the user is authorized by the valid invite link, not by an
-        // OWNER/ADMIN role — skip the direct-add actor authorization.
+        // ADMIN role — skip the direct-add actor authorization.
         skipActorAuthz: true,
       }
     );
@@ -501,9 +501,9 @@ export class GroupInviteLinkService {
     userId: string
   ): Promise<GroupInviteLink[]> {
     // Invite tokens grant group entry, so listing them must be restricted to an
-    // active OWNER/ADMIN of the room — not any authenticated user (AUDIT H4).
+    // active ADMIN of the room — not any authenticated user (AUDIT H4).
     await assertGroupMember(this.memberRepo, roomId, userId, {
-      roles: ["OWNER", "ADMIN"],
+      roles: ["ADMIN"],
     });
     return this.inviteLinkRepo.findActiveByRoom(roomId);
   }

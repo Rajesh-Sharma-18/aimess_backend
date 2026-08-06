@@ -29,7 +29,7 @@ export const unbanMemberSchema = z.object({
 export const updateRoleSchema = z.object({
   roomId: z.string().min(5).max(100),
   userId: z.string().min(5).max(100),
-  role: z.enum(["OWNER", "ADMIN", "MODERATOR", "MEMBER"]),
+  role: z.enum(["ADMIN", "MODERATOR", "MEMBER"]),
 });
 
 export const markReadSchema = z.object({
@@ -42,10 +42,22 @@ export const muteGroupSchema = z.object({
 });
 
 // Moderator-imposed mute on ANOTHER member — distinct from muteGroupSchema
-// (self-notification mute for the caller's own membership).
+// (self-notification mute for the caller's own membership). `durationMinutes`
+// mirrors community's `setMemberMuteSchema`: the SERVER computes the expiry
+// from its own clock (null/omitted = indefinite), so a client's local clock
+// can never produce an expiry that's already in the past. `mutedUntil` stays
+// accepted for back-compat with any existing caller sending an absolute
+// timestamp, but `durationMinutes` wins when both are present.
 export const muteMemberSchema = z.object({
   roomId: z.string().min(5).max(100),
   userId: z.string().min(5).max(100),
+  durationMinutes: z
+    .number()
+    .int()
+    .min(1, "Mute duration must be at least 1 minute")
+    .max(525_600, "Mute duration must be at most 365 days")
+    .nullable()
+    .optional(),
   mutedUntil: z.string().datetime().nullish(),
 });
 

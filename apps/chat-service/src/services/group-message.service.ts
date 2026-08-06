@@ -1099,7 +1099,7 @@ export class GroupMessageService {
     let deletedType = "SELF_DELETE";
     if (message.senderId !== userId) {
       // Only admins can delete others' messages
-      if (!["OWNER", "ADMIN", "MODERATOR"].includes(member.role)) {
+      if (!["ADMIN", "MODERATOR"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       deletedType = "ADMIN_DELETE";

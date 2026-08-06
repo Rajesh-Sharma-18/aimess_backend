@@ -64,7 +64,7 @@ export class GroupInviteLinkController {
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
-    // Authorize (active OWNER/ADMIN) before listing tokens; the count query is
+    // Authorize (active ADMIN) before listing tokens; the count query is
     // harmless and only surfaces if authorization passes.
     const links = await this.service.getActiveLinks(roomId, userId);
     const totalCount = await this.service.countActiveLinks(roomId);
