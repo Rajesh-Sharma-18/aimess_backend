@@ -1568,6 +1568,9 @@ export class GroupMessageService {
       params.senderId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    // A forward CREATES a message in the target room, so it is a send: a muted
+    // member must not be able to route around the mute by forwarding.
+    assertGroupMemberNotMuted(member);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.
     const senderRole = (member as { role?: string }).role ?? "MEMBER";

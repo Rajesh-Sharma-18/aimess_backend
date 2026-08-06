@@ -15,7 +15,11 @@ import {
   assertGroupReadAccess,
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
-import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
+import {
+  publishGroupMemberAddedSafe,
+  publishGroupMemberMuteSafe,
+} from "../events/publish-group-member-added.js";
+import { ChatEvents } from "@aimess/shared-types";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -443,6 +447,28 @@ export class GroupMemberService {
   }): Promise<void> {
     const { roomId, targetUserId, isMuted, mutedUntil, actorId } = args;
     const event = isMuted ? "group:member:muted" : "group:member:unmuted";
+
+    // Out-of-socket leg, exactly as community does it: a target whose devices
+    // were ALL offline when the mute landed gets a push/inbox row instead of
+    // discovering the mute from a rejected send. Fire-and-forget; needs the
+    // room name for the copy, so the lookup failing just skips the push.
+    void Promise.resolve(this.roomRepo?.findActiveByRoomId?.(roomId) ?? null)
+      .then((room) => {
+        publishGroupMemberMuteSafe(
+          isMuted
+            ? ChatEvents.GROUP_MEMBER_MUTED
+            : ChatEvents.GROUP_MEMBER_UNMUTED,
+          {
+            roomId,
+            groupName: room?.name ?? "",
+            targetUserId,
+            actorId,
+            mutedUntil: isMuted && mutedUntil ? mutedUntil.toISOString() : null,
+            eventAt: new Date().toISOString(),
+          }
+        );
+      })
+      .catch(() => {});
     // Epoch ms on the wire, matching community's mute payload exactly.
     const payload = {
       roomId,
