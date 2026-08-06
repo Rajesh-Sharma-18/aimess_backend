@@ -193,8 +193,13 @@ export class AutoDeleteService {
       } catch (err) {
         // Already deleted by another node / a manual delete that beat us — both
         // are the desired end state, so never let one row stop the page.
-        logger.debug?.(
-          `AutoDeleteService|sweep skip messageId=${row.id}: ${String(err)}`
+        //
+        // WARN, not debug: this used to be `logger.debug?.()`, which in a dev
+        // environment (level=info) discarded the reason a message failed to
+        // sweep. A sweep that deletes the row but cannot broadcast leaves the
+        // message on every open client, so the failure must be visible.
+        logger.warn(
+          `AutoDeleteService|sweep failed messageId=${row.id}: ${String(err)}`
         );
       }
     }
