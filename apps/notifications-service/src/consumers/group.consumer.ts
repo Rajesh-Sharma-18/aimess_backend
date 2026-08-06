@@ -10,6 +10,7 @@ import {
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { groupCopy } from "../lib/notification-copy.js";
+import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -32,6 +33,7 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
         actorId: p.actorId,
         ...groupCopy.memberAdded(p.groupName),
         deepLink,
+        apnsThreadId: generateThreadId("GROUP", p.roomId),
         data: {
           roomId: p.roomId,
           groupName: p.groupName,
