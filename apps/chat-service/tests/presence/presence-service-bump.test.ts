@@ -74,6 +74,14 @@ describe("PresenceService.getPresenceMany", () => {
   });
 });
 
+/** whoCanSeeOnlineStatus gate that admits everyone (scope EVERYONE). */
+const allowAllGate = () => ({
+  filterVisiblePresence: async (_viewerId: string, peerIds: string[]) =>
+    new Set(peerIds),
+  filterPresenceViewers: async (_subjectId: string, viewerIds: string[]) =>
+    new Set(viewerIds),
+});
+
 describe("PresenceService.recompute — presence-change conv:updated fan-out", () => {
   it("bumps conv:updated (with isOffline) to every peer sharing a private room, on a status flip", async () => {
     const cacheRepo = makeCacheRepo({
@@ -99,7 +107,13 @@ describe("PresenceService.recompute — presence-change conv:updated fan-out", (
       ]),
     } as any;
 
-    const svc = new PresenceService(cacheRepo, redis, privateRoomRepo);
+    const svc = new PresenceService(
+      cacheRepo,
+      redis,
+      privateRoomRepo,
+      undefined,
+      allowAllGate()
+    );
     await svc.recompute("u1");
     // The bump runs fire-and-forget inside recompute(); flush microtasks.
     await new Promise((r) => setImmediate(r));
@@ -119,6 +133,48 @@ describe("PresenceService.recompute — presence-change conv:updated fan-out", (
     expect(data.data.roomId).toBe("room-1");
     expect(data.data.isOffline).toBe(false); // u1 just came online
     expect(data.data.unread).toBe(false);
+  });
+
+  it("NEGATIVE: sends no bump to a peer whoCanSeeOnlineStatus excludes", async () => {
+    const cacheRepo = makeCacheRepo({
+      sessions: [
+        { realtimeConnected: "1", appState: "FOREGROUND", lastActiveAt: "0" },
+      ],
+      presenceByUser: { u1: "offline" },
+    });
+    const { redis, publishCalls } = makeFakeRedis();
+    const privateRoomRepo = {
+      findRoomsForPresenceBump: jest.fn(async () => [
+        {
+          roomId: "room-1",
+          peerId: "peer-1",
+          lastMessageId: "msg-1",
+          lastMessage: { content: { text: "hi" }, senderId: "u1" },
+          lastMessageAt: new Date(1000),
+        },
+      ]),
+    } as any;
+    // peer-1 is a non-friend / stranger sharing a DM room — denied.
+    const denyAllGate = {
+      filterVisiblePresence: async () => new Set<string>(),
+      filterPresenceViewers: async () => new Set<string>(),
+    };
+
+    const svc = new PresenceService(
+      cacheRepo,
+      redis,
+      privateRoomRepo,
+      undefined,
+      denyAllGate
+    );
+    await svc.recompute("u1");
+    await new Promise((r) => setImmediate(r));
+
+    // The subject's own presence:status still publishes (its `user:<id>` room
+    // is join-gated at presence:subscribe); the peer bump must not.
+    expect(publishCalls.filter((c) => c.channel === "user:peer-1").length).toBe(
+      0
+    );
   });
 
   it("does nothing when no PrivateRoomRepository was injected", async () => {

@@ -160,7 +160,7 @@ const groupMemberListParams = [
     required: false,
     schema: {
       type: "string",
-      enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+      enum: ["ADMIN", "MODERATOR", "MEMBER"],
     },
   },
 ] as const;
@@ -1535,7 +1535,7 @@ export const adminPaths = {
       operationId: "adminListGroupMembers",
       summary: "List group members",
       description:
-        "Paginated, searchable members (gRPC-live, chat-service). Search matches username, user id, and email; filterable by role (OWNER/ADMIN/MODERATOR/MEMBER). Requires `groups.read`.",
+        "Paginated, searchable members (gRPC-live, chat-service). Search matches username, user id, and email; filterable by role (ADMIN/MODERATOR/MEMBER). Requires `groups.read`.",
       security: adminSecurity,
       parameters: [idPathParam, ...groupMemberListParams],
       responses: {

@@ -98,6 +98,7 @@ export class GroupMemberRepository {
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
+      clearChatAt: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -108,6 +109,7 @@ export class GroupMemberRepository {
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
+        clearChatAt: true,
       },
     });
   }
@@ -125,8 +127,11 @@ export class GroupMemberRepository {
       unreadCount: number;
       notificationSettings: GroupMember["notificationSettings"];
       clearedAt: Date | null;
+      clearChatAt: Date | null;
       status: string;
       leftAt: Date | null;
+      moderationMuted: boolean;
+      moderationMutedUntil: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -137,8 +142,14 @@ export class GroupMemberRepository {
         unreadCount: true,
         notificationSettings: true,
         clearedAt: true,
+        clearChatAt: true,
         status: true,
         leftAt: true,
+        // Moderation mute — surfaced on every inbox row so a client that was
+        // offline when the mute landed restores the disabled composer on its
+        // first list fetch, with no extra request.
+        moderationMuted: true,
+        moderationMutedUntil: true,
       },
     });
   }
@@ -153,6 +164,17 @@ export class GroupMemberRepository {
       where: { roomId, userId, status: "ACTIVE" },
       data: {
         clearedAt: new Date(),
+        unreadCount: 0,
+        lastReadAt: new Date(),
+      },
+    });
+  }
+
+  async setClearChatAt(roomId: string, userId: string): Promise<void> {
+    await this.prisma.groupMember.updateMany({
+      where: { roomId, userId, status: "ACTIVE" },
+      data: {
+        clearChatAt: new Date(),
         unreadCount: 0,
         lastReadAt: new Date(),
       },
@@ -212,6 +234,48 @@ export class GroupMemberRepository {
         moderationMutedBy: null,
       },
     });
+  }
+
+  /**
+   * TIMED moderation mutes whose `moderationMutedUntil` has already passed —
+   * feeds the auto-unmute sweep. Indefinite mutes (`moderationMutedUntil: null`)
+   * are never returned. Mirrors community's `findExpiredMemberMutes`.
+   */
+  async findExpiredModerationMutes(params: {
+    now: Date;
+    limit: number;
+  }): Promise<Array<{ id: string; roomId: string; userId: string }>> {
+    return this.prisma.groupMember.findMany({
+      where: {
+        moderationMuted: true,
+        moderationMutedUntil: { not: null, lte: params.now },
+      },
+      select: { id: true, roomId: true, userId: true },
+      take: params.limit,
+    });
+  }
+
+  /**
+   * ATOMIC claim of one expired mute: clears the mute only while it is still
+   * expired-and-set, so exactly ONE sweeper instance (or RabbitMQ redelivery)
+   * runs the unmute side-effects. Returns the number of rows changed — 1 means
+   * this caller owns the expiry, 0 means someone else already handled it.
+   * Mirrors community's `claimExpiredMemberMute`.
+   */
+  async claimExpiredModerationMute(id: string, now: Date): Promise<number> {
+    const { count } = await this.prisma.groupMember.updateMany({
+      where: {
+        id,
+        moderationMuted: true,
+        moderationMutedUntil: { not: null, lte: now },
+      },
+      data: {
+        moderationMuted: false,
+        moderationMutedUntil: null,
+        moderationMutedBy: null,
+      },
+    });
+    return count;
   }
 
   /**
@@ -346,7 +410,7 @@ export class GroupMemberRepository {
 
   /**
    * Admin Group Management: map each given roomId → its ACTIVE owner userId.
-   * Rooms without an OWNER row are simply absent (callers fall back to
+   * Rooms without an ADMIN row are simply absent (callers fall back to
    * GroupRoom.createdBy).
    */
   async findOwnersForRooms(roomIds: string[]): Promise<Map<string, string>> {
@@ -354,7 +418,7 @@ export class GroupMemberRepository {
     const ids = [...new Set(roomIds.filter(Boolean))];
     if (!ids.length) return map;
     const owners = await this.prisma.groupMember.findMany({
-      where: { role: "OWNER", status: "ACTIVE", roomId: { in: ids } },
+      where: { role: "ADMIN", status: "ACTIVE", roomId: { in: ids } },
       select: { roomId: true, userId: true },
     });
     for (const o of owners) {
@@ -371,7 +435,7 @@ export class GroupMemberRepository {
     const ids = [...new Set(userIds.filter(Boolean))];
     if (!ids.length) return [];
     const rows = await this.prisma.groupMember.findMany({
-      where: { role: "OWNER", userId: { in: ids } },
+      where: { role: "ADMIN", userId: { in: ids } },
       select: { roomId: true },
     });
     return [...new Set(rows.map((r) => r.roomId))];

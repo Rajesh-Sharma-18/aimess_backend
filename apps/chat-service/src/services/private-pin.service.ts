@@ -2,6 +2,7 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import { resolvePinsMedia, type MediaFileLike } from "../lib/media-resolve.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { SystemEvent } from "../types/enums.js";
 import type { PrivateMessagePinRepository } from "../repositories/private-message-pin.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -289,15 +290,22 @@ export class PrivatePinService {
   /**
    * The room's currently active pinned message, in the SAME shape Community
    * embeds as `pinnedMessage` — single-active-pin lookup, not "newest pin".
-   * `_userId` is accepted (unused) for call-site compatibility — callers
-   * already validate room membership before reaching this point.
+   * When `userId` is given, a pin created before that user's own Clear Chat
+   * cutoff (`getPrivateDeletionCutoff`) is hidden from them ONLY — the pin
+   * row itself is untouched, so the other participant keeps seeing it.
    */
   async getActivePinSummary(
     roomId: string,
-    _userId?: string
+    userId?: string
   ): Promise<PinnedMessageSummary | null> {
     const pin = await this.pinRepo.findActivePinByRoom(roomId);
     if (!pin) return null;
+
+    if (userId) {
+      const room = await this.roomRepo.findByRoomId(roomId);
+      const cutoff = getPrivateDeletionCutoff(room, userId);
+      if (cutoff && pin.pinnedAt <= cutoff) return null;
+    }
 
     const isAvailable = !pin.originalMessageDeletedAt;
     const live = isAvailable

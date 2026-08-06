@@ -17,6 +17,7 @@ import {
   type VisibleLast,
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
+import { isGroupMemberMuted } from "../lib/access-guard.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -30,6 +31,16 @@ import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
   isJoined: boolean;
+  /**
+   * True when an admin/moderator silenced the CALLER — they can still read
+   * everything but cannot send/react/edit/pin. Distinct from `isMuted`, which
+   * is the caller's own NOTIFICATION mute. Same names community's detail
+   * payload uses. Optional so the list endpoints that don't resolve it keep
+   * compiling unchanged.
+   */
+  isMemberMuted?: boolean;
+  /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
+  memberMutedUntil?: string | null;
 };
 
 /**
@@ -234,6 +245,23 @@ export class GroupRoomService {
     return rooms.map((room) => capped.get(room.roomId) ?? room);
   }
 
+  private applyClearChatPreviewCap<T extends GroupRoom>(
+    rooms: T[],
+    membershipByRoom: Map<string, { clearChatAt?: Date | null }>
+  ): T[] {
+    return rooms.map((room) => {
+      const clearChatAt = membershipByRoom.get(room.roomId)?.clearChatAt;
+      if (
+        !clearChatAt ||
+        !room.lastMessageAt ||
+        room.lastMessageAt.getTime() > clearChatAt.getTime()
+      ) {
+        return room;
+      }
+      return { ...room, lastMessagePreview: null } as T;
+    });
+  }
+
   /**
    * Batch-resolves the "did every other active member read the caller's last
    * message" tick for a page of rooms — one shared query pass instead of N+1.
@@ -382,7 +410,7 @@ export class GroupRoomService {
     const member = await this.memberRepo.create({
       roomId,
       userId: params.createdBy,
-      role: "OWNER",
+      role: "ADMIN",
       status: "ACTIVE",
       joinedAt: new Date(),
     });
@@ -455,12 +483,29 @@ export class GroupRoomService {
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
     // Any authenticated user can fetch a group's detail, so isJoined genuinely
     // varies: true only when the caller has an ACTIVE membership row.
-    const isJoined = userId
-      ? (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) !== null
-      : false;
+    const membership = userId
+      ? await this.memberRepo.findActiveByRoomAndUser(roomId, userId)
+      : null;
+    const isJoined = membership !== null;
     // Resolve the room logo object key → download URL on read (never persisted).
     const avatar = await resolveMediaUrl(room.avatar);
-    return { ...room, avatar, isJoined };
+    // Caller's OWN moderation-mute state, so a client that reconnects (or opens
+    // the group cold) restores the disabled composer without waiting for a
+    // `group:member:muted` socket event it may have missed while offline —
+    // Scenario 4. Named exactly like community's detail payload
+    // (`isMemberMuted`/`memberMutedUntil`); distinct from `isMuted`, which is
+    // the caller's own NOTIFICATION mute.
+    const isMemberMuted = isGroupMemberMuted(membership);
+    return {
+      ...room,
+      avatar,
+      isJoined,
+      isMemberMuted,
+      memberMutedUntil:
+        isMemberMuted && membership?.moderationMutedUntil
+          ? membership.moderationMutedUntil.toISOString()
+          : null,
+    };
   }
 
   async updateRoom(
@@ -478,7 +523,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN"].includes(member.role)) {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
     }
 
@@ -565,7 +610,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (member.role !== "OWNER") {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
     }
 
@@ -605,6 +650,25 @@ export class GroupRoomService {
       .catch(() => {});
   }
 
+  async clearChat(roomId: string, userId: string): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    await this.memberRepo.setClearChatAt(roomId, userId);
+
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:cleared",
+          data: { roomId, clearedBy: userId, type: "GROUP" },
+        })
+      )
+      .catch(() => {});
+  }
+
   async getUserGroups(
     userId: string,
     params: { limit: number; cursor?: string | null; q?: string }
@@ -618,10 +682,14 @@ export class GroupRoomService {
     const rawRooms = (
       await this.roomRepo.getUserGroups(userId, roomIds, params)
     ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
+    const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.enrichLastMessageSenderNames(
-      await this.applyPerUserPreview(rawRooms, userId)
+      this.applyClearChatPreviewCap(
+        await this.applyPerUserPreview(rawRooms, userId),
+        membershipByRoom
+      )
     );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
@@ -753,7 +821,10 @@ export class GroupRoomService {
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.enrichLastMessageSenderNames(
       await this.applyLeftMemberPreviewCap(
-        await this.applyPerUserPreview(rawRooms, params.userId),
+        this.applyClearChatPreviewCap(
+          await this.applyPerUserPreview(rawRooms, params.userId),
+          membershipByRoom
+        ),
         membershipByRoom,
         params.userId
       )
@@ -780,10 +851,16 @@ export class GroupRoomService {
           new Date(settings.muteUntil).getTime() > now);
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = membership?.status === "LEFT";
+      const isMemberMuted = isGroupMemberMuted(membership);
       return {
         ...room,
         avatar: urlFromMap(avatarUrls, room.avatar),
         isMuted,
+        isMemberMuted,
+        memberMutedUntil:
+          isMemberMuted && membership?.moderationMutedUntil
+            ? membership.moderationMutedUntil.toISOString()
+            : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
         role: membership?.role ?? "MEMBER",

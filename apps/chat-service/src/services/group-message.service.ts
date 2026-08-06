@@ -30,6 +30,7 @@ import {
   assertGroupMember,
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
+  isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
@@ -75,7 +76,7 @@ import {
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
-import type { GroupMessage } from "../generated/prisma/index.js";
+import type { GroupMember, GroupMessage } from "../generated/prisma/index.js";
 
 export class GroupMessageService {
   constructor(
@@ -469,6 +470,22 @@ export class GroupMessageService {
   async getActiveMemberIds(roomId: string): Promise<string[]> {
     const members = await this.memberRepo.findActiveMembers(roomId);
     return members.map((m) => m.userId);
+  }
+
+  /**
+   * {@link getActiveMemberIds} plus the subset currently moderation-muted, from
+   * the SAME query — the gateway's typing/recording gate needs both and would
+   * otherwise pay a second round trip per keystroke. Lazy expiry is applied
+   * (`isGroupMemberMuted`), so a lapsed timed mute never appears here.
+   */
+  async getActiveRoster(
+    roomId: string
+  ): Promise<{ userIds: string[]; mutedUserIds: string[] }> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    return {
+      userIds: members.map((m) => m.userId),
+      mutedUserIds: members.filter(isGroupMemberMuted).map((m) => m.userId),
+    };
   }
 
   /**
@@ -991,6 +1008,9 @@ export class GroupMessageService {
       userId
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+    // Parity with CommunityMessageService.deleteForMe — a muted member cannot
+    // mutate their own view of room content either.
+    assertGroupMemberNotMuted(member);
 
     return this.messageRepo.deleteForMe(messageId, userId);
   }
@@ -1084,10 +1104,15 @@ export class GroupMessageService {
     let deletedType = "SELF_DELETE";
     if (message.senderId !== userId) {
       // Only admins can delete others' messages
-      if (!["OWNER", "ADMIN", "MODERATOR"].includes(member.role)) {
+      if (!["ADMIN", "MODERATOR"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       deletedType = "ADMIN_DELETE";
+    } else {
+      // Mirrors CommunityMessageService.deleteForAll: a muted member cannot
+      // delete their OWN message, but an admin/mod deleting someone else's is
+      // moderation and stays allowed even while that admin is muted.
+      assertGroupMemberNotMuted(member);
     }
 
     const deleted = await this.messageRepo.deleteForEveryone(
@@ -1144,7 +1169,13 @@ export class GroupMessageService {
     // authorize the caller as an ACTIVE member of THAT room before any sender/
     // type/window check. A non-member (or someone not in the message's room)
     // must not mutate it — NotFound so existence isn't leaked. (cross-room IDOR)
-    await this.assertActiveMemberOfMessageRoom(message, params.userId);
+    const editor = await this.assertActiveMemberOfMessageRoom(
+      message,
+      params.userId
+    );
+    // A muted member cannot mutate room content (Telegram: editing needs send).
+    // Mirrors CommunityMessageService.editMessage.
+    assertGroupMemberNotMuted(editor);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -1310,6 +1341,20 @@ export class GroupMessageService {
    */
   async assertMember(roomId: string, userId: string): Promise<void> {
     await assertGroupMember(this.memberRepo, roomId, userId);
+  }
+
+  /**
+   * {@link assertMember} plus the moderation-mute gate — for WRITE boundaries
+   * only (react / remove-reaction). Kept separate from `assertMember` because
+   * that one also guards pure READS (getMessageReactions, message context),
+   * which a muted member keeps full access to. Mirrors Community, where the
+   * react path calls `assertRoomMemberActive` + `assertCommunityMemberNotMuted`.
+   *
+   * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
+   */
+  async assertCanWrite(roomId: string, userId: string): Promise<void> {
+    const member = await assertGroupMember(this.memberRepo, roomId, userId);
+    assertGroupMemberNotMuted(member);
   }
 
   /**
@@ -1500,12 +1545,13 @@ export class GroupMessageService {
   private async assertActiveMemberOfMessageRoom(
     message: GroupMessage,
     userId: string
-  ): Promise<void> {
+  ): Promise<GroupMember> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       message.roomId,
       userId
     );
     if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return member;
   }
 
   async forwardMessage(params: {
@@ -1527,6 +1573,9 @@ export class GroupMessageService {
       params.senderId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    // A forward CREATES a message in the target room, so it is a send: a muted
+    // member must not be able to route around the mute by forwarding.
+    assertGroupMemberNotMuted(member);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.
     const senderRole = (member as { role?: string }).role ?? "MEMBER";
@@ -1734,6 +1783,44 @@ export class GroupMessageService {
     const out: Record<string, number> = {};
     for (const m of members) out[m.userId] = m.unreadCount ?? 0;
     return out;
+  }
+
+  /**
+   * Every other member's DELIVERED watermark, the parallel signal to
+   * {@link getMemberReadCursors} for the grey ✓✓ tier. `GroupMessage.deliveredTo`
+   * is already persisted (presence at insert + presence-connect backfill + the
+   * client ack below), but the history serializer strips it off the wire — without
+   * this the sender's group ticks collapse to a single ✓ on every relaunch, exactly
+   * the bug memberReadSeq fixed for the blue tier.
+   */
+  async getMemberDeliveredCursors(
+    roomId: string,
+    userId: string
+  ): Promise<Record<string, number>> {
+    return this.messageRepo.getMemberDeliveredSeqs(roomId, userId);
+  }
+
+  /**
+   * Client-initiated delivery ack for a group room (socket `message:delivered`).
+   * The presence paths cover "member was online at send" and "member reconnected";
+   * this covers the recipient confirming receipt itself. Same repo primitive, so
+   * all three converge on one forward-only `deliveredTo` append.
+   */
+  async markDelivered(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[] }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.recipientId
+    );
+    if (!member) return { count: 0, messageIds: [] };
+    return this.messageRepo.markDeliveredUpTo(
+      params.roomId,
+      params.recipientId,
+      params.upToMessageId
+    );
   }
 
   /**

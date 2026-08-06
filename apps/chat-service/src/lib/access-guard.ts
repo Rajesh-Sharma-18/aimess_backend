@@ -50,7 +50,7 @@ export async function assertPrivateParticipant(
 
 /**
  * Group: the caller MUST be an ACTIVE member. When `roles` is supplied the
- * member's role must be one of them (e.g. OWNER/ADMIN for management actions).
+ * member's role must be one of them (e.g. ADMIN for management actions).
  *
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller isn't an active member.
  * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the role is too low.

@@ -52,7 +52,7 @@ beforeEach(() => {
   svc.getGroup.mockResolvedValue({ groupId: GID, name: "Weekend Crew" });
   svc.listGroupMembers.mockResolvedValue({
     found: true,
-    items: [{ userId: "u1", role: "OWNER" }],
+    items: [{ userId: "u1", role: "ADMIN" }],
     pagination: PAGINATION,
   });
 });
@@ -141,11 +141,11 @@ describe("GET /v1/groups/:groupId/members", () => {
     expect(res.status).toBe(400);
   });
 
-  it("accepts the OWNER role filter", async () => {
+  it("accepts the ADMIN role filter", async () => {
     const res = await request(app)
-      .get(`/v1/groups/${GID}/members?role=OWNER`)
+      .get(`/v1/groups/${GID}/members?role=ADMIN`)
       .set(auth());
     expect(res.status).toBe(200);
-    expect(svc.listGroupMembers.mock.calls[0][1].role).toBe("OWNER");
+    expect(svc.listGroupMembers.mock.calls[0][1].role).toBe("ADMIN");
   });
 });

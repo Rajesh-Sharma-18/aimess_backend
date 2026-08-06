@@ -44,7 +44,10 @@ describe("publishConvUpdated — isOffline", () => {
       lastMessageId: "msg-1",
       lastMessageAt: 1,
       preview: basePreview,
-      getIsOnline: async (id: string) => online.has(id),
+      // Viewer-scoped: (viewer, subject) → the subject's presence AS the viewer
+      // is allowed to see it.
+      getIsOnline: async (_viewerId: string, subjectId: string) =>
+        online.has(subjectId),
     });
 
     const senderMsg = JSON.parse(
@@ -61,6 +64,29 @@ describe("publishConvUpdated — isOffline", () => {
     // Existing fields untouched.
     expect(senderMsg.data.lastMessageId).toBe("msg-1");
     expect(senderMsg.data.lastMessage).toEqual(basePreview);
+  });
+
+  it("PRIVACY: a peer hidden from this viewer is reported offline, not leaked", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-hidden",
+      recipientIds: ["viewer", "hidden-peer"],
+      senderId: "viewer",
+      lastMessageId: "msg-1",
+      lastMessageAt: 1,
+      preview: basePreview,
+      // The gate denies "viewer", so PresenceService reports false even though
+      // hidden-peer is genuinely online.
+      getIsOnline: async (viewerId: string) => viewerId !== "viewer",
+    });
+
+    const viewerMsg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:viewer")!.payload
+    );
+    expect(viewerMsg.data.isOffline).toBe(true);
   });
 
   it("omits isOffline for GROUP even when getIsOnline is supplied", async () => {

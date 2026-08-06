@@ -123,6 +123,37 @@ export class GroupMessageRepository {
   }
 
   /**
+   * Every other member's DELIVERED high-water mark (`userId` → `sequenceNumber`),
+   * derived from the newest of MY messages each member appears in `deliveredTo` on.
+   * Group's answer to PrivateMessageRepository.getNewestDeliveredSeq — one indexed
+   * query for the whole roster instead of one per member, since a single desc scan
+   * of my own messages yields every member's first (= newest) hit.
+   */
+  async getMemberDeliveredSeqs(
+    roomId: string,
+    senderId: string
+  ): Promise<Record<string, number>> {
+    const rows = await this.prisma.groupMessage.findMany({
+      where: { roomId, senderId, isDeleted: false },
+      orderBy: { sequenceNumber: "desc" },
+      take: 50,
+      select: { sequenceNumber: true, deliveredTo: true },
+    });
+    const cursors: Record<string, number> = {};
+    for (const row of rows) {
+      const list = Array.isArray(row.deliveredTo)
+        ? (row.deliveredTo as unknown as string[])
+        : [];
+      for (const userId of list) {
+        if (userId === senderId) continue;
+        if (cursors[userId] === undefined)
+          cursors[userId] = row.sequenceNumber ?? 0;
+      }
+    }
+    return cursors;
+  }
+
+  /**
    * Presence-driven delivery: append `recipientId` to `deliveredTo` on every
    * message in `roomId` at or before `upToMessageId` that was sent by someone
    * OTHER than the recipient and that they aren't already listed in. Returns

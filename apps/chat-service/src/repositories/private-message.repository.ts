@@ -54,6 +54,9 @@ export class PrivateMessageRepository {
     deletedFor?: object;
     isDeleted?: boolean;
     sequenceNumber?: number;
+    /** Auto-delete stamp — see lib/auto-delete.ts#computeAutoDeleteStamp. */
+    autoDeleteAt?: Date | null;
+    autoDeleteAfterView?: boolean;
     [key: string]: unknown;
   }): Promise<PrivateMessage> {
     const revision = await this.roomRepo.allocateRevision(data.roomId);
@@ -84,6 +87,8 @@ export class PrivateMessageRepository {
         forwardData: (data.forwardData as object) ?? null,
         deletedFor: (data.deletedFor as object) ?? {},
         isDeleted: data.isDeleted ?? false,
+        autoDeleteAt: data.autoDeleteAt ?? null,
+        autoDeleteAfterView: data.autoDeleteAfterView ?? false,
         createdAt: (data.createdAt as Date) ?? new Date(),
       },
     });
@@ -853,6 +858,9 @@ export class PrivateMessageRepository {
     forwardData: object;
     clientMessageId?: string | null;
     sequenceNumber?: number;
+    /** Auto-delete stamp of the TARGET room — a forward is a brand new message there. */
+    autoDeleteAt?: Date | null;
+    autoDeleteAfterView?: boolean;
   }): Promise<PrivateMessage> {
     const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.privateMessage.create({
@@ -875,7 +883,112 @@ export class PrivateMessageRepository {
         reactions: {},
         deletedFor: {},
         isDeleted: false,
+        autoDeleteAt: data.autoDeleteAt ?? null,
+        autoDeleteAfterView: data.autoDeleteAfterView ?? false,
       },
+    });
+  }
+
+  // ───────────────────────── auto-delete (disappearing messages) ────────────
+
+  /**
+   * Arm every "After Viewing" message the reader RECEIVED in this room: the
+   * deadline only starts once the recipient has actually seen it (§3.4/§8.7).
+   * Own messages are skipped — the sender has trivially "viewed" theirs, so the
+   * recipient's receipt is the only signal that matters. Idempotent: a second
+   * read receipt matches nothing because `autoDeleteAt` is already set.
+   */
+  async armAfterViewing(
+    roomId: string,
+    readerId: string,
+    deleteAt: Date
+  ): Promise<number> {
+    const res = await this.prisma.privateMessage.updateMany({
+      where: {
+        roomId,
+        senderId: { not: readerId },
+        autoDeleteAfterView: true,
+        autoDeleteAt: null,
+        isDeleted: false,
+      },
+      data: { autoDeleteAt: deleteAt },
+    });
+    return res.count;
+  }
+
+  /**
+   * One page of messages whose auto-delete deadline has passed.
+   *
+   * `not: null` is LOAD-BEARING, not defensive noise. On MongoDB, Prisma's
+   * `lte` comparison also matches a column whose value is explicitly `null`
+   * (BSON orders Null before Date and this comparison is not type-bracketed).
+   * Every message we write sets `autoDeleteAt: null` when it has no timer, so
+   * without this guard the sweeper treats "no timer" as "overdue" and deletes
+   * every ordinary message ~30s after it is sent — including "After Viewing"
+   * messages the recipient has not opened yet. Verified against a live Mongo:
+   * a filter of `{lte: now}` alone returns explicit-null rows.
+   */
+  async findDueAutoDeletes(
+    now: Date,
+    limit: number
+  ): Promise<Array<{ id: string; roomId: string; senderId: string | null }>> {
+    return this.prisma.privateMessage.findMany({
+      where: {
+        AND: [{ autoDeleteAt: { not: null } }, { autoDeleteAt: { lte: now } }],
+        isDeleted: false,
+      },
+      orderBy: { autoDeleteAt: "asc" },
+      take: limit,
+      select: { id: true, roomId: true, senderId: true },
+    });
+  }
+
+  /**
+   * Re-stamp still-pending messages after their owner CHANGES the timer (§8.8:
+   * both lengthening and shortening apply to messages already counting down).
+   * Only rows that ALREADY have a timer are touched — a change never
+   * retroactively puts a deadline on messages that were sent with the feature
+   * off (§4 "Not deleted: messages sent before the feature was enabled").
+   *
+   * `autoDeleteAt = createdAt + ttl` is per-row arithmetic, which the typed
+   * client can't express in one `updateMany`; this uses the same raw-command
+   * pattern as `lib/quote-refresh.ts` so it stays a single indexed write.
+   */
+  async restampPendingAutoDeletes(params: {
+    roomId: string;
+    senderIds: string[];
+    /** TIMER: seconds from createdAt. AFTER_VIEWING: null. */
+    ttlSeconds: number | null;
+    afterView: boolean;
+  }): Promise<void> {
+    const { roomId, senderIds, ttlSeconds, afterView } = params;
+    if (!senderIds.length) return;
+    const set = afterView
+      ? { autoDeleteAfterView: true, autoDeleteAt: null }
+      : {
+          autoDeleteAfterView: false,
+          autoDeleteAt: {
+            $add: ["$createdAt", Math.round((ttlSeconds ?? 0) * 1000)],
+          },
+        };
+    await this.prisma.$runCommandRaw({
+      update: "private_messages",
+      updates: [
+        {
+          q: {
+            roomId,
+            senderId: { $in: senderIds },
+            isDeleted: false,
+            $or: [
+              { autoDeleteAt: { $ne: null } },
+              { autoDeleteAfterView: true },
+            ],
+          },
+          // Pipeline form — required for the `$createdAt + ttl` expression.
+          u: [{ $set: set }],
+          multi: true,
+        },
+      ],
     });
   }
 

@@ -14,8 +14,8 @@ function buildService() {
       updateStatus: jest.fn().mockResolvedValue({ callId: "c" }),
       claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
       findByParticipant: jest.fn(),
+      findActiveByParticipant: jest.fn().mockResolvedValue([]),
       findStuckRinging: jest.fn(),
-      findStuckInProgress: jest.fn().mockResolvedValue([]),
       claimForMissed: jest.fn(),
       // Default to "nothing stranded" so the existing sweep tests are unaffected.
       findStuckInProgress: jest.fn().mockResolvedValue([]),

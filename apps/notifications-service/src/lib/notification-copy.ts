@@ -264,6 +264,25 @@ export const groupCopy = {
     title: groupName || "New group",
     body: "You were added to the group",
   }),
+  // Word-for-word the community mute copy, with "group" in place of the
+  // community name — see communityCopy.memberMuted/memberUnmuted.
+  memberMuted: (
+    groupName: string,
+    mutedUntil?: string | null
+  ): NotificationCopy => {
+    const until = mutedUntil ? formatUntil(mutedUntil) : null;
+    const name = groupName || "this group";
+    return {
+      title: name,
+      body: until
+        ? `You're muted in ${name} until ${until}`
+        : `You're muted in ${name}`,
+    };
+  },
+  memberUnmuted: (groupName: string): NotificationCopy => ({
+    title: groupName || "this group",
+    body: `You can post in ${groupName || "this group"} again`,
+  }),
 };
 
 export const callCopy = {

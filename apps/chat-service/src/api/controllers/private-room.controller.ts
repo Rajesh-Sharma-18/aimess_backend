@@ -4,9 +4,13 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
 import type { PrivateRoomService } from "../../services/private-room.service.js";
+import type { AutoDeleteService } from "../../services/auto-delete.service.js";
 
 export class PrivateRoomController {
-  constructor(private readonly service: PrivateRoomService) {}
+  constructor(
+    private readonly service: PrivateRoomService,
+    private readonly autoDeleteService: AutoDeleteService
+  ) {}
 
   // Same id-shape disambiguation as getRoomDetails below: a caller that POSTs
   // the room's OWN id here (rather than a peer's userId) almost certainly
@@ -82,6 +86,15 @@ export class PrivateRoomController {
       .json(new ApiResponse(null, t("CHAT_CONVERSATION_DELETED", req.locale)));
   });
 
+  clearChat = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    await this.service.clearChat(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("CHAT_CLEARED", req.locale)));
+  });
+
   muteRoom = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
@@ -103,6 +116,33 @@ export class PrivateRoomController {
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
+  });
+
+  // Automatically Delete Messages (disappearing messages). One-sided by design:
+  // the caller sets only their OWN timer; the peer is informed, never asked.
+  getAutoDelete = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.autoDeleteService.getSettings(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_AUTO_DELETE_FETCHED", req.locale)));
+  });
+
+  setAutoDelete = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { mode, ttlSeconds } = req.body as {
+      mode: string;
+      ttlSeconds?: number | null;
+    };
+    const result = await this.autoDeleteService.updateSetting(roomId, userId, {
+      mode,
+      ttlSeconds: ttlSeconds ?? null,
+    });
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_AUTO_DELETE_UPDATED", req.locale)));
   });
 
   archiveRoom = asyncHandler(async (req: Request, res: Response) => {

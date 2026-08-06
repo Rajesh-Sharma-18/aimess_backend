@@ -310,7 +310,11 @@ export function normalizeCatchupEvent(
     roomId: event.conversationId,
     conversationType: conversationType.toUpperCase(),
     content,
-    reactions: [],
+    // Canonical grouped reaction state carried by the catch-up protobuf event —
+    // without this a reaction applied live vanished the next time the client
+    // caught up (reopen room, reload, reconnect), since reconnect hydration
+    // never re-sent the plain `message:reaction` broadcast.
+    reactions: event.reactions ?? [],
     sequenceNumber: Number(event.sequenceNumber),
     // int64 arrives as a string via proto-loader (longs: String).
     revision: Number(event.revision ?? 0),
@@ -332,6 +336,41 @@ export function registerChatNamespace(
 ): void {
   const chat: Namespace = io.of("/chat");
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
+
+  /**
+   * Re-run the `presence:subscribe` authorization for everyone already watching
+   * `subjectId`, and drop the sockets that no longer qualify. Called when the
+   * subject's privacy settings change or a friendship they had is removed —
+   * i.e. exactly when a previously-granted subscription can turn stale.
+   *
+   * The subject's OWN sockets are never evicted (they are in `user:<self>` for
+   * their own events, not as watchers). `filterVisiblePresence` fails CLOSED,
+   * so a user-service outage during this pass drops watchers rather than
+   * keeping them — the client can re-subscribe, which is the safe direction.
+   */
+  const revokeStalePresenceWatchers = async (
+    subjectId: string
+  ): Promise<void> => {
+    try {
+      const watchers = await chat.in(`user:${subjectId}`).fetchSockets();
+      await Promise.all(
+        watchers.map(async (watcher) => {
+          const watcherId = watcher.data?.userId as string | undefined;
+          if (!watcherId || watcherId === subjectId) return;
+          const visible = await userClient.filterVisiblePresence(watcherId, [
+            subjectId,
+          ]);
+          if (!visible.includes(subjectId)) {
+            void watcher.leave(`user:${subjectId}`);
+          }
+        })
+      );
+    } catch (err) {
+      logger.warn(
+        `/chat presence re-authorization failed for ${subjectId}: ${String(err)}`
+      );
+    }
+  };
 
   // Dedicated subscriber for conversation, call, and user channels.
   // Backend services publish: { event: "message:new"|"message:edited"|..., data: {...} }
@@ -407,7 +446,8 @@ export function registerChatNamespace(
           // view. MUST stay self-only — otherwise a peer merely watching this
           // user's presence would learn they deleted a conversation (and its
           // roomId, which may be with a third party entirely).
-          parsed.event === "conv:deleted";
+          parsed.event === "conv:deleted" ||
+          parsed.event === "conv:cleared";
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
@@ -425,6 +465,34 @@ export function registerChatNamespace(
               callData.reason === "answered_elsewhere"));
         if (shouldMirrorJoinCallRoom) {
           void chat.in(targetChannel).socketsJoin(`call:${callData.callId}`);
+        }
+
+        // Presence subscriptions are authorized at `presence:subscribe` time,
+        // so a socket that joined `user:<subjectId>` while it was allowed keeps
+        // hearing that user's presence forever — including after they set
+        // whoCanSeeOnlineStatus to NO_ONE/FRIENDS, or unfriended/blocked the
+        // watcher. Both of those changes already publish on `user:<subjectId>`,
+        // so re-authorize the room's watchers here: the revocation lands on the
+        // same event that caused it, with no client action needed.
+        if (
+          pattern === "user:*" &&
+          (parsed.event === "settings:updated" ||
+            parsed.event === "friend:removed" ||
+            parsed.event === "friend:blocked")
+        ) {
+          void revokeStalePresenceWatchers(channel.slice("user:".length));
+          // `friend:blocked` is published to the BLOCKER only (blocking is
+          // silent to the blocked party), but it ends the friendship in both
+          // directions — so the blocked user's own watcher list has to be
+          // re-authorized too, or the blocker keeps seeing their presence.
+          const targetUserId = (parsed.data as { targetUserId?: unknown })
+            ?.targetUserId;
+          if (
+            parsed.event === "friend:blocked" &&
+            typeof targetUserId === "string"
+          ) {
+            void revokeStalePresenceWatchers(targetUserId);
+          }
         }
 
         void emitPersonalizedSender(
@@ -633,6 +701,59 @@ export function registerChatNamespace(
     intentional: z.literal(true),
   });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
+  const CallRejoinSchema = z.object({ callId: z.string().min(1) });
+
+  // A killed app (force-quit, OOM, crash) never sends `call:end`, and for a call
+  // still RINGING the caller has not joined the LiveKit room yet — so LiveKit's
+  // `participant_left` webhook cannot fire either and the row would sit open
+  // until the 60s missed sweep. Detect the participant's transport disconnect
+  // here, wait out a short reconnection grace, and finalize through the SAME
+  // idempotent `endCall` the explicit hang-up uses.
+  const CALL_DISCONNECT_GRACE_MS = Number(
+    process.env.CALL_DISCONNECT_GRACE_MS ?? 15_000
+  );
+  const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
+  const pendingCallCleanups = new Map<string, NodeJS.Timeout>();
+
+  const rememberCallMember = (callId: string, userId: string): void => {
+    redisPub
+      .set(`call:member:${callId}:${userId}`, "1", "EX", CALL_MEMBER_TTL_SEC)
+      .catch((err: unknown) =>
+        logger.warn(`/chat call member set failed ${callId}: ${String(err)}`)
+      );
+  };
+
+  const cancelCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    const timer = pendingCallCleanups.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingCallCleanups.delete(key);
+  };
+
+  const scheduleCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    if (pendingCallCleanups.has(key)) return;
+    const timer = setTimeout(() => {
+      pendingCallCleanups.delete(key);
+      void (async () => {
+        try {
+          // Adapter-aware, so a reconnect landing on ANOTHER gateway node still
+          // counts as present and cancels the cleanup.
+          const sockets = await chat.in(`call:${callId}`).fetchSockets();
+          if (sockets.some((s) => s.data.userId === userId)) return;
+          await messagingClient.endCall({ callId, userId });
+          logger.info(
+            `/chat call cleanup after disconnect callId=${callId} userId=${userId}`
+          );
+        } catch (err: unknown) {
+          logger.warn(`/chat call cleanup failed ${callId}: ${String(err)}`);
+        }
+      })();
+    }, CALL_DISCONNECT_GRACE_MS);
+    timer.unref();
+    pendingCallCleanups.set(key, timer);
+  };
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
@@ -1143,11 +1264,20 @@ export function registerChatNamespace(
         senderId: userId,
         resolveRoster: async (conversationId) => {
           try {
-            const { userIds } = await messagingClient.getRoomParticipantIds({
-              conversationId,
-              conversationType:
-                typingHints.get(conversationId)?.kind ?? "private",
-            });
+            const { userIds, mutedUserIds } =
+              await messagingClient.getRoomParticipantIds({
+                conversationId,
+                conversationType:
+                  typingHints.get(conversationId)?.kind ?? "private",
+              });
+            // A GROUP member under a moderation mute cannot send, so they must
+            // not be able to broadcast "…is typing" either (Scenario 1).
+            // Returning an empty roster drops the event: createDirectRosterBroadcast
+            // treats roster-membership as the sender's authorization. The muted
+            // member is NOT removed from `userIds` for anyone else's broadcast,
+            // so they keep RECEIVING peers' indicators — mute restricts sending
+            // only. `mutedUserIds` is always empty for PRIVATE.
+            if (mutedUserIds?.includes(userId)) return [];
             return userIds;
           } catch (err) {
             logger.warn(
@@ -1219,8 +1349,35 @@ export function registerChatNamespace(
             Date.now(),
             { senderName: recordingNames.get(conversationId) }
           ),
-        isAuthorized: (conversationId) =>
-          socket.rooms.has(`conv:${conversationId}`),
+        // Both kinds consult the same roster typing uses. PRIVATE: it returns
+        // an empty roster once either side has blocked the other, so a blocked
+        // DM never leaks a "recording…" indicator in either direction. GROUP:
+        // membership is already proven by the conv:<id> room check, but the
+        // roster also reports who is moderation-muted — a muted member must
+        // not advertise recording, since they cannot send the voice note.
+        // One gRPC call per recording start/stop (not per keystroke).
+        isAuthorized: async (conversationId) => {
+          if (!socket.rooms.has(`conv:${conversationId}`)) return false;
+          const kind = typingHints.get(conversationId)?.kind ?? "private";
+          try {
+            const { userIds, mutedUserIds } =
+              await messagingClient.getRoomParticipantIds({
+                conversationId,
+                conversationType: kind,
+              });
+            // Voice-note recording is a send action — a muted member must not
+            // advertise it (GROUP only; mutedUserIds is empty for PRIVATE).
+            if (mutedUserIds?.includes(userId)) return false;
+            // GROUP membership is already proven by the conv:<id> room check
+            // above; only PRIVATE needs the block-aware roster membership test.
+            return kind === "group" || userIds.includes(userId);
+          } catch (err) {
+            logger.warn(
+              `/chat recording: failed to resolve participants conversationId=${conversationId}: ${String(err)}`
+            );
+            return false;
+          }
+        },
       }),
     });
 
@@ -1228,6 +1385,7 @@ export function registerChatNamespace(
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
       recordingNames.set(r.data.conversationId, r.data.senderName);
+      rememberTypingHint(r.data);
       recording.start(r.data.conversationId);
     });
 
@@ -1235,6 +1393,7 @@ export function registerChatNamespace(
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
       recordingNames.set(r.data.conversationId, r.data.senderName);
+      rememberTypingHint(r.data);
       recording.stop(r.data.conversationId);
     });
 
@@ -1399,6 +1558,7 @@ export function registerChatNamespace(
             // Join the caller's socket to `call:<callId>` so lifecycle events
             // (call:answered / call:declined / call:ended) reach them.
             void socket.join(`call:${result.callId}`);
+            rememberCallMember(result.callId, userId);
             ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
               callId: result.callId,
               status: result.status,
@@ -1428,6 +1588,7 @@ export function registerChatNamespace(
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
             void socket.join(`call:${result.callId}`);
+            rememberCallMember(result.callId, userId);
             ackOk(callback, "SOCKET_CALL_ANSWERED", locale, {
               callId: result.callId,
               status: result.status,
@@ -1490,6 +1651,33 @@ export function registerChatNamespace(
             const { code, detailKey } = resolveGrpcAckError(err);
             ackError(callback, code, locale, detailKey);
           });
+      }
+    );
+
+    // Re-entry into `call:<id>` after a transport reconnect. Authorized against
+    // the membership key written when this user initiated/answered THAT call, so
+    // no new callId is minted and no peer can join a call they were never in.
+    socket.on(
+      "call:rejoin",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CallRejoinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        const { callId } = r.data;
+        void (async () => {
+          const isMember = await redisPub
+            .get(`call:member:${callId}:${userId}`)
+            .catch(() => null);
+          if (!isMember) {
+            ackError(callback, "FORBIDDEN", locale);
+            return;
+          }
+          cancelCallCleanup(callId, userId);
+          void socket.join(`call:${callId}`);
+          ackOk(callback, "SOCKET_CALL_REJOINED", locale, { callId });
+        })();
       }
     );
 
@@ -1666,6 +1854,16 @@ export function registerChatNamespace(
         })();
       }
     );
+
+    // `socket.rooms` is already emptied by the time `disconnect` fires, so the
+    // call rooms this participant was in must be read here.
+    socket.on("disconnecting", () => {
+      if (!userId) return;
+      for (const room of socket.rooms) {
+        if (!room.startsWith("call:")) continue;
+        scheduleCallCleanup(room.slice("call:".length), userId);
+      }
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/chat disconnected userId=${userId} reason=${reason}`);

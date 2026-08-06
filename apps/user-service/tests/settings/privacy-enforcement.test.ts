@@ -9,6 +9,7 @@ import {
   canViewProfile,
   discoverableWhere,
   scopeAdmits,
+  visibleIdentity,
   visibleIsOnline,
 } from "../../src/lib/privacy-scope.js";
 
@@ -160,5 +161,61 @@ describe("presence + profile masking on list surfaces", () => {
     const p = { privacySettings: { whoCanViewProfile: "FRIENDS_OF_FRIENDS" } };
     expect(canViewProfile(p, friendOfFriend)).toBe(true);
     expect(canViewProfile(p, stranger)).toBe(false);
+  });
+});
+
+describe("visibleIdentity — name + avatar on profile-card surfaces", () => {
+  const named = { firstName: "Ada", lastName: "Lovelace" };
+  const scoped = (whoCanViewProfile: string | null) => ({
+    ...named,
+    privacySettings: { whoCanViewProfile },
+  });
+
+  it("returns the real name and allows the avatar when the scope admits", () => {
+    expect(visibleIdentity(scoped("EVERYONE"), stranger)).toEqual({
+      avatarAllowed: true,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      fullName: "Ada Lovelace",
+    });
+  });
+
+  it("NO_ONE hides the name AND the avatar, even from a friend", () => {
+    expect(visibleIdentity(scoped("NO_ONE"), friend)).toEqual({
+      avatarAllowed: false,
+      firstName: null,
+      lastName: null,
+      fullName: null,
+    });
+  });
+
+  it("FRIENDS hides both from a stranger and shows both to a friend", () => {
+    expect(visibleIdentity(scoped("FRIENDS"), stranger).fullName).toBeNull();
+    expect(visibleIdentity(scoped("FRIENDS"), stranger).avatarAllowed).toBe(
+      false
+    );
+    expect(visibleIdentity(scoped("FRIENDS"), friend).fullName).toBe(
+      "Ada Lovelace"
+    );
+  });
+
+  it("FRIENDS_OF_FRIENDS admits one hop but not a stranger", () => {
+    expect(
+      visibleIdentity(scoped("FRIENDS_OF_FRIENDS"), friendOfFriend).fullName
+    ).toBe("Ada Lovelace");
+    expect(
+      visibleIdentity(scoped("FRIENDS_OF_FRIENDS"), stranger).fullName
+    ).toBeNull();
+  });
+
+  it("the owner always sees their own name", () => {
+    expect(
+      visibleIdentity(scoped("NO_ONE"), { isSelf: true, isFriend: false })
+        .fullName
+    ).toBe("Ada Lovelace");
+  });
+
+  it("no settings row falls back to EVERYONE, not to hidden", () => {
+    expect(visibleIdentity(named, stranger).fullName).toBe("Ada Lovelace");
   });
 });

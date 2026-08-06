@@ -589,6 +589,11 @@ message CatchupEventDto {
   // ZERO-LOSS CHANGE cursor for this message (Telegram pts). Present in both
   // catch-up modes; the client tracks the per-room max as its high-water.
   int64  revision        = 14;
+  // Canonical grouped reaction state, mirroring CommunityCatchupEventDto —
+  // without this a reaction applied live vanishes the next time the client
+  // catches up (reopen room, reload, reconnect), since catch-up is what
+  // rehydrates message state on those paths, not a plain reactions broadcast.
+  repeated ReactionGroupDto reactions = 15;
 }
 message CatchupRoomResponse {
   string conversation_id           = 1;
@@ -661,6 +666,13 @@ message GetRoomParticipantIdsRequest {
 }
 message GetRoomParticipantIdsResponse {
   repeated string user_ids = 1;
+  // Subset of `user_ids` currently under a moderation mute (GROUP only; always
+  // empty for PRIVATE, which has no moderation mute). The gateway drops a
+  // typing/recording indicator whose SENDER appears here — a muted member is
+  // send-blocked, so broadcasting "…is typing" would be a lie. Kept as a
+  // separate list rather than filtering `user_ids` so a muted member still
+  // RECEIVES everyone else's indicators (mute is a send restriction only).
+  repeated string muted_user_ids = 2;
 }
 
 // ---- CheckPrivateMute ----

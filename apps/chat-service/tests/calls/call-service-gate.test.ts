@@ -273,6 +273,94 @@ describe("CallService.initiateCall gate", () => {
   });
 });
 
+describe("CallService.initiateGroupCall — whoCanCallMe=NO_ONE opt-out", () => {
+  /** `buildService` stubs plus a group-member repo (arg 10). */
+  function buildGroupService(privacyByUser: Record<string, string>): {
+    service: CallService;
+    stubs: Stubs;
+  } {
+    const { stubs } = buildService();
+    stubs.getCallPrivacy.mockImplementation(async (userId: string) => ({
+      whoCanCallMe: (privacyByUser[userId] ?? "FRIENDS") as never,
+      allowedUserIds: [],
+    }));
+    stubs.callRepo.findActiveByGroup = jest.fn().mockResolvedValue(null);
+    const groupMemberRepo = {
+      findActiveByRoomAndUser: jest
+        .fn()
+        .mockResolvedValue({ userId: "caller" }),
+      findActiveMembers: jest
+        .fn()
+        .mockResolvedValue([
+          { userId: "caller" },
+          { userId: "m1" },
+          { userId: "m2" },
+        ]),
+    };
+    const service = new CallService(
+      stubs.callRepo as never,
+      stubs.privateRoomRepo as never,
+      stubs.redis as never,
+      stubs.livekit as never,
+      stubs.friendshipRepo as never,
+      stubs.getCallPrivacy,
+      stubs.getUserSnapshot,
+      undefined,
+      undefined,
+      groupMemberRepo as never
+    );
+    return { service, stubs };
+  }
+
+  const groupParams = { callerId: "caller", groupId: "grp-1", type: "AUDIO" };
+
+  it("does not ring a member who chose NO_ONE, but rings the rest", async () => {
+    const { service, stubs } = buildGroupService({ m1: "NO_ONE" });
+
+    await service.initiateGroupCall(groupParams);
+
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m2"] })
+    );
+    expect(stubs.redis.publish).not.toHaveBeenCalledWith(
+      "self:m1",
+      expect.anything()
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:m2",
+      expect.stringContaining("call:incoming")
+    );
+  });
+
+  it("rings everyone when nobody opted out", async () => {
+    const { service, stubs } = buildGroupService({});
+    await service.initiateGroupCall(groupParams);
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m1", "m2"] })
+    );
+  });
+
+  it("EDGE: every member opted out → no call at all", async () => {
+    const { service, stubs } = buildGroupService({
+      m1: "NO_ONE",
+      m2: "NO_ONE",
+    });
+    await expect(service.initiateGroupCall(groupParams)).rejects.toThrow(
+      /CALL_SELF_NOT_ALLOWED/
+    );
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("FAIL-OPEN: a privacy lookup error must not silence the group call", async () => {
+    const { service, stubs } = buildGroupService({});
+    stubs.getCallPrivacy.mockRejectedValue(new Error("user-service down"));
+    await service.initiateGroupCall(groupParams);
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ calleeIds: ["m1", "m2"] })
+    );
+  });
+});
+
 describe("CallService.initiateCall busy gate", () => {
   it("BUSY: callee already IN_PROGRESS → CALL_USER_BUSY, no call row", async () => {
     const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
@@ -480,5 +568,80 @@ describe("CallService.initiateCall — platform-wide calling kill-switch", () =>
       livekit: { url: "ws://livekit", token: "tk" },
     });
     expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CallService.answerCall busy gate (cross-caller race)", () => {
+  // Build a service + stub an existing RINGING call that can be answered.
+  function buildAnswerService() {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+
+    // The call being answered — RINGING, callee = "callee".
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      status: "RINGING",
+      type: "AUDIO",
+    });
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "tk" });
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: true });
+    // Default: callee has no other active call.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([]);
+
+    return { service, stubs };
+  }
+
+  it("allows answer when callee has no other active call", async () => {
+    const { service } = buildAnswerService();
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).resolves.toMatchObject({ livekit: { url: "ws://lk", token: "tk" } });
+  });
+
+  it("BUSY: callee already IN_PROGRESS on a DIFFERENT call → CALL_USER_BUSY", async () => {
+    const { service, stubs } = buildAnswerService();
+    // Simulate the cross-caller race: callee answered another call first.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "c2", // different call — the one being answered is "c1"
+        callerId: "caller2",
+        calleeId: "callee",
+        status: "IN_PROGRESS",
+      },
+    ]);
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).rejects.toThrow(/CALL_USER_BUSY/);
+  });
+
+  it("ANTI-REGRESSION: callee IN_PROGRESS on the SAME call → idempotent re-answer succeeds", async () => {
+    // This is the reconnect / second-device case. The busy guard must skip the
+    // call being answered (same id), not treat it as a blocking concurrent call.
+    const { service, stubs } = buildAnswerService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      status: "IN_PROGRESS", // already answered
+      type: "AUDIO",
+    });
+    // No other active call — the findActiveByParticipant result with c1 excluded
+    // is empty, so the guard passes, and the idempotent IN_PROGRESS early-return fires.
+    stubs.callRepo.findActiveByParticipant.mockResolvedValue([
+      {
+        callId: "c1", // same call being answered — excluded by the busy guard
+        callerId: "caller",
+        calleeId: "callee",
+        status: "IN_PROGRESS",
+      },
+    ]);
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "callee" })
+    ).resolves.toMatchObject({ livekit: { url: "ws://lk", token: "tk" } });
   });
 });

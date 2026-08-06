@@ -5,6 +5,9 @@ import * as protoLoader from "@grpc/proto-loader";
 import { env } from "../../config/env.js";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
   __dirname,
@@ -71,9 +74,12 @@ export function createUserClient(): UserClient {
   return {
     bulkGetUserSnapshots: (userIds) =>
       bulkBreaker.fire({ userIds }).catch(() => null),
-    filterVisiblePresence: (viewerId, peerIds) =>
-      peerIds.length === 0
+    filterVisiblePresence: (viewerId, peerIds) => {
+      if (!UUID_RE.test(viewerId)) return Promise.resolve([]);
+      const userIds = [...new Set(peerIds)].filter((id) => UUID_RE.test(id));
+      return userIds.length === 0
         ? Promise.resolve([])
-        : presenceBreaker.fire({ viewerId, peerIds }).catch(() => []),
+        : presenceBreaker.fire({ viewerId, peerIds: userIds }).catch(() => []);
+    },
   };
 }

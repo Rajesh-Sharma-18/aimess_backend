@@ -52,6 +52,7 @@ import type { NotificationRepository } from "../repositories/notification.reposi
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildCanonicalQuote,
   groupStoredReactions,
@@ -242,9 +243,14 @@ function publishRealtimeSafe(
 function publishMessageNewToParticipants(
   recipientIds: string[],
   payload: unknown,
-  context: string
+  context: string,
+  excludeUserId: string
 ): void {
   for (const userId of new Set(recipientIds.filter(Boolean))) {
+    // Skip the sender: their socket is already in `conv:<roomId>` (from
+    // sending) and gets the room broadcast above, so a personal-channel copy
+    // on top of that double-delivers `message:new` to just them.
+    if (userId === excludeUserId) continue;
     publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
   }
 }
@@ -385,6 +391,11 @@ export function createMessagingImpl(
                 countInUnread: (
                   row as unknown as { countInUnread?: boolean | null }
                 ).countInUnread,
+                // Without this the socket send path — the one the web/mobile
+                // clients actually use — broadcasts a message with no auto-delete
+                // deadline, so no countdown shows until a refetch reveals one
+                // that has already expired.
+                ...autoDeleteWireFields(row),
               });
               const bcastContext = `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
               publishRealtimeSafe(
@@ -402,7 +413,8 @@ export function createMessagingImpl(
                     publishMessageNewToParticipants(
                       ids,
                       rowPayload,
-                      bcastContext
+                      bcastContext,
+                      req.senderId
                     )
                   )
                   .catch((err: unknown) => {
@@ -414,7 +426,8 @@ export function createMessagingImpl(
                 publishMessageNewToParticipants(
                   [req.senderId, req.receiverId],
                   rowPayload,
-                  bcastContext
+                  bcastContext,
+                  req.senderId
                 );
               }
             }
@@ -915,22 +928,26 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
+          // The ROOM decides, never the caller's claim — same rule as
+          // markMessagesRead (a `grp_` id sent with conversationType "private"
+          // used to fall through to the PRIVATE branch and silently no-op).
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
+          const isGroup = conversationType === "GROUP";
 
-          if (conversationType === "GROUP") {
-            callback(null, { updatedCount: 0 });
-            return;
-          }
-
-          const { count, messageIds } =
-            await deps.privateMessageService.markDelivered({
-              roomId: req.conversationId,
-              recipientId: req.recipientId,
-              upToMessageId: req.upToMessageId,
-            });
+          const { count, messageIds } = isGroup
+            ? await deps.groupMessageService.markDelivered({
+                roomId: req.conversationId,
+                recipientId: req.recipientId,
+                upToMessageId: req.upToMessageId,
+              })
+            : await deps.privateMessageService.markDelivered({
+                roomId: req.conversationId,
+                recipientId: req.recipientId,
+                upToMessageId: req.upToMessageId,
+              });
 
           if (count > 0) {
             const deliveredPayload = JSON.stringify({
@@ -944,18 +961,24 @@ export function createMessagingImpl(
             });
             await redis.publish(`conv:${req.conversationId}`, deliveredPayload);
 
-            // ALSO publish directly to the sender's own `user:<id>` channel — see
-            // the identical comment on markMessagesRead. The sender is the ONLY
-            // other participant in a private room.
-            const peerId = await deps.privateMessageService
-              .getPeerId(req.conversationId, req.recipientId)
-              .catch(() => null);
-            if (peerId) {
+            // ALSO publish directly to each sender's own `user:<id>` channel — see
+            // the identical comment on markMessagesRead. Private has exactly one
+            // other participant; a group fans out to the whole active roster.
+            const senderIds = isGroup
+              ? await deps.groupMessageService
+                  .getActiveMemberIds(req.conversationId)
+                  .then((ids) => ids.filter((id) => id !== req.recipientId))
+                  .catch(() => [] as string[])
+              : await deps.privateMessageService
+                  .getPeerId(req.conversationId, req.recipientId)
+                  .then((id) => (id ? [id] : []))
+                  .catch(() => [] as string[]);
+            for (const senderId of senderIds) {
               void redis
-                .publish(`user:${peerId}`, deliveredPayload)
+                .publish(`user:${senderId}`, deliveredPayload)
                 .catch((e: unknown) =>
                   logger.warn(
-                    `message:delivered direct publish failed userId=${peerId}: ${String(e)}`
+                    `message:delivered direct publish failed userId=${senderId}: ${String(e)}`
                   )
                 );
             }
@@ -1072,7 +1095,9 @@ export function createMessagingImpl(
           // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
-            await deps.groupMessageService.assertMember(
+            // Write boundary — also rejects a moderation-muted member
+            // (CHAT_MUTED_IN_GROUP), same as the community react path.
+            await deps.groupMessageService.assertCanWrite(
               req.conversationId,
               req.userId
             );
@@ -1753,14 +1778,17 @@ export function createMessagingImpl(
           };
           const conversationId = req.conversationId ?? "";
           if (!conversationId) {
-            callback(null, { userIds: [] });
+            callback(null, { userIds: [], mutedUserIds: [] });
             return;
           }
 
           if (String(req.conversationType ?? "").toUpperCase() === "GROUP") {
-            const userIds =
-              await deps.groupMessageService.getActiveMemberIds(conversationId);
-            callback(null, { userIds });
+            // Roster + the moderation-muted subset in ONE query, so the
+            // gateway can drop a muted member's typing/recording indicator
+            // without a second per-keystroke round trip.
+            const roster =
+              await deps.groupMessageService.getActiveRoster(conversationId);
+            callback(null, roster);
             return;
           }
 
@@ -1772,17 +1800,32 @@ export function createMessagingImpl(
           // empty roster and stop being delivered. The fallback costs one
           // extra indexed lookup only in that legacy-group case.
           const room = await deps.privateRoomRepo.findByRoomId(conversationId);
-          const userIds = room
-            ? (room.participants ?? [])
-            : await deps.groupMessageService.getActiveMemberIds(conversationId);
+          // A one-directional block still suppresses typing for BOTH sides of
+          // the DM: the blocker's client shouldn't leak "typing…" to someone
+          // it doesn't want to hear from, and the blocked party shouldn't see
+          // the blocker's presence either. Empty roster == nobody delivered to.
+          const blockedBy = Array.isArray(room?.blockedBy)
+            ? (room.blockedBy as string[])
+            : [];
+          if (!room) {
+            // Legacy-client group fallback — resolve the muted subset too, so
+            // an old client that omits conversationType is gated identically.
+            callback(
+              null,
+              await deps.groupMessageService.getActiveRoster(conversationId)
+            );
+            return;
+          }
+          const userIds = blockedBy.length > 0 ? [] : (room.participants ?? []);
 
-          callback(null, { userIds });
+          // PRIVATE has no moderation mute — always an empty muted list.
+          callback(null, { userIds, mutedUserIds: [] });
         } catch (err) {
           // Fail-closed: an empty roster suppresses the indicator rather than
           // leaking it. Typing is presence-only, so a dropped event is
           // strictly better than an unauthorized broadcast or a socket error.
           logger.warn(`gRPC getRoomParticipantIds error: ${String(err)}`);
-          callback(null, { userIds: [] });
+          callback(null, { userIds: [], mutedUserIds: [] });
         }
       })();
     },
@@ -1966,6 +2009,12 @@ export function createMessagingImpl(
               sequenceNumber: e.sequenceNumber,
               isDeleted: e.isDeleted,
               deletedType: deletedType ?? "",
+              // Mirrors communityCatchup — reconnect/reload hydration must carry
+              // reaction state, else a reaction applied live vanishes the next
+              // time the client catches up (reopen room, reload, reconnect).
+              reactions: groupStoredReactions(
+                (e as { reactions?: unknown }).reactions
+              ),
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
               systemEvent: systemEvent ?? "",
               systemData: systemData ? JSON.stringify(systemData) : "",

@@ -39,8 +39,13 @@ model PrivateRoom {
   lastUnreadPreviewByUser   Json     @default("{}")
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
+  clearFor                  Json     @default("{}")
   mutedBy                   Json     @default("{}")
   archivedBy                Json     @default("{}")
+  // Auto-delete (disappearing messages) — PER USER, same one-sided per-user map
+  // shape as `mutedBy`: { "<userId>": { mode, ttlSeconds, setAt } }. See
+  // `lib/auto-delete.ts` for which side's timer a given message ends up with.
+  autoDeleteBy              Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
@@ -107,6 +112,11 @@ model PrivateMessage {
   editHistory      Json      @default("[]")
   deliveredTo      Json      @default("[]")
   deliveredAt      Json      @default("{}")
+  // Auto-delete (disappearing messages). `autoDeleteAt` = armed deadline swept by
+  // AutoDeleteService; `autoDeleteAfterView` = "After Viewing" message still waiting
+  // on the recipient's read receipt to arm its deadline. Both null/false = no timer.
+  autoDeleteAt        DateTime?
+  autoDeleteAfterView Boolean  @default(false)
 
   @@index([roomId, createdAt(sort: Desc)])
   // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
@@ -120,6 +130,10 @@ model PrivateMessage {
   @@index([roomId, revision])
   @@index([systemEvent])
   @@index([clientMessageId])
+  // Backs the auto-delete sweeper: WHERE autoDeleteAt <= now AND isDeleted = false.
+  @@index([autoDeleteAt])
+  // Backs arming "After Viewing" messages on a read receipt.
+  @@index([roomId, autoDeleteAfterView])
   @@map("private_messages")
 }
 
@@ -297,6 +311,7 @@ model GroupMember {
   // messages restore the group to their inbox. Distinct from `leftAt` — the
   // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
   clearedAt            DateTime?
+  clearChatAt          DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)

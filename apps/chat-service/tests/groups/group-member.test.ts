@@ -23,15 +23,15 @@ beforeEach(() => {
 });
 
 describe("POST /api/chat/group-members/add", () => {
-  it("POSITIVE: an OWNER/ADMIN adds a member to a non-full group", async () => {
+  it("POSITIVE: an ADMIN adds a member to a non-full group", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
       memberCount: 2,
       memberLimit: 50,
     });
-    // Actor (the authenticated caller) is an active OWNER.
+    // Actor (the authenticated caller) is the active ADMIN.
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
     mocks.groupMemberRepo.upsert.mockResolvedValue({
@@ -49,7 +49,7 @@ describe("POST /api/chat/group-members/add", () => {
     expect(mocks.groupMemberRepo.upsert).toHaveBeenCalled();
   });
 
-  // AUDIT H3 — addMember must authorize the actor (require OWNER/ADMIN).
+  // AUDIT H3 — addMember must authorize the actor (require ADMIN).
   it("SECURITY: 403 when a plain MEMBER tries to add someone", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
@@ -104,7 +104,7 @@ describe("POST /api/chat/group-members/add", () => {
       memberLimit: 50,
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
 
     const res = await request(app)
@@ -122,7 +122,7 @@ describe("POST /api/chat/group-members/add", () => {
       memberLimit: 50,
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "ACTIVE",
@@ -173,9 +173,9 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     );
   });
 
-  it("NEGATIVE: 400 when the OWNER tries to leave", async () => {
+  it("NEGATIVE: 400 when the sole ADMIN tries to leave", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
 
     const res = await request(app)
@@ -227,13 +227,13 @@ describe("POST /api/chat/group-members/kick", () => {
 
   it("SECURITY: 400 when trying to kick an equal-or-higher role", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser
-      .mockResolvedValueOnce({ role: "ADMIN" }) // actor
-      .mockResolvedValueOnce({ role: "OWNER" }); // target (higher)
+      .mockResolvedValueOnce({ role: "MODERATOR" }) // actor
+      .mockResolvedValueOnce({ role: "ADMIN" }); // target (higher)
 
     const res = await request(app)
       .post("/api/chat/group-members/kick")
       .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: "owner-user" });
+      .send({ roomId: ROOM, userId: "admin-user" });
 
     expect(res.status).toBe(400);
     expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
@@ -241,10 +241,32 @@ describe("POST /api/chat/group-members/kick", () => {
 });
 
 describe("POST /api/chat/group-members/role", () => {
-  it("POSITIVE: OWNER promotes a member to ADMIN", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
-    });
+  it("POSITIVE: ADMIN promotes a member to MODERATOR", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser
+      .mockResolvedValueOnce({ role: "ADMIN" }) // actor
+      .mockResolvedValueOnce({ role: "MEMBER" }); // target
+    mocks.groupMemberRepo.updateRole.mockResolvedValue({ role: "MODERATOR" });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/role")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: "target-user", role: "MODERATOR" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
+      ROOM,
+      "target-user",
+      "MODERATOR"
+    );
+  });
+
+  // "Make Admin" is a full hand-off — there is exactly one ADMIN per group, so
+  // promoting the target also demotes the caller to MEMBER in the same call.
+  // This merges what used to be a separate "Transfer Ownership" action.
+  it("POSITIVE: ADMIN makes a member the admin and steps down to MEMBER", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser
+      .mockResolvedValueOnce({ role: "ADMIN" }) // actor
+      .mockResolvedValueOnce({ role: "MODERATOR" }); // target
     mocks.groupMemberRepo.updateRole.mockResolvedValue({ role: "ADMIN" });
 
     const res = await request(app)
@@ -253,18 +275,37 @@ describe("POST /api/chat/group-members/role", () => {
       .send({ roomId: ROOM, userId: "target-user", role: "ADMIN" });
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalled();
+    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      "MEMBER"
+    );
+    expect(mocks.groupMemberRepo.updateRole).toHaveBeenCalledWith(
+      ROOM,
+      "target-user",
+      "ADMIN"
+    );
   });
 
-  it("SECURITY: 400 when an ADMIN tries to grant OWNER/ADMIN", async () => {
+  it("SECURITY: 400 when a MODERATOR tries to change any role", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "ADMIN",
+      role: "MODERATOR",
     });
 
     const res = await request(app)
       .post("/api/chat/group-members/role")
       .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, userId: "target-user", role: "ADMIN" });
+      .send({ roomId: ROOM, userId: "target-user", role: "MODERATOR" });
+
+    expect(res.status).toBe(400);
+    expect(mocks.groupMemberRepo.updateRole).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: 400 when the caller tries to change their own role", async () => {
+    const res = await request(app)
+      .post("/api/chat/group-members/role")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TEST_USER_ID, role: "MEMBER" });
 
     expect(res.status).toBe(400);
     expect(mocks.groupMemberRepo.updateRole).not.toHaveBeenCalled();
@@ -282,8 +323,12 @@ describe("POST /api/chat/group-members/role", () => {
 
 describe("GET /api/chat/group-members/:roomId", () => {
   it("POSITIVE: lists active members, paginated", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+    });
     mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
-      { userId: TEST_USER_ID, role: "OWNER", joinedAt: new Date(1) },
+      { userId: TEST_USER_ID, role: "ADMIN", joinedAt: new Date(1) },
     ]);
     mocks.groupMemberRepo.countActiveMembers.mockResolvedValue(1);
 
@@ -293,6 +338,22 @@ describe("GET /api/chat/group-members/:roomId", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+  });
+
+  // The roster is Group Info: a removed (kicked/banned) member must lose it the
+  // same moment they lose the chat, and a stranger must never read it at all.
+  it("SECURITY: 403 when the caller was removed from the group", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TEST_USER_ID,
+      status: "KICKED",
+    });
+
+    const res = await request(app)
+      .get(`/api/chat/group-members/${ROOM}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMemberRepo.findActiveMembers).not.toHaveBeenCalled();
   });
 
   it("SECURITY: 401 without a token", async () => {

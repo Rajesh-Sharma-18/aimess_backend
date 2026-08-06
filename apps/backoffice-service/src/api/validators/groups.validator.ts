@@ -7,7 +7,7 @@ import { z } from "zod";
 
 export const groupSortByEnum = z.enum(["createdAt", "memberCount"]);
 export const groupSortOrderEnum = z.enum(["asc", "desc"]);
-export const groupRoleEnum = z.enum(["OWNER", "ADMIN", "MODERATOR", "MEMBER"]);
+export const groupRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
 
 // ---------------------------------------------------------------------------
 // List query.

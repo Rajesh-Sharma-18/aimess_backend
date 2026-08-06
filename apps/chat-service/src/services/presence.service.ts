@@ -16,6 +16,23 @@ export interface PresenceBackfillHooks {
   backfillDeliveredOnPresenceConnect(userId: string): Promise<void>;
 }
 
+/**
+ * `whoCanSeeOnlineStatus` gate (user-service). Both directions are needed:
+ * viewer-scoped for reads ("which of these peers may I see?") and
+ * subject-scoped for fan-out ("who may hear that I just went offline?").
+ * Implementations MUST fail CLOSED — an empty set on transport failure.
+ */
+export interface PresenceVisibilityGate {
+  filterVisiblePresence(
+    viewerId: string,
+    peerIds: string[]
+  ): Promise<Set<string>>;
+  filterPresenceViewers(
+    subjectId: string,
+    viewerIds: string[]
+  ): Promise<Set<string>>;
+}
+
 export class PresenceService {
   private readonly backgroundTimeoutMs: number;
   /** Cap on how many private rooms get a presence-driven conv:updated bump per status flip. */
@@ -30,9 +47,60 @@ export class PresenceService {
     // without a PrivateRoomRepository keep working — presence-driven conv:updated
     // fan-out is simply skipped when omitted.
     private readonly privateRoomRepo?: PrivateRoomRepository,
-    options?: { backgroundTimeoutMs?: number }
+    options?: { backgroundTimeoutMs?: number },
+    // Optional like the repo above, but it fails CLOSED, not open: with no gate
+    // wired, every viewer-scoped read returns "offline" and the presence bump
+    // is skipped entirely. Presence is a privacy decision — a missing
+    // dependency must not turn into an open disclosure.
+    private readonly visibilityGate?: PresenceVisibilityGate
   ) {
     this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 5 * 60 * 1000;
+  }
+
+  /**
+   * `isOnline` for ONE subject as `viewerId` is allowed to see it — the read
+   * every user-facing surface must use (REST presence, room details). A denied
+   * viewer gets `false`, indistinguishable from genuinely offline.
+   */
+  async getPresenceFor(viewerId: string, subjectId: string): Promise<boolean> {
+    if (!this.visibilityGate) return false;
+    const visible = await this.visibilityGate.filterVisiblePresence(viewerId, [
+      subjectId,
+    ]);
+    return visible.has(subjectId) ? this.getPresence(subjectId) : false;
+  }
+
+  /**
+   * Batch twin of {@link getPresenceFor}. Peers the viewer may not see are
+   * reported `false` rather than omitted, so callers cannot distinguish
+   * "hidden" from "offline" and no call site has to handle a missing key.
+   */
+  async getPresenceManyFor(
+    viewerId: string,
+    peerIds: string[]
+  ): Promise<Map<string, boolean>> {
+    const result = new Map<string, boolean>(peerIds.map((id) => [id, false]));
+    if (peerIds.length === 0 || !this.visibilityGate) return result;
+    const visible = await this.visibilityGate.filterVisiblePresence(
+      viewerId,
+      peerIds
+    );
+    if (visible.size === 0) return result;
+    const online = await this.getPresenceMany([...visible]);
+    for (const [id, isOnline] of online) result.set(id, isOnline);
+    return result;
+  }
+
+  /** `lastSeen` for one subject, gated by the same `whoCanSeeOnlineStatus` scope. */
+  async getLastSeenFor(
+    viewerId: string,
+    subjectId: string
+  ): Promise<number | null> {
+    if (!this.visibilityGate) return null;
+    const visible = await this.visibilityGate.filterVisiblePresence(viewerId, [
+      subjectId,
+    ]);
+    return visible.has(subjectId) ? this.getLastSeen(subjectId) : null;
   }
 
   /**
@@ -219,15 +287,26 @@ export class PresenceService {
     userId: string,
     isOffline: boolean
   ): Promise<void> {
-    if (!this.privateRoomRepo || !this.redis) return;
+    if (!this.privateRoomRepo || !this.redis || !this.visibilityGate) return;
     const rooms = await this.privateRoomRepo.findRoomsForPresenceBump(
       userId,
       PresenceService.PRESENCE_BUMP_ROOM_LIMIT
     );
     if (!Array.isArray(rooms) || rooms.length === 0) return;
 
+    // `whoCanSeeOnlineStatus` gate. Sharing a DM room is NOT consent to see
+    // presence — a peer can be a stranger, or an ex-friend after an unfriend.
+    // Denied peers get no bump at all rather than a bump with a stale
+    // `isOffline`: the ARRIVAL of the event is itself the disclosure.
+    const allowed = await this.visibilityGate.filterPresenceViewers(
+      userId,
+      rooms.map((room) => room.peerId)
+    );
+    if (allowed.size === 0) return;
+
     const pipeline = this.redis.pipeline();
     for (const room of rooms) {
+      if (!allowed.has(room.peerId)) continue;
       const lm = room.lastMessage as Record<string, unknown> | null;
       const messageType = normalizeMessageType(
         (lm?.messageType as string) ?? "TEXT"

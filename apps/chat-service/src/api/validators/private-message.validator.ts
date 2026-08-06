@@ -161,6 +161,16 @@ export const muteRoomSchema = z.object({
   muteUntil: z.string().datetime().nullish(),
 });
 
+/**
+ * Auto-delete (disappearing messages). `ttlSeconds` is required for TIMER and
+ * ignored otherwise; the bounds live in `lib/auto-delete.ts` and are re-checked
+ * there so the socket/gRPC paths can't bypass them.
+ */
+export const autoDeleteSchema = z.object({
+  mode: z.enum(["OFF", "TIMER", "AFTER_VIEWING"]),
+  ttlSeconds: z.number().int().positive().nullish(),
+});
+
 export const reportMessageSchema = z.object({
   reason: z.enum([
     "SPAM",

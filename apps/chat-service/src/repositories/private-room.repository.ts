@@ -207,6 +207,7 @@ export class PrivateRoomRepository {
         lastUnreadPreviewByUser: (data.lastUnreadPreviewByUser as object) ?? {},
         blockedBy: (data.blockedBy as object) ?? [],
         deletedFor: (data.deletedFor as object) ?? {},
+        clearFor: (data.clearFor as object) ?? {},
         pinnedCount: (data.pinnedCount as number) ?? 0,
         lastPinnedAt: (data.lastPinnedAt as Date) ?? null,
       },
@@ -751,6 +752,52 @@ export class PrivateRoomRepository {
     });
   }
 
+  async setClearFor(roomId: string, userId: string): Promise<void> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return;
+
+    const clearFor = (existing.clearFor ?? {}) as Record<string, string>;
+    clearFor[userId] = new Date().toISOString();
+
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[userId] = 0;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = false;
+    const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    firstUnreadMessageIdByUser[userId] = null;
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    lastUnreadMessageIdByUser[userId] = null;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    lastUnreadPreviewByUser[userId] = null;
+
+    await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: {
+        clearFor,
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        firstUnreadMessageIdByUser:
+          firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   async setMuted(
     roomId: string,
     userId: string,
@@ -788,6 +835,42 @@ export class PrivateRoomRepository {
     return this.prisma.privateRoom.update({
       where: { roomId },
       data: { mutedBy: mutedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  /**
+   * Write ONE participant's auto-delete setting onto the per-user `autoDeleteBy`
+   * map (same read-modify-write shape as `setMuted`). `mode: "OFF"` removes the
+   * entry entirely so "never configured" and "explicitly turned off" stay one
+   * state — the effective-timer resolution only ever asks "is there an entry".
+   */
+  async setAutoDelete(
+    roomId: string,
+    userId: string,
+    setting: { mode: string; ttlSeconds: number | null } | null
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const autoDeleteBy = (existing.autoDeleteBy ?? {}) as Record<
+      string,
+      unknown
+    >;
+    if (!setting || setting.mode === "OFF") {
+      delete autoDeleteBy[userId];
+    } else {
+      autoDeleteBy[userId] = {
+        mode: setting.mode,
+        ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
+        setAt: new Date().toISOString(),
+      };
+    }
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { autoDeleteBy: autoDeleteBy as unknown as Prisma.InputJsonValue },
     });
   }
 

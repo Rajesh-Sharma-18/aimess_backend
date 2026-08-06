@@ -18,6 +18,9 @@ import {
   toChatRelationship,
 } from "../lib/friendship-view.js";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 interface AdminProfileRecord {
@@ -119,11 +122,10 @@ export function startUserGrpcServer(): grpc.Server {
       void (async () => {
         try {
           const viewerId = call.request.viewerId ?? "";
-          const peerIds = [...new Set(call.request.peerIds ?? [])].slice(
-            0,
-            500
-          );
-          if (!viewerId || peerIds.length === 0) {
+          const peerIds = [...new Set(call.request.peerIds ?? [])]
+            .filter((id) => UUID_RE.test(id))
+            .slice(0, 500);
+          if (!UUID_RE.test(viewerId) || peerIds.length === 0) {
             callback(null, { visiblePeerIds: [] });
             return;
           }
@@ -152,6 +154,54 @@ export function startUserGrpcServer(): grpc.Server {
           });
         } catch (err) {
           logger.error(`gRPC filterVisiblePresence error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Inverse of filterVisiblePresence: ONE subject, MANY viewers. Used on the
+    // fan-out side (presence bumps, conv:updated `isOffline`), where the
+    // subject's scope is read once and the audience filtered against it — the
+    // viewer-scoped RPC would need one call per recipient there.
+    filterPresenceViewers: (
+      call: grpc.ServerUnaryCall<
+        { subjectId: string; viewerIds: string[] },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<{ allowedViewerIds: string[] }>
+    ) => {
+      void (async () => {
+        try {
+          const subjectId = call.request.subjectId ?? "";
+          const viewerIds = [...new Set(call.request.viewerIds ?? [])]
+            .filter((id) => UUID_RE.test(id))
+            .slice(0, 500);
+          if (!UUID_RE.test(subjectId) || viewerIds.length === 0) {
+            callback(null, { allowedViewerIds: [] });
+            return;
+          }
+          const [friendIds, scopeByUserId] = await Promise.all([
+            friendshipRepository.findAcceptedFriendIdsForUser(
+              subjectId,
+              viewerIds
+            ),
+            userSettingsRepository.findOnlineVisibilityScopes([subjectId]),
+          ]);
+          const friendSet = new Set(friendIds);
+          // Missing row → FRIENDS (the schema default), NOT EVERYONE.
+          const scope =
+            scopeByUserId.get(subjectId) ??
+            SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus;
+          callback(null, {
+            allowedViewerIds: viewerIds.filter((viewerId) =>
+              scopeAdmits(scope, {
+                isSelf: viewerId === subjectId,
+                isFriend: friendSet.has(viewerId),
+              })
+            ),
+          });
+        } catch (err) {
+          logger.error(`gRPC filterPresenceViewers error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

@@ -38,6 +38,7 @@ import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { PrivateSystemMessageService } from "./services/private-system-message.service.js";
+import { AutoDeleteService } from "./services/auto-delete.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
 import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
@@ -99,6 +100,15 @@ import {
 
 let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
+let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
+let autoDeleteSweepHandle: ReturnType<typeof setInterval> | undefined;
+
+/** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
+ *  remainder drains on the next tick. Mirrors community's sweeper. */
+const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
+
+/** Same backstop for the auto-delete sweep. */
+const AUTO_DELETE_SWEEP_MAX_BATCHES = 50;
 
 const startServer = async () => {
   logger.info("Chat service starting...");
@@ -358,7 +368,11 @@ const startServer = async () => {
     const presenceService = new PresenceService(
       cacheRepo,
       redis,
-      privateRoomRepo
+      privateRoomRepo,
+      undefined,
+      // whoCanSeeOnlineStatus gate — without it every presence read here would
+      // bypass the setting the socket `presence:subscribe` path already honors.
+      userGrpcClient
     );
 
     const privateSystemMessageService = new PrivateSystemMessageService(
@@ -598,6 +612,18 @@ const startServer = async () => {
       presenceService
     );
 
+    // Auto-delete (disappearing messages) for private chats. Constructed AFTER
+    // the orchestrator on purpose — the sweeper deletes through the very same
+    // `deleteDirect` entry point a manual delete-for-everyone uses.
+    const autoDeleteService = new AutoDeleteService(
+      privateRoomRepo,
+      privateMessageRepo,
+      privateSystemMessageService,
+      privatePinService,
+      chatMessageOrchestrator,
+      redis
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -624,7 +650,10 @@ const startServer = async () => {
 
     // 4. Instantiate controllers
     const controllers = {
-      privateRoomCtrl: new PrivateRoomController(privateRoomService),
+      privateRoomCtrl: new PrivateRoomController(
+        privateRoomService,
+        autoDeleteService
+      ),
       inboxCtrl: new InboxController(inboxService),
       syncCtrl: new SyncController(syncService),
       privateMessageCtrl: new PrivateMessageController(
@@ -739,6 +768,58 @@ const startServer = async () => {
     if (typeof callTimeoutSweepHandle.unref === "function") {
       callTimeoutSweepHandle.unref();
     }
+
+    // Group auto-unmute sweep — the counterpart of community-service's
+    // mute-sweeper job. Correctness does NOT depend on it (mute enforcement
+    // applies lazy expiry the instant `moderationMutedUntil` passes); it exists
+    // to emit `group:member:unmuted` so the composer re-enables on every device
+    // without a refresh, and to clear the stale flag. Exactly-once across nodes
+    // via the atomic per-row claim, so no distributed lock is needed. Drains in
+    // pages so one tick can never monopolise the DB.
+    groupMuteSweepHandle = setInterval(() => {
+      void (async () => {
+        try {
+          for (let i = 0; i < GROUP_MUTE_SWEEP_MAX_BATCHES; i++) {
+            const n = await groupMemberService.expireDueModerationMutes(
+              env.GROUP_MUTE_SWEEP_BATCH
+            );
+            if (n > 0)
+              logger.info(`Group auto-unmute sweep expired ${n} mute(s)`);
+            if (n < env.GROUP_MUTE_SWEEP_BATCH) break; // drained
+          }
+        } catch (err) {
+          logger.warn(`groupMuteSweep failed: ${String(err)}`);
+        }
+      })();
+    }, env.GROUP_MUTE_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof groupMuteSweepHandle.unref === "function") {
+      groupMuteSweepHandle.unref();
+    }
+
+    // Auto-delete (disappearing messages) sweep. Unlike the mute sweep this one
+    // is load-bearing: it performs the actual deletion, server-side, so a
+    // message disappears on schedule even when neither client is running
+    // (§5.2 offline sender, §8.4 offline device). Drains in pages.
+    autoDeleteSweepHandle = setInterval(() => {
+      void (async () => {
+        try {
+          for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
+            const n = await autoDeleteService.sweepDue(
+              new Date(),
+              env.AUTO_DELETE_SWEEP_BATCH
+            );
+            if (n > 0)
+              logger.info(`Auto-delete sweep processed ${n} message(s)`);
+            if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+          }
+        } catch (err) {
+          logger.warn(`autoDeleteSweep failed: ${String(err)}`);
+        }
+      })();
+    }, env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof autoDeleteSweepHandle.unref === "function") {
+      autoDeleteSweepHandle.unref();
+    }
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);
@@ -752,6 +833,16 @@ async function shutdown(signal: string): Promise<void> {
   if (callTimeoutSweepHandle) {
     clearInterval(callTimeoutSweepHandle);
     callTimeoutSweepHandle = undefined;
+  }
+
+  if (groupMuteSweepHandle) {
+    clearInterval(groupMuteSweepHandle);
+    groupMuteSweepHandle = undefined;
+  }
+
+  if (autoDeleteSweepHandle) {
+    clearInterval(autoDeleteSweepHandle);
+    autoDeleteSweepHandle = undefined;
   }
 
   await new Promise<void>((resolve) => {
