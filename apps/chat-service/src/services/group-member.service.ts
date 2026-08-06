@@ -10,7 +10,11 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import { SystemEvent } from "../types/enums.js";
-import { assertGroupMember, isGroupMemberMuted } from "../lib/access-guard.js";
+import {
+  assertGroupMember,
+  assertGroupReadAccess,
+  isGroupMemberMuted,
+} from "../lib/access-guard.js";
 import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -256,6 +260,60 @@ export class GroupMemberService {
     });
   }
 
+  /**
+   * Roster-change fan-out to the REMAINING members — the group counterpart of
+   * community's `community:member:removed` / `community:member:updated`.
+   *
+   * A member sitting on the chat LIST (never called `conv:join`) only ever
+   * hears their own `user:<id>` channel, so a room-only broadcast leaves their
+   * member count and role badges stale until a manual refetch. Published to
+   * BOTH `conv:<roomId>` (open room) and every active member's `user:<id>`
+   * (list view, other devices), exactly like `publishMuteStateChange`.
+   *
+   * The affected member themselves is NOT special-cased here: a removed member
+   * already gets `group:removed` (which also force-leaves their sockets), and a
+   * role-changed member is still in the active roster below.
+   *
+   * Best-effort — a Redis hiccup never fails the originating moderation write.
+   */
+  private async publishRosterChange(args: {
+    roomId: string;
+    event: "group:member:removed" | "group:member:updated";
+    memberId: string;
+    actorId: string;
+    extra?: Record<string, unknown>;
+  }): Promise<void> {
+    const { roomId, event, memberId, actorId, extra } = args;
+    try {
+      const [room, roster] = await Promise.all([
+        this.roomRepo.findActiveByRoomId(roomId),
+        this.memberRepo.findActiveMembers(roomId, { limit: 500 }),
+      ]);
+      const payload = {
+        roomId,
+        conversationType: "GROUP" as const,
+        memberId,
+        actorId,
+        memberCount: room?.memberCount ?? roster.length,
+        updatedAt: Date.now(),
+        ...(extra ?? {}),
+      };
+      await Promise.all([
+        this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({ event, data: payload })
+        ),
+        ...roster.map((m) =>
+          publishChatUserEvent(this.redis, m.userId, event, payload)
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `GroupMemberService|${event} broadcast failed room=${roomId} member=${memberId}: ${String(err)}`
+      );
+    }
+  }
+
   async leave(
     roomId: string,
     userId: string,
@@ -286,6 +344,13 @@ export class GroupMemberService {
       ...(reason ? { systemData: { reason } } : {}),
     });
     this.emitGroupRemoved(roomId, userId, "LEAVE");
+    await this.publishRosterChange({
+      roomId,
+      event: "group:member:removed",
+      memberId: userId,
+      actorId: userId,
+      extra: { reason: "LEAVE" },
+    });
 
     return updated;
   }
@@ -336,6 +401,13 @@ export class GroupMemberService {
       systemData: { targetUserId: params.targetUserId },
     });
     this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:removed",
+      memberId: params.targetUserId,
+      actorId: params.kickedBy,
+      extra: { reason: "KICK" },
+    });
 
     return updated;
   }
@@ -626,6 +698,13 @@ export class GroupMemberService {
       systemData: { targetUserId: params.targetUserId },
     });
     this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:removed",
+      memberId: params.targetUserId,
+      actorId: params.bannedBy,
+      extra: { reason: "BAN" },
+    });
 
     return updated;
   }
@@ -803,6 +882,22 @@ export class GroupMemberService {
         systemEvent: SystemEvent.OWNERSHIP_TRANSFERRED,
         systemData: { targetUserId: params.targetUserId },
       });
+      // Two rows changed — the new OWNER and the demoted-to-ADMIN old owner —
+      // so both need their own event or one side's permissions stay stale.
+      await this.publishRosterChange({
+        roomId: params.roomId,
+        event: "group:member:updated",
+        memberId: params.targetUserId,
+        actorId: params.actorUserId,
+        extra: { role: "OWNER", previousRole: target?.role ?? "" },
+      });
+      await this.publishRosterChange({
+        roomId: params.roomId,
+        event: "group:member:updated",
+        memberId: params.actorUserId,
+        actorId: params.actorUserId,
+        extra: { role: "ADMIN", previousRole: "OWNER" },
+      });
       return updated;
     }
 
@@ -823,6 +918,18 @@ export class GroupMemberService {
       },
     });
 
+    // Realtime parity with community's `community:member:updated`: the system
+    // message alone only reaches clients currently sitting in the room, so
+    // without this the target's own permissions (and every other member's role
+    // badge) stay stale on the list view and on their other devices.
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:updated",
+      memberId: params.targetUserId,
+      actorId: params.actorUserId,
+      extra: { role: params.newRole, previousRole: target?.role ?? "" },
+    });
+
     return updated;
   }
 
@@ -834,8 +941,21 @@ export class GroupMemberService {
    */
   async getMembers(
     roomId: string,
-    params?: { limit?: number; cursor?: string | null }
+    params?: { limit?: number; cursor?: string | null },
+    /**
+     * Caller, when the roster is served over an authenticated surface. The
+     * route had NO membership check at all, so any authenticated user could
+     * read any group's roster, and a removed member kept seeing Group Info
+     * long after losing the group. Same read rule as the message timeline
+     * (`assertGroupReadAccess`): ACTIVE members and voluntary leavers may
+     * read; kicked/banned/non-members may not. Optional so the existing
+     * internal/test call sites keep compiling unchanged.
+     */
+    requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
+    if (requesterId) {
+      await assertGroupReadAccess(this.memberRepo, roomId, requesterId);
+    }
     const members = await this.memberRepo.findActiveMembers(roomId, params);
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
       return members.map((member) => ({

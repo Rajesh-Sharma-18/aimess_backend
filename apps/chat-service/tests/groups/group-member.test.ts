@@ -282,6 +282,10 @@ describe("POST /api/chat/group-members/role", () => {
 
 describe("GET /api/chat/group-members/:roomId", () => {
   it("POSITIVE: lists active members, paginated", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+    });
     mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
       { userId: TEST_USER_ID, role: "OWNER", joinedAt: new Date(1) },
     ]);
@@ -293,6 +297,22 @@ describe("GET /api/chat/group-members/:roomId", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+  });
+
+  // The roster is Group Info: a removed (kicked/banned) member must lose it the
+  // same moment they lose the chat, and a stranger must never read it at all.
+  it("SECURITY: 403 when the caller was removed from the group", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TEST_USER_ID,
+      status: "KICKED",
+    });
+
+    const res = await request(app)
+      .get(`/api/chat/group-members/${ROOM}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMemberRepo.findActiveMembers).not.toHaveBeenCalled();
   });
 
   it("SECURITY: 401 without a token", async () => {

@@ -142,13 +142,18 @@ export class GroupMemberController {
 
   getMembers = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    const { userId } = req.auth;
     const limit = Number(req.query.limit) || 50;
     const cursor = req.query.cursor as string | undefined;
     const page = Number(req.query.page) || 1;
-    const [members, totalCount] = await Promise.all([
-      this.service.getMembers(roomId, { limit, cursor }),
-      this.service.countMembers(roomId),
-    ]);
+    // Roster read is membership-gated in the service (throws before the count
+    // query matters), so run it first rather than in parallel with the count.
+    const members = await this.service.getMembers(
+      roomId,
+      { limit, cursor },
+      userId
+    );
+    const totalCount = await this.service.countMembers(roomId);
     const paginated = buildPaginatedResponse(
       members as unknown as Record<string, unknown>[],
       totalCount,
