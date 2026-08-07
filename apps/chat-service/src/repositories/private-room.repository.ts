@@ -409,7 +409,12 @@ export class PrivateRoomRepository {
       ? { $set: set, $inc: inc }
       : { $set: set }) as unknown as Prisma.InputJsonObject;
     const res = (await this.prisma.$runCommandRaw({
-      findAndModify: "PrivateRoom",
+      // Raw commands address the MONGO COLLECTION, not the Prisma model —
+      // PrivateRoom is @@map'd to `private_rooms`. A wrong name here does not
+      // error: findAndModify on a missing collection returns {value: null}, so
+      // every room snapshot write (lastMessageAt/lastMessage/unread) silently
+      // no-ops and the conversation never enters the inbox.
+      findAndModify: "private_rooms",
       query: { roomId },
       update,
       new: true,
