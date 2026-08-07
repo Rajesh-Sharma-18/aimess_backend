@@ -44,6 +44,10 @@ Thumbs.db
 # the procedure the server-side scripts reference by name, so a fresh clone on
 # a server must contain it.
 !deploy/README.md
+!deploy/ARCHITECTURE.md
+!deploy/OPERATIONS.md
+!deploy/DOMAINS-AND-STATUS.md
+!deploy/scripts/*.md
 tree-data.json
 community_*.json
 demo-frontend/
