@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { createPrivateMessageRoutes } from "./private-message.routes.js";
 import { createInboxRoutes } from "./inbox.routes.js";
+import { createConversationBulkRoutes } from "./conversation-bulk.routes.js";
 import { createSyncRoutes } from "./sync.routes.js";
 import { createGroupRoomRoutes } from "./group-room.routes.js";
 import { createGroupMessageRoutes } from "./group-message.routes.js";
@@ -22,6 +23,7 @@ import { healthRoutes } from "./health.routes.js";
 
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { InboxController } from "../controllers/inbox.controller.js";
+import type { ConversationBulkController } from "../controllers/conversation-bulk.controller.js";
 import type { SyncController } from "../controllers/sync.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
 import type { GroupRoomController } from "../controllers/group-room.controller.js";
@@ -39,6 +41,7 @@ import type { MessageContextController } from "../controllers/message-context.co
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
   inboxCtrl: InboxController;
+  conversationBulkCtrl: ConversationBulkController;
   syncCtrl: SyncController;
   privateMessageCtrl: PrivateMessageController;
   groupRoomCtrl: GroupRoomController;
@@ -62,6 +65,12 @@ export function createRoutes(controllers: Controllers): Router {
   const basePath = "/api/chat";
 
   router.use(`${basePath}/inbox`, createInboxRoutes(controllers.inboxCtrl));
+  // Bulk (multi-select) ops over the unified inbox — PRIVATE + GROUP in one
+  // call, mirroring community-service's /communities/{leave,mute,read}/bulk.
+  router.use(
+    `${basePath}/conversations`,
+    createConversationBulkRoutes(controllers.conversationBulkCtrl)
+  );
   router.use(`${basePath}/sync`, createSyncRoutes(controllers.syncCtrl));
   router.use(
     `${basePath}/private`,
@@ -102,6 +111,29 @@ export function createRoutes(controllers: Controllers): Router {
       controllers.communityMessageCtrl
     )
   );
+  // The V2 routers, ALSO mounted on the V1 base path. Every V2 chat endpoint is
+  // the same handler with a different query contract, and V1's timeline schema
+  // already accepts the seq/around cursors — but `/rooms/:roomId/changes` (the
+  // zero-loss revision feed the clients use on reopen/reconnect) and the
+  // `/messages/:messageId/react` shape existed ONLY under `/api/v2`, so a client
+  // on `/api/v1` got a bare `Cannot GET /api/chat/private/rooms/:id/changes`.
+  //
+  // Mounted AFTER the V1 routers above, so every path both define (e.g.
+  // `GET /rooms/:roomId/messages`) still resolves to its V1 handler — this only
+  // ADDS the endpoints V1 was missing. The `/api/v2/*` mounts below stay live.
+  router.use(
+    `${basePath}/private`,
+    createPrivateV2Routes(controllers.privateMessageCtrl)
+  );
+  router.use(
+    `${basePath}/groups`,
+    createGroupV2Routes(controllers.groupMessageCtrl)
+  );
+  router.use(
+    `${basePath}/community`,
+    createCommunityV2Routes(controllers.communityMessageCtrl)
+  );
+
   // Additive V2 surface: gateway `/api/v2/chat/community/*` rewrites to this
   // mount. V1 (`${basePath}/community`) above is untouched and always on.
   router.use(

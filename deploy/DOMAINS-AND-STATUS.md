@@ -14,49 +14,49 @@ works", so here is the honest split:
 
 ### Working and verified
 
-| Area | State |
-| --- | --- |
-| All 10 public endpoints | **200** |
-| 15 of 16 containers | running |
-| Error count, last 10 min, 8 backend services | **0** |
-| MongoDB replica set | `myState=1` (PRIMARY) |
-| PostgreSQL | 5 databases, 38 tables, 38 migrations applied |
-| MinIO | 4 buckets, all private |
-| RabbitMQ | 21 queues declared |
-| Redis | reachable from both app servers, AOF on, `noeviction` |
-| Cross-server links from Dev 02 | Postgres, Mongo, RabbitMQ, MinIO, Redis — all OK |
-| TLS | 8 certificates, auto-renew hooked |
-| Firewall | only 22223 / 80 / 443 answer from outside |
+| Area                                         | State                                                 |
+| -------------------------------------------- | ----------------------------------------------------- |
+| All 10 public endpoints                      | **200**                                               |
+| 15 of 16 containers                          | running                                               |
+| Error count, last 10 min, 8 backend services | **0**                                                 |
+| MongoDB replica set                          | `myState=1` (PRIMARY)                                 |
+| PostgreSQL                                   | 5 databases, 38 tables, 38 migrations applied         |
+| MinIO                                        | 4 buckets, all private                                |
+| RabbitMQ                                     | 21 queues declared                                    |
+| Redis                                        | reachable from both app servers, AOF on, `noeviction` |
+| Cross-server links from Dev 02               | Postgres, Mongo, RabbitMQ, MinIO, Redis — all OK      |
+| TLS                                          | 8 certificates, auto-renew hooked                     |
+| Firewall                                     | only 22223 / 80 / 443 answer from outside             |
 
 ### Not working
 
-| Problem | Impact | Needs |
-| --- | --- | --- |
+| Problem                                             | Impact                                                                                                                  | Needs                                                |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | **notifications-service is down** — restart-looping | **No push notifications at all.** RabbitMQ queues buffer durably, so nothing is lost; it drains when the service starts | APNs credentials, or approval to make APNs lazy-init |
-| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log | Grey-cloud the record |
-| **`notification.ai5dev.tech` is proxied** | Calls connect and then carry **no audio or video** — UDP cannot cross a Cloudflare proxy | Grey-cloud the record |
-| **SRS hooks point at the other environment** | Livestreams stay `PENDING` forever | `deploy/scripts/07-srs-add-hook.md` |
-| `APPLE_CLIENT_IDS` is a placeholder | Apple Sign-In rejects tokens | Apple Service ID |
-| Website social/Giphy/Maps keys blank | Those buttons and features inert | Keys + one website rebuild |
-| **No database backups** | Total loss if a disk fails | Scheduling — see OPERATIONS.md §13 |
+| **`minio.ai5dev.tech` is Cloudflare-proxied**       | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log       | Grey-cloud the record                                |
+| **`notification.ai5dev.tech` is proxied**           | Calls connect and then carry **no audio or video** — UDP cannot cross a Cloudflare proxy                                | Grey-cloud the record                                |
+| **SRS hooks point at the other environment**        | Livestreams stay `PENDING` forever                                                                                      | `deploy/scripts/07-srs-add-hook.md`                  |
+| `APPLE_CLIENT_IDS` is a placeholder                 | Apple Sign-In rejects tokens                                                                                            | Apple Service ID                                     |
+| Website social/Giphy/Maps keys blank                | Those buttons and features inert                                                                                        | Keys + one website rebuild                           |
+| **No database backups**                             | Total loss if a disk fails                                                                                              | Scheduling — see OPERATIONS.md §13                   |
 
 ---
 
 ## 2. Domain map
 
-| Domain | Origin server | Container | Port | Cloudflare | Live |
-| --- | --- | --- | --- | --- | --- |
-| `api.ai5dev.tech` | Dev 02 · `76.13.216.171` | api-gateway | 3000 | proxied ✔ | **200** |
-| `admin.ai5dev.tech` | Dev 02 · `76.13.216.171` | admin-panel | 3011 | proxied ✔ | **200** |
-| `backoffice.ai5dev.tech` | Dev 02 · `76.13.216.171` | backoffice-service | 3010 | proxied ✔ | **200** |
-| `website.ai5dev.tech` | Dev 01 · `76.13.216.164` | website | 3000 | proxied ✔ | **200** |
-| `minio.ai5dev.tech` | Dev 01 · `76.13.216.164` | minio | 9000 | **proxied ✘ must be grey** | **200** |
-| `notification.ai5dev.tech` | Dev 01 · `76.13.216.164` | livekit | 7880 | **proxied ✘ must be grey** | **200** |
-| `auth.ai5dev.tech` | Dev 01 · `76.13.216.164` | minio console | 9001 | proxied ✔ | **200** |
-| `rabbitmq.ai5dev.tech` | Dev 01 · `76.13.216.164` | rabbitmq UI | 15672 | proxied ✔ | **200** |
-| `ai5stream.tech` | Stream · `72.62.69.126` | SRS | 1935/8080 | DNS-only | **200** |
-| `community.ai5dev.tech` | — | — | — | — | **spare** |
-| `backend.ai5dev.tech` | — | — | — | — | **spare** |
+| Domain                     | Origin server            | Container          | Port      | Cloudflare                 | Live      |
+| -------------------------- | ------------------------ | ------------------ | --------- | -------------------------- | --------- |
+| `api.ai5dev.tech`          | Dev 02 · `76.13.216.171` | api-gateway        | 3000      | proxied ✔                  | **200**   |
+| `admin.ai5dev.tech`        | Dev 02 · `76.13.216.171` | admin-panel        | 3011      | proxied ✔                  | **200**   |
+| `backoffice.ai5dev.tech`   | Dev 02 · `76.13.216.171` | backoffice-service | 3010      | proxied ✔                  | **200**   |
+| `website.ai5dev.tech`      | Dev 01 · `76.13.216.164` | website            | 3000      | proxied ✔                  | **200**   |
+| `minio.ai5dev.tech`        | Dev 01 · `76.13.216.164` | minio              | 9000      | **proxied ✘ must be grey** | **200**   |
+| `notification.ai5dev.tech` | Dev 01 · `76.13.216.164` | livekit            | 7880      | **proxied ✘ must be grey** | **200**   |
+| `auth.ai5dev.tech`         | Dev 01 · `76.13.216.164` | minio console      | 9001      | proxied ✔                  | **200**   |
+| `rabbitmq.ai5dev.tech`     | Dev 01 · `76.13.216.164` | rabbitmq UI        | 15672     | proxied ✔                  | **200**   |
+| `ai5stream.tech`           | Stream · `72.62.69.126`  | SRS                | 1935/8080 | DNS-only                   | **200**   |
+| `community.ai5dev.tech`    | —                        | —                  | —         | —                          | **spare** |
+| `backend.ai5dev.tech`      | —                        | —                  | —         | —                          | **spare** |
 
 ### Two subdomains do not do what their name says
 
@@ -72,10 +72,10 @@ the vhost files so nobody is misled later.
 
 Both currently resolve to `104.21.93.157 / 172.67.211.185` — proxied.
 
-| Record | Set to | Because |
-| --- | --- | --- |
-| `minio.ai5dev.tech` | **DNS-only → `76.13.216.164`** | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO |
-| `notification.ai5dev.tech` | **DNS-only → `76.13.216.164`** | LiveKit media is UDP 50000-50100 direct to the host. Proxied, signaling succeeds and the call joins — with no media. Looks exactly like an app bug |
+| Record                     | Set to                         | Because                                                                                                                                                                        |
+| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `minio.ai5dev.tech`        | **DNS-only → `76.13.216.164`** | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO |
+| `notification.ai5dev.tech` | **DNS-only → `76.13.216.164`** | LiveKit media is UDP 50000-50100 direct to the host. Proxied, signaling succeeds and the call joins — with no media. Looks exactly like an app bug                             |
 
 Everything else can stay proxied.
 
@@ -83,39 +83,39 @@ Everything else can stay proxied.
 
 ## 3. Server and port reference
 
-| Server | IP | SSH | Public ports |
-| --- | --- | --- | --- |
-| Dev 01 | `76.13.216.164` | 22223 | 80, 443, 7881/tcp, 50000-50100/udp |
-| Dev 02 | `76.13.216.171` | 22223 | 80, 443 |
-| DB / SIEM | `187.77.130.157` | 22223 | 80*, 443 (Wazuh), 1514, 1515, 55000 |
-| Stream | `72.62.69.126` | 22223 | 80, 443, 1935 (RTMP) |
+| Server    | IP               | SSH   | Public ports                         |
+| --------- | ---------------- | ----- | ------------------------------------ |
+| Dev 01    | `76.13.216.164`  | 22223 | 80, 443, 7881/tcp, 50000-50100/udp   |
+| Dev 02    | `76.13.216.171`  | 22223 | 80, 443                              |
+| DB / SIEM | `187.77.130.157` | 22223 | 80\*, 443 (Wazuh), 1514, 1515, 55000 |
+| Stream    | `72.62.69.126`   | 22223 | 80, 443, 1935 (RTMP)                 |
 
 Restricted, not public:
 
-| Port | Server | Reachable only from |
-| --- | --- | --- |
-| 5432 PostgreSQL | Dev 01 | `76.13.216.171` |
-| 27017 MongoDB | Dev 01 | `76.13.216.171` |
-| 5672 RabbitMQ | Dev 01 | `76.13.216.171` |
-| 9000 MinIO | Dev 01 | `76.13.216.171` + local nginx |
-| 52023 Redis | DB server | `76.13.216.164`, `76.13.216.171` |
+| Port            | Server    | Reachable only from              |
+| --------------- | --------- | -------------------------------- |
+| 5432 PostgreSQL | Dev 01    | `76.13.216.171`                  |
+| 27017 MongoDB   | Dev 01    | `76.13.216.171`                  |
+| 5672 RabbitMQ   | Dev 01    | `76.13.216.171`                  |
+| 9000 MinIO      | Dev 01    | `76.13.216.171` + local nginx    |
+| 52023 Redis     | DB server | `76.13.216.164`, `76.13.216.171` |
 
 Verified from an external host: **only 22223, 80 and 443 answer anywhere.**
 Every database port times out.
 
 ### Internal service ports (Dev 02, not reachable off-box)
 
-| Service | HTTP | gRPC | Datastore |
-| --- | --- | --- | --- |
-| api-gateway | 3000 | — | Redis |
-| auth-service | 3001 | 4001 | PostgreSQL `aimess_auth` |
-| user-service | 3002 | 4002 | PostgreSQL `aimess_users` |
-| community-service | 3003 | 4003 | MongoDB `community_db` |
-| chat-service | 3004 | 4004 | MongoDB `aimess_chat` |
+| Service               | HTTP | gRPC | Datastore                      |
+| --------------------- | ---- | ---- | ------------------------------ |
+| api-gateway           | 3000 | —    | Redis                          |
+| auth-service          | 3001 | 4001 | PostgreSQL `aimess_auth`       |
+| user-service          | 3002 | 4002 | PostgreSQL `aimess_users`      |
+| community-service     | 3003 | 4003 | MongoDB `community_db`         |
+| chat-service          | 3004 | 4004 | MongoDB `aimess_chat`          |
 | notifications-service | 3006 | 4006 | MongoDB `aimess_notifications` |
-| stream-service | 3007 | 4007 | MongoDB `stream_db` |
-| media-service | 3009 | 4009 | MongoDB `aimess_media` |
-| backoffice-service | 3010 | 4010 | PostgreSQL `admin_db` |
+| stream-service        | 3007 | 4007 | MongoDB `stream_db`            |
+| media-service         | 3009 | 4009 | MongoDB `aimess_media`         |
+| backoffice-service    | 3010 | 4010 | PostgreSQL `admin_db`          |
 
 ---
 
@@ -165,16 +165,17 @@ middleware are both live.
 
 **These are not interchangeable. Copying one value to the other breaks it.**
 
-| App | `NEXT_PUBLIC_API_URL` | Why |
-| --- | --- | --- |
-| **website** | `https://api.ai5dev.tech/api/v1` | Full consumer base, **including `/api/v1`** |
-| **admin panel** | `https://api.ai5dev.tech` | **Host root, no path** |
+| App             | `NEXT_PUBLIC_API_URL`            | Why                                         |
+| --------------- | -------------------------------- | ------------------------------------------- |
+| **website**     | `https://api.ai5dev.tech/api/v1` | Full consumer base, **including `/api/v1`** |
+| **admin panel** | `https://api.ai5dev.tech`        | **Host root, no path**                      |
 
 **website** — `src/configs/app.config.ts` derives the v2 base by replacing that
 exact suffix:
 
 ```ts
-const rawApiPrefix   = process.env.NEXT_PUBLIC_API_URL || "https://api.aimess.app/api/v1";
+const rawApiPrefix =
+  process.env.NEXT_PUBLIC_API_URL || "https://api.aimess.app/api/v1";
 const rawApiV2Prefix = rawApiPrefix.replace(/\/api\/v1(\/?)$/, "/api/v2$1");
 ```
 
@@ -185,7 +186,7 @@ This was wrong at first deploy and is now corrected.
 **admin panel** — `getAdminApiBaseUrl()` appends the prefix itself:
 
 ```ts
-return `${host}/${adminPrefix}`;   // host + /admin/v1
+return `${host}/${adminPrefix}`; // host + /admin/v1
 ```
 
 Putting `/api/v1` here would produce `/api/v1/admin/v1/...` and 404. The admin
@@ -196,11 +197,11 @@ Socket.IO is served at `/socket.io/` and the client appends that itself.
 
 Gateway mounts, for reference (`apps/api-gateway/src/app.ts`):
 
-| Mount | Serves |
-| --- | --- |
-| `/api/v1`, `/api/v2` | consumer API |
-| `/admin` → rewritten | admin API (backoffice-service) |
-| `/socket.io/` | Socket.IO |
+| Mount                              | Serves                           |
+| ---------------------------------- | -------------------------------- |
+| `/api/v1`, `/api/v2`               | consumer API                     |
+| `/admin` → rewritten               | admin API (backoffice-service)   |
+| `/socket.io/`                      | Socket.IO                        |
 | `/health`, `/internal`, `/livekit` | ops, SRS hooks, LiveKit webhooks |
 
 Verified live: `POST /api/v1/app-version/check` → **200**;
@@ -211,14 +212,14 @@ returning 404 on these paths is normal — most routes are POST-only.
 
 ## 5. Credentials and where they live
 
-| Item | Location |
-| --- | --- |
-| SSH key | your `~/.ssh/id_ed25519` — publickey only, port 22223 |
-| Sudo password | `server_info.txt` — needed only for host-level changes |
-| Generated secrets | `/opt/aimess/shared-secrets.env` on Dev 01 **and** Dev 02 (mode 600, identical) |
-| Backend runtime env | `/opt/aimess/aimess_backend/deploy/dev0{1,2}/.env.dev0{1,2}` (mode 600) |
-| Frontend build env | `/opt/aimess/aimess_{website,admin_panel}/.env.production` |
-| Bootstrap admin | `harsh@vasundharasolutions.com` — password in `shared-secrets.env` |
+| Item                | Location                                                                        |
+| ------------------- | ------------------------------------------------------------------------------- |
+| SSH key             | your `~/.ssh/id_ed25519` — publickey only, port 22223                           |
+| Sudo password       | `server_info.txt` — needed only for host-level changes                          |
+| Generated secrets   | `/opt/aimess/shared-secrets.env` on Dev 01 **and** Dev 02 (mode 600, identical) |
+| Backend runtime env | `/opt/aimess/aimess_backend/deploy/dev0{1,2}/.env.dev0{1,2}` (mode 600)         |
+| Frontend build env  | `/opt/aimess/aimess_{website,admin_panel}/.env.production`                      |
+| Bootstrap admin     | `harsh@vasundharasolutions.com` — password in `shared-secrets.env`              |
 
 **Change the bootstrap admin password after first login**, then blank
 `BOOTSTRAP_SUPER_ADMIN_PASSWORD`.

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { logger } from "@aimess/logger";
-import { NotFoundError } from "@aimess/errors";
-import { buildReactionActivityText } from "@aimess/constants";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
+import {
+  buildReactionActivityText,
+  isCallContentType,
+} from "@aimess/constants";
 
 import type { Redis, Cluster } from "ioredis";
 
@@ -283,6 +286,15 @@ export class ChatMessageOrchestrator {
    * not duplicated here.
    */
   async sendDirect(params: SendDirectParams): Promise<SendDirectResult> {
+    // VOICE_CALL / VIDEO_CALL are written ONLY by the call service — a forged
+    // one would fake a call in someone's timeline (and, as a systemEvent-less
+    // row, one that never happened). The REST validators already reject them via
+    // `z.enum(CONTENT_TYPES)`, but the socket/gRPC path takes the kind as a free
+    // string, so the guard belongs here: the one point every send funnels
+    // through, whatever the transport.
+    if (isCallContentType(params.messageType ?? "")) {
+      throw new BadRequestError("CHAT_INVALID_MESSAGE_TYPE");
+    }
     const conversationType = resolveConversationType(
       params.roomId,
       params.conversationType
@@ -1670,20 +1682,34 @@ export class ChatMessageOrchestrator {
   private async resolveBroadcastContent(content: unknown): Promise<unknown> {
     if (!content || typeof content !== "object") return content;
     const c = content as Record<string, unknown>;
-    if (Array.isArray(c.files) && c.files.length > 0) {
-      try {
-        return {
-          ...c,
-          files: await resolveContentFiles(c.files as MediaFileLike[]),
-        };
-      } catch (err) {
-        logger.warn(
-          `ChatMessageOrchestrator|resolveBroadcastContent failed: ${String(err)}`
-        );
-        return content;
-      }
+    const hasFiles = Array.isArray(c.files) && c.files.length > 0;
+    // `content.sticker` lives outside files[]; REST history already resolves it
+    // (`resolveStickerField`), so the live broadcast must too.
+    const sticker =
+      c.sticker && typeof c.sticker === "object"
+        ? (c.sticker as MediaFileLike)
+        : null;
+    if (!hasFiles && !sticker) return content;
+    try {
+      const [files, stickerUrl] = await Promise.all([
+        hasFiles
+          ? resolveContentFiles(c.files as MediaFileLike[])
+          : Promise.resolve(null),
+        sticker ? resolveMediaUrl(fileMediaKey(sticker)) : Promise.resolve(""),
+      ]);
+      return {
+        ...c,
+        ...(files ? { files } : {}),
+        ...(sticker && stickerUrl
+          ? { sticker: { ...sticker, url: stickerUrl } }
+          : {}),
+      };
+    } catch (err) {
+      logger.warn(
+        `ChatMessageOrchestrator|resolveBroadcastContent failed: ${String(err)}`
+      );
+      return content;
     }
-    return content;
   }
 
   /**

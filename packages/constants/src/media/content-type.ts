@@ -1,7 +1,9 @@
 /**
  * Canonical message-kind ("contentType") catalog — the SINGLE source of truth
  * for every send validator, socket schema, and OpenAPI doc across all chat
- * surfaces (private, group, community). Before this module the list was
+ * surfaces (private, group, community). Read-only kinds that a client may never
+ * send live in {@link CALL_CONTENT_TYPES}; {@link ALL_CONTENT_TYPES} is the union
+ * a reader can observe. Before this module the list was
  * duplicated in three Zod validators that had drifted apart (private/group were
  * missing AUDIO and GIF that community accepted); importing from here keeps them
  * in lock-step.
@@ -32,6 +34,53 @@ export const CONTENT_TYPES = [
 ] as const;
 
 export type ContentType = (typeof CONTENT_TYPES)[number];
+
+/**
+ * Call-lifecycle message kinds. A call's timeline row is NOT a generic SYSTEM
+ * line: the client renders a call card whose icon/affordance depends on whether
+ * the call was voice or video, and that fact must come from the message kind
+ * rather than from parsing `content.text`.
+ *
+ * Deliberately NOT part of {@link CONTENT_TYPES}: that tuple backs the private /
+ * group send validators (`z.enum(CONTENT_TYPES)`), and these two are
+ * server-emitted only — a client must never be able to forge a call row by
+ * sending `messageType: "VOICE_CALL"`. Use {@link ALL_CONTENT_TYPES} wherever the
+ * full READ-side catalog is needed (docs, wire types).
+ */
+export const CALL_CONTENT_TYPES = ["VOICE_CALL", "VIDEO_CALL"] as const;
+
+export type CallContentType = (typeof CALL_CONTENT_TYPES)[number];
+
+/** Every kind that can appear as `contentType` on a READ/broadcast wire. */
+export const ALL_CONTENT_TYPES = [
+  ...CONTENT_TYPES,
+  ...CALL_CONTENT_TYPES,
+] as const;
+
+export type AnyContentType = (typeof ALL_CONTENT_TYPES)[number];
+
+/**
+ * Map a Call's `type` (`CallType`: "AUDIO" | "VIDEO") to the message kind its
+ * chat timeline row is stored as. The SINGLE place this mapping exists — every
+ * call-message writer (private DM audit rows, group call audit rows) goes
+ * through it, so the kind is derived from call METADATA, never from the
+ * rendered text. Unknown/absent type falls back to VOICE_CALL, matching the
+ * `CallType.AUDIO` default used when a client omits the call type.
+ */
+export function callContentType(
+  callType: string | null | undefined
+): CallContentType {
+  return String(callType ?? "").toUpperCase() === "VIDEO"
+    ? "VIDEO_CALL"
+    : "VOICE_CALL";
+}
+
+/** True if `value` is a call-lifecycle message kind (case-insensitive). */
+export function isCallContentType(value: string): boolean {
+  return (CALL_CONTENT_TYPES as readonly string[]).includes(
+    String(value ?? "").toUpperCase()
+  );
+}
 
 /**
  * The media-bearing subset of {@link CONTENT_TYPES} — i.e. the "MediaType" view

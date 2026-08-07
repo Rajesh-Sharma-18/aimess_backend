@@ -20,6 +20,7 @@ import {
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
+  chatChangesV2QuerySchema,
 } from "../validators/query.validator.js";
 import type { GroupMessageController } from "../controllers/group-message.controller.js";
 
@@ -59,6 +60,15 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     authenticate,
     validateQuery(messageTimelineQuerySchema),
     ctrl.getMessages
+  );
+  // Zero-loss revision catch-up. The V2 router exposes this as
+  // `/rooms/:roomId/changes`; groups on V1 address rooms as `/:roomId`, so this
+  // is the same handler at the V1 path shape clients actually call.
+  router.get(
+    "/:roomId/changes",
+    authenticate,
+    validateQuery(chatChangesV2QuerySchema),
+    ctrl.getChanges
   );
   router.get(
     "/:roomId/conversation",

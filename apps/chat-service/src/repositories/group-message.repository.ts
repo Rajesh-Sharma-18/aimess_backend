@@ -1074,6 +1074,36 @@ export class GroupMessageRepository {
   }
 
   /**
+   * GROUP twin of `PrivateMessageRepository.updateCallState` — in-place state
+   * transition of an existing CALL row, so one call stays one timeline row for
+   * its whole lifecycle. Not `editMessage`: no `editedAt`/`editHistory` stamp
+   * (a call card must never render as "edited"), but it does allocate a fresh
+   * room revision so the change rides `/changes` and `sinceRevision` catch-up.
+   */
+  async updateCallState(params: {
+    messageId: string;
+    roomId: string;
+    content: object;
+    messageType: string;
+    systemEvent: string | null;
+    systemData: object | null;
+    countInUnread: boolean;
+  }): Promise<GroupMessage> {
+    const revision = await this.roomRepo.allocateRevision(params.roomId);
+    return this.prisma.groupMessage.update({
+      where: { id: params.messageId },
+      data: {
+        content: params.content as unknown as Prisma.InputJsonValue,
+        messageType: params.messageType,
+        systemEvent: params.systemEvent,
+        systemData: params.systemData as unknown as Prisma.InputJsonValue,
+        countInUnread: params.countInUnread,
+        revision,
+      },
+    });
+  }
+
+  /**
    * List media/document messages in a room, newest first, cursor on createdAt.
    * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
    * in memory (Mongo can't $nin a JSON array).

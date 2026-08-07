@@ -25,8 +25,12 @@ export function shouldCountInUnread(params: {
   if (typeof params.explicit === "boolean") return params.explicit;
 
   const messageType = String(params.messageType ?? "").toUpperCase();
-  if (messageType && messageType !== "SYSTEM") return true;
 
+  // `systemEvent` / `systemMessageType` are authoritative on their own — a row
+  // can carry a lifecycle marker while using a NON-"SYSTEM" kind (call rows are
+  // stored as VOICE_CALL / VIDEO_CALL so the client can render a call card, yet
+  // are still audit lines that must not raise a badge). Checking messageType
+  // first and returning early would have counted every one of them.
   const isSystemMessage =
     messageType === "SYSTEM" ||
     !!params.systemEvent ||
