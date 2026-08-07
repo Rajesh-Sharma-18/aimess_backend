@@ -6,9 +6,8 @@
 # See the long comment in 01-firewall-dev01.sh for why container ports need
 # DOCKER-USER rules rather than ufw.
 #
-# On this host almost every service publishes to 127.0.0.1 only, so nginx is
-# the sole public path in. The two exceptions are the user-service and
-# community-service gRPC ports, which the remote stream-service must reach.
+# Every service on this host publishes to 127.0.0.1 only, so nginx is the sole
+# public path in and no container port is exposed off-box at all.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -93,7 +92,7 @@ echo
 echo "--- DOCKER-USER ---"
 iptables -L DOCKER-USER -n -v --line-numbers
 echo
-echo "--- published ports (everything except 4002/4003 must show 127.0.0.1) ---"
+echo "--- published ports (every container port must show 127.0.0.1) ---"
 ss -tulnp | grep -E 'docker|LISTEN' | head -30
 echo
 echo "Dev 02 firewall configured."
