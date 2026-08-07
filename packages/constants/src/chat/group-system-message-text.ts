@@ -206,13 +206,23 @@ export function buildGroupSystemFallbackText(
     case "MESSAGES_ENCRYPTED":
       return "Messages are end-to-end encrypted";
 
+    // Group call rows are sender-less lifecycle rows, so the actor-based
+    // wording above does not apply — they read exactly like their DM twin.
+    case "CALL_STARTED":
+    case "CALL_ENDED":
+      return buildCallTimelineText({
+        callType: data.callType as string,
+        status: data.status as string,
+        durationSec: data.durationSec as number,
+      });
+
     default:
       if (isActor) return "You updated the group";
       return `${actor} updated the group`;
   }
 }
 
-function formatCallDuration(durationSec: number): string {
+export function formatCallDuration(durationSec: number): string {
   const total = Math.max(0, Math.floor(durationSec));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -222,6 +232,68 @@ function formatCallDuration(durationSec: number): string {
   return hours > 0
     ? `${String(hours).padStart(2, "0")}:${mm}:${ss}`
     : `${mm}:${ss}`;
+}
+
+/**
+ * Every state a call timeline row can be in, in lifecycle order.
+ *
+ * A call is ONE chat row that transitions in place (see
+ * `CallChatMessageService`): it is written the moment the call starts ringing
+ * and updated — same row id, same `callId` — on every subsequent transition.
+ * `RINGING` and `ANSWERED` are live states; the rest are terminal.
+ */
+export const CALL_TIMELINE_STATUSES = [
+  "RINGING",
+  "ANSWERED",
+  "ENDED",
+  "MISSED",
+  "DECLINED",
+  "CANCELLED",
+  "FAILED",
+] as const;
+
+export type CallTimelineStatus = (typeof CALL_TIMELINE_STATUSES)[number];
+
+/** True if the call row has reached a state it can never leave. */
+export function isTerminalCallStatus(status: string): boolean {
+  const s = String(status ?? "").toUpperCase();
+  return s !== "RINGING" && s !== "ANSWERED";
+}
+
+/**
+ * SINGLE SOURCE OF TRUTH for a call row's English fallback text, across
+ * private DM rows, group rows, inbox previews and push bodies. Clients render
+ * the real card from `content.call` (`callStatus`, `direction`, `durationSec`)
+ * — this string only has to be sane wherever raw text is shown.
+ */
+export function buildCallTimelineText(params: {
+  callType?: string | null;
+  status?: string | null;
+  durationSec?: number | null;
+}): string {
+  const label =
+    String(params.callType ?? "").toUpperCase() === "VIDEO" ? "Video" : "Voice";
+  const status = String(params.status ?? "ENDED").toUpperCase();
+  switch (status) {
+    case "RINGING":
+      return `${label} call ringing`;
+    case "ANSWERED":
+      return `${label} call ongoing`;
+    case "DECLINED":
+      return `${label} call declined`;
+    case "CANCELLED":
+      return `${label} call cancelled`;
+    case "FAILED":
+      return `${label} call failed`;
+    // Same wording as the 1:1 timeline row so a missed call reads identically
+    // in a DM and in a group.
+    case "MISSED":
+      return `${label} call was not answered`;
+    default:
+      return `${label} call lasted ${formatCallDuration(
+        Number(params.durationSec ?? 0)
+      )}`;
+  }
 }
 
 /** Shared deterministic English fallback text for Private SYSTEM events. */
@@ -251,17 +323,13 @@ export function buildPrivateSystemFallbackText(
       if (isActor) return "You shared a group invite";
       return `${actor} shared a group invite`;
 
-    case "CALL_ENDED": {
-      const callLabel =
-        String(data.callType ?? "").toUpperCase() === "VIDEO"
-          ? "Video"
-          : "Voice";
-      const status = String(data.status ?? "ENDED").toUpperCase();
-      const durationSec = Number(data.durationSec ?? 0);
-      if (status === "DECLINED") return `${callLabel} call declined`;
-      if (status === "CANCELLED") return `${callLabel} call cancelled`;
-      return `${callLabel} call lasted ${formatCallDuration(durationSec)}`;
-    }
+    case "CALL_STARTED":
+    case "CALL_ENDED":
+      return buildCallTimelineText({
+        callType: data.callType as string,
+        status: data.status as string,
+        durationSec: data.durationSec as number,
+      });
 
     case "FRIENDSHIP_CREATED":
       return isActor || isTarget
@@ -350,7 +418,8 @@ export function personalizePrivateSystemMessageForViewer(
   viewerUserId: string
 ): string {
   if (!viewerUserId.trim()) return thirdPersonText;
-  if (event === "CALL_ENDED") return thirdPersonText;
+  if (event === "CALL_ENDED" || event === "CALL_STARTED")
+    return thirdPersonText;
   const personalized = buildPrivateSystemFallbackText(
     event,
     systemData,

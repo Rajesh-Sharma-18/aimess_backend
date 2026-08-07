@@ -11,19 +11,19 @@ server untouched.
 Audited **2026-08-06** by SSH. Several facts differ from `server_info.txt` — the
 corrections are load-bearing, so read this table before anything else.
 
-| `server_info.txt` says | Actual |
-| --- | --- |
-| SSH port 22 | **22223 on all four servers** |
-| Password auth (`rajvasu@tech5`) | **Disabled everywhere — publickey only.** The working key is `~/.ssh/id_ed25519` |
-| Sudo password `rajvasu@tech5` | **Rejected on all three servers.** `rajvasu` is in the `sudo` group but that password fails |
-| DB server runs MongoDB, PostgreSQL, Redis | **Only Redis.** Neither MongoDB nor PostgreSQL is installed |
+| `server_info.txt` says                    | Actual                                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| SSH port 22                               | **22223 on all four servers**                                                               |
+| Password auth (`rajvasu@tech5`)           | **Disabled everywhere — publickey only.** The working key is `~/.ssh/id_ed25519`            |
+| Sudo password `rajvasu@tech5`             | **Rejected on all three servers.** `rajvasu` is in the `sudo` group but that password fails |
+| DB server runs MongoDB, PostgreSQL, Redis | **Only Redis.** Neither MongoDB nor PostgreSQL is installed                                 |
 
-| Host | IP | Specs | State at audit |
-| --- | --- | --- | --- |
-| Dev 01 | `76.13.216.164` | 4 vCPU / 15 GB / 191 GB free, Ubuntu 24.04.4 | **Bare** — only sshd |
-| Dev 02 | `76.13.216.171` | 4 vCPU / 15 GB / 191 GB free, Ubuntu 24.04.4 | **Bare** — only sshd |
+| Host      | IP               | Specs                                        | State at audit                                                               |
+| --------- | ---------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| Dev 01    | `76.13.216.164`  | 4 vCPU / 15 GB / 191 GB free, Ubuntu 24.04.4 | **Bare** — only sshd                                                         |
+| Dev 02    | `76.13.216.171`  | 4 vCPU / 15 GB / 191 GB free, Ubuntu 24.04.4 | **Bare** — only sshd                                                         |
 | DB / SIEM | `187.77.130.157` | 4 vCPU / 15 GB / 176 GB free, Ubuntu 24.04.4 | **Wazuh** (manager + indexer + dashboard on 443) **+ Redis 7.0.15** on 52023 |
-| Stream | `72.62.69.126` | not inspected | `ai5stream.tech` → direct A record. **Left alone by design** |
+| Stream    | `72.62.69.126`   | not inspected                                | `ai5stream.tech` → direct A record. **Left alone by design**                 |
 
 All three hosts are in one datacenter — **0.42 ms RTT** between them — but there
 is **no private network**. Every interface is public, which is why the firewall
@@ -73,17 +73,17 @@ public interfaces on every request.
 
 ## 3. Domain allocation
 
-| Subdomain | Points at | Cloudflare | Notes |
-| --- | --- | --- | --- |
-| `api.ai5dev.tech` | Dev 02 | proxied | REST **and** Socket.IO (`/z-socket/`) |
-| `admin.ai5dev.tech` | Dev 02 | proxied | Admin panel |
-| `backoffice.ai5dev.tech` | Dev 02 | proxied | Admin API |
-| `website.ai5dev.tech` | Dev 01 | proxied | Consumer website |
-| `minio.ai5dev.tech` | Dev 01 | **grey-cloud** | See the 100 MB warning below |
-| `rabbitmq.ai5dev.tech` | Dev 01 | proxied | Management UI — IP-restrict it |
-| `notification.ai5dev.tech` | Dev 01 | **grey-cloud** | **Reused for LiveKit signaling** |
-| `auth.ai5dev.tech` | Dev 01 | proxied | **Reused for the MinIO console** (optional) |
-| `community.ai5dev.tech` `backend.ai5dev.tech` | — | — | Still spare |
+| Subdomain                                     | Points at | Cloudflare     | Notes                                       |
+| --------------------------------------------- | --------- | -------------- | ------------------------------------------- |
+| `api.ai5dev.tech`                             | Dev 02    | proxied        | REST **and** Socket.IO (`/z-socket/`)       |
+| `admin.ai5dev.tech`                           | Dev 02    | proxied        | Admin panel                                 |
+| `backoffice.ai5dev.tech`                      | Dev 02    | proxied        | Admin API                                   |
+| `website.ai5dev.tech`                         | Dev 01    | proxied        | Consumer website                            |
+| `minio.ai5dev.tech`                           | Dev 01    | **grey-cloud** | See the 100 MB warning below                |
+| `rabbitmq.ai5dev.tech`                        | Dev 01    | proxied        | Management UI — IP-restrict it              |
+| `notification.ai5dev.tech`                    | Dev 01    | **grey-cloud** | **Reused for LiveKit signaling**            |
+| `auth.ai5dev.tech`                            | Dev 01    | proxied        | **Reused for the MinIO console** (optional) |
+| `community.ai5dev.tech` `backend.ai5dev.tech` | —         | —              | Still spare                                 |
 
 **No new domains are needed.** `notification.` and `auth.` were provisioned for
 notification-service and auth-service, neither of which should be public —
@@ -116,6 +116,7 @@ next person is not misled.
 ## 4. What was added to the repos
 
 ### New Dockerfiles (4 backend services had none)
+
 `apps/backoffice-service`, `apps/community-service`, `apps/media-service`,
 `apps/notifications-service` — matching the existing multi-stage, non-root
 pattern. The three Mongo services copy `src/generated/prisma` into `dist/`
@@ -125,6 +126,7 @@ up on its own. All four also copy `dist/` explicitly, because `dist` is
 gitignored and `pnpm deploy` therefore omits it.
 
 ### New Dockerfiles for both frontends (neither had Docker at all)
+
 `aimess_admin_panel/Dockerfile`, `aimess_website/Dockerfile`, plus
 `.dockerignore` for each. Both repos gained `output: "standalone"` in
 `next.config.ts` — without it the runtime stage needs the full `node_modules`.
@@ -135,6 +137,7 @@ gitignored and `pnpm deploy` therefore omits it.
 > and changing any value means rebuilding the image.
 
 ### Redis password support — required code change
+
 The shared client (`packages/redis/src/client.ts`) accepted only `host` and
 `port`. The existing Redis requires a password, so **every service would have
 failed with `NOAUTH`**. Added optional `username`/`password` there, threaded
@@ -146,6 +149,7 @@ can carry the password inline.
 Verified with `pnpm exec turbo run typecheck` — **20/20 tasks pass**.
 
 ### Other repo changes
+
 - `package.json` → `docker:build:apps` now covers all nine services (was four).
 - `apps/*/.env.example` → documented `REDIS_PASSWORD` / `BULL_REDIS_PASSWORD`.
 
@@ -155,16 +159,16 @@ Verified with `pnpm exec turbo run typecheck` — **20/20 tasks pass**.
 
 Handled in `deploy/*/.env.*.example` and the compose files, but worth knowing:
 
-| Issue | Resolution |
-| --- | --- |
-| `AUTH_GRPC_URL=0.0.0.0:4001` and similar throughout | `0.0.0.0` is a **bind** address, not a valid dial target. Compose sets these to service names (`auth-service:4001`) |
-| Mongo port disagreement — `27018` (community, stream) vs `27017` (media, notifications) | `27017` everywhere |
-| RabbitMQ port disagreement — `5673` (community, stream) vs `5672` (chat) | `5672` everywhere |
-| `GRPC_SERVICE_TOKEN=dev-grpc-service-token-change-me` | Must be regenerated. With `NODE_ENV=production` services **refuse to start** if unset — deliberate |
-| `MINIO_ENDPOINT=http://10.0.127.227:9000`, `SRS_CANDIDATE=10.0.127.227` | Dev LAN addresses, replaced |
-| `MONGO_DATABASE` empty in `chat-service/.env.example` | It is the **authSource**; empty produces `authSource=` and auth fails. Set to `admin` |
-| `LINK_HOSTS=aimess.me`, `WEB_APP_URL=https://aimess.com` | ⚠ **Not `ai5dev.tech` domains.** Confirm you own them or invite/deep links break — see step 7 |
-| `OTP_DEV_FIXED_CODE=123456` | ⚠ Must be **empty** in production. Any value is accepted as a valid OTP for every account |
+| Issue                                                                                   | Resolution                                                                                                          |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_GRPC_URL=0.0.0.0:4001` and similar throughout                                     | `0.0.0.0` is a **bind** address, not a valid dial target. Compose sets these to service names (`auth-service:4001`) |
+| Mongo port disagreement — `27018` (community, stream) vs `27017` (media, notifications) | `27017` everywhere                                                                                                  |
+| RabbitMQ port disagreement — `5673` (community, stream) vs `5672` (chat)                | `5672` everywhere                                                                                                   |
+| `GRPC_SERVICE_TOKEN=dev-grpc-service-token-change-me`                                   | Must be regenerated. With `NODE_ENV=production` services **refuse to start** if unset — deliberate                  |
+| `MINIO_ENDPOINT=http://10.0.127.227:9000`, `SRS_CANDIDATE=10.0.127.227`                 | Dev LAN addresses, replaced                                                                                         |
+| `MONGO_DATABASE` empty in `chat-service/.env.example`                                   | It is the **authSource**; empty produces `authSource=` and auth fails. Set to `admin`                               |
+| `LINK_HOSTS=aimess.me`, `WEB_APP_URL=https://aimess.com`                                | ⚠ **Not `ai5dev.tech` domains.** Confirm you own them or invite/deep links break — see step 7                       |
+| `OTP_DEV_FIXED_CODE=123456`                                                             | ⚠ Must be **empty** in production. Any value is accepted as a valid OTP for every account                           |
 
 ---
 
@@ -353,13 +357,13 @@ Consequences:
 Reference values read from the live SRS/nginx config, already in
 `.env.dev02.example`:
 
-| Setting | Value |
-| --- | --- |
-| WHIP ingest | `https://ai5stream.tech/ingest` |
-| WebRTC / control API | `https://ai5stream.tech/rtc` , `/api` → `:1985` |
-| HLS + HTTP-FLV playback | `https://ai5stream.tech` → `:8080` |
-| RTMP | `rtmp://ai5stream.tech:1935` |
-| `SRS_HOOK_SECRET` | `3ffbbfb2c073a9b9f8d52c2235f1341b` |
+| Setting                 | Value                                           |
+| ----------------------- | ----------------------------------------------- |
+| WHIP ingest             | `https://ai5stream.tech/ingest`                 |
+| WebRTC / control API    | `https://ai5stream.tech/rtc` , `/api` → `:1985` |
+| HLS + HTTP-FLV playback | `https://ai5stream.tech` → `:8080`              |
+| RTMP                    | `rtmp://ai5stream.tech:1935`                    |
+| `SRS_HOOK_SECRET`       | `3ffbbfb2c073a9b9f8d52c2235f1341b`              |
 
 Minor unrelated bug spotted: the port-80 block of
 `/etc/nginx/sites-enabled/ai5stream.tech` has `server_name ai5stream.tech
