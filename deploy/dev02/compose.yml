@@ -108,10 +108,9 @@ services:
       USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users
       AUTH_GRPC_URL: auth-service:4001
       CHAT_GRPC_URL: chat-service:4004
-    ports:
-      # Published ONLY so the remote stream-service can call user-service over
-      # gRPC. Restricted to the stream server's IP in DOCKER-USER.
-      - "${LAN_IP}:4002:4002"
+    # No published ports. gRPC is reached as `user-service:4002` on the compose
+    # network. An earlier revision published this for a remote stream-service,
+    # but stream-service runs here now, so nothing off-box needs gRPC.
 
   # ===========================================================================
   # community-service — MongoDB community_db.
@@ -128,9 +127,7 @@ services:
       USER_GRPC_URL: user-service:4002
       CHAT_GRPC_URL: chat-service:4004
       STREAM_GRPC_URL: ${STREAM_GRPC_URL}
-    ports:
-      # Published ONLY for the remote stream-service. See user-service above.
-      - "${LAN_IP}:4003:4003"
+    # No published ports — see user-service above.
 
   # ===========================================================================
   # chat-service — MongoDB aimess_chat + Socket.IO.
