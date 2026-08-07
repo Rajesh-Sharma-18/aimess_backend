@@ -80,15 +80,21 @@ export function publishQrLinkEvent(
  * never opened a `/notify` connection. Every namespace's socket carries
  * `socket.data.sessionId` (set by the shared auth middleware) — the gateway
  * disconnects only the socket(s) matching `sessionId`.
+ *
+ * `reason` separates a user's OWN sign-out on this device (`"logout"`) from a
+ * revoke it did not ask for (`"terminated"` — another device, admin, expiry).
+ * Both force-disconnect; only `"terminated"` warrants the client-facing
+ * `auth:session_terminated` notice (see api-gateway `session-revoke.ts`).
  */
 export function publishSessionRevokedEvent(
   redis: Redis | Cluster,
   userId: string,
-  sessionId: string
+  sessionId: string,
+  reason: "terminated" | "logout" = "terminated"
 ): Promise<number> {
   return redis.publish(
     `session-revoke:${userId}`,
-    JSON.stringify({ sessionId })
+    JSON.stringify({ sessionId, reason })
   );
 }
 
