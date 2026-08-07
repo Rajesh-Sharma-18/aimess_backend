@@ -106,12 +106,36 @@ for d in "${DOMAINS[@]}"; do
 done
 
 echo "==> [4/5] installing real site configs"
-# certbot writes these on first run; the site configs include them.
-[ -f /etc/letsencrypt/options-ssl-nginx.conf ] || \
-  curl -fsSL https://raw.githubusercontent.com/certbot/certbot/main/certbot-nginx/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
-    -o /etc/letsencrypt/options-ssl-nginx.conf
+# The site configs include these two. certbot only drops them in when the
+# --nginx installer runs; we use --webroot, so they may be absent.
+#
+# Written locally rather than downloaded: the upstream raw.githubusercontent
+# path moves between certbot releases, and a 404 there aborts the whole script
+# after the certificates have already been issued.
+if [ ! -f /etc/letsencrypt/options-ssl-nginx.conf ]; then
+  PKG=/usr/lib/python3/dist-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf
+  if [ -f "$PKG" ]; then
+    cp "$PKG" /etc/letsencrypt/options-ssl-nginx.conf
+    echo "    installed options-ssl-nginx.conf from the certbot package"
+  else
+    cat > /etc/letsencrypt/options-ssl-nginx.conf <<'SSLCONF'
+# Mozilla intermediate profile. Equivalent to certbot's shipped defaults.
+ssl_session_cache shared:le_nginx_SSL:10m;
+ssl_session_timeout 1440m;
+ssl_session_tickets off;
+
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+
+ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305";
+SSLCONF
+    echo "    wrote a built-in options-ssl-nginx.conf"
+  fi
+fi
+
+# 2048-bit takes ~10-30s; only ever generated once.
 [ -f /etc/letsencrypt/ssl-dhparams.pem ] || \
-  openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048
+  openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048 2>/dev/null
 
 for i in "${!SITES[@]}"; do
   site="${SITES[$i]}"
