@@ -34,8 +34,28 @@ try {
   // NotYetInitialized (94) is the only error we want to act on. Anything else
   // is a real failure and should surface rather than be papered over.
   if (e.code !== 94 && !/no replset config/i.test(e.message)) { throw e; }
-  print("initiating replica set rs0 with member ${HOST}:27017");
-  rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "${HOST}:27017" }] });
+
+  // Try the LAN IP first. It is the more broadly correct value — a client that
+  // does topology discovery gets an address it can actually route to.
+  try {
+    print("initiating replica set rs0 with member ${HOST}:27017");
+    rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "${HOST}:27017" }] });
+  } catch (e2) {
+    // InvalidReplicaSetConfig (93): "no host ... maps to this node". mongod
+    // decides whether a member IS itself by connecting to that address; from
+    // inside the container that means going out to the host's public IP and
+    // back in through the published port. That hairpin is not guaranteed to
+    // work under Docker, and on this deployment it does not.
+    //
+    // localhost is always recognised as self, so it is the reliable fallback.
+    // Safe here ONLY because every service connects with directConnection=true
+    // (see apps/*/src/config/env.ts) and so never consults the advertised
+    // topology. Drop directConnection from any connection string and this
+    // becomes wrong.
+    if (e2.code !== 93 && !/maps to this node/i.test(e2.message)) { throw e2; }
+    print("host did not map to this node (hairpin NAT unavailable) — falling back to localhost:27017");
+    rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] });
+  }
 }
 EOF
 
@@ -59,24 +79,23 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-cat >&2 <<EOM
+# Last resort: the set exists but is stuck (for example it was initiated with an
+# unreachable host by an earlier run of this script). Force it to localhost.
+echo "still no PRIMARY — forcing the member address to localhost:27017"
+mongosh --quiet --host mongodb --username "$USER" --password "$PASS" \
+  --authenticationDatabase admin --eval \
+  'rs.reconfig({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]},{force:true})' || true
 
-ERROR: the replica set was initiated but never elected a PRIMARY.
+for i in $(seq 1 15); do
+  state=$(mongosh --quiet --host mongodb --username "$USER" --password "$PASS" \
+    --authenticationDatabase admin --eval 'try { rs.status().myState } catch (e) { -1 }' 2>/dev/null || echo -1)
+  if [ "$state" = "1" ]; then
+    echo "node is PRIMARY after reconfig — replica set ready."
+    exit 0
+  fi
+  echo "waiting for PRIMARY after reconfig (myState=$state, $i/15)..."
+  sleep 2
+done
 
-Almost always this is the isSelf check failing: mongod cannot reach itself at
-${HOST}:27017 from inside the container, because hairpin NAT back through the
-published port is not working on this host.
-
-FIX — re-initiate using localhost, which mongod always recognises as itself:
-
-  docker exec -it aimess-mongodb mongosh -u "\$MONGO_ROOT_USERNAME" \\
-    -p "\$MONGO_ROOT_PASSWORD" --authenticationDatabase admin --eval \\
-    'rs.reconfig({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]},{force:true})'
-
-This is safe here ONLY because every service connects with
-directConnection=true (see apps/*/src/config/env.ts), so no client relies on
-the advertised topology. If you ever drop directConnection from a connection
-string, this must be changed back to ${HOST}:27017 and the hairpin issue fixed.
-
-EOM
+echo "ERROR: replica set never reached PRIMARY. Inspect: docker logs aimess-mongodb" >&2
 exit 1
