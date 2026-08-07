@@ -17,7 +17,10 @@ import {
   type VisibleLast,
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
-import { isGroupMemberMuted } from "../lib/access-guard.js";
+import {
+  assertGroupReadAccess,
+  isGroupMemberMuted,
+} from "../lib/access-guard.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -479,14 +482,41 @@ export class GroupRoomService {
   }
 
   async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
-    const room = await this.roomRepo.findActiveByRoomId(roomId);
-    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
-    // Any authenticated user can fetch a group's detail, so isJoined genuinely
-    // varies: true only when the caller has an ACTIVE membership row.
-    const membership = userId
-      ? await this.memberRepo.findActiveByRoomAndUser(roomId, userId)
-      : null;
-    const isJoined = membership !== null;
+    const found = await this.roomRepo.findActiveByRoomId(roomId);
+    if (!found) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // Same read rule as the timeline and the roster: ACTIVE members, plus
+    // voluntary leavers (who keep the frozen row in their inbox and must still
+    // be able to open it). Kicked/banned/never-members are rejected — this
+    // endpoint previously had NO gate at all, so anyone holding a roomId could
+    // read the group's name, settings, member count AND the live
+    // `lastMessagePreview` text, which defeated the leave/kick read cutoff
+    // enforced everywhere else. Unauthenticated internal callers (no userId)
+    // are unchanged.
+    let membership: GroupMember | null = null;
+    if (userId) {
+      ({ member: membership } = await assertGroupReadAccess(
+        this.memberRepo,
+        roomId,
+        userId
+      ));
+    }
+    const isJoined = membership?.status === "ACTIVE";
+    // A LEFT member's detail preview is capped at their `leftAt` exactly like
+    // their inbox row (`applyLeftMemberPreviewCap`), so the sidebar and the
+    // detail payload can never disagree about what they are allowed to see.
+    const [room] =
+      userId && membership?.status === "LEFT"
+        ? await this.applyLeftMemberPreviewCap(
+            [found],
+            new Map([
+              [
+                roomId,
+                { status: membership.status, leftAt: membership.leftAt },
+              ],
+            ]),
+            userId
+          )
+        : [found];
     // Resolve the room logo object key → download URL on read (never persisted).
     const avatar = await resolveMediaUrl(room.avatar);
     // Caller's OWN moderation-mute state, so a client that reconnects (or opens

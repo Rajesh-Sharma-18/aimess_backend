@@ -72,7 +72,14 @@ services:
     restart: unless-stopped
 
     command:
-      ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+      [
+        "mongod",
+        "--replSet",
+        "rs0",
+        "--bind_ip_all",
+        "--keyFile",
+        "/etc/mongo-keyfile/keyfile",
+      ]
 
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
@@ -88,7 +95,11 @@ services:
       - ${MONGO_KEYFILE_PATH}:/etc/mongo-keyfile/keyfile:ro
 
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -182,7 +193,11 @@ services:
     healthcheck:
       # The server image ships curl but has no preconfigured `mc` alias, so the
       # documented HTTP health endpoint is the reliable probe here.
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1",
+        ]
       interval: 30s
       timeout: 10s
       retries: 5

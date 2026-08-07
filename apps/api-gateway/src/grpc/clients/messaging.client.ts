@@ -353,7 +353,10 @@ export interface MessagingClient {
   declineCall(p: DeclineCallParams): Promise<CallStatusResult>;
   endCall(p: EndCallParams): Promise<EndCallResult>;
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
-  handleLiveKitRoomFinished(p: { roomName: string }): Promise<unknown>;
+  handleLiveKitRoomFinished(p: {
+    roomName: string;
+    eventType: string;
+  }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
     p: GetRoomParticipantIdsParams
@@ -409,7 +412,14 @@ export function createMessagingClient(): MessagingClient {
         sentAt: Number(r.sentAt),
         sequenceNumber: Number(r.sequenceNumber),
       }));
-    }
+    },
+    // A send is a NON-CANCELLABLE write: the default 2s breaker timeout abandons
+    // the ack while chat-service still persists the row, so the client is told
+    // "failed" for a message that exists, and a burst (many concurrent sends to
+    // one room push p99 past 2s) trips the circuit and fast-fails every send for
+    // resetTimeout ms. Measured p50 ≈ 0.8s idle, ≈ 5s at 10-way concurrency, so
+    // give the call room to finish and only trip when the service is truly dead.
+    { timeout: 20000, volumeThreshold: 20, errorThresholdPercentage: 80 }
   );
 
   const getMessagesBreaker = makeBreaker(
@@ -700,9 +710,10 @@ export function createMessagingClient(): MessagingClient {
 
   const handleLiveKitRoomFinishedBreaker = makeBreaker(
     "messaging.handleLiveKitRoomFinished",
-    (p: { roomName: string }) =>
+    (p: { roomName: string; eventType: string }) =>
       call<unknown, Record<string, never>>("handleLiveKitRoomFinished", {
         roomName: p.roomName,
+        eventType: p.eventType,
       })
   );
 

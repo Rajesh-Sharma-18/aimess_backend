@@ -36,6 +36,9 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
 
+const CALL_INITIATE_RATE_MAX = 5; // call attempts allowed per caller…
+const CALL_INITIATE_RATE_WINDOW_SEC = 60; // …per this window
+
 /**
  * Cross-namespace request-DTO parity (/community is the reference contract).
  *
@@ -146,6 +149,21 @@ const ContactSchema = z.object({
   avatar: z.string().max(3000).optional(),
   userId: z.string().max(100).optional(),
 });
+// STICKER sends carry their media OUTSIDE files[] (chat-service persists
+// `content.sticker`). Omitting it here made zod strip it, so a sticker sent over
+// the socket persisted with an EMPTY content blob — it rendered from local state
+// and was gone on the next history read. Mirrors the REST `stickerSchema`.
+const StickerSchema = z
+  .object({
+    mediaId: z.string().min(1).max(100).optional(),
+    objectKey: z.string().min(1).max(500).optional(),
+    url: z.string().max(MAX_URL_LEN).optional(),
+    packId: z.string().max(100),
+    stickerId: z.string().max(100),
+  })
+  .refine((d) => d.objectKey || d.url, {
+    message: "sticker requires objectKey or url",
+  });
 const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),
@@ -161,6 +179,7 @@ const MessageSendSchemaBase = z.object({
   urls: z.array(z.string().url().max(MAX_URL_LEN)).max(MAX_URLS).optional(),
   location: LocationSchema.optional(),
   contact: ContactSchema.optional(),
+  sticker: StickerSchema.optional(),
   repliedToId: z.string().optional(),
   conversationType: z.preprocess(
     (value) =>
@@ -486,6 +505,13 @@ export function registerChatNamespace(
           // roomId, which may be with a third party entirely).
           parsed.event === "conv:deleted" ||
           parsed.event === "conv:cleared" ||
+          // The caller's own conversation NOTIFICATION mute (multi-device
+          // sync). Same leak shape as the two above and worse in intent: the
+          // payload carries the room id, so a peer merely watching this user's
+          // presence would learn they had muted a conversation — quite
+          // possibly the one with that very peer.
+          parsed.event === "conv:muted" ||
+          parsed.event === "conv:unmuted" ||
           // The inbox bump. Published per-recipient on `user:<recipientId>`,
           // but that room is ALSO joined by every peer watching this user's
           // presence — so each bump leaked one participant's room id, preview
@@ -978,6 +1004,7 @@ export function registerChatNamespace(
           files,
           ...(r.data.location ? { location: r.data.location } : {}),
           ...(r.data.contact ? { contact: r.data.contact } : {}),
+          ...(r.data.sticker ? { sticker: r.data.sticker } : {}),
         };
         messagingClient
           .sendMessage({
@@ -1627,6 +1654,27 @@ export function registerChatNamespace(
     );
 
     // Feature 4: Call signaling
+
+    /**
+     * Ring-bomb brake. `initiateCall` cancels the caller's own RINGING rows as part
+     * of its self-cleanup, so the busy gate never stops a caller from re-ringing the
+     * same victim in a tight loop. The HTTP rate limiter can't help: it never sees
+     * Socket.IO frames, and it is skipped outright in development. Same
+     * incr+expire+fail-open shape as the /stream comment limiter.
+     */
+    const isCallInitiateRateLimited = async (): Promise<boolean> => {
+      const key = `rl:call-initiate:${userId}`;
+      try {
+        const count = await redisPub.incr(key);
+        if (count === 1) {
+          await redisPub.expire(key, CALL_INITIATE_RATE_WINDOW_SEC);
+        }
+        return count > CALL_INITIATE_RATE_MAX;
+      } catch {
+        return false; // fail open
+      }
+    };
+
     socket.on(
       "call:initiate",
       (payload: unknown, callback?: (res: unknown) => void) => {
@@ -1635,31 +1683,37 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        messagingClient
-          .initiateCall({
-            callerId: userId,
-            calleeId: r.data.calleeId ?? "",
-            type: r.data.callType,
-            privateRoomId: r.data.privateRoomId,
-            groupId: r.data.groupId,
-          })
-          .then((result) => {
-            // Join the caller's socket to `call:<callId>` so lifecycle events
-            // (call:answered / call:declined / call:ended) reach them.
-            void socket.join(`call:${result.callId}`);
-            rememberCallMember(result.callId, userId);
-            ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
-              callId: result.callId,
-              status: result.status,
-              livekitUrl: result.livekit?.url,
-              token: result.livekit?.token,
+        void (async () => {
+          if (await isCallInitiateRateLimited()) {
+            ackError(callback, "RATE_LIMITED", locale);
+            return;
+          }
+          messagingClient
+            .initiateCall({
+              callerId: userId,
+              calleeId: r.data.calleeId ?? "",
+              type: r.data.callType,
+              privateRoomId: r.data.privateRoomId,
+              groupId: r.data.groupId,
+            })
+            .then((result) => {
+              // Join the caller's socket to `call:<callId>` so lifecycle events
+              // (call:answered / call:declined / call:ended) reach them.
+              void socket.join(`call:${result.callId}`);
+              rememberCallMember(result.callId, userId);
+              ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
+                callId: result.callId,
+                status: result.status,
+                livekitUrl: result.livekit?.url,
+                token: result.livekit?.token,
+              });
+            })
+            .catch((err: unknown) => {
+              logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
+              const { code, detailKey } = resolveGrpcAckError(err);
+              ackError(callback, code, locale, detailKey);
             });
-          })
-          .catch((err: unknown) => {
-            logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
-          });
+        })();
       }
     );
 
