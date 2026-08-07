@@ -234,7 +234,7 @@ Bytes never pass through the API. The presigned URL is signed against
 `MINIO_PUBLIC_ENDPOINT`, so that value must exactly match the host the browser
 uses or every signature is rejected.
 
-### Livestream — **not yet working**
+### Livestream — resolved by polling, not hooks
 
 ```mermaid
 flowchart LR
@@ -244,8 +244,12 @@ flowchart LR
     V["Viewer"] -->|HLS / FLV| SRS
 ```
 
-SRS notifies only the other environment. Until a second hook URL is added
-(`deploy/scripts/07-srs-add-hook.md`), streams started here stay `PENDING`.
+SRS's `on_publish` hook still points only at the other environment, and a second
+URL **cannot** be added: SRS rejects a publish if any hook returns non-zero, and
+each environment denies the other's stream keys. Instead, `reconcileWithSrs()`
+polls `GET /api/v1/streams/` every 30s and flips `PENDING → LIVE` for any stream
+SRS is actually carrying. The stream server is untouched. See
+`deploy/scripts/07-srs-add-hook.md`.
 
 ---
 

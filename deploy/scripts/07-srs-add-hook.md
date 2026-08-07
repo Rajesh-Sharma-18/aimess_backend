@@ -1,126 +1,116 @@
-# Adding a second SRS hook URL (stream server, 72.62.69.126)
+# Livestreams on a shared SRS — why we do NOT add a second hook URL
 
-This is the **only** change made to the stream server. It is additive and
-reversible: the existing hook to `aimess.api.vasundharasolutions.com` stays
-exactly as it is, and a second URL is appended so both environments are
-notified.
+**Status: resolved in code. No change was made to the stream server.**
 
-SRS's `http_hooks` accepts a list and POSTs the same event to **every** URL in
-it, so adding one does not remove or degrade the other.
+An earlier revision of this document described adding a second `http_hooks` URL
+to `72.62.69.126` so both environments would be notified. **Do not do that.** It
+was tested before applying and would have broken live production streams.
 
 ---
 
-## Before you start
+## What was measured
 
-Read the current state (no changes yet):
+`on_publish` is the hook that flips a stream `PENDING → LIVE`. SRS calls **every**
+URL in the `http_hooks` list and **rejects the publish if any of them returns a
+non-zero body**.
 
-```bash
-ssh -p 22223 rajvasu@72.62.69.126
-sudo grep -n -A8 'http_hooks' /usr/local/srs/trunk/conf/rtmp2rtc.conf
-```
-
-Expected today:
+Probing our endpoint with a stream key we do not own:
 
 ```
-http_hooks {
-    enabled      on;
-    on_publish   https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_unpublish https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_play      https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_stop      https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-}
+POST https://api.ai5dev.tech/internal/srs/hooks?secret=…
+{"action":"on_publish","app":"live","stream":"unknown_key_not_in_our_db"}
+
+→ HTTP 200, body: 1        # 1 = DENY
 ```
 
-**There is a live stream running on this box.** Two ffmpeg transcodes were
-active at audit time. Do this during a quiet window.
+`handlePublish` returns `false` for an unknown key, which is correct on its own
+— it stops strangers publishing to arbitrary keys. But it means:
+
+| Publisher                  | Old env hook | Our hook     | Outcome              |
+| -------------------------- | ------------ | ------------ | -------------------- |
+| Existing production stream | `0` allow    | **`1` deny** | **publish rejected** |
+| New ai5dev stream          | **`1` deny** | `0` allow    | **publish rejected** |
+
+Two environments cannot share one SRS through publish hooks. Each one's
+database is authoritative only for its own stream keys, so each denies the
+other's. At the time of testing there were **5 active ffmpeg transcodes** on
+that box — a real stream was live.
+
+`on_unpublish`, `on_play` and `on_stop` all return `0` for unknown keys and are
+harmless, but none of them is what marks a stream LIVE.
 
 ---
 
-## 1. Back up
+## What was done instead
+
+`reconcileWithSrs()` in `apps/stream-service/src/services/livestream.service.ts`
+already ran on the 30-second sweeper tick, listing every publisher SRS actually
+has open and resolving them against the database. It only acted on streams that
+were already terminal; everything else hit a `continue`.
+
+It now also handles the opposite direction: a stream we have as `PENDING` or
+`RECONNECTING` that SRS is actively carrying gets `handlePublish()` called on it.
+
+```
+SRS  ──(30s poll: GET /api/v1/streams/)──►  stream-service
+                                              │
+                        PENDING + SRS publishing → handlePublish() → LIVE
+```
+
+`handlePublish` is safe to call repeatedly — it no-ops on an already-LIVE stream
+and resumes a `RECONNECTING` one without re-broadcasting.
+
+**Consequences**
+
+- The stream server is untouched. Production streams are unaffected.
+- The `on_publish` hook becomes an optimisation, not a requirement. If it ever
+  reaches us it still works and is instant.
+- A genuinely dropped hook delivery now self-heals instead of stranding a stream
+  in `PENDING` forever.
+- Worst case a stream goes LIVE up to 30 seconds late.
+
+---
+
+## Configuration this depends on
+
+Polling needs the SRS API, which on that host has `http_api { auth { enabled on } }`.
+Both values live in `deploy/dev02/.env.dev02`:
+
+| Variable           | Value                    | Note                                                                                                                                                                                                                                                             |
+| ------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SRS_API_URL`      | `https://ai5stream.tech` | **Bare origin.** The code appends `/api/v1/streams/` itself (schema default is `http://localhost:1985`). Setting `…/api` produces `/api/api/v1/streams/`, which returns the API index instead of the stream list — and still answers `200`, so it fails silently |
+| `SRS_API_USERNAME` | `deploy@gmail.com`       | from `rtmp2rtc.conf`                                                                                                                                                                                                                                             |
+| `SRS_API_PASSWORD` | `deploy.125#`            | The trailing `#` **is** part of the password, despite `#` being a comment character in SRS config. Verified: without it the API returns 401                                                                                                                      |
+
+Verified working from inside the container:
+
+```
+SRS_API_URL = https://ai5stream.tech
+HTTP 200  code 0  streams 0
+```
+
+---
+
+## When the old environment is decommissioned
+
+Once `13.203.130.146` is gone, hooks become simpler and instant. Repoint them:
 
 ```bash
 sudo cp /usr/local/srs/trunk/conf/rtmp2rtc.conf \
         /usr/local/srs/trunk/conf/rtmp2rtc.conf.bak-$(date +%F-%H%M)
-```
-
-## 2. Append the second URL to each hook
-
-Edit `/usr/local/srs/trunk/conf/rtmp2rtc.conf` so each directive lists both
-URLs, space-separated, ending in a single `;`:
-
-```
-http_hooks {
-    enabled      on;
-    on_publish   https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b
-                 https://api.ai5dev.tech/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_unpublish https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b
-                 https://api.ai5dev.tech/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_play      https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b
-                 https://api.ai5dev.tech/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-    on_stop      https://aimess.api.vasundharasolutions.com/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b
-                 https://api.ai5dev.tech/internal/srs/hooks?secret=3ffbbfb2c073a9b9f8d52c2235f1341b;
-}
-```
-
-The secret is intentionally the same on both — `SRS_HOOK_SECRET` in
-`.env.dev02` is already set to it.
-
-> **Do this only after `api.ai5dev.tech` is live and serving HTTPS.** SRS treats
-> a failed `on_publish` hook as a rejection. If the new URL is unreachable,
-> whether it breaks the existing environment depends on your SRS version's
-> multi-URL failure handling — verify on a throwaway stream key before trusting
-> it with real traffic. That is what step 4 is for.
-
-## 3. Validate and reload
-
-```bash
-# Parse-check WITHOUT restarting.
-sudo /usr/local/srs/trunk/objs/srs -t -c /usr/local/srs/trunk/conf/rtmp2rtc.conf
-
-# Reload in place — does NOT drop live streams (unlike a restart).
-sudo pkill -HUP -f 'objs/srs -c conf/rtmp2rtc.conf'
-
-sudo tail -40 /usr/local/srs/trunk/objs/srs.log
-```
-
-## 4. Verify both environments receive hooks
-
-Publish to a **throwaway stream key** and watch both sides:
-
-```bash
-# New environment (on Dev 02)
-docker logs -f aimess-stream-service | grep -i 'srs\|hook'
-
-# Existing environment — confirm it still transitions streams to LIVE
-```
-
-Both must log the `on_publish`. If the existing environment stops working,
-roll back immediately (step 5).
-
-## 5. Rollback
-
-```bash
-sudo cp /usr/local/srs/trunk/conf/rtmp2rtc.conf.bak-<timestamp> \
+sudo sed -i 's|https://aimess.api.vasundharasolutions.com|https://api.ai5dev.tech|g' \
         /usr/local/srs/trunk/conf/rtmp2rtc.conf
 sudo /usr/local/srs/trunk/objs/srs -t -c /usr/local/srs/trunk/conf/rtmp2rtc.conf
-sudo pkill -HUP -f 'objs/srs -c conf/rtmp2rtc.conf'
+sudo pkill -HUP -f 'objs/srs -c conf/rtmp2rtc.conf'      # reload, does not drop live streams
 ```
 
----
-
-## Keep stream keys distinct
-
-Both stacks now receive every event for every stream. Each will try to own the
-lifecycle of any key it recognises. Because they use separate MongoDB
-`stream_db` databases, a key created in one is unknown to the other and its
-hook is ignored — which is the behaviour you want.
-
-Do **not** copy stream keys between environments, and do not point both at the
-same `stream_db`.
+`SRS_HOOK_SECRET` in `.env.dev02` already matches the one in that config, so no
+other change is needed. Keep the polling reconciliation — it costs one API call
+per 30s and is what makes a dropped hook survivable.
 
 ---
 
-## Unrelated bug worth fixing while you are in there
+## Unrelated bug on that host
 
 The port-80 block of `/etc/nginx/sites-enabled/ai5stream.tech` reads:
 
