@@ -41,6 +41,23 @@ export const deviceTokenRepository = {
         deviceId: input.deviceId ?? null,
       },
     });
+
+    // One live token per (user, device, tokenType). FCM hands out a fresh token
+    // on rotation / re-subscribe without invalidating the old one immediately,
+    // so both rows would survive until FCM finally reports the stale one dead —
+    // and until then every push is delivered TWICE to the same browser, which
+    // renders as two identical notifications. Tokens without a deviceId can't
+    // be attributed to a device, so they're left alone.
+    if (input.deviceId) {
+      await prisma.deviceToken.deleteMany({
+        where: {
+          userId: input.userId,
+          deviceId: input.deviceId,
+          tokenType: input.tokenType,
+          token: { not: input.token },
+        },
+      });
+    }
   },
 
   /**
