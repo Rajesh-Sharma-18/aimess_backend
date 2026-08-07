@@ -155,7 +155,10 @@ Route-ordering verified: `DELETE /messages/:messageId` (2 segments) does not col
 **Renamed (V2 suffix dropped, implementation kept)**
 
 - `communityService.listMineV2` → `listMineKeyset`
-- `communityMessageService.getMessagesSeqV2` / `getMessagesAroundV2` → `getMessagesSeqKeyset` / `getMessagesAroundKeyset`
+- `communityMessageService.getMessagesSeqV2` → `getMessagesSeqKeyset`
+- `communityMessageService.getMessagesAroundV2` — **deleted, not renamed.** It had no
+  caller even before this work (the V2 `around` branch called the TIMESTAMP-anchored
+  `getMessagesAround`), so it was already dead code.
 - `deleteMessageV2` → `deleteMessageByPath`
 - `setReactionV2` → `setReaction`
 - `chatChangesV2QuerySchema` + `communityChangesV2QuerySchema` → one shared `roomChangesQuerySchema`

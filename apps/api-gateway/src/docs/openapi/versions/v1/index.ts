@@ -7,6 +7,7 @@ import { chatPaths } from "../../paths/chat.paths.js";
 import { communityPaths } from "../../paths/community.paths.js";
 import { userPaths } from "../../paths/user.paths.js";
 import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
+import { chatChangesPaths } from "../../paths/chat-changes.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
 import { mediaPaths } from "../../paths/media.paths.js";
 import { streamPaths } from "../../paths/stream.paths.js";
@@ -25,6 +26,9 @@ export const v1Paths = {
   ...communityPaths,
   ...chatPaths,
   ...chatExtrasPaths,
+  // Folded onto v1 when /api/v2 was retired: the zero-loss /changes feeds and the
+  // room-inferred SET-reaction routes. All keys are new — no overrides.
+  ...chatChangesPaths,
   ...devicesPaths,
   ...mediaPaths,
   ...streamPaths,
