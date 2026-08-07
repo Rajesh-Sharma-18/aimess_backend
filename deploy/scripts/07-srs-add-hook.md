@@ -1,10 +1,44 @@
 # Livestreams on a shared SRS — why we do NOT add a second hook URL
 
-**Status: resolved in code. No change was made to the stream server.**
+**Status: SRS hooks were REPOINTED to `api.ai5dev.tech` on 2026-08-07.**
+Livestreams on the old environment (`13.203.130.146`) are consequently disabled —
+that trade-off was approved, as ai5dev.tech replaces it.
 
-An earlier revision of this document described adding a second `http_hooks` URL
-to `72.62.69.126` so both environments would be notified. **Do not do that.** It
-was tested before applying and would have broken live production streams.
+An earlier revision described adding a _second_ `http_hooks` URL so both
+environments would be notified. **Do not do that** — see "Why not two URLs"
+below. It was tested before applying and would have broken live streams.
+
+## Why the repoint was necessary
+
+SRS delegates publish authorisation to whatever backend its hooks point at. While
+they pointed at the old environment, every ai5dev stream key was unknown there and
+the publish was refused outright:
+
+```
+[ERROR] code=3008(HttpResponseData)(HTTP response data invalid)
+  : RTC: http_hooks_on_publish : rtmp on_publish https://aimess.api.vasundhar...
+```
+
+Symptom: WebRTC negotiated fine (SRS answered, ICE candidate correct) but
+`frames=0`, `publish.active=False`, `recv_bytes` only signalling — and
+stream-service logged `notifyWhenPlayable: gave up waiting for frames`.
+
+The polling reconciliation below fixes the `PENDING -> LIVE` transition but
+**cannot** work around SRS refusing the publish. Both were needed.
+
+### How it was applied
+
+```bash
+cp rtmp2rtc.conf rtmp2rtc.conf.bak-$(date +%F-%H%M%S)      # backup first
+sed -i 's|https://aimess.api.vasundharasolutions.com|https://api.ai5dev.tech|g' rtmp2rtc.conf
+/usr/local/srs/trunk/objs/srs -t -c rtmp2rtc.conf           # validate BEFORE reloading
+kill -HUP <srs-pid>                                         # same PID, no dropped streams
+```
+
+Confirmed `reload config success, state=90`, and from the stream server:
+`on_publish` for an unknown key returns `1`, the other three return `0`.
+
+## Why not two URLs
 
 ---
 
@@ -91,22 +125,27 @@ HTTP 200  code 0  streams 0
 
 ---
 
-## When the old environment is decommissioned
+## Rolling back
 
-Once `13.203.130.146` is gone, hooks become simpler and instant. Repoint them:
+The pre-repoint config is preserved on the stream server:
 
 ```bash
-sudo cp /usr/local/srs/trunk/conf/rtmp2rtc.conf \
-        /usr/local/srs/trunk/conf/rtmp2rtc.conf.bak-$(date +%F-%H%M)
-sudo sed -i 's|https://aimess.api.vasundharasolutions.com|https://api.ai5dev.tech|g' \
+ls /usr/local/srs/trunk/conf/rtmp2rtc.conf.bak-*
+sudo cp /usr/local/srs/trunk/conf/rtmp2rtc.conf.bak-2026-08-07-110157 \
         /usr/local/srs/trunk/conf/rtmp2rtc.conf
 sudo /usr/local/srs/trunk/objs/srs -t -c /usr/local/srs/trunk/conf/rtmp2rtc.conf
-sudo pkill -HUP -f 'objs/srs -c conf/rtmp2rtc.conf'      # reload, does not drop live streams
+sudo pkill -HUP -f 'objs/srs -c conf/rtmp2rtc.conf'
 ```
 
-`SRS_HOOK_SECRET` in `.env.dev02` already matches the one in that config, so no
-other change is needed. Keep the polling reconciliation — it costs one API call
-per 30s and is what makes a dropped hook survivable.
+That restores livestreams on `13.203.130.146` and disables them here again.
+Only one environment can own the hooks.
+
+`SRS_HOOK_SECRET` in `.env.dev02` matches the value in that config, so nothing
+else needs changing either way.
+
+**Keep the polling reconciliation regardless.** It costs one API call per 30s
+and is what turns a dropped hook delivery into a 30-second delay rather than a
+stream stuck in `PENDING` forever.
 
 ---
 
