@@ -57,9 +57,19 @@ export class PrivateMessageRepository {
     /** Auto-delete stamp — see lib/auto-delete.ts#computeAutoDeleteStamp. */
     autoDeleteAt?: Date | null;
     autoDeleteAfterView?: boolean;
+    /** Pre-allocated CHANGE revision; omit to allocate one here. */
+    revision?: number;
     [key: string]: unknown;
   }): Promise<PrivateMessage> {
-    const revision = await this.roomRepo.allocateRevision(data.roomId);
+    // The send path pre-allocates `revision` in the SAME room-document `$inc`
+    // that hands out `sequenceNumber`, so one message costs one room write
+    // instead of two. Two writes to one doc was the send path's contention
+    // wall under a burst — the community path merged these counters for the
+    // same reason (see GeneralRoomRepository.allocateSequenceAndRevision).
+    const revision =
+      typeof data.revision === "number"
+        ? data.revision
+        : await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,

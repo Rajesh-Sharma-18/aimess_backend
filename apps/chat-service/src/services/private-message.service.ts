@@ -84,6 +84,7 @@ import type { GroupMemberRepository } from "../repositories/group-member.reposit
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { personalizePrivateSystemMessageForViewer } from "@aimess/constants";
+import { allocateRoomSlot } from "../lib/room-lock.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type {
@@ -230,11 +231,20 @@ export class PrivateMessageService {
       }
     }
 
+    // One round trip for three answers: the first row's sequence number, the
+    // room's auto-delete settings, and the pre-send `lastMessageAt` that tells
+    // us whether this is the conversation's first message. Reading the room
+    // separately for each of those tripled the remote Mongo hops per send.
+    //
     // Auto-delete: which timer THIS message gets is decided once, here, from the
     // room's per-user settings (see lib/auto-delete.ts). Resolved before the
     // insert loop so every album row of one send shares the same deadline.
-    const autoDelete = await this.resolveAutoDeleteStamp(
-      params.roomId,
+    const firstAllocation = await allocateRoomSlot(params.roomId, (id, count) =>
+      this.roomRepo.allocateSequenceBlock(id, count)
+    );
+    const roomBefore = firstAllocation.room;
+    const autoDelete = this.autoDeleteStampFromRoom(
+      roomBefore,
       params.senderId
     );
 
@@ -257,8 +267,16 @@ export class PrivateMessageService {
         ...(i === 0 && quoteData ? { quoteData } : {}),
       };
 
-      const seq = await this.roomRepo.allocateSequence(params.roomId);
-      entity.sequenceNumber = seq;
+      if (i === 0) {
+        entity.sequenceNumber = firstAllocation.sequenceNumber;
+        entity.revision = firstAllocation.revision;
+      } else {
+        const next = await allocateRoomSlot(params.roomId, (id, count) =>
+          this.roomRepo.allocateSequenceBlock(id, count)
+        );
+        entity.sequenceNumber = next.sequenceNumber;
+        entity.revision = next.revision;
+      }
 
       try {
         const row = await this.messageRepo.createMessage(
@@ -309,9 +327,6 @@ export class PrivateMessageService {
     // (before either client's friend-suggestion/inbox UI had anything to react
     // to). Snapshot the pre-update state so we can tell the very first message
     // apart from every later one.
-    const roomBefore = await this.roomRepo
-      .findByRoomId(params.roomId)
-      .catch(() => null);
     const isFirstMessage = !roomBefore?.lastMessageAt;
 
     // Update room with last message; unread += one per persisted row.
@@ -759,20 +774,18 @@ export class PrivateMessageService {
    * sender-first-then-peer rule (see lib/auto-delete.ts). Fails OPEN — a lookup
    * error must never block a send, it just means no timer on that message.
    */
-  private async resolveAutoDeleteStamp(
-    roomId: string,
+  private autoDeleteStampFromRoom(
+    room: { participants?: string[]; autoDeleteBy?: unknown; roomId?: string },
     senderId: string
-  ): Promise<AutoDeleteStamp> {
+  ): AutoDeleteStamp {
     try {
-      const room = await this.roomRepo.findByRoomId(roomId);
-      if (!room) return AUTO_DELETE_NONE;
       const peerId = (room.participants ?? []).find((id) => id !== senderId);
       const map = parseAutoDeleteMap(room.autoDeleteBy);
       const setting = resolveEffectiveAutoDelete(map, senderId, peerId ?? "");
       return computeAutoDeleteStamp(setting, new Date());
     } catch (err) {
       logger.warn(
-        `PrivateMessageService|resolveAutoDeleteStamp failed room=${roomId}: ${String(err)}`
+        `PrivateMessageService|autoDeleteStampFromRoom failed room=${room.roomId}: ${String(err)}`
       );
       return AUTO_DELETE_NONE;
     }
@@ -1621,11 +1634,14 @@ export class PrivateMessageService {
       originalContentType: source.messageType,
     };
 
-    const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+    const targetAllocation = await this.roomRepo.allocateSequenceWithRoom(
+      params.targetRoomId
+    );
+    const seq = targetAllocation.sequenceNumber;
     // §8.1 — a forward does NOT inherit the source message's timer; it is a new
     // message in the TARGET chat and follows that chat's own setting.
-    const autoDelete = await this.resolveAutoDeleteStamp(
-      params.targetRoomId,
+    const autoDelete = this.autoDeleteStampFromRoom(
+      targetAllocation.room,
       params.senderId
     );
 
