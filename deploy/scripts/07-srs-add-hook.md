@@ -105,34 +105,54 @@ I-01 reload untouched.
 
 ---
 
-## 4. The other half of the bug: the sweeper killed streams anyway
+## 4. The heartbeat sweeper — what is actually true
 
-Fixing the hooks was necessary but not sufficient. `findStaleLiveStreams` split
-"host stopped heartbeating" from "host never heartbeated", but the Mongo
-connector orders `null` below every date, so the `lastHeartbeatAt < cutoff`
-branch matched null too — **every stream was ENDED on the first 30 s sweeper
-tick after going live**, five minutes before its timeout.
+The hook misconfiguration above was the **whole** cause of the publish
+rejections. While verifying that, the heartbeat sweeper looked like a second
+cause; it is not, and the difference is worth recording because it is easy to
+re-derive incorrectly.
 
-It did not just end early, it poisoned the key: `on_publish` denies an `ENDED`
-stream, so every retry on that key was refused. That is the permanent
-"Could not access the specified channel or stream key" in OBS.
+`findStaleLiveStreams` splits "host stopped heartbeating"
+(`lastHeartbeatAt < cutoff`) from "host never heartbeated"
+(`lastHeartbeatAt == null && livedAt < cutoff`). Both branches misbehave, in
+opposite directions, and **only one of them is reachable with real data**:
 
-Measured before the fix: a LIVE stream with a null heartbeat ENDED after 34 s,
-while an identical one with a fresh heartbeat was still LIVE at 137 s.
+| Document shape                       | Written by    | Swept?      | Correct?         |
+| ------------------------------------ | ------------- | ----------- | ---------------- |
+| `lastHeartbeatAt` a stale `Date`     | the app       | yes         | ✅               |
+| `lastHeartbeatAt` **absent**         | **the app**   | **never**   | ❌ leaks as LIVE |
+| `lastHeartbeatAt` an explicit `null` | nothing today | immediately | ❌ premature     |
 
-OBS was hit hardest, because the host broadcasts from OBS rather than the app —
-the client heartbeat may never arrive at all. `pollObsStreamQuality` already
-confirms SRS is receiving frames every tick, so it now also refreshes
-`lastHeartbeatAt`; without that a healthy OBS broadcast still died, just at
-5 minutes instead of 30 seconds.
+Prisma omits an unset optional field rather than storing `null`, so a stream
+that has never heartbeated has **no `lastHeartbeatAt` key at all** — and
+`{ lastHeartbeatAt: null }` does not match an absent field. A bare `lt`, by
+contrast, _does_ match an explicit `null`.
 
-Fixed in `50e51392`. Verified after deploy:
+Measured on this collection: a LIVE stream 15 minutes past cutoff with the
+field **absent** was still LIVE; an otherwise identical one with an explicit
+`null` was ENDED within 34 s. Nothing in the codebase writes an explicit null,
+so the premature-kill path cannot happen in production — an earlier revision of
+this note claimed it could, on the strength of probe rows inserted by hand
+through `mongosh`, which is not how the app stores them.
 
-| Probe                          | Expected | Result               |
-| ------------------------------ | -------- | -------------------- |
-| null heartbeat, just went LIVE | survives | **LIVE at 128 s** ✅ |
-| heartbeat stale by 10 min      | ends     | **ENDED** ✅         |
-| null heartbeat, LIVE 10 min    | ends     | **ENDED** ✅         |
+**The real state: the heartbeat mechanism is inert.** Every live
+`PHONE_CAMERA` stream on this deployment has no `lastHeartbeatAt` — the client
+is not calling `POST /streams/:id/heartbeat` at all. Streams are ended only by
+`on_unpublish` or by `reconcileWithSrs`, and `reconcileWithSrs` only walks
+publishers SRS _has_, so a LIVE stream whose publisher vanished without an
+`on_unpublish` leaks as LIVE indefinitely.
+
+The null branch was **deliberately not widened** to match absent fields.
+Widening it would end every healthy camera broadcast at
+`STREAM_HEARTBEAT_TIMEOUT_MS`, because no client is heartbeating. The choices
+are to fix the client, or to move liveness onto SRS — which is what
+`pollObsStreamQuality` now does for OBS: it already confirms SRS is receiving
+frames every tick, so it also stamps `lastHeartbeatAt`. That gives OBS streams
+a real liveness signal instead of an absent one, so a dead OBS broadcast is
+cleaned up ~5 min after frames stop instead of leaking forever. WHIP streams
+still leak — decide on the client heartbeat first.
+
+Shipped in `50e51392`.
 
 ---
 

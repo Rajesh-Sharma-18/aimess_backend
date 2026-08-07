@@ -265,14 +265,28 @@ export class LivestreamRepository {
       where: {
         status: "LIVE",
         OR: [
-          // `not: null` is load-bearing. The Mongo connector orders null below
-          // every date, so a bare `lt` ALSO matches streams that have never
-          // heartbeated — ending them on the first tick after go-live instead
-          // of after the timeout they are owed, and permanently poisoning the
-          // stream key (on_publish denies an ENDED stream, so the publisher
-          // can never get back in). The null case belongs to the branch below,
-          // which is the only one allowed to consider it.
+          // Guard only. A bare `lt` also matches an EXPLICIT null, which would
+          // end a stream on the first tick after go-live rather than after the
+          // timeout it is owed — and that poisons the key, since on_publish
+          // denies an ENDED stream. Nothing writes an explicit null today
+          // (recordHeartbeat and pollObsStreamQuality only ever write a Date),
+          // so this is defence against a future writer, not a live fault.
           { lastHeartbeatAt: { not: null, lt: cutoff } },
+          // KNOWN GAP — this branch does not fire in production. Prisma omits
+          // an unset optional field rather than storing null, so a stream that
+          // has never heartbeated has NO `lastHeartbeatAt` key at all, and
+          // `{ lastHeartbeatAt: null }` does not match an absent field. Such a
+          // stream is therefore never swept. Measured: a LIVE stream 15 min
+          // past cutoff with the field absent was still LIVE; an otherwise
+          // identical one with an explicit null was ended.
+          //
+          // Deliberately NOT widened to match absent. Clients are not sending
+          // heartbeats at all right now — every live PHONE_CAMERA stream on
+          // this deployment has no `lastHeartbeatAt` — so widening it would
+          // end every healthy camera broadcast at STREAM_HEARTBEAT_TIMEOUT_MS.
+          // Fix the client, or move liveness onto SRS (see
+          // pollObsStreamQuality, which does exactly that for OBS), before
+          // touching this.
           { lastHeartbeatAt: null, livedAt: { lt: cutoff } },
         ],
       },
