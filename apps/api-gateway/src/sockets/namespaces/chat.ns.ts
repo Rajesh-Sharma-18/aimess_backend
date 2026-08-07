@@ -36,6 +36,9 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
 
+const CALL_INITIATE_RATE_MAX = 5; // call attempts allowed per caller…
+const CALL_INITIATE_RATE_WINDOW_SEC = 60; // …per this window
+
 /**
  * Cross-namespace request-DTO parity (/community is the reference contract).
  *
@@ -1481,6 +1484,27 @@ export function registerChatNamespace(
     );
 
     // Feature 4: Call signaling
+
+    /**
+     * Ring-bomb brake. `initiateCall` cancels the caller's own RINGING rows as part
+     * of its self-cleanup, so the busy gate never stops a caller from re-ringing the
+     * same victim in a tight loop. The HTTP rate limiter can't help: it never sees
+     * Socket.IO frames, and it is skipped outright in development. Same
+     * incr+expire+fail-open shape as the /stream comment limiter.
+     */
+    const isCallInitiateRateLimited = async (): Promise<boolean> => {
+      const key = `rl:call-initiate:${userId}`;
+      try {
+        const count = await redisPub.incr(key);
+        if (count === 1) {
+          await redisPub.expire(key, CALL_INITIATE_RATE_WINDOW_SEC);
+        }
+        return count > CALL_INITIATE_RATE_MAX;
+      } catch {
+        return false; // fail open
+      }
+    };
+
     socket.on(
       "call:initiate",
       (payload: unknown, callback?: (res: unknown) => void) => {
@@ -1489,30 +1513,36 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        messagingClient
-          .initiateCall({
-            callerId: userId,
-            calleeId: r.data.calleeId ?? "",
-            type: r.data.callType,
-            privateRoomId: r.data.privateRoomId,
-            groupId: r.data.groupId,
-          })
-          .then((result) => {
-            // Join the caller's socket to `call:<callId>` so lifecycle events
-            // (call:answered / call:declined / call:ended) reach them.
-            void socket.join(`call:${result.callId}`);
-            ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
-              callId: result.callId,
-              status: result.status,
-              livekitUrl: result.livekit?.url,
-              token: result.livekit?.token,
+        void (async () => {
+          if (await isCallInitiateRateLimited()) {
+            ackError(callback, "RATE_LIMITED", locale);
+            return;
+          }
+          messagingClient
+            .initiateCall({
+              callerId: userId,
+              calleeId: r.data.calleeId ?? "",
+              type: r.data.callType,
+              privateRoomId: r.data.privateRoomId,
+              groupId: r.data.groupId,
+            })
+            .then((result) => {
+              // Join the caller's socket to `call:<callId>` so lifecycle events
+              // (call:answered / call:declined / call:ended) reach them.
+              void socket.join(`call:${result.callId}`);
+              ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
+                callId: result.callId,
+                status: result.status,
+                livekitUrl: result.livekit?.url,
+                token: result.livekit?.token,
+              });
+            })
+            .catch((err: unknown) => {
+              logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
+              const { code, detailKey } = resolveGrpcAckError(err);
+              ackError(callback, code, locale, detailKey);
             });
-          })
-          .catch((err: unknown) => {
-            logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
-            const { code, detailKey } = resolveGrpcAckError(err);
-            ackError(callback, code, locale, detailKey);
-          });
+        })();
       }
     );
 

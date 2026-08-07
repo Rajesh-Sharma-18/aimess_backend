@@ -78,12 +78,94 @@ export class CallService {
     return ids.length > 0 ? ids : [call.calleeId];
   }
 
+  /**
+   * Publish to the call room AND to every participant's personal room.
+   *
+   * `call:<callId>` is joined only inside the call:initiate / call:answer ack, so a
+   * socket that reconnects mid-call is no longer in it and would never learn the call
+   * ended — the panel hangs on a live call forever. `self:<userId>` is re-joined on
+   * every connect, so mirroring there is what makes terminal events survive a
+   * reconnect. Clients already ignore events for a callId they aren't on, so the
+   * double delivery to a socket in both rooms is a no-op.
+   *
+   * Every publish is independently non-fatal: a call must still end if one fails.
+   */
+  private async publishToCallAndParticipants(
+    call: Pick<Call, "callId" | "callerId" | "calleeId" | "calleeIds">,
+    payload: string,
+    logTag: string
+  ): Promise<void> {
+    const warn = (target: string) => (err: unknown) =>
+      logger.warn(
+        `CallService|${logTag}|redis publish failed target=${target}: ${String(err)}`
+      );
+    const selves = [call.callerId, ...this.ringTargets(call)];
+    await Promise.all([
+      this.redis
+        .publish(`call:${call.callId}`, payload)
+        .catch(warn(`call:${call.callId}`)),
+      ...selves.map((userId) =>
+        this.redis
+          .publish(`self:${userId}`, payload)
+          .catch(warn(`self:${userId}`))
+      ),
+    ]);
+  }
+
   /** True if `userId` is a callee on this call — 1:1's calleeId OR a GROUP roster member. */
   private isCallee(
     call: Pick<Call, "calleeId" | "calleeIds">,
     userId: string
   ): boolean {
     return call.calleeId === userId || (call.calleeIds ?? []).includes(userId);
+  }
+
+  /**
+   * Serialize one caller's `initiateCall` critical section (self-cleanup → busy
+   * gate → create).
+   *
+   * Without it the RPC is fully re-entrant, and two rapid initiates from the same
+   * user interleave: one request's self-cleanup — which runs BEFORE its own row
+   * exists — flips to ENDED the row the other request created milliseconds
+   * earlier. The victim carries on obliviously, minting tokens and ringing the
+   * callee for a call already dead in the DB, and the caller is never told.
+   *
+   * Fails OPEN when Redis is unreachable: this race is rare and a total calling
+   * outage is not an acceptable trade. Short TTL so a crashed holder cannot wedge
+   * a user out of calling, and release is token-checked so an expired lock that
+   * was retaken by a newer attempt is never deleted out from under it.
+   */
+  private async withCallerLock<T>(
+    callerId: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const LOCK_TTL_MS = 10_000;
+    const key = `lock:call-initiate:${callerId}`;
+    const token = randomUUID();
+    try {
+      const held = await this.redis.set(key, token, "PX", LOCK_TTL_MS, "NX");
+      if (held !== "OK") throw new ConflictError("CALL_ALREADY_IN_CALL");
+    } catch (err) {
+      if (err instanceof ConflictError) throw err;
+      logger.warn(`CallService|withCallerLock|acquire failed: ${String(err)}`);
+      return fn();
+    }
+    try {
+      return await fn();
+    } finally {
+      try {
+        await this.redis.eval(
+          "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+          1,
+          key,
+          token
+        );
+      } catch (err) {
+        logger.warn(
+          `CallService|withCallerLock|release failed: ${String(err)}`
+        );
+      }
+    }
   }
 
   async initiateCall(params: {
@@ -197,61 +279,72 @@ export class CallService {
       now.getTime() - env.CALL_MAX_DURATION_SEC * 1000
     );
 
-    // (a) Self-cleanup: a new outgoing call means the caller abandoned any prior
-    // OUTGOING ring. Cancel the caller's own RINGING-as-caller rows so (1) the
-    // caller is never falsely "busy" on their own zombie call, and (2) the old
-    // callee's ring stops immediately instead of waiting for the sweep.
-    const ownRinging = await this.callRepo.findCallerRinging(params.callerId);
-    for (const stale of ownRinging) {
-      const { won } = await this.callRepo.claimStatusTransition(
-        stale.callId,
-        CallStatus.RINGING,
-        { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
-      );
-      if (!won) continue;
-      await this.redis
-        .publish(
-          `self:${stale.calleeId}`,
-          JSON.stringify({
-            event: "call:cancelled",
-            data: { callId: stale.callId },
-          })
-        )
-        .catch((err: unknown) =>
-          logger.warn(
-            `CallService|initiateCall|self-cleanup publish failed: ${String(err)}`
-          )
-        );
-    }
-
-    // (b) Busy gate — is either party genuinely active right now?
-    const active = await this.callRepo.findActiveByParticipant(
-      [params.callerId, params.calleeId],
-      freshCutoff,
-      liveCutoff
-    );
-    const calleeBusy = active.some(
-      (c) => c.callerId === params.calleeId || c.calleeId === params.calleeId
-    );
-    if (calleeBusy) throw new ConflictError("CALL_USER_BUSY");
-    const callerBusy = active.some(
-      (c) => c.callerId === params.callerId || c.calleeId === params.callerId
-    );
-    // Defense-in-depth: the caller's own client also guards against this, and
-    // self-cleanup above already cleared their outbound rings — reaching here
-    // means the caller is IN_PROGRESS or has a fresh INCOMING ring to handle.
-    if (callerBusy) throw new ConflictError("CALL_ALREADY_IN_CALL");
-
     const callId = randomUUID();
-    const call = await this.callRepo.create({
-      callId,
-      callerId: params.callerId,
-      calleeId: params.calleeId,
-      type: params.type || CallType.AUDIO,
-      status: CallStatus.RINGING,
-      // Always persist the canonical room we authorized above. The website
-      // normally omits privateRoomId and lets us derive it from the pair.
-      privateRoomId: room.roomId,
+
+    // (a) self-cleanup, (b) busy gate and the create MUST be atomic per caller —
+    // see withCallerLock. Outside the lock, a concurrent initiate's self-cleanup
+    // cancels the row this one is about to create.
+    const call = await this.withCallerLock(params.callerId, async () => {
+      // (a) Self-cleanup: a new outgoing call means the caller abandoned any prior
+      // OUTGOING ring. Cancel the caller's own RINGING-as-caller rows so (1) the
+      // caller is never falsely "busy" on their own zombie call, and (2) the old
+      // callee's ring stops immediately instead of waiting for the sweep.
+      // Bounded by `now` so it can only ever touch rings that predate this
+      // request — belt to the lock's braces if a lock is ever lost or expires.
+      const ownRinging = await this.callRepo.findCallerRinging(
+        params.callerId,
+        now
+      );
+      for (const stale of ownRinging) {
+        const { won } = await this.callRepo.claimStatusTransition(
+          stale.callId,
+          CallStatus.RINGING,
+          { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
+        );
+        if (!won) continue;
+        await this.redis
+          .publish(
+            `self:${stale.calleeId}`,
+            JSON.stringify({
+              event: "call:cancelled",
+              data: { callId: stale.callId },
+            })
+          )
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|initiateCall|self-cleanup publish failed: ${String(err)}`
+            )
+          );
+      }
+
+      // (b) Busy gate — is either party genuinely active right now?
+      const active = await this.callRepo.findActiveByParticipant(
+        [params.callerId, params.calleeId],
+        freshCutoff,
+        liveCutoff
+      );
+      const calleeBusy = active.some(
+        (c) => c.callerId === params.calleeId || c.calleeId === params.calleeId
+      );
+      if (calleeBusy) throw new ConflictError("CALL_USER_BUSY");
+      const callerBusy = active.some(
+        (c) => c.callerId === params.callerId || c.calleeId === params.callerId
+      );
+      // Defense-in-depth: the caller's own client also guards against this, and
+      // self-cleanup above already cleared their outbound rings — reaching here
+      // means the caller is IN_PROGRESS or has a fresh INCOMING ring to handle.
+      if (callerBusy) throw new ConflictError("CALL_ALREADY_IN_CALL");
+
+      return this.callRepo.create({
+        callId,
+        callerId: params.callerId,
+        calleeId: params.calleeId,
+        type: params.type || CallType.AUDIO,
+        status: CallStatus.RINGING,
+        // Always persist the canonical room we authorized above. The website
+        // normally omits privateRoomId and lets us derive it from the pair.
+        privateRoomId: room.roomId,
+      });
     });
 
     // Glare backstop: the true sub-latency A↔B race where both initiates pass
@@ -608,19 +701,14 @@ export class CallService {
     };
 
     await Promise.all([
-      this.redis
-        .publish(
-          `call:${params.callId}`,
-          JSON.stringify({
-            event: "call:answered",
-            data: { callId: params.callId },
-          })
-        )
-        .catch((err: unknown) => {
-          logger.warn(
-            `CallService|answerCall|redis publish failed: ${String(err)}`
-          );
+      this.publishToCallAndParticipants(
+        updated,
+        JSON.stringify({
+          event: "call:answered",
+          data: { callId: params.callId },
         }),
+        "answerCall"
+      ),
       this.publishCallHandled(
         params.calleeId,
         params.callId,
@@ -748,19 +836,14 @@ export class CallService {
     };
 
     await Promise.all([
-      this.redis
-        .publish(
-          `call:${params.callId}`,
-          JSON.stringify({
-            event: "call:declined",
-            data: { callId: params.callId },
-          })
-        )
-        .catch((err: unknown) => {
-          logger.warn(
-            `CallService|declineCall|redis publish failed: ${String(err)}`
-          );
+      this.publishToCallAndParticipants(
+        updated,
+        JSON.stringify({
+          event: "call:declined",
+          data: { callId: params.callId },
         }),
+        "declineCall"
+      ),
       this.publishCallHandled(
         params.calleeId,
         params.callId,
@@ -901,23 +984,18 @@ export class CallService {
         params.userId
       );
     } else {
-      await this.redis
-        .publish(
-          `call:${params.callId}`,
-          JSON.stringify({
-            event: "call:ended",
-            data: {
-              callId: params.callId,
-              endedBy: params.userId,
-              durationSec,
-            },
-          })
-        )
-        .catch((err: unknown) => {
-          logger.warn(
-            `CallService|endCall|redis publish failed: ${String(err)}`
-          );
-        });
+      await this.publishToCallAndParticipants(
+        updated,
+        JSON.stringify({
+          event: "call:ended",
+          data: {
+            callId: params.callId,
+            endedBy: params.userId,
+            durationSec,
+          },
+        }),
+        "endCall"
+      );
 
       await this.postCallChatMessageSafe(
         call,
@@ -1098,21 +1176,18 @@ export class CallService {
       if (!won) continue;
       flipped++;
 
-      await this.redis
-        .publish(
-          `call:${call.callId}`,
-          JSON.stringify({
-            event: "call:ended",
-            data: {
-              callId: call.callId,
-              endedBy: "SYSTEM_TIMEOUT",
-              durationSec,
-            },
-          })
-        )
-        .catch((err: unknown) =>
-          logger.warn(`CallService|sweepStale|publish failed: ${String(err)}`)
-        );
+      await this.publishToCallAndParticipants(
+        call,
+        JSON.stringify({
+          event: "call:ended",
+          data: {
+            callId: call.callId,
+            endedBy: "SYSTEM_TIMEOUT",
+            durationSec,
+          },
+        }),
+        "sweepStale"
+      );
 
       await this.postCallChatMessageSafe(
         call,
@@ -1145,15 +1220,29 @@ export class CallService {
    *  - RINGING → cancel (caller abandoned before answer): ENDED + `call:cancelled`
    *    to the callee's `self:` channel + push dismiss, mirroring `endCall`'s
    *    pre-answer branch so the ring stops now instead of at the 60s missed sweep.
-   *    (During RINGING only the caller is in the LiveKit room, so a leave here can
-   *    only be the caller giving up.)
+   *    ONLY on `room_finished` — see the guard below.
    *  - anything terminal → no-op.
    */
-  async reconcileFromLiveKitRoomFinished(callId: string): Promise<void> {
+  async reconcileFromLiveKitRoomFinished(
+    callId: string,
+    eventType: string
+  ): Promise<void> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return; // room name wasn't a callId — ignore
 
     if (call.status === CallStatus.RINGING) {
+      // `participant_left` must never cancel a ringing call. During RINGING the
+      // caller is the room's ONLY participant, so any churn on their connection
+      // fires it — notably cancelling one call while immediately placing the next,
+      // which cancelled the brand-new call and surfaced to the caller as a 15s
+      // hang then "engine not connected". Only a real room close counts here; a
+      // caller who is genuinely gone is still caught by the 60s missed sweep.
+      if (eventType !== "room_finished") {
+        logger.debug(
+          `CallService|reconcile|ignoring ${eventType} for RINGING call=${callId}`
+        );
+        return;
+      }
       const endedAt = new Date();
       const { won } = await this.callRepo.claimStatusTransition(
         callId,
@@ -1235,19 +1324,14 @@ export class CallService {
     );
     if (!won) return;
 
-    await this.redis
-      .publish(
-        `call:${callId}`,
-        JSON.stringify({
-          event: "call:ended",
-          data: { callId, endedBy: "SYSTEM_LIVEKIT", durationSec },
-        })
-      )
-      .catch((err: unknown) => {
-        logger.warn(
-          `CallService|reconcile|redis publish failed: ${String(err)}`
-        );
-      });
+    await this.publishToCallAndParticipants(
+      call,
+      JSON.stringify({
+        event: "call:ended",
+        data: { callId, endedBy: "SYSTEM_LIVEKIT", durationSec },
+      }),
+      "reconcile"
+    );
 
     await this.postCallChatMessageSafe(
       call,
