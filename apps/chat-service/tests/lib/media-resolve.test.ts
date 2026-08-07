@@ -118,11 +118,28 @@ describe("resolveContentFiles", () => {
     });
   });
 
-  it("leaves an entry that already carries a full http url untouched", async () => {
+  it("passes an external http url (no objectKey) through unsigned", async () => {
     const entry = { url: "https://cdn.example.com/sticker.png" };
     const out = await resolveContentFiles([entry]);
-    expect(out[0]).toBe(entry);
+    expect(out[0]).toEqual(entry);
     expect(resolveDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  // Some clients persist the presigned URL they received at upload time next to
+  // the objectKey. That URL expires (~1h), so the read boundary must ALWAYS
+  // re-sign from the key — keeping the stored one made live/catch-up broadcasts
+  // hand out dead links (media rendered on send, broke on reopen/reconnect).
+  it("re-signs from objectKey even when a stale url is stored", async () => {
+    const out = await resolveContentFiles([
+      {
+        objectKey: "chat-uploads/u1/a.jpg",
+        url: "http://minio.test/aimess-chat/chat-uploads/u1/a.jpg?X-Amz-Expires=3600&X-Amz-Signature=expired",
+        name: "a.jpg",
+      },
+    ]);
+    expect(out[0]?.url).toBe(
+      `https://minio.test/${CHAT}/chat-uploads/u1/a.jpg`
+    );
   });
 
   it("returns [] for null/empty and does not throw", async () => {

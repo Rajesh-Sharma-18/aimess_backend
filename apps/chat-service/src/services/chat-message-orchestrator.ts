@@ -1670,20 +1670,34 @@ export class ChatMessageOrchestrator {
   private async resolveBroadcastContent(content: unknown): Promise<unknown> {
     if (!content || typeof content !== "object") return content;
     const c = content as Record<string, unknown>;
-    if (Array.isArray(c.files) && c.files.length > 0) {
-      try {
-        return {
-          ...c,
-          files: await resolveContentFiles(c.files as MediaFileLike[]),
-        };
-      } catch (err) {
-        logger.warn(
-          `ChatMessageOrchestrator|resolveBroadcastContent failed: ${String(err)}`
-        );
-        return content;
-      }
+    const hasFiles = Array.isArray(c.files) && c.files.length > 0;
+    // `content.sticker` lives outside files[]; REST history already resolves it
+    // (`resolveStickerField`), so the live broadcast must too.
+    const sticker =
+      c.sticker && typeof c.sticker === "object"
+        ? (c.sticker as MediaFileLike)
+        : null;
+    if (!hasFiles && !sticker) return content;
+    try {
+      const [files, stickerUrl] = await Promise.all([
+        hasFiles
+          ? resolveContentFiles(c.files as MediaFileLike[])
+          : Promise.resolve(null),
+        sticker ? resolveMediaUrl(fileMediaKey(sticker)) : Promise.resolve(""),
+      ]);
+      return {
+        ...c,
+        ...(files ? { files } : {}),
+        ...(sticker && stickerUrl
+          ? { sticker: { ...sticker, url: stickerUrl } }
+          : {}),
+      };
+    } catch (err) {
+      logger.warn(
+        `ChatMessageOrchestrator|resolveBroadcastContent failed: ${String(err)}`
+      );
+      return content;
     }
-    return content;
   }
 
   /**
