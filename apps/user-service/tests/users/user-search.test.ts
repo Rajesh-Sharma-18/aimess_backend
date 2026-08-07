@@ -276,7 +276,19 @@ describe("GET /api/v1/users/search", () => {
     expect(res.body.data.recent).toEqual([]);
   });
 
-  it("excludes a blocked user from Recent even if it was viewed before", async () => {
+  it("excludes a user who BLOCKED the viewer from Recent even if it was viewed before", async () => {
+    recentRepo.findByUserId.mockResolvedValue([recentUserRow()]);
+    pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(PEER_ID)]);
+    friendRepo.findAllBlocks.mockResolvedValue([
+      { blockerId: PEER_ID, blockedId: TEST_USER_ID },
+    ]);
+
+    const res = await request(app).get("/api/v1/users/search").set(auth());
+
+    expect(res.body.data.recent).toEqual([]);
+  });
+
+  it("keeps a user the VIEWER blocked in Recent, flagged isBlockedByMe (one-way)", async () => {
     recentRepo.findByUserId.mockResolvedValue([recentUserRow()]);
     pRepo.findDiscoverableByUserIds.mockResolvedValue([profile(PEER_ID)]);
     friendRepo.findAllBlocks.mockResolvedValue([
@@ -285,7 +297,11 @@ describe("GET /api/v1/users/search", () => {
 
     const res = await request(app).get("/api/v1/users/search").set(auth());
 
-    expect(res.body.data.recent).toEqual([]);
+    expect(res.body.data.recent).toHaveLength(1);
+    expect(res.body.data.recent[0]).toMatchObject({
+      userId: PEER_ID,
+      isBlockedByMe: true,
+    });
   });
 
   it("puts an accepted friend with an existing room into Chat, and groups actively joined into Chat", async () => {

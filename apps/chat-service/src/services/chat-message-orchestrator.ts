@@ -22,6 +22,7 @@ import {
   buildChatMessageEvent,
   buildCanonicalQuote,
   normalizeMessageType,
+  autoDeleteWireFields,
   type ReactionGroup,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
@@ -373,6 +374,7 @@ export class ChatMessageOrchestrator {
       revision: (msg as unknown as { revision?: number }).revision ?? 0,
       countInUnread: (msg as unknown as { countInUnread?: boolean | null })
         .countInUnread,
+      ...autoDeleteWireFields(msg),
     });
 
     if (!alreadySent) {
@@ -408,6 +410,7 @@ export class ChatMessageOrchestrator {
           revision: (row as unknown as { revision?: number }).revision ?? 0,
           countInUnread: (row as unknown as { countInUnread?: boolean | null })
             .countInUnread,
+          ...autoDeleteWireFields(row),
         });
         const bcastContext = `roomId=${params.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
         publishRealtimeSafe(

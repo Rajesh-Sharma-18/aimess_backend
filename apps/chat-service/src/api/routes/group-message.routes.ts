@@ -122,6 +122,13 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     ctrl.forwardMessage
   );
 
+  // "Viewed list" — members whose read cursor has reached this message
+  router.get(
+    "/:roomId/messages/:messageId/read-by",
+    authenticate,
+    ctrl.getMessageReadBy
+  );
+
   // Get reactions on a group message
   router.get(
     "/:roomId/messages/:messageId/reactions",

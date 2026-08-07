@@ -18,7 +18,7 @@ import type { GroupSystemMessageService } from "./group-system-message.service.j
 import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
-const PIN_ROLES = ["OWNER", "ADMIN", "MODERATOR"];
+const PIN_ROLES = ["ADMIN", "MODERATOR"];
 
 /**
  * Parity with `CommunityPinService`: only ONE active pin may exist per room at

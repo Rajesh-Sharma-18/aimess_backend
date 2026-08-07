@@ -5,6 +5,12 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
+import {
+  buildTextSearchPipeline,
+  orderByIds,
+  parseSearchCursor,
+  readTextSearchPage,
+} from "./message-search.js";
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
@@ -114,6 +120,37 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findMany({
       where: { id: { in: validIds } },
     });
+  }
+
+  /**
+   * Every other member's DELIVERED high-water mark (`userId` → `sequenceNumber`),
+   * derived from the newest of MY messages each member appears in `deliveredTo` on.
+   * Group's answer to PrivateMessageRepository.getNewestDeliveredSeq — one indexed
+   * query for the whole roster instead of one per member, since a single desc scan
+   * of my own messages yields every member's first (= newest) hit.
+   */
+  async getMemberDeliveredSeqs(
+    roomId: string,
+    senderId: string
+  ): Promise<Record<string, number>> {
+    const rows = await this.prisma.groupMessage.findMany({
+      where: { roomId, senderId, isDeleted: false },
+      orderBy: { sequenceNumber: "desc" },
+      take: 50,
+      select: { sequenceNumber: true, deliveredTo: true },
+    });
+    const cursors: Record<string, number> = {};
+    for (const row of rows) {
+      const list = Array.isArray(row.deliveredTo)
+        ? (row.deliveredTo as unknown as string[])
+        : [];
+      for (const userId of list) {
+        if (userId === senderId) continue;
+        if (cursors[userId] === undefined)
+          cursors[userId] = row.sequenceNumber ?? 0;
+      }
+    }
+    return cursors;
   }
 
   /**
@@ -706,47 +743,55 @@ export class GroupMessageRepository {
     return result[0]?.total ?? 0;
   }
 
-  async searchByText(
-    roomId: string,
-    query: string,
-    limit: number,
-    userId: string,
-    skip = 0,
-    cutoff?: Date
-  ): Promise<GroupMessage[]> {
-    // content.text is inside a Json column — use a raw regex query for matching
-    // ids, then re-fetch via the typed client for the normal message shape.
-    // `deletedForUserIds` mirrors the same per-user delete-for-me idiom used
-    // elsewhere in this repository (e.g. countUnreadSince above) — without it,
-    // search resurrects messages this user deleted for themselves. `cutoff`
-    // (delete-conversation) is the same idea at the whole-room level.
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const raw = (await this.prisma.groupMessage.findRaw({
-      filter: {
-        roomId,
+  async searchByText(params: {
+    roomId: string;
+    query: string;
+    limit: number;
+    userId: string;
+    cursor?: string | null;
+    cutoff?: Date;
+  }): Promise<{
+    messages: GroupMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const pipeline = buildTextSearchPipeline({
+      match: {
+        roomId: params.roomId,
         isDeleted: false,
-        deletedForUserIds: { $ne: userId },
-        "content.text": { $regex: escaped, $options: "i" },
-        ...(cutoff
-          ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+        deletedForUserIds: { $ne: params.userId },
+        ...(params.cutoff
+          ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
           : {}),
       },
-      options: { sort: { createdAt: -1 }, skip, limit },
-    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+      query: params.query,
+      cursor: parseSearchCursor(params.cursor),
+      limit: params.limit,
+    });
 
-    const ids = raw
-      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
-      .filter((id): id is string => Boolean(id));
-    if (!ids.length) return [];
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: pipeline as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Parameters<typeof readTextSearchPage>[0];
+    const page = readTextSearchPage(raw ?? [], params.limit);
+    if (!page.ids.length) {
+      return {
+        messages: [],
+        scores: page.scores,
+        hasMore: false,
+        nextCursor: null,
+      };
+    }
 
     const rows = await this.prisma.groupMessage.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: page.ids } },
     });
-    // Preserve findRaw's paginated order — an unordered `IN` re-fetch plus a
-    // fresh createdAt sort would silently undo the skip/limit window on
-    // same-timestamp rows.
-    const order = new Map(ids.map((id, i) => [id, i]));
-    return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+    return {
+      messages: orderByIds(rows, page.ids),
+      scores: page.scores,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
   }
 
   async findByClientMessageId(

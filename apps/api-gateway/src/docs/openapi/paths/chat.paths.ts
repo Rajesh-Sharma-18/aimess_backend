@@ -2770,7 +2770,16 @@ function searchPath(tag: string, summary: string) {
       tags: [tag],
       summary,
       description:
-        "Case-insensitive substring search over message text in the room.",
+        "Index-backed full-text search over message text in the room, newest-first.\n\n" +
+        "Matching uses a MongoDB `$text` index, so terms match at WORD granularity — " +
+        "a partial word returns nothing until it is complete. Clients bridge that gap " +
+        "by filtering their local cache while the user types.\n\n" +
+        "Pagination is an opaque `(createdAt, _id)` keyset cursor, not an offset: pass " +
+        "the previous response's `nextCursor` back as `cursor`. Stable under concurrent " +
+        "inserts, so pages never duplicate or drop rows. `page`/`skip` are no longer accepted.\n\n" +
+        "Each item carries `searchScore` (MongoDB textScore) for client-side relevance " +
+        "ranking and highlighting, plus the `id` and `sequenceNumber` needed to navigate " +
+        "via `GET .../messages?around={id}`.",
       security: [{ bearerAuth: [] }],
       parameters: [
         {
@@ -2784,7 +2793,16 @@ function searchPath(tag: string, summary: string) {
           in: "query",
           required: true,
           schema: { type: "string" },
-          description: "Search term.",
+          description: "Search term. Matched at word granularity.",
+        },
+        {
+          name: "cursor",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Opaque keyset cursor `<createdAtMs>_<objectId>` taken from the previous " +
+            "response's `nextCursor`. Omit for the first page.",
         },
         limitParam(30),
       ],

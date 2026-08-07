@@ -593,6 +593,11 @@ message CatchupEventDto {
   // ZERO-LOSS CHANGE cursor for this message (Telegram pts). Present in both
   // catch-up modes; the client tracks the per-room max as its high-water.
   int64  revision        = 14;
+  // Canonical grouped reaction state, mirroring CommunityCatchupEventDto —
+  // without this a reaction applied live vanishes the next time the client
+  // catches up (reopen room, reload, reconnect), since catch-up is what
+  // rehydrates message state on those paths, not a plain reactions broadcast.
+  repeated ReactionGroupDto reactions = 15;
 }
 message CatchupRoomResponse {
   string conversation_id           = 1;

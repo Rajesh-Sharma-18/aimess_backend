@@ -143,7 +143,7 @@ describe("listGroupMembersQuerySchema", () => {
   });
 
   it("accepts each valid role enum value", () => {
-    for (const role of ["OWNER", "ADMIN", "MODERATOR", "MEMBER"]) {
+    for (const role of ["ADMIN", "MODERATOR", "MEMBER"]) {
       const r = listGroupMembersQuerySchema.safeParse({ role });
       assert.equal(r.success, true, `role=${role} should be valid`);
       assert.equal(r.data?.role, role);

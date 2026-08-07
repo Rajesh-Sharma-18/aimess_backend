@@ -31,6 +31,14 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  computeAutoDeleteStamp,
+  parseAutoDeleteMap,
+  resolveEffectiveAutoDelete,
+  AUTO_DELETE_NONE,
+  AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
+  type AutoDeleteStamp,
+} from "../lib/auto-delete.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
@@ -222,10 +230,20 @@ export class PrivateMessageService {
       }
     }
 
+    // Auto-delete: which timer THIS message gets is decided once, here, from the
+    // room's per-user settings (see lib/auto-delete.ts). Resolved before the
+    // insert loop so every album row of one send shares the same deadline.
+    const autoDelete = await this.resolveAutoDeleteStamp(
+      params.roomId,
+      params.senderId
+    );
+
     const created: PrivateMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       const entity: Record<string, unknown> = {
+        autoDeleteAt: autoDelete.autoDeleteAt,
+        autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.roomId,
         senderId: params.senderId,
         receiverId: params.receiverId,
@@ -688,21 +706,26 @@ export class PrivateMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<PrivateMessage[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: PrivateMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
       params.userId
     );
-    return this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      params.skip ?? 0,
-      getPrivateDeletionCutoff(room, params.userId)
-    );
+    return this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      cursor: params.cursor,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
   }
 
   async listMedia(params: {
@@ -730,11 +753,65 @@ export class PrivateMessageService {
     });
   }
 
+  /**
+   * The auto-delete columns a message sent by `senderId` into `roomId` must
+   * carry. Reads the room's per-user `autoDeleteBy` map and applies the
+   * sender-first-then-peer rule (see lib/auto-delete.ts). Fails OPEN — a lookup
+   * error must never block a send, it just means no timer on that message.
+   */
+  private async resolveAutoDeleteStamp(
+    roomId: string,
+    senderId: string
+  ): Promise<AutoDeleteStamp> {
+    try {
+      const room = await this.roomRepo.findByRoomId(roomId);
+      if (!room) return AUTO_DELETE_NONE;
+      const peerId = (room.participants ?? []).find((id) => id !== senderId);
+      const map = parseAutoDeleteMap(room.autoDeleteBy);
+      const setting = resolveEffectiveAutoDelete(map, senderId, peerId ?? "");
+      return computeAutoDeleteStamp(setting, new Date());
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|resolveAutoDeleteStamp failed room=${roomId}: ${String(err)}`
+      );
+      return AUTO_DELETE_NONE;
+    }
+  }
+
+  /**
+   * Auto-delete "After Viewing": start the countdown on every such message this
+   * reader RECEIVED in this room (§3.4 — the deadline only exists once the
+   * recipient has actually seen it; §8.7 — never before the receipt lands).
+   * Idempotent, so every mark-read can call it unconditionally. Returns the
+   * number of messages armed.
+   */
+  async armAfterViewingMessages(
+    roomId: string,
+    readerId: string
+  ): Promise<number> {
+    return this.messageRepo.armAfterViewing(
+      roomId,
+      readerId,
+      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000)
+    );
+  }
+
   async markRead(params: {
     roomId: string;
     userId: string;
     lastMessageId: string;
   }): Promise<unknown> {
+    // Auto-delete "After Viewing" arms HERE — the single point every read path
+    // (REST via the orchestrator, socket/gRPC via markMessagesRead) funnels
+    // through — so no caller can forget it. Fire-and-forget: the sweeper still
+    // owns the deletion, a failure here only delays it to the next read.
+    void this.armAfterViewingMessages(params.roomId, params.userId).catch(
+      (err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
+        );
+      }
+    );
     return this.roomRepo.markReadUpTo({
       roomId: params.roomId,
       userId: params.userId,
@@ -1545,10 +1622,18 @@ export class PrivateMessageService {
     };
 
     const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+    // §8.1 — a forward does NOT inherit the source message's timer; it is a new
+    // message in the TARGET chat and follows that chat's own setting.
+    const autoDelete = await this.resolveAutoDeleteStamp(
+      params.targetRoomId,
+      params.senderId
+    );
 
     let message: PrivateMessage;
     try {
       message = await this.messageRepo.createForwardedMessage({
+        autoDeleteAt: autoDelete.autoDeleteAt,
+        autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.targetRoomId,
         senderId: params.senderId,
         receiverId: params.receiverId,

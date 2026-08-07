@@ -209,6 +209,12 @@ export interface CatchupEventDto {
   systemData: string;
   /** Per-message CHANGE cursor (Telegram pts). 0 when the row predates the backfill. */
   revision?: number;
+  /** Canonical grouped reaction state — see CatchupEventDto.reactions in messaging.proto. */
+  reactions?: Array<{
+    emoji: string;
+    count: number;
+    users: Array<{ userId: string; displayName: string; avatar: string }>;
+  }>;
 }
 export interface CatchupRoomResult {
   conversationId: string;

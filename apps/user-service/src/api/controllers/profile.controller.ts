@@ -31,12 +31,21 @@ export const updateProfile = asyncHandler(
   }
 );
 
-/** `GET /api/v1/users/:userId` — another user's profile, scoped to the viewer. */
+/**
+ * `GET /api/v1/users/:userId` — another user's profile, scoped to the viewer.
+ *
+ * `me` resolves to the caller. Clients were already sending it and, with no
+ * param validation on this route, the literal string reached Prisma and blew up
+ * with `invalid input syntax for type uuid: "me"` on every request. Anything
+ * else that is not a UUID is rejected by `publicProfileParamsSchema` before it
+ * gets here.
+ */
 export const getPublicProfile = asyncHandler(
   async (req: Request, res: Response) => {
+    const requested = req.params.userId as string;
     const profile = await userProfileService.getPublicProfile(
       req.auth.userId,
-      req.params.userId as string
+      requested === "me" ? req.auth.userId : requested
     );
 
     return res

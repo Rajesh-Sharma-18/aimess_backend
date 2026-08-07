@@ -33,6 +33,21 @@ const dateOfBirthSchema = z
 
 const genderSchema = z.enum(PROFILE_GENDER_VALUES);
 
+/**
+ * `GET /users/:userId`. Every sibling route that takes a user id validates it
+ * (see `unfriendParamsSchema`); this one did not, so any non-UUID string went
+ * straight to Prisma and surfaced as a 500 plus `invalid input syntax for type
+ * uuid` in the logs instead of a 400.
+ *
+ * `me` is allowed through as the documented self alias — the controller swaps
+ * it for the caller's own id.
+ */
+export const publicProfileParamsSchema = z.object({
+  userId: z.union([z.literal("me"), z.string().uuid("User ID is invalid")]),
+});
+
+export type PublicProfileParams = z.infer<typeof publicProfileParamsSchema>;
+
 export const updateProfileSchema = z
   .object({
     firstName: z

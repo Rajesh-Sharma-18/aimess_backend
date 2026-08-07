@@ -27,7 +27,6 @@ export type CommunityMessageType =
 
 /** Group member roles */
 export const GroupRole = {
-  OWNER: "OWNER",
   ADMIN: "ADMIN",
   MODERATOR: "MODERATOR",
   MEMBER: "MEMBER",
@@ -114,6 +113,9 @@ export const SystemEvent = {
   FRIENDSHIP_DELETED: "FRIENDSHIP_DELETED",
   FRIENDSHIP_BLOCKED: "FRIENDSHIP_BLOCKED",
   FRIENDSHIP_BANNED: "FRIENDSHIP_BANNED",
+
+  /** Private-chat auto-delete (disappearing messages) timer enabled/changed/disabled. */
+  AUTO_DELETE_UPDATED: "AUTO_DELETE_UPDATED",
 } as const;
 export type SystemEvent = (typeof SystemEvent)[keyof typeof SystemEvent];
 

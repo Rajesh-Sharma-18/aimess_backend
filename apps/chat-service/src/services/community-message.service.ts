@@ -36,6 +36,8 @@ import {
   toggleStoredReaction,
   // setStoredReaction,
   reactionUserIdMap,
+  buildReactionGroups,
+  type ReactionGroup,
   type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
@@ -109,6 +111,8 @@ type CommunityMessageWire = Omit<
   contentType: string;
   /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
   isPersonal?: boolean;
+  /** Canonical reaction shape — see `toWire`. */
+  reactionGroups?: ReactionGroup[];
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -1200,6 +1204,16 @@ export class CommunityMessageService {
       wire.reactions = out;
     }
 
+    // Canonical client-facing reaction shape (FE reads `reactionGroups[]`,
+    // matching the live `community:message:reaction` broadcast) — history reads
+    // were only renaming the raw `reactions` map's avatar key, never emitting
+    // this, so a reaction applied live vanished on the next history fetch/reload.
+    wire.reactionGroups = buildReactionGroups(
+      m.reactions,
+      (key) => (urlMap ? urlFromMap(urlMap, key) : ""),
+      resolveReactionUser
+    );
+
     // Normalize editedAt → epoch ms and derive isEdited so all list/timeline
     // surfaces are consistent with the edit socket event and sync API.
     const editedMs =
@@ -1888,8 +1902,13 @@ export class CommunityMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<CommunityMessageWire[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: CommunityMessageWire[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
@@ -1897,17 +1916,24 @@ export class CommunityMessageService {
       params.userId,
       { allowBannedReadCutoff: true }
     );
-    const rows = await this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      isActiveMember(member),
-      params.skip ?? 0,
-      bannedAtCutoff
-    );
-    const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
+    const result = await this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      viewerIsActiveMember: isActiveMember(member),
+      cursor: params.cursor,
+      readCutoff: bannedAtCutoff,
+    });
+    const urlMap = await this.resolveRowsMedia(result.messages);
+    return {
+      messages: result.messages.map((m) =>
+        this.toWire(m, urlMap, undefined, params.userId)
+      ),
+      scores: result.scores,
+      hasMore: result.hasMore,
+      nextCursor: result.nextCursor,
+    };
   }
 
   async countMessages(roomId: string): Promise<number> {

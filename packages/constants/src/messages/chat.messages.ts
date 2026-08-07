@@ -155,6 +155,22 @@ export const CHAT_MESSAGES = {
     vi: "Đã lưu trữ cuộc trò chuyện",
     en: "Conversation archived",
   },
+  CHAT_AUTO_DELETE_FETCHED: {
+    vi: "Lấy cài đặt tự động xóa tin nhắn thành công",
+    en: "Auto-delete setting fetched successfully",
+  },
+  CHAT_AUTO_DELETE_UPDATED: {
+    vi: "Đã cập nhật cài đặt tự động xóa tin nhắn",
+    en: "Auto-delete setting updated",
+  },
+  CHAT_AUTO_DELETE_INVALID_MODE: {
+    vi: "Chế độ tự động xóa không hợp lệ",
+    en: "Invalid auto-delete mode",
+  },
+  CHAT_AUTO_DELETE_INVALID_TTL: {
+    vi: "Thời gian tự động xóa không hợp lệ",
+    en: "Invalid auto-delete duration",
+  },
   CHAT_ROOM_UNARCHIVED: {
     vi: "Đã bỏ lưu trữ cuộc trò chuyện",
     en: "Conversation unarchived",
@@ -315,24 +331,28 @@ export const CHAT_MESSAGES = {
     en: "Group member limit reached",
   },
   CHAT_OWNER_CANNOT_LEAVE: {
-    vi: "Chủ nhóm không thể rời đi. Hãy chuyển quyền hoặc giải tán nhóm.",
-    en: "Owner cannot leave. Transfer ownership or disband the group.",
+    vi: "Quản trị viên không thể rời đi. Hãy chỉ định quản trị viên khác hoặc giải tán nhóm.",
+    en: "Admin cannot leave. Make someone else admin or disband the group.",
   },
   CHAT_CANNOT_KICK_HIGHER_ROLE: {
     vi: "Không thể loại thành viên có vai trò bằng hoặc cao hơn",
     en: "Cannot remove a member with an equal or higher role",
+  },
+  CHAT_CANNOT_CHANGE_OWN_ROLE: {
+    vi: "Bạn không thể tự thay đổi vai trò của mình",
+    en: "You cannot change your own role",
   },
   CHAT_INSUFFICIENT_PERMISSIONS: {
     vi: "Bạn không có đủ quyền để thực hiện hành động này",
     en: "Insufficient permissions to perform this action",
   },
   CHAT_ONLY_OWNER_ADMIN_UPDATE: {
-    vi: "Chỉ chủ nhóm hoặc quản trị viên mới có thể cập nhật nhóm",
-    en: "Only the owner or an admin can update the group",
+    vi: "Chỉ quản trị viên mới có thể cập nhật nhóm",
+    en: "Only the admin can update the group",
   },
   CHAT_ONLY_OWNER_DISBAND: {
-    vi: "Chỉ chủ nhóm mới có thể giải tán nhóm",
-    en: "Only the owner can disband the group",
+    vi: "Chỉ quản trị viên mới có thể giải tán nhóm",
+    en: "Only the admin can disband the group",
   },
 
   // --- Invite links ---

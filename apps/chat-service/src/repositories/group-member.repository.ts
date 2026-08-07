@@ -70,6 +70,14 @@ export class GroupMemberRepository {
     });
   }
 
+  /** Rows flagged muted — callers still drop expired windows via isGroupMemberMuted. */
+  async findMutedMembers(roomId: string): Promise<GroupMember[]> {
+    return this.prisma.groupMember.findMany({
+      where: { roomId, status: "ACTIVE", moderationMuted: true },
+      orderBy: { joinedAt: "asc" },
+    });
+  }
+
   async getActiveRoomIds(userId: string): Promise<string[]> {
     const members = await this.prisma.groupMember.findMany({
       where: { userId, status: "ACTIVE" },
@@ -402,7 +410,7 @@ export class GroupMemberRepository {
 
   /**
    * Admin Group Management: map each given roomId → its ACTIVE owner userId.
-   * Rooms without an OWNER row are simply absent (callers fall back to
+   * Rooms without an ADMIN row are simply absent (callers fall back to
    * GroupRoom.createdBy).
    */
   async findOwnersForRooms(roomIds: string[]): Promise<Map<string, string>> {
@@ -410,7 +418,7 @@ export class GroupMemberRepository {
     const ids = [...new Set(roomIds.filter(Boolean))];
     if (!ids.length) return map;
     const owners = await this.prisma.groupMember.findMany({
-      where: { role: "OWNER", status: "ACTIVE", roomId: { in: ids } },
+      where: { role: "ADMIN", status: "ACTIVE", roomId: { in: ids } },
       select: { roomId: true, userId: true },
     });
     for (const o of owners) {
@@ -427,7 +435,7 @@ export class GroupMemberRepository {
     const ids = [...new Set(userIds.filter(Boolean))];
     if (!ids.length) return [];
     const rows = await this.prisma.groupMember.findMany({
-      where: { role: "OWNER", userId: { in: ids } },
+      where: { role: "ADMIN", userId: { in: ids } },
       select: { roomId: true },
     });
     return [...new Set(rows.map((r) => r.roomId))];

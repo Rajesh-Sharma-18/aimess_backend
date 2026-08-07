@@ -38,6 +38,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.requesterId,
         ...friendCopy.requested(p.requesterName),
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           // Alias of friendshipId — matches the FE's pending-conversation
@@ -72,6 +73,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         ...friendCopy.acceptedForRequester(p.addresseeName),
         deepLink: deepLinkForRequester,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
@@ -99,6 +101,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.requesterId,
         ...friendCopy.acceptedForAddressee(p.requesterName),
         deepLink: deepLinkForAddressee,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
@@ -132,6 +135,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         ...friendCopy.rejected(p.addresseeName),
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
@@ -159,6 +163,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.requesterId,
         ...friendCopy.rejectedSelf(p.requesterName),
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
@@ -190,6 +195,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         ...friendCopy.cancelled(p.requesterName),
         dataOnly: true,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
@@ -206,6 +212,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         // announcing a cancellation would contradict the row disappearing.
         dataOnly: true,
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,

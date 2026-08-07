@@ -844,21 +844,26 @@ export class GroupMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<GroupMessage[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: GroupMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const member = await assertGroupMember(
       this.memberRepo,
       params.roomId,
       params.userId
     );
-    return this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      params.skip ?? 0,
-      getGroupVisibilityCutoff(member)
-    );
+    return this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      cursor: params.cursor,
+      cutoff: getGroupVisibilityCutoff(member),
+    });
   }
 
   async listMedia(params: {
@@ -1099,7 +1104,7 @@ export class GroupMessageService {
     let deletedType = "SELF_DELETE";
     if (message.senderId !== userId) {
       // Only admins can delete others' messages
-      if (!["OWNER", "ADMIN", "MODERATOR"].includes(member.role)) {
+      if (!["ADMIN", "MODERATOR"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       deletedType = "ADMIN_DELETE";
@@ -1568,6 +1573,9 @@ export class GroupMessageService {
       params.senderId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    // A forward CREATES a message in the target room, so it is a send: a muted
+    // member must not be able to route around the mute by forwarding.
+    assertGroupMemberNotMuted(member);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.
     const senderRole = (member as { role?: string }).role ?? "MEMBER";
@@ -1778,6 +1786,44 @@ export class GroupMessageService {
   }
 
   /**
+   * Every other member's DELIVERED watermark, the parallel signal to
+   * {@link getMemberReadCursors} for the grey ✓✓ tier. `GroupMessage.deliveredTo`
+   * is already persisted (presence at insert + presence-connect backfill + the
+   * client ack below), but the history serializer strips it off the wire — without
+   * this the sender's group ticks collapse to a single ✓ on every relaunch, exactly
+   * the bug memberReadSeq fixed for the blue tier.
+   */
+  async getMemberDeliveredCursors(
+    roomId: string,
+    userId: string
+  ): Promise<Record<string, number>> {
+    return this.messageRepo.getMemberDeliveredSeqs(roomId, userId);
+  }
+
+  /**
+   * Client-initiated delivery ack for a group room (socket `message:delivered`).
+   * The presence paths cover "member was online at send" and "member reconnected";
+   * this covers the recipient confirming receipt itself. Same repo primitive, so
+   * all three converge on one forward-only `deliveredTo` append.
+   */
+  async markDelivered(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[] }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.recipientId
+    );
+    if (!member) return { count: 0, messageIds: [] };
+    return this.messageRepo.markDeliveredUpTo(
+      params.roomId,
+      params.recipientId,
+      params.upToMessageId
+    );
+  }
+
+  /**
    * Every OTHER active member's current read high-water mark, as a
    * sequenceNumber, keyed by userId. Used to hydrate per-message "seen by" /
    * read-count state on the INITIAL page load (group has no single "peer" —
@@ -1862,6 +1908,84 @@ export class GroupMessageService {
     return {
       readToSeq: typeof seq === "number" ? seq : 0,
       remainingUnread,
+    };
+  }
+
+  /**
+   * "Viewed list" for one group message — every active member (excluding the
+   * sender) whose read cursor has reached this message's sequenceNumber.
+   * Same high-water-mark rule as getMemberReadCursors, just inverted per message.
+   */
+  async getMessageReadBy(params: {
+    roomId: string;
+    messageId: string;
+    requesterId: string;
+  }): Promise<{
+    readBy: {
+      userId: string;
+      displayName: string;
+      avatar: string;
+      readAt: number | null;
+    }[];
+    totalMembers: number;
+  }> {
+    const requester = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.requesterId
+    );
+    if (!requester) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message || message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const messageSeq =
+      (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
+
+    const members = await this.memberRepo.findActiveMembers(params.roomId);
+    const candidates = members.filter(
+      (m) => m.userId !== message.senderId && m.lastReadMessageId
+    );
+
+    const seqById = new Map<string, number>();
+    await Promise.all(
+      [...new Set(candidates.map((m) => m.lastReadMessageId as string))].map(
+        async (id) => {
+          seqById.set(id, await this.getMessageSequence(id));
+        }
+      )
+    );
+
+    const readers = candidates.filter((m) => {
+      const seq = seqById.get(m.lastReadMessageId as string) ?? 0;
+      return messageSeq > 0
+        ? seq >= messageSeq
+        : !!m.lastReadAt && m.lastReadAt >= message.createdAt;
+    });
+
+    const snapshots =
+      readers.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            readers.map((m) => m.userId),
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const urlMap = await resolveMediaUrlMap(
+      [...snapshots.values()].map((s) => (s.avatar as string) || "")
+    );
+
+    return {
+      readBy: readers.map((m) => {
+        const snap = snapshots.get(m.userId) ?? {};
+        return {
+          userId: m.userId,
+          displayName: resolveDisplayName(snap),
+          avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
+          readAt: m.lastReadAt ? new Date(m.lastReadAt).getTime() : null,
+        };
+      }),
+      totalMembers: members.filter((m) => m.userId !== message.senderId).length,
     };
   }
 

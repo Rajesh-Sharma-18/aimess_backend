@@ -313,7 +313,11 @@ export function normalizeCatchupEvent(
     roomId: event.conversationId,
     conversationType: conversationType.toUpperCase(),
     content,
-    reactions: [],
+    // Canonical grouped reaction state carried by the catch-up protobuf event —
+    // without this a reaction applied live vanished the next time the client
+    // caught up (reopen room, reload, reconnect), since reconnect hydration
+    // never re-sent the plain `message:reaction` broadcast.
+    reactions: event.reactions ?? [],
     sequenceNumber: Number(event.sequenceNumber),
     // int64 arrives as a string via proto-loader (longs: String).
     revision: Number(event.revision ?? 0),
@@ -337,21 +341,42 @@ export function registerChatNamespace(
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
   /**
-   * Re-run the `presence:subscribe` authorization for everyone already watching
-   * `subjectId`, and drop the sockets that no longer qualify. Called when the
-   * subject's privacy settings change or a friendship they had is removed —
-   * i.e. exactly when a previously-granted subscription can turn stale.
+   * Re-run the `presence:subscribe` authorization for every socket that asked
+   * to watch `subjectId`, in BOTH directions, and tell each one what it should
+   * now believe. Called when the subject's privacy settings change or a
+   * friendship of theirs changes — i.e. exactly when a granted subscription can
+   * turn stale, or a denied one can become legitimate.
    *
-   * The subject's OWN sockets are never evicted (they are in `user:<self>` for
-   * their own events, not as watchers). `filterVisiblePresence` fails CLOSED,
-   * so a user-service outage during this pass drops watchers rather than
-   * keeping them — the client can re-subscribe, which is the safe direction.
+   * Two things make this instant rather than "correct on next reconnect":
+   *
+   *  - Revoked watchers are pushed an explicit `presence:status` **offline**
+   *    before they leave the room. Dropping them silently is safe but leaves a
+   *    green dot on screen forever, since the room they just left is the only
+   *    thing that would ever have corrected it. Reporting the subject as
+   *    offline is not a disclosure — it is precisely what a denied viewer is
+   *    entitled to see.
+   *  - Newly-allowed watchers are joined and pushed the subject's CURRENT
+   *    status. Widening used to require the client to re-subscribe, because a
+   *    denied socket never joined the room and nothing tracked that it wanted
+   *    to; `presence-intent:<subjectId>` is that missing record.
+   *
+   * The subject's OWN sockets are skipped (they are in `user:<self>` for their
+   * own events, not as watchers). `filterVisiblePresence` fails CLOSED, so a
+   * user-service outage during this pass revokes rather than grants.
    */
-  const revokeStalePresenceWatchers = async (
-    subjectId: string
-  ): Promise<void> => {
+  const resyncPresenceWatchers = async (subjectId: string): Promise<void> => {
     try {
-      const watchers = await chat.in(`user:${subjectId}`).fetchSockets();
+      const watchers = await chat
+        .in(`presence-intent:${subjectId}`)
+        .fetchSockets();
+      if (watchers.length === 0) return;
+
+      // One Redis read for the whole pass — `user:online:<id>` is the same key
+      // the gateway maintains on connect/heartbeat, so it needs no new RPC.
+      const isOnline =
+        (await redisPub.exists(`user:online:${subjectId}`).catch(() => 0)) ===
+        1;
+
       await Promise.all(
         watchers.map(async (watcher) => {
           const watcherId = watcher.data?.userId as string | undefined;
@@ -359,7 +384,24 @@ export function registerChatNamespace(
           const visible = await userClient.filterVisiblePresence(watcherId, [
             subjectId,
           ]);
-          if (!visible.includes(subjectId)) {
+          const allowed = visible.includes(subjectId);
+          const subscribed = watcher.rooms.has(`user:${subjectId}`);
+
+          if (allowed && !subscribed) {
+            void watcher.join(`user:${subjectId}`);
+            watcher.emit("presence:status", {
+              userId: subjectId,
+              isOnline,
+              lastSeen: null,
+            });
+            return;
+          }
+          if (!allowed && subscribed) {
+            watcher.emit("presence:status", {
+              userId: subjectId,
+              isOnline: false,
+              lastSeen: null,
+            });
             void watcher.leave(`user:${subjectId}`);
           }
         })
@@ -446,7 +488,27 @@ export function registerChatNamespace(
           // user's presence would learn they deleted a conversation (and its
           // roomId, which may be with a third party entirely).
           parsed.event === "conv:deleted" ||
-          parsed.event === "conv:cleared";
+          parsed.event === "conv:cleared" ||
+          // The inbox bump. Published per-recipient on `user:<recipientId>`,
+          // but that room is ALSO joined by every peer watching this user's
+          // presence — so each bump leaked one participant's room id, preview
+          // and unread state to unrelated watchers, and made their clients
+          // invalidate an inbox they have no row for. Self-only, like the two
+          // above.
+          parsed.event === "conv:updated" ||
+          // Friendship state, published per affected user on `user:<userId>`
+          // (see `emitFriendEventSafe`). Same leak shape: any peer who called
+          // presence:subscribe on this user — which the web client does for
+          // EVERY DM peer — was receiving their friend requests, accepts and
+          // rejects. A third party's client would show the request as if it
+          // were its own. Both parties still get their copy, because
+          // user-service publishes to each of them separately.
+          parsed.event.startsWith("friend:") ||
+          // The pending-friend-request conversation row. Worse than the
+          // above: the payload carries the requester's name, username and
+          // avatar plus a synthetic sidebar row, so a watcher rendered a
+          // pending request that was never addressed to them.
+          parsed.event.startsWith("conversation:");
         const targetChannel =
           pattern === "user:*" && isSelfOnlyEvent
             ? `self:${channel.slice("user:".length)}`
@@ -477,20 +539,36 @@ export function registerChatNamespace(
           pattern === "user:*" &&
           (parsed.event === "settings:updated" ||
             parsed.event === "friend:removed" ||
-            parsed.event === "friend:blocked")
+            parsed.event === "friend:blocked" ||
+            // Widening halves of the same coin: under a FRIENDS scope, becoming
+            // friends (or being unblocked) GRANTS presence that was previously
+            // denied. Without these the new friend stays grey until they
+            // reconnect — the mirror image of the stale-green-dot bug.
+            parsed.event === "friend:accepted" ||
+            parsed.event === "friend:unblocked")
         ) {
-          void revokeStalePresenceWatchers(channel.slice("user:".length));
-          // `friend:blocked` is published to the BLOCKER only (blocking is
-          // silent to the blocked party), but it ends the friendship in both
-          // directions — so the blocked user's own watcher list has to be
-          // re-authorized too, or the blocker keeps seeing their presence.
-          const targetUserId = (parsed.data as { targetUserId?: unknown })
-            ?.targetUserId;
-          if (
-            parsed.event === "friend:blocked" &&
-            typeof targetUserId === "string"
-          ) {
-            void revokeStalePresenceWatchers(targetUserId);
+          void resyncPresenceWatchers(channel.slice("user:".length));
+          // Friendship changes are symmetric: they move BOTH users' visibility,
+          // but the event lands on one channel per publish (and `friend:blocked`
+          // is published to the BLOCKER only, since blocking is silent to the
+          // blocked party). Resync the counterpart from the payload too, or one
+          // side of every pair keeps a stale view.
+          const peer = parsed.data as {
+            targetUserId?: unknown;
+            otherUserId?: unknown;
+            requesterId?: unknown;
+            addresseeId?: unknown;
+          } | null;
+          const subjectId = channel.slice("user:".length);
+          for (const candidate of [
+            peer?.targetUserId,
+            peer?.otherUserId,
+            peer?.requesterId,
+            peer?.addresseeId,
+          ]) {
+            if (typeof candidate === "string" && candidate !== subjectId) {
+              void resyncPresenceWatchers(candidate);
+            }
           }
         }
 
@@ -700,6 +778,59 @@ export function registerChatNamespace(
     intentional: z.literal(true),
   });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
+  const CallRejoinSchema = z.object({ callId: z.string().min(1) });
+
+  // A killed app (force-quit, OOM, crash) never sends `call:end`, and for a call
+  // still RINGING the caller has not joined the LiveKit room yet — so LiveKit's
+  // `participant_left` webhook cannot fire either and the row would sit open
+  // until the 60s missed sweep. Detect the participant's transport disconnect
+  // here, wait out a short reconnection grace, and finalize through the SAME
+  // idempotent `endCall` the explicit hang-up uses.
+  const CALL_DISCONNECT_GRACE_MS = Number(
+    process.env.CALL_DISCONNECT_GRACE_MS ?? 15_000
+  );
+  const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
+  const pendingCallCleanups = new Map<string, NodeJS.Timeout>();
+
+  const rememberCallMember = (callId: string, userId: string): void => {
+    redisPub
+      .set(`call:member:${callId}:${userId}`, "1", "EX", CALL_MEMBER_TTL_SEC)
+      .catch((err: unknown) =>
+        logger.warn(`/chat call member set failed ${callId}: ${String(err)}`)
+      );
+  };
+
+  const cancelCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    const timer = pendingCallCleanups.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    pendingCallCleanups.delete(key);
+  };
+
+  const scheduleCallCleanup = (callId: string, userId: string): void => {
+    const key = `${callId}:${userId}`;
+    if (pendingCallCleanups.has(key)) return;
+    const timer = setTimeout(() => {
+      pendingCallCleanups.delete(key);
+      void (async () => {
+        try {
+          // Adapter-aware, so a reconnect landing on ANOTHER gateway node still
+          // counts as present and cancels the cleanup.
+          const sockets = await chat.in(`call:${callId}`).fetchSockets();
+          if (sockets.some((s) => s.data.userId === userId)) return;
+          await messagingClient.endCall({ callId, userId });
+          logger.info(
+            `/chat call cleanup after disconnect callId=${callId} userId=${userId}`
+          );
+        } catch (err: unknown) {
+          logger.warn(`/chat call cleanup failed ${callId}: ${String(err)}`);
+        }
+      })();
+    }, CALL_DISCONNECT_GRACE_MS);
+    timer.unref();
+    pendingCallCleanups.set(key, timer);
+  };
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
@@ -1094,6 +1225,14 @@ export function registerChatNamespace(
         // be too late. Denied peers are silently dropped rather than erroring:
         // a per-peer rejection would itself disclose the setting.
         void (async () => {
+          // Record the INTENT to watch each peer, allowed or not. Nothing is
+          // ever published to `presence-intent:*` — it exists so a later
+          // widening (NO_ONE → EVERYONE, or becoming friends) can find the
+          // sockets that asked and grant them, without the client
+          // re-subscribing. Authorization still lives entirely in `user:*`.
+          for (const peerId of r.data.peerIds) {
+            void socket.join(`presence-intent:${peerId}`);
+          }
           const visible = await userClient.filterVisiblePresence(
             userId,
             r.data.peerIds
@@ -1118,6 +1257,9 @@ export function registerChatNamespace(
         }
         for (const peerId of r.data.peerIds) {
           void socket.leave(`user:${peerId}`);
+          // Drop the intent too, or a later widening would silently re-grant a
+          // subscription the client explicitly gave up.
+          void socket.leave(`presence-intent:${peerId}`);
         }
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED", locale);
       }
@@ -1133,6 +1275,10 @@ export function registerChatNamespace(
           if (room.startsWith("user:") && room !== `user:${userId}`) {
             void socket.leave(room);
             unsubscribedCount++;
+          }
+          // Intents go with them — see `presence:unsubscribe`.
+          if (room.startsWith("presence-intent:")) {
+            void socket.leave(room);
           }
         }
         ackOk(callback, "SOCKET_PRESENCE_UNSUBSCRIBED_ALL", locale, {
@@ -1530,6 +1676,7 @@ export function registerChatNamespace(
               // Join the caller's socket to `call:<callId>` so lifecycle events
               // (call:answered / call:declined / call:ended) reach them.
               void socket.join(`call:${result.callId}`);
+              rememberCallMember(result.callId, userId);
               ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
                 callId: result.callId,
                 status: result.status,
@@ -1560,6 +1707,7 @@ export function registerChatNamespace(
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
             void socket.join(`call:${result.callId}`);
+            rememberCallMember(result.callId, userId);
             ackOk(callback, "SOCKET_CALL_ANSWERED", locale, {
               callId: result.callId,
               status: result.status,
@@ -1622,6 +1770,33 @@ export function registerChatNamespace(
             const { code, detailKey } = resolveGrpcAckError(err);
             ackError(callback, code, locale, detailKey);
           });
+      }
+    );
+
+    // Re-entry into `call:<id>` after a transport reconnect. Authorized against
+    // the membership key written when this user initiated/answered THAT call, so
+    // no new callId is minted and no peer can join a call they were never in.
+    socket.on(
+      "call:rejoin",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CallRejoinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        const { callId } = r.data;
+        void (async () => {
+          const isMember = await redisPub
+            .get(`call:member:${callId}:${userId}`)
+            .catch(() => null);
+          if (!isMember) {
+            ackError(callback, "FORBIDDEN", locale);
+            return;
+          }
+          cancelCallCleanup(callId, userId);
+          void socket.join(`call:${callId}`);
+          ackOk(callback, "SOCKET_CALL_REJOINED", locale, { callId });
+        })();
       }
     );
 
@@ -1798,6 +1973,16 @@ export function registerChatNamespace(
         })();
       }
     );
+
+    // `socket.rooms` is already emptied by the time `disconnect` fires, so the
+    // call rooms this participant was in must be read here.
+    socket.on("disconnecting", () => {
+      if (!userId) return;
+      for (const room of socket.rooms) {
+        if (!room.startsWith("call:")) continue;
+        scheduleCallCleanup(room.slice("call:".length), userId);
+      }
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/chat disconnected userId=${userId} reason=${reason}`);

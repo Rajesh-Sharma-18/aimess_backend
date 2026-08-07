@@ -6,8 +6,6 @@ import {
   addMemberSchema,
   leaveGroupSchema,
   kickMemberSchema,
-  banMemberSchema,
-  unbanMemberSchema,
   updateRoleSchema,
   muteGroupSchema,
   muteMemberSchema,
@@ -32,13 +30,6 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     ctrl.leave
   );
   router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
-  router.post("/ban", authenticate, validateBody(banMemberSchema), ctrl.ban);
-  router.post(
-    "/unban",
-    authenticate,
-    validateBody(unbanMemberSchema),
-    ctrl.unban
-  );
   router.post(
     "/report",
     authenticate,
@@ -51,6 +42,7 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     validateBody(updateRoleSchema),
     ctrl.updateRole
   );
+  router.get("/:roomId/muted", authenticate, ctrl.getMutedMembers);
   router.get("/:roomId", authenticate, ctrl.getMembers);
 
   // Mute / unmute personal notifications for this group (parity with Private's
@@ -64,7 +56,7 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
   router.post("/:roomId/unmute", authenticate, ctrl.unmuteRoom);
 
   // Moderator-imposed mute on ANOTHER member (distinct from the self-notification
-  // mute above) — OWNER/ADMIN/MODERATOR only, same role gate as kick.
+  // mute above) — ADMIN/MODERATOR only, same role gate as kick.
   router.post(
     "/mute-member",
     authenticate,

@@ -36,7 +36,7 @@ describe("POST /api/chat/groups (create)", () => {
     mocks.groupMemberRepo.create.mockResolvedValue({
       roomId: "grp_new",
       userId: TEST_USER_ID,
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_new",
@@ -51,7 +51,7 @@ describe("POST /api/chat/groups (create)", () => {
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
     expect(res.body.data.room.roomId).toBe("grp_new");
-    expect(res.body.data.member.role).toBe("OWNER");
+    expect(res.body.data.member.role).toBe("ADMIN");
   });
 
   it("NEGATIVE: 400 when name is empty", async () => {
@@ -80,7 +80,7 @@ describe("POST /api/chat/groups (create)", () => {
 
   it("SECURITY: mass-assignment — extra body fields are stripped by Zod, not persisted", async () => {
     mocks.groupRoomRepo.create.mockResolvedValue({ roomId: "grp_new" });
-    mocks.groupMemberRepo.create.mockResolvedValue({ role: "OWNER" });
+    mocks.groupMemberRepo.create.mockResolvedValue({ role: "ADMIN" });
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_new",
     });
@@ -112,7 +112,7 @@ describe("POST /api/chat/groups (create)", () => {
     mocks.groupMemberRepo.create.mockResolvedValue({
       roomId: "grp_new",
       userId: TEST_USER_ID,
-      role: "OWNER",
+      role: "ADMIN",
       joinedAt: "2030-01-01T00:00:00.000Z",
     });
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
@@ -138,7 +138,7 @@ describe("POST /api/chat/groups (create)", () => {
     );
     const [, payload] = mocks.redis.publish.mock.calls[0];
     expect(payload).toContain('"roomId":"grp_new"');
-    expect(payload).toContain('"role":"OWNER"');
+    expect(payload).toContain('"role":"ADMIN"');
     // group:added must also carry the resolved download URL (not the raw key).
     expect(payload).toContain(
       "https://media.test/aimess-avatars/group-avatars/grp_new/logo.png"
@@ -273,9 +273,9 @@ describe("GET /api/chat/groups/:roomId", () => {
 });
 
 describe("PATCH /api/chat/groups/:roomId (update)", () => {
-  it("POSITIVE: owner updates the group name", async () => {
+  it("POSITIVE: admin updates the group name", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_1",
@@ -331,9 +331,9 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
 });
 
 describe("POST /api/chat/groups/:roomId/disband", () => {
-  it("POSITIVE: owner disbands the group", async () => {
+  it("POSITIVE: the sole admin disbands the group", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupRoomRepo.disband.mockResolvedValue({
       roomId: "grp_1",
@@ -348,9 +348,9 @@ describe("POST /api/chat/groups/:roomId/disband", () => {
     expect(mocks.groupInviteLinkRepo.revokeAllForRoom).toHaveBeenCalled();
   });
 
-  it("SECURITY: 400 when a non-owner (ADMIN) tries to disband", async () => {
+  it("SECURITY: 400 when a non-admin (MODERATOR) tries to disband", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "ADMIN",
+      role: "MODERATOR",
     });
 
     const res = await request(app)
@@ -455,7 +455,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       roomId: "grp_1",
       userId: TEST_USER_ID,
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(null);
 

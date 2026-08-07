@@ -30,7 +30,7 @@ describe("POST /api/chat/invite-links (create)", () => {
       settings: {},
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupInviteLinkRepo.create.mockResolvedValue({
       token: "newtoken",
@@ -86,13 +86,13 @@ describe("POST /api/chat/invite-links (create)", () => {
 });
 
 describe("POST /api/chat/invite-links/revoke", () => {
-  it("POSITIVE: an owner revokes a link", async () => {
+  it("POSITIVE: the admin revokes a link", async () => {
     mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
       token: TOKEN,
       roomId: ROOM,
     });
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupInviteLinkRepo.revoke.mockResolvedValue({ token: TOKEN });
 
@@ -273,9 +273,9 @@ describe("POST /api/chat/invite-links/join", () => {
 });
 
 describe("GET /api/chat/invite-links/room/:roomId", () => {
-  it("POSITIVE: an OWNER/ADMIN lists active links for a room", async () => {
+  it("POSITIVE: the ADMIN lists active links for a room", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-      role: "OWNER",
+      role: "ADMIN",
     });
     mocks.groupInviteLinkRepo.findActiveByRoom.mockResolvedValue([
       { token: TOKEN, roomId: ROOM },

@@ -38,6 +38,7 @@ import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { PrivateSystemMessageService } from "./services/private-system-message.service.js";
+import { AutoDeleteService } from "./services/auto-delete.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
 import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
@@ -100,10 +101,14 @@ import {
 let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
 let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
+let autoDeleteSweepHandle: ReturnType<typeof setInterval> | undefined;
 
 /** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
  *  remainder drains on the next tick. Mirrors community's sweeper. */
 const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
+
+/** Same backstop for the auto-delete sweep. */
+const AUTO_DELETE_SWEEP_MAX_BATCHES = 50;
 
 const startServer = async () => {
   logger.info("Chat service starting...");
@@ -154,6 +159,25 @@ const startServer = async () => {
 
     await waitForMongoWritablePrimary();
 
+    for (const stale of [
+      {
+        collection: "private_messages",
+        name: "private_messages_content_text_idx",
+      },
+      { collection: "group_messages", name: "group_messages_content_text_idx" },
+      {
+        collection: "general_room_messages",
+        name: "general_room_messages_message_idx",
+      },
+    ]) {
+      try {
+        await dropMongoIndexIfExists(prisma, stale.collection, stale.name);
+      } catch (err) {
+        logger.warn(`Failed to drop stale text index ${stale.name}`);
+        logger.warn(err);
+      }
+    }
+
     const textIndexes: {
       collection: string;
       key: Record<string, 1 | -1 | "text">;
@@ -162,17 +186,17 @@ const startServer = async () => {
       {
         collection: "private_messages",
         key: { "content.text": "text" },
-        name: "private_messages_content_text_idx",
+        name: "private_messages_content_text_v2_idx",
       },
       {
         collection: "group_messages",
         key: { "content.text": "text" },
-        name: "group_messages_content_text_idx",
+        name: "group_messages_content_text_v2_idx",
       },
       {
         collection: "general_room_messages",
         key: { message: "text" },
-        name: "general_room_messages_message_idx",
+        name: "general_room_messages_message_v2_idx",
       },
     ];
     for (const idx of textIndexes) {
@@ -180,6 +204,7 @@ const startServer = async () => {
         await ensureMongoIndex(prisma, idx.collection, {
           key: idx.key,
           name: idx.name,
+          defaultLanguage: "none",
         });
       } catch (err) {
         logger.warn(`Failed to create text index ${idx.name} — continuing`);
@@ -587,6 +612,18 @@ const startServer = async () => {
       presenceService
     );
 
+    // Auto-delete (disappearing messages) for private chats. Constructed AFTER
+    // the orchestrator on purpose — the sweeper deletes through the very same
+    // `deleteDirect` entry point a manual delete-for-everyone uses.
+    const autoDeleteService = new AutoDeleteService(
+      privateRoomRepo,
+      privateMessageRepo,
+      privateSystemMessageService,
+      privatePinService,
+      chatMessageOrchestrator,
+      redis
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -613,7 +650,10 @@ const startServer = async () => {
 
     // 4. Instantiate controllers
     const controllers = {
-      privateRoomCtrl: new PrivateRoomController(privateRoomService),
+      privateRoomCtrl: new PrivateRoomController(
+        privateRoomService,
+        autoDeleteService
+      ),
       inboxCtrl: new InboxController(inboxService),
       syncCtrl: new SyncController(syncService),
       privateMessageCtrl: new PrivateMessageController(
@@ -755,6 +795,31 @@ const startServer = async () => {
     if (typeof groupMuteSweepHandle.unref === "function") {
       groupMuteSweepHandle.unref();
     }
+
+    // Auto-delete (disappearing messages) sweep. Unlike the mute sweep this one
+    // is load-bearing: it performs the actual deletion, server-side, so a
+    // message disappears on schedule even when neither client is running
+    // (§5.2 offline sender, §8.4 offline device). Drains in pages.
+    autoDeleteSweepHandle = setInterval(() => {
+      void (async () => {
+        try {
+          for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
+            const n = await autoDeleteService.sweepDue(
+              new Date(),
+              env.AUTO_DELETE_SWEEP_BATCH
+            );
+            if (n > 0)
+              logger.info(`Auto-delete sweep processed ${n} message(s)`);
+            if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+          }
+        } catch (err) {
+          logger.warn(`autoDeleteSweep failed: ${String(err)}`);
+        }
+      })();
+    }, env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof autoDeleteSweepHandle.unref === "function") {
+      autoDeleteSweepHandle.unref();
+    }
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);
@@ -773,6 +838,11 @@ async function shutdown(signal: string): Promise<void> {
   if (groupMuteSweepHandle) {
     clearInterval(groupMuteSweepHandle);
     groupMuteSweepHandle = undefined;
+  }
+
+  if (autoDeleteSweepHandle) {
+    clearInterval(autoDeleteSweepHandle);
+    autoDeleteSweepHandle = undefined;
   }
 
   await new Promise<void>((resolve) => {

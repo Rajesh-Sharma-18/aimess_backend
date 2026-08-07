@@ -21,7 +21,7 @@ beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
   mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-    role: "OWNER",
+    role: "ADMIN",
   });
   mocks.groupMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
   mocks.groupMessagePinRepo.runTransaction.mockImplementation(

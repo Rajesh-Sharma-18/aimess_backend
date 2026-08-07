@@ -10,8 +10,16 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import { SystemEvent } from "../types/enums.js";
-import { assertGroupMember, isGroupMemberMuted } from "../lib/access-guard.js";
-import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
+import {
+  assertGroupMember,
+  assertGroupReadAccess,
+  isGroupMemberMuted,
+} from "../lib/access-guard.js";
+import {
+  publishGroupMemberAddedSafe,
+  publishGroupMemberMuteSafe,
+} from "../events/publish-group-member-added.js";
+import { ChatEvents } from "@aimess/shared-types";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -77,8 +85,8 @@ export class GroupMemberService {
       actorId?: string;
       /**
        * Invite-link self-join: the joining user is authorized by possessing a
-       * valid link, so skip the OWNER/ADMIN actor check. Default (false) means
-       * a direct add MUST be performed by an active OWNER/ADMIN.
+       * valid link, so skip the staff actor check. Default (false) means
+       * a direct add MUST be performed by an active ADMIN/MODERATOR.
        */
       skipActorAuthz?: boolean;
     }
@@ -86,9 +94,10 @@ export class GroupMemberService {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
-    // Authorize the actor: only an active OWNER/ADMIN may add members (mirrors
-    // the kick/updateRole guards). Without this, any authenticated user could
-    // inject themselves or others into a private group (AUDIT H3).
+    // Authorize the actor: only active staff may add members. Without this, any
+    // authenticated user could inject themselves or others into a private group
+    // (AUDIT H3). MODERATOR is included — adding is a growth action, not a
+    // destructive one, so it stays below the updateRole bar (ADMIN only).
     if (!opts?.skipActorAuthz) {
       if (!params.invitedBy) {
         throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
@@ -98,7 +107,7 @@ export class GroupMemberService {
         params.roomId,
         params.invitedBy,
         {
-          roles: ["OWNER", "ADMIN"],
+          roles: ["ADMIN", "MODERATOR"],
         }
       );
     }
@@ -109,7 +118,7 @@ export class GroupMemberService {
 
     // Friend-gate direct adds — parity with private DM's friendship check.
     // Skipped for invite-link self-joins (skipActorAuthz) and for the
-    // OWNER-onboards-themselves creation path (invitedBy == userId).
+    // creator-onboards-themselves creation path (invitedBy == userId).
     if (
       !opts?.skipActorAuthz &&
       params.invitedBy &&
@@ -130,12 +139,8 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // A banned member cannot rejoin (mirrors community's assertNotBanned join
-    // gate) — without this, `ban` had no effect since upsert would silently
-    // reactivate them on the next add/invite-link redemption.
-    if (existing && existing.status === "BANNED") {
-      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
-    }
+    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
+    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -256,6 +261,60 @@ export class GroupMemberService {
     });
   }
 
+  /**
+   * Roster-change fan-out to the REMAINING members — the group counterpart of
+   * community's `community:member:removed` / `community:member:updated`.
+   *
+   * A member sitting on the chat LIST (never called `conv:join`) only ever
+   * hears their own `user:<id>` channel, so a room-only broadcast leaves their
+   * member count and role badges stale until a manual refetch. Published to
+   * BOTH `conv:<roomId>` (open room) and every active member's `user:<id>`
+   * (list view, other devices), exactly like `publishMuteStateChange`.
+   *
+   * The affected member themselves is NOT special-cased here: a removed member
+   * already gets `group:removed` (which also force-leaves their sockets), and a
+   * role-changed member is still in the active roster below.
+   *
+   * Best-effort — a Redis hiccup never fails the originating moderation write.
+   */
+  private async publishRosterChange(args: {
+    roomId: string;
+    event: "group:member:removed" | "group:member:updated";
+    memberId: string;
+    actorId: string;
+    extra?: Record<string, unknown>;
+  }): Promise<void> {
+    const { roomId, event, memberId, actorId, extra } = args;
+    try {
+      const [room, roster] = await Promise.all([
+        this.roomRepo.findActiveByRoomId(roomId),
+        this.memberRepo.findActiveMembers(roomId, { limit: 500 }),
+      ]);
+      const payload = {
+        roomId,
+        conversationType: "GROUP" as const,
+        memberId,
+        actorId,
+        memberCount: room?.memberCount ?? roster.length,
+        updatedAt: Date.now(),
+        ...(extra ?? {}),
+      };
+      await Promise.all([
+        this.redis.publish(
+          `conv:${roomId}`,
+          JSON.stringify({ event, data: payload })
+        ),
+        ...roster.map((m) =>
+          publishChatUserEvent(this.redis, m.userId, event, payload)
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `GroupMemberService|${event} broadcast failed room=${roomId} member=${memberId}: ${String(err)}`
+      );
+    }
+  }
+
   async leave(
     roomId: string,
     userId: string,
@@ -267,7 +326,7 @@ export class GroupMemberService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    if (member.role === "OWNER") {
+    if (member.role === "ADMIN") {
       throw new BadRequestError("CHAT_OWNER_CANNOT_LEAVE");
     }
 
@@ -286,6 +345,13 @@ export class GroupMemberService {
       ...(reason ? { systemData: { reason } } : {}),
     });
     this.emitGroupRemoved(roomId, userId, "LEAVE");
+    await this.publishRosterChange({
+      roomId,
+      event: "group:member:removed",
+      memberId: userId,
+      actorId: userId,
+      extra: { reason: "LEAVE" },
+    });
 
     return updated;
   }
@@ -301,7 +367,7 @@ export class GroupMemberService {
       params.kickedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -312,7 +378,7 @@ export class GroupMemberService {
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
     // Cannot kick someone with equal or higher role
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -336,6 +402,13 @@ export class GroupMemberService {
       systemData: { targetUserId: params.targetUserId },
     });
     this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:removed",
+      memberId: params.targetUserId,
+      actorId: params.kickedBy,
+      extra: { reason: "KICK" },
+    });
 
     return updated;
   }
@@ -371,6 +444,28 @@ export class GroupMemberService {
   }): Promise<void> {
     const { roomId, targetUserId, isMuted, mutedUntil, actorId } = args;
     const event = isMuted ? "group:member:muted" : "group:member:unmuted";
+
+    // Out-of-socket leg, exactly as community does it: a target whose devices
+    // were ALL offline when the mute landed gets a push/inbox row instead of
+    // discovering the mute from a rejected send. Fire-and-forget; needs the
+    // room name for the copy, so the lookup failing just skips the push.
+    void Promise.resolve(this.roomRepo?.findActiveByRoomId?.(roomId) ?? null)
+      .then((room) => {
+        publishGroupMemberMuteSafe(
+          isMuted
+            ? ChatEvents.GROUP_MEMBER_MUTED
+            : ChatEvents.GROUP_MEMBER_UNMUTED,
+          {
+            roomId,
+            groupName: room?.name ?? "",
+            targetUserId,
+            actorId,
+            mutedUntil: isMuted && mutedUntil ? mutedUntil.toISOString() : null,
+            eventAt: new Date().toISOString(),
+          }
+        );
+      })
+      .catch(() => {});
     // Epoch ms on the wire, matching community's mute payload exactly.
     const payload = {
       roomId,
@@ -423,8 +518,8 @@ export class GroupMemberService {
   }
 
   /**
-   * Moderator-imposed mute — same role gate as kick (OWNER/ADMIN on anyone
-   * lower; MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
+   * Moderator-imposed mute — same role gate as kick (ADMIN on anyone lower;
+   * MODERATOR on MEMBER only), so a muted member cannot send/react/edit/
    * delete/pin (enforced across every group write path via
    * `assertGroupMemberNotMuted`) while keeping full read access. Distinct from
    * `muteRoom` (self-notification mute) — this is a moderation action performed
@@ -437,7 +532,7 @@ export class GroupMemberService {
     mutedUntil?: Date | null;
   }): Promise<GroupMember | null> {
     // Parity with community's "you cannot mute yourself" rule; without it an
-    // OWNER outranks nobody and would fall through the role-order check below.
+    // ADMIN outranks nobody and would fall through the role-order check below.
     if (params.mutedBy === params.targetUserId) {
       throw new BadRequestError("CHAT_CANNOT_MUTE_SELF");
     }
@@ -447,7 +542,7 @@ export class GroupMemberService {
       params.mutedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -457,7 +552,7 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -494,7 +589,7 @@ export class GroupMemberService {
       params.actorId
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -592,7 +687,7 @@ export class GroupMemberService {
       params.bannedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -602,7 +697,7 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
     if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
       throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
     }
@@ -626,12 +721,19 @@ export class GroupMemberService {
       systemData: { targetUserId: params.targetUserId },
     });
     this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:removed",
+      memberId: params.targetUserId,
+      actorId: params.bannedBy,
+      extra: { reason: "BAN" },
+    });
 
     return updated;
   }
 
   /**
-   * Lift a ban. Actor must be OWNER/ADMIN/MODERATOR (same gate as `ban`). Does
+   * Lift a ban. Actor must be ADMIN/MODERATOR (same gate as `ban`). Does
    * NOT re-add the user as a member — it only clears the ban so a future
    * add/invite-link redemption is no longer rejected by `addMember`'s check.
    */
@@ -645,7 +747,7 @@ export class GroupMemberService {
       params.unbannedBy
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
@@ -760,48 +862,73 @@ export class GroupMemberService {
     newRole: string;
     actorUserId: string;
   }): Promise<GroupMember | null> {
+    // Parity with muteMember's CHAT_CANNOT_MUTE_SELF — the caller is always
+    // the sole ADMIN by the gate below, so a self-target would be either a
+    // no-op or (for newRole="ADMIN") a pointless self-handoff.
+    if (params.actorUserId === params.targetUserId) {
+      throw new BadRequestError("CHAT_CANNOT_CHANGE_OWN_ROLE");
+    }
+
     const actor = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.actorUserId
     );
     if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
-    }
-
-    // Owner can set any role, admin can only set moderator/member
-    if (actor.role !== "OWNER" && ["OWNER", "ADMIN"].includes(params.newRole)) {
+    // Only the sole ADMIN may change roles at all (mirrors community: a
+    // MODERATOR can never promote/demote/hand off admin).
+    if (actor.role !== "ADMIN") {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
     // Captured before the write so the system-message text can distinguish a
-    // promotion from a demotion (and an ownership transfer) instead of a
+    // promotion from a demotion (and an admin hand-off) instead of a
     // generic "role changed to X" line.
     const target = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
       params.targetUserId
     );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Ownership transfer: promoting a member to OWNER auto-demotes the current
-    // OWNER to ADMIN and emits OWNERSHIP_TRANSFERRED instead of ROLE_CHANGED.
-    // Guarded above (only actor.role === OWNER may set OWNER), so `actor` IS
-    // the current owner.
-    if (params.newRole === "OWNER") {
+    // "Make Admin" — full admin hand-off (this is also what used to be the
+    // separate "Transfer Ownership" action; there is exactly one ADMIN per
+    // group, so promoting anyone to ADMIN necessarily demotes the caller to
+    // MEMBER in the same call). Mirrors community-service's `transferAdmin`.
+    if (params.newRole === "ADMIN") {
       await this.memberRepo.updateRole(
         params.roomId,
         params.actorUserId,
-        "ADMIN"
+        "MEMBER"
       );
       const updated = await this.memberRepo.updateRole(
         params.roomId,
         params.targetUserId,
-        "OWNER"
+        "ADMIN"
       );
       await this.sysMsg.post({
         roomId: params.roomId,
         actorId: params.actorUserId,
-        systemEvent: SystemEvent.OWNERSHIP_TRANSFERRED,
-        systemData: { targetUserId: params.targetUserId },
+        systemEvent: SystemEvent.ROLE_CHANGED,
+        systemData: {
+          targetUserId: params.targetUserId,
+          oldRole: target.role,
+          newRole: "ADMIN",
+        },
+      });
+      // Two rows changed — the new ADMIN and the demoted-to-MEMBER old admin —
+      // so both need their own event or one side's permissions stay stale.
+      await this.publishRosterChange({
+        roomId: params.roomId,
+        event: "group:member:updated",
+        memberId: params.targetUserId,
+        actorId: params.actorUserId,
+        extra: { role: "ADMIN", previousRole: target.role },
+      });
+      await this.publishRosterChange({
+        roomId: params.roomId,
+        event: "group:member:updated",
+        memberId: params.actorUserId,
+        actorId: params.actorUserId,
+        extra: { role: "MEMBER", previousRole: "ADMIN" },
       });
       return updated;
     }
@@ -823,6 +950,18 @@ export class GroupMemberService {
       },
     });
 
+    // Realtime parity with community's `community:member:updated`: the system
+    // message alone only reaches clients currently sitting in the room, so
+    // without this the target's own permissions (and every other member's role
+    // badge) stay stale on the list view and on their other devices.
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:updated",
+      memberId: params.targetUserId,
+      actorId: params.actorUserId,
+      extra: { role: params.newRole, previousRole: target?.role ?? "" },
+    });
+
     return updated;
   }
 
@@ -834,9 +973,41 @@ export class GroupMemberService {
    */
   async getMembers(
     roomId: string,
-    params?: { limit?: number; cursor?: string | null }
+    params?: { limit?: number; cursor?: string | null },
+    /**
+     * Caller, when the roster is served over an authenticated surface. The
+     * route had NO membership check at all, so any authenticated user could
+     * read any group's roster, and a removed member kept seeing Group Info
+     * long after losing the group. Same read rule as the message timeline
+     * (`assertGroupReadAccess`): ACTIVE members and voluntary leavers may
+     * read; kicked/banned/non-members may not. Optional so the existing
+     * internal/test call sites keep compiling unchanged.
+     */
+    requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {
-    const members = await this.memberRepo.findActiveMembers(roomId, params);
+    if (requesterId) {
+      await assertGroupReadAccess(this.memberRepo, roomId, requesterId);
+    }
+    return this.enrich(await this.memberRepo.findActiveMembers(roomId, params));
+  }
+
+  /** Muted roster — expired mute windows are dropped, matching isGroupMemberMuted. */
+  async getMutedMembers(
+    roomId: string,
+    requesterId: string
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
+    await assertGroupMember(this.memberRepo, roomId, requesterId, {
+      roles: ["ADMIN", "MODERATOR"],
+    });
+    const muted = (await this.memberRepo.findMutedMembers(roomId)).filter(
+      isGroupMemberMuted
+    );
+    return this.enrich(muted);
+  }
+
+  private async enrich(
+    members: GroupMember[]
+  ): Promise<Array<GroupMember | EnrichedGroupMember>> {
     if (!members.length || !this.userSnapshotService || !this.cacheRepo) {
       return members.map((member) => ({
         ...member,

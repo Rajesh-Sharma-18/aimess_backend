@@ -52,6 +52,7 @@ import type { NotificationRepository } from "../repositories/notification.reposi
 import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildCanonicalQuote,
   groupStoredReactions,
@@ -390,6 +391,11 @@ export function createMessagingImpl(
                 countInUnread: (
                   row as unknown as { countInUnread?: boolean | null }
                 ).countInUnread,
+                // Without this the socket send path — the one the web/mobile
+                // clients actually use — broadcasts a message with no auto-delete
+                // deadline, so no countdown shows until a refetch reveals one
+                // that has already expired.
+                ...autoDeleteWireFields(row),
               });
               const bcastContext = `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
               publishRealtimeSafe(
@@ -922,22 +928,26 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType =
-            typeof req.conversationType === "string"
-              ? req.conversationType.toUpperCase()
-              : "PRIVATE";
+          // The ROOM decides, never the caller's claim — same rule as
+          // markMessagesRead (a `grp_` id sent with conversationType "private"
+          // used to fall through to the PRIVATE branch and silently no-op).
+          const conversationType = resolveConversationType(
+            req.conversationId,
+            req.conversationType
+          );
+          const isGroup = conversationType === "GROUP";
 
-          if (conversationType === "GROUP") {
-            callback(null, { updatedCount: 0 });
-            return;
-          }
-
-          const { count, messageIds } =
-            await deps.privateMessageService.markDelivered({
-              roomId: req.conversationId,
-              recipientId: req.recipientId,
-              upToMessageId: req.upToMessageId,
-            });
+          const { count, messageIds } = isGroup
+            ? await deps.groupMessageService.markDelivered({
+                roomId: req.conversationId,
+                recipientId: req.recipientId,
+                upToMessageId: req.upToMessageId,
+              })
+            : await deps.privateMessageService.markDelivered({
+                roomId: req.conversationId,
+                recipientId: req.recipientId,
+                upToMessageId: req.upToMessageId,
+              });
 
           if (count > 0) {
             const deliveredPayload = JSON.stringify({
@@ -951,18 +961,24 @@ export function createMessagingImpl(
             });
             await redis.publish(`conv:${req.conversationId}`, deliveredPayload);
 
-            // ALSO publish directly to the sender's own `user:<id>` channel — see
-            // the identical comment on markMessagesRead. The sender is the ONLY
-            // other participant in a private room.
-            const peerId = await deps.privateMessageService
-              .getPeerId(req.conversationId, req.recipientId)
-              .catch(() => null);
-            if (peerId) {
+            // ALSO publish directly to each sender's own `user:<id>` channel — see
+            // the identical comment on markMessagesRead. Private has exactly one
+            // other participant; a group fans out to the whole active roster.
+            const senderIds = isGroup
+              ? await deps.groupMessageService
+                  .getActiveMemberIds(req.conversationId)
+                  .then((ids) => ids.filter((id) => id !== req.recipientId))
+                  .catch(() => [] as string[])
+              : await deps.privateMessageService
+                  .getPeerId(req.conversationId, req.recipientId)
+                  .then((id) => (id ? [id] : []))
+                  .catch(() => [] as string[]);
+            for (const senderId of senderIds) {
               void redis
-                .publish(`user:${peerId}`, deliveredPayload)
+                .publish(`user:${senderId}`, deliveredPayload)
                 .catch((e: unknown) =>
                   logger.warn(
-                    `message:delivered direct publish failed userId=${peerId}: ${String(e)}`
+                    `message:delivered direct publish failed userId=${senderId}: ${String(e)}`
                   )
                 );
             }
@@ -1994,6 +2010,12 @@ export function createMessagingImpl(
               sequenceNumber: e.sequenceNumber,
               isDeleted: e.isDeleted,
               deletedType: deletedType ?? "",
+              // Mirrors communityCatchup — reconnect/reload hydration must carry
+              // reaction state, else a reaction applied live vanishes the next
+              // time the client catches up (reopen room, reload, reconnect).
+              reactions: groupStoredReactions(
+                (e as { reactions?: unknown }).reactions
+              ),
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
               systemEvent: systemEvent ?? "",
               systemData: systemData ? JSON.stringify(systemData) : "",
