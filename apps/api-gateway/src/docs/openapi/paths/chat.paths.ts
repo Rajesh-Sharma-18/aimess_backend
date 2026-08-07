@@ -877,6 +877,12 @@ const groupById = {
     tags: ["Chat — Groups"],
     operationId: "getGroupDetails",
     summary: "Get group details",
+    description:
+      "Members-only. ACTIVE members get the live room; a member who LEFT still " +
+      "reads it with `isJoined=false` and `lastMessagePreview` capped at their " +
+      "`leftAt` (same cutoff as the timeline). Kicked, banned and non-members " +
+      "get 403 `CHAT_NOT_A_MEMBER`. To preview a group before joining, use " +
+      "`GET /chat/invite-links/preview/{token}`.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -889,6 +895,7 @@ const groupById = {
     responses: {
       ...successResponse("Group details", "ChatGroupRoom"),
       "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
     },
   },
@@ -1348,7 +1355,7 @@ const groupMemberMuteMember = {
       "Owner/admin/moderator only, and the caller must outrank the target (a moderator cannot mute another moderator). " +
       "This is the MODERATION mute — the counterpart of `POST /communities/{id}/members/{userId}/mute` — and is entirely " +
       "distinct from `POST /chat/group-members/{roomId}/mute`, which mutes the caller's OWN notifications. " +
-      "Omit or null `mutedUntil` to mute indefinitely; an ISO-8601 timestamp mutes until then (expiry is applied lazily, " +
+      "Omit or null `durationMinutes` to mute indefinitely; a minute count is added to the SERVER's clock (expiry is applied lazily, " +
       "so posting rights return the instant it passes). A muted member keeps FULL read access — history, new messages, " +
       "media downloads, member list, search, receipts — but every write is rejected with `CHAT_MUTED_IN_GROUP` (403): " +
       "send (all content types), edit, delete-own, react, and pin. Typing and voice-recording indicators are dropped " +
@@ -3397,10 +3404,183 @@ const communityMessagePin = {
 // =============================================================================
 // Assemble all chat paths
 // =============================================================================
+// --- Unified inbox · bulk (multi-select) operations -------------------------
+// Direct counterparts of POST /communities/{leave,mute,read}/bulk. One call
+// may mix PRIVATE (`prv_…`) and GROUP (`grp_…`) rows; the type comes from the
+// id prefix, never from the client. Every item is routed to the SAME
+// single-conversation code path the one-off endpoint uses, so bulk and
+// individual calls produce identical writes, socket events and pushes.
+
+const conversationsBulkLeave = {
+  post: {
+    tags: ["Chat — Inbox"],
+    operationId: "bulkLeaveConversations",
+    summary: "Bulk leave or delete conversations",
+    description:
+      "Removes multiple conversations from the caller's list in one call. " +
+      "Items are processed independently — a failure for one never rolls back " +
+      "the others, and the response is always `200 OK`. Inspect each item's " +
+      "`status`/`errorCode` and the `summary`.\n\n" +
+      "**PRIVATE rows** always run delete-for-me (`DELETE /chat/private/rooms/{roomId}`): " +
+      "the conversation leaves the caller's list, the peer is unaffected, " +
+      "history stays on the server and the room reappears if a new message " +
+      "arrives. `conv:deleted` is emitted to the caller's other devices.\n\n" +
+      "**GROUP rows** follow `groupAction`: `LEAVE` (default) removes " +
+      "membership for real (`group:removed` to the leaver, " +
+      "`group:member:removed` + MEMBER_LEFT system message to the rest, " +
+      "member count decremented — the group does not return on reload), " +
+      "`DELETE` only clears the caller's history and keeps membership.\n\n" +
+      "A group ADMIN cannot leave while other members remain — that item " +
+      "fails with `OWNER_CANNOT_LEAVE` (mirrors community's " +
+      "`ADMIN_CANNOT_LEAVE`); transfer ownership or disband first.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatBulkLeaveRequest" },
+          examples: {
+            mixed: {
+              summary: "Two private chats and two groups in one call",
+              value: {
+                roomIds: [
+                  "prv_abc123",
+                  "prv_def456",
+                  "grp_aaa111",
+                  "grp_bbb222",
+                ],
+                groupAction: "LEAVE",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Bulk leave processed", "ChatBulkLeaveResult"),
+      "400": badRequest,
+      "401": unauthorized,
+      "429": {
+        description: "Rate limited (30 bulk operations per minute per user)",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const conversationsBulkMute = {
+  post: {
+    tags: ["Chat — Inbox"],
+    operationId: "bulkMuteConversations",
+    summary: "Bulk mute or unmute conversations",
+    description:
+      "Mutes or unmutes multiple conversations for the caller. This is the " +
+      "**conversation** mute (the list row's bell), NOT the group/community " +
+      "moderation mute that silences another member — see " +
+      "`POST /chat/group-members/mute-member` for that.\n\n" +
+      "Mute suppresses **push notifications only**. Everything else keeps " +
+      "working exactly as before: messages still arrive over the socket and " +
+      "are still persisted, the unread count still increments, the row still " +
+      "bumps to the top of the list on new activity, read receipts, typing " +
+      "and media all continue.\n\n" +
+      "`durationMinutes` is resolved against the SERVER clock; omit or null " +
+      "for an indefinite mute. Expiry is applied **lazily** at push time, so a " +
+      "timed mute lapses on its own — no sweeper, no refresh, no re-login.\n\n" +
+      "Rooms the caller cannot mute (not a participant, no longer an active " +
+      "member, room gone) are silently `skipped`, never fatal. Each updated " +
+      "room emits `conv:muted` / `conv:unmuted` on the caller's own socket " +
+      "channel so their other devices re-render without a refetch.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatBulkMuteRequest" },
+          examples: {
+            muteEightHours: {
+              summary: "Mute two conversations for 8 hours",
+              value: {
+                action: "mute",
+                roomIds: ["prv_abc123", "grp_aaa111"],
+                durationMinutes: 480,
+              },
+            },
+            unmute: {
+              summary: "Unmute",
+              value: { action: "unmute", roomIds: ["prv_abc123"] },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Bulk mute/unmute result", "ChatBulkMuteResult"),
+      "400": badRequest,
+      "401": unauthorized,
+    },
+  },
+};
+
+const conversationsBulkRead = {
+  post: {
+    tags: ["Chat — Inbox"],
+    operationId: "bulkMarkConversationsRead",
+    summary: "Bulk mark conversations as read",
+    description:
+      "Zeroes the caller's unread count on multiple conversations. Each room " +
+      "is read up to its CURRENT last message, resolved server-side — the " +
+      "client sends no boundary id and therefore cannot mark a conversation " +
+      "read past a message that arrived after the list rendered.\n\n" +
+      "Runs the full read path per room, identical to " +
+      "`POST /chat/private/rooms/{roomId}/read`: the read pointer advances " +
+      "**forward-only**, `message:read` reaches the sender(s) so their ticks " +
+      "turn blue, `read_sync` reaches the caller's other devices, the nav " +
+      "badge total is recomputed and the tray notification is dismissed.\n\n" +
+      "Nothing else changes: no messages are deleted, no timestamps are " +
+      "rewritten and `lastActivity`/list ordering are untouched.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatBulkMarkReadRequest" },
+          examples: {
+            basic: {
+              summary: "Mark four conversations read",
+              value: {
+                roomIds: [
+                  "prv_abc123",
+                  "prv_def456",
+                  "grp_aaa111",
+                  "grp_bbb222",
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Bulk mark-as-read result", "ChatBulkMarkReadResult"),
+      "400": badRequest,
+      "401": unauthorized,
+    },
+  },
+};
+
 export const chatPaths = {
   // Unified inbox
   "/chat/inbox": chatInbox,
   "/chat/unread-summary": unreadSummary,
+
+  // Unified inbox — bulk (multi-select) operations
+  "/chat/conversations/leave/bulk": conversationsBulkLeave,
+  "/chat/conversations/mute/bulk": conversationsBulkMute,
+  "/chat/conversations/read/bulk": conversationsBulkRead,
 
   // Private messaging
   "/chat/private/conversations": privateConversations,

@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { createPrivateMessageRoutes } from "./private-message.routes.js";
 import { createInboxRoutes } from "./inbox.routes.js";
+import { createConversationBulkRoutes } from "./conversation-bulk.routes.js";
 import { createSyncRoutes } from "./sync.routes.js";
 import { createGroupRoomRoutes } from "./group-room.routes.js";
 import { createGroupMessageRoutes } from "./group-message.routes.js";
@@ -22,6 +23,7 @@ import { healthRoutes } from "./health.routes.js";
 
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { InboxController } from "../controllers/inbox.controller.js";
+import type { ConversationBulkController } from "../controllers/conversation-bulk.controller.js";
 import type { SyncController } from "../controllers/sync.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
 import type { GroupRoomController } from "../controllers/group-room.controller.js";
@@ -39,6 +41,7 @@ import type { MessageContextController } from "../controllers/message-context.co
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
   inboxCtrl: InboxController;
+  conversationBulkCtrl: ConversationBulkController;
   syncCtrl: SyncController;
   privateMessageCtrl: PrivateMessageController;
   groupRoomCtrl: GroupRoomController;
@@ -62,6 +65,12 @@ export function createRoutes(controllers: Controllers): Router {
   const basePath = "/api/chat";
 
   router.use(`${basePath}/inbox`, createInboxRoutes(controllers.inboxCtrl));
+  // Bulk (multi-select) ops over the unified inbox — PRIVATE + GROUP in one
+  // call, mirroring community-service's /communities/{leave,mute,read}/bulk.
+  router.use(
+    `${basePath}/conversations`,
+    createConversationBulkRoutes(controllers.conversationBulkCtrl)
+  );
   router.use(`${basePath}/sync`, createSyncRoutes(controllers.syncCtrl));
   router.use(
     `${basePath}/private`,

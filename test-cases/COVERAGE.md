@@ -1,14 +1,14 @@
 # AIMess Backend — Test Coverage Index & Gap Analysis
 
 Generated from a full pass over the implemented codebase (`apps/*/src`, the Socket.IO namespaces,
-and `docs/SOCKET_EVENTS.md`). **1,116 test cases** across **10 modules / 97 files**.
+and `docs/SOCKET_EVENTS.md`). **1,136 test cases** across **10 modules / 98 files**.
 
 | Module               | Folder                                   | Files | Test cases | ID range         |
 | -------------------- | ---------------------------------------- | ----: | ---------: | ---------------- |
 | Auth                 | [`auth/`](auth/)                         |    16 |        159 | TC-AUTH-001…159  |
 | Users                | [`users/`](users/)                       |     8 |        103 | TC-USER-001…103  |
 | Friends              | [`friends/`](friends/)                   |     9 |         81 | TC-FRND-001…081  |
-| Private chat         | [`private-chat/`](private-chat/)         |    12 |        133 | TC-PCHAT-001…133 |
+| Private chat         | [`private-chat/`](private-chat/)         |    13 |        153 | TC-PCHAT-001…153 |
 | Group chat           | [`group-chat/`](group-chat/)             |    11 |        163 | TC-GCHAT-001…163 |
 | Communities          | [`communities/`](communities/)           |    11 |        139 | TC-COMM-001…139  |
 | Calls                | [`calls/`](calls/)                       |     7 |         68 | TC-CALL-001…068  |

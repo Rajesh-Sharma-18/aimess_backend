@@ -179,6 +179,8 @@ channels:
       messageNew: { $ref: "#/components/messages/MessageNew" }
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
+      convMuted: { $ref: "#/components/messages/ConvMuted" }
+      convUnmuted: { $ref: "#/components/messages/ConvUnmuted" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -720,6 +722,34 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "conv:updated — chat list bump-to-top (to user:<id>)"
     messages: [{ $ref: "#/channels/chat/messages/convUpdated" }]
+  chat.onConvMuted:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:muted — the caller muted a conversation (own devices only)"
+    description: |
+      Multi-device sync for the CONVERSATION mute (the list row's bell), not the
+      moderation mute that silences another member. Emitted once per room by
+      both the single-room routes (`POST /chat/private/rooms/{roomId}/mute`,
+      `POST /chat/group-members/{roomId}/mute`) and the bulk route
+      (`POST /chat/conversations/mute/bulk`), so a mute applied on Android lands
+      on web and iOS with no refetch.
+
+      Delivered ONLY to the muting user's own sockets (gateway rewrites it to
+      `self:<id>`): `user:<id>` is also joined by presence watchers, and the
+      payload names the room.
+
+      Muting changes push delivery only — `message:new`, `conv:updated`,
+      unread counts, receipts and typing are all unaffected.
+    messages: [{ $ref: "#/channels/chat/messages/convMuted" }]
+  chat.onConvUnmuted:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:unmuted — the caller unmuted a conversation (own devices only)"
+    description: |
+      Inverse of `conv:muted`; same delivery rules. NOT emitted when a timed
+      mute simply expires — expiry is evaluated lazily at push time, so no event
+      is needed and none is sent.
+    messages: [{ $ref: "#/channels/chat/messages/convUnmuted" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -2534,6 +2564,40 @@ components:
             senderName: ""
             unread: false
             isOffline: true
+    ConvMuted:
+      name: "conv:muted"
+      title: "conv:muted"
+      payload: { $ref: "#/components/schemas/ConvMuteChangedPayload" }
+      examples:
+        - name: Group muted for 8 hours
+          payload:
+            roomId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            type: GROUP
+            isMuted: true
+            mutedUntil: "2026-08-07T18:00:00.000Z"
+            updatedAt: 1749465231234
+        - name: Private chat muted indefinitely
+          payload:
+            roomId: "prv_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "prv_6843e1a2b5c3d4e5f6a7b8c9"
+            type: PRIVATE
+            isMuted: true
+            mutedUntil: null
+            updatedAt: 1749465231234
+    ConvUnmuted:
+      name: "conv:unmuted"
+      title: "conv:unmuted"
+      payload: { $ref: "#/components/schemas/ConvMuteChangedPayload" }
+      examples:
+        - name: Private chat unmuted
+          payload:
+            roomId: "prv_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "prv_6843e1a2b5c3d4e5f6a7b8c9"
+            type: PRIVATE
+            isMuted: false
+            mutedUntil: null
+            updatedAt: 1749465231234
     CommunityUpdated:
       name: "community:updated"
       title: "community:updated (on /community)"
@@ -5323,8 +5387,9 @@ components:
         Message send payload (client → server). The server derives sender
         identity from the authenticated socket — clients never stamp their own
         `senderId`. `clientTs` (epoch ms) is the optional display-only compose time.
-        Stickers are community-only in V1 — there is no `sticker` field here; send a
-        STICKER-typed reference via `files[]` or use a community.
+        STICKER sends carry their reference in `sticker` (same shape as
+        `community:message:send`), NOT in `files[]` — it is persisted as
+        `content.sticker` and is what history replays.
       properties:
         conversationId: { type: string, minLength: 1, maxLength: 200 }
         clientMessageId:
@@ -5354,6 +5419,19 @@ components:
           items: { type: string, format: uri, maxLength: 3000 }
         location: { $ref: "#/components/schemas/Location" }
         contact: { $ref: "#/components/schemas/Contact" }
+        sticker:
+          type: object
+          description: |
+            Sticker / GIF attachment — a REFERENCE only; the socket never carries
+            bytes. Send the resolved `url` (external GIF) or
+            `packId`+`stickerId`+`objectKey` (uploaded sticker). Persisted as
+            `content.sticker`, so it survives reload/pagination unchanged.
+          properties:
+            objectKey: { type: string, maxLength: 500 }
+            url: { type: string, maxLength: 3000 }
+            packId: { type: string, maxLength: 100 }
+            stickerId: { type: string, maxLength: 100 }
+          required: [packId, stickerId]
         repliedToId: { type: string, maxLength: 200 }
         conversationType: { $ref: "#/components/schemas/ConversationType" }
         receiverId: { type: string, maxLength: 200 }
@@ -5720,6 +5798,28 @@ components:
             type: boolean,
             description: "PRIVATE only — true when the OTHER participant (the recipient's chat peer) is currently offline, sourced from the same real-time PresenceService/Redis presence state as GET /chat/private/conversations and GET /chat/private/rooms/:peerId. Omitted for GROUP (no single peer). Re-emitted on its own whenever that peer's presence flips, independent of new messages.",
           }
+    ConvMuteChangedPayload:
+      type: object
+      description: >
+        The caller's own conversation-mute state for one room. Delivered to their
+        own devices only. Shared by conv:muted and conv:unmuted.
+      properties:
+        roomId: { type: string }
+        conversationId:
+          {
+            type: string,
+            description: "Alias of roomId, for clients keyed on conversationId.",
+          }
+        type: { type: string, enum: [PRIVATE, GROUP] }
+        isMuted: { type: boolean }
+        mutedUntil:
+          {
+            type: string,
+            format: date-time,
+            nullable: true,
+            description: "ISO-8601 expiry; null = indefinite (or unmuted). Evaluated lazily at push time, so no event fires when it lapses.",
+          }
+        updatedAt: { type: integer, description: epoch ms. }
     CommunityUpdatedPayload:
       type: object
       description: Community list bump-to-top hint. Delivered on /chat to user:<id>.

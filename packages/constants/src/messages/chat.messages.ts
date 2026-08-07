@@ -151,6 +151,14 @@ export const CHAT_MESSAGES = {
     vi: "Đã bật thông báo cuộc trò chuyện",
     en: "Conversation unmuted",
   },
+  CHAT_CONVERSATIONS_BULK_LEFT: {
+    vi: "Đã xử lý xong yêu cầu rời/xóa nhiều cuộc trò chuyện",
+    en: "Bulk conversation leave processed",
+  },
+  CHAT_CONVERSATIONS_BULK_READ: {
+    vi: "Đã đánh dấu các cuộc trò chuyện là đã đọc",
+    en: "Conversations marked as read",
+  },
   CHAT_ROOM_ARCHIVED: {
     vi: "Đã lưu trữ cuộc trò chuyện",
     en: "Conversation archived",

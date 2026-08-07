@@ -887,6 +887,48 @@ export class PrivateRoomService {
       .catch(() => {});
   }
 
+  /**
+   * Fan the caller's own conversation-mute state to EVERY device they have
+   * open — the chat counterpart of community's
+   * `community:notification-setting-updated`. Emitted from the single
+   * mute/unmute path (not from the bulk service) so one-off and bulk changes
+   * are impossible to desync: whichever route wrote the state, every device
+   * hears the same event.
+   *
+   * Self-only by design, and enforced a second time at the gateway: `user:<id>`
+   * is also joined by presence WATCHERS, so this must be in chat.ns.ts's
+   * `isSelfOnlyEvent` list or a peer would learn the caller muted them.
+   *
+   * Best-effort — a Redis hiccup must never fail the mute write itself.
+   */
+  private publishMuteChanged(
+    roomId: string,
+    userId: string,
+    isMuted: boolean,
+    muteUntil: Date | null
+  ): void {
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: isMuted ? "conv:muted" : "conv:unmuted",
+          data: {
+            roomId,
+            conversationId: roomId,
+            type: "PRIVATE",
+            isMuted,
+            mutedUntil: muteUntil ? muteUntil.toISOString() : null,
+            updatedAt: Date.now(),
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateRoomService|conv:${isMuted ? "muted" : "unmuted"} publish failed room=${roomId} user=${userId}: ${String(err)}`
+        );
+      });
+  }
+
   async muteRoom(
     roomId: string,
     userId: string,
@@ -900,6 +942,7 @@ export class PrivateRoomService {
       userId,
       muteUntil
     );
+    this.publishMuteChanged(roomId, userId, true, muteUntil);
     return updated ?? room;
   }
 
@@ -908,6 +951,7 @@ export class PrivateRoomService {
     if (!room || !room.participants?.includes(userId))
       throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
     const updated = await this.privateRoomRepo.setUnmuted(roomId, userId);
+    this.publishMuteChanged(roomId, userId, false, null);
     return updated ?? room;
   }
 

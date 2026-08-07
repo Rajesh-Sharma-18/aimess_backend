@@ -5224,6 +5224,11 @@ export const openApiSchemas = {
       },
       avatar: { $ref: "#/components/schemas/MediaObject" },
       isOnline: { type: "boolean" },
+      isBlockedByMe: {
+        type: "boolean",
+        description:
+          "You blocked this user. Blocks are one-way: they stay in your results so you can unblock them, while users who blocked YOU are omitted entirely (so this is never true in reverse). Render Unblock rather than a friend-request action — sending one returns 400 USER_BLOCKED.",
+      },
       relationshipStatus: {
         type: "string",
         enum: ["FRIEND", "PENDING_IN", "PENDING_OUT", "NONE"],
@@ -5387,6 +5392,11 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
       isOnline: { type: "boolean" },
+      isBlockedByMe: {
+        type: "boolean",
+        description:
+          "You blocked this user. Blocks are one-way: they stay in your results so you can unblock them, while users who blocked YOU are omitted entirely (so this is never true in reverse). Render Unblock rather than a friend-request action — sending one returns 400 USER_BLOCKED.",
+      },
       roomId: {
         type: "string",
         nullable: true,
@@ -5405,6 +5415,7 @@ export const openApiSchemas = {
       "avatarUrlExpiresIn",
       "avatar",
       "isOnline",
+      "isBlockedByMe",
       "roomId",
     ],
   },
@@ -11079,6 +11090,143 @@ export const openApiSchemas = {
       muteUntil: { type: "string", format: "date-time", nullable: true },
     },
   },
+
+  // --- Bulk (multi-select) conversation operations -------------------------
+  // Chat counterparts of BulkLeaveRequest / BulkMuteRequest /
+  // BulkMarkReadRequest on the Communities surface. Same shapes, same caps,
+  // same skip-don't-fail semantics; `roomIds` replaces `communityIds`.
+  ChatBulkConversationIds: {
+    type: "array",
+    minItems: 1,
+    maxItems: 50,
+    description:
+      "Conversation room ids from the unified inbox. A `grp_…` id is treated " +
+      "as a GROUP and a `prv_…` id as a PRIVATE chat — the client never sends " +
+      "a type. Duplicates are de-duplicated server-side, so the same list may " +
+      "safely mix both kinds.",
+    items: { type: "string", minLength: 5, maxLength: 100 },
+  },
+  ChatBulkLeaveRequest: {
+    type: "object",
+    required: ["roomIds"],
+    properties: {
+      roomIds: { $ref: "#/components/schemas/ChatBulkConversationIds" },
+      groupAction: {
+        type: "string",
+        enum: ["LEAVE", "DELETE"],
+        default: "LEAVE",
+        description:
+          "What to do with the GROUP rows in `roomIds` (PRIVATE rows ignore " +
+          "it — a 1-to-1 room has no membership, so they always run " +
+          "delete-for-me).\n\n" +
+          "- `LEAVE` (default) — real membership removal, identical to " +
+          "`POST /chat/group-members/{roomId}/leave`: MEMBER_LEFT system " +
+          "message, member count decrement, `group:removed` to the leaver and " +
+          "`group:member:removed` to the remaining roster. The group does " +
+          "**not** come back on reload.\n" +
+          '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
+          "`DELETE /chat/groups/{roomId}`: clears the caller's own history " +
+          "and keeps membership, so the room reappears when a new message " +
+          "arrives.",
+      },
+    },
+  },
+  ChatBulkLeaveItemResult: {
+    type: "object",
+    properties: {
+      roomId: { type: "string" },
+      type: { type: "string", enum: ["PRIVATE", "GROUP"] },
+      status: {
+        type: "string",
+        enum: ["LEFT", "DELETED", "FAILED"],
+        description:
+          "`LEFT` — group membership removed. `DELETED` — conversation " +
+          "removed from the caller's own list (private delete-for-me, or a " +
+          'group `groupAction: "DELETE"`). `FAILED` — see `errorCode`.',
+      },
+      errorCode: {
+        type: "string",
+        enum: ["OWNER_CANNOT_LEAVE", "NOT_MEMBER", "NOT_FOUND"],
+        description:
+          "Present only on `FAILED`. `OWNER_CANNOT_LEAVE` — the caller is the " +
+          "group's ADMIN; transfer ownership or disband first (mirrors " +
+          "community's `ADMIN_CANNOT_LEAVE`).",
+      },
+    },
+    required: ["roomId", "type", "status"],
+  },
+  ChatBulkLeaveResult: {
+    type: "object",
+    description:
+      "Per-item outcome. Items are processed independently and successes are " +
+      "never rolled back for a later failure — inspect each `status`.",
+    properties: {
+      results: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatBulkLeaveItemResult" },
+      },
+      summary: {
+        type: "object",
+        properties: {
+          requested: { type: "integer" },
+          succeeded: { type: "integer" },
+          failed: { type: "integer" },
+        },
+        required: ["requested", "succeeded", "failed"],
+      },
+    },
+    required: ["results", "summary"],
+  },
+  ChatBulkMuteRequest: {
+    type: "object",
+    required: ["action", "roomIds"],
+    properties: {
+      action: { type: "string", enum: ["mute", "unmute"] },
+      roomIds: { $ref: "#/components/schemas/ChatBulkConversationIds" },
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525_600,
+        nullable: true,
+        description:
+          "Minutes from now, resolved against the SERVER clock so a skewed " +
+          "client can never produce an already-expired mute. Omit or null to " +
+          "mute indefinitely. Ignored when `action` is `unmute`. One expiry " +
+          "is computed for the whole batch.",
+      },
+    },
+  },
+  ChatBulkMuteResult: {
+    type: "object",
+    description:
+      "Rooms actually updated vs. silently skipped (not a participant, no " +
+      "longer an active member, room gone).",
+    properties: {
+      muted: { type: "array", items: { type: "string" } },
+      unmuted: { type: "array", items: { type: "string" } },
+      skipped: { type: "array", items: { type: "string" } },
+    },
+  },
+  ChatBulkMarkReadRequest: {
+    type: "object",
+    required: ["roomIds"],
+    properties: {
+      roomIds: { $ref: "#/components/schemas/ChatBulkConversationIds" },
+    },
+  },
+  ChatBulkMarkReadResult: {
+    type: "object",
+    properties: {
+      updatedCount: {
+        type: "integer",
+        description:
+          "Rooms whose read pointer actually advanced. An empty conversation, " +
+          "one already fully read, or one the caller can no longer read is " +
+          "skipped and not counted.",
+      },
+    },
+    required: ["updatedCount"],
+  },
   ChatReportMessageRequest: {
     type: "object",
     required: ["reason"],
@@ -11452,6 +11600,11 @@ export const openApiSchemas = {
       groupsCount: { type: "integer", nullable: true },
       communitiesCount: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },
+      isBlockedByMe: {
+        type: "boolean",
+        description:
+          "You blocked this user. Blocks are one-way, so the blocker still resolves the profile; a user who blocked YOU returns 404 instead. `relationship.status` collapses BLOCKED to NONE, so branch on this flag to show Unblock instead of Add Friend.",
+      },
       relationship: {
         $ref: "#/components/schemas/PublicUserProfileRelationship",
       },
@@ -11463,6 +11616,7 @@ export const openApiSchemas = {
       "firstName",
       "lastName",
       "isDeletedUser",
+      "isBlockedByMe",
       "relationship",
     ],
   },
@@ -11581,13 +11735,25 @@ export const openApiSchemas = {
         maxLength: 100,
         description: "The member to silence. Cannot be the caller.",
       },
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525_600,
+        nullable: true,
+        description:
+          "Minutes from now, computed SERVER-side. Omit or null to mute " +
+          "indefinitely. Expiry is applied lazily, so the member can post " +
+          "again the instant it passes. Mirrors " +
+          "`POST /communities/{id}/members/{userId}/mute`.",
+      },
       mutedUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "ISO-8601 expiry. Omit or null to mute indefinitely. Expiry is " +
-          "applied lazily, so the member can post again the instant it passes.",
+          "Deprecated: an absolute ISO-8601 expiry, trusting the CALLER's " +
+          "clock. Prefer `durationMinutes`. Ignored when `durationMinutes` " +
+          "is present.",
       },
     },
     required: ["roomId", "userId"],

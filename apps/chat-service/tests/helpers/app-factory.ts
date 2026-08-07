@@ -26,6 +26,7 @@ import type { Controllers } from "../../src/api/routes/index.js";
 // -- Real services --
 import { PrivateRoomService } from "../../src/services/private-room.service.js";
 import { InboxService } from "../../src/services/inbox.service.js";
+import { ConversationBulkService } from "../../src/services/conversation-bulk.service.js";
 import { SyncService } from "../../src/services/sync.service.js";
 import { PrivateMessageService } from "../../src/services/private-message.service.js";
 import { PrivatePinService } from "../../src/services/private-pin.service.js";
@@ -50,6 +51,7 @@ import { AutoDeleteService } from "../../src/services/auto-delete.service.js";
 // -- Real controllers --
 import { PrivateRoomController } from "../../src/api/controllers/private-room.controller.js";
 import { InboxController } from "../../src/api/controllers/inbox.controller.js";
+import { ConversationBulkController } from "../../src/api/controllers/conversation-bulk.controller.js";
 import { SyncController } from "../../src/api/controllers/sync.controller.js";
 import { PrivateMessageController } from "../../src/api/controllers/private-message.controller.js";
 import { GroupRoomController } from "../../src/api/controllers/group-room.controller.js";
@@ -415,6 +417,14 @@ export function buildApp(): BuiltApp {
     groupPinService,
     presenceService
   );
+  const conversationBulkService = new ConversationBulkService(
+    privateRoomService,
+    groupRoomService,
+    groupMemberService,
+    chatMessageOrchestrator,
+    privateRoomRepo,
+    groupRoomRepo
+  );
   const autoDeleteService = new AutoDeleteService(
     privateRoomRepo,
     privateMessageRepo,
@@ -431,6 +441,9 @@ export function buildApp(): BuiltApp {
       autoDeleteService
     ),
     inboxCtrl: new InboxController(inboxService),
+    conversationBulkCtrl: new ConversationBulkController(
+      conversationBulkService
+    ),
     syncCtrl: new SyncController(syncService),
     privateMessageCtrl: new PrivateMessageController(
       privateMessageService,

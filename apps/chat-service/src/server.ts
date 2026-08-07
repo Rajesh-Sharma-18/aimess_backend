@@ -31,6 +31,7 @@ import { PrivateMessageReportRepository } from "./repositories/private-message-r
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
 import { InboxService } from "./services/inbox.service.js";
+import { ConversationBulkService } from "./services/conversation-bulk.service.js";
 import { UnreadSummaryService } from "./services/unread-summary.service.js";
 import { registerUnreadSummaryPusher } from "./events/unread-summary-bridge.js";
 import { publishChatUserEvent } from "@aimess/redis";
@@ -67,6 +68,7 @@ import { PresenceService } from "./services/presence.service.js";
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
 import { InboxController } from "./api/controllers/inbox.controller.js";
+import { ConversationBulkController } from "./api/controllers/conversation-bulk.controller.js";
 import { SyncController } from "./api/controllers/sync.controller.js";
 import { PrivateMessageController } from "./api/controllers/private-message.controller.js";
 import { GroupRoomController } from "./api/controllers/group-room.controller.js";
@@ -624,6 +626,18 @@ const startServer = async () => {
       redis
     );
 
+    // Bulk (multi-select) inbox operations. Owns no domain logic — it fans
+    // each roomId out to the SAME single-conversation entry point the one-off
+    // REST routes use, so bulk and individual calls can never drift.
+    const conversationBulkService = new ConversationBulkService(
+      privateRoomService,
+      groupRoomService,
+      groupMemberService,
+      chatMessageOrchestrator,
+      privateRoomRepo,
+      groupRoomRepo
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -655,6 +669,9 @@ const startServer = async () => {
         autoDeleteService
       ),
       inboxCtrl: new InboxController(inboxService),
+      conversationBulkCtrl: new ConversationBulkController(
+        conversationBulkService
+      ),
       syncCtrl: new SyncController(syncService),
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
