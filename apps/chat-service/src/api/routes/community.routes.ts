@@ -10,6 +10,7 @@ import {
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
+  roomChangesQuerySchema,
 } from "../validators/query.validator.js";
 import {
   editCommunityMessageSchema,
@@ -49,6 +50,17 @@ export function createCommunityRoutes(
     authenticate,
     validateQuery(communitySyncQuerySchema),
     messageCtrl.syncMessages
+  );
+
+  // Zero-loss changes feed — the revision-axis catch-up that `/sync` (updatedAt)
+  // approximates. Returns inserts AND mutations whose `revision >
+  // since_revision`, plus `resetRequired` for a deep-gap re-baseline. Same
+  // contract as the private and group equivalents.
+  router.get(
+    "/rooms/:roomId/changes",
+    authenticate,
+    validateQuery(roomChangesQuerySchema),
+    messageCtrl.getChanges
   );
 
   router.post(

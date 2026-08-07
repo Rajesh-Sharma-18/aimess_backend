@@ -3,7 +3,6 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
-import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
 import { NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
@@ -12,7 +11,6 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
-  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -106,108 +104,17 @@ export class PrivateMessageController {
   });
 
   /**
-   * `GET /private/rooms/:roomId/messages` (V1) — timestamp-named cursor params.
-   * Frozen: V2 clients use {@link getMessagesV2}.
+   * `GET /private/rooms/:roomId/messages` — the private room timeline. Supports
+   * every pagination axis: `before_ts`/`after_ts` (compound `(createdAt, _id)`
+   * keyset), the gap-safe `before_seq`/`after_seq` sequence keyset, and
+   * `around=<messageId>` for jump-to-message. See {@link listMessages}.
    */
   getMessages = asyncHandler((req: Request, res: Response) =>
     this.listMessages(req, res, "before_ts", "after_ts")
   );
 
   /**
-   * `GET /api/v2/chat/private/rooms/:roomId/messages` — Cursor V2. Identical
-   * handler, response and business logic to V1; the ONLY difference is that the
-   * opaque compound `(createdAt, id)` keyset token arrives on
-   * `before_cursor`/`after_cursor` instead of `before_ts`/`after_ts`, so V2
-   * exposes no timestamp-shaped pagination params. Matches the community V2
-   * contract (see `communityTimelineV2QuerySchema`).
-   */
-  getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessagesV2(req, res)
-  );
-
-  /**
-   * V2 timeline — `before_seq`/`after_seq`/`around` only. The retired timestamp
-   * cursors are rejected by `timelineV2QuerySchema.strict()`, so there is no
-   * fallback branch here: sequence is the single pagination axis.
-   */
-  private async listMessagesV2(req: Request, res: Response) {
-    const { userId } = req.auth;
-    const roomId = req.params.roomId as string;
-    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
-    const around = req.query.around as string | undefined;
-
-    // The peer's READ and DELIVERED watermarks. The serializer strips
-    // `readBy`/`deliveredTo` off every message, so these room-level cursors are
-    // the only thing that keeps a sender's own ticks alive across a relaunch.
-    // V1 `listMessages` has shipped both since they existed; this V2 handler
-    // (the one every current client calls) never did — the exact omission that
-    // collapsed group ticks, mirrored on the private side.
-    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
-      this.messageService.getPeerReadSeq(roomId, userId).catch(() => 0),
-      this.messageService.getPeerDeliveredSeq(roomId, userId).catch(() => 0),
-    ]);
-
-    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
-      res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(
-            { ...payload, peerReadSeq, peerDeliveredSeq },
-            payload.items.length
-              ? t("CHAT_MESSAGES_FETCHED", req.locale)
-              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
-          )
-        );
-
-    if (around) {
-      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
-        await this.messageService.getMessagesAround({
-          roomId,
-          userId,
-          messageId: around,
-          limit,
-        });
-      const [enriched, pinnedMessage] = await Promise.all([
-        this.messageService.enrichMessages(items, userId),
-        this.pinService.getActivePinSummary(roomId, userId),
-      ]);
-      send({
-        ...buildTimelinePageV2(enriched, limit, {
-          hasMoreOlder,
-          hasMoreNewer,
-          olderCursor,
-          newerCursor,
-        }),
-        pinnedMessage,
-      });
-      return;
-    }
-
-    const beforeSeq =
-      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
-    const afterSeq =
-      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
-
-    const result = await this.messageService.getMessagesSeq({
-      roomId,
-      userId,
-      direction: afterSeq != null ? "after" : "before",
-      seq: afterSeq ?? beforeSeq ?? null,
-      limit,
-    });
-    const [enriched, pinnedMessage] = await Promise.all([
-      this.messageService.enrichMessages(result.items, userId),
-      this.pinService.getActivePinSummary(roomId, userId),
-    ]);
-    send({
-      ...buildTimelinePageV2(enriched, limit, result.cursors),
-      roomRevision: result.roomRevision,
-      pinnedMessage,
-    });
-  }
-
-  /**
-   * V2 — `GET /api/v2/chat/private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
+   * `GET /private/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
    * Returns every message whose room CHANGE `revision > since_revision` (inserts AND
    * edits/deletes/reactions), current state, ordered revision ASC, plus `roomRevision`
    * (new high-water), `resetRequired` (deep-gap re-baseline) and `nextRevisionCursor`.
@@ -252,22 +159,23 @@ export class PrivateMessageController {
   });
 
   /**
-   * Shared timeline core for V1 + V2. `olderKey`/`newerKey` name the query params
-   * that carry the opaque compound cursor — the single axis that differs between
-   * the two versions. Everything else (access guard, seq keyset, around window,
-   * enrichment, serialization, envelope) is version-agnostic.
+   * The private room timeline. `olderKey`/`newerKey` name the query params that
+   * carry the opaque compound `(createdAt, _id)` cursor.
+   *
+   * Pagination precedence: `around` (jump-to-message) → `before_seq`/`after_seq`
+   * (gap-safe sequence keyset) → the compound timestamp keyset → newest page.
    */
   private async listMessages(
     req: Request,
     res: Response,
-    olderKey: "before_ts" | "before_cursor",
-    newerKey: "after_ts" | "after_cursor"
+    olderKey: "before_ts",
+    newerKey: "after_ts"
   ) {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 30;
 
-    // V2 §3.2: prefer seq-based keyset cursors (gap-safe) when present.
+    // Prefer seq-based keyset cursors (gap-safe) when present.
     // before_seq → sequenceNumber < seq (newest-first);
     // after_seq  → sequenceNumber > seq (oldest-first);
     // around=<messageId> → window centered on a message (jump-to-message).
@@ -284,9 +192,12 @@ export class PrivateMessageController {
     // peerDeliveredSeq is the parallel signal for the DELIVERED (✓✓ grey) tick
     // when the peer has received but not yet opened the chat — hydrated from
     // the newest MY-message the peer appears in `deliveredTo` on.
-    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
+    // pinnedMessage rides along on every page so the pinned banner hydrates from
+    // the timeline call itself instead of a second round-trip.
+    const [peerReadSeq, peerDeliveredSeq, pinnedMessage] = await Promise.all([
       this.messageService.getPeerReadSeq(roomId, userId),
       this.messageService.getPeerDeliveredSeq(roomId, userId),
+      this.pinService.getActivePinSummary(roomId, userId),
     ]);
 
     if (around) {
@@ -309,7 +220,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, peerReadSeq, peerDeliveredSeq },
+            { ...paginated, peerReadSeq, peerDeliveredSeq, pinnedMessage },
             enriched.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -350,7 +261,7 @@ export class PrivateMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, peerReadSeq, peerDeliveredSeq },
+            { ...paginated, peerReadSeq, peerDeliveredSeq, pinnedMessage },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -400,7 +311,10 @@ export class PrivateMessageController {
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse({ ...paginated, peerReadSeq, peerDeliveredSeq }, msg)
+        new ApiResponse(
+          { ...paginated, peerReadSeq, peerDeliveredSeq, pinnedMessage },
+          msg
+        )
       );
   }
 
@@ -799,11 +713,13 @@ export class PrivateMessageController {
   });
 
   /**
-   * V2 `POST /messages/:messageId/react` — single-write SET, matching the community
-   * REST react. The room is resolved from the message, so the offline queue can drain
-   * a reaction with only (messageId, emoji) regardless of conversation type.
+   * `POST /private/messages/:messageId/react` — single-write SET, matching the
+   * community REST react. The room is resolved from the message, so the offline
+   * queue can drain a reaction with only (messageId, emoji) regardless of
+   * conversation type. The room-scoped `addReaction`/`removeReaction` toggle pair
+   * stays available for clients that already know the room.
    */
-  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+  setReaction = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
     const { emoji } = req.body as { emoji: string };

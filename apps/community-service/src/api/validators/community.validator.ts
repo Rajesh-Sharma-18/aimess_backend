@@ -119,15 +119,17 @@ const discoverSearchSchema = z
 
 /**
  * `GET /communities/mine` — a single endpoint that serves two modes, inferred
- * from the params (no `scope` flag). At least one of `before_ts`, `after_ts`,
- * `q`, or `categoryId` must be present.
+ * from the params (no `scope` flag).
  *
- *   joined mode (before_ts OR after_ts present) — the caller's own communities,
- *     ordered by `lastActivityAt`, using **cursor (timestamp) pagination**.
- *     Timestamps are epoch milliseconds and mutually exclusive:
- *       before_ts → lastActivityAt <= before_ts (newest-first)
- *       after_ts  → lastActivityAt >= after_ts  (oldest-first)
- *     Pagination takes precedence over `q`/`categoryId` if both are sent.
+ *   joined mode (`cursor`, `before_ts` OR `after_ts` present) — the caller's own
+ *     communities, ordered by `lastActivityAt`.
+ *       cursor    → gap-safe compound `(lastActivityAt, id)` keyset, EXCLUSIVE.
+ *                   Preferred: same-millisecond communities are returned exactly
+ *                   once, so no client-side de-duplication is needed.
+ *       before_ts → lastActivityAt <= before_ts (newest-first), INCLUSIVE
+ *       after_ts  → lastActivityAt >= after_ts  (oldest-first), INCLUSIVE
+ *     Timestamps are epoch milliseconds and mutually exclusive. Pagination takes
+ *     precedence over `q`/`categoryId` if both are sent.
  *
  *   search mode (q and/or categoryId, no pagination) — PUBLIC communities plus
  *     any PRIVATE community the caller is already an ACTIVE member of, filtered
@@ -139,9 +141,26 @@ const discoverSearchSchema = z
  */
 export const myCommunitiesQuerySchema = z
   .object({
-    // joined-mode cursor pagination
+    // joined-mode cursor pagination — legacy bare epoch-ms bounds (INCLUSIVE, so
+    // consecutive pages share the boundary row when `lastActivityAt` ties and the
+    // client has to de-duplicate by id). Kept for backward compatibility.
     before_ts: z.coerce.number().int().positive().optional(),
     after_ts: z.coerce.number().int().positive().optional(),
+    // Joined-mode compound keyset cursor — the gap-safe replacement for
+    // before_ts/after_ts. EITHER a plain epoch-ms ("1784104753870") OR the opaque
+    // compound token "<lastActivityAtMs>_<communityId>" handed back as
+    // `pagination.nextCursor`. Kept as a string so the id tiebreaker survives
+    // (coercing to a number would drop it). Boundaries are EXCLUSIVE, so
+    // same-millisecond communities are returned exactly once across pages.
+    //
+    // Precedence: `cursor` wins over before_ts/after_ts when both are sent.
+    cursor: z
+      .string()
+      .regex(
+        /^\d+(_[a-fA-F0-9]{24})?$/,
+        "cursor must be epoch-ms or the compound cursor '<ms>_<communityId>'"
+      )
+      .optional(),
     // search-mode filters + offset pagination
     q: discoverSearchSchema.optional(),
     categoryId: categoryIdSchema.optional(),
@@ -156,41 +175,6 @@ export const myCommunitiesQuerySchema = z
   });
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
-
-/**
- * V2 query schema for `GET /api/v2/communities/mine`. Replaces V1's bare
- * epoch-ms `before_ts`/`after_ts` cursor with a single opaque compound `cursor`
- * (`"<lastActivityAtMs>_<communityId>"`), so same-millisecond communities can no
- * longer skip/duplicate at a page boundary (the V1 leak). Treat `cursor` as
- * OPAQUE: feed the returned `nextCursor` back verbatim; a bare epoch-ms is also
- * accepted (first page / coarse jump, no `_id` tiebreaker).
- *
- *   joined mode (default — no q/categoryId): the caller's ACTIVE communities,
- *     newest-activity first, compound-keyset cursor pagination.
- *   search mode (q and/or categoryId): PUBLIC + own PRIVATE communities, offset
- *     pagination — identical to V1's search mode.
- */
-export const myCommunitiesV2QuerySchema = z.object({
-  // EITHER a plain epoch-ms ("1784104753870") OR the opaque compound cursor
-  // "<ms>_<communityId>" handed back as `nextCursor`. Kept as a string so the
-  // id tiebreaker survives (coercing to a number would drop it).
-  cursor: z
-    .string()
-    .regex(
-      /^\d+(_[a-fA-F0-9]{24})?$/,
-      "cursor must be epoch-ms or the compound cursor '<ms>_<communityId>'"
-    )
-    .optional(),
-  // search-mode filters + offset pagination (unchanged from V1)
-  q: discoverSearchSchema.optional(),
-  categoryId: categoryIdSchema.optional(),
-  filter: z.enum(["all", "live", "upcoming"]).default("all"),
-  page: pageSchema,
-  // shared
-  limit: limitSchema,
-});
-
-export type MyCommunitiesV2Query = z.infer<typeof myCommunitiesV2QuerySchema>;
 
 /**
  * Public discovery / browse / search query — backs the deprecated

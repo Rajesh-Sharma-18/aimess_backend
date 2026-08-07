@@ -83,38 +83,8 @@ if (env.STREAM_SERVICE_URL) {
   });
 }
 
-// V2 is a PARALLEL, additive surface. Only services that expose a V2 endpoint are
-// registered here; every other resource keeps using V1. The downstream prefixes
-// carry the `/api/v2` segment so the service can host the V2 routes beside the
-// (frozen) V1 ones without collision. See each service's V2 route mount.
-const v2Services: VersionedServiceConfig[] = [];
-
-if (env.COMMUNITY_SERVICE_URL) {
-  v2Services.push({
-    segment: "communities",
-    target: env.COMMUNITY_SERVICE_URL,
-    // community-service hosts V2 at /api/v2/communities/* (mounted beside its
-    // /api/v1/communities router). The gateway strips /api/v2/communities, then
-    // this prefix restores it downstream.
-    downstreamPrefix: "/api/v2/communities",
-    swaggerTag: "Communities",
-  });
-}
-
-if (env.CHAT_SERVICE_URL) {
-  v2Services.push({
-    segment: "chat",
-    target: env.CHAT_SERVICE_URL,
-    // chat-service hosts the V2 community message timeline at
-    // /api/v2/chat/community/* (beside its /api/chat V1 router).
-    downstreamPrefix: "/api/v2/chat",
-    swaggerTag: "Chat",
-  });
-}
-
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
-  v2: v2Services,
 };
 
 export function getServicesForVersion(

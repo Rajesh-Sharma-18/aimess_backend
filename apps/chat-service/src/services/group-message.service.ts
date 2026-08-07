@@ -713,7 +713,7 @@ export class GroupMessageService {
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
 
-  /** Raw message lookup — the V2 delete route resolves its room from the message. */
+  /** Raw message lookup — the path-param delete route resolves its room from the message. */
   findMessageById(messageId: string): Promise<GroupMessage | null> {
     return this.messageRepo.findById(messageId);
   }
@@ -1397,7 +1397,7 @@ export class GroupMessageService {
   private readonly REVISION_RESET_HORIZON = 10_000;
 
   /**
-   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/group/rooms/:roomId/changes`.
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/groups/:roomId/changes`.
    * Identical contract to the private equivalent; see it for the full rationale.
    *
    * NOTE for clients: per-viewer filtering happens AFTER the page slice, so

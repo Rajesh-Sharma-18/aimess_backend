@@ -3,11 +3,7 @@ import type { Request, Response } from "express";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
-import {
-  parseTsCursor,
-  buildListPageV2,
-  type PaginatedResponse,
-} from "../../lib/pagination.js";
+import { parseTsCursor, type PaginatedResponse } from "../../lib/pagination.js";
 import type { InboxService, InboxItem } from "../../services/inbox.service.js";
 
 export class InboxController {
@@ -17,18 +13,55 @@ export class InboxController {
    * GET /api/chat/inbox — unified, timestamp-ordered list of the user's private
    * rooms and group chats.
    *
-   * Query (epoch ms, mutually exclusive; omit both for the newest page):
-   *   before_ts=<ms>&limit=20  → items with lastMessageAt <= before_ts (newest-first)
-   *   after_ts=<ms>&limit=20   → items with lastMessageAt >= after_ts  (oldest-first)
+   * Two pagination modes, checked in this order (omit all for the newest page):
+   *
+   *   before_cursor / after_cursor (PREFERRED) — the opaque compound
+   *     `(lastMessageAt, roomId)` keyset token. Boundaries are EXCLUSIVE, so
+   *     consecutive pages never share a row when two conversations tie on
+   *     `lastMessageAt`. Echo `pagination.nextCursor` back verbatim.
+   *   before_ts / after_ts (legacy, epoch ms) — a bare INCLUSIVE bound:
+   *     before_ts → lastMessageAt <= before_ts (newest-first)
+   *     after_ts  → lastMessageAt >= after_ts  (oldest-first)
+   *     Pages share the boundary row on a tie; clients de-dupe by roomId.
+   *
+   * Both modes share the same service call, items and response envelope — only
+   * the DB boundary differs.
    */
   getInbox = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
+    const limit = Number(req.query.limit) || 20;
+
+    // Compound-cursor mode wins when present: it is the strictly better boundary.
+    // The token is "<ms>_<roomId>" — `parseTsCursor` splits on the FIRST "_" so
+    // the roomId's own "prv_"/"grp_" prefix survives intact.
+    const rawCursor =
+      req.query.after_cursor != null
+        ? String(req.query.after_cursor)
+        : req.query.before_cursor != null
+          ? String(req.query.before_cursor)
+          : undefined;
+
+    if (rawCursor != null) {
+      const cursor = parseTsCursor(rawCursor);
+      const result = await this.service.getInbox({
+        userId,
+        direction: req.query.after_cursor != null ? "after" : "before",
+        ts: new Date(cursor ? cursor.ms : Date.now()),
+        boundaryId: cursor?.id ?? null,
+        // A cursor page is exclusive so it never re-returns its own boundary row.
+        inclusive: cursor == null,
+        compoundCursor: true,
+        limit,
+      });
+
+      this.send(req, res, result, limit);
+      return;
+    }
 
     const beforeTs =
       req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
     const afterTs =
       req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
-    const limit = Number(req.query.limit) || 20;
 
     const direction = afterTs != null ? "after" : "before";
     const tsMs =
@@ -44,67 +77,7 @@ export class InboxController {
     this.send(req, res, result, limit);
   });
 
-  /**
-   * `GET /api/v2/chat/inbox` — Cursor V2. Same service, same items, same
-   * envelope; the ONLY change is pagination: `before_cursor`/`after_cursor`
-   * carry the opaque compound `(lastMessageAt, roomId)` keyset token instead of
-   * V1's inclusive bare epoch-ms `before_ts`/`after_ts`, so consecutive pages no
-   * longer share a boundary row when timestamps tie (no client de-dupe needed).
-   * `nextCursor` is that same opaque token — echo it back verbatim.
-   *
-   * A bare epoch-ms is accepted as a coarse jump (exclusive, no tiebreaker),
-   * matching the community V2 cursor contract. Omit both for the newest page.
-   */
-  getInboxV2 = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
-    const limit = Number(req.query.limit) || 20;
-
-    const raw =
-      req.query.after_cursor != null
-        ? String(req.query.after_cursor)
-        : req.query.before_cursor != null
-          ? String(req.query.before_cursor)
-          : undefined;
-    const direction = req.query.after_cursor != null ? "after" : "before";
-
-    // Compound token "<ms>_<roomId>"; split on the FIRST "_" so the roomId's own
-    // "prv_"/"grp_" prefix survives intact.
-    const cursor = parseTsCursor(raw);
-
-    const result = await this.service.getInbox({
-      userId,
-      direction,
-      ts: new Date(cursor ? cursor.ms : Date.now()),
-      boundaryId: cursor?.id ?? null,
-      // No cursor → newest page, inclusive of the newest row. A cursor page is
-      // exclusive so it never re-returns its own boundary row.
-      inclusive: cursor == null,
-      compoundCursor: true,
-      limit,
-    });
-
-    // V2 list envelope: `items` + a single `page`. The inbox is a LIST, not a
-    // timeline — it has no sequence axis, so it keeps a genuine time-keyset
-    // cursor. `totalCount` rides along because the tab badge renders it.
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          buildListPageV2(
-            result.items,
-            limit,
-            result.hasMore,
-            result.nextCursor,
-            result.total
-          ),
-          result.items.length
-            ? t("CHAT_INBOX_FETCHED", req.locale)
-            : t("CHAT_NO_INBOX_FOUND", req.locale)
-        )
-      );
-  });
-
-  /** Shared response envelope — identical for V1 and V2. */
+  /** Shared response envelope — identical for both pagination modes. */
   private send(
     req: Request,
     res: Response,

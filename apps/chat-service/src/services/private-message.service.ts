@@ -656,7 +656,7 @@ export class PrivateMessageService {
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
 
-  /** Raw message lookup — the V2 delete/react routes resolve their room from the message. */
+  /** Raw message lookup — the path-param react route resolves its room from the message. */
   findMessageById(messageId: string): Promise<PrivateMessage | null> {
     return this.messageRepo.findById(messageId);
   }
@@ -1400,7 +1400,7 @@ export class PrivateMessageService {
   private readonly REVISION_RESET_HORIZON = 10_000;
 
   /**
-   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/private/rooms/:roomId/changes`.
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/private/rooms/:roomId/changes`.
    *
    * Every message whose room CHANGE `revision > sinceRevision`, current state, ordered
    * revision ASC — inserts AND mutations (edit/delete-for-everyone/reaction), regardless

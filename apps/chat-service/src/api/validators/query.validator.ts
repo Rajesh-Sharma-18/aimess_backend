@@ -2,9 +2,6 @@ import { z } from "zod";
 
 /** Shared query-param schemas for message list + search endpoints. */
 
-/** One page size for every V2 timeline — private, group and community alike. */
-export const V2_TIMELINE_LIMIT = 40;
-
 export const messageListQuerySchema = z.object({
   cursor: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -22,9 +19,9 @@ export const messageListQuerySchema = z.object({
  * ("<ms>_<objectId>") back verbatim to page on. The `_id` tiebreaker makes
  * continuation EXCLUSIVE and keeps same-millisecond messages reachable exactly
  * once — so consecutive pages no longer share a boundary message (no client-side
- * de-dupe needed). V2 clients should prefer the gap-safe before_seq/after_seq
- * cursors; these *_ts params are the V1 fallback. The two are mutually exclusive;
- * omit both for the newest page.
+ * de-dupe needed). Prefer the gap-safe `before_seq`/`after_seq` cursors where the
+ * room's `sequenceNumber` is populated; these *_ts params are the fallback that
+ * works on all data. The two are mutually exclusive; omit both for the newest page.
  */
 // Timestamp cursors: EITHER a plain epoch-ms ("1782133107521") OR the opaque
 // COMPOUND keyset cursor "<ms>_<objectId>" handed back as `nextCursor`. Kept as a
@@ -60,48 +57,14 @@ export const messageTimelineQuerySchema = z
   });
 
 /**
- * THE V2 message-timeline query contract — identical for private, group AND
- * community, so one client paging path covers all three.
- *
- * `sequenceNumber` is the only pagination axis. It is a server-assigned monotonic
- * counter, so it matches display order by definition. `(createdAt, id)` does NOT:
- * this server has verified timestamp inversions, and an exclusive timestamp cursor
- * steps over the inverted rows and drops them with no error and no gap marker.
- *
- * - `before_seq`: older page — `sequenceNumber < seq`.
- * - `after_seq` : newer page — `sequenceNumber > seq`.
- * - `around`    : jump-to-message window centered on a messageId.
- * - omit all    : newest page.
- *
- * `.strict()` is load-bearing. Zod silently STRIPS unknown keys by default, so a
- * client sending a retired param (`cursor`, `before_ts`, `after_cursor`) got the
- * NEWEST page back instead of the page it asked for — an infinite pagination loop
- * with a 200 status. Rejecting the request makes that a loud 400 instead.
+ * Query schema for the ZERO-LOSS changes feed, shared by all three room kinds
+ * (`GET /chat/private/rooms/:roomId/changes`, `GET /chat/groups/:roomId/changes`,
+ * `GET /chat/community/rooms/:roomId/changes`). `since_revision` is the client's
+ * per-room CHANGE high-water; `0` = cold start (drains from the beginning within
+ * the retention horizon). One schema, so the three can never drift and a client
+ * needs only one drain loop.
  */
-export const timelineV2QuerySchema = z
-  .object({
-    before_seq: z.coerce.number().int().min(0).optional(),
-    after_seq: z.coerce.number().int().min(0).optional(),
-    around: z.string().min(1).max(100).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(V2_TIMELINE_LIMIT),
-  })
-  .strict()
-  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
-    message: "Provide either before_seq or after_seq, not both",
-    path: ["before_seq"],
-  });
-
-export const privateTimelineV2QuerySchema = timelineV2QuerySchema;
-export const groupTimelineV2QuerySchema = timelineV2QuerySchema;
-
-/**
- * Query schema for the private + group ZERO-LOSS changes feeds
- * (`GET /api/v2/chat/{private,group}/rooms/:roomId/changes`). `since_revision` is the
- * client's per-room CHANGE high-water; `0` = cold start (drains from the beginning).
- * Same contract as `communityChangesV2QuerySchema` so all three room kinds share one
- * client drain loop.
- */
-export const chatChangesV2QuerySchema = z.object({
+export const roomChangesQuerySchema = z.object({
   since_revision: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(200).default(100),
 });
@@ -147,11 +110,16 @@ export const mediaListQuerySchema = z.object({
 });
 
 /**
- * Query schema for the timestamp-paginated community message-list endpoint (V1).
- * Community messages DO carry a real per-room monotonic `sequenceNumber`
- * (allocateSequence → generalRoom.lastSequence); the V1 endpoint simply paginates
- * on the `(createdAt, _id)` timestamp keyset instead. The gap-safe seq cursors
- * (`before_seq`/`after_seq`) live on the V2 schema below. Timestamps are epoch ms.
+ * Query schema for the community message-list endpoint.
+ * Community messages carry a real per-room monotonic `sequenceNumber`
+ * (allocateSequence → generalRoom.lastSequence), so the endpoint supports BOTH
+ * the `(createdAt, _id)` timestamp keyset (default; works on all data with no
+ * backfill) and the gap-safe `sequenceNumber` keyset (`before_seq`/`after_seq`,
+ * opt-in — only trustworthy on rooms whose seq has been backfilled).
+ * Timestamps are epoch ms.
+ *
+ * Precedence: `around` → `before_seq`/`after_seq` → `after_ts` (incremental sync)
+ * → `before_ts` / newest page.
  *
  * The two timestamp params are mutually exclusive:
  *
@@ -183,28 +151,21 @@ export const communityTimelineQuerySchema = z
       .optional(),
     after_ts: z.coerce.number().int().positive().optional(),
     around: z.string().min(1).max(100).optional(),
+    // Gap-safe sequenceNumber keyset (opt-in). before_seq → sequenceNumber < seq
+    // (newest-first); after_seq → > seq (oldest-first). Takes precedence over the
+    // *_ts params when sent. Only use on rooms whose sequenceNumber is backfilled.
+    before_seq: z.coerce.number().int().min(0).optional(),
+    after_seq: z.coerce.number().int().min(0).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(30),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Provide either before_ts or after_ts, not both",
     path: ["before_ts"],
+  })
+  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
+    message: "Provide either before_seq or after_seq, not both",
+    path: ["before_seq"],
   });
-
-/**
-/** Community V2 timeline — the same contract as private/group. */
-export const communityTimelineV2QuerySchema = timelineV2QuerySchema;
-
-/**
- * Query schema for the ZERO-LOSS changes feed
- * (`GET /api/v2/chat/community/rooms/:roomId/changes`). `since_revision` is the
- * client's per-room CHANGE high-water; `0` = cold start (drains from the
- * beginning within the retention horizon). Returns inserts AND mutations whose
- * `revision > since_revision`.
- */
-export const communityChangesV2QuerySchema = z.object({
-  since_revision: z.coerce.number().int().min(0).default(0),
-  limit: z.coerce.number().int().min(1).max(200).default(100),
-});
 
 /**
  * Query schema for the community incremental-sync REST endpoint.
@@ -253,33 +214,12 @@ export const messageContextQuerySchema = z.object({
   roomId: z.string().min(1).max(300),
 });
 
-export const inboxQuerySchema = z
-  .object({
-    before_ts: z.coerce.number().int().positive().optional(),
-    after_ts: z.coerce.number().int().positive().optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
-  })
-  .refine((q) => !(q.before_ts != null && q.after_ts != null), {
-    message: "Please provide only one pagination parameter at a time",
-    path: ["before_ts"],
-  });
-
 /**
- * V2 query schema for the unified inbox (`GET /api/v2/chat/inbox`).
- *
- * Replaces V1's bare epoch-ms `before_ts`/`after_ts` with the same opaque
- * compound keyset token community V2 uses — here `"<lastMessageAtMs>_<roomId>"`,
- * since the inbox's tiebreaker is the `roomId` both repositories already sort on
- * (`orderBy: [lastMessageAt, roomId]`), not an ObjectId. This closes V1's
- * inclusive-boundary duplicate/skip on same-millisecond rows, so clients no
- * longer have to de-dupe by `roomId`.
- *
- * - `before_cursor`: older page (newest-first).
- * - `after_cursor` : newer page (oldest-first).
- *
- * The token is OPAQUE — echo `nextCursor` back verbatim. A bare epoch-ms is
- * accepted as a coarse jump (exclusive, no tiebreaker). Omit both for the
- * newest page.
+ * The inbox's compound keyset token: `"<lastMessageAtMs>_<roomId>"`. The
+ * tiebreaker is the `roomId` STRING (`prv_`/`grp_` + nanoid) that both
+ * repositories already sort on (`orderBy: [lastMessageAt, roomId]`), not an
+ * ObjectId — hence the wider character class. A bare epoch-ms is also accepted as
+ * a coarse jump (exclusive, no tiebreaker).
  */
 const compoundRoomCursor = z
   .string()
@@ -288,11 +228,31 @@ const compoundRoomCursor = z
     "must be epoch-ms or the compound cursor '<ms>_<roomId>'"
   );
 
-export const inboxV2QuerySchema = z
+/**
+ * Query schema for the unified inbox (`GET /chat/inbox`). Two pagination modes:
+ *
+ * - `before_cursor` / `after_cursor` (PREFERRED) — the opaque compound
+ *   `(lastMessageAt, roomId)` keyset token. Boundaries are EXCLUSIVE, so
+ *   consecutive pages never share a row when two conversations tie on
+ *   `lastMessageAt` and the client needs no de-duplication. Echo
+ *   `pagination.nextCursor` back verbatim.
+ * - `before_ts` / `after_ts` (legacy) — a bare epoch-ms bound, INCLUSIVE, so
+ *   pages share the boundary row on a tie and clients de-dupe by `roomId`.
+ *   Retained for backward compatibility.
+ *
+ * `*_cursor` wins over `*_ts` when both are sent. Omit all for the newest page.
+ */
+export const inboxQuerySchema = z
   .object({
     before_cursor: compoundRoomCursor.optional(),
     after_cursor: compoundRoomCursor.optional(),
+    before_ts: z.coerce.number().int().positive().optional(),
+    after_ts: z.coerce.number().int().positive().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .refine((q) => !(q.before_ts != null && q.after_ts != null), {
+    message: "Please provide only one pagination parameter at a time",
+    path: ["before_ts"],
   })
   .refine((q) => !(q.before_cursor != null && q.after_cursor != null), {
     message: "Provide either before_cursor or after_cursor, not both",

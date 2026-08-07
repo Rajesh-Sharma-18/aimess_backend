@@ -11,7 +11,6 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
-  buildTimelinePageV2,
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
@@ -127,6 +126,16 @@ export class CommunityMessageController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  /**
+   * `GET /chat/community/rooms/:roomId/messages` — the community room timeline.
+   *
+   * Pagination precedence:
+   *   `around`                     → jump-to-message window (ts-anchored)
+   *   `before_seq` / `after_seq`   → gap-safe sequenceNumber keyset (OPT-IN; only
+   *                                  trustworthy on rooms with seq backfilled)
+   *   `after_ts`                   → incremental sync (updatedAt >=, incl. tombstones)
+   *   `before_ts` / none           → compound `(createdAt, _id)` history keyset
+   */
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
@@ -148,7 +157,7 @@ export class CommunityMessageController {
         limit,
       });
       const paginated = buildAroundResponse(
-        items as unknown as Record<string, unknown>[],
+        toCanonicalMessages(items as unknown as Record<string, unknown>[]),
         total,
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
@@ -164,6 +173,47 @@ export class CommunityMessageController {
               : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
           )
         );
+      return;
+    }
+
+    // Gap-safe sequenceNumber keyset (opt-in). Checked before the *_ts params so
+    // a client that sends both gets the monotonic axis. `sequenceNumber` matches
+    // display order by definition, whereas `(createdAt, id)` can invert — but it
+    // is only correct on rooms whose seq has been backfilled, which is why this
+    // stays opt-in rather than becoming the default.
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+
+    if (beforeSeq != null || afterSeq != null) {
+      const result = await this.service.getMessagesSeqKeyset({
+        roomId,
+        userId,
+        direction: afterSeq != null ? "after" : "before",
+        seq: afterSeq ?? beforeSeq ?? null,
+        limit,
+      });
+      const paginated = {
+        ...buildTimelineResponse(
+          toCanonicalMessages(
+            result.items as unknown as Record<string, unknown>[]
+          ),
+          result.total,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
+      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      const msg = paginated.data.length
+        ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+        : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
       return;
     }
 
@@ -206,7 +256,7 @@ export class CommunityMessageController {
       res.status(HTTP_STATUS.OK).json(
         new ApiResponse(
           {
-            data: result.items,
+            data: toCanonicalMessages(result.items),
             hasMore: result.hasMore,
             // Store this as the next after_ts to page forward or re-sync.
             nextCursor: result.nextCursor,
@@ -237,7 +287,9 @@ export class CommunityMessageController {
     // ADDITIVE on every page so a client can page BOTH ways from any window.
     const paginated = {
       ...buildTimelineResponse(
-        result.items as unknown as Record<string, unknown>[],
+        toCanonicalMessages(
+          result.items as unknown as Record<string, unknown>[]
+        ),
         result.total,
         limit,
         result.hasMore,
@@ -256,89 +308,7 @@ export class CommunityMessageController {
   });
 
   /**
-   * V2 — `GET /api/v2/chat/community/rooms/:roomId/messages`.
-   *
-   * PRIMARY history axis = an OPAQUE `cursor` on the compound `(createdAt, id)`
-   * keyset (same keyset V1 computes). It works on ALL existing data with no
-   * backfill and always hands back a real `<ms>_<id>` `nextCursor` (never `"0"`)
-   * — fixing the "cursor ignored / infinite newest-page loop" the FE reported.
-   * The `sequenceNumber` keyset (`before_seq`/`after_seq`) stays as an OPT-IN
-   * gap-safe path for rooms whose seq has been backfilled.
-   *
-   * Precedence: `around` (jump-to-message, ts-anchored) → `before_seq`/`after_seq`
-   * (explicit seq opt-in) → opaque `cursor` / `before_ts` / `after_ts` (ts keyset,
-   * DEFAULT) → newest page. Response adds `pinnedMessage` + `roomRevision`.
-   */
-  getMessagesV2 = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
-    const roomId = req.params.roomId as string;
-    const limit = Number(req.query.limit) || 40;
-    const around = req.query.around as string | undefined;
-
-    if (around) {
-      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
-        await this.service.getMessagesAround({
-          roomId,
-          userId,
-          messageId: around,
-          limit,
-        });
-      const page = buildTimelinePageV2(
-        toCanonicalMessages(items as unknown as Record<string, unknown>[]),
-        limit,
-        { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
-      );
-      const [pinnedMessage, roomRevision] = await Promise.all([
-        this.pinService.getActivePinSummary(roomId),
-        this.service.getRoomRevision(roomId),
-      ]);
-      res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(
-            { ...page, roomRevision, pinnedMessage },
-            items.length
-              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
-              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
-          )
-        );
-      return;
-    }
-
-    const beforeSeq =
-      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
-    const afterSeq =
-      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
-
-    const result = await this.service.getMessagesSeqV2({
-      roomId,
-      userId,
-      direction: afterSeq != null ? "after" : "before",
-      seq: afterSeq ?? beforeSeq ?? null,
-      limit,
-    });
-
-    const page = buildTimelinePageV2(
-      toCanonicalMessages(result.items as unknown as Record<string, unknown>[]),
-      limit,
-      result.cursors
-    );
-    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
-    const msg = page.items.length
-      ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
-      : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          { ...page, roomRevision: result.roomRevision, pinnedMessage },
-          msg
-        )
-      );
-  });
-
-  /**
-   * V2 — `GET /api/v2/chat/community/rooms/:roomId/changes` — the ZERO-LOSS
+   * `GET /chat/community/rooms/:roomId/changes` — the ZERO-LOSS
    * changes feed. Returns every message whose room CHANGE `revision >
    * since_revision` (inserts AND edits/deletes/reactions), current state, ordered
    * revision ASC, plus `roomRevision` (new high-water), `resetRequired` (deep-gap

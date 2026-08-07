@@ -1548,15 +1548,16 @@ type CommunityRow = NonNullable<
   Awaited<ReturnType<typeof communityRepository.findById>>
 >;
 
-/** One `/mine` page row — the shared `mineActivitySelect` shape (V1 == V2). */
+/** One `/mine` page row — the shared `mineActivitySelect` shape. */
 type MineActivityRow = Awaited<
   ReturnType<typeof communityRepository.listMineByActivity>
 >["rows"][number];
 
 /**
  * Serialize a `/mine` page of raw community rows into `CommunityListItem`s —
- * the FULL enrichment shared verbatim by V1 (`listMine`, timestamp cursor) and
- * V2 (`listMineV2`, compound keyset cursor). Only the DB boundary + the emitted
+ * the FULL enrichment shared verbatim by both pagination paths: `listMine`
+ * (legacy inclusive timestamp bound) and `listMineKeyset` (compound exclusive
+ * keyset cursor). Only the DB boundary + the emitted
  * `nextCursor` differ between the two; everything a client actually sees (chat
  * enrichment, mute/moderation state, live sender names, per-viewer lastActivity
  * reconciliation, livestream + streaming flags) is produced identically here.
@@ -2608,14 +2609,14 @@ export const communityService = {
   },
 
   /**
-   * V2 of {@link listMine} for `GET /api/v2/communities/mine`: same enriched
-   * page ({@link enrichMineCommunities}), but paged by a gap-safe COMPOUND
-   * `(lastActivityAt, id)` keyset instead of V1's bare-millisecond bound — so
-   * same-ms communities can no longer skip/duplicate at a page edge. `cursor`
-   * null → newest page; `nextCursor` is the opaque compound `"<ms>_<id>"` the
-   * client feeds straight back as the next `cursor`.
+   * The `cursor=` path of `GET /api/v1/communities/mine`: same enriched page as
+   * {@link listMine} ({@link enrichMineCommunities}), but paged by a gap-safe
+   * COMPOUND `(lastActivityAt, id)` keyset instead of the legacy bare-millisecond
+   * bound — so same-ms communities can no longer skip/duplicate at a page edge.
+   * `cursor` null → newest page; `nextCursor` is the opaque compound `"<ms>_<id>"`
+   * the client feeds straight back as the next `cursor`.
    */
-  async listMineV2(
+  async listMineKeyset(
     userId: string,
     params: { cursor: { ts: Date; id: string } | null; limit: number }
   ): Promise<PaginatedResponse<CommunityListItem>> {

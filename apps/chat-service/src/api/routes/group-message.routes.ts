@@ -20,7 +20,9 @@ import {
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
+  roomChangesQuerySchema,
 } from "../validators/query.validator.js";
+import { deleteMessageQuerySchema } from "../validators/private-message.validator.js";
 import type { GroupMessageController } from "../controllers/group-message.controller.js";
 
 const sendLimit = createRateLimit({
@@ -72,12 +74,36 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     validateQuery(mediaListQuerySchema),
     ctrl.getRoomMedia
   );
+
+  // Zero-loss changes feed — every message whose room CHANGE `revision >
+  // since_revision` (inserts AND edits/deletes/reactions), current state. Same
+  // contract as the private and community equivalents.
+  router.get(
+    "/:roomId/changes",
+    authenticate,
+    validateQuery(roomChangesQuerySchema),
+    ctrl.getChanges
+  );
+
   router.post(
     "/messages/delete",
     authenticate,
     sendLimit,
     validateBody(deleteGroupMessageSchema),
     ctrl.deleteMessage
+  );
+
+  // Path-param delete, matching the private/community shape so a client needs no
+  // per-conversation-type branch. The room is resolved FROM the message. The
+  // body-carried `POST /messages/delete` above stays available. Two path segments
+  // after the `/groups` mount, so it never collides with `DELETE /:roomId` on the
+  // group-room router (one segment) even though that router is mounted first.
+  router.delete(
+    "/messages/:messageId",
+    authenticate,
+    sendLimit,
+    validateQuery(deleteMessageQuerySchema),
+    ctrl.deleteMessageByPath
   );
 
   // Edit a group message (own, TEXT-only, within the 15-min window)
@@ -87,6 +113,16 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     sendLimit,
     validateBody(editGroupMessageSchema),
     ctrl.editMessage
+  );
+
+  // Single-write SET reaction — see the private router's equivalent. The
+  // room-scoped add/remove toggle pair below stays available.
+  router.post(
+    "/messages/:messageId/react",
+    authenticate,
+    sendLimit,
+    validateBody(reactionBodySchema),
+    ctrl.setReaction
   );
   router.get("/:roomId/pins", authenticate, ctrl.getPins);
 

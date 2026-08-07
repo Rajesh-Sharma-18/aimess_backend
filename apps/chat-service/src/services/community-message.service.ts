@@ -1347,15 +1347,15 @@ export class CommunityMessageService {
   }
 
   /**
-   * V2 sequence timeline page
-   * (`GET /api/v2/chat/community/rooms/:roomId/messages`). Gap-safe monotonic
-   * `sequenceNumber` keyset — the SAME shared core as the V1 timestamp path
+   * The `before_seq`/`after_seq` sequence timeline page of
+   * `GET /chat/community/rooms/:roomId/messages`. Gap-safe monotonic
+   * `sequenceNumber` keyset — the SAME shared core as the timestamp path
    * ({@link getTimelinePageShared}); only the cursor axis differs, so a
    * same-millisecond burst can never split across a page boundary. `seq === null`
    * → newest page; `nextCursor` is the plain seq string the client feeds back as
    * `before_seq` (older) / `after_seq` (newer).
    */
-  async getMessagesSeqV2(params: {
+  async getMessagesSeqKeyset(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
@@ -1379,14 +1379,15 @@ export class CommunityMessageService {
   }
 
   /**
-   * Shared community-timeline page core for BOTH the V1 timestamp endpoint and
-   * the V2 sequence endpoint. The ONLY thing that differs between them is the
-   * pagination axis, fully encapsulated in the {@link PaginationCursor} + its
-   * adapter (fetch the page, stringify the `nextCursor`). Access guards,
+   * Shared community-timeline page core for BOTH pagination axes of
+   * `GET /chat/community/rooms/:roomId/messages`. The ONLY thing that differs
+   * between them is the axis, fully encapsulated in the {@link PaginationCursor}
+   * + its adapter (fetch the page, stringify the `nextCursor`). Access guards,
    * membership/ban resolution, the history-visible `total`, ordering,
    * reaction-snapshot enrichment, media URL resolution and serialization are
-   * identical and live here once — so V1 and V2 return byte-identical message
-   * objects and envelopes. V1 passes a TIMESTAMP cursor; V2 a SEQUENCE cursor.
+   * identical and live here once — so both axes return byte-identical message
+   * objects and envelopes. `before_ts`/`after_ts` pass a TIMESTAMP cursor;
+   * `before_seq`/`after_seq` a SEQUENCE cursor.
    */
   private async getTimelinePageShared(params: {
     roomId: string;
@@ -1731,25 +1732,8 @@ export class CommunityMessageService {
   }
 
   /**
-   * V2 seq-anchored jump-to-message window. Same shared core as V1
-   * ({@link getAroundWindowShared}); the SEQUENCE strategy anchors the window on
-   * the message's `sequenceNumber` and returns seq continuation cursors
-   * (`olderCursor`/`newerCursor` fed back as `before_seq`/`after_seq`).
-   */
-  async getMessagesAroundV2(params: {
-    roomId: string;
-    userId: string;
-    messageId: string;
-    limit: number;
-  }): Promise<
-    { items: CommunityMessageWire[]; total: number } & AroundCursors
-  > {
-    return this.getAroundWindowShared({ ...params, strategy: "SEQUENCE" });
-  }
-
-  /**
-   * Shared jump-to-message window core for the V1 (date-anchored) and V2
-   * (seq-anchored) `around` reads. The window anchors on the message row itself;
+   * Shared jump-to-message window core for the date-anchored and seq-anchored
+   * `around` reads. The window anchors on the message row itself;
    * the adapter reads only the cursor's STRATEGY (not its boundary), so a
    * strategy-tagged placeholder cursor selects the seq-vs-date window query AND
    * the matching continuation-cursor format. Access guard, `total`, media
