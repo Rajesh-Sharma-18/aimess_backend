@@ -1,7 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src"
+    "rootDir": "src",
+    // See apps/backoffice-service/tsconfig.json: the inherited "outDir" from
+    // tsconfig.base.json resolves against the BASE file, i.e. <repo-root>/dist.
+    // Every generated service needs its own override, so the template carries one.
+    "outDir": "dist"
   },
   "include": ["src"]
 }
