@@ -445,8 +445,12 @@ export class LivestreamService {
    * broadcast session, continuous duration) and `stream.started` /
    * `community:stream:started` are NOT re-emitted, since the community-facing
    * "this stream is live" state never actually changed during the blip.
+   *
+   * `clientId` is SRS's `client_id` for the publishing connection. It is
+   * recorded on the row so a late on_unpublish from a SUPERSEDED connection can
+   * be told apart from the real one — see {@link handleUnpublish}.
    */
-  async handlePublish(streamKey: string): Promise<boolean> {
+  async handlePublish(streamKey: string, clientId?: string): Promise<boolean> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
       logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
@@ -459,9 +463,17 @@ export class LivestreamService {
       return false;
     }
 
-    // Already LIVE (e.g. markLive was called manually before the hook fired) —
-    // allow the publish but skip the re-broadcast so status events fire exactly once.
+    // Already LIVE (e.g. markLive was called manually before the hook fired, or
+    // a reconnect's on_publish overtook the previous session's on_unpublish) —
+    // allow the publish but skip the re-broadcast so status events fire exactly
+    // once. The client id is still recorded: this connection is now the one on
+    // air, so any on_unpublish still in flight for the previous one is stale.
     if (stream.status === "LIVE") {
+      if (clientId && stream.publisherClientId !== clientId) {
+        await this.streamRepo.updateById(stream.id, {
+          publisherClientId: clientId,
+        });
+      }
       logger.info(
         `on_publish for already-LIVE stream id=${stream.id} — allowing without re-broadcast`
       );
@@ -487,6 +499,7 @@ export class LivestreamService {
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
       disconnectedAt: null,
+      publisherClientId: clientId ?? null,
       // Resume: keep the original livedAt so duration/history stay continuous
       // across the blip. Fresh publish: stamp it for the first time.
       ...(isResume ? {} : { livedAt: new Date() }),
@@ -574,8 +587,20 @@ export class LivestreamService {
    *
    * RECONNECTING/ENDED/CANCELLED → no-op (idempotent against duplicate hooks).
    * PENDING → finalized outright (unpublish with no preceding publish = bad state).
+   *
+   * STALE HOOKS: a browser WHIP reconnect republishes by DELETEing the old WHIP
+   * resource and POSTing a new one. SRS dispatches both hooks on background
+   * coroutines and Express serves them concurrently, so the OLD connection's
+   * on_unpublish can land AFTER the NEW connection's on_publish. Acting on it
+   * would demote a stream whose publisher is very much alive — media keeps
+   * flowing, the UI sits on "RECONNECTING" forever, and 45 s later the
+   * reconnect-grace sweeper ends a perfectly healthy broadcast. `clientId` (SRS
+   * `client_id`) identifies the connection the hook is about: if it doesn't
+   * match the one {@link handlePublish} last put on air, the hook is stale and
+   * dropped. Null on either side = unknown provenance → honour the hook, which
+   * is the pre-existing behaviour.
    */
-  async handleUnpublish(streamKey: string): Promise<void> {
+  async handleUnpublish(streamKey: string, clientId?: string): Promise<void> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
       logger.warn(
@@ -584,6 +609,16 @@ export class LivestreamService {
       return;
     }
     if (stream.status === "ENDED" || stream.status === "RECONNECTING") {
+      return;
+    }
+    if (
+      clientId &&
+      stream.publisherClientId &&
+      stream.publisherClientId !== clientId
+    ) {
+      logger.info(
+        `on_unpublish: ignoring stale hook for stream id=${stream.id} — client=${clientId} was superseded by client=${stream.publisherClientId}`
+      );
       return;
     }
 
@@ -1246,6 +1281,13 @@ export class LivestreamService {
    * window. This is the one place a reconnect-grace stream is actually
    * declared over — see {@link handleUnpublish} (enters the grace window) and
    * {@link handlePublish} (resumes LIVE within it).
+   *
+   * Before ending anything it re-checks SRS: if the key still has a publisher
+   * open, the row is stale bookkeeping (a lost or reordered on_publish hook),
+   * not a dead broadcast — resume it rather than killing a stream that is
+   * visibly on air. This acts on a publisher's PRESENCE, which a degraded SRS
+   * reply can only under-report; the mirror case (absence) is deliberately NOT
+   * trusted here, same discipline as {@link reconcileWithSrs}.
    */
   private async sweepStaleReconnectingStreams(): Promise<void> {
     const cutoff = new Date(Date.now() - env.STREAM_RECONNECT_GRACE_MS);
@@ -1263,10 +1305,28 @@ export class LivestreamService {
     if (!stale.length) return;
 
     logger.info(
-      `sweepStaleReconnectingStreams: finalizing ${stale.length} stream(s) whose reconnect grace expired`
+      `sweepStaleReconnectingStreams: ${stale.length} stream(s) past the reconnect grace window`
     );
+
+    // null = an SRS instance was unreachable; an empty map then means "we know
+    // nothing", which degrades to the previous end-everything behaviour.
+    const publishers = await this.srsService.listPublishers();
+    const publishingClientIds = new Map(
+      (publishers ?? []).map((p) => [p.streamKey, p.clientId])
+    );
+
     for (const stream of stale) {
       try {
+        const clientId = publishingClientIds.get(stream.streamKey);
+        if (
+          clientId &&
+          (await this.handlePublish(stream.streamKey, clientId))
+        ) {
+          logger.info(
+            `sweepStaleReconnectingStreams: resumed stream=${stream.id} — SRS still has publisher client=${clientId}`
+          );
+          continue;
+        }
         await this.finalizeAsEnded(stream);
         logger.info(
           `sweepStaleReconnectingStreams: ended stream=${stream.id} community=${stream.communityId}`

@@ -46,6 +46,9 @@ export function createInternalRoutes(
         action?: string;
         stream?: string;
         app?: string;
+        /** SRS connection id — distinguishes a superseded publisher's late
+         *  on_unpublish from the live one's (see handleUnpublish). */
+        client_id?: string | number;
       };
       logStreamHookBanner(
         `HIT /internal/srs/hooks action=${body.action ?? "?"} app=${
@@ -57,7 +60,7 @@ export function createInternalRoutes(
         } secretCheck=enabled`
       );
       logger.info(
-        `SRS hook HIT — action=${body.action ?? "?"} stream=${body.stream ?? "?"} app=${body.app ?? "?"} ip=${req.ip ?? "?"}`
+        `SRS hook HIT — action=${body.action ?? "?"} stream=${body.stream ?? "?"} app=${body.app ?? "?"} client=${String(body.client_id ?? "?")} ip=${req.ip ?? "?"}`
       );
 
       // Shared-secret guard — always enforced.
@@ -77,6 +80,12 @@ export function createInternalRoutes(
 
       const action = body.action ?? "";
       const streamKey = body.stream ?? "";
+      // SRS sends client_id as a string; coerce defensively so a numeric id
+      // still compares equal across publish/unpublish.
+      const clientId =
+        body.client_id === undefined || body.client_id === null
+          ? undefined
+          : String(body.client_id);
 
       if (!streamKey) {
         logger.warn(
@@ -99,7 +108,10 @@ export function createInternalRoutes(
       try {
         switch (action) {
           case "on_publish": {
-            const allow = await livestreamService.handlePublish(streamKey);
+            const allow = await livestreamService.handlePublish(
+              streamKey,
+              clientId
+            );
             logStreamHookBanner(
               `RESULT action=on_publish stream=${streamKey} allowed=${String(allow)} responseBody=${
                 allow ? "0" : "1"
@@ -109,7 +121,7 @@ export function createInternalRoutes(
             return;
           }
           case "on_unpublish": {
-            await livestreamService.handleUnpublish(streamKey);
+            await livestreamService.handleUnpublish(streamKey, clientId);
             logStreamHookBanner(
               `RESULT action=on_unpublish stream=${streamKey} responseBody=0`
             );
