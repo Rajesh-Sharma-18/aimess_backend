@@ -5,10 +5,13 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { chatCopy } from "../lib/notification-copy.js";
+import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
   filterToActiveCommunityMembers,
   isCommunityActorMuted,
+  isGroupMemberMuted,
+  isPrivateRoomMutedBy,
 } from "../services/notification-eligibility.service.js";
 
 /**
@@ -36,6 +39,10 @@ interface MessageSentPayload {
   senderId: string;
   senderName: string;
   senderAvatar: string;
+  groupName?: string;
+  conversationAvatar?: string;
+  canReply?: boolean;
+  unreadCount?: number;
   preview: string;
   messageType: string;
   sentAt: number;
@@ -69,6 +76,43 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     (id) => id && id !== data.senderId
   );
   if (recipients.length === 0) return;
+
+  // Private-room mute gate: a recipient who has muted this 1-to-1 conversation
+  // must not receive a push for it. Everything else (persistence, unread
+  // counts, socket events, ordering) is unaffected — this consumer only
+  // decides push delivery. Fail-open on oracle outage (see chatMessagingClient).
+  if (
+    data.conversationType === "PRIVATE" ||
+    data.conversationType === "GROUP"
+  ) {
+    const muteChecks = await Promise.all(
+      recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
+    );
+    const before = recipients.length;
+    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    if (recipients.length < before) {
+      logger.info(
+        `Suppressing ${data.conversationType} push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
+
+  // Group-room mute gate: mirror of the private-room gate above, but the mute
+  // setting lives on the GroupMember row (per-membership) rather than the room.
+  if (data.conversationType === "GROUP") {
+    const muteChecks = await Promise.all(
+      recipients.map((id) => isGroupMemberMuted(id, data.conversationId))
+    );
+    const before = recipients.length;
+    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    if (recipients.length < before) {
+      logger.info(
+        `Suppressing group push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`
+      );
+    }
+    if (recipients.length === 0) return;
+  }
 
   // Authoritative ACTIVE-roster filter: chat-service's RoomMember mirror can
   // lag behind leave/kick/ban, so a LEFT user may still appear in recipientIds.
@@ -122,6 +166,15 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     isCommunity ? data.communityName : undefined
   );
 
+  // Map PRIVATE → PERSONAL for thread-id generation (internal vs wire protocol naming)
+  const chatType =
+    data.conversationType === "PRIVATE" ? "PERSONAL" : data.conversationType;
+  const threadId = generateThreadId(
+    chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
+    data.conversationId,
+    communityId
+  );
+
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
@@ -135,6 +188,8 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     actorId: data.senderId,
     deepLink,
     collapseKey: `conv:${data.conversationId}`,
+    apnsThreadId: threadId,
+    chatType: chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
     showPreviewOverride,
     // Chat messages must never create a Notification Center entry — see
     // PushInput.skipInbox. Push (this call) and per-conversation unread
@@ -153,6 +208,14 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       senderId: data.senderId,
       senderName: data.senderName ?? "",
       senderAvatar: data.senderAvatar ?? "",
+      ...(data.groupName ? { groupName: data.groupName } : {}),
+      ...(data.conversationAvatar
+        ? { conversationAvatar: data.conversationAvatar }
+        : {}),
+      canReply: data.canReply === false ? "false" : "true",
+      ...(typeof data.unreadCount === "number"
+        ? { unreadCount: String(data.unreadCount) }
+        : {}),
       contentType: data.messageType ?? "",
       preview: data.preview ?? "",
       sentAt: String(data.sentAt ?? ""),

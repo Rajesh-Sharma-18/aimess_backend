@@ -94,8 +94,10 @@ describe("JOIN_REQUEST_APPROVED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Join request approved");
-    expect(arg.body).toContain("Cool Community");
+    expect(arg.title).toBe("Cool Community");
+    expect(arg.body).toBe(
+      "Someone approved your request to join Cool Community"
+    );
     expect(arg.data).toMatchObject({ requestId: RID, status: "APPROVED" });
   });
 
@@ -132,8 +134,10 @@ describe("JOIN_REQUEST_REJECTED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Join request declined");
-    expect(arg.body).toContain("Cool Community");
+    expect(arg.title).toBe("Cool Community");
+    expect(arg.body).toBe(
+      "Your request to join Cool Community wasn't approved"
+    );
     expect(arg.data).toMatchObject({ requestId: RID, status: "REJECTED" });
   });
 
@@ -181,7 +185,8 @@ describe("MEMBER_ADDED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Welcome to the community");
+    expect(arg.title).toBe("Your community");
+    expect(arg.body).toBe("You were added to Your community");
   });
 
   it("fans the moderator awareness push to admins/mods, excluding actor + joiner", async () => {

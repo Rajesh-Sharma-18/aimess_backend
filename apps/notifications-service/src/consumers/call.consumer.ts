@@ -3,6 +3,7 @@ import amqp from "amqplib";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { generateEventThreadId } from "../lib/thread-id.js";
 import { pushToUser } from "../services/push.service.js";
 
 /**
@@ -44,6 +45,8 @@ interface CallCancelPayload {
   callId: string;
   calleeId: string;
   reason: string;
+  callerId?: string;
+  callerName?: string;
 }
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
@@ -73,6 +76,8 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     deepLink,
     // One ring per call — a re-publish must replace, never stack.
     collapseKey: `call:${data.callId}`,
+    // Group all call-related notifications together
+    apnsThreadId: generateEventThreadId("CALL_INCOMING"),
     // Calls are time-critical: wake the device immediately and keep the
     // notification on screen (sendPush maps high → requireInteraction on web,
     // apns-priority 10, android priority high).
@@ -83,6 +88,9 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     // Live ring — iOS VOIP tokens get an APNs VoIP push (required for reliable
     // wake); see PushInput.allowVoip docs for why this must stay opt-in.
     allowVoip: true,
+    // iOS shows "Accept" / "Decline" action buttons when the category matches a
+    // registered UNNotificationCategory. iOS side must register "INCOMING_CALL".
+    apnsCategory: "INCOMING_CALL",
     // No `notification` block: the client renders its own full-screen CallStyle
     // ring. Sending one makes Android auto-post a SECOND tray notification
     // beside it, and a notification-carrying message does not reliably reach
@@ -100,15 +108,12 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
       type: "CALL_INCOMING",
       callId: data.callId,
       callerId: data.callerId,
-      callerName: data.callerName ?? "",
+      callerName: data.callerName || "Someone",
       callerAvatar: data.callerAvatar ?? "",
       callType: isVideo ? "VIDEO" : "AUDIO",
       initiatedAt: String(data.initiatedAt ?? ""),
       idempotencyKey: data.callId,
       deepLink,
-      // Lets a push-woken client join LiveKit without waiting for its socket.
-      // `?? ""` — messages queued by the previous producer lack these, and FCM
-      // rejects non-string data values.
       livekitUrl: data.livekitUrl ?? "",
       token: data.token ?? "",
     },
@@ -192,6 +197,8 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
       type: "CALL_CANCELLED",
       callId: data.callId,
       reason: data.reason ?? "",
+      callerId: data.callerId ?? "",
+      callerName: data.callerName ?? "",
     },
   });
 }

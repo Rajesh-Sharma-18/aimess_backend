@@ -62,6 +62,19 @@ export interface InboxItem {
   role: string | null;
   /** GROUP-only: true when the caller is an active member; null for PRIVATE rows. */
   isJoined: boolean | null;
+  /** GROUP-only: true when the caller voluntarily left; null for PRIVATE rows. */
+  hasLeft: boolean | null;
+  /**
+   * GROUP-only: an admin/moderator has silenced the CALLER (read stays open,
+   * every write is rejected with CHAT_MUTED_IN_GROUP). Distinct from `isMuted`,
+   * the caller's own NOTIFICATION mute. `getInboxGroups` already computed this
+   * — the unified inbox simply dropped it on the floor, so a client that was
+   * offline when the mute landed had no way to restore its disabled composer
+   * on a cold start. Null for PRIVATE rows.
+   */
+  isMemberMuted: boolean | null;
+  /** GROUP-only: ISO-8601 expiry of a timed member-mute; null = indefinite. */
+  memberMutedUntil: string | null;
 }
 
 export interface InboxResult {
@@ -198,6 +211,9 @@ export class InboxService {
       memberCount: null,
       role: null,
       isJoined: null,
+      hasLeft: null,
+      isMemberMuted: null,
+      memberMutedUntil: null,
     };
   }
 
@@ -232,6 +248,9 @@ export class InboxService {
       memberCount: room.memberCount,
       role: room.role,
       isJoined: room.isJoined,
+      hasLeft: room.hasLeft,
+      isMemberMuted: room.isMemberMuted ?? false,
+      memberMutedUntil: room.memberMutedUntil ?? null,
     };
   }
 }

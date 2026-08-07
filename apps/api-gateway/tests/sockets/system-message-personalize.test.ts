@@ -22,6 +22,30 @@ describe("personalizeGroupSocketMessage", () => {
     expect(result).toEqual(message);
   });
 
+  it("personalizes a PRIVATE lifecycle system message", () => {
+    const message = {
+      conversationType: "PRIVATE",
+      contentType: "SYSTEM",
+      systemEvent: "MESSAGE_PINNED",
+      systemData: {
+        actorId: "member-1",
+        actorName: "Alice",
+      },
+      contentText: "Alice pinned a message",
+      content: { text: "Alice pinned a message", urls: [], files: [] },
+    };
+
+    expect(personalizeGroupSocketMessage(message, "member-1")).toEqual({
+      ...message,
+      contentText: "You pinned a message",
+      content: {
+        text: "You pinned a message",
+        urls: [],
+        files: [],
+      },
+    });
+  });
+
   it("still personalizes a GROUP lifecycle system message", () => {
     const message = {
       conversationType: "GROUP",

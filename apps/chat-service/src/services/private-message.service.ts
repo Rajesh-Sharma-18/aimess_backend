@@ -26,9 +26,19 @@ import {
   toWireMessage,
   isCommunityInvitationMessage,
   buildCommunityInvitationAction,
+  isGroupInvitationMessage,
+  buildGroupInvitationAction,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  computeAutoDeleteStamp,
+  parseAutoDeleteMap,
+  resolveEffectiveAutoDelete,
+  AUTO_DELETE_NONE,
+  AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
+  type AutoDeleteStamp,
+} from "../lib/auto-delete.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
@@ -51,6 +61,7 @@ import {
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import {
+  resolveMediaUrl,
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
@@ -68,7 +79,11 @@ import type { PrivateMessageReportRepository } from "../repositories/private-mes
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { personalizePrivateSystemMessageForViewer } from "@aimess/constants";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
 import type {
@@ -96,7 +111,14 @@ export class PrivateMessageService {
     // Optional so existing unit tests that construct the service without these
     // keep working (delivery just stays "sent" until the client ack lands).
     private readonly presenceService?: PresenceService,
-    private readonly redis?: Redis | Cluster | null
+    private readonly redis?: Redis | Cluster | null,
+    // Optional — GROUP_INVITE cards resolve membership/link state directly via
+    // these repos (unlike COMMUNITY_INVITE, group data lives in this same
+    // service, so no gRPC round-trip is needed). Omitted callers just fall
+    // back to the message's own stored data (see enrichMessages).
+    private readonly groupRoomRepo?: GroupRoomRepository,
+    private readonly groupMemberRepo?: GroupMemberRepository,
+    private readonly groupInviteLinkRepo?: GroupInviteLinkRepository
   ) {}
 
   async sendMessage(params: {
@@ -208,10 +230,20 @@ export class PrivateMessageService {
       }
     }
 
+    // Auto-delete: which timer THIS message gets is decided once, here, from the
+    // room's per-user settings (see lib/auto-delete.ts). Resolved before the
+    // insert loop so every album row of one send shares the same deadline.
+    const autoDelete = await this.resolveAutoDeleteStamp(
+      params.roomId,
+      params.senderId
+    );
+
     const created: PrivateMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       const entity: Record<string, unknown> = {
+        autoDeleteAt: autoDelete.autoDeleteAt,
+        autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.roomId,
         senderId: params.senderId,
         receiverId: params.receiverId,
@@ -674,21 +706,26 @@ export class PrivateMessageService {
     userId: string;
     query: string;
     limit: number;
-    skip?: number;
-  }): Promise<PrivateMessage[]> {
+    cursor?: string | null;
+  }): Promise<{
+    messages: PrivateMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
       params.userId
     );
-    return this.messageRepo.searchByText(
-      params.roomId,
-      params.query,
-      params.limit,
-      params.userId,
-      params.skip ?? 0,
-      getPrivateDeletionCutoff(room, params.userId)
-    );
+    return this.messageRepo.searchByText({
+      roomId: params.roomId,
+      query: params.query,
+      limit: params.limit,
+      userId: params.userId,
+      cursor: params.cursor,
+      cutoff: getPrivateDeletionCutoff(room, params.userId),
+    });
   }
 
   async listMedia(params: {
@@ -716,11 +753,65 @@ export class PrivateMessageService {
     });
   }
 
+  /**
+   * The auto-delete columns a message sent by `senderId` into `roomId` must
+   * carry. Reads the room's per-user `autoDeleteBy` map and applies the
+   * sender-first-then-peer rule (see lib/auto-delete.ts). Fails OPEN — a lookup
+   * error must never block a send, it just means no timer on that message.
+   */
+  private async resolveAutoDeleteStamp(
+    roomId: string,
+    senderId: string
+  ): Promise<AutoDeleteStamp> {
+    try {
+      const room = await this.roomRepo.findByRoomId(roomId);
+      if (!room) return AUTO_DELETE_NONE;
+      const peerId = (room.participants ?? []).find((id) => id !== senderId);
+      const map = parseAutoDeleteMap(room.autoDeleteBy);
+      const setting = resolveEffectiveAutoDelete(map, senderId, peerId ?? "");
+      return computeAutoDeleteStamp(setting, new Date());
+    } catch (err) {
+      logger.warn(
+        `PrivateMessageService|resolveAutoDeleteStamp failed room=${roomId}: ${String(err)}`
+      );
+      return AUTO_DELETE_NONE;
+    }
+  }
+
+  /**
+   * Auto-delete "After Viewing": start the countdown on every such message this
+   * reader RECEIVED in this room (§3.4 — the deadline only exists once the
+   * recipient has actually seen it; §8.7 — never before the receipt lands).
+   * Idempotent, so every mark-read can call it unconditionally. Returns the
+   * number of messages armed.
+   */
+  async armAfterViewingMessages(
+    roomId: string,
+    readerId: string
+  ): Promise<number> {
+    return this.messageRepo.armAfterViewing(
+      roomId,
+      readerId,
+      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000)
+    );
+  }
+
   async markRead(params: {
     roomId: string;
     userId: string;
     lastMessageId: string;
   }): Promise<unknown> {
+    // Auto-delete "After Viewing" arms HERE — the single point every read path
+    // (REST via the orchestrator, socket/gRPC via markMessagesRead) funnels
+    // through — so no caller can forget it. Fire-and-forget: the sweeper still
+    // owns the deletion, a failure here only delays it to the next read.
+    void this.armAfterViewingMessages(params.roomId, params.userId).catch(
+      (err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
+        );
+      }
+    );
     return this.roomRepo.markReadUpTo({
       roomId: params.roomId,
       userId: params.userId,
@@ -1531,10 +1622,18 @@ export class PrivateMessageService {
     };
 
     const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+    // §8.1 — a forward does NOT inherit the source message's timer; it is a new
+    // message in the TARGET chat and follows that chat's own setting.
+    const autoDelete = await this.resolveAutoDeleteStamp(
+      params.targetRoomId,
+      params.senderId
+    );
 
     let message: PrivateMessage;
     try {
       message = await this.messageRepo.createForwardedMessage({
+        autoDeleteAt: autoDelete.autoDeleteAt,
+        autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.targetRoomId,
         senderId: params.senderId,
         receiverId: params.receiverId,
@@ -1810,7 +1909,8 @@ export class PrivateMessageService {
     // link may have been revoked/expired/the community deleted.
     const systemActionByMessageId = new Map<
       string,
-      ReturnType<typeof buildCommunityInvitationAction>
+      | ReturnType<typeof buildCommunityInvitationAction>
+      | ReturnType<typeof buildGroupInvitationAction>
     >();
     const inviteMessages = messages.filter(isCommunityInvitationMessage);
     if (inviteMessages.length > 0) {
@@ -1878,6 +1978,66 @@ export class PrivateMessageService {
       }
     }
 
+    // Resolve `systemAction` for every GROUP_INVITE card — in-process (no
+    // gRPC): group membership/link state lives in this same service, so each
+    // card is re-checked directly against the current row, unlike
+    // COMMUNITY_INVITE which needs the batched gRPC round-trip above.
+    const groupInviteMessages = messages.filter(isGroupInvitationMessage);
+    if (
+      groupInviteMessages.length > 0 &&
+      this.groupRoomRepo &&
+      this.groupMemberRepo
+    ) {
+      for (const m of groupInviteMessages) {
+        const sd = (m.systemData ?? {}) as Record<string, unknown>;
+        const groupId = String(sd.groupId ?? "");
+        const groupName = String(sd.groupName ?? "");
+        const groupAvatarUrl = sd.groupAvatarUrl
+          ? String(sd.groupAvatarUrl)
+          : null;
+        const memberCount = Number(sd.memberCount ?? 0);
+        const token = sd.token ? String(sd.token) : null;
+        const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
+
+        const room = groupId
+          ? await this.groupRoomRepo.findActiveByRoomId(groupId)
+          : null;
+        const alreadyJoined =
+          Boolean(room) && viewerId
+            ? Boolean(
+                await this.groupMemberRepo.findActiveByRoomAndUser(
+                  groupId,
+                  viewerId
+                )
+              )
+            : false;
+        const link = token
+          ? await this.groupInviteLinkRepo?.findActiveByToken(token)
+          : null;
+        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
+          ? "DELETED"
+          : token && !link
+            ? "REVOKED"
+            : "ACTIVE";
+
+        systemActionByMessageId.set(
+          m.id,
+          buildGroupInvitationAction({
+            groupId,
+            groupName: room?.name ?? groupName,
+            groupAvatarUrl: room
+              ? await resolveMediaUrl(room.avatar)
+              : groupAvatarUrl,
+            memberCount: room?.memberCount ?? memberCount,
+            inviteToken: token,
+            deepLink,
+            alreadyJoined,
+            status,
+          })
+        );
+      }
+    }
+
     return messages.map((message) => {
       const snapshot = (snapshots.get(message.senderId || "") || {}) as Record<
         string,
@@ -1914,27 +2074,50 @@ export class PrivateMessageService {
       // and the sticker sub-object (content.sticker) — the latter lives
       // outside `files[]` and is otherwise never resolve-on-read.
       const content = wire.content as Record<string, unknown> | null;
-      const resolvedContent = content
+      let contentForWire = content;
+      if (
+        viewerId &&
+        String(wire.contentType).toUpperCase() === "SYSTEM" &&
+        message.systemEvent
+      ) {
+        const systemData = (message.systemData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const thirdPersonText = String(content?.text ?? "");
+        const personalized = personalizePrivateSystemMessageForViewer(
+          message.systemEvent,
+          systemData,
+          thirdPersonText,
+          viewerId
+        );
+        if (personalized !== thirdPersonText && content) {
+          contentForWire = { ...content, text: personalized };
+        }
+      }
+
+      const resolvedContent = contentForWire
         ? {
-            ...content,
-            ...(Array.isArray(content.files)
+            ...contentForWire,
+            ...(Array.isArray(contentForWire.files)
               ? {
                   files: applyUrlMapToFiles(
-                    content.files as MediaFileLike[],
+                    contentForWire.files as MediaFileLike[],
                     urlMap
                   ),
                 }
               : {}),
-            ...(content.sticker && typeof content.sticker === "object"
+            ...(contentForWire.sticker &&
+            typeof contentForWire.sticker === "object"
               ? {
                   sticker: resolveStickerField(
-                    content.sticker as MediaFileLike,
+                    contentForWire.sticker as MediaFileLike,
                     urlMap
                   ),
                 }
               : {}),
           }
-        : content;
+        : contentForWire;
 
       // Canonical client-facing reaction shape (FE reads `reactionGroups[]`; the
       // legacy `reactions` map carried by `...wire` is deprecated).

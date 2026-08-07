@@ -3,6 +3,10 @@ import type { Redis, Cluster } from "ioredis";
 
 import type { SystemEvent } from "../types/enums.js";
 import {
+  buildPrivateSystemFallbackText,
+  resolvePersonDisplayName,
+} from "@aimess/constants";
+import {
   buildChatMessageEvent,
   buildDeletePayload,
 } from "../lib/chat-message.serializer.js";
@@ -20,11 +24,6 @@ export interface PostPrivateSystemMessageParams {
   systemEvent: SystemEvent;
   systemData?: Record<string, unknown>;
 }
-
-const TEXT_BY_EVENT: Record<string, (actorName: string) => string> = {
-  MESSAGE_PINNED: (actor) => `${actor} pinned a message`,
-  MESSAGE_UNPINNED: (actor) => `${actor} unpinned a message`,
-};
 
 /**
  * Posts SYSTEM messages for private-room lifecycle events (currently pin/unpin
@@ -61,22 +60,28 @@ export class PrivateSystemMessageService {
   ): Promise<string | null> {
     const { roomId, actorId, peerId, systemEvent } = params;
     try {
+      const ids = [actorId, peerId].filter(Boolean);
       const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
-        [actorId],
+        ids,
         this.cacheRepo
       );
       const actorSnap = (snapshots.get(actorId) || {}) as Record<
         string,
         unknown
       >;
-      const actorName =
-        (actorSnap.displayName as string) ||
-        (actorSnap.username as string) ||
-        "";
-      const buildText = TEXT_BY_EVENT[systemEvent];
-      const text = buildText ? buildText(actorName || "Someone") : "Updated";
+      const peerSnap = (snapshots.get(peerId) || {}) as Record<string, unknown>;
+      const actorName = resolvePersonDisplayName(actorSnap);
+      const targetName = resolvePersonDisplayName(peerSnap);
 
-      const systemData = { ...params.systemData, actorId, actorName };
+      const systemData = {
+        ...params.systemData,
+        actorId,
+        actorName,
+        peerId,
+        targetUserId: peerId,
+        targetName,
+      };
+      const text = buildPrivateSystemFallbackText(systemEvent, systemData);
       const sequenceNumber = await this.roomRepo.allocateSequence(roomId);
       const message = await this.messageRepo.createMessage({
         roomId,

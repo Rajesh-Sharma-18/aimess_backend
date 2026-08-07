@@ -18,3 +18,8 @@ export const joinByInviteLinkSchema = z.object({
 export const previewInviteLinkSchema = z.object({
   token: z.string().min(10).max(100),
 });
+
+export const bulkSendInviteLinkSchema = z.object({
+  userIds: z.array(z.string().min(1)).min(1).max(50),
+  token: z.string().min(10).max(100).nullish(),
+});

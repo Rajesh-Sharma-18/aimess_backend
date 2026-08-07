@@ -10,6 +10,7 @@ import { createChatNotificationClient } from "../grpc/chat-notification.client.j
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
+import type { DeviceTokenRow } from "../repositories/device-token.repository.js";
 import {
   isCommunityActiveMember,
   isCommunityNotificationEnabled,
@@ -110,6 +111,12 @@ export interface PushInput {
   type: string;
   title: string;
   body: string;
+  /**
+   * Notification-Center heading. `null` = render the row with NO heading (the
+   * body is already a self-describing sentence). `undefined` = reuse `title`.
+   * Never affects the FCM tray notification, which always needs a title.
+   */
+  inboxTitle?: string | null;
   /** Actor that triggered the notification (optional). */
   actorId?: string;
   /** Extra string→string context (entity ids, roster, etc.). */
@@ -119,6 +126,18 @@ export interface PushInput {
   deepLink?: string;
   /** FCM collapse key — collapse multiple notifs for same conversation. */
   collapseKey?: string;
+  /**
+   * APNs thread-id for notification grouping (iOS). Stable identifier shared by
+   * all notifications belonging to the same conversation. Format: type_id
+   * (e.g. chat_conv123, group_group789, community_comm456).
+   */
+  apnsThreadId?: string;
+  /**
+   * Chat/conversation type for client-side foreground suppression and navigation.
+   * Used to determine notification grouping and enable clients to suppress
+   * duplicate banners when user is already viewing the conversation.
+   */
+  chatType?: "PERSONAL" | "GROUP" | "COMMUNITY";
   /** FCM message TTL in seconds (default 86400 = 24h). */
   ttl?: number;
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
@@ -172,6 +191,17 @@ export interface PushInput {
    * call, chat message, etc.).
    */
   allowVoip?: boolean;
+  /**
+   * Skip the device that originated the action. The read-dismiss push uses it so the device
+   * where the conversation was read is not told to dismiss what it already cleared.
+   */
+  excludeDeviceId?: string;
+  /**
+   * APNs notification category — iOS maps this to registered UNNotificationCategory
+   * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
+   * Ignored on Android and data-only pushes.
+   */
+  apnsCategory?: string;
 }
 
 /**
@@ -197,6 +227,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     data,
     deepLink,
     collapseKey,
+    apnsThreadId,
     ttl,
     priority,
     bypassSettings = false,
@@ -204,6 +235,8 @@ export async function pushToUser(input: PushInput): Promise<void> {
     skipInbox = false,
     dataOnly = false,
     allowVoip = false,
+    excludeDeviceId,
+    apnsCategory,
   } = input;
 
   let body = input.body;
@@ -294,13 +327,21 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // important-events-only, everything else stays FCM+realtime-only.
   if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
+      const { inboxTitle } = input;
       await chatNotificationClient.createNotification({
         userId,
         actorId,
         type,
         title,
         body,
-        data,
+        data: {
+          ...(data ?? {}),
+          ...(inboxTitle === null
+            ? { suppressTitle: "true" }
+            : inboxTitle
+              ? { inboxTitle }
+              : {}),
+        },
       });
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
@@ -309,7 +350,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   }
 
   // Load all device tokens for this user.
-  let rawTokens: { token: string; tokenType: string }[];
+  let rawTokens: DeviceTokenRow[];
   try {
     rawTokens = await deviceTokenService.getTokensForUser(userId);
   } catch (error) {
@@ -320,7 +361,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
-  const tokens = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
+  const deduped = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
+  const tokens = excludeDeviceId
+    ? deduped.filter((t) => t.deviceId !== excludeDeviceId)
+    : deduped;
 
   // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
   // registered device, so nothing can ever be delivered no matter what the rest
@@ -335,14 +379,31 @@ export async function pushToUser(input: PushInput): Promise<void> {
     `[push:deliver] user=${userId} type=${type} tokens=${tokens.length}`
   );
 
+  // If there is at least one VoIP token, CallKit will handle the call ring on
+  // iOS. When there is none, we fall back to a notification-bearing FCM push
+  // so the user sees at least a banner on a killed iOS app.
+  const hasVoipToken = tokens.some((t) => t.tokenType === "VOIP");
+
   await Promise.all(
-    tokens.map(async ({ token, tokenType }) => {
+    tokens.map(async ({ token, tokenType, platform }) => {
       // VOIP tokens are iOS PushKit tokens registered only for call ringing —
       // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and
       // ONLY for an event explicitly marked allowVoip (see PushInput docs).
       // A VOIP token is not a valid FCM channel either, so anything else for
       // that token is skipped rather than misdelivered.
       if (tokenType === "VOIP" && !allowVoip) return;
+
+      // ponytail: iOS without a VoIP token gets a notification-carrying FCM
+      // push for call rings so a killed app shows a banner. When a VoIP token
+      // exists, CallKit handles it and we keep dataOnly to avoid a double ring.
+      const effectiveDataOnly =
+        dataOnly &&
+        !(
+          tokenType === "FCM" &&
+          platform === "IOS" &&
+          allowVoip &&
+          !hasVoipToken
+        );
 
       const result =
         tokenType === "VOIP"
@@ -354,9 +415,12 @@ export async function pushToUser(input: PushInput): Promise<void> {
               data,
               deepLink,
               collapseKey,
+              apnsThreadId,
               ttl,
               priority,
-              dataOnly,
+              dataOnly: effectiveDataOnly,
+              platform,
+              apnsCategory,
             });
       if (result.invalidToken) {
         try {

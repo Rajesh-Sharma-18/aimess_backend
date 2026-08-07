@@ -77,6 +77,8 @@ export class NotificationRepository {
         actorSnapshot: (data.actorSnapshot as object) ?? {},
         payload,
         loginSessionId: sessionId,
+        groupKey: (data.groupKey as string | null) ?? null,
+        version: 1,
         isRead: (data.isRead as boolean) ?? false,
         readAt: (data.readAt as Date) ?? null,
         isDeleted: (data.isDeleted as boolean) ?? false,
@@ -125,7 +127,7 @@ export class NotificationRepository {
     if (notificationIds.length === 0) return 0;
     const result = await this.prisma.notification.updateMany({
       where: { id: { in: notificationIds }, userId, isRead: false },
-      data: { isRead: true, readAt: new Date() },
+      data: { isRead: true, readAt: new Date(), version: { increment: 1 } },
     });
     return result.count;
   }
@@ -139,7 +141,7 @@ export class NotificationRepository {
     // a non-owning id matches 0 rows and returns null without mutating.
     const result = await this.prisma.notification.updateMany({
       where: { id: notificationId, userId },
-      data: { isRead: true, readAt: new Date() },
+      data: { isRead: true, readAt: new Date(), version: { increment: 1 } },
     });
     if (result.count === 0) return null;
     return this.prisma.notification.findFirst({
@@ -170,7 +172,7 @@ export class NotificationRepository {
         ...(before ? { createdAt: { lte: before } } : {}),
         ...(extraWhere ?? {}),
       },
-      data: { isRead: true, readAt: new Date() },
+      data: { isRead: true, readAt: new Date(), version: { increment: 1 } },
     });
   }
 
@@ -239,7 +241,11 @@ export class NotificationRepository {
     // isDeleted:false keeps re-deletes idempotent (a second call matches 0 rows).
     const result = await this.prisma.notification.updateMany({
       where: { id: notificationId, userId, isDeleted: false },
-      data: { isDeleted: true, deletedAt: new Date() },
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        version: { increment: 1 },
+      },
     });
     return { count: result.count };
   }
@@ -256,6 +262,37 @@ export class NotificationRepository {
         type,
         entity: { path: ["id"], equals: entityId },
       },
+    });
+  }
+
+  async findCollapsible(
+    userId: string,
+    type: string,
+    entityId: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: {
+        userId,
+        type,
+        isRead: false,
+        isDeleted: false,
+        entity: { path: ["id"], equals: entityId },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async collapseInto(
+    id: string,
+    data: {
+      actorId: string;
+      actorSnapshot: object;
+      payload: object;
+    }
+  ): Promise<Notification> {
+    return this.prisma.notification.update({
+      where: { id },
+      data: { ...data, createdAt: new Date() },
     });
   }
 
@@ -312,7 +349,12 @@ export class NotificationRepository {
     };
     return this.prisma.notification.update({
       where: { id },
-      data: { payload: updatedPayload, isRead: true, readAt: new Date() },
+      data: {
+        payload: updatedPayload,
+        isRead: true,
+        readAt: new Date(),
+        version: { increment: 1 },
+      },
     });
   }
 
@@ -323,7 +365,58 @@ export class NotificationRepository {
   ): Promise<Notification | null> {
     return this.prisma.notification.update({
       where: { id },
-      data: { type, payload: payload as object },
+      data: { type, payload: payload as object, version: { increment: 1 } },
+    });
+  }
+
+  async findActiveByGroupKey(
+    userId: string,
+    groupKey: string
+  ): Promise<Notification | null> {
+    return this.prisma.notification.findFirst({
+      where: { userId, groupKey, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async applyStateTransition(
+    id: string,
+    data: {
+      type: string;
+      actorId: string;
+      actorSnapshot: object;
+      entity: object;
+      payload: object;
+      resurface: boolean;
+    }
+  ): Promise<Notification> {
+    return this.prisma.notification.update({
+      where: { id },
+      data: {
+        type: data.type,
+        actorId: data.actorId,
+        actorSnapshot: data.actorSnapshot,
+        entity: data.entity,
+        payload: data.payload,
+        version: { increment: 1 },
+        ...(data.resurface ? { isRead: false, readAt: null } : {}),
+      },
+    });
+  }
+
+  async findUpdatedSince(
+    userId: string,
+    since: Date,
+    params: { limit: number; viewerSessionId?: string | null }
+  ): Promise<Notification[]> {
+    return this.prisma.notification.findMany({
+      where: {
+        userId,
+        updatedAt: { gt: since },
+        ...excludeSelfLoginWhere(params.viewerSessionId),
+      },
+      orderBy: { updatedAt: "asc" },
+      take: params.limit,
     });
   }
 }

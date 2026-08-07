@@ -5,6 +5,12 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
+import {
+  buildTextSearchPipeline,
+  orderByIds,
+  parseSearchCursor,
+  readTextSearchPage,
+} from "./message-search.js";
 import { logger } from "@aimess/logger";
 import {
   shouldCountInUnread,
@@ -86,6 +92,25 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /** Mirrors CommunityMessageRepository/GeneralRoomMessageRepository's addReport. */
+  async addReport(
+    messageId: string,
+    report: { userReportId: string; userReportReason: string }
+  ): Promise<GroupMessage | null> {
+    const existing = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+    });
+    if (!existing) return null;
+
+    const reports = (existing.reports ?? []) as Array<Record<string, unknown>>;
+    reports.push({ ...report, reportedAt: new Date() });
+
+    return this.prisma.groupMessage.update({
+      where: { id: messageId },
+      data: { reports: reports as unknown as Prisma.InputJsonValue },
+    });
+  }
+
   /** Batch findById — used to resolve a page's own-last-message read ticks in one query. */
   async findManyByIds(ids: string[]): Promise<GroupMessage[]> {
     const validIds = [...new Set(ids)].filter((id) =>
@@ -95,6 +120,37 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findMany({
       where: { id: { in: validIds } },
     });
+  }
+
+  /**
+   * Every other member's DELIVERED high-water mark (`userId` → `sequenceNumber`),
+   * derived from the newest of MY messages each member appears in `deliveredTo` on.
+   * Group's answer to PrivateMessageRepository.getNewestDeliveredSeq — one indexed
+   * query for the whole roster instead of one per member, since a single desc scan
+   * of my own messages yields every member's first (= newest) hit.
+   */
+  async getMemberDeliveredSeqs(
+    roomId: string,
+    senderId: string
+  ): Promise<Record<string, number>> {
+    const rows = await this.prisma.groupMessage.findMany({
+      where: { roomId, senderId, isDeleted: false },
+      orderBy: { sequenceNumber: "desc" },
+      take: 50,
+      select: { sequenceNumber: true, deliveredTo: true },
+    });
+    const cursors: Record<string, number> = {};
+    for (const row of rows) {
+      const list = Array.isArray(row.deliveredTo)
+        ? (row.deliveredTo as unknown as string[])
+        : [];
+      for (const userId of list) {
+        if (userId === senderId) continue;
+        if (cursors[userId] === undefined)
+          cursors[userId] = row.sequenceNumber ?? 0;
+      }
+    }
+    return cursors;
   }
 
   /**
@@ -219,18 +275,26 @@ export class GroupMessageRepository {
     userId: string;
     /** Per-user "delete conversation" cutoff — excludes everything at/before it. */
     cutoff?: Date;
+    /** A member who left keeps read access only up to (inclusive of) this instant. */
+    readCutoffBefore?: Date;
   }): Record<string, unknown> {
     const core = {
       roomId: params.roomId,
       deletedForUserIds: { $ne: params.userId },
     };
-    if (!params.cutoff) return core;
-    return {
-      $and: [
-        core,
-        { createdAt: { $gt: { $date: params.cutoff.toISOString() } } },
-      ],
-    };
+    const bounds: Record<string, unknown>[] = [];
+    if (params.cutoff) {
+      bounds.push({
+        createdAt: { $gt: { $date: params.cutoff.toISOString() } },
+      });
+    }
+    if (params.readCutoffBefore) {
+      bounds.push({
+        createdAt: { $lte: { $date: params.readCutoffBefore.toISOString() } },
+      });
+    }
+    if (bounds.length === 0) return core;
+    return { $and: [core, ...bounds] };
   }
 
   /**
@@ -262,12 +326,15 @@ export class GroupMessageRepository {
     limit: number;
     /** Per-user "delete conversation" cutoff — see {@link timelineMatch}. */
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<{ messages: GroupMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
       cutoff: params.cutoff,
+      readCutoffBefore: params.readCutoffBefore,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -429,6 +496,7 @@ export class GroupMessageRepository {
     roomId: string;
     userId: string;
     cutoff?: Date;
+    readCutoffBefore?: Date;
   }): Promise<number> {
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -451,6 +519,8 @@ export class GroupMessageRepository {
     seq: number | null;
     limit: number;
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const bound =
       params.seq == null
@@ -463,7 +533,16 @@ export class GroupMessageRepository {
       where: {
         roomId: params.roomId,
         sequenceNumber: bound,
-        ...(params.cutoff ? { createdAt: { gt: params.cutoff } } : {}),
+        ...(params.cutoff || params.readCutoffBefore
+          ? {
+              createdAt: {
+                ...(params.cutoff ? { gt: params.cutoff } : {}),
+                ...(params.readCutoffBefore
+                  ? { lte: params.readCutoffBefore }
+                  : {}),
+              },
+            }
+          : {}),
       },
       orderBy: { sequenceNumber: order },
       take: params.limit + 1 + 10,
@@ -486,6 +565,8 @@ export class GroupMessageRepository {
     anchorSeq: number;
     limit: number;
     cutoff?: Date;
+    /** A member who left keeps read access only up to this instant — see {@link timelineMatch}. */
+    readCutoffBefore?: Date;
   }): Promise<GroupMessage[]> {
     const half = Math.max(1, Math.floor(params.limit / 2));
     const keep = (msg: GroupMessage): boolean => {
@@ -493,9 +574,17 @@ export class GroupMessageRepository {
       const deletedFor = (raw.deletedForUserIds ?? []) as string[];
       return !deletedFor.includes(params.userId);
     };
-    const cutoffWhere = params.cutoff
-      ? { createdAt: { gt: params.cutoff } }
-      : {};
+    const cutoffWhere =
+      params.cutoff || params.readCutoffBefore
+        ? {
+            createdAt: {
+              ...(params.cutoff ? { gt: params.cutoff } : {}),
+              ...(params.readCutoffBefore
+                ? { lte: params.readCutoffBefore }
+                : {}),
+            },
+          }
+        : {};
     const [before, anchorAndAfter] = await Promise.all([
       this.prisma.groupMessage.findMany({
         where: {
@@ -654,47 +743,55 @@ export class GroupMessageRepository {
     return result[0]?.total ?? 0;
   }
 
-  async searchByText(
-    roomId: string,
-    query: string,
-    limit: number,
-    userId: string,
-    skip = 0,
-    cutoff?: Date
-  ): Promise<GroupMessage[]> {
-    // content.text is inside a Json column — use a raw regex query for matching
-    // ids, then re-fetch via the typed client for the normal message shape.
-    // `deletedForUserIds` mirrors the same per-user delete-for-me idiom used
-    // elsewhere in this repository (e.g. countUnreadSince above) — without it,
-    // search resurrects messages this user deleted for themselves. `cutoff`
-    // (delete-conversation) is the same idea at the whole-room level.
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const raw = (await this.prisma.groupMessage.findRaw({
-      filter: {
-        roomId,
+  async searchByText(params: {
+    roomId: string;
+    query: string;
+    limit: number;
+    userId: string;
+    cursor?: string | null;
+    cutoff?: Date;
+  }): Promise<{
+    messages: GroupMessage[];
+    scores: Map<string, number>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const pipeline = buildTextSearchPipeline({
+      match: {
+        roomId: params.roomId,
         isDeleted: false,
-        deletedForUserIds: { $ne: userId },
-        "content.text": { $regex: escaped, $options: "i" },
-        ...(cutoff
-          ? { createdAt: { $gt: { $date: cutoff.toISOString() } } }
+        deletedForUserIds: { $ne: params.userId },
+        ...(params.cutoff
+          ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
           : {}),
       },
-      options: { sort: { createdAt: -1 }, skip, limit },
-    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+      query: params.query,
+      cursor: parseSearchCursor(params.cursor),
+      limit: params.limit,
+    });
 
-    const ids = raw
-      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
-      .filter((id): id is string => Boolean(id));
-    if (!ids.length) return [];
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: pipeline as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Parameters<typeof readTextSearchPage>[0];
+    const page = readTextSearchPage(raw ?? [], params.limit);
+    if (!page.ids.length) {
+      return {
+        messages: [],
+        scores: page.scores,
+        hasMore: false,
+        nextCursor: null,
+      };
+    }
 
     const rows = await this.prisma.groupMessage.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: page.ids } },
     });
-    // Preserve findRaw's paginated order — an unordered `IN` re-fetch plus a
-    // fresh createdAt sort would silently undo the skip/limit window on
-    // same-timestamp rows.
-    const order = new Map(ids.map((id, i) => [id, i]));
-    return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+    return {
+      messages: orderByIds(rows, page.ids),
+      scores: page.scores,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
   }
 
   async findByClientMessageId(

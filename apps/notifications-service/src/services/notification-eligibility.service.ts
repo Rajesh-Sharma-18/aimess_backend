@@ -7,6 +7,7 @@
  * user cannot keep receiving community pushes when the oracle is unhealthy.
  */
 import { communityClient } from "../grpc/community.client.js";
+import { chatMessagingClient } from "../grpc/chat-messaging.client.js";
 
 /**
  * True when `actorId` has an effective moderation mute in `communityId` — i.e.
@@ -20,6 +21,40 @@ export async function isCommunityActorMuted(
     await communityClient.checkCommunityMute({
       communityId,
       userId: actorId,
+    })
+  ).isMuted;
+}
+
+/**
+ * True when `recipientId` has muted private room `roomId` — i.e. this
+ * message must not generate a push for them. Fail-open, same as community's
+ * `isCommunityActorMuted`: an oracle outage must never suppress a push.
+ */
+export async function isPrivateRoomMutedBy(
+  recipientId: string,
+  roomId: string
+): Promise<boolean> {
+  return (
+    await chatMessagingClient.checkPrivateMute({
+      roomId,
+      userId: recipientId,
+    })
+  ).isMuted;
+}
+
+/**
+ * True when `recipientId` has muted group room `roomId` — i.e. this message
+ * must not generate a push for them. Fail-open, same as `isPrivateRoomMutedBy`:
+ * an oracle outage must never suppress a push.
+ */
+export async function isGroupMemberMuted(
+  recipientId: string,
+  roomId: string
+): Promise<boolean> {
+  return (
+    await chatMessagingClient.checkGroupMute({
+      roomId,
+      userId: recipientId,
     })
   ).isMuted;
 }

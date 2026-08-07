@@ -20,6 +20,16 @@ service UserService {
   // Internal: chat-service reads the callee's call-privacy setting to gate 1-to-1
   // calls (whoCanCallMe + allow-list). Callee-scoped, not per-caller.
   rpc GetCallPrivacy (GetCallPrivacyRequest) returns (GetCallPrivacyResponse);
+  // Internal: the api-gateway filters `presence:subscribe` peer lists through
+  // this before joining the viewer's socket into any `user:<peerId>` room.
+  // Without it, ANY authenticated socket can subscribe to ANY user's presence
+  // regardless of their whoCanSeeOnlineStatus setting.
+  rpc FilterVisiblePresence (FilterVisiblePresenceRequest) returns (FilterVisiblePresenceResponse);
+  // Internal: the INVERSE of FilterVisiblePresence — one subject, many viewers.
+  // chat-service uses it on the fan-out side (presence bumps, conv:updated
+  // isOffline) where the subject is fixed and the audience is the room's peers,
+  // so the whole audience is evaluated in ONE call instead of one per viewer.
+  rpc FilterPresenceViewers (FilterPresenceViewersRequest) returns (FilterPresenceViewersResponse);
   // Admin Panel (SUPER_ADMIN, `settings.manage`) ONLY: platform-wide maintenance
   // sweep that force-unfriends EVERY accepted friendship on the platform, not
   // just one caller's. `confirm` must be true or this returns INVALID_ARGUMENT —
@@ -160,6 +170,30 @@ message GetCallPrivacyRequest {
 message GetCallPrivacyResponse {
   string          who_can_call_me  = 1;
   repeated string allowed_user_ids = 2;
+}
+
+message FilterVisiblePresenceRequest {
+  string          viewer_id = 1;
+  repeated string peer_ids  = 2;
+}
+
+// The subset of peer_ids whose whoCanSeeOnlineStatus admits this viewer.
+// Peers omitted here must never have their presence relayed to the viewer.
+message FilterVisiblePresenceResponse {
+  repeated string visible_peer_ids = 1;
+}
+
+message FilterPresenceViewersRequest {
+  // Whose presence is about to be disclosed.
+  string          subject_id = 1;
+  repeated string viewer_ids = 2;
+}
+
+// The subset of viewer_ids that subject_id's whoCanSeeOnlineStatus admits.
+// Viewers omitted here must never receive the subject's presence — including
+// derived fields such as conv:updated's `isOffline`.
+message FilterPresenceViewersResponse {
+  repeated string allowed_viewer_ids = 1;
 }
 
 message AdminDisconnectAllFriendshipsRequest {

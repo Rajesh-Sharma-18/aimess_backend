@@ -11,6 +11,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import {
@@ -21,6 +22,7 @@ import {
   buildChatMessageEvent,
   buildCanonicalQuote,
   normalizeMessageType,
+  autoDeleteWireFields,
   type ReactionGroup,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
@@ -41,7 +43,7 @@ import type { GroupMessageService } from "./group-message.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import { resolveDisplayName } from "./user-snapshot.service.js";
+import { resolveSenderIdentity } from "../lib/resolve-sender-identity.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
 import { resolveConversationType } from "../lib/conversation-type.js";
@@ -260,10 +262,17 @@ export class ChatMessageOrchestrator {
     private readonly presenceService?: PresenceService
   ) {}
 
-  /** Reused by every PRIVATE conv:updated publish — undefined skips isOffline entirely. */
-  private getIsOnline(): ((userId: string) => Promise<boolean>) | undefined {
+  /**
+   * Reused by every PRIVATE conv:updated publish — undefined skips isOffline
+   * entirely. Viewer-scoped on purpose: `isOffline` is presence, so it goes
+   * through the same `whoCanSeeOnlineStatus` gate as every other read.
+   */
+  private getIsOnline():
+    | ((viewerId: string, subjectId: string) => Promise<boolean>)
+    | undefined {
     return this.presenceService
-      ? (userId: string) => this.presenceService!.getIsOnline(userId)
+      ? (viewerId: string, subjectId: string) =>
+          this.presenceService!.getPresenceFor(viewerId, subjectId)
       : undefined;
   }
 
@@ -365,6 +374,7 @@ export class ChatMessageOrchestrator {
       revision: (msg as unknown as { revision?: number }).revision ?? 0,
       countInUnread: (msg as unknown as { countInUnread?: boolean | null })
         .countInUnread,
+      ...autoDeleteWireFields(msg),
     });
 
     if (!alreadySent) {
@@ -400,6 +410,7 @@ export class ChatMessageOrchestrator {
           revision: (row as unknown as { revision?: number }).revision ?? 0,
           countInUnread: (row as unknown as { countInUnread?: boolean | null })
             .countInUnread,
+          ...autoDeleteWireFields(row),
         });
         const bcastContext = `roomId=${params.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`;
         publishRealtimeSafe(
@@ -413,9 +424,12 @@ export class ChatMessageOrchestrator {
         // (join happens on `conversation:join`), so a recipient on the chat list or in
         // the background never saw the message and never sent a delivery receipt —
         // leaving the sender stuck on a single tick. Mirrors the gRPC send path.
-        // Clients dedupe by serverMessageId, so a double-receive is a no-op.
+        // Excludes the sender: their own socket is already in `conv:<roomId>` (from
+        // sending) and gets the message via the ack, so a personal-channel copy on
+        // top of the room broadcast double-delivers `message:new` to just them.
         const fanOut = (ids: string[]) => {
           for (const userId of new Set(ids.filter(Boolean))) {
+            if (userId === params.senderId) continue;
             publishRealtimeSafe(
               this.redis,
               `user:${userId}`,
@@ -487,8 +501,16 @@ export class ChatMessageOrchestrator {
         sentAt: serverTs,
       };
       if (conversationType === "GROUP") {
+        const header = await this.groupMessageService
+          .getPushHeader(params.roomId)
+          .catch(() => null);
+        const groupAvatar = header?.avatar
+          ? await resolveMediaUrl(header.avatar).catch(() => "")
+          : "";
         publishMessageSentSafe({
           ...pushBase,
+          ...(header?.name ? { groupName: header.name } : {}),
+          ...(groupAvatar ? { conversationAvatar: groupAvatar } : {}),
           fetchRecipients: () =>
             this.groupMessageService.getActiveMemberIds(params.roomId),
         });
@@ -717,13 +739,16 @@ export class ChatMessageOrchestrator {
 
       // FCM push — community messages need the same offline-wake push as
       // private/group. fetchRecipients is lazy so the DB call only runs when
-      // RabbitMQ is configured. communityName is forwarded when the REST caller
-      // supplies it so the consumer can set it as the push title.
+      // RabbitMQ is configured. communityName falls back to the locally-mirrored
+      // GeneralRoom.name when the caller omits it, so the consumer always has a
+      // real community name for the push title (not the sender's name).
       publishMessageSentSafe({
         conversationId: params.communityId,
         conversationType: "COMMUNITY",
         communityId: params.communityId,
-        communityName: params.communityName,
+        communityName:
+          params.communityName ||
+          (await this.communityMessageService.getRoomName(params.roomId)),
         messageId: saved.id,
         clientMessageId,
         senderId: params.senderId,
@@ -1284,6 +1309,15 @@ export class ChatMessageOrchestrator {
     // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
     notifyUnreadChanged(params.readerId);
 
+    // Dismiss this conversation's tray notification on the reader's other devices. read_sync
+    // above only reaches live sockets; a backgrounded device needs a push to clear.
+    publishConversationReadSafe({
+      readerId: params.readerId,
+      conversationId: params.roomId,
+      conversationType,
+      readAt: Date.now(),
+    });
+
     return { readToSeq };
   }
 
@@ -1324,7 +1358,11 @@ export class ChatMessageOrchestrator {
 
     // Authorize the caller at the REST boundary (same rule as the read paths).
     if (conversationType === "GROUP") {
-      await this.groupMessageService.assertMember(params.roomId, params.userId);
+      // Write boundary — also rejects a moderation-muted member.
+      await this.groupMessageService.assertCanWrite(
+        params.roomId,
+        params.userId
+      );
     } else {
       await this.privateMessageService.assertParticipant(
         params.roomId,
@@ -1613,23 +1651,13 @@ export class ChatMessageOrchestrator {
     senderName?: string,
     senderAvatar?: string
   ): Promise<{ senderName: string; senderAvatar: string }> {
-    if (senderName !== undefined && senderAvatar !== undefined) {
-      return { senderName, senderAvatar };
-    }
-    const snaps = await this.userSnapshotService.getUserSnapshotsMap(
-      [senderId],
-      this.cacheRepo
+    return resolveSenderIdentity(
+      this.userSnapshotService,
+      this.cacheRepo,
+      senderId,
+      senderName,
+      senderAvatar
     );
-    const snap = snaps.get(senderId);
-    // Use the shared fullName → displayName → username → memberId → "Unknown User"
-    // fallback chain so an empty computed displayName (profile with blank first/last)
-    // still yields a real sender name for the group/private list preview.
-    const resolvedName = resolveDisplayName(snap);
-    return {
-      senderName:
-        senderName ?? (resolvedName === "Unknown User" ? "" : resolvedName),
-      senderAvatar: senderAvatar ?? ((snap?.avatar as string) || ""),
-    };
   }
 
   /**

@@ -55,9 +55,14 @@ export type UserProfileData = {
 export type PublicUserProfileData = {
   userId: string;
   username: string;
-  displayName: string;
-  firstName: string;
-  lastName: string;
+  /**
+   * Null when the target's `whoCanViewProfile` excludes this viewer — the
+   * handle (`username`) and `userId` still resolve so the profile stays
+   * addressable and actionable.
+   */
+  displayName: string | null;
+  firstName: string | null;
+  lastName: string | null;
   bio: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
@@ -71,6 +76,14 @@ export type PublicUserProfileData = {
   groupsCount: number | null;
   communitiesCount: number | null;
   isDeletedUser: boolean;
+  /**
+   * The VIEWER blocked this user. Blocks are one-way, so the blocker still
+   * resolves the profile; the reverse direction 404s before this is built, so
+   * it never reports the target's block. `relationship.status` collapses BLOCKED
+   * to NONE (search vocabulary), so this is the flag clients branch on to show
+   * "Unblock" instead of "Add friend".
+   */
+  isBlockedByMe: boolean;
   relationship: {
     friendshipId: string | null;
     status: string;

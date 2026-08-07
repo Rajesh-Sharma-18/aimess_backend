@@ -99,6 +99,9 @@ function makeBaseDeps(savedOverride?: Partial<typeof BASE_SAVED>) {
       sendMessage: jest.fn(async () => ({ ...BASE_SAVED, ...savedOverride })),
       getActiveMemberIds: jest.fn(async () => ["u1", "u2", "u3"]),
     },
+    generalRoomRepo: {
+      findRoomById: jest.fn(async () => ({ name: "Football Fans" })),
+    },
   });
 }
 
@@ -123,7 +126,7 @@ describe("sendCommunityMessage — community:updated carries senderName (T6)", (
     });
   });
 
-  it("senderName defaults to empty string when the snapshot is missing", async () => {
+  it("senderName falls back to the shared 'Unknown User' chain when the snapshot is missing", async () => {
     const deps = makeDeps({
       cacheRepo: {},
       userSnapshotService: {
@@ -142,7 +145,7 @@ describe("sendCommunityMessage — community:updated carries senderName (T6)", (
 
     expect(pubUpdated).toHaveBeenCalledTimes(1);
     expect(pubUpdated.mock.calls[0][0]).toMatchObject({
-      senderName: "",
+      senderName: "Unknown User",
     });
   });
 });
@@ -167,6 +170,17 @@ describe("sendCommunityMessage — FCM push via publishMessageSentSafe (T7)", ()
       messageId: "msg1",
       senderId: "u1",
       senderName: "Alice",
+    });
+  });
+
+  it("carries communityName from the room's mirrored GeneralRoom.name so the push title is never the sender's name (regression, AIMESS_BACKEND_NOTIFICATIONS.md §1)", async () => {
+    await invoke(
+      createCommunityImpl(makeBaseDeps()).sendCommunityMessage as Handler,
+      BASE_REQ
+    );
+
+    expect(pubPush.mock.calls[0][0]).toMatchObject({
+      communityName: "Football Fans",
     });
   });
 

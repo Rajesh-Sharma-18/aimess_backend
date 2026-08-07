@@ -39,8 +39,13 @@ model PrivateRoom {
   lastUnreadPreviewByUser   Json     @default("{}")
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
+  clearFor                  Json     @default("{}")
   mutedBy                   Json     @default("{}")
   archivedBy                Json     @default("{}")
+  // Auto-delete (disappearing messages) — PER USER, same one-sided per-user map
+  // shape as `mutedBy`: { "<userId>": { mode, ttlSeconds, setAt } }. See
+  // `lib/auto-delete.ts` for which side's timer a given message ends up with.
+  autoDeleteBy              Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
@@ -107,6 +112,11 @@ model PrivateMessage {
   editHistory      Json      @default("[]")
   deliveredTo      Json      @default("[]")
   deliveredAt      Json      @default("{}")
+  // Auto-delete (disappearing messages). `autoDeleteAt` = armed deadline swept by
+  // AutoDeleteService; `autoDeleteAfterView` = "After Viewing" message still waiting
+  // on the recipient's read receipt to arm its deadline. Both null/false = no timer.
+  autoDeleteAt        DateTime?
+  autoDeleteAfterView Boolean  @default(false)
 
   @@index([roomId, createdAt(sort: Desc)])
   // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
@@ -120,6 +130,10 @@ model PrivateMessage {
   @@index([roomId, revision])
   @@index([systemEvent])
   @@index([clientMessageId])
+  // Backs the auto-delete sweeper: WHERE autoDeleteAt <= now AND isDeleted = false.
+  @@index([autoDeleteAt])
+  // Backs arming "After Viewing" messages on a read receipt.
+  @@index([roomId, autoDeleteAfterView])
   @@map("private_messages")
 }
 
@@ -232,6 +246,9 @@ model GroupMessage {
   deletedAt          DateTime?
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
+  // Message-level "Report" action, mirroring CommunityMessage's inline reports
+  // array (as opposed to Private's dedicated PrivateMessageReport model).
+  reports            Json      @default("[]")
   sequenceNumber     Int       @default(0)
   // Zero-loss sync CHANGE cursor — see PrivateMessage.revision. 0 = pre-backfill row.
   revision           Int       @default(0)
@@ -280,11 +297,21 @@ model GroupMember {
   kickReason           String?
   bannedAt             DateTime?
   bannedBy             String?
+  // Moderator-imposed mute (distinct from `notificationSettings.mute`, which is
+  // the member's OWN notification preference). A muted member keeps full read
+  // access but cannot send/react — mirrors community's CommunityMemberMute,
+  // collapsed onto this row since chat-service is already the sole source of
+  // truth for group membership (no cross-service mirror needed here).
+  // `moderationMutedUntil` null + `moderationMuted` true = indefinite.
+  moderationMuted       Boolean   @default(false)
+  moderationMutedUntil  DateTime?
+  moderationMutedBy     String?
   // Per-user "delete conversation" cutoff (Telegram-style): messages created
   // at/before this instant are hidden from this member, even after new
   // messages restore the group to their inbox. Distinct from `leftAt` — the
   // member stays ACTIVE and keeps receiving new messages. See PrivateRoom.deletedFor.
   clearedAt            DateTime?
+  clearChatAt          DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
   unreadCount          Int       @default(0)
@@ -527,6 +554,15 @@ model Notification {
   // alert" needs a real indexed field, not a JSON-path query.
   loginSessionId String?
 
+  // Stable identity of the underlying entity/action (see lib/notification-identity.ts).
+  // Two events for the same real-world thing share a groupKey, so the second one
+  // transitions the existing row instead of creating a duplicate.
+  groupKey String?
+  // Monotonic per-row revision. Every mutation bumps it; clients apply an
+  // incoming frame only when its version is >= the version they hold, which is
+  // what makes socket/API/local-DB convergence order-independent.
+  version Int @default(1)
+
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, type])
   // Covers the unread count — the hottest query here (every create, read,
@@ -534,6 +570,8 @@ model Notification {
   // applied: every query is userId-scoped.
   @@index([userId, isRead, isDeleted])
   @@index([userId, loginSessionId])
+  @@index([userId, groupKey])
+  @@index([userId, updatedAt(sort: Desc)])
   @@map("notifications")
 }
 
@@ -584,10 +622,19 @@ model Call {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   callId        String    @unique
   callerId      String
+  // 1:1 calls: the single callee. Group calls: "" — the real roster lives in
+  // calleeIds. Kept scalar (not nullable) rather than removed so every
+  // existing 1:1 callerId/calleeId query stays a plain equality check.
   calleeId      String
   type          String    @default("AUDIO")
   status        String    @default("RINGING")
   privateRoomId String?
+  // Set only for a GROUP call — the chat-service group roomId the call was
+  // started from. null for 1:1 calls.
+  groupId       String?
+  // GROUP calls only: every rung member (excludes the caller). Empty for 1:1
+  // calls, where calleeId alone is authoritative.
+  calleeIds     String[]  @default([])
   initiatedAt   DateTime  @default(now())
   answeredAt    DateTime?
   endedAt       DateTime?
@@ -598,6 +645,7 @@ model Call {
 
   @@index([callerId, initiatedAt(sort: Desc)])
   @@index([calleeId, initiatedAt(sort: Desc)])
+  @@index([groupId, status])
   @@index([status])
   // Busy-gate lookups filter by participant + status. ponytail: [status] alone
   // works at dev scale; these compound indexes keep the query cheap as call

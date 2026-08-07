@@ -531,6 +531,61 @@ describe("DELETE /api/chat/private/rooms/:roomId (delete-for-me)", () => {
     expect(res.status).toBe(404);
     expect(mocks.privateRoomRepo.setDeletedFor).not.toHaveBeenCalled();
   });
+
+  it("POSITIVE: clears the room's active pin (regardless of who pinned it) so it doesn't resurface", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+    });
+    mocks.privateRoomRepo.setDeletedFor.mockResolvedValue(undefined);
+    mocks.privateRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 0 });
+    mocks.privateMessagePinRepo.findActivePinByRoom.mockResolvedValue({
+      id: "pin_1",
+      roomId: "prv_1",
+      messageId: "msg_1",
+      pinnedBy: "peer-1", // pinned by the OTHER participant, not the caller
+      pinSystemMessageId: "sys_1",
+    });
+    mocks.privateMessagePinRepo.softDeletePin.mockResolvedValue({
+      id: "pin_1",
+      roomId: "prv_1",
+      messageId: "msg_1",
+      unpinnedAt: new Date(),
+      unpinnedByUserId: TEST_USER_ID,
+    });
+
+    const res = await request(app)
+      .delete("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateMessagePinRepo.softDeletePin).toHaveBeenCalledWith(
+      "pin_1",
+      TEST_USER_ID,
+      expect.any(Date)
+    );
+    expect(mocks.privateRoomRepo.incPinnedCount).toHaveBeenCalledWith(
+      "prv_1",
+      -1
+    );
+  });
+
+  it("POSITIVE: no-op when the room has no active pin", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+    });
+    mocks.privateRoomRepo.setDeletedFor.mockResolvedValue(undefined);
+    mocks.privateMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
+
+    const res = await request(app)
+      .delete("/api/chat/private/rooms/prv_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateMessagePinRepo.softDeletePin).not.toHaveBeenCalled();
+    expect(mocks.privateRoomRepo.incPinnedCount).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/chat/private/rooms/:roomId/mute + /unmute", () => {

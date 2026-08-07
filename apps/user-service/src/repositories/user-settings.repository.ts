@@ -141,8 +141,10 @@ export const userSettingsRepository = {
 
   /**
    * Callee-scoped call-privacy read for the chat-service `initiateCall` gate.
-   * Returns default FRIENDS + empty allow-list when no row exists yet (matches
-   * the Prisma-schema default so unset users still receive calls from friends).
+   * Returns FRIENDS + an empty allow-list when no row exists yet. This is
+   * deliberately STRICTER than the column default (EVERYONE): profile creation
+   * always writes the row, so a missing one means something went wrong, and a
+   * failure must not hand strangers the ability to ring the user.
    */
   async findCallPrivacy(
     userId: string
@@ -160,6 +162,35 @@ export const userSettingsRepository = {
         (r) => r.allowedUserId
       ),
     };
+  },
+
+  /**
+   * Addressee-scoped `whoCanSendFriendRequests` for the `sendRequest` gate.
+   * `null` means no settings row yet → the caller's `scopeAdmits` falls back to
+   * the schema default (EVERYONE), so unset users still receive requests.
+   */
+  async findFriendRequestPrivacy(userId: string): Promise<string | null> {
+    const row = await prisma.privacySettings.findUnique({
+      where: { userId },
+      select: { whoCanSendFriendRequests: true },
+    });
+    return row?.whoCanSendFriendRequests ?? null;
+  },
+
+  /**
+   * `whoCanSeeOnlineStatus` for many users at once — backs the socket
+   * `presence:subscribe` gate, which filters a whole peer list per call.
+   * Users absent from the result have no settings row (→ EVERYONE).
+   */
+  async findOnlineVisibilityScopes(
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await prisma.privacySettings.findMany({
+      where: { userId: { in: userIds } },
+      select: { userId: true, whoCanSeeOnlineStatus: true },
+    });
+    return new Map(rows.map((r) => [r.userId, r.whoCanSeeOnlineStatus]));
   },
 
   findSettingsBundle(userId: string): Promise<SettingsBundle | null> {

@@ -80,6 +80,11 @@ const envSchema = z.object({
 
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 
+  // Same var as community-service's — the shared HTTPS host for both community
+  // (`/+<code>`, `/<handle>`) and group (`/g/<token>`) invite links. Falls back
+  // to the bare token/code when unset (local/dev).
+  INVITE_LINK_BASE_URL: z.string().url().optional(),
+
   // LiveKit (self-hosted). See Docs/calls/CALLS-LIVEKIT.md.
   // LIVEKIT_URL is the WS URL clients connect to (ws://localhost:7880 dev,
   // wss://livekit.example.com in prod). API key/secret must match the
@@ -99,6 +104,21 @@ const envSchema = z.object({
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
   CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
+
+  // Auto-unmute sweep for TIMED group moderation mutes. Enforcement itself is
+  // lazy (a lapsed `moderationMutedUntil` stops blocking immediately), so this
+  // sweep only delivers the realtime `group:member:unmuted` signal and clears
+  // the stale flag. Multi-node safe (atomic per-row claim).
+  GROUP_MUTE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(60),
+  GROUP_MUTE_SWEEP_BATCH: z.coerce.number().positive().default(200),
+
+  // Auto-delete (disappearing messages) sweeper for private chats. UNLIKE the
+  // mute sweep, correctness DOES depend on this one: it is what actually
+  // deletes a due message, on the server, whether or not either client is
+  // online (§5.2/§8.4). 30s keeps "After Viewing" feeling immediate without
+  // polling hard. Multi-node safe (a lost race is a no-op).
+  AUTO_DELETE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(30),
+  AUTO_DELETE_SWEEP_BATCH: z.coerce.number().positive().default(200),
 
   // Hard ceiling on an IN_PROGRESS call. Without it a client that dies before
   // sending `call:end` (crash, force-kill, dead network) leaves the row active

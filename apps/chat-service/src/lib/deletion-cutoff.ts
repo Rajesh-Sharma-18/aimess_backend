@@ -1,26 +1,39 @@
-/**
- * Per-user "delete conversation" cutoff. When a user deletes a private chat or
- * group chat, messages created at/before this instant must never be visible to
- * them again — even after a new message restores the room to their inbox
- * (Telegram-style "Delete Chat" semantics). Every message-read path (history
- * pagination, socket catchup/changes, search, media, unread, last-message
- * preview) must clamp to `createdAt > cutoff` for the requesting user.
- */
-
-/** Private room: cutoff lives in `PrivateRoom.deletedFor` — a `{ [userId]: ISO-ts }` map. */
-export function getPrivateDeletionCutoff(
-  room: { deletedFor?: unknown } | null | undefined,
-  userId: string
-): Date | undefined {
-  const ts = (room?.deletedFor as Record<string, unknown> | undefined)?.[
-    userId
-  ];
-  return typeof ts === "string" ? new Date(ts) : undefined;
+function parseCutoff(value: unknown): Date | undefined {
+  return typeof value === "string" ? new Date(value) : undefined;
 }
 
-/** Group: cutoff lives directly on the caller's own `GroupMember.clearedAt` row. */
-export function getGroupDeletionCutoff(
-  member: { clearedAt?: Date | null } | null | undefined
+function latest(...dates: Array<Date | undefined>): Date | undefined {
+  return dates
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+}
+
+export function getPrivateDeletionCutoff(
+  room: { deletedFor?: unknown; clearFor?: unknown } | null | undefined,
+  userId: string
 ): Date | undefined {
-  return member?.clearedAt ?? undefined;
+  const deletedAt = parseCutoff(
+    (room?.deletedFor as Record<string, unknown> | undefined)?.[userId]
+  );
+  const clearAt = parseCutoff(
+    (room?.clearFor as Record<string, unknown> | undefined)?.[userId]
+  );
+  return latest(deletedAt, clearAt);
+}
+
+export function getGroupVisibilityCutoff(
+  member:
+    | {
+        clearedAt?: Date | null;
+        clearChatAt?: Date | null;
+        joinedAt?: Date | null;
+      }
+    | null
+    | undefined
+): Date | undefined {
+  return latest(
+    member?.clearedAt ?? undefined,
+    member?.clearChatAt ?? undefined,
+    member?.joinedAt ?? undefined
+  );
 }

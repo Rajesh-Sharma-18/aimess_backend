@@ -32,6 +32,28 @@ export function emitFriendEventSafe(
   });
 }
 
+/**
+ * Push a settings change to the owner's OTHER logged-in devices.
+ *
+ * Rides the same `user:<userId>` channel, but the /chat relay redirects
+ * `settings:updated` to the `self:<userId>` room (see the `isSelfOnlyEvent`
+ * list in `chat.ns.ts`). That redirect is load-bearing, not an optimization:
+ * `presence:subscribe` lets a peer join `user:<peerId>`, so publishing a user's
+ * own privacy settings to the shared identity room would hand them to exactly
+ * the people those settings exist to exclude.
+ */
+export function emitSettingsUpdatedSafe(
+  userId: string,
+  settings: unknown
+): void {
+  void publishChatUserEvent(redis, userId, "settings:updated", settings).catch(
+    (error) => {
+      logger.warn(`Failed to publish settings:updated to user:${userId}`);
+      logger.warn(error);
+    }
+  );
+}
+
 /** Publish the same realtime event to two users at once (e.g. both sides of a friendship change). */
 export function emitFriendEventToPairSafe(
   userAId: string,

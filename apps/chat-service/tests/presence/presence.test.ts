@@ -51,6 +51,27 @@ describe("GET /api/chat/private/presence/:userId", () => {
     expect(res.body.data.lastSeen).toBeNull();
   });
 
+  it("PRIVACY: a peer whose whoCanSeeOnlineStatus excludes the viewer reads as offline", async () => {
+    mocks.cacheRepo.getUserPresence.mockResolvedValue("online");
+    mocks.cacheRepo.getLastSeen.mockResolvedValue(1717000000000);
+    mocks.presenceVisibilityGate.filterVisiblePresence.mockResolvedValue(
+      new Set()
+    );
+
+    const res = await request(app)
+      .get("/api/chat/private/presence/peer-42")
+      .set(bearer(makeAccessToken()));
+
+    // Same shape a genuinely-offline peer returns — the setting itself must
+    // not be inferable from this response.
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      userId: "peer-42",
+      isOnline: false,
+      lastSeen: null,
+    });
+  });
+
   it("SECURITY: 401 without a token", async () => {
     const res = await request(app).get("/api/chat/private/presence/peer-1");
     expect(res.status).toBe(401);

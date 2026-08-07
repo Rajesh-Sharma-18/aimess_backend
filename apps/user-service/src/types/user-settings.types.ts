@@ -4,7 +4,12 @@ export type PrivacyScopeValue =
   | "FRIENDS"
   | "NO_ONE";
 
-export type CallPrivacyScopeValue = "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
+/** `EVERYONE` is the only scope admitting a non-friend caller. */
+export type CallPrivacyScopeValue =
+  | "EVERYONE"
+  | "FRIENDS"
+  | "SELECTED_FRIENDS"
+  | "NO_ONE";
 
 export type AutoDeleteTimerValue = "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30";
 

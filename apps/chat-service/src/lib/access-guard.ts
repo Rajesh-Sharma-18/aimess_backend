@@ -50,7 +50,7 @@ export async function assertPrivateParticipant(
 
 /**
  * Group: the caller MUST be an ACTIVE member. When `roles` is supplied the
- * member's role must be one of them (e.g. OWNER/ADMIN for management actions).
+ * member's role must be one of them (e.g. ADMIN for management actions).
  *
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller isn't an active member.
  * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the role is too low.
@@ -67,6 +67,66 @@ export async function assertGroupMember(
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/**
+ * Group READ access: an ACTIVE member reads everything; a member who
+ * voluntarily LEFT keeps read access to history up to (and including) the
+ * moment they left (WhatsApp-style — the chat stays visible, read-only, no
+ * new messages). Kicked/banned/never-a-member callers are denied, same as
+ * {@link assertGroupMember} — this only widens the LEFT case.
+ *
+ * @throws ForbiddenError `CHAT_NOT_A_MEMBER` for anyone who isn't currently
+ *   active or a past voluntary leaver (kicked/banned/no row).
+ */
+export async function assertGroupReadAccess(
+  memberRepo: Pick<GroupMemberRepository, "findByRoomAndUser">,
+  roomId: string,
+  userId: string
+): Promise<{ member: GroupMember; readCutoffBefore?: Date }> {
+  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+  if (member?.status === "ACTIVE") return { member };
+  if (member?.status === "LEFT" && member.leftAt) {
+    return { member, readCutoffBefore: member.leftAt };
+  }
+  throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+}
+
+/**
+ * True when the group member row carries an effective moderation mute.
+ * Lazy expiry: a timed mute (`moderationMutedUntil`) auto-lifts the instant it
+ * passes — no sweeper needed. An indefinite mute has `moderationMuted=true`
+ * with `moderationMutedUntil=null`. Mirrors {@link isCommunityMemberMuted};
+ * unlike community's cross-service mirror, group membership is a single row
+ * chat-service already owns, so no separate mute model/sync is needed.
+ */
+export function isGroupMemberMuted(
+  member:
+    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
+    | null
+    | undefined
+): boolean {
+  if (!member?.moderationMuted) return false;
+  if (member.moderationMutedUntil == null) return true; // indefinite
+  return member.moderationMutedUntil.getTime() > Date.now();
+}
+
+/**
+ * Group WRITE gate for moderation mute: a muted member cannot send/react
+ * (they keep full read access). Call AFTER the membership guard that loads
+ * the member row, reusing it — zero extra I/O.
+ *
+ * @throws ForbiddenError `CHAT_MUTED_IN_GROUP` when the member is muted.
+ */
+export function assertGroupMemberNotMuted(
+  member:
+    | Pick<GroupMember, "moderationMuted" | "moderationMutedUntil">
+    | null
+    | undefined
+): void {
+  if (isGroupMemberMuted(member)) {
+    throw new ForbiddenError("CHAT_MUTED_IN_GROUP");
+  }
 }
 
 /**

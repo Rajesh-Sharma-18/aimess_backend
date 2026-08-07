@@ -33,6 +33,7 @@ import {
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
+import { generateEventThreadId } from "../lib/thread-id.js";
 import { redis } from "../config/redis.js";
 import {
   pushToUser,
@@ -54,8 +55,12 @@ function base(
   extra: Record<string, string>,
   deepLink?: string,
   category: PushInput["category"] = "communityEnabled",
-  nav?: Omit<NotificationNavigation, "communityId">
-): Pick<PushInput, "category" | "type" | "actorId" | "deepLink" | "data"> {
+  nav?: Omit<NotificationNavigation, "communityId">,
+  apnsThreadId?: string
+): Pick<
+  PushInput,
+  "category" | "type" | "actorId" | "deepLink" | "data" | "apnsThreadId"
+> {
   // Every notification carries a navigation object — it is what the client
   // routes on. Community identity is folded in from `extra` so a call site
   // never has to repeat it.
@@ -72,8 +77,10 @@ function base(
     type,
     actorId,
     deepLink,
+    apnsThreadId,
     data: {
       communityId,
+      type,
       deepLink: deepLink ?? "",
       ...extra,
       navigation: JSON.stringify(navigation),
@@ -121,7 +128,8 @@ async function handleCommunityEvent(
             screen: "COMMUNITY_REQUESTS",
             requestId: p.requestId,
             userId: p.userId,
-          }
+          },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -158,7 +166,8 @@ async function handleCommunityEvent(
           {
             screen: "COMMUNITY_LIVESTREAM",
             livestreamId: p.livestreamId,
-          }
+          },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -192,12 +201,13 @@ async function handleCommunityEvent(
             communityAvatarUrl: p.communityAvatarUrl ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("stream", p.livestreamId),
+          buildDeepLink("community", p.communityId),
           "liveStreamEnabled",
           {
             screen: "COMMUNITY_LIVESTREAM",
             livestreamId: p.livestreamId,
-          }
+          },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -238,7 +248,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          navigation
+          navigation,
+          generateEventThreadId(type)
         ),
       });
       await publishUserSocketEvent(
@@ -289,7 +300,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("communities"),
           "communityEnabled",
-          navigation
+          navigation,
+          generateEventThreadId(type)
         ),
       });
       await publishUserSocketEvent(
@@ -352,7 +364,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS" }
+          { screen: "COMMUNITY_DETAILS" },
+          generateEventThreadId(type)
         ),
       });
       // Real-time UI flip: "Join" button → "Joined" without a page refresh.
@@ -385,7 +398,8 @@ async function handleCommunityEvent(
             },
             buildDeepLink("community", p.communityId),
             "communityEnabled",
-            { screen: "COMMUNITY_DETAILS", requestId: p.requestId }
+            { screen: "COMMUNITY_DETAILS", requestId: p.requestId },
+            generateEventThreadId(type)
           ),
         });
       }
@@ -408,7 +422,8 @@ async function handleCommunityEvent(
             },
             buildDeepLink("community", p.communityId),
             "communityEnabled",
-            { screen: "COMMUNITY_MEMBERS", userId: p.targetUserId }
+            { screen: "COMMUNITY_MEMBERS", userId: p.targetUserId },
+            generateEventThreadId(type)
           ),
         }));
       }
@@ -427,7 +442,8 @@ async function handleCommunityEvent(
           { reason: p.reason },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS" }
+          { screen: "COMMUNITY_DETAILS" },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -448,7 +464,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS" }
+          { screen: "COMMUNITY_DETAILS" },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -469,7 +486,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("communities"),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -492,7 +510,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("communities"),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -510,7 +529,8 @@ async function handleCommunityEvent(
           {},
           buildDeepLink("communities"),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -531,7 +551,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -549,7 +570,8 @@ async function handleCommunityEvent(
           {},
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -567,7 +589,8 @@ async function handleCommunityEvent(
           { note: p.note },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId }
+          { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -593,7 +616,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_INVITE", inviteId: p.inviteId }
+          { screen: "COMMUNITY_INVITE", inviteId: p.inviteId },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -619,7 +643,8 @@ async function handleCommunityEvent(
             screen: "COMMUNITY_INVITE",
             inviteId: p.inviteId,
             userId: p.userId,
-          }
+          },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -646,7 +671,8 @@ async function handleCommunityEvent(
             screen: "COMMUNITY_REPORTS",
             reportId: p.reportId,
             ...(p.targetUserId ? { userId: p.targetUserId } : {}),
-          }
+          },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -671,7 +697,8 @@ async function handleCommunityEvent(
             screen: "COMMUNITY_REPORTS",
             reportId: p.reportId,
             ...(p.targetUserId ? { userId: p.targetUserId } : {}),
-          }
+          },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -697,7 +724,8 @@ async function handleCommunityEvent(
             screen: "COMMUNITY_REPORTS",
             reportId: p.reportId,
             ...(p.targetUserId ? { userId: p.targetUserId } : {}),
-          }
+          },
+          generateEventThreadId(type)
         ),
       });
       break;
@@ -716,7 +744,8 @@ async function handleCommunityEvent(
           { reason: p.reason },
           buildDeepLink("communities"),
           "communityEnabled",
-          { screen: "COMMUNITY_LIST" }
+          { screen: "COMMUNITY_LIST" },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -734,7 +763,8 @@ async function handleCommunityEvent(
           { reason: p.reason ?? "" },
           buildDeepLink("communities"),
           "communityEnabled",
-          { screen: "COMMUNITY_LIST" }
+          { screen: "COMMUNITY_LIST" },
+          generateEventThreadId(type)
         ),
       }));
       break;
@@ -756,7 +786,8 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
-          { screen: "COMMUNITY_DETAILS" }
+          { screen: "COMMUNITY_DETAILS" },
+          generateEventThreadId(type)
         ),
       }));
       break;

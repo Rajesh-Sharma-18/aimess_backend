@@ -9,6 +9,8 @@ import {
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
+import { visibleIdentity, visibleIsOnline } from "../lib/privacy-scope.js";
+import { splitBlocks } from "../lib/block-visibility.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { recentUserSearchRepository } from "../repositories/recent-user-search.repository.js";
 import { RecentSearchTargetType } from "../generated/prisma/client.js";
@@ -30,9 +32,10 @@ export type SearchUserItem = {
   type: "USER";
   userId: string;
   username: string;
-  firstName: string;
-  lastName: string;
-  fullName: string;
+  /** Null when `whoCanViewProfile` denies this viewer — see `visibleIdentity`. */
+  firstName: string | null;
+  lastName: string | null;
+  fullName: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   avatar: MediaObject;
@@ -47,6 +50,14 @@ export type SearchUserItem = {
   isFriend: boolean;
   /** Relationship: FRIEND | PENDING | NONE. */
   relationshipStatus: RelationshipStatus;
+  /**
+   * The VIEWER blocked this user. Blocks are one-way, so such rows stay in the
+   * blocker's results — this flag lets the client offer "Unblock" instead of a
+   * friend-request action the API would reject with FRIEND_BLOCKED. Users who
+   * blocked the viewer never reach the client at all, so this is never true in
+   * the other direction.
+   */
+  isBlockedByMe: boolean;
   /** Friendship row id when FRIEND/PENDING; null when NONE. */
   friendshipId: string | null;
   /** Who sent the PENDING request; null when FRIEND/NONE. */
@@ -85,6 +96,10 @@ type BasicProfile = {
   lastName: string;
   avatarUrl: string | null;
   isOnline: boolean;
+  privacySettings?: {
+    whoCanSeeOnlineStatus?: string | null;
+    whoCanViewProfile?: string | null;
+  } | null;
 };
 
 async function resolveAvatar(stored: string | null) {
@@ -105,23 +120,36 @@ async function resolveAvatar(stored: string | null) {
 async function toUserItem(
   profile: BasicProfile,
   roomId: string | null,
-  relationship: PeerRelationship
+  relationship: PeerRelationship,
+  friendOfFriendIds: ReadonlySet<string>,
+  blockedByMe: ReadonlySet<string>
 ): Promise<SearchUserItem> {
-  const { url, expiresIn, avatar } = await resolveAvatar(profile.avatarUrl);
+  // `whoCanViewProfile` — a denied viewer keeps the handle (the row must stay
+  // actionable) but gets no real name and no photo.
+  const identity = visibleIdentity(profile, {
+    isFriend: relationship.isFriend,
+    isFriendOfFriend: friendOfFriendIds.has(profile.userId),
+  });
+  const { url, expiresIn, avatar } = await resolveAvatar(
+    identity.avatarAllowed ? profile.avatarUrl : null
+  );
   return {
     type: "USER",
     userId: profile.userId,
     username: profile.username,
-    firstName: profile.firstName,
-    lastName: profile.lastName,
-    fullName: `${profile.firstName} ${profile.lastName}`.trim(),
+    firstName: identity.firstName,
+    lastName: identity.lastName,
+    fullName: identity.fullName,
     avatarUrl: url,
     avatarUrlExpiresIn: expiresIn,
     avatar,
-    isOnline: profile.isOnline,
+    // `whoCanSeeOnlineStatus` — a denied viewer sees `false`, indistinguishable
+    // from genuinely offline. Never leak the real flag here.
+    isOnline: visibleIsOnline(profile, { isFriend: relationship.isFriend }),
     roomId,
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
+    isBlockedByMe: blockedByMe.has(profile.userId),
     friendshipId: relationship.friendshipId,
     requesterId: relationship.requesterId,
     relationship: {
@@ -196,10 +224,17 @@ export const userSearchService = {
       messagingGrpcClient.listPrivateRoomPeers(viewerId, PRIVATE_ROOM_PEER_CAP),
     ]);
 
-    const blockedIds = new Set(
-      blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
-    );
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, blocks);
     const relationshipOf = buildRelationshipLookup(viewerId, relationships);
+    const viewerFriendIds = getFriendPeerIds(viewerId, relationships);
+    // FRIENDS_OF_FRIENDS needs the one-hop expansion, not just direct friends.
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      viewerFriendIds
+    );
+    // Reused for `whoCanViewProfile` masking on every row below — the same
+    // one-hop set discovery already paid for, never a second traversal.
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -215,7 +250,10 @@ export const userSearchService = {
     const [recentProfiles, recentGroups, recentRoomMatches] = await Promise.all(
       [
         recentUserIds.length
-          ? userProfileRepository.findByUserIds(recentUserIds)
+          ? userProfileRepository.findDiscoverableByUserIds(
+              recentUserIds,
+              viewerGraph
+            )
           : Promise.resolve([]),
         recentGroupIds.length
           ? messagingGrpcClient.getGroupsByIds(viewerId, recentGroupIds)
@@ -236,14 +274,19 @@ export const userSearchService = {
       if (recent.length >= RECENT_LIMIT) break;
       if (row.targetType === RecentSearchTargetType.USER) {
         const profile = recentProfileById.get(row.targetId);
-        if (!profile || blockedIds.has(profile.userId)) continue;
+        // Only users who blocked the VIEWER drop out — a user the viewer
+        // blocked stays in their own Recent list (they can still open and
+        // unblock them).
+        if (!profile || hiddenIds.has(profile.userId)) continue;
         recent.push(
           await toUserItem(
             profile,
             recentRoomByUserId.get(profile.userId) ??
               peerRoomByUserId.get(profile.userId) ??
               null,
-            relationshipOf(profile.userId)
+            relationshipOf(profile.userId),
+            fofIds,
+            blockedByMe
           )
         );
       } else {
@@ -271,9 +314,7 @@ export const userSearchService = {
       messagingGrpcClient.listPrivateRoomPeers(viewerId, PRIVATE_ROOM_PEER_CAP),
     ]);
 
-    const blockedIds = new Set(
-      blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
-    );
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, blocks);
     const relationshipOf = buildRelationshipLookup(viewerId, relationships);
     // `peers` arrives ordered by lastMessageAt desc from chat-service; used
     // only to attach `roomId` metadata and to order friends by recency —
@@ -283,8 +324,16 @@ export const userSearchService = {
     );
     const roomOrderIndex = new Map(peers.map((p, idx) => [p.peerUserId, idx]));
     const friendIds = getFriendPeerIds(viewerId, relationships).filter(
-      (id) => !blockedIds.has(id)
+      (id) => !hiddenIds.has(id)
     );
+    // Resolved once and reused by both buckets — a FRIENDS_OF_FRIENDS target is
+    // discoverable when the viewer shares at least one mutual friend with them.
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      friendIds
+    );
+    // Reused for `whoCanViewProfile` masking on every row below.
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
 
     // ---------------------------------------------------------------------
     // Chat — max 10: accepted friends (isFriend === true), regardless of
@@ -293,7 +342,13 @@ export const userSearchService = {
     // ---------------------------------------------------------------------
     const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
       friendIds.length
-        ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
+        ? userProfileRepository.findUsersInList(
+            friendIds,
+            q,
+            0,
+            CHAT_LIMIT,
+            viewerGraph
+          )
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
     ]);
@@ -313,7 +368,9 @@ export const userSearchService = {
         await toUserItem(
           p,
           peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId)
+          relationshipOf(p.userId),
+          fofIds,
+          blockedByMe
         )
       );
     }
@@ -335,7 +392,10 @@ export const userSearchService = {
     // ---------------------------------------------------------------------
     const excludeUserIds = [
       viewerId,
-      ...blockedIds,
+      // Blocks are one-way: only users who blocked the VIEWER are removed.
+      // Users the viewer blocked stay searchable to their own blocker, carrying
+      // `isBlockedByMe` so the row renders as blocked rather than addable.
+      ...hiddenIds,
       ...friendIds, // only accepted friends are excluded from "other"
     ];
     const excludeGroupIds = [...chatGroupIdSet];
@@ -345,7 +405,8 @@ export const userSearchService = {
         excludeUserIds,
         q,
         skip,
-        otherTake
+        otherTake,
+        viewerGraph
       ),
       messagingGrpcClient.listOtherGroups(
         viewerId,
@@ -362,7 +423,9 @@ export const userSearchService = {
         await toUserItem(
           p,
           peerRoomByUserId.get(p.userId) ?? null,
-          relationshipOf(p.userId)
+          relationshipOf(p.userId),
+          fofIds,
+          blockedByMe
         )
       );
     }

@@ -472,6 +472,78 @@ export function buildCommunityInvitationAction(params: {
   };
 }
 
+export type GroupInvitationStatus =
+  | "ACTIVE"
+  | "EXPIRED"
+  | "REVOKED"
+  | "DELETED";
+
+export interface GroupInvitationSystemAction {
+  type: "GROUP_INVITATION";
+  groupId: string;
+  groupName: string;
+  groupAvatarUrl?: string | null;
+  memberCount?: number;
+  inviteToken?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: GroupInvitationStatus;
+  canOpen: boolean;
+}
+
+/** True for a stored SYSTEM message that carries a GROUP_INVITE card. */
+export function isGroupInvitationMessage(m: {
+  messageType?: string | null;
+  systemEvent?: string | null;
+}): boolean {
+  return (
+    normalizeMessageType(m.messageType) === "SYSTEM" &&
+    m.systemEvent === "GROUP_INVITE"
+  );
+}
+
+/**
+ * The SINGLE builder for a GROUP_INVITE message's `systemAction` card — mirrors
+ * {@link buildCommunityInvitationAction}. Unlike the community variant, group
+ * membership/link state lives in this same service, so callers resolve it via
+ * direct repo reads (no gRPC) both at send time and on historical reads.
+ */
+export function buildGroupInvitationAction(params: {
+  groupId: string;
+  groupName: string;
+  groupAvatarUrl?: string | null;
+  memberCount?: number;
+  inviteToken?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: GroupInvitationStatus;
+}): GroupInvitationSystemAction {
+  const {
+    groupId,
+    groupName,
+    groupAvatarUrl = null,
+    memberCount,
+    inviteToken = null,
+    deepLink,
+    alreadyJoined,
+    status,
+  } = params;
+  const canOpen =
+    status !== "DELETED" && (alreadyJoined || status === "ACTIVE");
+  return {
+    type: "GROUP_INVITATION",
+    groupId,
+    groupName,
+    groupAvatarUrl,
+    memberCount,
+    inviteToken,
+    deepLink,
+    alreadyJoined,
+    status,
+    canOpen,
+  };
+}
+
 export interface ChatMessageEventInput {
   id: string;
   clientMessageId?: string | null;
@@ -503,9 +575,51 @@ export interface ChatMessageEventInput {
   /** Group lifecycle SYSTEM messages only (messageType=SYSTEM). */
   systemEvent?: string | null;
   systemData?: unknown;
-  /** COMMUNITY_INVITE cards only — see {@link buildCommunityInvitationAction}. */
-  systemAction?: CommunityInvitationSystemAction | null;
+  /** COMMUNITY_INVITE / GROUP_INVITE cards only — see {@link buildCommunityInvitationAction} / {@link buildGroupInvitationAction}. */
+  systemAction?:
+    | CommunityInvitationSystemAction
+    | GroupInvitationSystemAction
+    | null;
   countInUnread?: boolean | null;
+  /**
+   * PRIVATE auto-delete deadline (epoch ms), or null/omitted when the message
+   * has no timer. MUST ride the live event, not just REST history: without it a
+   * message sent while auto-delete is on renders with no countdown until the
+   * client refetches, and then shows a countdown that is already expired.
+   */
+  autoDeleteAt?: number | null;
+  /** True while an "After Viewing" message is waiting on the recipient's read receipt. */
+  autoDeleteAfterView?: boolean;
+}
+
+/**
+ * Pull a stored message's auto-delete stamp into the wire shape.
+ *
+ * One helper rather than four hand-rolled copies: every path that emits a live
+ * `message:new`/`message:edited` (REST send, socket/gRPC send, forward, edit)
+ * has to carry it, and the bug this fixes was exactly one of those paths
+ * quietly not doing so.
+ */
+export function autoDeleteWireFields(row: unknown): {
+  autoDeleteAt: number | null;
+  autoDeleteAfterView: boolean;
+} {
+  const r = (row ?? {}) as {
+    autoDeleteAt?: Date | string | number | null;
+    autoDeleteAfterView?: boolean | null;
+  };
+  const raw = r.autoDeleteAt;
+  let at: number | null = null;
+  if (raw instanceof Date) at = raw.getTime();
+  else if (typeof raw === "number") at = raw;
+  else if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    at = Number.isFinite(parsed) ? parsed : null;
+  }
+  return {
+    autoDeleteAt: at,
+    autoDeleteAfterView: r.autoDeleteAfterView === true,
+  };
 }
 
 export type DeleteConversationKind = ConversationKind | "COMMUNITY";
@@ -588,6 +702,11 @@ export function buildChatMessageEvent(
     sequenceNumber: input.sequenceNumber,
     revision: input.revision ?? 0,
     countInUnread: input.countInUnread ?? true,
+    // Auto-delete (PRIVATE). Always present so a client can clear a stale
+    // countdown when a re-stamp removes the deadline, rather than only ever
+    // learning about deadlines that exist.
+    autoDeleteAt: input.autoDeleteAt ?? null,
+    autoDeleteAfterView: input.autoDeleteAfterView ?? false,
     // Group lifecycle system messages (messageType=SYSTEM) carry structured data.
     ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
     ...(input.systemData !== undefined ? { systemData: input.systemData } : {}),

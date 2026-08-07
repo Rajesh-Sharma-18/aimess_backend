@@ -23,7 +23,8 @@ export class GroupMemberController {
   leave = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const result = await this.service.leave(roomId, userId);
+    const { reason } = req.body as { reason?: string };
+    const result = await this.service.leave(roomId, userId, reason);
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_GROUP_LEFT", req.locale)));
@@ -37,29 +38,6 @@ export class GroupMemberController {
       targetUserId: userId,
       kickedBy,
       reason,
-    });
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
-  });
-
-  ban = asyncHandler(async (req: Request, res: Response) => {
-    const { userId: bannedBy } = req.auth;
-    const { roomId, userId, reason } = req.body;
-    const result = await this.service.ban({
-      roomId,
-      targetUserId: userId,
-      bannedBy,
-      reason,
-    });
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
-  });
-
-  unban = asyncHandler(async (req: Request, res: Response) => {
-    const { userId: unbannedBy } = req.auth;
-    const { roomId, userId } = req.body;
-    const result = await this.service.unban({
-      roomId,
-      targetUserId: userId,
-      unbannedBy,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
@@ -112,15 +90,66 @@ export class GroupMemberController {
       .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
   });
 
+  muteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: mutedBy } = req.auth;
+    const { roomId, userId, durationMinutes, mutedUntil } = req.body as {
+      roomId: string;
+      userId: string;
+      durationMinutes?: number | null;
+      mutedUntil?: string | null;
+    };
+    // `durationMinutes` (server clock) wins over a client-computed absolute
+    // `mutedUntil` — mirrors community's setMemberMuteSchema handling.
+    const resolvedMutedUntil =
+      durationMinutes !== undefined
+        ? durationMinutes == null
+          ? null
+          : new Date(Date.now() + durationMinutes * 60_000)
+        : mutedUntil
+          ? new Date(mutedUntil)
+          : null;
+    const result = await this.service.muteMember({
+      roomId,
+      targetUserId: userId,
+      mutedBy,
+      mutedUntil: resolvedMutedUntil,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  unmuteMember = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: actorId } = req.auth;
+    const { roomId, userId } = req.body as { roomId: string; userId: string };
+    const result = await this.service.unmuteMember({
+      roomId,
+      targetUserId: userId,
+      actorId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  getMutedMembers = asyncHandler(async (req: Request, res: Response) => {
+    const members = await this.service.getMutedMembers(
+      req.params.roomId as string,
+      req.auth.userId
+    );
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ data: members }));
+  });
+
   getMembers = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    const { userId } = req.auth;
     const limit = Number(req.query.limit) || 50;
     const cursor = req.query.cursor as string | undefined;
     const page = Number(req.query.page) || 1;
-    const [members, totalCount] = await Promise.all([
-      this.service.getMembers(roomId, { limit, cursor }),
-      this.service.countMembers(roomId),
-    ]);
+    // Roster read is membership-gated in the service (throws before the count
+    // query matters), so run it first rather than in parallel with the count.
+    const members = await this.service.getMembers(
+      roomId,
+      { limit, cursor },
+      userId
+    );
+    const totalCount = await this.service.countMembers(roomId);
     const paginated = buildPaginatedResponse(
       members as unknown as Record<string, unknown>[],
       totalCount,

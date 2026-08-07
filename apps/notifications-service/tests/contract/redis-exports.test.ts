@@ -20,8 +20,8 @@ import * as redisPkg from "@aimess/redis";
 describe("@aimess/redis package contract", () => {
   it("exports publishUserSocketEvent as a function", () => {
     expect(typeof redisPkg.publishUserSocketEvent).toBe("function");
-    // (redis, userId, event, data) → 4 declared params.
-    expect(redisPkg.publishUserSocketEvent.length).toBe(4);
+    // (redis, userId, event, data, excludeSessionId?) → 5 declared params.
+    expect(redisPkg.publishUserSocketEvent.length).toBe(5);
   });
 
   it("exports publishCommunityRoomEvent as a function", () => {

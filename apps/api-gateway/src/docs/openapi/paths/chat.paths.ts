@@ -511,6 +511,31 @@ const privateRoomDelete = {
   },
 };
 
+const privateRoomClear = {
+  post: {
+    tags: ["Chat â€” Private"],
+    operationId: "clearPrivateChat",
+    summary: "Clear chat for me",
+    description:
+      "Clears all previous private messages for the authenticated user only. " +
+      "The conversation remains in the inbox, peers keep their history, and new messages remain visible.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat cleared"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 const privateMessages = {
   get: {
     tags: ["Chat — Private"],
@@ -920,6 +945,31 @@ const groupById = {
   },
 };
 
+const groupClear = {
+  post: {
+    tags: ["Chat â€” Groups"],
+    operationId: "clearGroupChat",
+    summary: "Clear chat for me",
+    description:
+      "Clears all previous group messages for the authenticated user only. " +
+      "The user remains a member, other members keep their history, and new messages remain visible.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat cleared"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 const groupDisband = {
   post: {
     tags: ["Chat — Groups"],
@@ -1284,6 +1334,71 @@ const groupMemberUnmute = {
     responses: {
       ...successResponse("Group unmuted", "ChatGroupMember"),
       "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberMuteMember = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "muteGroupMember",
+    summary: "Mute another member (moderation)",
+    description:
+      "Owner/admin/moderator only, and the caller must outrank the target (a moderator cannot mute another moderator). " +
+      "This is the MODERATION mute — the counterpart of `POST /communities/{id}/members/{userId}/mute` — and is entirely " +
+      "distinct from `POST /chat/group-members/{roomId}/mute`, which mutes the caller's OWN notifications. " +
+      "Omit or null `mutedUntil` to mute indefinitely; an ISO-8601 timestamp mutes until then (expiry is applied lazily, " +
+      "so posting rights return the instant it passes). A muted member keeps FULL read access — history, new messages, " +
+      "media downloads, member list, search, receipts — but every write is rejected with `CHAT_MUTED_IN_GROUP` (403): " +
+      "send (all content types), edit, delete-own, react, and pin. Typing and voice-recording indicators are dropped " +
+      "server-side too. " +
+      "Emits `group:member:muted` on `conv:<roomId>` (roster badges) AND on the target's own `user:<id>` channel, so every " +
+      "logged-in device disables its composer with no refresh, plus a `typing:stop`/`recording:stop` retraction for the target.",
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatMuteMemberRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Member muted", "ChatGroupMember"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMemberUnmuteMember = {
+  post: {
+    tags: ["Chat — Groups"],
+    operationId: "unmuteGroupMember",
+    summary: "Unmute another member (moderation)",
+    description:
+      "Owner/admin/moderator only. Lifts a moderation mute and restores sending, media, voice notes, reactions, pinning " +
+      "and typing immediately. 404 `CHAT_MEMBER_NOT_MUTED` when the member is not currently muted (a fully-expired timed " +
+      "mute counts as not muted). Emits `group:member:unmuted` to the room AND to the target's `user:<id>` channel, so " +
+      "every device re-enables its composer without a refetch. A timed mute that simply lapses emits the same event from " +
+      'the auto-unmute sweep, with `actorId: ""`.',
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatUnmuteMemberRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Member unmuted", "ChatGroupMember"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
     },
   },
@@ -2655,7 +2770,16 @@ function searchPath(tag: string, summary: string) {
       tags: [tag],
       summary,
       description:
-        "Case-insensitive substring search over message text in the room.",
+        "Index-backed full-text search over message text in the room, newest-first.\n\n" +
+        "Matching uses a MongoDB `$text` index, so terms match at WORD granularity — " +
+        "a partial word returns nothing until it is complete. Clients bridge that gap " +
+        "by filtering their local cache while the user types.\n\n" +
+        "Pagination is an opaque `(createdAt, _id)` keyset cursor, not an offset: pass " +
+        "the previous response's `nextCursor` back as `cursor`. Stable under concurrent " +
+        "inserts, so pages never duplicate or drop rows. `page`/`skip` are no longer accepted.\n\n" +
+        "Each item carries `searchScore` (MongoDB textScore) for client-side relevance " +
+        "ranking and highlighting, plus the `id` and `sequenceNumber` needed to navigate " +
+        "via `GET .../messages?around={id}`.",
       security: [{ bearerAuth: [] }],
       parameters: [
         {
@@ -2669,7 +2793,16 @@ function searchPath(tag: string, summary: string) {
           in: "query",
           required: true,
           schema: { type: "string" },
-          description: "Search term.",
+          description: "Search term. Matched at word granularity.",
+        },
+        {
+          name: "cursor",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Opaque keyset cursor `<createdAtMs>_<objectId>` taken from the previous " +
+            "response's `nextCursor`. Omit for the first page.",
         },
         limitParam(30),
       ],
@@ -3273,6 +3406,7 @@ export const chatPaths = {
   "/chat/private/conversations": privateConversations,
   "/chat/private/rooms/{peerId}": privateRoomByPeer,
   "/chat/private/rooms/{roomId}": privateRoomDelete,
+  "/chat/private/rooms/{roomId}/clear": privateRoomClear,
   "/chat/private/rooms/{roomId}/messages": privateMessages,
   "/chat/private/rooms/{roomId}/media": privateMedia,
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
@@ -3289,6 +3423,7 @@ export const chatPaths = {
   "/chat/groups": groupCreate,
   "/chat/groups/my-groups": groupMyGroups,
   "/chat/groups/{roomId}": groupById,
+  "/chat/groups/{roomId}/clear": groupClear,
   "/chat/groups/{roomId}/disband": groupDisband,
   "/chat/groups/{roomId}/archive": groupArchive,
   "/chat/groups/{roomId}/unarchive": groupUnarchive,
@@ -3311,6 +3446,8 @@ export const chatPaths = {
   "/chat/group-members/{roomId}": groupMembers,
   "/chat/group-members/{roomId}/mute": groupMemberMute,
   "/chat/group-members/{roomId}/unmute": groupMemberUnmute,
+  "/chat/group-members/mute-member": groupMemberMuteMember,
+  "/chat/group-members/unmute-member": groupMemberUnmuteMember,
 
   // Group invite links
   "/chat/invite-links": inviteLinkCreate,

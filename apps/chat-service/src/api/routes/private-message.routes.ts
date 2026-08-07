@@ -10,6 +10,7 @@ import {
   forwardMessageSchema,
   editMessageSchema,
   muteRoomSchema,
+  autoDeleteSchema,
   reportMessageSchema,
   sendPrivateMessageBodySchema,
   markReadBodySchema,
@@ -65,6 +66,7 @@ export function createPrivateMessageRoutes(
 
   // Delete conversation for me
   router.delete("/rooms/:roomId", authenticate, roomCtrl.deleteForMe);
+  router.post("/rooms/:roomId/clear", authenticate, roomCtrl.clearChat);
 
   // Mute / unmute a conversation
   router.post(
@@ -74,6 +76,20 @@ export function createPrivateMessageRoutes(
     roomCtrl.muteRoom
   );
   router.post("/rooms/:roomId/unmute", authenticate, roomCtrl.unmuteRoom);
+
+  // Automatically Delete Messages (disappearing messages) — per-user setting
+  router.get(
+    "/rooms/:roomId/auto-delete",
+    authenticate,
+    roomCtrl.getAutoDelete
+  );
+  router.put(
+    "/rooms/:roomId/auto-delete",
+    authenticate,
+    sendLimit,
+    validateBody(autoDeleteSchema),
+    roomCtrl.setAutoDelete
+  );
 
   // Archive / unarchive a conversation
   router.patch("/rooms/:roomId/archive", authenticate, roomCtrl.archiveRoom);

@@ -17,6 +17,7 @@ import {
   type VisibleLast,
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
+import { isGroupMemberMuted } from "../lib/access-guard.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -30,6 +31,16 @@ import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
   isJoined: boolean;
+  /**
+   * True when an admin/moderator silenced the CALLER — they can still read
+   * everything but cannot send/react/edit/pin. Distinct from `isMuted`, which
+   * is the caller's own NOTIFICATION mute. Same names community's detail
+   * payload uses. Optional so the list endpoints that don't resolve it keep
+   * compiling unchanged.
+   */
+  isMemberMuted?: boolean;
+  /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
+  memberMutedUntil?: string | null;
 };
 
 /**
@@ -51,6 +62,9 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
   unreadCount: number;
   role: string;
+  /** True when the caller voluntarily left this group — kept in the inbox
+   *  read-only (history intact, `isJoined: false`), WhatsApp-style. */
+  hasLeft: boolean;
   /**
    * Telegram-style tick for the last message, but ONLY meaningful when the
    * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
@@ -172,6 +186,80 @@ export class GroupRoomService {
           } as T;
         });
     return this.applyReactionOverlay(withDeleteOverlay, userId);
+  }
+
+  /**
+   * A LEFT member's inbox row must not preview a message posted after they
+   * left — same "no content past leftAt" rule `assertGroupReadAccess`/
+   * `readCutoffBefore` already enforce when they open the room's actual
+   * history; without this, the shared `GroupRoom.lastMessagePreview` (which
+   * ISN'T per-viewer) would keep showing whatever the group's real last
+   * message is, effectively "receiving" its text via the sidebar even though
+   * the timeline itself correctly stops at leftAt. Only touches `LEFT`
+   * memberships whose shared last message postdates their `leftAt`; ACTIVE
+   * members and any row without a real membership pass through untouched.
+   */
+  private async applyLeftMemberPreviewCap<T extends GroupRoom>(
+    rooms: T[],
+    membershipByRoom: Map<string, { status: string; leftAt: Date | null }>,
+    userId: string
+  ): Promise<T[]> {
+    if (!rooms.length) return rooms;
+    const stale = rooms.filter((room) => {
+      const membership = membershipByRoom.get(room.roomId);
+      return (
+        membership?.status === "LEFT" &&
+        membership.leftAt != null &&
+        room.lastMessageAt != null &&
+        room.lastMessageAt.getTime() > membership.leftAt.getTime()
+      );
+    });
+    if (!stale.length) return rooms;
+
+    const capped = new Map<string, T>();
+    await Promise.all(
+      stale.map(async (room) => {
+        const leftAt = membershipByRoom.get(room.roomId)?.leftAt;
+        if (!leftAt) return;
+        const [prev] = await this.messageRepo.findByRoomIdWithTime(
+          room.roomId,
+          leftAt.toISOString(),
+          1,
+          userId
+        );
+        capped.set(room.roomId, {
+          ...room,
+          lastMessagePreview: prev
+            ? {
+                text: (prev.content as { text?: string } | null)?.text ?? "",
+                senderId: prev.senderId ?? "",
+                senderName: prev.senderName ?? "",
+                messageType: prev.messageType,
+                createdAt: prev.createdAt,
+              }
+            : null,
+        } as T);
+      })
+    );
+    if (!capped.size) return rooms;
+    return rooms.map((room) => capped.get(room.roomId) ?? room);
+  }
+
+  private applyClearChatPreviewCap<T extends GroupRoom>(
+    rooms: T[],
+    membershipByRoom: Map<string, { clearChatAt?: Date | null }>
+  ): T[] {
+    return rooms.map((room) => {
+      const clearChatAt = membershipByRoom.get(room.roomId)?.clearChatAt;
+      if (
+        !clearChatAt ||
+        !room.lastMessageAt ||
+        room.lastMessageAt.getTime() > clearChatAt.getTime()
+      ) {
+        return room;
+      }
+      return { ...room, lastMessagePreview: null } as T;
+    });
   }
 
   /**
@@ -322,7 +410,7 @@ export class GroupRoomService {
     const member = await this.memberRepo.create({
       roomId,
       userId: params.createdBy,
-      role: "OWNER",
+      role: "ADMIN",
       status: "ACTIVE",
       joinedAt: new Date(),
     });
@@ -395,12 +483,29 @@ export class GroupRoomService {
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
     // Any authenticated user can fetch a group's detail, so isJoined genuinely
     // varies: true only when the caller has an ACTIVE membership row.
-    const isJoined = userId
-      ? (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) !== null
-      : false;
+    const membership = userId
+      ? await this.memberRepo.findActiveByRoomAndUser(roomId, userId)
+      : null;
+    const isJoined = membership !== null;
     // Resolve the room logo object key → download URL on read (never persisted).
     const avatar = await resolveMediaUrl(room.avatar);
-    return { ...room, avatar, isJoined };
+    // Caller's OWN moderation-mute state, so a client that reconnects (or opens
+    // the group cold) restores the disabled composer without waiting for a
+    // `group:member:muted` socket event it may have missed while offline —
+    // Scenario 4. Named exactly like community's detail payload
+    // (`isMemberMuted`/`memberMutedUntil`); distinct from `isMuted`, which is
+    // the caller's own NOTIFICATION mute.
+    const isMemberMuted = isGroupMemberMuted(membership);
+    return {
+      ...room,
+      avatar,
+      isJoined,
+      isMemberMuted,
+      memberMutedUntil:
+        isMemberMuted && membership?.moderationMutedUntil
+          ? membership.moderationMutedUntil.toISOString()
+          : null,
+    };
   }
 
   async updateRoom(
@@ -418,7 +523,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["OWNER", "ADMIN"].includes(member.role)) {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
     }
 
@@ -505,7 +610,7 @@ export class GroupRoomService {
       userId
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (member.role !== "OWNER") {
+    if (member.role !== "ADMIN") {
       throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
     }
 
@@ -545,6 +650,25 @@ export class GroupRoomService {
       .catch(() => {});
   }
 
+  async clearChat(roomId: string, userId: string): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    await this.memberRepo.setClearChatAt(roomId, userId);
+
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:cleared",
+          data: { roomId, clearedBy: userId, type: "GROUP" },
+        })
+      )
+      .catch(() => {});
+  }
+
   async getUserGroups(
     userId: string,
     params: { limit: number; cursor?: string | null; q?: string }
@@ -558,10 +682,14 @@ export class GroupRoomService {
     const rawRooms = (
       await this.roomRepo.getUserGroups(userId, roomIds, params)
     ).filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)));
+    const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.enrichLastMessageSenderNames(
-      await this.applyPerUserPreview(rawRooms, userId)
+      this.applyClearChatPreviewCap(
+        await this.applyPerUserPreview(rawRooms, userId),
+        membershipByRoom
+      )
     );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
@@ -574,7 +702,10 @@ export class GroupRoomService {
   }
 
   async countUserGroups(userId: string, q?: string): Promise<number> {
-    const memberships = await this.memberRepo.getActiveMemberships(userId);
+    // Matches getInboxGroups' membership source (ACTIVE + LEFT) so this total
+    // stays consistent with what the inbox page actually returns.
+    const memberships =
+      await this.memberRepo.getActiveOrLeftMemberships(userId);
     if (!memberships.length) return 0;
     const clearedByRoom = new Map(
       memberships.map((m) => [m.roomId, m.clearedAt])
@@ -666,7 +797,7 @@ export class GroupRoomService {
     inclusive?: boolean;
     limit: number;
   }): Promise<EnrichedGroupRoom[]> {
-    const memberships = await this.memberRepo.getActiveMemberships(
+    const memberships = await this.memberRepo.getActiveOrLeftMemberships(
       params.userId
     );
     if (!memberships.length) return [];
@@ -689,7 +820,14 @@ export class GroupRoomService {
     // Per-user visibility: swap in the viewer's previous-visible preview for any
     // room whose shared last message they have hidden (delete-for-me / global).
     const rooms = await this.enrichLastMessageSenderNames(
-      await this.applyPerUserPreview(rawRooms, params.userId)
+      await this.applyLeftMemberPreviewCap(
+        this.applyClearChatPreviewCap(
+          await this.applyPerUserPreview(rawRooms, params.userId),
+          membershipByRoom
+        ),
+        membershipByRoom,
+        params.userId
+      )
     );
 
     // Resolve every room logo on this page ONCE (deduped) → download URLs, so
@@ -711,14 +849,23 @@ export class GroupRoomService {
         settings.mute === true ||
         (settings.muteUntil != null &&
           new Date(settings.muteUntil).getTime() > now);
-      const isJoined = membership != null;
+      const isJoined = membership?.status === "ACTIVE";
+      const hasLeft = membership?.status === "LEFT";
+      const isMemberMuted = isGroupMemberMuted(membership);
       return {
         ...room,
         avatar: urlFromMap(avatarUrls, room.avatar),
         isMuted,
-        unreadCount: membership?.unreadCount ?? 0,
+        isMemberMuted,
+        memberMutedUntil:
+          isMemberMuted && membership?.moderationMutedUntil
+            ? membership.moderationMutedUntil.toISOString()
+            : null,
+        // A left member accrues no unread — their cursor is frozen at leftAt.
+        unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
         role: membership?.role ?? "MEMBER",
         isJoined,
+        hasLeft,
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });

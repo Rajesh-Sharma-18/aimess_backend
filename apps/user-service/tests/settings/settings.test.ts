@@ -15,6 +15,10 @@ jest.mock("../../src/repositories/user-settings.repository.js", () => ({
 jest.mock("../../src/messaging/publish-settings-updated.js", () => ({
   publishSettingsUpdatedSafe: jest.fn(),
 }));
+// Multi-device settings fan-out — needs a live Redis client otherwise.
+jest.mock("../../src/lib/friend-socket.js", () => ({
+  emitSettingsUpdatedSafe: jest.fn(),
+}));
 
 import request from "supertest";
 

@@ -38,6 +38,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.requesterId,
         ...friendCopy.requested(p.requesterName),
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           // Alias of friendshipId — matches the FE's pending-conversation
@@ -72,6 +73,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         ...friendCopy.acceptedForRequester(p.addresseeName),
         deepLink: deepLinkForRequester,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
@@ -99,10 +101,14 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.requesterId,
         ...friendCopy.acceptedForAddressee(p.requesterName),
         deepLink: deepLinkForAddressee,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           deepLink: deepLinkForAddressee,
+          // This user IS the actor — their own accept must not re-flag the row
+          // unread on their other devices.
+          resurface: "false",
           resolution: "You are now friends!",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,
@@ -129,6 +135,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         ...friendCopy.rejected(p.addresseeName),
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
@@ -156,10 +163,12 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.requesterId,
         ...friendCopy.rejectedSelf(p.requesterName),
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
-          resolution: "I have declined the friend request",
+          resurface: "false",
+          resolution: "You declined this friend request",
           resolutionTone: "danger",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,
@@ -174,13 +183,36 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
     case FriendshipEvents.FRIEND_CANCELLED: {
       const p = data as FriendCancelledPayload;
       const deepLink = buildDeepLink("user", p.requesterId);
+      // Withdrawing a request must leave NOTHING behind, on either side. The
+      // addressee's incoming card is removed below; this removes the requester's
+      // own copy of the same friendship group so a cancel from one device doesn't
+      // leave a ghost card on their other devices. Both resolve to the same
+      // groupKey (friend:<friendshipId>), so the delete branch handles each.
+      await pushToUser({
+        userId: p.requesterId,
+        category: "friendRequestEnabled",
+        type,
+        actorId: p.addresseeId,
+        ...friendCopy.cancelled(p.requesterName),
+        dataOnly: true,
+        apnsThreadId: `friend_${p.friendshipId}`,
+        data: {
+          friendshipId: p.friendshipId,
+          addresseeId: p.addresseeId,
+          requesterId: p.requesterId,
+        },
+      });
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
         ...friendCopy.cancelled(p.requesterName),
+        // Silent: this event REMOVES the request row, so a visible push
+        // announcing a cancellation would contradict the row disappearing.
+        dataOnly: true,
         deepLink,
+        apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,

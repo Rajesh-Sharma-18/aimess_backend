@@ -9,7 +9,6 @@ import { logger } from "@aimess/logger";
 
 import {
   buildPaginatedResponse,
-  buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
@@ -20,6 +19,7 @@ import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildDeletePayload,
   groupStoredReactions,
@@ -136,12 +136,23 @@ export class PrivateMessageController {
     const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
     const around = req.query.around as string | undefined;
 
+    // The peer's READ and DELIVERED watermarks. The serializer strips
+    // `readBy`/`deliveredTo` off every message, so these room-level cursors are
+    // the only thing that keeps a sender's own ticks alive across a relaunch.
+    // V1 `listMessages` has shipped both since they existed; this V2 handler
+    // (the one every current client calls) never did — the exact omission that
+    // collapsed group ticks, mirrored on the private side.
+    const [peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getPeerReadSeq(roomId, userId).catch(() => 0),
+      this.messageService.getPeerDeliveredSeq(roomId, userId).catch(() => 0),
+    ]);
+
     const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
       res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            payload,
+            { ...payload, peerReadSeq, peerDeliveredSeq },
             payload.items.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -208,12 +219,19 @@ export class PrivateMessageController {
     const sinceRevision = Number(req.query.since_revision) || 0;
     const limit = Number(req.query.limit) || 100;
 
-    const result = await this.messageService.getChanges({
-      roomId,
-      userId,
-      sinceRevision,
-      limit,
-    });
+    // Receipts move without bumping `revision`, so the changes feed alone would
+    // never tell a reconnecting sender that the peer read or received anything
+    // while they were away. Resolved alongside the page; both best-effort.
+    const [result, peerReadSeq, peerDeliveredSeq] = await Promise.all([
+      this.messageService.getChanges({
+        roomId,
+        userId,
+        sinceRevision,
+        limit,
+      }),
+      this.messageService.getPeerReadSeq(roomId, userId).catch(() => 0),
+      this.messageService.getPeerDeliveredSeq(roomId, userId).catch(() => 0),
+    ]);
 
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse(
@@ -223,6 +241,8 @@ export class PrivateMessageController {
           resetRequired: result.resetRequired,
           hasMore: result.hasMore,
           nextRevisionCursor: result.nextRevisionCursor,
+          peerReadSeq,
+          peerDeliveredSeq,
         },
         result.items.length
           ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -645,32 +665,43 @@ export class PrivateMessageController {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const query = ((req.query.q as string) ?? "").trim();
-    const limit = Number(req.query.limit) || 30;
-    const page = Number(req.query.page) || 1;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+    const cursor =
+      req.query.cursor != null ? String(req.query.cursor) : undefined;
     if (!query) {
-      const empty = buildListResponse([], 0, page, limit);
       res
         .status(HTTP_STATUS.OK)
-        .json(new ApiResponse(empty, t("CHAT_NO_MESSAGES_FOUND", req.locale)));
+        .json(
+          new ApiResponse(
+            { data: [], hasMore: false, nextCursor: null },
+            t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
       return;
     }
-    const skip = (page - 1) * limit;
-    const [messages, totalCount] = await Promise.all([
-      this.messageService.searchMessages({
-        roomId,
-        userId,
-        query,
-        limit,
-        skip,
-      }),
-      this.messageService.countSearchResults(roomId, query, userId),
-    ]);
-    const enriched = await this.messageService.enrichMessages(messages);
-    const paginated = buildListResponse(enriched, totalCount, page, limit);
-    const msg = paginated.data.length
+    const result = await this.messageService.searchMessages({
+      roomId,
+      userId,
+      query,
+      limit,
+      cursor,
+    });
+    const enriched = await this.messageService.enrichMessages(result.messages);
+    const data = enriched.map((m) => ({
+      ...m,
+      searchScore: result.scores.get((m as { id: string }).id) ?? 0,
+    }));
+    const msg = data.length
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { data, hasMore: result.hasMore, nextCursor: result.nextCursor },
+          msg
+        )
+      );
   });
 
   forwardMessage = asyncHandler(async (req: Request, res: Response) => {
@@ -706,6 +737,7 @@ export class PrivateMessageController {
       isForwarded: true,
       serverTs: result.createdAt?.getTime() ?? Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      ...autoDeleteWireFields(result),
     });
     await this.redis.publish(
       `conv:${targetRoomId}`,
@@ -852,6 +884,9 @@ export class PrivateMessageController {
           ? result.createdAt.getTime()
           : Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      // §4 — an edit does not restart the timer; the deadline rides along so an
+      // edited bubble keeps showing the same countdown instead of losing it.
+      ...autoDeleteWireFields(result),
     });
     if (result.roomId) {
       await this.redis.publish(

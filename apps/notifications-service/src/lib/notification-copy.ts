@@ -6,8 +6,16 @@
  * actor-first sentence case, no trailing period unless the body is multi-sentence.
  */
 export interface NotificationCopy {
+  /** Tray/FCM heading — always present, the OS requires one. */
   title: string;
   body: string;
+  /**
+   * Notification-Center heading. `null` means the row renders WITHOUT a heading
+   * because the body is already a complete, self-describing sentence — forcing
+   * a title there is what makes an inbox read like a list of identical cards.
+   * Omit to reuse `title`.
+   */
+  inboxTitle?: string | null;
 }
 
 /** Communities are named whenever the payload carries the name; several legacy events don't. */
@@ -38,53 +46,59 @@ function formatUntil(iso: string): string | null {
     : `${mutedUntilFormatter.format(at)} UTC`;
 }
 
+// Social rows are self-describing sentences that already name the person and
+// carry their avatar — a heading above them adds nothing, so inboxTitle is null.
 export const friendCopy = {
   requested: (requesterName?: string): NotificationCopy => ({
-    title: "Friend Request",
-    body: `${person(requesterName)} has sent you a friend request.`,
+    title: person(requesterName),
+    body: `${person(requesterName)} sent you a friend request`,
+    inboxTitle: null,
   }),
   acceptedForRequester: (addresseeName?: string): NotificationCopy => ({
-    title: "Friend Request",
-    body: `You sent ${person(addresseeName)} a friend request.`,
+    title: person(addresseeName),
+    body: `${person(addresseeName)} accepted your friend request`,
+    inboxTitle: null,
   }),
-  /** Addressee-side copy after accept. Prefer preserving the existing
-   *  friend.requested card via gRPC in-place update; these strings are the
-   *  fallback when no prior row exists. Resolution text is in `data.resolution`. */
   acceptedForAddressee: (requesterName?: string): NotificationCopy => ({
-    title: "Friend Request",
-    body: `${person(requesterName)} has sent you a friend request.`,
+    title: person(requesterName),
+    body: `You and ${person(requesterName)} are now friends`,
+    inboxTitle: null,
   }),
   rejected: (addresseeName?: string): NotificationCopy => ({
-    title: "Friend Request",
-    body: `You sent ${person(addresseeName)} a friend request.`,
+    title: person(addresseeName),
+    body: `${person(addresseeName)} declined your friend request`,
+    inboxTitle: null,
   }),
-  // Used to update the ADDRESSEE's own friend.requested row in-place on reject.
-  // Resolution text is carried in `data.resolution`; title/body fall back here
-  // only when no prior friend.requested row exists to preserve.
   rejectedSelf: (requesterName?: string): NotificationCopy => ({
-    title: "Friend Request",
-    body: `${person(requesterName)} has sent you a friend request.`,
+    title: person(requesterName),
+    body: `You declined ${person(requesterName)}'s friend request`,
+    inboxTitle: null,
   }),
   cancelled: (requesterName?: string): NotificationCopy => ({
     title: person(requesterName),
-    body: "Cancelled their friend request",
+    body: `${person(requesterName)} cancelled their friend request`,
+    inboxTitle: null,
   }),
 };
 
+// Community rows carry the community avatar and a community badge; the body
+// names the community itself, so a separate heading would just repeat it.
 export const communityCopy = {
   joinRequested: (
     communityName: string,
     requesterName: string
   ): NotificationCopy => ({
     title: named(communityName),
-    body: `${person(requesterName)} asked to join`,
+    body: `${person(requesterName)} asked to join ${named(communityName)}`,
+    inboxTitle: null,
   }),
   livestreamStarted: (
     communityName: string,
     hostName: string
   ): NotificationCopy => ({
     title: named(communityName),
-    body: `${person(hostName)} is live now`,
+    body: `${person(hostName)} is live in ${named(communityName)}`,
+    inboxTitle: null,
   }),
   livestreamEnded: (
     communityName: string,
@@ -92,103 +106,135 @@ export const communityCopy = {
     duration?: string | null
   ): NotificationCopy => ({
     title: named(communityName),
-    body: duration
-      ? `${person(hostName)} ended the livestream after ${duration}`
-      : `${person(hostName)} ended the livestream`,
+    body:
+      duration && !/^0[smh]?$/.test(duration.trim())
+        ? `${person(hostName)} ended the livestream in ${named(communityName)} after ${duration}`
+        : `${person(hostName)} ended the livestream in ${named(communityName)}`,
+    inboxTitle: null,
   }),
   joinRequestApproved: (
     communityName: string,
     decidedByName: string
   ): NotificationCopy => ({
     title: named(communityName),
-    body: `${person(decidedByName)} approved your request to join`,
+    body: `${person(decidedByName)} approved your request to join ${named(communityName)}`,
+    inboxTitle: null,
   }),
   joinRequestRejected: (communityName: string): NotificationCopy => ({
     title: named(communityName),
-    body: "Your request to join wasn't approved",
+    body: `Your request to join ${named(communityName)} wasn't approved`,
+    inboxTitle: null,
   }),
   memberJoined: (communityName: string): NotificationCopy => ({
     title: named(communityName),
-    body: "You're now a member",
+    body: `You're now a member of ${named(communityName)}`,
+    inboxTitle: null,
   }),
   memberAdded: (communityName?: string | null): NotificationCopy => ({
     title: named(communityName),
-    body: "You've been added",
+    body: `You were added to ${named(communityName)}`,
+    inboxTitle: null,
   }),
   memberAddedForModerators: (
     communityName?: string | null
   ): NotificationCopy => ({
     title: named(communityName),
-    body: "A new member joined",
+    body: `A new member joined ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  adminTransferred: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "You're the admin now",
+  adminTransferred: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `You're now the admin of ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  roleChanged: (newRole: string): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: `You're now ${ROLE_LABEL[newRole] ?? newRole.toLowerCase()}`,
+  roleChanged: (
+    newRole: string,
+    communityName?: string | null
+  ): NotificationCopy => ({
+    title: named(communityName),
+    body: `You're now ${ROLE_LABEL[newRole] ?? newRole.toLowerCase()} in ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  memberKicked: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "You've been removed by a moderator",
+  memberKicked: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `You were removed from ${named(communityName)}`,
+    inboxTitle: null,
   }),
   memberBanned: (communityName?: string | null): NotificationCopy => ({
     title: named(communityName),
-    body: "You've been banned",
+    body: `You were banned from ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  memberUnbanned: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "Your ban has been lifted",
+  memberUnbanned: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `Your ban in ${named(communityName)} has been lifted`,
+    inboxTitle: null,
   }),
-  memberMuted: (mutedUntil?: string | null): NotificationCopy => {
+  memberMuted: (
+    mutedUntil?: string | null,
+    communityName?: string | null
+  ): NotificationCopy => {
     const until = mutedUntil ? formatUntil(mutedUntil) : null;
     return {
-      title: UNNAMED_COMMUNITY,
+      title: named(communityName),
       body: until
-        ? `You've been muted until ${until}`
-        : "You've been muted by a moderator",
+        ? `You're muted in ${named(communityName)} until ${until}`
+        : `You're muted in ${named(communityName)}`,
+      inboxTitle: null,
     };
   },
-  memberUnmuted: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "You can post again",
+  memberUnmuted: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `You can post in ${named(communityName)} again`,
+    inboxTitle: null,
   }),
-  memberWarned: (note?: string): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: note?.trim() || "You received a warning from a moderator",
+  memberWarned: (
+    note?: string,
+    communityName?: string | null
+  ): NotificationCopy => ({
+    title: named(communityName),
+    body: note?.trim() || `A moderator warned you in ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  inviteSent: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "You've been invited to join",
+  inviteSent: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `You've been invited to join ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  inviteAccepted: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "Your invite was accepted",
+  inviteAccepted: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `Your invite to ${named(communityName)} was accepted`,
+    inboxTitle: null,
   }),
-  reportCreated: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "A new report needs review",
+  reportCreated: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `A new report in ${named(communityName)} needs review`,
+    inboxTitle: null,
   }),
-  reportActioned: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "A moderator reviewed your report",
+  reportActioned: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `A moderator reviewed your report in ${named(communityName)}`,
+    inboxTitle: null,
   }),
-  reportResolved: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "Your report was resolved",
+  reportResolved: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `Your report in ${named(communityName)} was resolved`,
+    inboxTitle: null,
   }),
-  deleted: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "This community was deleted",
+  deleted: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `${named(communityName)} was deleted`,
+    inboxTitle: null,
   }),
-  closed: (): NotificationCopy => ({
-    title: UNNAMED_COMMUNITY,
-    body: "This community has been closed",
+  closed: (communityName?: string | null): NotificationCopy => ({
+    title: named(communityName),
+    body: `${named(communityName)} has been closed`,
+    inboxTitle: null,
   }),
   reopened: (communityName: string): NotificationCopy => ({
     title: named(communityName),
-    body: "This community is open again",
+    body: `${named(communityName)} is open again`,
+    inboxTitle: null,
   }),
 };
 
@@ -217,6 +263,25 @@ export const groupCopy = {
   memberAdded: (groupName: string): NotificationCopy => ({
     title: groupName || "New group",
     body: "You were added to the group",
+  }),
+  // Word-for-word the community mute copy, with "group" in place of the
+  // community name — see communityCopy.memberMuted/memberUnmuted.
+  memberMuted: (
+    groupName: string,
+    mutedUntil?: string | null
+  ): NotificationCopy => {
+    const until = mutedUntil ? formatUntil(mutedUntil) : null;
+    const name = groupName || "this group";
+    return {
+      title: name,
+      body: until
+        ? `You're muted in ${name} until ${until}`
+        : `You're muted in ${name}`,
+    };
+  },
+  memberUnmuted: (groupName: string): NotificationCopy => ({
+    title: groupName || "this group",
+    body: `You can post in ${groupName || "this group"} again`,
   }),
 };
 

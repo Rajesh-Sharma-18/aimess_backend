@@ -52,6 +52,32 @@ export class NotificationController {
       .json(new ApiResponse({ ...paginated, counts, type: category }, msg));
   });
 
+  // Delta sync — everything that changed after `since` (epoch ms), tombstones
+  // included. One call replaces a full-feed refetch on reconnect / cold start.
+  syncNotifications = asyncHandler(async (req: Request, res: Response) => {
+    const { userId, sessionId } = req.auth;
+    const rawSince = req.query.since;
+    const parsed = Number(rawSince);
+    const since = new Date(Number.isFinite(parsed) && parsed > 0 ? parsed : 0);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+    const [result, counts] = await Promise.all([
+      this.service.syncSince(userId, {
+        since,
+        limit,
+        viewerSessionId: sessionId,
+      }),
+      this.service.getCounts(userId, sessionId),
+    ]);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { ...result, counts },
+          t("CHAT_NOTIFICATIONS_FETCHED", req.locale)
+        )
+      );
+  });
+
   // Accepts either a single notificationId or a notificationIds array
   // (validated by markReadSchema) so one endpoint covers mark-one and
   // mark-many. Scoped to the caller so a user can't mark another user's

@@ -8890,6 +8890,18 @@ export const openApiSchemas = {
         description:
           "True when the logged-in caller is an active member of this group. Present on the read surfaces — GET /groups/my-groups (always true) and GET /groups/{roomId} (varies: false for a non-member). Omitted on mutation responses (create/update/disband).",
       },
+      isMemberMuted: {
+        type: "boolean",
+        description:
+          "True when an admin/moderator has silenced the CALLER — they keep full read access but every write is rejected with CHAT_MUTED_IN_GROUP. Distinct from `isMuted` (the caller's own notification mute). Present on GET /groups/{roomId} and the inbox rows, so a client restores the disabled composer on a cold open or after a reconnect that missed the `group:member:muted` socket event. Mirrors community's `isMemberMuted`.",
+      },
+      memberMutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "ISO-8601 expiry of the caller's moderation mute. null = indefinite when `isMemberMuted` is true, or not muted.",
+      },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
@@ -11549,6 +11561,42 @@ export const openApiSchemas = {
     type: "object",
     description:
       "POST /chat/group-members/unban — clears ban (status → LEFT); does not re-add the member.",
+    properties: {
+      roomId: { type: "string", minLength: 5, maxLength: 100 },
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatMuteMemberRequest: {
+    type: "object",
+    description:
+      "POST /chat/group-members/mute-member — MODERATION mute applied BY an " +
+      "owner/admin/moderator ON another member. Distinct from ChatMuteRoomRequest, " +
+      "which is the caller's own notification mute.",
+    properties: {
+      roomId: { type: "string", minLength: 5, maxLength: 100 },
+      userId: {
+        type: "string",
+        minLength: 5,
+        maxLength: 100,
+        description: "The member to silence. Cannot be the caller.",
+      },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "ISO-8601 expiry. Omit or null to mute indefinitely. Expiry is " +
+          "applied lazily, so the member can post again the instant it passes.",
+      },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatUnmuteMemberRequest: {
+    type: "object",
+    description:
+      "POST /chat/group-members/unmute-member — lifts a moderation mute. " +
+      "404 CHAT_MEMBER_NOT_MUTED when the member is not currently muted.",
     properties: {
       roomId: { type: "string", minLength: 5, maxLength: 100 },
       userId: { type: "string", minLength: 5, maxLength: 100 },

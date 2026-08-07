@@ -18,6 +18,8 @@ import {
   type VisibilitySource,
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
+import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -27,6 +29,7 @@ import {
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
+import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 
@@ -235,7 +238,7 @@ function toConversationListItem(
  * fields. Timestamps are epoch ms (private-chat convention), not the ISO
  * strings community uses.
  */
-export interface PrivateRoomDetailsData {
+export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   id: string;
   roomId: string;
   participants: string[];
@@ -260,6 +263,8 @@ export interface PrivateRoomDetailsData {
   createdAt: number;
   updatedAt: number;
   friendship: WireFriendship;
+  /** Auto-delete (disappearing messages) state — see lib/auto-delete.ts#buildAutoDeleteWire. */
+  autoDelete: Record<string, unknown>;
 }
 
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
@@ -293,7 +298,10 @@ export class PrivateRoomService {
         callerId: string,
         candidateIds: string[]
       ): Promise<Map<string, ChatFriendshipInfo>>;
-    }
+    },
+    // ponytail: optional — omitted in existing unit tests; pin clearing on
+    // delete just becomes a no-op (matches the pre-existing behavior).
+    private readonly pinService?: PrivatePinService
   ) {}
 
   /**
@@ -457,6 +465,12 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
+      autoDelete: buildAutoDeleteWire(
+        parseAutoDeleteMap(enriched.autoDeleteBy),
+        userId,
+        enriched.peerId
+      ),
+      ...toPeerFriendshipRelationship(enriched.friendship),
     };
   }
 
@@ -558,8 +572,10 @@ export class PrivateRoomService {
     // Real-time presence — reuses PresenceService (same `presence:user:<id>`
     // Redis source conv:updated reads) rather than the user-snapshot's
     // `isOnline` field, which user-service never populates (always false).
+    // Viewer-scoped: a peer whose `whoCanSeeOnlineStatus` excludes this caller
+    // reads as offline here, exactly as they do on every other surface.
     const onlineByPeer = this.presenceService
-      ? await this.presenceService.getPresenceMany(peerIds)
+      ? await this.presenceService.getPresenceManyFor(userId, peerIds)
       : new Map<string, boolean>();
 
     // Resolve peer avatar object keys → full download URLs (resolve on read).
@@ -691,16 +707,22 @@ export class PrivateRoomService {
       const rawLm = perUserFallback.has(room.roomId)
         ? (perUserFallback.get(room.roomId) ?? null)
         : room.lastMessage;
-      const lastMessage = (rawLm && typeof rawLm === "object"
-        ? toWireMessage(rawLm as { messageType?: string | null })
-        : (rawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
+      const cutoff = getPrivateDeletionCutoff(room, userId);
+      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
+      const visibleRawLm =
+        cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
+          ? null
+          : rawLm;
+      const lastMessage = (visibleRawLm && typeof visibleRawLm === "object"
+        ? toWireMessage(visibleRawLm as { messageType?: string | null })
+        : (visibleRawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
 
       // Community-style normalized lastActivity — same {type,userId,username,
       // preview,dateTime} shape as CommunityLastActivity. `username` mirrors
       // the sender's live display name (peer if they sent it; empty when the
       // caller sent it themselves — the client already knows its own name and
       // renders "You:", matching how the community list defers self-labeling).
-      const lmRecord = rawLm as Record<string, unknown> | null;
+      const lmRecord = visibleRawLm as Record<string, unknown> | null;
       const lmSenderId = (lmRecord?.senderId as string) ?? null;
       const lmMessageType = normalizeMessageType(
         (lmRecord?.messageType as string) ?? "TEXT"
@@ -802,6 +824,37 @@ export class PrivateRoomService {
 
     await this.privateRoomRepo.setDeletedFor(roomId, userId);
 
+    // The pin belongs to the room, not either user — clear it so a stale
+    // pin doesn't resurface if the room becomes visible again later (e.g.
+    // a new message arrives after this delete). Best-effort: must not fail
+    // the delete itself.
+    const clearedPin = await this.pinService
+      ?.clearActivePin(roomId, userId)
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateRoomService|deleteForMe: clearActivePin failed: ${String(err)}`
+        );
+        return null;
+      });
+    if (clearedPin) {
+      this.redis
+        .publish(
+          `conv:${roomId}`,
+          JSON.stringify({
+            event: "pin:updated",
+            data: {
+              roomId,
+              conversationId: roomId,
+              messageId: clearedPin.messageId,
+              unpinnedBy: userId,
+              action: "unpinned",
+              pinnedCount: 0,
+            },
+          })
+        )
+        .catch(() => {});
+    }
+
     // Notify the user that the conversation was deleted from their view.
     this.redis
       .publish(
@@ -809,6 +862,26 @@ export class PrivateRoomService {
         JSON.stringify({
           event: "conv:deleted",
           data: { roomId, deletedBy: userId },
+        })
+      )
+      .catch(() => {});
+  }
+
+  async clearChat(roomId: string, userId: string): Promise<void> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const isParticipant = room.participants?.includes(userId);
+    if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    await this.privateRoomRepo.setClearFor(roomId, userId);
+
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:cleared",
+          data: { roomId, clearedBy: userId, type: "PRIVATE" },
         })
       )
       .catch(() => {});

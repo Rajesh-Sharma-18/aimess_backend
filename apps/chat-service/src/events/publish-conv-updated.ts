@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
-import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
+import type {
+  CommunityInvitationSystemAction,
+  GroupInvitationSystemAction,
+} from "../lib/chat-message.serializer.js";
 import { notifyUnreadChanged } from "./unread-summary-bridge.js";
 
 /**
@@ -26,7 +29,7 @@ interface BumpPreview {
    * "Invitation" chip and navigate straight to the community without a
    * refetch. Passed straight through into the bumped `lastMessage`.
    */
-  systemAction?: CommunityInvitationSystemAction;
+  systemAction?: CommunityInvitationSystemAction | GroupInvitationSystemAction;
 }
 
 /**
@@ -75,13 +78,16 @@ interface PublishConvUpdatedParams {
   subjectUserId?: string;
   selfPreview?: string;
   /**
-   * Canonical online-status lookup (reuses `PresenceService.getIsOnline`,
-   * i.e. the same `presence:user:<id>` Redis source the REST conversation
-   * APIs read). When supplied for `type: "PRIVATE"`, each recipient's payload
-   * gets an `isOffline` field for the OTHER participant in the room. Omitted
-   * entirely for GROUP (no single "peer") or when not supplied.
+   * Viewer-scoped online-status lookup (reuses
+   * `PresenceService.getPresenceFor`, i.e. the same `presence:user:<id>` Redis
+   * source the REST conversation APIs read, behind the same
+   * `whoCanSeeOnlineStatus` gate). When supplied for `type: "PRIVATE"`, each
+   * recipient's payload gets an `isOffline` field for the OTHER participant in
+   * the room — reported offline when that participant has hidden their
+   * presence from this recipient. Omitted entirely for GROUP (no single
+   * "peer") or when not supplied.
    */
-  getIsOnline?: (userId: string) => Promise<boolean>;
+  getIsOnline?: (viewerId: string, subjectId: string) => Promise<boolean>;
   /**
    * Absolute per-recipient unread after this bump. When set, the client SETs
    * the row badge to this value instead of blind +1 (albums / multi-row sends
@@ -179,18 +185,22 @@ export async function publishConvUpdated(
   // participant per recipient). Reuses PresenceService.getIsOnline via the
   // caller-supplied `getIsOnline`, the same Redis source the REST conversation
   // APIs read, so socket + REST presence never disagree.
-  let onlineById: Map<string, boolean> | undefined;
+  // Keyed by RECIPIENT (the viewer), holding the OTHER participant's presence
+  // as that recipient is allowed to see it — `getIsOnline` is viewer-scoped, so
+  // a peer who hid their online status reads as offline here too.
+  let onlineByViewer: Map<string, boolean> | undefined;
   if (p.type === "PRIVATE" && p.getIsOnline) {
     try {
       const entries = await Promise.all(
-        recipientIds.map(
-          async (id): Promise<[string, boolean]> => [
-            id,
-            await p.getIsOnline!(id),
-          ]
-        )
+        recipientIds.map(async (viewerId): Promise<[string, boolean]> => {
+          const subjectId = recipientIds.find((id) => id !== viewerId);
+          return [
+            viewerId,
+            subjectId ? await p.getIsOnline!(viewerId, subjectId) : false,
+          ];
+        })
       );
-      onlineById = new Map(entries);
+      onlineByViewer = new Map(entries);
     } catch (err) {
       logger.warn(
         `conv:updated presence lookup failed for ${p.roomId}: ${String(err)}`
@@ -241,11 +251,9 @@ export async function publishConvUpdated(
         override === undefined
           ? (p.countInUnread ?? !isSystem) && recipientId !== effectiveSenderId
           : false;
-      const otherParticipant = recipientIds.find((id) => id !== recipientId);
-      const isOffline =
-        onlineById && otherParticipant
-          ? !(onlineById.get(otherParticipant) ?? false)
-          : undefined;
+      const isOffline = onlineByViewer
+        ? !(onlineByViewer.get(recipientId) ?? false)
+        : undefined;
       // Nav-badge total changed for this recipient — single choke point for
       // every conv:updated caller (REST controllers, gRPC handlers, system
       // messages), see unread-summary-bridge.ts.

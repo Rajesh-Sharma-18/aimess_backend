@@ -27,6 +27,11 @@ import type {
   SignInProvider,
 } from "../types/auth-account.types.js";
 import { isProfileComplete } from "../lib/profile-completion.util.js";
+import {
+  SCHEMA_DEFAULT_SCOPE,
+  scopeAdmits,
+  visibleIdentity,
+} from "../lib/privacy-scope.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type {
@@ -225,28 +230,6 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   return profile;
 }
 
-/**
- * Does `scope` admit this viewer? `FRIENDS_OF_FRIENDS` is treated as FRIENDS —
- * the graph query it would need does not exist yet and over-sharing is the
- * worse failure. Self always passes.
- */
-function scopeAdmits(
-  scope: string | null | undefined,
-  isSelf: boolean,
-  isFriend: boolean
-): boolean {
-  if (isSelf) return true;
-  switch (scope) {
-    case "NO_ONE":
-      return false;
-    case "FRIENDS":
-    case "FRIENDS_OF_FRIENDS":
-      return isFriend;
-    default:
-      return true; // EVERYONE, or unset (the schema default)
-  }
-}
-
 export const userProfileService = {
   /**
    * Another user's profile, viewer-scoped. Blocks 404 (never 403 — a 403 would
@@ -271,8 +254,11 @@ export const userProfileService = {
     ]);
 
     if (!profile || profile.deletedAt) throw notFound();
-    // Either direction hides the account entirely — same policy search already
-    // applies via `findAllBlocks`.
+    // One-way, matching search (`lib/block-visibility.ts`): the TARGET's block
+    // hides them from this viewer. The viewer's OWN block does not — a blocker
+    // has to be able to open the profile of someone they blocked to review and
+    // undo it. `blockedByViewer` is still carried into the relationship view
+    // below so the client renders "Blocked" instead of an add-friend action.
     if (blockedByTarget) throw notFound();
 
     const isSelf = viewerId === targetUserId;
@@ -287,33 +273,56 @@ export const userProfileService = {
     const isFriend = view.status === "ACCEPTED";
     const isDeletedUser = profile.status === ProfileStatus.DELETED;
 
+    const viewProfileScope =
+      profile.privacySettings?.whoCanViewProfile ??
+      SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
+    // Only `whoCanViewProfile` offers FRIENDS_OF_FRIENDS here, and the lookup
+    // is two indexed queries — so resolve the mutual-friend edge only when that
+    // exact scope is set and the cheaper isSelf/isFriend answers do not settle it.
+    const isFriendOfFriend =
+      viewProfileScope === "FRIENDS_OF_FRIENDS" && !isSelf && !isFriend
+        ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
+        : false;
+    const relation = { isSelf, isFriend, isFriendOfFriend };
+
+    const canViewProfile =
+      !isDeletedUser && scopeAdmits(viewProfileScope, relation);
+
+    // Name + avatar are the most identifying parts of the profile, so NO_ONE
+    // has to cover them too — masking only bio/cover/counts left the card fully
+    // recognizable. `username` survives so the row stays addressable. Resolving
+    // a null key yields the same "no avatar" shape as a user who never set one,
+    // so a denied viewer cannot tell the two apart.
+    const identity = visibleIdentity(profile, relation);
     const [avatarView, avatar] = await Promise.all([
-      avatarService.resolveViewUrlForClient(profile.avatarUrl),
+      avatarService.resolveViewUrlForClient(
+        identity.avatarAllowed ? profile.avatarUrl : null
+      ),
       toMediaObject({
         bucket: env.MINIO_BUCKET_AVATARS,
-        stored: profile.avatarUrl,
+        stored: identity.avatarAllowed ? profile.avatarUrl : null,
         prefixes: MEDIA_PREFIXES.userAvatars,
         strategy: mediaUrlStrategy,
       }),
     ]);
 
-    const canViewProfile =
-      !isDeletedUser &&
-      scopeAdmits(profile.privacySettings?.whoCanViewProfile, isSelf, isFriend);
     const canSeePresence =
       canViewProfile &&
       scopeAdmits(
-        profile.privacySettings?.whoCanSeeOnlineStatus,
-        isSelf,
-        isFriend
+        // Missing row → FRIENDS (the schema default), NOT EVERYONE.
+        profile.privacySettings?.whoCanSeeOnlineStatus ??
+          SCHEMA_DEFAULT_SCOPE.whoCanSeeOnlineStatus,
+        relation
       );
 
     return {
       userId: profile.userId,
       username: profile.username,
-      displayName: buildDisplayName(profile.firstName, profile.lastName),
-      firstName: profile.firstName,
-      lastName: profile.lastName,
+      displayName: identity.fullName
+        ? buildDisplayName(profile.firstName, profile.lastName)
+        : null,
+      firstName: identity.firstName,
+      lastName: identity.lastName,
       bio: canViewProfile ? profile.bio : null,
       avatarUrl: avatarView?.url ?? null,
       avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
@@ -328,6 +337,7 @@ export const userProfileService = {
       groupsCount: canViewProfile ? profile.groupsCount : null,
       communitiesCount: canViewProfile ? profile.communitiesCount : null,
       isDeletedUser,
+      isBlockedByMe: Boolean(blockedByViewer),
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {

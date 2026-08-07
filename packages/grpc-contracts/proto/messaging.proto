@@ -43,6 +43,14 @@ service MessagingService {
   // `user:<id>` socket room without requiring anyone to conv:join first.
   // Read-only, single query (ids only) — no N+1.
   rpc GetRoomParticipantIds   (GetRoomParticipantIdsRequest)   returns (GetRoomParticipantIdsResponse);
+  // Mirror of community.proto's CheckCommunityMute, for private 1-to-1 rooms.
+  // notifications-service calls this before FCM/APNs fan-out to suppress
+  // push for a recipient who has muted this conversation.
+  rpc CheckPrivateMute        (CheckPrivateMuteRequest)        returns (CheckPrivateMuteResponse);
+  // Mirror of CheckPrivateMute, for group rooms. notifications-service calls
+  // this before FCM/APNs fan-out to suppress push for a member who has muted
+  // this group.
+  rpc CheckGroupMute          (CheckGroupMuteRequest)          returns (CheckGroupMuteResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
   // Admin Group Management: list/detail/members (owned by chat-service).
@@ -476,6 +484,9 @@ message InitiateCallRequest {
   string callee_id       = 2;
   string type            = 3;
   string private_room_id = 4;
+  // GROUP call: set instead of callee_id — the server resolves the ring
+  // roster from the group's active membership. Empty for 1:1 calls.
+  string group_id        = 5;
 }
 message AnswerCallRequest {
   string call_id   = 1;
@@ -578,6 +589,11 @@ message CatchupEventDto {
   // ZERO-LOSS CHANGE cursor for this message (Telegram pts). Present in both
   // catch-up modes; the client tracks the per-room max as its high-water.
   int64  revision        = 14;
+  // Canonical grouped reaction state, mirroring CommunityCatchupEventDto —
+  // without this a reaction applied live vanishes the next time the client
+  // catches up (reopen room, reload, reconnect), since catch-up is what
+  // rehydrates message state on those paths, not a plain reactions broadcast.
+  repeated ReactionGroupDto reactions = 15;
 }
 message CatchupRoomResponse {
   string conversation_id           = 1;
@@ -650,4 +666,33 @@ message GetRoomParticipantIdsRequest {
 }
 message GetRoomParticipantIdsResponse {
   repeated string user_ids = 1;
+  // Subset of `user_ids` currently under a moderation mute (GROUP only; always
+  // empty for PRIVATE, which has no moderation mute). The gateway drops a
+  // typing/recording indicator whose SENDER appears here — a muted member is
+  // send-blocked, so broadcasting "…is typing" would be a lie. Kept as a
+  // separate list rather than filtering `user_ids` so a muted member still
+  // RECEIVES everyone else's indicators (mute is a send restriction only).
+  repeated string muted_user_ids = 2;
+}
+
+// ---- CheckPrivateMute ----
+message CheckPrivateMuteRequest {
+  string room_id = 1;
+  // The recipient whose mute setting on this room should be checked.
+  string user_id = 2;
+}
+message CheckPrivateMuteResponse {
+  bool  is_muted    = 1;
+  int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
+}
+
+// ---- CheckGroupMute ----
+message CheckGroupMuteRequest {
+  string room_id = 1;
+  // The member whose mute setting on this group should be checked.
+  string user_id = 2;
+}
+message CheckGroupMuteResponse {
+  bool  is_muted    = 1;
+  int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
 }

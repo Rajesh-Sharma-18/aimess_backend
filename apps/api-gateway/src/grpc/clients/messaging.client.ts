@@ -209,6 +209,12 @@ export interface CatchupEventDto {
   systemData: string;
   /** Per-message CHANGE cursor (Telegram pts). 0 when the row predates the backfill. */
   revision?: number;
+  /** Canonical grouped reaction state — see CatchupEventDto.reactions in messaging.proto. */
+  reactions?: Array<{
+    emoji: string;
+    count: number;
+    users: Array<{ userId: string; displayName: string; avatar: string }>;
+  }>;
 }
 export interface CatchupRoomResult {
   conversationId: string;
@@ -233,6 +239,12 @@ export interface GetRoomParticipantIdsParams {
 }
 export interface GetRoomParticipantIdsResult {
   userIds: string[];
+  /**
+   * Subset of `userIds` currently under a moderation mute (GROUP only; always
+   * empty for PRIVATE). Optional so a chat-service that predates the field
+   * still type-checks — an absent list simply gates nobody.
+   */
+  mutedUserIds?: string[];
 }
 
 export interface GetMessageReactionsParams {
@@ -267,6 +279,8 @@ export interface InitiateCallParams {
   calleeId: string;
   type?: string;
   privateRoomId?: string;
+  /** GROUP call: set instead of calleeId — server resolves the ring roster. */
+  groupId?: string;
 }
 export interface CallStatusResult {
   callId: string;
@@ -631,9 +645,10 @@ export function createMessagingClient(): MessagingClient {
     (p: InitiateCallParams) =>
       call<unknown, CallStatusResult>("initiateCall", {
         callerId: p.callerId,
-        calleeId: p.calleeId,
+        calleeId: p.calleeId ?? "",
         type: p.type ?? "AUDIO",
         privateRoomId: p.privateRoomId ?? "",
+        groupId: p.groupId ?? "",
       })
   );
 

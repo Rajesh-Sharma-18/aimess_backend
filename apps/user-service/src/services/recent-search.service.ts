@@ -1,6 +1,8 @@
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
+import { friendshipRepository } from "../repositories/friendship.repository.js";
+import { visibleIdentity, visibleIsOnline } from "../lib/privacy-scope.js";
 import { recentSearchRepository } from "../repositories/recent-search.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { avatarService } from "./avatar.service.js";
@@ -14,8 +16,9 @@ export type RecentSearchEntry =
       user: {
         userId: string;
         username: string;
-        firstName: string;
-        lastName: string;
+        /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+        firstName: string | null;
+        lastName: string | null;
         bio: string | null;
         avatarUrl: string | null;
         avatarUrlExpiresIn: number | null;
@@ -53,10 +56,23 @@ export const recentSearchService = {
 
     const profileMap = new Map<
       string,
-      Awaited<ReturnType<typeof userProfileRepository.findByUserIds>>[number]
+      Awaited<
+        ReturnType<typeof userProfileRepository.findDiscoverableByUserIds>
+      >[number]
     >();
+    // Search history is a discovery surface: a user who has since set
+    // `whoCanFindMe` to NO_ONE/FRIENDS must drop out of it, not linger as a
+    // permanently-cached way around the setting. Rows whose profile is filtered
+    // out fall through to the existing "profile deleted" QUERY fallback below.
+    const viewerGraph =
+      userIds.length > 0
+        ? await friendshipRepository.resolveViewerGraph(userId)
+        : { friendIds: [], friendOfFriendIds: [] };
     if (userIds.length > 0) {
-      const profiles = await userProfileRepository.findByUserIds(userIds);
+      const profiles = await userProfileRepository.findDiscoverableByUserIds(
+        userIds,
+        viewerGraph
+      );
       for (const p of profiles) profileMap.set(p.userId, p);
     }
 
@@ -73,8 +89,15 @@ export const recentSearchService = {
               createdAt: row.createdAt,
             };
           }
+          const isFriend = viewerGraph.friendIds.includes(profile.userId);
+          const identity = visibleIdentity(profile, {
+            isFriend,
+            isFriendOfFriend: viewerGraph.friendOfFriendIds.includes(
+              profile.userId
+            ),
+          });
           const { url, expiresIn, avatar } = await resolveAvatar(
-            profile.avatarUrl
+            identity.avatarAllowed ? profile.avatarUrl : null
           );
           return {
             id: row.id,
@@ -82,13 +105,13 @@ export const recentSearchService = {
             user: {
               userId: profile.userId,
               username: profile.username,
-              firstName: profile.firstName,
-              lastName: profile.lastName,
-              bio: null, // not available from findByUserIds select
+              firstName: identity.firstName,
+              lastName: identity.lastName,
+              bio: null, // this list has never rendered bio
               avatarUrl: url,
               avatarUrlExpiresIn: expiresIn,
               avatar,
-              isOnline: profile.isOnline,
+              isOnline: visibleIsOnline(profile, { isFriend }),
             },
             createdAt: row.createdAt,
           };

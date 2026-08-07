@@ -91,6 +91,22 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     })),
   },
 }));
+// chat-messaging.client.js — same import.meta.url-at-load issue as
+// community.client.js. Default is fail-open (not muted).
+jest.mock("../../src/grpc/chat-messaging.client.js", () => ({
+  createChatMessagingClient: jest.fn(() => ({
+    checkPrivateMute: jest.fn(async () => ({
+      isMuted: false,
+      mutedUntil: 0,
+    })),
+  })),
+  chatMessagingClient: {
+    checkPrivateMute: jest.fn(async () => ({
+      isMuted: false,
+      mutedUntil: 0,
+    })),
+  },
+}));
 
 // --- Firebase Admin (pulls native/ESM firebase-admin at import) --------------
 //     Mocking the thin wrapper keeps the real SDK out of the CJS require graph.

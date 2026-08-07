@@ -9,6 +9,7 @@ import {
   deleteGroupMessageSchema,
   forwardGroupMessageSchema,
   editGroupMessageSchema,
+  reportGroupMessageSchema,
   sendGroupMessageBodySchema,
   markGroupReadBodySchema,
   reactionBodySchema,
@@ -103,6 +104,15 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     ctrl.unpin
   );
 
+  // Report a group message
+  router.post(
+    "/:roomId/messages/:messageId/report",
+    authenticate,
+    sendLimit,
+    validateBody(reportGroupMessageSchema),
+    ctrl.reportMessage
+  );
+
   // Forward a group message
   router.post(
     "/:roomId/messages/:messageId/forward",
@@ -110,6 +120,13 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     sendLimit,
     validateBody(forwardGroupMessageSchema),
     ctrl.forwardMessage
+  );
+
+  // "Viewed list" — members whose read cursor has reached this message
+  router.get(
+    "/:roomId/messages/:messageId/read-by",
+    authenticate,
+    ctrl.getMessageReadBy
   );
 
   // Get reactions on a group message

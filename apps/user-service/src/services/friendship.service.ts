@@ -25,8 +25,10 @@ import {
   toSearchRelationship,
   type FriendshipView,
 } from "../lib/friendship-view.js";
+import { scopeAdmits } from "../lib/privacy-scope.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { userCache } from "../lib/user-cache.js";
 import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { env } from "../config/env.js";
@@ -467,6 +469,30 @@ export const friendshipService = {
       requesterId,
       addresseeId
     );
+
+    // `whoCanSendFriendRequests` — enforced here, the single funnel every
+    // client (REST, socket, QR deep-link) reaches. Skipped when a PENDING row
+    // already exists in the OTHER direction: that path only auto-accepts the
+    // addressee's own outstanding request, which their setting cannot forbid.
+    const isMutualAccept =
+      existing?.status === "PENDING" && existing.requesterId === addresseeId;
+    if (!isMutualAccept) {
+      const scope =
+        await userSettingsRepository.findFriendRequestPrivacy(addresseeId);
+      // Already-friends is impossible here (that throws below), so "is a
+      // friend" can only mean an ACCEPTED row — which FRIENDS/FoF admits.
+      const alreadyFriends = existing?.status === "ACCEPTED";
+      // FRIENDS_OF_FRIENDS = at least one mutual friend. The lookup is two
+      // indexed queries, so only run it when the scope actually depends on the
+      // answer — EVERYONE and NO_ONE decide without touching the graph.
+      const isFriendOfFriend =
+        scope === "FRIENDS_OF_FRIENDS" && !alreadyFriends
+          ? await friendshipRepository.hasMutualFriend(requesterId, addresseeId)
+          : false;
+      if (!scopeAdmits(scope, { isFriend: alreadyFriends, isFriendOfFriend })) {
+        throw new BadRequestError("FRIEND_REQUEST_NOT_ALLOWED");
+      }
+    }
 
     if (existing) {
       if (existing.status === "ACCEPTED") {
@@ -1108,10 +1134,11 @@ export const friendshipService = {
 
     await friendshipRepository.createBlock(blockerId, blockedId);
 
-    // Symmetric — activates chat-service's `friendship.blocked` consumer
-    // branch for both directions so neither side can message the other.
+    // Directional only — a block is one-way (blockerId → blockedId). Publishing
+    // the reverse direction too would make chat-service's replica treat the
+    // blocked party as if THEY had also blocked the blocker (symmetric ban),
+    // which breaks messaging/call permission direction.
     publishFriendshipBlockedSafe(blockerId, blockedId);
-    publishFriendshipBlockedSafe(blockedId, blockerId);
 
     // Blocking is silent to the blocked party — same product policy this
     // codebase already applies to FRIEND_UNFRIENDED (notifications-service
@@ -1151,8 +1178,10 @@ export const friendshipService = {
     );
 
     if (reverseBlock) {
+      // Only the surviving direction (blockedId still blocks blockerId) —
+      // blockerId no longer blocks anyone here, so re-publishing that
+      // direction would wrongly re-symmetrize the relationship.
       publishFriendshipBlockedSafe(blockedId, blockerId);
-      publishFriendshipBlockedSafe(blockerId, blockedId);
     } else if (friendship?.status === "ACCEPTED") {
       publishFriendshipCreatedSafe(
         friendship.requesterId,

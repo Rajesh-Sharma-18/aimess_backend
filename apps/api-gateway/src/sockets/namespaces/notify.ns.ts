@@ -137,6 +137,9 @@ export function registerNotifyNamespace(
               .to(`user:${userId}`)
               .emit(isMarkAll ? "notification:all-read" : "notification:read", {
                 unreadCount,
+                ...(isMarkAll
+                  ? {}
+                  : { notificationIds: r.data.notificationIds }),
               });
             notify.to(`user:${userId}`).emit("notification:count_update", {
               count: unreadCount,

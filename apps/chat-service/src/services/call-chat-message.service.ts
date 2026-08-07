@@ -10,7 +10,11 @@ import type { PrivateMessage } from "../generated/prisma/index.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 
-export type CallChatMessageOutcome = "ENDED" | "MISSED";
+export type CallChatMessageOutcome =
+  | "ENDED"
+  | "MISSED"
+  | "DECLINED"
+  | "CANCELLED";
 
 export interface PostCallChatMessageParams {
   callId: string;
@@ -45,8 +49,9 @@ const formatCallDuration = (durationSec: number): string => {
 /**
  * Persists call lifecycle entries into the private DM timeline.
  *
- * Completed calls are sender-less SYSTEM/CALL_ENDED audit rows and therefore
- * do not count as unread. A timed-out call is deliberately a normal TEXT row
+ * ENDED/DECLINED/CANCELLED are all sender-less SYSTEM/CALL_ENDED audit rows
+ * and therefore do not count as unread. A timed-out (MISSED) call is
+ * deliberately a normal TEXT row
  * from caller to callee, so it behaves like ordinary chat (unread, inbox bump,
  * and push fallback). This service is internal-only: callers cannot forge these
  * records through the public message send API.
@@ -86,8 +91,11 @@ export class CallChatMessageService {
       return null;
     }
 
-    const isEnded = params.outcome === "ENDED";
-    const senderId = isEnded ? "" : params.callerId;
+    // Only MISSED stays a normal sender-visible TEXT row (unread, inbox bump,
+    // push fallback) — ENDED/DECLINED/CANCELLED are all sender-less SYSTEM
+    // audit rows, since neither side "sent" the outcome, the call itself did.
+    const isSystemOutcome = params.outcome !== "MISSED";
+    const senderId = isSystemOutcome ? "" : params.callerId;
     const receiverId = params.calleeId;
     const clientMessageId = `call:${params.callId}:${params.outcome.toLowerCase()}`;
 
@@ -103,16 +111,21 @@ export class CallChatMessageService {
     const callLabel =
       params.callType.toUpperCase() === "VIDEO" ? "Video" : "Voice";
     const durationSec = Math.max(0, Math.floor(params.durationSec ?? 0));
-    const text = isEnded
-      ? `${callLabel} call lasted ${formatCallDuration(durationSec)}`
-      : `${callLabel} call was not answered`;
-    const messageType = isEnded ? "SYSTEM" : "TEXT";
-    const systemEvent = isEnded ? SystemEvent.CALL_ENDED : null;
-    const systemData = isEnded
+    const text =
+      params.outcome === "ENDED"
+        ? `${callLabel} call lasted ${formatCallDuration(durationSec)}`
+        : params.outcome === "MISSED"
+          ? `${callLabel} call was not answered`
+          : params.outcome === "DECLINED"
+            ? `${callLabel} call declined`
+            : `${callLabel} call cancelled`;
+    const messageType = isSystemOutcome ? "SYSTEM" : "TEXT";
+    const systemEvent = isSystemOutcome ? SystemEvent.CALL_ENDED : null;
+    const systemData = isSystemOutcome
       ? {
           callId: params.callId,
           callType: params.callType.toUpperCase(),
-          status: "ENDED",
+          status: params.outcome,
           durationSec,
           callerId: params.callerId,
           calleeId: params.calleeId,
@@ -130,7 +143,7 @@ export class CallChatMessageService {
         durationSec,
       },
     };
-    const countInUnread = !isEnded;
+    const countInUnread = !isSystemOutcome;
     const sequenceNumber = await this.roomRepo.allocateSequence(room.roomId);
     const message = await this.messageRepo.createMessage({
       roomId: room.roomId,
@@ -170,7 +183,7 @@ export class CallChatMessageService {
         );
       });
 
-    const callerSnapshot = isEnded
+    const callerSnapshot = isSystemOutcome
       ? { displayName: "", avatarUrl: "" }
       : await this.getUserSnapshot(params.callerId).catch(() => ({
           displayName: "",
@@ -231,7 +244,7 @@ export class CallChatMessageService {
       },
     });
 
-    if (!isEnded) {
+    if (!isSystemOutcome) {
       publishMessageSentSafe({
         conversationId: room.roomId,
         conversationType: "PRIVATE",

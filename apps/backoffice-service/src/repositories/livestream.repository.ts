@@ -1354,9 +1354,9 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       streamMetadata: {
         ingestProtocol: s.sourceType || "RTMP",
         playbackUrl: s.hlsUrl || "",
-        resolution: "",
-        bitrateKbps: 0,
-        fps: 0,
+        resolution: s.resolution || "",
+        bitrateKbps: s.bitrateKbps || 0,
+        fps: s.fps || 0,
         region: "",
         isRecording: false,
         recordingUrl: null,

@@ -4,11 +4,12 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
   addMemberSchema,
+  leaveGroupSchema,
   kickMemberSchema,
-  banMemberSchema,
-  unbanMemberSchema,
   updateRoleSchema,
   muteGroupSchema,
+  muteMemberSchema,
+  unmuteMemberSchema,
   reportMemberSchema,
 } from "../validators/group-member.validator.js";
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
@@ -22,15 +23,13 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     validateBody(addMemberSchema),
     ctrl.addMember
   );
-  router.post("/:roomId/leave", authenticate, ctrl.leave);
-  router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
-  router.post("/ban", authenticate, validateBody(banMemberSchema), ctrl.ban);
   router.post(
-    "/unban",
+    "/:roomId/leave",
     authenticate,
-    validateBody(unbanMemberSchema),
-    ctrl.unban
+    validateBody(leaveGroupSchema),
+    ctrl.leave
   );
+  router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
   router.post(
     "/report",
     authenticate,
@@ -43,6 +42,7 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     validateBody(updateRoleSchema),
     ctrl.updateRole
   );
+  router.get("/:roomId/muted", authenticate, ctrl.getMutedMembers);
   router.get("/:roomId", authenticate, ctrl.getMembers);
 
   // Mute / unmute personal notifications for this group (parity with Private's
@@ -54,6 +54,21 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     ctrl.muteRoom
   );
   router.post("/:roomId/unmute", authenticate, ctrl.unmuteRoom);
+
+  // Moderator-imposed mute on ANOTHER member (distinct from the self-notification
+  // mute above) — ADMIN/MODERATOR only, same role gate as kick.
+  router.post(
+    "/mute-member",
+    authenticate,
+    validateBody(muteMemberSchema),
+    ctrl.muteMember
+  );
+  router.post(
+    "/unmute-member",
+    authenticate,
+    validateBody(unmuteMemberSchema),
+    ctrl.unmuteMember
+  );
 
   return router;
 }

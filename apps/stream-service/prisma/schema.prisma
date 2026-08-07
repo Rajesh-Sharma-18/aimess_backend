@@ -58,6 +58,12 @@ model Livestream {
   // which tracks the separate "owner's client is alive" signal.
   disconnectedAt   DateTime?
   lastHeartbeatAt  DateTime?
+  // Last self-reported (browser WHIP) or server-polled (OBS/SRS) quality
+  // snapshot. Null until the first report arrives after go-live.
+  lastKnownResolution   String?
+  lastKnownBitrateKbps  Int?
+  lastKnownFps          Int?
+  qualityUpdatedAt      DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

@@ -16,6 +16,8 @@ export interface MongoIndexSpec {
   partialFilterExpression?: Record<string, unknown>;
   expireAfterSeconds?: number;
   collation?: Record<string, unknown>;
+  defaultLanguage?: string;
+  weights?: Record<string, number>;
 }
 
 function rawCommandErrorMessage(error: unknown): string {
@@ -87,6 +89,10 @@ export async function ensureMongoIndex(
               ? { expireAfterSeconds: spec.expireAfterSeconds }
               : {}),
             ...(spec.collation ? { collation: spec.collation } : {}),
+            ...(spec.defaultLanguage
+              ? { default_language: spec.defaultLanguage }
+              : {}),
+            ...(spec.weights ? { weights: spec.weights } : {}),
           },
         ],
       });

@@ -1,19 +1,24 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
+import { assertGroupMemberNotMuted } from "../lib/access-guard.js";
 import { resolvePinsMedia, type MediaFileLike } from "../lib/media-resolve.js";
+import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupMessagePinRepository } from "../repositories/group-message-pin.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { PinnedMessageSummary } from "./community-pin.service.js";
 import type { GroupMessagePin } from "../generated/prisma/index.js";
 
-const PIN_ROLES = ["OWNER", "ADMIN", "MODERATOR"];
+const PIN_ROLES = ["ADMIN", "MODERATOR"];
 
 /**
  * Parity with `CommunityPinService`: only ONE active pin may exist per room at
@@ -54,6 +59,9 @@ export class GroupPinService {
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
+    // A muted moderator/admin cannot pin — pinning writes into the room
+    // (it posts a MESSAGE_PINNED system line). Mirrors CommunityPinService.
+    assertGroupMemberNotMuted(member);
 
     const msg = await this.messageRepo.findById(messageId);
     if (!msg || msg.roomId !== roomId)
@@ -106,7 +114,7 @@ export class GroupPinService {
             pinnedAt: new Date(),
             messageCreatedAt: msg.createdAt,
             senderId: msg.senderId || "",
-            senderDisplayName: (senderSnap.displayName as string) || "",
+            senderDisplayName: resolveDisplayName(senderSnap),
             senderAvatar: (senderSnap.avatar as string) || "",
             contentPinned: msg.content as object,
           },
@@ -177,6 +185,7 @@ export class GroupPinService {
     if (!PIN_ROLES.includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
+    assertGroupMemberNotMuted(member);
 
     const activePinForMessage =
       await this.pinRepo.findActivePinByMessageId(messageId);
@@ -249,15 +258,25 @@ export class GroupPinService {
   /**
    * The room's currently active pinned message, in the SAME shape Community
    * embeds as `pinnedMessage` — single-active-pin lookup, not "newest pin".
-   * `_userId` is accepted (unused) for call-site compatibility — callers
-   * already validate room membership before reaching this point.
+   * When `userId` is given, a pin created before that member's own Clear Chat
+   * cutoff (`getGroupVisibilityCutoff`) is hidden from them ONLY — the pin
+   * row itself is untouched, so every other member keeps seeing it.
    */
   async getActivePinSummary(
     roomId: string,
-    _userId?: string
+    userId?: string
   ): Promise<PinnedMessageSummary | null> {
     const pin = await this.pinRepo.findActivePinByRoom(roomId);
     if (!pin) return null;
+
+    if (userId) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
+        roomId,
+        userId
+      );
+      const cutoff = getGroupVisibilityCutoff(member);
+      if (cutoff && pin.pinnedAt <= cutoff) return null;
+    }
 
     const isAvailable = !pin.originalMessageDeletedAt;
     const live = isAvailable

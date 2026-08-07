@@ -3,7 +3,13 @@ import type { MediaObject } from "@aimess/shared-types";
 
 import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
+import {
+  canViewProfile,
+  visibleIdentity,
+  visibleIsOnline,
+} from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import { splitBlocks } from "../lib/block-visibility.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
@@ -13,8 +19,9 @@ export type RelationshipStatus = "FRIEND" | "PENDING" | "NONE";
 export type UserDiscoveryResult = {
   userId: string;
   username: string;
-  firstName: string;
-  lastName: string;
+  /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+  firstName: string | null;
+  lastName: string | null;
   bio: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
@@ -24,6 +31,12 @@ export type UserDiscoveryResult = {
    */
   avatar: MediaObject;
   isOnline: boolean;
+  /**
+   * The VIEWER blocked this user. Blocks are one-way, so the blocker keeps
+   * seeing (and can unblock) them; users who blocked the viewer never appear at
+   * all, so this is never true in the other direction.
+   */
+  isBlockedByMe?: boolean;
   relationshipStatus?: RelationshipStatus;
   friendshipId?: string | null;
   /** Who sent the PENDING request; null/absent when FRIEND/NONE. */
@@ -106,35 +119,51 @@ export const userDiscoveryService = {
       }
     }
 
-    const blockedIds = new Set<string>(
-      allBlocks.map((b) =>
-        b.blockerId === viewerId ? b.blockedId : b.blockerId
-      )
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
+    const excludeIds = [viewerId, ...hiddenIds];
+    const viewerFriendIds = Array.from(acceptedFriendIds);
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      viewerFriendIds
     );
-    const excludeIds = [viewerId, ...Array.from(blockedIds)];
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
 
     const [profiles, total] = await Promise.all([
-      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
-      userProfileRepository.countUsersNotInList(excludeIds, q),
+      userProfileRepository.findUsersNotInList(
+        excludeIds,
+        q,
+        skip,
+        limit,
+        viewerGraph
+      ),
+      userProfileRepository.countUsersNotInList(excludeIds, q, viewerGraph),
     ]);
 
     const resolved = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        const isFriend = acceptedFriendIds.has(p.userId);
+        const relation = {
+          isFriend,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         const base = {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: p.bio,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
-          isOnline: p.isOnline,
+          isOnline: visibleIsOnline(p, { isFriend }),
+          isBlockedByMe: blockedByMe.has(p.userId),
         };
 
-        if (acceptedFriendIds.has(p.userId)) {
+        if (isFriend) {
           return {
             ...base,
             isFriend: true,
@@ -198,25 +227,37 @@ export const userDiscoveryService = {
       })
     );
 
+    // Every row here is already a direct friend, so the one-hop expansion adds
+    // nothing to who is visible — skip the extra query.
+    const viewerGraph = { friendIds, friendOfFriendIds: [] };
     const [profiles, total] = await Promise.all([
-      userProfileRepository.findUsersInList(friendIds, q, skip, limit),
-      userProfileRepository.countUsersInList(friendIds, q),
+      userProfileRepository.findUsersInList(
+        friendIds,
+        q,
+        skip,
+        limit,
+        viewerGraph
+      ),
+      userProfileRepository.countUsersInList(friendIds, q, viewerGraph),
     ]);
 
     const users = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        // NO_ONE applies even to accepted friends — name and avatar go with it.
+        const identity = visibleIdentity(p, { isFriend: true });
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: p.bio,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, { isFriend: true }) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
-          isOnline: p.isOnline,
+          isOnline: visibleIsOnline(p, { isFriend: true }),
           relationshipStatus: "FRIEND" as RelationshipStatus,
           friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
           requesterId: null,
@@ -239,7 +280,6 @@ export const userDiscoveryService = {
     ]);
 
     const acceptedFriendIds = new Set<string>();
-    const blockedUserIds = new Set<string>();
     const pendingRelMap = new Map<
       string,
       { friendshipId: string; isRequester: boolean }
@@ -257,20 +297,25 @@ export const userDiscoveryService = {
       }
     }
 
-    for (const b of allBlocks) {
-      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
-      blockedUserIds.add(otherId);
-    }
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
 
-    const excludeIds = [
+    const viewerFriendIds = Array.from(acceptedFriendIds);
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
       viewerId,
-      ...Array.from(acceptedFriendIds),
-      ...Array.from(blockedUserIds),
-    ];
+      viewerFriendIds
+    );
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
+    const excludeIds = [viewerId, ...viewerFriendIds, ...hiddenIds];
 
     const [profiles, total] = await Promise.all([
-      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
-      userProfileRepository.countUsersNotInList(excludeIds, q),
+      userProfileRepository.findUsersNotInList(
+        excludeIds,
+        q,
+        skip,
+        limit,
+        viewerGraph
+      ),
+      userProfileRepository.countUsersNotInList(excludeIds, q, viewerGraph),
     ]);
 
     const users = await Promise.all(
@@ -284,18 +329,26 @@ export const userDiscoveryService = {
           friendshipId = pending.friendshipId;
           requesterId = pending.isRequester ? viewerId : p.userId;
         }
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        // Non-friends by construction (accepted friends are excluded above).
+        const relation = {
+          isFriend: false,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: p.bio,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
-          isOnline: p.isOnline,
+          isOnline: visibleIsOnline(p, { isFriend: false }),
+          isBlockedByMe: blockedByMe.has(p.userId),
           relationshipStatus,
           friendshipId,
           requesterId,
@@ -311,35 +364,61 @@ export const userDiscoveryService = {
     skip: number,
     limit: number
   ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
-    const allBlocks = await friendshipRepository.findAllBlocks(viewerId);
-    const blockedUserIds = new Set<string>();
+    // Friends are NOT excluded from this bucket, but the friend set is still
+    // needed: it decides who passes a FRIENDS-scoped whoCanFindMe and whose
+    // presence/bio this viewer may see.
+    const [allBlocks, friendships] = await Promise.all([
+      friendshipRepository.findAllBlocks(viewerId),
+      friendshipRepository.findAcceptedFriends(viewerId),
+    ]);
+    const { hiddenIds, blockedByMe } = splitBlocks(viewerId, allBlocks);
 
-    for (const b of allBlocks) {
-      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
-      blockedUserIds.add(otherId);
-    }
-
-    const excludeIds = [viewerId, ...Array.from(blockedUserIds)];
+    const friendIdSet = new Set(
+      friendships.map((f) =>
+        f.requesterId === viewerId ? f.addresseeId : f.requesterId
+      )
+    );
+    const viewerFriendIds = Array.from(friendIdSet);
+    const viewerGraph = await friendshipRepository.resolveViewerGraph(
+      viewerId,
+      viewerFriendIds
+    );
+    const fofIds = new Set(viewerGraph.friendOfFriendIds);
+    const excludeIds = [viewerId, ...hiddenIds];
 
     const [profiles, total] = await Promise.all([
-      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
-      userProfileRepository.countUsersNotInList(excludeIds, q),
+      userProfileRepository.findUsersNotInList(
+        excludeIds,
+        q,
+        skip,
+        limit,
+        viewerGraph
+      ),
+      userProfileRepository.countUsersNotInList(excludeIds, q, viewerGraph),
     ]);
 
     const users = await Promise.all(
       profiles.map(async (p) => {
-        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
-        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        const isFriend = friendIdSet.has(p.userId);
+        const relation = {
+          isFriend,
+          isFriendOfFriend: fofIds.has(p.userId),
+        };
+        const identity = visibleIdentity(p, relation);
+        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
+        const avatar = await resolveAvatarMedia(storedAvatar);
         return {
           userId: p.userId,
           username: p.username,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          bio: p.bio,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          bio: canViewProfile(p, relation) ? p.bio : null,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
           avatar,
-          isOnline: p.isOnline,
+          isOnline: visibleIsOnline(p, { isFriend }),
+          isBlockedByMe: blockedByMe.has(p.userId),
         };
       })
     );

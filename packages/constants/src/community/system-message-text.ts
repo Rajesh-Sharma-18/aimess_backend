@@ -3,12 +3,19 @@ import {
   type CommunitySystemMessageType as CommunitySystemMessageTypeValue,
 } from "./system-message.js";
 
-/** Prefer first + last name (`displayName`); never fall back to username. */
+/**
+ * Prefer first + last name (`displayName`); never fall back to username/handle
+ * (system-message sentences read as "X added Y", a raw handle reads wrong
+ * there). Still needs SOME non-empty label when displayName is unresolved
+ * (snapshot-cache miss) — otherwise the persisted sentence renders with a
+ * blank actor/target ("added "), permanently, since system message text is
+ * baked in at send time and never recomputed.
+ */
 export function resolvePersonDisplayName(
   snapshot: Record<string, unknown> | null | undefined
 ): string {
-  if (!snapshot) return "";
-  return String(snapshot.displayName ?? "").trim();
+  const name = snapshot ? String(snapshot.displayName ?? "").trim() : "";
+  return name || "Unknown User";
 }
 
 /**

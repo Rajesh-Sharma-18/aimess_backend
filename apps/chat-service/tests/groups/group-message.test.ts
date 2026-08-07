@@ -31,7 +31,8 @@ beforeEach(() => {
 
 describe("GET /:roomId/messages (timeline, membership-gated)", () => {
   it("POSITIVE: an active member gets a message page", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
     });
     mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
@@ -58,10 +59,62 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
+  // A member must never see history from before they joined the group — the
+  // timeline read path clamps to createdAt > max(joinedAt, clearedAt).
+  it("VISIBILITY: passes the member's joinedAt as the timeline cutoff", async () => {
+    const joinedAt = new Date("2026-07-01T00:00:00Z");
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+      joinedAt,
+      clearedAt: null,
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.groupMessageRepo.findByRoomIdTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ cutoff: joinedAt })
+    );
+  });
+
+  // A rejoin re-stamps joinedAt — even if the member cleared their history
+  // earlier, the LATER joinedAt (from rejoining) is the effective cutoff.
+  it("VISIBILITY: joinedAt (rejoin) wins over an earlier clearedAt", async () => {
+    const clearedAt = new Date("2026-01-01T00:00:00Z");
+    const joinedAt = new Date("2026-07-01T00:00:00Z"); // rejoined after clearing
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+      joinedAt,
+      clearedAt,
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.groupMessageRepo.findByRoomIdTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ cutoff: joinedAt })
+    );
+  });
+
   // Resolve-on-read: the denormalized senderAvatar key AND attachment objectKeys
   // must surface as full download URLs (mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves senderAvatar + content.files object keys in history", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
       role: "MEMBER",
     });
     mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
@@ -133,14 +186,19 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([
-      {
-        id: "g1",
-        senderId: "u",
-        content: { text: "hello" },
-        createdAt: new Date(1),
-      },
-    ]);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [
+        {
+          id: "g1",
+          senderId: "u",
+          content: { text: "hello" },
+          createdAt: new Date(1),
+        },
+      ],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
     mocks.groupMessageRepo.countSearchResults.mockResolvedValue(1);
 
     const res = await request(app)
@@ -153,48 +211,51 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
-  // Regression: `page` was parsed but never converted to a DB skip, so page 2
-  // silently returned the exact same window as page 1 and any match beyond
-  // the first `limit` results was unreachable.
-  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+  it("REGRESSION: forwards the keyset cursor, never a skip offset", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: false,
+      nextCursor: null,
+    });
 
     await request(app)
-      .get(`${BASE}/${ROOM}/messages/search?q=hello&page=2&limit=10`)
+      .get(
+        `${BASE}/${ROOM}/messages/search?q=hello&limit=10&cursor=1700000000000_abc`
+      )
       .set(bearer(makeAccessToken()));
 
-    expect(mocks.groupMessageRepo.searchByText).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      10,
-      expect.any(String),
-      10,
-      undefined
-    );
+    const args = mocks.groupMessageRepo.searchByText.mock.calls[0][0];
+    expect(args).toMatchObject({
+      roomId: ROOM,
+      query: "hello",
+      limit: 10,
+      cursor: "1700000000000_abc",
+    });
+    expect(args).not.toHaveProperty("skip");
   });
 
-  it("REGRESSION: countSearchResults is scoped to the requesting user (deleted-for-me parity)", async () => {
+  it("REGRESSION: surfaces hasMore/nextCursor so the client pages without duplicates", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
-    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+    mocks.groupMessageRepo.searchByText.mockResolvedValue({
+      messages: [],
+      scores: new Map(),
+      hasMore: true,
+      nextCursor: "1700000000000_abc",
+    });
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages/search?q=hello`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(mocks.groupMessageRepo.countSearchResults).toHaveBeenCalledWith(
-      ROOM,
-      "hello",
-      expect.any(String),
-      undefined
-    );
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data.nextCursor).toBe("1700000000000_abc");
   });
 
   // AUDIT H2 — search must be gated on active membership (IDOR).
@@ -652,5 +713,72 @@ describe("pins + forward + reactions", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /:roomId/messages/:messageId/report", () => {
+  it("POSITIVE: an active member reports a message → 201 + persisted report", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.addReport.mockResolvedValue({
+      id: "g1",
+      reports: [{ userReportId: TEST_USER_ID, userReportReason: "SPAM" }],
+    });
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.groupMessageRepo.addReport).toHaveBeenCalledWith("g1", {
+      userReportId: TEST_USER_ID,
+      userReportReason: "SPAM",
+    });
+  });
+
+  it("SECURITY: IDOR — 403 reporting a message in a group you're not a member of", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMessageRepo.addReport).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 404 reporting a message that doesn't exist", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/missing/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("NEGATIVE: 400 when reportReason is missing", async () => {
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(res.status).toBe(400);
   });
 });

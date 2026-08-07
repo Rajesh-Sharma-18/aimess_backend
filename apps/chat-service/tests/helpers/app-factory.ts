@@ -45,6 +45,7 @@ import { ChatMessageOrchestrator } from "../../src/services/chat-message-orchest
 import { UserSnapshotService } from "../../src/services/user-snapshot.service.js";
 import { CallService } from "../../src/services/call.service.js";
 import { PresenceService } from "../../src/services/presence.service.js";
+import { AutoDeleteService } from "../../src/services/auto-delete.service.js";
 
 // -- Real controllers --
 import { PrivateRoomController } from "../../src/api/controllers/private-room.controller.js";
@@ -98,6 +99,8 @@ function redisMock(): any {
     get: jest.fn(async () => null),
     set: jest.fn(async () => "OK"),
     del: jest.fn(async () => 0),
+    incr: jest.fn(async () => 1),
+    expire: jest.fn(async () => 1),
     multi: jest.fn(() => ({
       zremrangebyscore: jest.fn().mockReturnThis(),
       zadd: jest.fn().mockReturnThis(),
@@ -137,6 +140,9 @@ export interface BuiltMocks {
   userSnapshotService: UserSnapshotService;
   // services (handy for spies in a few specs)
   presenceService: PresenceService;
+  privateMessageService: PrivateMessageService;
+  chatMessageOrchestrator: ChatMessageOrchestrator;
+  autoDeleteService: AutoDeleteService;
 }
 
 export interface BuiltApp {
@@ -192,6 +198,15 @@ export function buildApp(): BuiltApp {
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();
+  // The list endpoint reads per-tab counts alongside the rows; without a default
+  // every notifications spec would 500 on an undefined counts object.
+  notificationRepo.countByCategories.mockResolvedValue({
+    all: 0,
+    friends: 0,
+    communities: 0,
+    mentions: 0,
+    system: 0,
+  });
   const callRepo = repoMock();
 
   // -- Peers / collaborators --
@@ -217,31 +232,25 @@ export function buildApp(): BuiltApp {
   // Constructed early (before privateRoomService/orchestrator) to mirror
   // server.ts's DI order — presenceService is the single real-time source
   // both REST (isOnline/isOffline) and conv:updated read.
+  // whoCanSeeOnlineStatus gate — defaults to "everyone may see" so specs that
+  // aren't about privacy read presence as before; a privacy spec overrides
+  // `presenceVisibilityGate.filterVisiblePresence` to deny.
+  const presenceVisibilityGate: any = {
+    filterVisiblePresence: jest.fn(
+      async (_viewerId: string, peerIds: string[]) => new Set(peerIds)
+    ),
+    filterPresenceViewers: jest.fn(
+      async (_subjectId: string, viewerIds: string[]) => new Set(viewerIds)
+    ),
+  };
   const presenceService = new PresenceService(
     cacheRepo,
     redis,
-    privateRoomRepo
+    privateRoomRepo,
+    undefined,
+    presenceVisibilityGate
   );
 
-  const privateRoomService = new PrivateRoomService(
-    privateRoomRepo,
-    privateMessageRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    redis,
-    presenceService,
-    friendshipGrpcClient
-  );
-  const privateMessageService = new PrivateMessageService(
-    privateMessageRepo,
-    privateRoomRepo,
-    cacheRepo,
-    userSnapshotService,
-    userServiceClient,
-    privateMessageReportRepo,
-    communityClient
-  );
   const privateSystemMessageService = new PrivateSystemMessageService(
     privateMessageRepo,
     privateRoomRepo,
@@ -256,6 +265,27 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService,
     privateSystemMessageService
+  );
+
+  const privateRoomService = new PrivateRoomService(
+    privateRoomRepo,
+    privateMessageRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    redis,
+    presenceService,
+    friendshipGrpcClient,
+    privatePinService
+  );
+  const privateMessageService = new PrivateMessageService(
+    privateMessageRepo,
+    privateRoomRepo,
+    cacheRepo,
+    userSnapshotService,
+    userServiceClient,
+    privateMessageReportRepo,
+    communityClient
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(
@@ -290,7 +320,12 @@ export function buildApp(): BuiltApp {
   const groupInviteLinkService = new GroupInviteLinkService(
     groupInviteLinkRepo,
     groupRoomRepo,
-    groupMemberRepo
+    groupMemberRepo,
+    privateRoomRepo,
+    privateMessageRepo,
+    userSnapshotService,
+    cacheRepo,
+    redis
   );
   const groupPinService = new GroupPinService(
     groupMessagePinRepo,
@@ -380,10 +415,21 @@ export function buildApp(): BuiltApp {
     groupPinService,
     presenceService
   );
+  const autoDeleteService = new AutoDeleteService(
+    privateRoomRepo,
+    privateMessageRepo,
+    privateSystemMessageService,
+    privatePinService,
+    chatMessageOrchestrator,
+    redis
+  );
 
   // -- Real controllers --
   const controllers: Controllers = {
-    privateRoomCtrl: new PrivateRoomController(privateRoomService),
+    privateRoomCtrl: new PrivateRoomController(
+      privateRoomService,
+      autoDeleteService
+    ),
     inboxCtrl: new InboxController(inboxService),
     syncCtrl: new SyncController(syncService),
     privateMessageCtrl: new PrivateMessageController(
@@ -450,6 +496,10 @@ export function buildApp(): BuiltApp {
       redis,
       userSnapshotService,
       presenceService,
+      presenceVisibilityGate,
+      privateMessageService,
+      chatMessageOrchestrator,
+      autoDeleteService,
     },
   };
 }

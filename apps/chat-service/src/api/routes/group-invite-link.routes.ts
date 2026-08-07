@@ -6,6 +6,7 @@ import {
   createInviteLinkSchema,
   revokeInviteLinkSchema,
   joinByInviteLinkSchema,
+  bulkSendInviteLinkSchema,
 } from "../validators/group-invite-link.validator.js";
 import type { GroupInviteLinkController } from "../controllers/group-invite-link.controller.js";
 
@@ -34,6 +35,12 @@ export function createGroupInviteLinkRoutes(
     ctrl.join
   );
   router.get("/room/:roomId", authenticate, ctrl.getActiveLinks);
+  router.post(
+    "/room/:roomId/bulk-send",
+    authenticate,
+    validateBody(bulkSendInviteLinkSchema),
+    ctrl.bulkSend
+  );
 
   return router;
 }

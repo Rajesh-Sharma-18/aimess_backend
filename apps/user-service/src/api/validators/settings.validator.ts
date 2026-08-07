@@ -15,6 +15,7 @@ const viewProfileScopeSchema = z.enum([
   "NO_ONE",
 ]);
 const callPrivacyScopeSchema = z.enum([
+  "EVERYONE",
   "FRIENDS",
   "SELECTED_FRIENDS",
   "NO_ONE",
