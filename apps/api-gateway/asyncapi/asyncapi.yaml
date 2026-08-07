@@ -5338,12 +5338,26 @@ components:
         - `VOICE_CALL` / `VIDEO_CALL` — a call lifecycle entry in a private or
           group timeline. **Read-only**: the send validators reject them, they are
           only ever written by the call service. The kind comes from the call's
-          own type, so it does NOT change with the outcome — read the outcome from
-          `content.call` (`{ callId, callType, outcome, durationSec }`, where
-          `outcome` is `ENDED` | `MISSED` | `DECLINED` | `CANCELLED`). Terminal
-          audit rows also carry `systemEvent: CALL_ENDED` + `systemData`, are
-          sender-less (`senderId: ""`) and never raise an unread badge. Never
-          classify a call by parsing `content.text`.
+          own type, so it does NOT change as the call progresses — read the
+          current state from `content.call`
+          (`{ callId, callType, callStatus, callerId, calleeId, durationSec }`,
+          where `callStatus` is `RINGING` | `ANSWERED` | `ENDED` | `DECLINED` |
+          `MISSED` | `CANCELLED` | `FAILED`; `outcome` is a legacy alias with the
+          same value).
+
+          **ONE CALL IS ONE ROW.** The row is created the moment the call starts
+          ringing and arrives as `message:new`; every later state rewrites that
+          SAME row (same `id`, `sequenceNumber` and `serverTs`) and arrives as
+          `message:edited`. Never append a second card per state — upsert on
+          `content.call.callId`. Each transition also bumps the room `revision`,
+          so `/changes` and `sinceRevision` catch-up replay the final state to a
+          client that was offline for the whole call.
+
+          Live rows carry `systemEvent: CALL_STARTED`, settled rows
+          `CALL_ENDED`, both with `systemData`. Rows are sender-less
+          (`senderId: ""`) — take the ↗/↙ direction from `content.call.callerId`,
+          not from the sender. Only the transition into `MISSED` raises an unread
+          badge. Never classify a call by parsing `content.text`.
 
     # -------- chat send payloads --------
     FileAttachment:
@@ -5734,8 +5748,9 @@ components:
         systemEvent:
           type: string
           description: >-
-            Set when contentType=SYSTEM, and on terminal call rows
-            (contentType=VOICE_CALL/VIDEO_CALL) where it is always CALL_ENDED.
+            Set when contentType=SYSTEM, and on call rows
+            (contentType=VOICE_CALL/VIDEO_CALL): CALL_STARTED while the call is
+            live (RINGING/ANSWERED), CALL_ENDED once it settles.
           enum:
             [
               GROUP_CREATED,
@@ -5747,14 +5762,15 @@ components:
               ROOM_RENAMED,
               AVATAR_CHANGED,
               DESCRIPTION_CHANGED,
+              CALL_STARTED,
               CALL_ENDED,
             ]
         systemData:
           type: object
           description: >-
             actorId/actorName (+ targetUserId/targetName, newRole, newName where
-            relevant). For CALL_ENDED: callId, callType, status, durationSec,
-            callerId, endedBy.
+            relevant). For CALL_STARTED/CALL_ENDED: callId, callType, status,
+            durationSec, callerId, calleeId, endedBy.
           additionalProperties: true
       required:
         [

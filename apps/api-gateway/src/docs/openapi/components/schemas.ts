@@ -8535,7 +8535,7 @@ export const openApiSchemas = {
           "VIDEO_CALL",
         ],
         description:
-          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`). VOICE_CALL / VIDEO_CALL = a call lifecycle entry (started/answered/declined/missed/ended/cancelled) — render the call card from `content.call` (`callId`, `callType`, `outcome`, `durationSec`), never from the text. These two are READ-ONLY: they are rejected on send.",
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`). VOICE_CALL / VIDEO_CALL = a call lifecycle entry — render the call card from `content.call` (`callId`, `callType`, `callStatus`, `callerId`, `durationSec`), never from the text. ONE CALL IS ONE ROW: the row is created the moment the call starts ringing and the SAME row is then transitioned in place (RINGING → ANSWERED → ENDED | DECLINED | MISSED | CANCELLED | FAILED), arriving as `message:edited` on each change — never as a second row. `content.call.outcome` is a legacy alias carrying the same value as `callStatus`. These two kinds are READ-ONLY: they are rejected on send.",
       },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -8649,7 +8649,7 @@ export const openApiSchemas = {
           "VIDEO_CALL",
         ],
         description:
-          "Canonical UPPER-CASE message kind. VOICE_CALL / VIDEO_CALL mark a call lifecycle entry — the kind is derived from the call's own type, so it is stable across every outcome (answered, declined, missed, ended, cancelled); read the outcome from `content.call.outcome`.",
+          "Canonical UPPER-CASE message kind. VOICE_CALL / VIDEO_CALL mark a call lifecycle entry — the kind is derived from the call's own type, so it is stable for the whole life of the row; read the current state from `content.call.callStatus` (RINGING | ANSWERED | ENDED | DECLINED | MISSED | CANCELLED | FAILED). One call is one row, transitioned in place and re-broadcast as `message:edited`.",
       },
       parentMessageId: {
         type: "string",
