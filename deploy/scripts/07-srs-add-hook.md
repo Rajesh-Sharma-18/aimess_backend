@@ -38,11 +38,9 @@ kill -HUP <srs-pid>                                         # same PID, no dropp
 Confirmed `reload config success, state=90`, and from the stream server:
 `on_publish` for an unknown key returns `1`, the other three return `0`.
 
-## Why not two URLs
-
 ---
 
-## What was measured
+## Why not two URLs — what was measured
 
 `on_publish` is the hook that flips a stream `PENDING → LIVE`. SRS calls **every**
 URL in the `http_hooks` list and **rejects the publish if any of them returns a
@@ -96,12 +94,12 @@ and resumes a `RECONNECTING` one without re-broadcasting.
 
 **Consequences**
 
-- The stream server is untouched. Production streams are unaffected.
-- The `on_publish` hook becomes an optimisation, not a requirement. If it ever
-  reaches us it still works and is instant.
-- A genuinely dropped hook delivery now self-heals instead of stranding a stream
-  in `PENDING` forever.
-- Worst case a stream goes LIVE up to 30 seconds late.
+- A dropped or failed hook delivery self-heals instead of stranding a stream in
+  `PENDING` forever — worst case it goes LIVE up to 30 seconds late.
+- The `PENDING -> LIVE` transition no longer depends on the hook at all.
+- It does **not** remove the need for the hooks to address this environment:
+  SRS still asks them for permission to publish, and a refusal stops the media
+  before any of this runs. That is why the repoint above was also required.
 
 ---
 
