@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { callContentType, isTerminalCallStatus } from "@aimess/constants";
 import {
   BadRequestError,
   ConflictError,
@@ -20,13 +21,14 @@ import type {
 } from "./call-chat-message.service.js";
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
 import type { CallFlagService } from "./call-flag.service.js";
+import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import {
   publishCallIncomingSafe,
   publishCallMissedSafe,
   publishCallCancelSafe,
 } from "../events/publish-call-incoming.js";
-import { CallStatus, CallType } from "../types/enums.js";
+import { CallStatus, CallType, SystemEvent } from "../types/enums.js";
 
 /**
  * Callee-scoped privacy lookup. Kept as an injected function (not a client
@@ -64,6 +66,16 @@ export class CallService {
     private readonly groupMemberRepo?: Pick<
       GroupMemberRepository,
       "findActiveByRoomAndUser" | "findActiveMembers"
+    >,
+    /**
+     * Group-call timeline audit rows. Same role CallChatMessageService plays for
+     * 1:1, but a group call's row belongs in the GroupMessage timeline, so it
+     * reuses the group lifecycle writer with a VOICE_CALL/VIDEO_CALL kind
+     * override instead of duplicating a second persistence path.
+     */
+    private readonly groupSystemMessages?: Pick<
+      GroupSystemMessageService,
+      "postOrUpdateCall"
     >
   ) {}
 
@@ -222,6 +234,16 @@ export class CallService {
             `CallService|initiateCall|self-cleanup publish failed: ${String(err)}`
           )
         );
+      // The abandoned ring already has a "Ringing…" card in the timeline —
+      // settle it here, or it would sit ringing forever (the missed sweep skips
+      // it now that this row is no longer RINGING).
+      await this.postCallChatMessageSafe(
+        stale,
+        "CANCELLED",
+        now,
+        0,
+        params.callerId
+      );
     }
 
     // (b) Busy gate — is either party genuinely active right now?
@@ -363,6 +385,19 @@ export class CallService {
       livekitUrl: calleeCreds.url,
       token: calleeCreds.token,
     });
+
+    // The chat card appears NOW, while the phone is still ringing — WhatsApp
+    // behavior. Posted only after the glare backstop above, so the losing side
+    // of a simultaneous-dial race never leaves an orphan ringing card. This
+    // same row is then transitioned in place by answer/decline/end/miss; it is
+    // never joined by a second card.
+    await this.postCallChatMessageSafe(
+      call,
+      "RINGING",
+      now,
+      0,
+      params.callerId
+    );
 
     return { ...call, livekit: callerCreds };
   }
@@ -546,6 +581,15 @@ export class CallService {
       });
     }
 
+    // Ringing card in the group timeline, same as 1:1 — see initiateCall.
+    await this.postCallChatMessageSafe(
+      call,
+      "RINGING",
+      now,
+      0,
+      params.callerId
+    );
+
     return { ...call, livekit: callerCreds };
   }
 
@@ -635,6 +679,17 @@ export class CallService {
       callerId: call.callerId,
     });
 
+    // "Ringing…" → "Ongoing" on the SAME card. The final duration replaces this
+    // when endCall lands; until then every device (including the ones that did
+    // not answer) sees the call is live rather than still ringing.
+    await this.postCallChatMessageSafe(
+      updated,
+      "ANSWERED",
+      answeredAt,
+      0,
+      params.calleeId
+    );
+
     return { ...updated, livekit };
   }
 
@@ -712,6 +767,15 @@ export class CallService {
               `CallService|declineCall(group)|final publish failed: ${String(err)}`
             );
           });
+        // Only the LAST decline is the call's outcome — posting per-member
+        // would spam the timeline with one row per rung member.
+        await this.postCallChatMessageSafe(
+          updated,
+          "DECLINED",
+          endedAt,
+          0,
+          params.calleeId
+        );
       }
       const again = await this.callRepo.findByCallId(params.callId);
       return (
@@ -1265,11 +1329,18 @@ export class CallService {
     durationSec: number,
     endedBy: string
   ): Promise<void> {
-    // GROUP calls have no calleeId-shaped chat-message audit yet — CallChatMessageService
-    // is built around a single caller/callee pair. Skip rather than post a
-    // misleading 1:1-shaped system message; a group-call variant is a
-    // follow-up, not part of this MVP.
-    if (!this.callChatMessages || call.groupId) return;
+    // GROUP calls land in the GroupMessage timeline instead — CallChatMessageService
+    // is built around a single caller/callee pair and writes PrivateMessage rows.
+    if (call.groupId) {
+      await this.postGroupCallChatMessageSafe(
+        call,
+        outcome,
+        durationSec,
+        endedBy
+      );
+      return;
+    }
+    if (!this.callChatMessages) return;
     try {
       await this.callChatMessages.post({
         callId: call.callId,
@@ -1286,6 +1357,70 @@ export class CallService {
       // A chat-side effect must never prevent the authoritative call transition.
       logger.warn(
         `CallService|chat message failed callId=${call.callId} outcome=${outcome}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * GROUP counterpart of the 1:1 call audit row. Posts one CALL_ENDED entry into
+   * the group's timeline, stored as VOICE_CALL / VIDEO_CALL (never SYSTEM) so
+   * every read path — REST history, /changes, chat:catchup, live `message:new`,
+   * inbox preview — reports the same call kind a DM does. `content.call` carries
+   * the identical structured sub-object as the private row, so clients render
+   * the call card from metadata rather than parsing text.
+   *
+   * Sender-less (`actorId: null`): like 1:1, nobody "sent" the outcome — the call
+   * did. The GroupSystemMessageService path already skips unread for any row with
+   * a `systemEvent`, so a group call never raises a badge.
+   *
+   * ponytail: no clientMessageId-style idempotency barrier here — every call site
+   * sits behind a won `claimStatusTransition` / `claimForMissed`, so there is
+   * exactly one writer per terminal transition. Add one if group calls ever gain
+   * a retry path that can re-enter a terminal state.
+   */
+  private async postGroupCallChatMessageSafe(
+    call: Call,
+    outcome: CallChatMessageOutcome,
+    durationSec: number,
+    endedBy: string
+  ): Promise<void> {
+    if (!this.groupSystemMessages || !call.groupId) return;
+    const callType = String(call.type ?? "").toUpperCase() || CallType.AUDIO;
+    const seconds = Math.max(0, Math.floor(durationSec));
+    try {
+      await this.groupSystemMessages.postOrUpdateCall({
+        callId: call.callId,
+        roomId: call.groupId,
+        actorId: null,
+        // CALL_STARTED while the call is live, CALL_ENDED once it settles —
+        // one row, two markers, matching the 1:1 writer.
+        systemEvent: isTerminalCallStatus(outcome)
+          ? SystemEvent.CALL_ENDED
+          : SystemEvent.CALL_STARTED,
+        messageType: callContentType(callType),
+        systemData: {
+          callId: call.callId,
+          callType,
+          status: outcome,
+          durationSec: seconds,
+          callerId: call.callerId,
+          endedBy,
+        },
+        contentExtra: {
+          call: {
+            callId: call.callId,
+            callType,
+            callStatus: outcome,
+            // Legacy alias — pre-lifecycle clients read `outcome`.
+            outcome,
+            durationSec: seconds,
+            callerId: call.callerId,
+          },
+        },
+      });
+    } catch (error) {
+      logger.warn(
+        `CallService|group chat message failed callId=${call.callId} outcome=${outcome}: ${String(error)}`
       );
     }
   }

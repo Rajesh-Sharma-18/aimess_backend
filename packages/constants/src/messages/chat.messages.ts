@@ -253,6 +253,10 @@ export const CHAT_MESSAGES = {
     vi: "Không thể xóa tin nhắn hệ thống",
     en: "System messages cannot be deleted",
   },
+  CHAT_INVALID_MESSAGE_TYPE: {
+    vi: "Loại tin nhắn không hợp lệ",
+    en: "Invalid message type",
+  },
   CHAT_REACTION_CONFLICT: {
     vi: "Không thể cập nhật cảm xúc do xung đột, vui lòng thử lại",
     en: "Couldn't update reaction due to a conflict, please try again",

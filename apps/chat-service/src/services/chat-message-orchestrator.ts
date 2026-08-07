@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { logger } from "@aimess/logger";
-import { NotFoundError } from "@aimess/errors";
-import { buildReactionActivityText } from "@aimess/constants";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
+import {
+  buildReactionActivityText,
+  isCallContentType,
+} from "@aimess/constants";
 
 import type { Redis, Cluster } from "ioredis";
 
@@ -283,6 +286,15 @@ export class ChatMessageOrchestrator {
    * not duplicated here.
    */
   async sendDirect(params: SendDirectParams): Promise<SendDirectResult> {
+    // VOICE_CALL / VIDEO_CALL are written ONLY by the call service — a forged
+    // one would fake a call in someone's timeline (and, as a systemEvent-less
+    // row, one that never happened). The REST validators already reject them via
+    // `z.enum(CONTENT_TYPES)`, but the socket/gRPC path takes the kind as a free
+    // string, so the guard belongs here: the one point every send funnels
+    // through, whatever the transport.
+    if (isCallContentType(params.messageType ?? "")) {
+      throw new BadRequestError("CHAT_INVALID_MESSAGE_TYPE");
+    }
     const conversationType = resolveConversationType(
       params.roomId,
       params.conversationType

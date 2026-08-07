@@ -13,6 +13,7 @@
     "db:backfill:normalized-group-name": "tsx scripts/backfill-normalized-group-name.ts",
     "db:backfill:group-owner-to-admin": "tsx scripts/backfill-group-owner-to-admin.ts",
     "db:backfill:single-group-admin": "tsx scripts/backfill-single-group-admin.ts",
+    "db:backfill:call-content-type": "tsx scripts/backfill-call-content-type.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "lint": "eslint .",

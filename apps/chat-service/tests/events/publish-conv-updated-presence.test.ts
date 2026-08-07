@@ -128,7 +128,7 @@ describe("publishConvUpdated — isOffline", () => {
     }
   });
 
-  it("keeps a private SYSTEM audit bump sender-less and unread for nobody", async () => {
+  it("keeps a private call audit bump sender-less and unread for nobody", async () => {
     const { redis, publishCalls } = makeFakeRedis();
 
     await publishConvUpdated({
@@ -140,7 +140,10 @@ describe("publishConvUpdated — isOffline", () => {
       senderName: "",
       lastMessageId: "call-message",
       lastMessageAt: 1,
-      preview: { contentType: "SYSTEM", text: "Voice call lasted 02:05" },
+      // Call rows are VOICE_CALL/VIDEO_CALL, not SYSTEM — so the sender-less +
+      // no-badge behaviour must come from the explicit countInUnread/senderId,
+      // NOT from publishConvUpdated's contentType==="SYSTEM" shortcut.
+      preview: { contentType: "VOICE_CALL", text: "Voice call lasted 02:05" },
       countInUnread: false,
     });
 

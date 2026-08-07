@@ -676,6 +676,41 @@ export class PrivateMessageRepository {
     });
   }
 
+  /**
+   * In-place state transition of an existing CALL row (RINGING → ANSWERED →
+   * ENDED/MISSED/DECLINED/CANCELLED/FAILED). A call is ONE timeline row for its
+   * whole lifetime, so every transition rewrites that row instead of appending
+   * a second one — see CallChatMessageService.
+   *
+   * Deliberately NOT `editMessage`: this is a server-authored lifecycle change,
+   * not a user edit, so it must not stamp `editedAt`/`editHistory` (which would
+   * render an "edited" tag on a call card). It DOES allocate a fresh room
+   * revision, which is what carries the update through `/changes` and the
+   * `sinceRevision` catch-up axis to clients that were offline.
+   */
+  async updateCallState(params: {
+    messageId: string;
+    roomId: string;
+    content: object;
+    messageType: string;
+    systemEvent: string | null;
+    systemData: object | null;
+    countInUnread: boolean;
+  }): Promise<PrivateMessage> {
+    const revision = await this.roomRepo.allocateRevision(params.roomId);
+    return this.prisma.privateMessage.update({
+      where: { id: params.messageId },
+      data: {
+        content: params.content as unknown as Prisma.InputJsonValue,
+        messageType: params.messageType,
+        systemEvent: params.systemEvent,
+        systemData: params.systemData as unknown as Prisma.InputJsonValue,
+        countInUnread: params.countInUnread,
+        revision,
+      },
+    });
+  }
+
   async markDeliveredUpTo(
     roomId: string,
     recipientId: string,
