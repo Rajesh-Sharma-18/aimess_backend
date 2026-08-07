@@ -14,6 +14,14 @@
 # speaks to clamd over TCP at CLAMAV_HOST:CLAMAV_PORT. Do not install it here.
 
 FROM node:22-bookworm-slim AS builder
+# openssl is required HERE, not just in the runner. `prisma generate` sniffs the
+# libssl version to pick a query-engine binary; without it detection fails with
+# "Prisma failed to detect the libssl/openssl version" and it silently defaults
+# to openssl-1.1.x. Bookworm ships 3.0.x, so the container then dies at startup
+# with "could not locate the Query Engine for runtime debian-openssl-3.0.x".
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && apt-get clean
 WORKDIR /repo
 ENV CI=true
 ENV HUSKY=0
