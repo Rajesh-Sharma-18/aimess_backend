@@ -32,8 +32,12 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-read -r -s -p "Redis password: " REDIS_PASSWORD
-echo
+# Accept the password from the environment so this can run unattended over a
+# non-interactive SSH session; fall back to prompting when run by hand.
+if [ -z "${REDIS_PASSWORD:-}" ]; then
+  read -r -s -p "Redis password: " REDIS_PASSWORD
+  echo
+fi
 
 R=(redis-cli -h 127.0.0.1 -p 52023 -a "$REDIS_PASSWORD" --no-auth-warning)
 
