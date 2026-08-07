@@ -5314,6 +5314,8 @@ components:
           LOCATION,
           CONTACT,
           SYSTEM,
+          VOICE_CALL,
+          VIDEO_CALL,
         ]
       description: |
         Message kind — **UPPER-CASE on every surface** (socket + REST,
@@ -5333,6 +5335,15 @@ components:
         - `STICKER` — requires `sticker`; `LOCATION` — requires `location`;
           `CONTACT` — requires `contact`.
         - `SYSTEM` — group/community lifecycle event (carries `systemEvent`/`systemData`).
+        - `VOICE_CALL` / `VIDEO_CALL` — a call lifecycle entry in a private or
+          group timeline. **Read-only**: the send validators reject them, they are
+          only ever written by the call service. The kind comes from the call's
+          own type, so it does NOT change with the outcome — read the outcome from
+          `content.call` (`{ callId, callType, outcome, durationSec }`, where
+          `outcome` is `ENDED` | `MISSED` | `DECLINED` | `CANCELLED`). Terminal
+          audit rows also carry `systemEvent: CALL_ENDED` + `systemData`, are
+          sender-less (`senderId: ""`) and never raise an unread badge. Never
+          classify a call by parsing `content.text`.
 
     # -------- chat send payloads --------
     FileAttachment:
@@ -5722,7 +5733,9 @@ components:
         sentAt: { type: integer, description: epoch ms (== serverTs). }
         systemEvent:
           type: string
-          description: Set when contentType=SYSTEM.
+          description: >-
+            Set when contentType=SYSTEM, and on terminal call rows
+            (contentType=VOICE_CALL/VIDEO_CALL) where it is always CALL_ENDED.
           enum:
             [
               GROUP_CREATED,
@@ -5734,10 +5747,14 @@ components:
               ROOM_RENAMED,
               AVATAR_CHANGED,
               DESCRIPTION_CHANGED,
+              CALL_ENDED,
             ]
         systemData:
           type: object
-          description: actorId/actorName (+ targetUserId/targetName, newRole, newName where relevant).
+          description: >-
+            actorId/actorName (+ targetUserId/targetName, newRole, newName where
+            relevant). For CALL_ENDED: callId, callType, status, durationSec,
+            callerId, endedBy.
           additionalProperties: true
       required:
         [

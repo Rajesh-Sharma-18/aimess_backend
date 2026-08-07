@@ -8531,9 +8531,11 @@ export const openApiSchemas = {
           "SYSTEM",
           "LOCATION",
           "CONTACT",
+          "VOICE_CALL",
+          "VIDEO_CALL",
         ],
         description:
-          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`).",
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`). VOICE_CALL / VIDEO_CALL = a call lifecycle entry (started/answered/declined/missed/ended/cancelled) — render the call card from `content.call` (`callId`, `callType`, `outcome`, `durationSec`), never from the text. These two are READ-ONLY: they are rejected on send.",
       },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -8643,8 +8645,11 @@ export const openApiSchemas = {
           "LOCATION",
           "CONTACT",
           "SYSTEM",
+          "VOICE_CALL",
+          "VIDEO_CALL",
         ],
-        description: "Canonical UPPER-CASE message kind.",
+        description:
+          "Canonical UPPER-CASE message kind. VOICE_CALL / VIDEO_CALL mark a call lifecycle entry — the kind is derived from the call's own type, so it is stable across every outcome (answered, declined, missed, ended, cancelled); read the outcome from `content.call.outcome`.",
       },
       parentMessageId: {
         type: "string",
