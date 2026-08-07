@@ -12,6 +12,9 @@ const envSchema = z.object({
 
   REDIS_HOST: z.string(),
   REDIS_PORT: z.coerce.number(),
+  // Optional so local dev against an unauthenticated Redis keeps working.
+  // Required for any shared/remote Redis, which must not be left open.
+  REDIS_PASSWORD: z.string().optional(),
   REDIS_CACHE_ENABLED: z
     .enum(["true", "false"])
     .default("true")

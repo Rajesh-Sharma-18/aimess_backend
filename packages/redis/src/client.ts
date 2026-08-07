@@ -5,14 +5,28 @@ let redis: Redis | undefined;
 export const connectRedis = ({
   host,
   port,
+  username,
+  password,
 }: {
   host: string;
   port: number;
+  /** ACL user. Omit for a password-only (`requirepass`) server. */
+  username?: string;
+  /**
+   * Omit for an unauthenticated server (local dev). Required by any Redis
+   * reachable off-box — a shared/remote instance must not be left open, and
+   * without this the client fails every command with NOAUTH.
+   */
+  password?: string;
 }): Redis => {
   if (!redis) {
     redis = new Redis({
       host,
       port,
+      // ioredis sends AUTH only when these are set, so leaving them undefined
+      // keeps the no-auth dev path byte-identical to before.
+      username,
+      password,
       lazyConnect: true,
       // Fail fast when Redis is unreachable/misconfigured so callers' try/catch
       // can fall back instead of the request hanging forever. (A hung command
