@@ -161,6 +161,54 @@ middleware are both live.
 
 ---
 
+## 4b. Frontend API base URLs — the two apps differ
+
+**These are not interchangeable. Copying one value to the other breaks it.**
+
+| App | `NEXT_PUBLIC_API_URL` | Why |
+| --- | --- | --- |
+| **website** | `https://api.ai5dev.tech/api/v1` | Full consumer base, **including `/api/v1`** |
+| **admin panel** | `https://api.ai5dev.tech` | **Host root, no path** |
+
+**website** — `src/configs/app.config.ts` derives the v2 base by replacing that
+exact suffix:
+
+```ts
+const rawApiPrefix   = process.env.NEXT_PUBLIC_API_URL || "https://api.aimess.app/api/v1";
+const rawApiV2Prefix = rawApiPrefix.replace(/\/api\/v1(\/?)$/, "/api/v2$1");
+```
+
+Give it a bare host and the regex does not match, so `apiV2Prefix` silently
+equals `apiPrefix` — **every v2 call goes to v1 and nothing reports an error**.
+This was wrong at first deploy and is now corrected.
+
+**admin panel** — `getAdminApiBaseUrl()` appends the prefix itself:
+
+```ts
+return `${host}/${adminPrefix}`;   // host + /admin/v1
+```
+
+Putting `/api/v1` here would produce `/api/v1/admin/v1/...` and 404. The admin
+surface is **not** under `/api/v1`; that prefix is consumer-only.
+
+`NEXT_PUBLIC_SOCKET_URL` is the **host with no path** for both apps —
+Socket.IO is served at `/socket.io/` and the client appends that itself.
+
+Gateway mounts, for reference (`apps/api-gateway/src/app.ts`):
+
+| Mount | Serves |
+| --- | --- |
+| `/api/v1`, `/api/v2` | consumer API |
+| `/admin` → rewritten | admin API (backoffice-service) |
+| `/socket.io/` | Socket.IO |
+| `/health`, `/internal`, `/livekit` | ops, SRS hooks, LiveKit webhooks |
+
+Verified live: `POST /api/v1/app-version/check` → **200**;
+`GET /admin/v1/auth/login` → **401** (route + JWT middleware active). A `GET`
+returning 404 on these paths is normal — most routes are POST-only.
+
+---
+
 ## 5. Credentials and where they live
 
 | Item | Location |
