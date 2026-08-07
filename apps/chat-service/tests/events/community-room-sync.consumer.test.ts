@@ -38,7 +38,6 @@ jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
     publish: jest.fn(async () => 1),
-    // The ACTIVE member.synced branch writes a `community:fresh-join:*` key.
     set: jest.fn(async () => "OK"),
     on: jest.fn(),
   },

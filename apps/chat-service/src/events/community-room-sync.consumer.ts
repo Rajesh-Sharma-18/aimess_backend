@@ -273,23 +273,11 @@ export class CommunityRoomSyncConsumer {
           // "left", and a PENDING join-request sync must NOT purge a join line.
           const rawStatus = (event.data.status ?? "").toUpperCase();
 
-          // Mark the member as a fresh join so community:updated bumps are
-          // suppressed until community:added arrives at the client. The key
-          // expires after 60 s — well past any realistic socket delivery window.
-          if (rawStatus === "ACTIVE") {
-            await redis
-              .set(
-                `community:fresh-join:${communityId}:${userId}`,
-                "1",
-                "EX",
-                60
-              )
-              .catch((err: unknown) => {
-                logger.warn(
-                  `fresh-join key set failed community=${communityId} user=${userId}: ${String(err)}`
-                );
-              });
-          }
+          // NOTE: this used to write a 60 s `community:fresh-join:*` key that
+          // suppressed `community:updated` list bumps for the member. It was
+          // removed — see publishCommunityUpdated: `community:added` is
+          // delivered synchronously at join time, so the window only ever
+          // swallowed legitimate bumps.
 
           // Hard-deletes stale PERSONAL session lines of `types` for this user
           // and tombstones each on their own `user:<id>` channel so an
