@@ -1,0 +1,297 @@
+# =============================================================================
+# Dev 02 — 76.13.216.171 — APPLICATION SERVICES + ADMIN PANEL
+#
+#   docker compose -f compose.yml --env-file .env.dev02 up -d
+#
+# Design notes
+# ------------
+# • All inter-service gRPC stays on this compose bridge network, addressed by
+#   SERVICE NAME (auth-service:4001, user-service:4002, …). Nothing gRPC is
+#   published to a host interface except 4002/4003, which the remote
+#   stream-service needs — see the `ports:` comments on those two services.
+#
+#   This is why every *_GRPC_URL below is a service name and NOT 0.0.0.0:400x.
+#   The .env.example files ship `0.0.0.0:400x`, which is a BIND address and is
+#   not a valid DIAL target — connecting to 0.0.0.0 does not reach a peer.
+#
+# • Only the four services nginx fronts publish an HTTP port, and each binds
+#   127.0.0.1 so nothing is reachable from the internet except through nginx.
+#
+# • stream-service IS in this file. The original plan assumed it already ran on
+#   the stream server; a 2026-08-06 check of 72.62.69.126 showed that host runs
+#   ONLY SRS (nothing on 3007/4007). SRS itself stays remote and untouched.
+#
+# ⚠  DOCKER PUBLISHED PORTS BYPASS UFW — see deploy/scripts/02-firewall-dev02.sh.
+# =============================================================================
+name: aimess-dev02
+
+# ---------------------------------------------------------------------------
+# Shared restart/logging policy. Without a logging cap, a chatty service fills
+# the disk with JSON logs and takes the whole box down.
+# ---------------------------------------------------------------------------
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+  networks: [aimess]
+
+services:
+  # ===========================================================================
+  # api-gateway — the ONLY public entry point for consumer traffic.
+  # https://api.ai5dev.tech  →  127.0.0.1:3000
+  # ===========================================================================
+  api-gateway:
+    <<: *common
+    image: aimess-api-gateway:latest
+    container_name: aimess-api-gateway
+    env_file: [.env.dev02]
+    environment:
+      API_GATEWAY_PORT: "3000"
+      # HTTP fan-out targets (service-name addressed, container ports).
+      AUTH_SERVICE_URL: http://auth-service:3001
+      USER_SERVICE_URL: http://user-service:3002
+      COMMUNITY_SERVICE_URL: http://community-service:3003
+      CHAT_SERVICE_URL: http://chat-service:3004
+      NOTIFICATION_SERVICE_URL: http://notifications-service:3006
+      MEDIA_SERVICE_URL: http://media-service:3009
+      BACKOFFICE_SERVICE_URL: http://backoffice-service:3010
+      STREAM_SERVICE_URL: ${STREAM_SERVICE_URL}
+      COMMUNITY_INTERNAL_URL: http://community-service:3003
+      # gRPC dial targets.
+      AUTH_GRPC_URL: auth-service:4001
+      USER_GRPC_URL: user-service:4002
+      COMMUNITY_GRPC_URL: community-service:4003
+      CHAT_GRPC_URL: chat-service:4004
+      NOTIFICATION_GRPC_URL: notifications-service:4006
+      MEDIA_GRPC_URL: media-service:4009
+      STREAM_GRPC_URL: ${STREAM_GRPC_URL}
+      # nginx is the only thing in front of this container, and it sets
+      # X-Forwarded-For. One hop — not zero, or rate limiting keys every
+      # request to the nginx IP and one abusive client throttles everybody.
+      TRUST_PROXY_HOPS: "1"
+      SWAGGER_SERVER_URLS: https://api.ai5dev.tech
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [auth-service, user-service, community-service, chat-service]
+
+  # ===========================================================================
+  # auth-service — PostgreSQL aimess_auth. Internal only; reached through the
+  # gateway. Deliberately NOT given a public subdomain: a direct public route
+  # would bypass the gateway's sensitive-auth rate limiting.
+  # ===========================================================================
+  auth-service:
+    <<: *common
+    image: aimess-auth-service:latest
+    container_name: aimess-auth-service
+    env_file: [.env.dev02]
+    environment:
+      AUTH_SERVICE_PORT: "3001"
+      AUTH_GRPC_PORT: "4001"
+      AUTH_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_auth
+      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3006
+      TRUST_PROXY_HOPS: "1"
+
+  # ===========================================================================
+  # user-service — PostgreSQL aimess_users.
+  # ===========================================================================
+  user-service:
+    <<: *common
+    image: aimess-user-service:latest
+    container_name: aimess-user-service
+    env_file: [.env.dev02]
+    environment:
+      USER_SERVICE_PORT: "3002"
+      USER_GRPC_PORT: "4002"
+      USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users
+      AUTH_GRPC_URL: auth-service:4001
+      CHAT_GRPC_URL: chat-service:4004
+    # No published ports. gRPC is reached as `user-service:4002` on the compose
+    # network. An earlier revision published this for a remote stream-service,
+    # but stream-service runs here now, so nothing off-box needs gRPC.
+
+  # ===========================================================================
+  # community-service — MongoDB community_db.
+  # ===========================================================================
+  community-service:
+    <<: *common
+    image: aimess-community-service:latest
+    container_name: aimess-community-service
+    env_file: [.env.dev02]
+    environment:
+      COMMUNITY_SERVICE_PORT: "3003"
+      COMMUNITY_GRPC_PORT: "4003"
+      COMMUNITY_DATABASE_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@${DEV01_IP}:27017/community_db?authSource=admin&directConnection=true
+      USER_GRPC_URL: user-service:4002
+      CHAT_GRPC_URL: chat-service:4004
+      STREAM_GRPC_URL: ${STREAM_GRPC_URL}
+    # No published ports — see user-service above.
+
+  # ===========================================================================
+  # chat-service — MongoDB aimess_chat + Socket.IO.
+  # https://api.ai5dev.tech/z-socket/  →  127.0.0.1:3004
+  #
+  # Single instance, so the single Redis node is sufficient for the Socket.IO
+  # adapter. REDIS_CLUSTER_NODES is intentionally left UNSET — setting it would
+  # switch the client to cluster mode against a non-cluster Redis and fail.
+  # Adding a second chat replica later means adding sticky sessions in nginx.
+  # ===========================================================================
+  chat-service:
+    <<: *common
+    image: aimess-chat-service:latest
+    container_name: aimess-chat-service
+    env_file: [.env.dev02]
+    environment:
+      CHAT_SERVICE_PORT: "3004"
+      CHAT_GRPC_PORT: "4004"
+      MONGO_DB_NAME: aimess_chat
+      USER_SERVICE_URL: http://user-service:3002
+      AUTH_SERVICE_URL: http://auth-service:3001
+      AUTH_GRPC_URL: auth-service:4001
+      USER_SERVICE_GRPC_URL: user-service:4002
+      COMMUNITY_GRPC_URL: community-service:4003
+      NOTIFICATION_GRPC_URL: notifications-service:4006
+      MINIO_BUCKET: aimess-chat
+    ports:
+      - "127.0.0.1:3004:3004"
+
+  # ===========================================================================
+  # notifications-service — MongoDB aimess_notifications. Push (FCM/APNs) + email.
+  # ===========================================================================
+  notifications-service:
+    <<: *common
+    image: aimess-notifications-service:latest
+    container_name: aimess-notifications-service
+    env_file: [.env.dev02]
+    environment:
+      NOTIFICATIONS_SERVICE_PORT: "3006"
+      NOTIFICATIONS_GRPC_PORT: "4006"
+      MONGO_DB_NAME: aimess_notifications
+      USER_SERVICE_GRPC_URL: user-service:4002
+      CHAT_SERVICE_GRPC_URL: chat-service:4004
+      COMMUNITY_SERVICE_GRPC_URL: community-service:4003
+
+  # ===========================================================================
+  # media-service — MongoDB aimess_media. Presigned uploads + AV scan queue.
+  #
+  # Uses Bull on the shared Redis. That Redis has maxmemory-policy=noeviction,
+  # which is REQUIRED — under an eviction policy Redis would silently drop job
+  # keys and scans would vanish without error.
+  # ===========================================================================
+  media-service:
+    <<: *common
+    image: aimess-media-service:latest
+    container_name: aimess-media-service
+    env_file: [.env.dev02]
+    environment:
+      MEDIA_SERVICE_PORT: "3009"
+      MEDIA_GRPC_PORT: "4009"
+      MONGO_DB_NAME: aimess_media
+      CHAT_GRPC_URL: chat-service:4004
+      MINIO_BUCKET: aimess-chat
+      # CORS is enforced at the gateway; media-service is not publicly routed.
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_WEB_ORIGINS}
+      # Flip to "true" and start the clamav profile to enable AV scanning.
+      CLAMAV_ENABLED: ${CLAMAV_ENABLED:-false}
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      BULL_REDIS_HOST: ${REDIS_HOST}
+      BULL_REDIS_PORT: ${REDIS_PORT}
+
+  # ===========================================================================
+  # stream-service — MongoDB stream_db. Livestream lifecycle + comments.
+  #
+  # CORRECTION to the original plan: this was assumed to be already running on
+  # the stream server. Verified 2026-08-06 — it is NOT. That host runs only SRS;
+  # nothing listens on 3007 or 4007 there. The stream-service instance that does
+  # exist belongs to the other environment (aimess.api.vasundharasolutions.com),
+  # so this stack needs its own.
+  #
+  # It talks to the REMOTE SRS at ai5stream.tech over HTTPS for stream control,
+  # and receives SRS http_hooks at /internal/srs/hooks. Those hooks currently
+  # point at the other environment — see SRS_HOOK_SECRET in .env.dev02.
+  # ===========================================================================
+  stream-service:
+    <<: *common
+    image: aimess-stream-service:latest
+    container_name: aimess-stream-service
+    env_file: [.env.dev02]
+    environment:
+      STREAM_SERVICE_PORT: "3007"
+      STREAM_GRPC_PORT: "4007"
+      USER_GRPC_URL: user-service:4002
+      COMMUNITY_GRPC_URL: community-service:4003
+
+  # ===========================================================================
+  # backoffice-service — PostgreSQL admin_db. Admin API for the admin panel.
+  # https://backoffice.ai5dev.tech  →  127.0.0.1:3010
+  # ===========================================================================
+  backoffice-service:
+    <<: *common
+    image: aimess-backoffice-service:latest
+    container_name: aimess-backoffice-service
+    env_file: [.env.dev02]
+    environment:
+      BACKOFFICE_SERVICE_PORT: "3010"
+      BACKOFFICE_GRPC_PORT: "4010"
+      ADMIN_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/admin_db
+      AUTH_GRPC_URL: auth-service:4001
+      USER_GRPC_URL: user-service:4002
+      COMMUNITY_GRPC_URL: community-service:4003
+      CHAT_GRPC_URL: chat-service:4004
+      STREAM_GRPC_URL: ${STREAM_GRPC_URL}
+      CORS_ALLOWED_ORIGINS: ${ADMIN_WEB_ORIGIN}
+      TRUST_PROXY_HOPS: "1"
+    ports:
+      - "127.0.0.1:3010:3010"
+
+  # ===========================================================================
+  # Admin panel (Next.js) — https://admin.ai5dev.tech
+  #
+  # Image is built from the aimess_admin_panel repo, NOT from this one:
+  #   docker build -t aimess-admin-panel:latest /path/to/aimess_admin_panel
+  #
+  # NEXT_PUBLIC_* values are baked in at BUILD time from that repo's
+  # .env.production — they cannot be changed here. Rebuild to change them.
+  # ===========================================================================
+  admin-panel:
+    <<: *common
+    image: aimess-admin-panel:latest
+    container_name: aimess-admin-panel
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "127.0.0.1:3011:3000"
+
+  # ===========================================================================
+  # ClamAV — optional. Start with:
+  #   docker compose --profile clamav up -d
+  # and set CLAMAV_ENABLED=true in .env.dev02.
+  #
+  # First boot downloads ~350 MB of definitions and the daemon holds ~1.5 GB
+  # resident, so it is off by default.
+  # ===========================================================================
+  clamav:
+    <<: *common
+    image: clamav/clamav:stable
+    container_name: aimess-clamav
+    profiles: [clamav]
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck || exit 1"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 300s
+
+volumes:
+  clamav_data:
+
+networks:
+  aimess:
+    driver: bridge

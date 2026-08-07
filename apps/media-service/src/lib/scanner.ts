@@ -297,7 +297,13 @@ let scanQueue: BullQueue<MediaScanJob> | null = null;
 export function getScanQueue(): BullQueue<MediaScanJob> {
   if (!scanQueue) {
     scanQueue = new Queue<MediaScanJob>(env.MEDIA_SCAN_QUEUE_NAME, {
-      redis: { host: env.BULL_REDIS_HOST, port: env.BULL_REDIS_PORT },
+      redis: {
+        host: env.BULL_REDIS_HOST,
+        port: env.BULL_REDIS_PORT,
+        // Falls back to the main Redis password so the common case (Bull and
+        // the cache on the same authenticated instance) needs one variable.
+        password: env.BULL_REDIS_PASSWORD ?? env.REDIS_PASSWORD,
+      },
       defaultJobOptions: {
         attempts: env.MEDIA_SCAN_JOB_ATTEMPTS,
         backoff: { type: "exponential", delay: env.MEDIA_SCAN_BACKOFF_MS },

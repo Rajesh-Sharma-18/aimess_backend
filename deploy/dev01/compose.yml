@@ -1,0 +1,267 @@
+# =============================================================================
+# Dev 01 — 76.13.216.164 — DATA, MESSAGING, OBJECT STORAGE, MEDIA SFU, WEBSITE
+#
+#   docker compose -f compose.yml --env-file .env.dev01 up -d
+#
+# Redis is NOT here — it already runs on 187.77.130.157:52023 and is reused.
+# stream-service and SRS are NOT here — they stay on the existing stream server.
+#
+# ---------------------------------------------------------------------------
+# ⚠  DOCKER PUBLISHED PORTS BYPASS UFW.
+# Docker writes its own iptables rules ahead of ufw's, so `ufw deny 5432` does
+# NOT protect a container that publishes 5432. Every port published on a public
+# interface below is protected by rules in the DOCKER-USER chain instead —
+# see deploy/scripts/01-firewall-dev01.sh. Run that script or these databases
+# are reachable from the open internet.
+# ---------------------------------------------------------------------------
+name: aimess-dev01
+
+services:
+  # ===========================================================================
+  # PostgreSQL 16 — auth-service, user-service, backoffice-service
+  # Databases created on first boot by docker/postgres/init/01-create-databases.sql:
+  #   aimess_auth, aimess_users, aimess_communities, aimess_moderation, admin_db
+  # ===========================================================================
+  postgres:
+    image: postgres:16
+    container_name: aimess-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Must stay `postgres` — the init script issues CREATE DATABASE against it.
+      POSTGRES_DB: postgres
+
+    # Bound to the LAN IP (not 0.0.0.0) so Dev 02 can reach it. Locked down in
+    # DOCKER-USER to 76.13.216.171 only.
+    ports:
+      - "${LAN_IP}:5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks: [aimess]
+
+  # ===========================================================================
+  # MongoDB 7 — chat, community, media, notifications (stream_db lives on the
+  # stream server).
+  #
+  # Runs as a SINGLE-NODE REPLICA SET (rs0) WITH AUTH. Both are mandatory:
+  #   • Replica set — Prisma's MongoDB connector wraps writes to @unique-indexed
+  #     models in transactions, which a standalone mongod cannot serve.
+  #   • Auth — every service composes mongodb://user:pass@host/... from
+  #     MONGO_ROOT_USERNAME / MONGO_ROOT_PASSWORD (see apps/*/src/config/env.ts).
+  #
+  # replSet + auth together require a shared internal-auth KEYFILE. Generate it
+  # once with deploy/scripts/00-bootstrap-host.sh before the first `up`.
+  #
+  # The replica set is initiated by the `mongo-init` service below, using the
+  # LAN IP as the member host so the topology is valid off-box.
+  # ===========================================================================
+  mongodb:
+    image: mongo:7
+    container_name: aimess-mongodb
+    restart: unless-stopped
+
+    command:
+      ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+
+    ports:
+      - "${LAN_IP}:27017:27017"
+
+    volumes:
+      - mongodb_data:/data/db
+      # Mounted read-only, owned by uid 999 (the mongodb user in this image),
+      # mode 0400 — mongod refuses to start if the keyfile is group/world readable.
+      - ${MONGO_KEYFILE_PATH}:/etc/mongo-keyfile/keyfile:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    networks: [aimess]
+
+  # ===========================================================================
+  # One-shot: initiate the replica set, then exit 0.
+  #
+  # The member host MUST be the LAN IP, not localhost. A driver connecting from
+  # Dev 02 asks the node for the topology; if the set says its only member is
+  # "localhost:27017", the driver tries to reach localhost on ITS OWN box and
+  # every query fails. Services also pass directConnection=true as a second
+  # layer of protection against exactly this.
+  # ===========================================================================
+  mongo-init:
+    image: mongo:7
+    container_name: aimess-mongo-init
+    restart: on-failure
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      LAN_IP: ${LAN_IP}
+    entrypoint: ["bash", "/init-replica.sh"]
+    volumes:
+      - ../mongo/init-replica.sh:/init-replica.sh:ro
+    networks: [aimess]
+
+  # ===========================================================================
+  # RabbitMQ — auth, user, community, notifications (and stream-service remotely)
+  # Management UI proxied at https://rabbitmq.ai5dev.tech (IP-allowlisted in nginx).
+  # ===========================================================================
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: aimess-rabbitmq
+    restart: unless-stopped
+
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+
+    ports:
+      - "${LAN_IP}:5672:5672"
+      # Management UI stays on loopback; nginx terminates TLS and proxies to it.
+      - "127.0.0.1:15672:15672"
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks: [aimess]
+
+  # ===========================================================================
+  # MinIO — avatars, chat media, community images, stream thumbnails.
+  #
+  # MINIO_SERVER_URL must be the PUBLIC HTTPS origin: presigned upload/download
+  # URLs are signed against it, and a mismatch makes every signature invalid.
+  # ===========================================================================
+  minio:
+    image: minio/minio
+    container_name: aimess-minio
+    restart: unless-stopped
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SERVER_URL: ${MINIO_PUBLIC_URL}
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_CONSOLE_PUBLIC_URL}
+
+    ports:
+      # S3 API — reachable from Dev 02 (server-side presign) and from nginx.
+      - "${LAN_IP}:9000:9000"
+      - "127.0.0.1:9000:9000"
+      # Console — loopback only, nginx fronts it.
+      - "127.0.0.1:9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+    healthcheck:
+      # The server image ships curl but has no preconfigured `mc` alias, so the
+      # documented HTTP health endpoint is the reliable probe here.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+    networks: [aimess]
+
+  # ===========================================================================
+  # One-shot: create the buckets the services expect, then exit 0.
+  # Bucket names come from apps/*/.env.example (MINIO_BUCKET_*).
+  # ===========================================================================
+  minio-init:
+    image: minio/mc
+    container_name: aimess-minio-init
+    restart: on-failure
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: ["sh", "/init-buckets.sh"]
+    volumes:
+      - ../minio/init-buckets.sh:/init-buckets.sh:ro
+    networks: [aimess]
+
+  # ===========================================================================
+  # LiveKit — self-hosted SFU + embedded TURN for 1-to-1 audio/video calls.
+  # chat-service mints the access tokens; the browser connects to LIVEKIT_URL.
+  #
+  # ⚠  The UDP media range CANNOT pass through a Cloudflare proxy. The DNS
+  # record for livekit.ai5dev.tech must be GREY-CLOUD (DNS-only), pointing
+  # straight at 76.13.216.164.
+  # ===========================================================================
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: aimess-livekit
+    restart: unless-stopped
+
+    command: ["--config", "/etc/livekit/config.yaml"]
+
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+
+    # host networking — the 50000-50100/udp range is far cheaper to serve
+    # without per-port userland proxies, and LiveKit needs to see real client IPs
+    # for ICE to work.
+    network_mode: host
+
+    volumes:
+      - ../livekit/config.yaml:/etc/livekit/config.yaml:ro
+
+  # ===========================================================================
+  # Website (Next.js) — https://website.ai5dev.tech
+  #
+  # Image is built from the aimess_website repo, NOT from this one:
+  #   docker build -t aimess-website:latest /path/to/aimess_website
+  #
+  # NEXT_PUBLIC_* values are baked in at BUILD time from that repo's
+  # .env.production — they cannot be changed here. Rebuild to change them.
+  # ===========================================================================
+  website:
+    image: aimess-website:latest
+    container_name: aimess-website
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [aimess]
+
+volumes:
+  postgres_data:
+  mongodb_data:
+  rabbitmq_data:
+  minio_data:
+
+networks:
+  aimess:
+    driver: bridge
