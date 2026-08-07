@@ -17,7 +17,7 @@ Every V2 capability has been folded into its `/api/v1` endpoint. `/api/v2` no lo
 
 ### What this means for you
 
-- **If you only ever called `/api/v1`:** nothing changed. Not one V1 request, parameter, or response field behaves differently. You can skip to [New capabilities on V1](#new-capabilities-on-v1) to see what you gained for free.
+- **If you only ever called `/api/v1`:** nothing changed. Not one V1 request, parameter, or response field behaves differently. Skip to [Added fields](#added-fields-v1-gained-these-all-optional) and [Response Changes](#response-changes) to see what you gained for free.
 - **If you called any `/api/v2` endpoint:** you must change those calls. There are at most 12 of them. Most are a path swap; four also need a response-reader change.
 
 ### Summary of changes
