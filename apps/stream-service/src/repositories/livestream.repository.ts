@@ -265,7 +265,14 @@ export class LivestreamRepository {
       where: {
         status: "LIVE",
         OR: [
-          { lastHeartbeatAt: { lt: cutoff } },
+          // `not: null` is load-bearing. The Mongo connector orders null below
+          // every date, so a bare `lt` ALSO matches streams that have never
+          // heartbeated — ending them on the first tick after go-live instead
+          // of after the timeout they are owed, and permanently poisoning the
+          // stream key (on_publish denies an ENDED stream, so the publisher
+          // can never get back in). The null case belongs to the branch below,
+          // which is the only one allowed to consider it.
+          { lastHeartbeatAt: { not: null, lt: cutoff } },
           { lastHeartbeatAt: null, livedAt: { lt: cutoff } },
         ],
       },

@@ -1119,6 +1119,15 @@ export class LivestreamService {
           resolution: `${stats.width}x${stats.height}`,
           bitrateKbps: stats.bitrateKbps,
         });
+        // SRS is still receiving frames, which is the ONLY trustworthy liveness
+        // signal an OBS stream has: the host is broadcasting from OBS, not from
+        // the app, so the client-driven heartbeat may stop the moment they
+        // switch windows or the phone backgrounds the app. Treat "the publisher
+        // is demonstrably still sending" as the heartbeat, or the sweeper ends
+        // a perfectly healthy broadcast at STREAM_HEARTBEAT_TIMEOUT_MS.
+        await this.streamRepo.updateById(stream.id, {
+          lastHeartbeatAt: new Date(),
+        });
       } catch (error) {
         logger.warn(
           `pollObsStreamQuality failed for stream=${stream.id}: ${String(error)}`
