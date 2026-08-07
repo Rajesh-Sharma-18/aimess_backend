@@ -26,11 +26,16 @@ DEPLOY_USER="${SUDO_USER:-rajvasu}"
 echo "==> [1/7] apt update + base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+# NOTE: do NOT add iptables-persistent / netfilter-persistent here. Debian marks
+# them as conflicting with ufw, so apt silently REMOVES ufw to install them —
+# which breaks the firewall scripts that run straight after this one. They are
+# not needed anyway: the DOCKER-USER rules are reapplied on every boot by
+# aimess-docker-firewall.service rather than restored from a saved ruleset.
 apt-get install -y -qq \
   ca-certificates curl gnupg lsb-release \
   nginx certbot python3-certbot-nginx \
   gettext-base jq \
-  iptables-persistent netfilter-persistent
+  ufw
 
 echo "==> [2/7] Docker Engine + Compose plugin (official repo)"
 if ! command -v docker >/dev/null 2>&1; then
