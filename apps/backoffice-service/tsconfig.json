@@ -1,7 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src"
+    "rootDir": "src",
+    // Required even though tsconfig.base.json sets it: relative paths in an
+    // extended config resolve against the BASE file's directory, so the
+    // inherited value points at <repo-root>/dist. Every other service
+    // re-declares it for the same reason.
+    "outDir": "dist"
   },
   "include": ["src"]
 }

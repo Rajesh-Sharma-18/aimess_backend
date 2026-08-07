@@ -22,6 +22,10 @@ const envSchema = z.object({
 
   REDIS_HOST: z.string(),
   REDIS_PORT: z.coerce.number(),
+  // Optional so local dev against an unauthenticated Redis keeps working.
+  // Required for any shared/remote Redis, which must not be left open.
+  // Applies to cluster mode too — every node must share the password.
+  REDIS_PASSWORD: z.string().optional(),
   // Comma-separated "host:port" pairs to enable Redis Cluster mode.
   // Example: 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
   // Leave unset to use a single Redis node (REDIS_HOST / REDIS_PORT).

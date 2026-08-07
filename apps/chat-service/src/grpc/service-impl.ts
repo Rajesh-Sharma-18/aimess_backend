@@ -1757,9 +1757,10 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { roomName?: string };
+          const req = call.request as { roomName?: string; eventType?: string };
           await deps.callService.reconcileFromLiveKitRoomFinished(
-            req.roomName ?? ""
+            req.roomName ?? "",
+            req.eventType ?? ""
           );
           callback(null, {});
         } catch (err) {

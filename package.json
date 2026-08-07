@@ -57,7 +57,7 @@
     "docker:up": "docker compose --env-file .env up -d",
     "docker:down": "docker compose --env-file .env down",
     "docker:build": "docker compose --env-file .env build",
-    "docker:build:apps": "docker build -f apps/api-gateway/Dockerfile -t aimess-api-gateway:local . && docker build -f apps/auth-service/Dockerfile -t aimess-auth-service:local . && docker build -f apps/user-service/Dockerfile -t aimess-user-service:local . && docker build -f apps/chat-service/Dockerfile -t aimess-chat-service:local .",
+    "docker:build:apps": "docker build -f apps/api-gateway/Dockerfile -t aimess-api-gateway:local . && docker build -f apps/auth-service/Dockerfile -t aimess-auth-service:local . && docker build -f apps/user-service/Dockerfile -t aimess-user-service:local . && docker build -f apps/community-service/Dockerfile -t aimess-community-service:local . && docker build -f apps/chat-service/Dockerfile -t aimess-chat-service:local . && docker build -f apps/notifications-service/Dockerfile -t aimess-notifications-service:local . && docker build -f apps/media-service/Dockerfile -t aimess-media-service:local . && docker build -f apps/stream-service/Dockerfile -t aimess-stream-service:local . && docker build -f apps/backoffice-service/Dockerfile -t aimess-backoffice-service:local .",
     "docker:rebuild": "docker compose --env-file .env down && docker compose --env-file .env build && docker compose --env-file .env up -d",
     "docker:ps": "docker compose --env-file .env ps",
     "docker:logs": "docker compose --env-file .env logs -f",

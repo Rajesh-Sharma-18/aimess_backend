@@ -8,6 +8,10 @@ import { env } from "./env.js";
 const sharedOptions = {
   lazyConnect: true,
   maxRetriesPerRequest: null,
+  // ioredis sends AUTH only when this is set, so an unauthenticated dev Redis
+  // behaves exactly as before. In cluster mode the password is applied via
+  // redisOptions below, which covers every node — they must all share it.
+  password: env.REDIS_PASSWORD,
 };
 
 // Parse REDIS_CLUSTER_NODES when set (e.g. "127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003")

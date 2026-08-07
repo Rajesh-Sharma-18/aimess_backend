@@ -353,7 +353,10 @@ export interface MessagingClient {
   declineCall(p: DeclineCallParams): Promise<CallStatusResult>;
   endCall(p: EndCallParams): Promise<EndCallResult>;
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
-  handleLiveKitRoomFinished(p: { roomName: string }): Promise<unknown>;
+  handleLiveKitRoomFinished(p: {
+    roomName: string;
+    eventType: string;
+  }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
     p: GetRoomParticipantIdsParams
@@ -700,9 +703,10 @@ export function createMessagingClient(): MessagingClient {
 
   const handleLiveKitRoomFinishedBreaker = makeBreaker(
     "messaging.handleLiveKitRoomFinished",
-    (p: { roomName: string }) =>
+    (p: { roomName: string; eventType: string }) =>
       call<unknown, Record<string, never>>("handleLiveKitRoomFinished", {
         roomName: p.roomName,
+        eventType: p.eventType,
       })
   );
 
