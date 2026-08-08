@@ -693,8 +693,11 @@ describe("pins + forward + reactions", () => {
   });
 
   it("POSITIVE: get reactions returns grouped result", async () => {
+    // The repo returns the stored map PLUS the owning roomId (the revision
+    // allocator needs it), not the bare map.
     mocks.groupMessageRepo.getReactions.mockResolvedValue({
-      "🔥": ["u1", "u2"],
+      reactions: { "🔥": ["u1", "u2"] },
+      roomId: ROOM,
     });
 
     const res = await request(app)

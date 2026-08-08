@@ -180,6 +180,14 @@ export function buildApp(): BuiltApp {
   communityMessagePinRepo.runTransaction = jest.fn(
     (fn: (tx: unknown) => unknown) => fn({})
   );
+  // Group and private pins run the same switch-pin transaction — same reason,
+  // same passthrough.
+  groupMessagePinRepo.runTransaction = jest.fn((fn: (tx: unknown) => unknown) =>
+    fn({})
+  );
+  privateMessagePinRepo.runTransaction = jest.fn(
+    (fn: (tx: unknown) => unknown) => fn({})
+  );
   const generalRoomRepo = repoMock();
   // Default: community general rooms are open/active. The community write gate
   // (`assertCommunityRoomWritable`) loads the room on send/edit/delete/react/pin;
@@ -515,4 +523,18 @@ export function buildApp(): BuiltApp {
       autoDeleteService,
     },
   };
+}
+
+/**
+ * Program BOTH group-membership lookups with the same rows.
+ *
+ * The inbox/count paths read `getActiveOrLeftMemberships` (ACTIVE + LEFT +
+ * KICKED — a removed member keeps a read-only row), while `/my-groups` and the
+ * unread sum still read the ACTIVE-only `getActiveMemberships`. A spec that
+ * stubs only one of them gets `undefined` back from the other and 500s, so
+ * stub them together unless the spec is specifically about the difference.
+ */
+export function mockGroupMemberships(mocks: BuiltMocks, rows: unknown[]): void {
+  mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue(rows);
+  mocks.groupMemberRepo.getActiveOrLeftMemberships.mockResolvedValue(rows);
 }
