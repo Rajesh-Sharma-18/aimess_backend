@@ -412,7 +412,14 @@ export function createMessagingClient(): MessagingClient {
         sentAt: Number(r.sentAt),
         sequenceNumber: Number(r.sequenceNumber),
       }));
-    }
+    },
+    // A send is a NON-CANCELLABLE write: the default 2s breaker timeout abandons
+    // the ack while chat-service still persists the row, so the client is told
+    // "failed" for a message that exists, and a burst (many concurrent sends to
+    // one room push p99 past 2s) trips the circuit and fast-fails every send for
+    // resetTimeout ms. Measured p50 ≈ 0.8s idle, ≈ 5s at 10-way concurrency, so
+    // give the call room to finish and only trip when the service is truly dead.
+    { timeout: 20000, volumeThreshold: 20, errorThresholdPercentage: 80 }
   );
 
   const getMessagesBreaker = makeBreaker(

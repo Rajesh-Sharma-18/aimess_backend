@@ -832,6 +832,36 @@ export class GroupMemberService {
    * the storage field (`notificationSettings`) and even read it in the inbox
    * list, but no route ever wrote it.
    */
+  /**
+   * See PrivateRoomService.publishMuteChanged — identical contract, `type` is
+   * the only difference. Lives on the single mute/unmute path so the one-off
+   * route and the bulk service can never desync a device.
+   */
+  private publishConversationMuteChanged(
+    roomId: string,
+    userId: string,
+    isMuted: boolean,
+    muteUntil: Date | null
+  ): void {
+    publishChatUserEvent(
+      this.redis,
+      userId,
+      isMuted ? "conv:muted" : "conv:unmuted",
+      {
+        roomId,
+        conversationId: roomId,
+        type: "GROUP",
+        isMuted,
+        mutedUntil: muteUntil ? muteUntil.toISOString() : null,
+        updatedAt: Date.now(),
+      }
+    ).catch((err: unknown) => {
+      logger.warn(
+        `GroupMemberService|conv:${isMuted ? "muted" : "unmuted"} publish failed room=${roomId} user=${userId}: ${String(err)}`
+      );
+    });
+  }
+
   async muteRoom(
     roomId: string,
     userId: string,
@@ -843,6 +873,7 @@ export class GroupMemberService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
     const updated = await this.memberRepo.setMuted(roomId, userId, muteUntil);
+    this.publishConversationMuteChanged(roomId, userId, true, muteUntil);
     return updated ?? member;
   }
 
@@ -853,6 +884,7 @@ export class GroupMemberService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
     const updated = await this.memberRepo.setUnmuted(roomId, userId);
+    this.publishConversationMuteChanged(roomId, userId, false, null);
     return updated ?? member;
   }
 

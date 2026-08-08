@@ -147,27 +147,26 @@ export function applyUrlMapToFiles<T extends MediaFileLike>(
 }
 
 /**
- * Resolve a message's attachment array (`content.files` / generic attachments).
- * Each entry gains a `url` resolved from its `objectKey`; an entry that already
- * carries a full http(s) `url` is left untouched. Non-array input passes
+ * Async batch form of {@link applyUrlMapToFiles} for a message's attachment
+ * array (`content.files` / generic attachments): every entry gets a FRESH `url`
+ * (and `thumbnailUrl`) resolved from its stored key. Non-array input passes
  * through. Returns a new array (inputs are not mutated).
+ *
+ * An entry with an `objectKey` is ALWAYS re-signed, even when the stored row
+ * also carries a `url`: some clients persist the presigned upload/download URL
+ * they got at upload time alongside the key, and that URL expires (~1h). Keeping
+ * it made every live/catch-up broadcast (the paths that use this helper, unlike
+ * REST history which already goes through `applyUrlMapToFiles`) hand the client
+ * a dead link, so media rendered on send and broke on reopen/reconnect.
+ * Keys with no `objectKey` (external Giphy/Tenor URLs) still pass through
+ * unchanged via `urlFromMap`'s http(s) fallback.
  */
 export async function resolveContentFiles<T extends MediaFileLike>(
   files: T[] | null | undefined
 ): Promise<T[]> {
   if (!Array.isArray(files) || files.length === 0) return files ?? [];
   const urlMap = await resolveMediaUrlMap(files.flatMap(fileMediaKeys));
-  return files.map((file) => {
-    const existing = typeof file.url === "string" ? file.url : "";
-    if (existing && isHttpUrl(existing)) {
-      const thumbnailUrl =
-        typeof file.thumbnailObjectKey === "string"
-          ? urlFromMap(urlMap, file.thumbnailObjectKey)
-          : "";
-      return thumbnailUrl ? { ...file, thumbnailUrl } : file;
-    }
-    return applyUrlMapToFiles([file], urlMap)[0]!;
-  });
+  return applyUrlMapToFiles(files, urlMap);
 }
 
 /**

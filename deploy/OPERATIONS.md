@@ -10,22 +10,22 @@ ssh -p 22223 -i ~/.ssh/id_ed25519 rajvasu@187.77.130.157  # DB / Redis
 ```
 
 > **Port is 22223, not 22. Auth is publickey only** — the password in
-> `server_info.txt` will not log you in over SSH. It is the *sudo* password.
+> `server_info.txt` will not log you in over SSH. It is the _sudo_ password.
 
 ---
 
 ## 0. Which server do I touch?
 
-| I changed… | Server | Rebuild? |
-| --- | --- | --- |
-| Any `apps/*` backend service | **Dev 02** | yes — that service's image |
-| `packages/*` shared code | **Dev 02** | yes — **every** service depends on them |
-| `aimess_website` | **Dev 01** | yes |
-| `aimess_admin_panel` | **Dev 02** | yes |
-| A `NEXT_PUBLIC_*` value | Dev 01 or 02 | **yes — baked in at build time** |
-| A backend env value | Dev 02 | no — just recreate the container |
-| An nginx vhost | that server | no — install + reload |
-| A Prisma schema | Dev 02 (build) + Dev 01 (migrate) | yes, and run the migration |
+| I changed…                   | Server                            | Rebuild?                                |
+| ---------------------------- | --------------------------------- | --------------------------------------- |
+| Any `apps/*` backend service | **Dev 02**                        | yes — that service's image              |
+| `packages/*` shared code     | **Dev 02**                        | yes — **every** service depends on them |
+| `aimess_website`             | **Dev 01**                        | yes                                     |
+| `aimess_admin_panel`         | **Dev 02**                        | yes                                     |
+| A `NEXT_PUBLIC_*` value      | Dev 01 or 02                      | **yes — baked in at build time**        |
+| A backend env value          | Dev 02                            | no — just recreate the container        |
+| An nginx vhost               | that server                       | no — install + reload                   |
+| A Prisma schema              | Dev 02 (build) + Dev 01 (migrate) | yes, and run the migration              |
 
 ---
 
@@ -212,11 +212,11 @@ docker run --rm --network aimess-dev01_aimess \
 MongoDB uses `db push` (index sync), one database per service — swap
 `MONGO_DATABASE_URL` and the script each time:
 
-| Service | Database | Command |
-| --- | --- | --- |
-| community | `community_db` | `pnpm db:push:community` (uses `COMMUNITY_DATABASE_URL`) |
-| stream | `stream_db` | `pnpm db:push:stream` (uses `STREAM_DATABASE_URL`) |
-| chat | `aimess_chat` | `pnpm db:push:chat` (uses `MONGO_DATABASE_URL`) |
+| Service       | Database               | Command                                                  |
+| ------------- | ---------------------- | -------------------------------------------------------- |
+| community     | `community_db`         | `pnpm db:push:community` (uses `COMMUNITY_DATABASE_URL`) |
+| stream        | `stream_db`            | `pnpm db:push:stream` (uses `STREAM_DATABASE_URL`)       |
+| chat          | `aimess_chat`          | `pnpm db:push:chat` (uses `MONGO_DATABASE_URL`)          |
 | notifications | `aimess_notifications` | `pnpm db:push:notifications` (uses `MONGO_DATABASE_URL`) |
 
 Run migrations **before** starting the new service image if a release adds
@@ -297,19 +297,19 @@ inbound from `eth0`, so new ports are closed by default; on Dev 01 only
 
 ## 11. Troubleshooting
 
-| Symptom | Likely cause | Check |
-| --- | --- | --- |
-| Container restart-loops | env validation or a missing dependency | `docker logs <name> --tail 50` |
-| `502` from nginx | container down or not listening | `docker ps` then `curl 127.0.0.1:<port>` on the host |
-| `522` from Cloudflare | nginx itself down, or :443 not listening | `sudo nginx -t; ss -tlnp \| grep 443` |
-| Frontend calls the wrong API | `NEXT_PUBLIC_*` baked into an old image | rebuild the frontend image |
-| `NOAUTH` from Redis | `REDIS_PASSWORD` missing/wrong | check `.env.dev02` |
-| Prisma "Transactions are not supported" | replica set lost its primary | `rs.status().myState` must be 1 |
-| Prisma "could not locate the Query Engine" | builder/runner libc or openssl mismatch | both stages must be `bookworm-slim` with `openssl` installed |
-| `ENOENT … .proto` | proto files missing from the image | Dockerfile must copy them to `/packages/grpc-contracts/proto` |
-| Socket.IO 404 | wrong path | it is `/socket.io/` on api-gateway, **not** `/z-socket/` |
-| Upload 413 at ~100 MB | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record |
-| Call connects, no audio/video | `notification.ai5dev.tech` is proxied | grey-cloud it — UDP cannot proxy |
+| Symptom                                    | Likely cause                              | Check                                                         |
+| ------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------- |
+| Container restart-loops                    | env validation or a missing dependency    | `docker logs <name> --tail 50`                                |
+| `502` from nginx                           | container down or not listening           | `docker ps` then `curl 127.0.0.1:<port>` on the host          |
+| `522` from Cloudflare                      | nginx itself down, or :443 not listening  | `sudo nginx -t; ss -tlnp \| grep 443`                         |
+| Frontend calls the wrong API               | `NEXT_PUBLIC_*` baked into an old image   | rebuild the frontend image                                    |
+| `NOAUTH` from Redis                        | `REDIS_PASSWORD` missing/wrong            | check `.env.dev02`                                            |
+| Prisma "Transactions are not supported"    | replica set lost its primary              | `rs.status().myState` must be 1                               |
+| Prisma "could not locate the Query Engine" | builder/runner libc or openssl mismatch   | both stages must be `bookworm-slim` with `openssl` installed  |
+| `ENOENT … .proto`                          | proto files missing from the image        | Dockerfile must copy them to `/packages/grpc-contracts/proto` |
+| Socket.IO 404                              | wrong path                                | it is `/socket.io/` on api-gateway, **not** `/z-socket/`      |
+| Upload 413 at ~100 MB                      | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record                                        |
+| Call connects, no audio/video              | `notification.ai5dev.tech` is proxied     | grey-cloud it — UDP cannot proxy                              |
 
 Full reset of one service:
 

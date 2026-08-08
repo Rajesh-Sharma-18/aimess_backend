@@ -149,6 +149,21 @@ const ContactSchema = z.object({
   avatar: z.string().max(3000).optional(),
   userId: z.string().max(100).optional(),
 });
+// STICKER sends carry their media OUTSIDE files[] (chat-service persists
+// `content.sticker`). Omitting it here made zod strip it, so a sticker sent over
+// the socket persisted with an EMPTY content blob — it rendered from local state
+// and was gone on the next history read. Mirrors the REST `stickerSchema`.
+const StickerSchema = z
+  .object({
+    mediaId: z.string().min(1).max(100).optional(),
+    objectKey: z.string().min(1).max(500).optional(),
+    url: z.string().max(MAX_URL_LEN).optional(),
+    packId: z.string().max(100),
+    stickerId: z.string().max(100),
+  })
+  .refine((d) => d.objectKey || d.url, {
+    message: "sticker requires objectKey or url",
+  });
 const MessageSendSchemaBase = z.object({
   conversationId: z.string().min(1),
   clientMessageId: z.string().optional(),
@@ -164,6 +179,7 @@ const MessageSendSchemaBase = z.object({
   urls: z.array(z.string().url().max(MAX_URL_LEN)).max(MAX_URLS).optional(),
   location: LocationSchema.optional(),
   contact: ContactSchema.optional(),
+  sticker: StickerSchema.optional(),
   repliedToId: z.string().optional(),
   conversationType: z.preprocess(
     (value) =>
@@ -489,6 +505,13 @@ export function registerChatNamespace(
           // roomId, which may be with a third party entirely).
           parsed.event === "conv:deleted" ||
           parsed.event === "conv:cleared" ||
+          // The caller's own conversation NOTIFICATION mute (multi-device
+          // sync). Same leak shape as the two above and worse in intent: the
+          // payload carries the room id, so a peer merely watching this user's
+          // presence would learn they had muted a conversation — quite
+          // possibly the one with that very peer.
+          parsed.event === "conv:muted" ||
+          parsed.event === "conv:unmuted" ||
           // The inbox bump. Published per-recipient on `user:<recipientId>`,
           // but that room is ALSO joined by every peer watching this user's
           // presence — so each bump leaked one participant's room id, preview
@@ -981,6 +1004,7 @@ export function registerChatNamespace(
           files,
           ...(r.data.location ? { location: r.data.location } : {}),
           ...(r.data.contact ? { contact: r.data.contact } : {}),
+          ...(r.data.sticker ? { sticker: r.data.sticker } : {}),
         };
         messagingClient
           .sendMessage({

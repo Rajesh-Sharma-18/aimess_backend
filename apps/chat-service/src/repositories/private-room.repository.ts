@@ -47,6 +47,60 @@ export class PrivateRoomRepository {
   }
 
   /**
+   * `allocateSequence` that also hands back the room document the `$inc` just
+   * touched. The send path used to read the SAME doc twice more per message —
+   * once for the auto-delete settings, once to decide "is this the first
+   * message" — three remote round trips to one document. The post-`$inc` doc
+   * still carries the PRE-send `lastMessageAt` (the snapshot update happens
+   * later), so both answers are already in here.
+   */
+  async allocateSequenceWithRoom(
+    roomId: string
+  ): Promise<{ sequenceNumber: number; revision: number; room: PrivateRoom }> {
+    const block = await this.allocateSequenceBlock(roomId, 1);
+    return {
+      sequenceNumber: block.lastSequence,
+      revision: block.lastRevision,
+      room: block.room,
+    };
+  }
+
+  /**
+   * Reserve `count` consecutive sequence/revision numbers in ONE `$inc`.
+   *
+   * The counter update is a per-room serialization point — one network round
+   * trip per message against a remote Mongo caps a single conversation at
+   * ~1/RTT sends per second no matter how much concurrency the callers have.
+   * Handing out a block lets a burst pay for one round trip instead of `count`
+   * of them. The returned values are the counters AFTER the increment, so the
+   * reserved range is `lastSequence - count + 1 .. lastSequence`.
+   */
+  async allocateSequenceBlock(
+    roomId: string,
+    count: number
+  ): Promise<{
+    lastSequence: number;
+    lastRevision: number;
+    room: PrivateRoom;
+  }> {
+    const n = Math.max(1, count);
+    const room = await withWriteConflictRetry(() =>
+      this.prisma.privateRoom.update({
+        where: { roomId },
+        data: {
+          lastSequence: { increment: n },
+          lastRevision: { increment: n },
+        },
+      })
+    );
+    return {
+      lastSequence: room.lastSequence,
+      lastRevision: room.lastRevision,
+      room,
+    };
+  }
+
+  /**
    * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
    * Same atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`, but on
    * `lastRevision` and bumped on EVERY content change (insert, edit, delete-for-everyone,
@@ -312,93 +366,56 @@ export class PrivateRoomRepository {
     /** How many unread rows this send contributes (albums > 1). */
     unreadIncrement?: number;
   }): Promise<PrivateRoom | null> {
-    // Read-then-write for the Map-based unread fields — wrapped in
-    // withWriteConflictRetry (see db-errors.ts) so a concurrent write to the
-    // same room (e.g. a markReadUpTo racing this send) retries on a fresh read
-    // instead of one writer's update silently clobbering the other's.
-    return withWriteConflictRetry(() => this.doUpdateRoomOnNewMessage(params));
-  }
-
-  private async doUpdateRoomOnNewMessage(params: {
-    roomId: string;
-    message: {
-      _id: string;
-      content: unknown;
-      senderId: string;
-      messageType: string;
-      systemEvent?: string | null;
-      systemData?: unknown;
-      createdAt: Date;
-    };
-    receiverId: string;
-    unreadIncrement?: number;
-  }): Promise<PrivateRoom | null> {
+    // ONE atomic findAndModify: `$inc` the receiver's unread counter and `$set`
+    // the snapshot fields by dotted path, so nothing is read first and two
+    // concurrent sends to the same room can never clobber each other. The old
+    // read-modify-write (findUnique + update, retried on WriteConflict) was the
+    // send path's throughput wall: under a burst every writer collided with
+    // every other one, each retry re-read the doc, and this single step went
+    // from ~1.4s to >20s at ~17 sends/s — long enough to blow the gateway's
+    // gRPC breaker and fail sends that had already been persisted.
     const { roomId, message, receiverId } = params;
     const now = message.createdAt || new Date();
-
-    const existing = await this.prisma.privateRoom.findUnique({
-      where: { roomId },
-    });
-    if (!existing) return null;
-
-    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
-      string,
-      number
-    >;
     const unreadIncrement = params.unreadIncrement ?? 1;
+
+    const lastMessage = {
+      content: message.content,
+      senderId: message.senderId,
+      messageType: message.messageType,
+      systemEvent: message.systemEvent || null,
+      systemData: message.systemData || null,
+      createdAt: now.toISOString(),
+    };
+
+    const set: Record<string, unknown> = {
+      lastMessageId: { $oid: message._id },
+      lastMessageAt: { $date: now.toISOString() },
+      lastMessage,
+      updatedAt: { $date: now.toISOString() },
+    };
+    const inc: Record<string, number> = {};
     if (unreadIncrement > 0) {
-      unreadCountByUser[receiverId] =
-        (unreadCountByUser[receiverId] || 0) + unreadIncrement;
-    }
-
-    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
-      string,
-      boolean
-    >;
-    if (unreadIncrement > 0) hasUnreadByUser[receiverId] = true;
-
-    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
-      {}) as Record<string, string>;
-    if (unreadIncrement > 0)
-      lastUnreadMessageIdByUser[receiverId] = message._id;
-
-    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
-      {}) as Record<string, unknown>;
-    if (unreadIncrement > 0) {
-      lastUnreadPreviewByUser[receiverId] = {
-        content: message.content,
-        senderId: message.senderId,
-        messageType: message.messageType,
-        systemEvent: message.systemEvent || null,
-        systemData: message.systemData || null,
-        createdAt: now,
+      inc[`unreadCountByUser.${receiverId}`] = unreadIncrement;
+      set[`hasUnreadByUser.${receiverId}`] = true;
+      set[`lastUnreadMessageIdByUser.${receiverId}`] = message._id;
+      set[`lastUnreadPreviewByUser.${receiverId}`] = {
+        ...lastMessage,
+        createdAt: { $date: now.toISOString() },
         messageId: message._id,
       };
     }
 
-    return this.prisma.privateRoom.update({
-      where: { roomId },
-      data: {
-        lastMessageId: message._id,
-        lastMessageAt: now,
-        lastMessage: {
-          content: message.content as Prisma.InputJsonValue,
-          senderId: message.senderId,
-          messageType: message.messageType,
-          systemEvent: message.systemEvent || null,
-          systemData: message.systemData || null,
-          createdAt: now.toISOString(),
-        } as unknown as Prisma.InputJsonValue,
-        unreadCountByUser:
-          unreadCountByUser as unknown as Prisma.InputJsonValue,
-        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
-        lastUnreadMessageIdByUser:
-          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
-        lastUnreadPreviewByUser:
-          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
-        updatedAt: now,
-      },
-    });
+    const update = (Object.keys(inc).length
+      ? { $set: set, $inc: inc }
+      : { $set: set }) as unknown as Prisma.InputJsonObject;
+    const res = (await this.prisma.$runCommandRaw({
+      findAndModify: "PrivateRoom",
+      query: { roomId },
+      update,
+      new: true,
+    } as unknown as Prisma.InputJsonObject)) as { value?: unknown } | null;
+
+    return (res?.value as PrivateRoom | undefined) ?? null;
   }
 
   async markReadUpTo(params: {
