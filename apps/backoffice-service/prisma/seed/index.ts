@@ -107,14 +107,23 @@ async function main(): Promise<void> {
   await seedRoles(permKeyToId);
   await seedPlatformStats();
   await bootstrapSuperAdmin();
-  const userIndexCount = await seedUserIndex(prisma);
+
+  // The UserIndex seed inserts ~40 INVENTED users (u_seed_NN) with fabricated
+  // ban reasons and statuses. They render in the admin User Management screen
+  // indistinguishably from real accounts, which is useful for UI work and
+  // misleading anywhere else. Opt out with SEED_USER_INDEX=false.
+  //
+  // Defaults to true so existing local workflows are unchanged.
+  const seedDemoUsers = process.env.SEED_USER_INDEX !== "false";
+  const userIndexCount = seedDemoUsers ? await seedUserIndex(prisma) : 0;
+
   // eslint-disable-next-line no-console
   console.log(
     `Seeded ${String(PERMISSION_CATALOGUE.length)} permissions, ${String(
       ROLE_MATRIX.length
     )} roles, RolePermission matrix, PlatformStats singleton, and ${String(
       userIndexCount
-    )} UserIndex rows.`
+    )} UserIndex rows${seedDemoUsers ? "" : " (demo users skipped via SEED_USER_INDEX=false)"}.`
   );
 }
 

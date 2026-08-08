@@ -9,12 +9,12 @@ read off the running servers, not copied from a plan.
 
 Three servers, plus a fourth that was already running and was left alone.
 
-| Server        | IP               | Role                                                               |
-| ------------- | ---------------- | ------------------------------------------------------------------ |
-| **Dev 01**    | `76.13.216.164`  | State: databases, queue, object storage, media SFU, public website |
-| **Dev 02**    | `76.13.216.171`  | Compute: all 9 Node services + admin panel. Holds no data          |
-| **DB / SIEM** | `187.77.130.157` | Redis (reused) + your pre-existing Wazuh install                   |
-| **Stream**    | `72.62.69.126`   | SRS media server for `ai5stream.tech`. **Untouched**               |
+| Server        | IP               | Role                                                                |
+| ------------- | ---------------- | ------------------------------------------------------------------- |
+| **Dev 01**    | `76.13.216.164`  | State: databases, queue, object storage, media SFU, public website  |
+| **Dev 02**    | `76.13.216.171`  | Compute: all 9 Node services + admin panel. Holds no data           |
+| **DB / SIEM** | `187.77.130.157` | Redis (reused) + your pre-existing Wazuh install                    |
+| **Stream**    | `72.62.69.126`   | SRS media server for `ai5stream.tech`. **3 SRS instances** — see §6 |
 
 The split is deliberate: **every gRPC call stays inside one Docker network on
 Dev 02**. Only database, queue and storage traffic crosses between servers.
@@ -140,12 +140,13 @@ flowchart LR
     A -->|"public IP<br/>187.77.130.157:52023"| D["Redis on DB server"]
 ```
 
-| From → To                       | Address form                                  | Why                                         |
-| ------------------------------- | --------------------------------------------- | ------------------------------------------- |
-| Dev 02 service → Dev 02 service | **Docker service name** (`auth-service:4001`) | Same compose network. Never leaves the host |
-| Dev 02 → Dev 01 datastore       | **LAN IP** (`76.13.216.164:5432`)             | Different host. Firewalled to Dev 02 only   |
-| Anything → Redis                | `187.77.130.157:52023`                        | Firewalled to Dev01+Dev02 only              |
-| stream-service → SRS            | `https://ai5stream.tech/api`                  | Remote, over public TLS                     |
+| From → To                       | Address form                                  | Why                                          |
+| ------------------------------- | --------------------------------------------- | -------------------------------------------- |
+| Dev 02 service → Dev 02 service | **Docker service name** (`auth-service:4001`) | Same compose network. Never leaves the host  |
+| Dev 02 → Dev 01 datastore       | **LAN IP** (`76.13.216.164:5432`)             | Different host. Firewalled to Dev 02 only    |
+| Anything → Redis                | `187.77.130.157:52023`                        | Firewalled to Dev01+Dev02 only               |
+| stream-service → SRS (WHIP)     | `https://ai5stream.tech` (bare origin)        | I-02. Code appends `/api/v1/streams/` itself |
+| stream-service → SRS (OBS/RTMP) | `https://ai5stream.tech/ingest`               | I-01's API — OBS lands there, not on I-02    |
 
 > The `.env.example` files ship `AUTH_GRPC_URL=0.0.0.0:4001`. That is a **bind**
 > address, not a dial target — connecting to `0.0.0.0` reaches nothing. The
@@ -234,18 +235,35 @@ Bytes never pass through the API. The presigned URL is signed against
 `MINIO_PUBLIC_ENDPOINT`, so that value must exactly match the host the browser
 uses or every signature is rejected.
 
-### Livestream — **not yet working**
+### Livestream — three SRS instances, two of them hook-bearing
 
 ```mermaid
 flowchart LR
-    P["Publisher"] -->|RTMP / WHIP| SRS["SRS · ai5stream.tech"]
-    SRS -.->|"on_publish hook"| OLD["aimess.api.vasundharasolutions.com<br/>OTHER environment"]
-    SRS -.->|"hook NOT configured"| NEW["api.ai5dev.tech<br/>this environment"]
-    V["Viewer"] -->|HLS / FLV| SRS
+    OBS["OBS / iOS"] -->|"RTMP :1935"| I1["I-01 · /usr/local/obs<br/>ingest origin"]
+    CAM["Browser camera"] -->|"WHIP · UDP :8000"| I2["I-02 · /usr/local/srs<br/>WebRTC"]
+    I1 -->|forward :1937| I2
+    I1 -->|forward :1936| I3["I-03 · /usr/local/hls<br/>HLS writer · no hooks"]
+    I1 -.->|on_publish| GW["api.ai5dev.tech"]
+    I2 -.->|on_publish| GW
+    I3 --> V["Viewer · HLS ABR"]
 ```
 
-SRS notifies only the other environment. Until a second hook URL is added
-(`deploy/scripts/07-srs-add-hook.md`), streams started here stay `PENDING`.
+`ai5stream.tech` runs **three separate SRS installations**, each with its own
+`conf/` directory — not one server with two config files. I-01 (`/usr/local/obs`)
+takes RTMP, I-02 (`/usr/local/srs`) takes WHIP, I-03 (`/usr/local/hls`) writes
+HLS. **`/usr/local/srs/trunk/conf/srs.conf` is stock and unused** — the RTMP
+config lives under `/usr/local/obs/`.
+
+Both hook-bearing instances must point at the same backend. Repointing only one
+splits authorisation by protocol — camera works, OBS is rejected, or the
+reverse. A second hook URL **cannot** be added instead: SRS rejects a publish if
+any hook returns non-zero, and each environment denies the other's stream keys.
+
+Because I-01 forwards to I-02, an RTMP publish fires `on_publish` twice.
+`handlePublish` returns `true` on an already-LIVE stream, so the second is a
+no-op. `reconcileWithSrs()` additionally polls every 30s and flips
+`PENDING → LIVE` for anything SRS is carrying, so a dropped hook self-heals.
+See `deploy/scripts/07-srs-add-hook.md`.
 
 ---
 
@@ -274,12 +292,12 @@ Verified from outside: only `22223`, `80`, `443` answer on any server.
 
 ## 8. Known gaps
 
-| Gap                                                                             | Effect                                                                                        | Owner                                  |
-| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------- |
-| **notifications-service down** — APNs provider built at import with blank creds | No push at all; RabbitMQ queues buffer durably until it starts                                | Needs APNs keys, or lazy-init approval |
-| `minio.ai5dev.tech` still Cloudflare-**proxied**                                | Uploads at `CHAT_VIDEO_MAX_BYTES` (100 MB) hit Cloudflare's cap and 413 before reaching MinIO | Cloudflare toggle                      |
-| `notification.ai5dev.tech` still **proxied**                                    | LiveKit calls connect but carry no audio/video — UDP cannot traverse the proxy                | Cloudflare toggle                      |
-| SRS hooks point at the other environment                                        | Livestreams stay `PENDING`                                                                    | `07-srs-add-hook.md`                   |
-| `APPLE_CLIENT_IDS` is a placeholder                                             | Apple Sign-In rejects tokens                                                                  | Apple Service ID needed                |
-| Website social/Giphy/Maps keys blank                                            | Those buttons/features inert                                                                  | Needs keys + one website rebuild       |
-| TURN disabled in LiveKit                                                        | Users behind UDP-blocking firewalls get no media                                              | Optional; needs cert on 5349           |
+| Gap                                                                             | Effect                                                                                        | Owner                                    |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| **notifications-service down** — APNs provider built at import with blank creds | No push at all; RabbitMQ queues buffer durably until it starts                                | Needs APNs keys, or lazy-init approval   |
+| `minio.ai5dev.tech` still Cloudflare-**proxied**                                | Uploads at `CHAT_VIDEO_MAX_BYTES` (100 MB) hit Cloudflare's cap and 413 before reaching MinIO | Cloudflare toggle                        |
+| `notification.ai5dev.tech` still **proxied**                                    | LiveKit calls connect but carry no audio/video — UDP cannot traverse the proxy                | Cloudflare toggle                        |
+| Old environment can no longer publish to `ai5stream.tech`                       | Both SRS instances now authorise against ai5dev only — approved trade-off, reversible         | `07-srs-add-hook.md` §7 (roll back both) |
+| `APPLE_CLIENT_IDS` is a placeholder                                             | Apple Sign-In rejects tokens                                                                  | Apple Service ID needed                  |
+| Website social/Giphy/Maps keys blank                                            | Those buttons/features inert                                                                  | Needs keys + one website rebuild         |
+| TURN disabled in LiveKit                                                        | Users behind UDP-blocking firewalls get no media                                              | Optional; needs cert on 5349             |

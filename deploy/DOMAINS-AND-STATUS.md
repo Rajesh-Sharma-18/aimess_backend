@@ -35,7 +35,7 @@ works", so here is the honest split:
 | **notifications-service is down** — restart-looping | **No push notifications at all.** RabbitMQ queues buffer durably, so nothing is lost; it drains when the service starts | APNs credentials, or approval to make APNs lazy-init |
 | **`minio.ai5dev.tech` is Cloudflare-proxied**       | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log       | Grey-cloud the record                                |
 | **`notification.ai5dev.tech` is proxied**           | Calls connect and then carry **no audio or video** — UDP cannot cross a Cloudflare proxy                                | Grey-cloud the record                                |
-| **SRS hooks point at the other environment**        | Livestreams stay `PENDING` forever                                                                                      | `deploy/scripts/07-srs-add-hook.md`                  |
+| ~~SRS hooks point at the other environment~~        | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing     | done — `deploy/scripts/07-srs-add-hook.md`           |
 | `APPLE_CLIENT_IDS` is a placeholder                 | Apple Sign-In rejects tokens                                                                                            | Apple Service ID                                     |
 | Website social/Giphy/Maps keys blank                | Those buttons and features inert                                                                                        | Keys + one website rebuild                           |
 | **No database backups**                             | Total loss if a disk fails                                                                                              | Scheduling — see OPERATIONS.md §13                   |
@@ -261,8 +261,11 @@ nc -vz -w3 187.77.130.157 52023                                        # must ti
    notifications-service starts and Android/web push work now.
 2. **Grey-cloud `minio.` and `notification.`** — two clicks; without them large
    uploads and all call media are broken.
-3. **Add the SRS second hook** — `deploy/scripts/07-srs-add-hook.md`. Livestreams
-   are dead until then. Do it in a quiet window; that box has a live stream.
+3. ~~Add the SRS second hook~~ — **done 2026-08-07.** Both hook-bearing SRS
+   instances repointed; RTMP (OBS) and WHIP (camera) both verified publishing
+   end to end. Consequence: the old environment can no longer publish to
+   `ai5stream.tech`. Roll back **both** instances or neither —
+   `deploy/scripts/07-srs-add-hook.md` §7.
 4. **Send `APPLE_CLIENT_IDS`** and the website social/Giphy/Maps keys — one
    rebuild covers them all.
 5. **Set up backups.** PostgreSQL, MongoDB and MinIO currently have none.
