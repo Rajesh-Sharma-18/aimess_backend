@@ -286,6 +286,13 @@ const FriendCancelRequestSchema = z.object({
 interface RedisSocketEvent {
   event: string;
   data: unknown;
+  /**
+   * Envelope-only (never emitted to clients): when present, this user's own
+   * sockets are skipped for this `conv:<roomId>` broadcast. Set by the group
+   * removal path so a banned/kicked member never receives the room event
+   * announcing their own removal ("Admin banned X" / group:member:removed).
+   */
+  excludeUserId?: string;
 }
 
 /** Restore the canonical message shape stripped down by the catch-up protobuf. */
@@ -595,12 +602,21 @@ export function registerChatNamespace(
           }
         }
 
+        // Honor an envelope-level excludeUserId on conv:* broadcasts only —
+        // the removal path sets it so the banned/kicked target's own sockets
+        // are skipped while every remaining member still gets the event.
+        const excludeUserId =
+          pattern === "conv:*" && typeof parsed.excludeUserId === "string"
+            ? parsed.excludeUserId
+            : undefined;
+
         void emitPersonalizedSender(
           chat,
           targetChannel,
           parsed.event,
           parsed.data,
-          personalizeFn
+          personalizeFn,
+          excludeUserId
         );
 
         // Auto-join the conversation room when the user is added to a new

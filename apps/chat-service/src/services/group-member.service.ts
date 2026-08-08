@@ -283,8 +283,15 @@ export class GroupMemberService {
     memberId: string;
     actorId: string;
     extra?: Record<string, unknown>;
+    // When set (removal only), skip this user's own sockets on the
+    // `conv:<roomId>` broadcast — the removed member must not receive a roster
+    // event carrying their own memberId (a client's generic "member removed"
+    // handler could mistake it for something to act on). They already get the
+    // authoritative `group:removed` on their personal channel. Left undefined
+    // for role updates, where the subject SHOULD hear their own change.
+    excludeUserId?: string;
   }): Promise<void> {
-    const { roomId, event, memberId, actorId, extra } = args;
+    const { roomId, event, memberId, actorId, extra, excludeUserId } = args;
     try {
       const [room, roster] = await Promise.all([
         this.roomRepo.findActiveByRoomId(roomId),
@@ -302,7 +309,11 @@ export class GroupMemberService {
       await Promise.all([
         this.redis.publish(
           `conv:${roomId}`,
-          JSON.stringify({ event, data: payload })
+          JSON.stringify({
+            event,
+            ...(excludeUserId ? { excludeUserId } : {}),
+            data: payload,
+          })
         ),
         ...roster.map((m) =>
           publishChatUserEvent(this.redis, m.userId, event, payload)
@@ -395,19 +406,24 @@ export class GroupMemberService {
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
 
+    // Evict first (see ban() for the ordering rationale), then post the removal
+    // line and roster event with the target hard-excluded — a kicked member
+    // must not receive the "Admin removed X" line about themselves either.
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.sysMsg.post({
       roomId: params.roomId,
       actorId: params.kickedBy,
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: { targetUserId: params.targetUserId },
+      excludeUserId: params.targetUserId,
     });
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.publishRosterChange({
       roomId: params.roomId,
       event: "group:member:removed",
       memberId: params.targetUserId,
       actorId: params.kickedBy,
       extra: { reason: "KICK" },
+      excludeUserId: params.targetUserId,
     });
 
     return updated;
@@ -714,19 +730,27 @@ export class GroupMemberService {
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
 
+    // Evict the target's sockets from conv:<roomId> FIRST (the gateway reacts
+    // to group:removed), so the window in which a concurrent normal message
+    // could still reach them is as small as possible. The ban system line and
+    // the roster event below are additionally hard-excluded from the target
+    // regardless of eviction timing (excludeUserId), so the target never sees
+    // its own ban announcement — remaining members still do.
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
     await this.sysMsg.post({
       roomId: params.roomId,
       actorId: params.bannedBy,
       systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: { targetUserId: params.targetUserId },
+      excludeUserId: params.targetUserId,
     });
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
     await this.publishRosterChange({
       roomId: params.roomId,
       event: "group:member:removed",
       memberId: params.targetUserId,
       actorId: params.bannedBy,
       extra: { reason: "BAN" },
+      excludeUserId: params.targetUserId,
     });
 
     return updated;
