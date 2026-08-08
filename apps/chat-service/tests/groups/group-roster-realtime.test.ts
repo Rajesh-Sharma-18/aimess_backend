@@ -95,6 +95,109 @@ describe("POST /api/chat/group-members/kick", () => {
   });
 });
 
+/**
+ * Adding was the ONLY membership change with no roster fan-out: the DB row and
+ * the room's memberCount both moved, but nobody already in the group heard
+ * about it, so the admin's own "255/256 Members" stayed put until a hard
+ * reload. It reuses `group:member:updated` (same payload shape, same consumers)
+ * rather than minting a third roster event.
+ */
+describe("POST /api/chat/group-members/add", () => {
+  beforeEach(() => {
+    mocks.groupMemberRepo.upsert.mockResolvedValue({
+      userId: TARGET,
+      role: "MEMBER",
+      status: "ACTIVE",
+      joinedAt: new Date(),
+    });
+  });
+
+  it("REALTIME: an add announces the new roster to the room and every member", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(201);
+    expect(channelsFor("group:member:updated")).toEqual([
+      `conv:${ROOM}`,
+      `user:${TEST_USER_ID}`,
+      `user:${BYSTANDER}`,
+    ]);
+    expect(
+      publishes().find((p) => p.event === "group:member:updated")!.data
+    ).toMatchObject({
+      roomId: ROOM,
+      conversationType: "GROUP",
+      memberId: TARGET,
+      role: "MEMBER",
+      actorId: TEST_USER_ID,
+      memberCount: 2,
+    });
+  });
+
+  it("RE-ADD: a KICKED row is re-admitted as ACTIVE with every removal field cleared", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "KICKED",
+      kickedAt: new Date(),
+      kickedBy: TEST_USER_ID,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(201);
+    expect(mocks.groupMemberRepo.upsert).toHaveBeenCalledWith(
+      ROOM,
+      TARGET,
+      expect.objectContaining({
+        status: "ACTIVE",
+        leftAt: null,
+        kickedAt: null,
+        kickedBy: null,
+        kickReason: null,
+        bannedAt: null,
+        bannedBy: null,
+      })
+    );
+    // The re-added member's own channel is what un-sticks their client.
+    expect(channelsFor("group:added")).toEqual([`user:${TARGET}`]);
+  });
+
+  it("CAPACITY: a full group rejects a NEW member but the already-ACTIVE case is not a capacity error", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Testing Invites",
+      memberCount: 256,
+      memberLimit: 256,
+    });
+
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    const full = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: "brand-new-user" });
+    expect(full.status).toBe(400);
+
+    // Same full room, but the target is already in it: the membership check has
+    // to run FIRST, or "already a member" is misreported as "group is full".
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "ACTIVE",
+    });
+    const dupe = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+    expect(dupe.status).toBe(409);
+  });
+});
+
 describe("POST /api/chat/group-members/role", () => {
   it("REALTIME: group:member:updated carries the new role to the room and every member", async () => {
     mocks.groupMemberRepo.updateRole.mockResolvedValue({

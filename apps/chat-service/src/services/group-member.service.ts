@@ -112,6 +112,21 @@ export class GroupMemberService {
       );
     }
 
+    // Resolve the existing row BEFORE the capacity check: a re-add of someone
+    // who is still ACTIVE is a no-op that must report CHAT_ALREADY_MEMBER, not
+    // a capacity failure. A KICKED/LEFT row already gave its slot back
+    // (`incMemberCount(-1)` on the removal), so a genuine re-add is measured
+    // against the freed count and succeeds whenever a slot exists.
+    const existing = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (existing && existing.status === "ACTIVE") {
+      throw new ConflictError("CHAT_ALREADY_MEMBER");
+    }
+    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
+    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
+
     if (room.memberCount >= room.memberLimit) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");
     }
@@ -131,16 +146,6 @@ export class GroupMemberService {
       );
       if (!isFriend) throw new ForbiddenError("CHAT_ADD_MEMBER_NOT_FRIEND");
     }
-
-    const existing = await this.memberRepo.findByRoomAndUser(
-      params.roomId,
-      params.userId
-    );
-    if (existing && existing.status === "ACTIVE") {
-      throw new ConflictError("CHAT_ALREADY_MEMBER");
-    }
-    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
-    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -184,6 +189,25 @@ export class GroupMemberService {
     // `community:added`. Payload is a full inbox row: the client upserts it
     // directly and must NOT back-fill from REST.
     this.emitGroupAdded(room, member, params.userId);
+
+    // Roster fan-out to everyone ALREADY in the group — the exact counterpart of
+    // the `group:member:removed` every removal path publishes. Without it an add
+    // was the only membership change with no realtime signal, so the admin's own
+    // Group Info stayed at the pre-add count and roster until a manual refresh
+    // (the add is the caller's own request, but the count lives on a socket-fed
+    // row, not on the mutation response). `group:member:updated` is reused
+    // deliberately rather than minting a `group:member:added`: its payload
+    // already carries `memberId` + `role` + the authoritative `memberCount`, and
+    // every consumer of it (roster invalidation, member count, own-role patch)
+    // is exactly the reaction an add needs. `previousRole` is empty because
+    // there was no active membership to change from.
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:updated",
+      memberId: params.userId,
+      actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+      extra: { role: member.role, previousRole: "" },
+    });
 
     return member;
   }
