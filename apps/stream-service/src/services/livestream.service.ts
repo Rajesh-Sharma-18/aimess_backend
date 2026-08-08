@@ -1154,6 +1154,15 @@ export class LivestreamService {
           resolution: `${stats.width}x${stats.height}`,
           bitrateKbps: stats.bitrateKbps,
         });
+        // SRS is still receiving frames, which is the ONLY trustworthy liveness
+        // signal an OBS stream has: the host is broadcasting from OBS, not from
+        // the app, so the client-driven heartbeat may stop the moment they
+        // switch windows or the phone backgrounds the app. Treat "the publisher
+        // is demonstrably still sending" as the heartbeat, or the sweeper ends
+        // a perfectly healthy broadcast at STREAM_HEARTBEAT_TIMEOUT_MS.
+        await this.streamRepo.updateById(stream.id, {
+          lastHeartbeatAt: new Date(),
+        });
       } catch (error) {
         logger.warn(
           `pollObsStreamQuality failed for stream=${stream.id}: ${String(error)}`
@@ -1195,7 +1204,12 @@ export class LivestreamService {
    * terminal. It runs on the existing 30s sweeper tick, so a failed kick
    * self-heals within one tick instead of never.
    *
-   * ponytail: deliberately ONE-DIRECTIONAL — it only ends SRS sessions the DB
+   * It ALSO recovers a missing on_publish (PENDING/RECONNECTING → LIVE) when
+   * SRS is already carrying the publisher. That makes livestreams work against
+   * an SRS whose hooks point at a different deployment, where the hook can
+   * never reach us — see the inline note in the loop below.
+   *
+   * ponytail: the kick path is deliberately ONE-DIRECTIONAL — it only ends SRS sessions the DB
    * says are already over. The mirror case (DB says LIVE, SRS has no publisher)
    * is left to the heartbeat + reconnect-grace sweepers above, because acting on
    * it here would mean ending live streams based on an *absence* in the SRS
@@ -1234,6 +1248,33 @@ export class LivestreamService {
         logger.warn(
           `reconcileWithSrs: SRS publisher for unknown streamKey=${publisher.streamKey} on ${publisher.apiBase}`
         );
+        continue;
+      }
+
+      // ── SRS is publishing but we still think it is pending ────────────────
+      // Normally on_publish flips PENDING → LIVE the instant the publisher
+      // connects. That hook can never arrive when SRS is shared with another
+      // deployment: SRS calls every configured hook URL and rejects the publish
+      // if ANY returns non-zero, so a second environment cannot be added to the
+      // list without each one denying the other's stream keys.
+      //
+      // Recovering it here makes the hook an optimisation rather than a
+      // requirement — worst case a stream goes LIVE one sweeper tick (30s) late
+      // instead of never. It also self-heals a genuinely dropped hook delivery.
+      //
+      // handlePublish is safe to call repeatedly: it no-ops on an already-LIVE
+      // stream and resumes a RECONNECTING one without re-broadcasting.
+      if (stream.status === "PENDING" || stream.status === "RECONNECTING") {
+        try {
+          const allowed = await this.handlePublish(publisher.streamKey);
+          logger.info(
+            `reconcileWithSrs: recovered missing on_publish stream=${stream.id} status=${stream.status} key=${publisher.streamKey} allowed=${String(allowed)}`
+          );
+        } catch (err) {
+          logger.warn(
+            `reconcileWithSrs: failed to recover publish for stream=${stream.id} — ${String(err)}`
+          );
+        }
         continue;
       }
 
