@@ -161,6 +161,7 @@ jest.mock("../../src/messaging/publish-community-chat.js", () => ({
   publishCommunityCreatedForChatSafe: jest.fn(),
   publishCommunityDeletedForChatSafe: jest.fn(),
   publishCommunityInviteLinkSharedForChatSafe: jest.fn(),
+  publishCommunityMemberSyncedForChatSafe: jest.fn(),
   publishCommunityMemberMuteSyncedForChatSafe: jest.fn(),
   publishCommunityMemberMuteRetractedForChatSafe: jest.fn(),
   publishCommunityStatusChangedForChatSafe: jest.fn(),

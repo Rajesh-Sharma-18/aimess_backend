@@ -11,12 +11,73 @@ import {
   type CommunityMember,
   type Prisma,
 } from "../generated/prisma/index.js";
+import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
+import type { CommunityMemberUnmutedSocketPayload } from "@aimess/shared-types";
+
+import { redis } from "../config/redis.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
-import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
+import {
+  publishCommunityMemberMuteSyncedForChatSafe,
+  publishCommunityMemberSyncedForChatSafe,
+} from "../messaging/publish-community-chat.js";
 import {
   buildCommunitySearchFilter,
   normalizeForSearch,
 } from "../lib/community-search.util.js";
+
+/**
+ * A rejoin deletes the previous cycle's `CommunityMemberMute` row, but that row
+ * was ALSO mirrored into chat-service's `RoomMember` (the local write-path gate)
+ * and rendered as a muted composer on every device the member is connected on.
+ * Deleting the row alone leaves both stale — the member reads as ACTIVE yet
+ * still can't type until a hard reload. So the clear is announced on exactly the
+ * same two channels a manual unmute uses (`communityService._publishMuteStateChange`):
+ * the chat-sync mirror and the `community:member:unmuted` socket event, fanned
+ * out to the community room (roster badges) and the member's own `user:<id>`
+ * channel (multi-device composer re-enable).
+ *
+ * `actorId: ""` is the established convention for a system-driven unmute (same
+ * as the auto-unmute sweeper) — no admin performed this one.
+ *
+ * Best-effort: a Redis hiccup must never fail the join request. The chat mirror
+ * is already fire-and-forget over RabbitMQ, and is published AFTER the caller's
+ * `community.member.synced` so the consumer upserts the ACTIVE RoomMember row
+ * before clearing its mute flags (same queue, so ordering is FIFO).
+ */
+async function announceStaleMuteCleared(
+  communityId: string,
+  userId: string
+): Promise<void> {
+  publishCommunityMemberMuteSyncedForChatSafe({
+    communityId,
+    userId,
+    isMuted: false,
+    mutedUntil: null,
+  });
+
+  const payload: CommunityMemberUnmutedSocketPayload = {
+    communityId,
+    memberId: userId,
+    isMuted: false,
+    mutedUntil: null,
+    actorId: "",
+    updatedAt: Date.now(),
+  };
+  try {
+    await Promise.all([
+      publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:member:unmuted",
+        payload
+      ),
+      publishChatUserEvent(redis, userId, "community:member:unmuted", payload),
+    ]);
+  } catch {
+    // Swallowed: the member is already unmuted in the DB and in chat-service;
+    // a dropped socket frame only costs this client a refetch, never correctness.
+  }
+}
 
 /**
  * The `select` shared by the V1 timestamp `listMineByActivity` and the V2
@@ -698,45 +759,58 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }
   ) {
-    const row = await prisma.communityMember.update({
-      where: { communityId_userId: { communityId, userId } },
-      data: {
-        status: CommunityMemberStatus.ACTIVE,
-        // A new membership cycle never carries forward the previous cycle's
-        // rank — a rejoining ADMIN/MODERATOR always starts over as MEMBER,
-        // regardless of leave/kick/ban+unban path.
-        role: CommunityMemberRole.MEMBER,
-        // Rejoin starts a fresh membership: advance joinedAt to now so the member
-        // list shows the LATEST join time, not the original (stale) one. joinedAt
-        // is @default(now()) which only applies on create, so reactivation must
-        // set it explicitly.
-        joinedAt: new Date(),
-        // Fresh membership also clears any stale kick/dismiss/unban markers
-        // from the previous membership cycle (removedAt is audit metadata for
-        // the OLD cycle; dismissedAt only applies to a BANNED row; unbannedAt
-        // only applies to a post-unban LEFT row — none of them should leak
-        // into a later, unrelated leave in THIS fresh cycle).
-        removedAt: { unset: true },
-        removedBy: { unset: true },
-        removedReason: { unset: true },
-        dismissedAt: { unset: true },
-        unbannedAt: { unset: true },
-        ...snapshot,
-      },
-      select: {
-        id: true,
-        userId: true,
-        role: true,
-        status: true,
-        joinedAt: true,
-        snapshotUsername: true,
-        snapshotDisplayName: true,
-        snapshotAvatarKey: true,
-        bannedAt: true,
-        bannedBy: true,
-        banReason: true,
-      },
-    });
+    const [row, clearedMutes] = await prisma.$transaction([
+      prisma.communityMember.update({
+        where: { communityId_userId: { communityId, userId } },
+        data: {
+          status: CommunityMemberStatus.ACTIVE,
+          // A new membership cycle never carries forward the previous cycle's
+          // rank — a rejoining ADMIN/MODERATOR always starts over as MEMBER,
+          // regardless of leave/kick/ban+unban path.
+          role: CommunityMemberRole.MEMBER,
+          // Rejoin starts a fresh membership: advance joinedAt to now so the member
+          // list shows the LATEST join time, not the original (stale) one. joinedAt
+          // is @default(now()) which only applies on create, so reactivation must
+          // set it explicitly.
+          joinedAt: new Date(),
+          // Fresh membership also clears any stale kick/dismiss/unban/ban markers
+          // from the previous membership cycle (removedAt is audit metadata for
+          // the OLD cycle; dismissedAt only applies to a BANNED row; unbannedAt
+          // only applies to a post-unban LEFT row; bannedAt/bannedBy/banReason are
+          // the OLD ban's metadata — none of them should leak into a later,
+          // unrelated moderation event in THIS fresh cycle).
+          removedAt: { unset: true },
+          removedBy: { unset: true },
+          removedReason: { unset: true },
+          dismissedAt: { unset: true },
+          unbannedAt: { unset: true },
+          bannedAt: { unset: true },
+          bannedBy: { unset: true },
+          banReason: { unset: true },
+          ...snapshot,
+        },
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          status: true,
+          joinedAt: true,
+          snapshotUsername: true,
+          snapshotDisplayName: true,
+          snapshotAvatarKey: true,
+          bannedAt: true,
+          bannedBy: true,
+          banReason: true,
+        },
+      }),
+      // A fresh membership cycle also drops any leftover mute/warning rows from
+      // the OLD cycle — otherwise a rejoining member is still muted, or still
+      // carries warnings issued to a membership that no longer exists.
+      prisma.communityMemberMute.deleteMany({ where: { communityId, userId } }),
+      prisma.communityMemberWarning.deleteMany({
+        where: { communityId, userId },
+      }),
+    ]);
     // Re-add of a previously-LEFT member: mirror the reactivation into
     // chat-service's RoomMember so they regain send/read in the general room.
     // The other member-mutation methods (create/createMany/updateStatus/
@@ -747,6 +821,11 @@ export const communityRepository = {
       status: CommunityMemberStatus.ACTIVE,
       role: row.role as CommunityMemberRole,
     });
+    // Only when the ending cycle actually carried a mute — a plain rejoin must
+    // not spray unmute events at the roster for a member who was never muted.
+    if (clearedMutes.count > 0) {
+      await announceStaleMuteCleared(communityId, userId);
+    }
     return row;
   },
 
@@ -766,39 +845,51 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }
   ) {
-    const row = await prisma.communityMember.update({
-      where: { communityId_userId: { communityId, userId } },
-      data: {
-        status: CommunityMemberStatus.ACTIVE,
-        role: CommunityMemberRole.ADMIN,
-        joinedAt: new Date(),
-        removedAt: { unset: true },
-        removedBy: { unset: true },
-        removedReason: { unset: true },
-        dismissedAt: { unset: true },
-        unbannedAt: { unset: true },
-        ...snapshot,
-      },
-      select: {
-        id: true,
-        userId: true,
-        role: true,
-        status: true,
-        joinedAt: true,
-        snapshotUsername: true,
-        snapshotDisplayName: true,
-        snapshotAvatarKey: true,
-        bannedAt: true,
-        bannedBy: true,
-        banReason: true,
-      },
-    });
+    const [row, clearedMutes] = await prisma.$transaction([
+      prisma.communityMember.update({
+        where: { communityId_userId: { communityId, userId } },
+        data: {
+          status: CommunityMemberStatus.ACTIVE,
+          role: CommunityMemberRole.ADMIN,
+          joinedAt: new Date(),
+          removedAt: { unset: true },
+          removedBy: { unset: true },
+          removedReason: { unset: true },
+          dismissedAt: { unset: true },
+          unbannedAt: { unset: true },
+          bannedAt: { unset: true },
+          bannedBy: { unset: true },
+          banReason: { unset: true },
+          ...snapshot,
+        },
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          status: true,
+          joinedAt: true,
+          snapshotUsername: true,
+          snapshotDisplayName: true,
+          snapshotAvatarKey: true,
+          bannedAt: true,
+          bannedBy: true,
+          banReason: true,
+        },
+      }),
+      prisma.communityMemberMute.deleteMany({ where: { communityId, userId } }),
+      prisma.communityMemberWarning.deleteMany({
+        where: { communityId, userId },
+      }),
+    ]);
     publishCommunityMemberSyncedForChatSafe({
       communityId,
       userId,
       status: CommunityMemberStatus.ACTIVE,
       role: CommunityMemberRole.ADMIN,
     });
+    if (clearedMutes.count > 0) {
+      await announceStaleMuteCleared(communityId, userId);
+    }
     return row;
   },
 

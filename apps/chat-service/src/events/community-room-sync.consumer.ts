@@ -79,6 +79,22 @@ export function buildRoomMemberSyncData(
     // Keep ban/leave bookkeeping consistent with the new status.
     data.bannedAt = status === "banned" ? new Date() : null;
     data.leftAt = status === "left" ? new Date() : null;
+    // Becoming ACTIVE always starts a FRESH membership cycle, and community-service
+    // deletes the previous cycle's mute row as part of that same transition — so the
+    // mirrored write-gate flags must not survive it. Doing it here (rather than
+    // relying solely on the `community.member.mute_synced` that accompanies a
+    // rejoin) makes the clear self-healing: a dropped or out-of-order stale
+    // `{isMuted:true}` can't leave a rejoined member silently unable to send.
+    //
+    // Safe because status ACTIVE is only ever published on member CREATE and on
+    // REJOIN (see community.repository createMember/createManyMembers/
+    // reactivateMemberWithSnapshot/reactivateAdminMember) — muting an already-active
+    // member rides `mute_synced`, and a role change publishes role WITHOUT status,
+    // so neither path reaches this branch and neither can be clobbered.
+    if (status === "active") {
+      data.isMuted = false;
+      data.mutedUntil = null;
+    }
   }
   if (role) data.role = role;
   return Object.keys(data).length === 0 ? null : data;
@@ -334,12 +350,22 @@ export class CommunityRoomSyncConsumer {
             const boundary = event.data.eventAt
               ? new Date(event.data.eventAt)
               : undefined;
+            const safeBoundary =
+              boundary && !Number.isNaN(boundary.getTime())
+                ? boundary
+                : undefined;
             await purgeAndTombstone(
               PERSONAL_JOIN_SESSION_TYPES,
               "join",
-              boundary && !Number.isNaN(boundary.getTime())
-                ? boundary
-                : undefined
+              safeBoundary
+            );
+            // Mute/unmute PERSONAL lines are cycle-scoped moderation history —
+            // a rejoin must start a fresh membership (see reactivateMemberWithSnapshot),
+            // so stale mute notices from the ending cycle can't outlive it either.
+            await purgeAndTombstone(
+              ["MEMBER_MUTED", "MEMBER_UNMUTED"],
+              "mute",
+              safeBoundary
             );
           }
 
