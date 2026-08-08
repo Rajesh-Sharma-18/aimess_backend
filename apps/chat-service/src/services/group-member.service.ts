@@ -1035,9 +1035,12 @@ export class GroupMemberService {
      * route had NO membership check at all, so any authenticated user could
      * read any group's roster, and a removed member kept seeing Group Info
      * long after losing the group. Same read rule as the message timeline
-     * (`assertGroupReadAccess`): ACTIVE members and voluntary leavers may
-     * read; kicked/banned/non-members may not. Optional so the existing
-     * internal/test call sites keep compiling unchanged.
+     * (`assertGroupReadAccess`): ACTIVE members, voluntary leavers AND removed
+     * (kicked) members may read — Group Info stays open read-only after a
+     * removal; banned/non-members may not. `findActiveMembers` still returns
+     * only the ACTIVE roster, so a removed viewer never sees themselves listed
+     * as a member. Optional so the existing internal/test call sites keep
+     * compiling unchanged.
      */
     requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {

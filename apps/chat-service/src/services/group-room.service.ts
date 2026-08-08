@@ -19,6 +19,7 @@ import {
 import { groupVisibilitySource } from "./last-visible-adapters.js";
 import {
   assertGroupReadAccess,
+  groupReadCutoff,
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -44,6 +45,15 @@ export type GroupRoomMembership = GroupRoom & {
   isMemberMuted?: boolean;
   /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
   memberMutedUntil?: string | null;
+  /**
+   * The caller's raw `GroupMember.status` — `"ACTIVE" | "LEFT" | "KICKED"`, or
+   * null for an internal/unauthenticated read. This is what lets a client
+   * distinguish ACTIVE / left / removed-by-an-admin WITHOUT inferring it from
+   * `isJoined === false`, so a hard reload or a cold open restores the correct
+   * read-only bar instead of only reacting to the `group:removed` socket event.
+   * (BANNED never reaches a client here — the read guard rejects it.)
+   */
+  membershipStatus?: string | null;
 };
 
 /**
@@ -68,6 +78,10 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
   /** True when the caller voluntarily left this group — kept in the inbox
    *  read-only (history intact, `isJoined: false`), WhatsApp-style. */
   hasLeft: boolean;
+  /** True when an admin/moderator REMOVED the caller (kicked). Same read-only
+   *  treatment as {@link hasLeft} — the row stays, history stays, every write
+   *  is denied — only the notice wording and the absence of a rejoin differ. */
+  isRemoved: boolean;
   /**
    * Telegram-style tick for the last message, but ONLY meaningful when the
    * CALLER sent it (null otherwise). Three tiers, matching Telegram/WhatsApp:
@@ -192,29 +206,33 @@ export class GroupRoomService {
   }
 
   /**
-   * A LEFT member's inbox row must not preview a message posted after they
-   * left — same "no content past leftAt" rule `assertGroupReadAccess`/
-   * `readCutoffBefore` already enforce when they open the room's actual
-   * history; without this, the shared `GroupRoom.lastMessagePreview` (which
-   * ISN'T per-viewer) would keep showing whatever the group's real last
-   * message is, effectively "receiving" its text via the sidebar even though
-   * the timeline itself correctly stops at leftAt. Only touches `LEFT`
-   * memberships whose shared last message postdates their `leftAt`; ACTIVE
-   * members and any row without a real membership pass through untouched.
+   * An ex-member's inbox row must not preview a message posted after they
+   * stopped being a member — same "no content past the cutoff" rule
+   * `assertGroupReadAccess`/`readCutoffBefore` already enforce when they open
+   * the room's actual history; without this, the shared
+   * `GroupRoom.lastMessagePreview` (which ISN'T per-viewer) would keep showing
+   * whatever the group's real last message is, effectively "receiving" its text
+   * via the sidebar even though the timeline itself correctly stops at the
+   * cutoff. Covers both ways a membership ends read-only — voluntary `LEFT`
+   * (`leftAt`) and admin removal `KICKED` (`kickedAt`), resolved by the shared
+   * `groupReadCutoff`; ACTIVE members and any row without a real membership
+   * pass through untouched.
    */
   private async applyLeftMemberPreviewCap<T extends GroupRoom>(
     rooms: T[],
-    membershipByRoom: Map<string, { status: string; leftAt: Date | null }>,
+    membershipByRoom: Map<
+      string,
+      { status: string; leftAt: Date | null; kickedAt?: Date | null }
+    >,
     userId: string
   ): Promise<T[]> {
     if (!rooms.length) return rooms;
     const stale = rooms.filter((room) => {
-      const membership = membershipByRoom.get(room.roomId);
+      const cutoff = groupReadCutoff(membershipByRoom.get(room.roomId));
       return (
-        membership?.status === "LEFT" &&
-        membership.leftAt != null &&
+        cutoff != null &&
         room.lastMessageAt != null &&
-        room.lastMessageAt.getTime() > membership.leftAt.getTime()
+        room.lastMessageAt.getTime() > cutoff.getTime()
       );
     });
     if (!stale.length) return rooms;
@@ -222,7 +240,7 @@ export class GroupRoomService {
     const capped = new Map<string, T>();
     await Promise.all(
       stale.map(async (room) => {
-        const leftAt = membershipByRoom.get(room.roomId)?.leftAt;
+        const leftAt = groupReadCutoff(membershipByRoom.get(room.roomId));
         if (!leftAt) return;
         const [prev] = await this.messageRepo.findByRoomIdWithTime(
           room.roomId,
@@ -501,17 +519,22 @@ export class GroupRoomService {
       ));
     }
     const isJoined = membership?.status === "ACTIVE";
-    // A LEFT member's detail preview is capped at their `leftAt` exactly like
-    // their inbox row (`applyLeftMemberPreviewCap`), so the sidebar and the
-    // detail payload can never disagree about what they are allowed to see.
+    // An ex-member's detail preview is capped at their leave/removal instant
+    // exactly like their inbox row (`applyLeftMemberPreviewCap`), so the
+    // sidebar and the detail payload can never disagree about what they are
+    // allowed to see.
     const [room] =
-      userId && membership?.status === "LEFT"
+      userId && membership && groupReadCutoff(membership)
         ? await this.applyLeftMemberPreviewCap(
             [found],
             new Map([
               [
                 roomId,
-                { status: membership.status, leftAt: membership.leftAt },
+                {
+                  status: membership.status,
+                  leftAt: membership.leftAt,
+                  kickedAt: membership.kickedAt,
+                },
               ],
             ]),
             userId
@@ -530,6 +553,7 @@ export class GroupRoomService {
       ...room,
       avatar,
       isJoined,
+      membershipStatus: membership?.status ?? null,
       isMemberMuted,
       memberMutedUntil:
         isMemberMuted && membership?.moderationMutedUntil
@@ -881,10 +905,13 @@ export class GroupRoomService {
           new Date(settings.muteUntil).getTime() > now);
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = membership?.status === "LEFT";
+      const isRemoved = membership?.status === "KICKED";
       const isMemberMuted = isGroupMemberMuted(membership);
       return {
         ...room,
         avatar: urlFromMap(avatarUrls, room.avatar),
+        membershipStatus: membership?.status ?? null,
+        isRemoved,
         isMuted,
         isMemberMuted,
         memberMutedUntil:
