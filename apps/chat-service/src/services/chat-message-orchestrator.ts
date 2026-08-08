@@ -40,6 +40,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
+import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
@@ -1278,16 +1279,22 @@ export class ChatMessageOrchestrator {
       },
     });
 
+    // Settings → Chat → Read Receipt, off: the read still happens (the reader's
+    // own unread badge and `read_sync` below are unaffected) — only the OUTBOUND
+    // receipt is withheld, so nobody learns this user read them.
+    const mayBroadcast = await mayBroadcastReadReceipts(params.readerId);
+
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.
-    await this.redis.publish(`conv:${params.roomId}`, readPayload);
+    if (mayBroadcast)
+      await this.redis.publish(`conv:${params.roomId}`, readPayload);
 
     // ALSO publish directly to every other participant/member's own
     // `user:<id>` channel — the conversation-LIST view only joins `conv:*`
     // rooms it's currently rendering, so without this direct delivery a
     // sender's list row misses the READ tick whenever their sidebar socket
     // wasn't (yet) joined to this specific room. Mirrors the gRPC handler.
-    for (const otherId of otherUserIds) {
+    for (const otherId of mayBroadcast ? otherUserIds : []) {
       void this.redis
         .publish(`user:${otherId}`, readPayload)
         .catch((e: unknown) =>

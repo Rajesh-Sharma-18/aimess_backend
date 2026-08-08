@@ -39,6 +39,7 @@ import {
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
   type AutoDeleteStamp,
 } from "../lib/auto-delete.js";
+import { getAccountAutoDelete } from "../lib/account-chat-settings.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
@@ -243,7 +244,7 @@ export class PrivateMessageService {
       this.roomRepo.allocateSequenceBlock(id, count)
     );
     const roomBefore = firstAllocation.room;
-    const autoDelete = this.autoDeleteStampFromRoom(
+    const autoDelete = await this.autoDeleteStampFromRoom(
       roomBefore,
       params.senderId
     );
@@ -771,17 +772,23 @@ export class PrivateMessageService {
   /**
    * The auto-delete columns a message sent by `senderId` into `roomId` must
    * carry. Reads the room's per-user `autoDeleteBy` map and applies the
-   * sender-first-then-peer rule (see lib/auto-delete.ts). Fails OPEN — a lookup
-   * error must never block a send, it just means no timer on that message.
+   * sender-first-then-peer-then-account-default rule (see lib/auto-delete.ts).
+   * Fails OPEN — a lookup error must never block a send, it just means no timer
+   * on that message.
    */
-  private autoDeleteStampFromRoom(
+  private async autoDeleteStampFromRoom(
     room: { participants?: string[]; autoDeleteBy?: unknown; roomId?: string },
     senderId: string
-  ): AutoDeleteStamp {
+  ): Promise<AutoDeleteStamp> {
     try {
       const peerId = (room.participants ?? []).find((id) => id !== senderId);
       const map = parseAutoDeleteMap(room.autoDeleteBy);
-      const setting = resolveEffectiveAutoDelete(map, senderId, peerId ?? "");
+      const setting = resolveEffectiveAutoDelete(
+        map,
+        senderId,
+        peerId ?? "",
+        await getAccountAutoDelete(senderId)
+      );
       return computeAutoDeleteStamp(setting, new Date());
     } catch (err) {
       logger.warn(
@@ -1640,7 +1647,7 @@ export class PrivateMessageService {
     const seq = targetAllocation.sequenceNumber;
     // §8.1 — a forward does NOT inherit the source message's timer; it is a new
     // message in the TARGET chat and follows that chat's own setting.
-    const autoDelete = this.autoDeleteStampFromRoom(
+    const autoDelete = await this.autoDeleteStampFromRoom(
       targetAllocation.room,
       params.senderId
     );

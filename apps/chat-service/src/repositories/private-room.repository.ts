@@ -862,9 +862,13 @@ export class PrivateRoomRepository {
 
   /**
    * Write ONE participant's auto-delete setting onto the per-user `autoDeleteBy`
-   * map (same read-modify-write shape as `setMuted`). `mode: "OFF"` removes the
-   * entry entirely so "never configured" and "explicitly turned off" stay one
-   * state — the effective-timer resolution only ever asks "is there an entry".
+   * map (same read-modify-write shape as `setMuted`).
+   *
+   * `mode: "OFF"` is STORED, not deleted: "explicitly turned off in this chat"
+   * has to outrank the account-wide default (Settings → Chat → Auto-Delete),
+   * which "never configured" does not. Passing `null` clears the entry back to
+   * never-configured. Everything downstream reads through
+   * `readAutoDeleteSetting`, which reports OFF for both.
    */
   async setAutoDelete(
     roomId: string,
@@ -880,7 +884,7 @@ export class PrivateRoomRepository {
       string,
       unknown
     >;
-    if (!setting || setting.mode === "OFF") {
+    if (!setting) {
       delete autoDeleteBy[userId];
     } else {
       autoDeleteBy[userId] = {

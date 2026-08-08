@@ -25,6 +25,14 @@ interface BulkSnapshotsResult {
   users: UserSnapshotRecord[];
 }
 
+/** The account-wide Settings → Chat block (user-service `ChatSettings`). */
+export interface ChatSettings {
+  /** "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30". */
+  autoDeleteTimer: string;
+  typingIndicators: boolean;
+  readReceipts: boolean;
+}
+
 export interface CallPrivacy {
   /** `EVERYONE` is the only scope that admits a non-friend caller. */
   whoCanCallMe: "EVERYONE" | "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
@@ -122,6 +130,11 @@ const getCallPrivacyBreaker: Breaker<{ userId: string }, CallPrivacy> =
     call<{ userId: string }, CallPrivacy>("getCallPrivacy", args)
   );
 
+const getChatSettingsBreaker: Breaker<{ userId: string }, ChatSettings> =
+  makeBreaker("user.getChatSettings", (args: { userId: string }) =>
+    call<{ userId: string }, ChatSettings>("getChatSettings", args)
+  );
+
 const checkFriendshipsBreaker: Breaker<
   { callerId: string; candidateIds: string[] },
   CheckFriendshipsResult
@@ -182,6 +195,28 @@ export const userGrpcClient = {
       whoCanCallMe: r.whoCanCallMe ?? "FRIENDS",
       allowedUserIds: r.allowedUserIds ?? [],
     };
+  },
+
+  /**
+   * One user's account-wide Settings → Chat block, or `null` when the call was
+   * inconclusive (transport failure / breaker open).
+   *
+   * `null` rather than a defaulted object on purpose: the caller caches, and a
+   * cached fallback would outlive the outage that produced it. Choosing the
+   * fail-open defaults is therefore the caller's job — see
+   * lib/account-chat-settings.ts.
+   */
+  async getChatSettings(userId: string): Promise<ChatSettings | null> {
+    try {
+      const r = await getChatSettingsBreaker.fire({ userId });
+      return {
+        autoDeleteTimer: r.autoDeleteTimer || "OFF",
+        typingIndicators: r.typingIndicators !== false,
+        readReceipts: r.readReceipts !== false,
+      };
+    } catch {
+      return null;
+    }
   },
 
   /**

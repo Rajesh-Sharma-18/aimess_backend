@@ -6,6 +6,7 @@ import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
+import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import type {
   CatchupEventDto,
   MessagingClient,
@@ -599,13 +600,24 @@ export function registerChatNamespace(
             ? parsed.excludeUserId
             : undefined;
 
+        // Reciprocity for Settings → Chat → Read Receipt: chat-service already
+        // withholds the receipt of a READER who switched it off; this drops it
+        // for a VIEWER who did. It has to happen here, not at publish time — one
+        // `message:read` reaches many viewers with different settings.
+        const skipViewer =
+          parsed.event === "message:read"
+            ? (viewerUserId: string) =>
+                viewerHidesReadReceipts(userClient, viewerUserId)
+            : undefined;
+
         void emitPersonalizedSender(
           chat,
           channel,
           parsed.event,
           parsed.data,
           personalizeFn,
-          excludeUserId
+          excludeUserId,
+          skipViewer
         );
 
         // Auto-join the conversation room when the user is added to a new
@@ -1388,6 +1400,8 @@ export function registerChatNamespace(
     const typing = createPresenceIndicator({
       startEvent: "typing:start",
       stopEvent: "typing:stop",
+      canStart: async () =>
+        (await userClient.getChatFlags(userId)).typingIndicators,
       broadcast: createDirectRosterBroadcast({
         namespace: chat,
         senderId: userId,
@@ -1420,6 +1434,8 @@ export function registerChatNamespace(
             conversationId,
             typingHints.get(conversationId)?.senderName
           ),
+        // Reciprocal: a peer who turned their own indicator off doesn't see mine.
+        filterRecipients: typingViewerFilter(userClient),
       }),
     });
 

@@ -20,6 +20,10 @@ import {
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
+import {
+  getAccountAutoDelete,
+  getAccountChatSettings,
+} from "../lib/account-chat-settings.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -428,10 +432,10 @@ export class PrivateRoomService {
    * including the live `friendship` (and, folded into its `status`, current
    * block) state — never computed independently per call site.
    */
-  private toRoomDetailsData(
+  private async toRoomDetailsData(
     enriched: EnrichedPrivateRoom,
     userId: string
-  ): PrivateRoomDetailsData {
+  ): Promise<PrivateRoomDetailsData> {
     const mutedBy = (enriched.mutedBy ?? {}) as Record<
       string,
       { muteUntil?: string | null }
@@ -468,7 +472,8 @@ export class PrivateRoomService {
       autoDelete: buildAutoDeleteWire(
         parseAutoDeleteMap(enriched.autoDeleteBy),
         userId,
-        enriched.peerId
+        enriched.peerId,
+        await getAccountAutoDelete(userId)
       ),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };
@@ -640,7 +645,7 @@ export class PrivateRoomService {
     const idsToResolve = new Set<string>();
     const ownRowMeta = new Map<
       string,
-      { lastMessageId: string; peerReadCursorId: string | null }
+      { lastMessageId: string; peerReadCursorId: string | null; peerId: string }
     >();
     for (const room of rooms) {
       const rawLmForStatus = perUserFallback.has(room.roomId)
@@ -658,6 +663,7 @@ export class PrivateRoomService {
       ownRowMeta.set(room.roomId, {
         lastMessageId: room.lastMessageId,
         peerReadCursorId,
+        peerId,
       });
       idsToResolve.add(room.lastMessageId);
       if (peerReadCursorId) idsToResolve.add(peerReadCursorId);
@@ -666,6 +672,27 @@ export class PrivateRoomService {
       ? await this.privateMessageRepo.findManyByIds([...idsToResolve])
       : [];
     const messageById = new Map(resolvedMessages.map((m) => [m.id, m]));
+
+    // Settings → Chat → Read Receipt, applied to the LIST tick as well as the
+    // live `message:read` event — otherwise the blue tick the socket withheld
+    // reappears on the next refresh and the switch looks broken. Reciprocal,
+    // WhatsApp-style: the viewer must allow receipts to SEE one, and the peer
+    // must allow receipts to GIVE one. Cached per user, so this is at most one
+    // lookup per distinct peer on the page.
+    const viewerSeesReceipts = (await getAccountChatSettings(userId))
+      .readReceipts;
+    const receiptPeerIds = [
+      ...new Set([...ownRowMeta.values()].map((m) => m.peerId).filter(Boolean)),
+    ];
+    const peerGivesReceipts = new Map(
+      await Promise.all(
+        receiptPeerIds.map(
+          async (id) =>
+            [id, (await getAccountChatSettings(id)).readReceipts] as const
+        )
+      )
+    );
+
     const readStatusByRoom = new Map<string, "SENT" | "DELIVERED" | "READ">();
     for (const [roomId, meta] of ownRowMeta) {
       const lastMsg = messageById.get(meta.lastMessageId) as
@@ -679,7 +706,9 @@ export class PrivateRoomService {
               | undefined
           )?.sequenceNumber ?? 0)
         : 0;
-      if (lastSeq > 0 && peerReadSeq >= lastSeq) {
+      const receiptsVisible =
+        viewerSeesReceipts && peerGivesReceipts.get(meta.peerId) !== false;
+      if (receiptsVisible && lastSeq > 0 && peerReadSeq >= lastSeq) {
         readStatusByRoom.set(roomId, "READ");
       } else {
         readStatusByRoom.set(
