@@ -36,7 +36,7 @@ function toAdminUserRecord(row: AuthUser): Record<string, string> {
 // and dist/grpc (built) to the repo root.
 const PROTO_PATH = path.resolve(
   __dirname,
-  "../../../../packages/grpc-contracts/proto/auth.proto"
+  "../../../../../packages/grpc-contracts/proto/auth.proto"
 );
 
 const authImpl: grpc.UntypedServiceImplementation = {
