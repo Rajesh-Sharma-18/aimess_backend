@@ -167,6 +167,46 @@ export class CommunityMessageController {
       return;
     }
 
+    // Gap-safe seq keyset — the axis the web client actually pages on, and the
+    // same precedence private/group V1 use: seq wins over the *_ts cursors.
+    // Feed back `page.olderSeq`/`olderCursor` as before_seq to walk history.
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    if (beforeSeq != null || afterSeq != null) {
+      const result = await this.service.getMessagesSeqV2({
+        roomId,
+        userId,
+        direction: afterSeq != null ? "after" : "before",
+        seq: afterSeq != null ? afterSeq : (beforeSeq as number),
+        limit,
+      });
+      const paginated = {
+        ...buildTimelineResponse(
+          result.items as unknown as Record<string, unknown>[],
+          result.total,
+          limit,
+          result.hasMore,
+          result.nextCursor
+        ),
+        ...result.cursors,
+        roomRevision: result.roomRevision,
+      };
+      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { ...paginated, pinnedMessage },
+            paginated.data.length
+              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
     // `before_ts` is the history-scroll cursor. It is EITHER a plain epoch-ms
     // (a first/manual call) OR the opaque COMPOUND cursor "<ms>_<objectId>"
     // handed back as `nextCursor` from a previous page. Splitting on "_" yields
