@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { currentLocale } from "@aimess/constants";
 import amqp from "amqplib";
 
 import {
@@ -95,7 +96,9 @@ export async function publishAdminPasswordResetOtp(
   const channel = await getChannel();
   const payload = JSON.stringify({
     type: AdminAuthEvents.PASSWORD_RESET_OTP_REQUESTED,
-    data,
+    // The admin has no session yet (this IS the reset flow), so the email
+    // follows the `x-lang` of the request that asked for it.
+    data: { ...data, locale: currentLocale() },
   });
   channel.sendToQueue(NOTIFICATION_QUEUE, Buffer.from(payload), {
     persistent: true,

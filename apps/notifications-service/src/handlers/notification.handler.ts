@@ -1,3 +1,4 @@
+import { resolveLocale } from "@aimess/constants";
 import type {
   AdminPasswordResetOtpRequestedPayload,
   ChangeEmailOtpRequestedPayload,
@@ -11,6 +12,17 @@ import { adminPasswordResetOtpEmail } from "../providers/mail/templates/admin-pa
 import { changeEmailOtpEmail } from "../providers/mail/templates/change-email-otp.js";
 import { linkEmailOtpEmail } from "../providers/mail/templates/link-email-otp.js";
 import { passwordResetOtpEmail } from "../providers/mail/templates/password-reset-otp.js";
+
+/**
+ * OTP emails go to an address, not to an account — a password reset or an email
+ * verification happens with no session and often no user row to read a language
+ * preference from. So the language comes from the request that triggered the
+ * send, stamped onto the event by the publisher. Absent (older publisher), it
+ * falls back to the default locale.
+ */
+function localeOf(data: { locale?: string }) {
+  return resolveLocale(null, data.locale ?? null);
+}
 
 export async function handleUserRegistered(_data: UserCreatedPayload) {
   //   await sendMail({
@@ -33,6 +45,7 @@ export async function handlePasswordResetOtpRequested(
   const { subject, html } = passwordResetOtpEmail({
     code: data.code,
     ttlSeconds: data.ttlSeconds,
+    locale: localeOf(data),
   });
   await sendMail({ to: data.email, subject, html });
 }
@@ -43,6 +56,7 @@ export async function handleAdminPasswordResetOtpRequested(
   const { subject, html } = adminPasswordResetOtpEmail({
     code: data.code,
     ttlSeconds: data.ttlSeconds,
+    locale: localeOf(data),
   });
   await sendMail({ to: data.email, subject, html });
 }
@@ -53,6 +67,7 @@ export async function handleLinkEmailOtpRequested(
   const { subject, html } = linkEmailOtpEmail({
     code: data.code,
     ttlSeconds: data.ttlSeconds,
+    locale: localeOf(data),
   });
   await sendMail({ to: data.email, subject, html });
 }
@@ -63,6 +78,7 @@ export async function handleChangeEmailOtpRequested(
   const { subject, html } = changeEmailOtpEmail({
     code: data.code,
     ttlSeconds: data.ttlSeconds,
+    locale: localeOf(data),
   });
   await sendMail({ to: data.email, subject, html });
 }

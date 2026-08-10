@@ -95,6 +95,26 @@ export class PrivateRoomController {
       .json(new ApiResponse(null, t("CHAT_CLEARED", req.locale)));
   });
 
+  // Report the peer of this conversation. Body carries the target explicitly so
+  // the service can bind it to the room's participants rather than inferring it.
+  reportUser = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: reporterId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { userId, reason, description } = req.body as {
+      userId: string;
+      reason: string;
+      description?: string;
+    };
+    const result = await this.service.reportUser({
+      roomId,
+      reporterId,
+      targetUserId: userId,
+      reason,
+      description,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   muteRoom = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

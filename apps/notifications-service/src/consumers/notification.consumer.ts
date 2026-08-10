@@ -172,7 +172,7 @@ export async function startConsumer() {
             category: "systemEnabled",
             type: parsed.type,
             bypassSettings: true,
-            ...authCopy.passwordChanged(),
+            copy: authCopy.passwordChanged(),
             data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });
           break;
@@ -184,7 +184,7 @@ export async function startConsumer() {
             category: "systemEnabled",
             type: parsed.type,
             bypassSettings: true,
-            ...authCopy.emailChanged(),
+            copy: authCopy.emailChanged(),
             data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });
           break;

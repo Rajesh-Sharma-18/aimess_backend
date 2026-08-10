@@ -674,6 +674,9 @@ importers:
       "@aimess/auth-jwt":
         specifier: workspace:*
         version: link:../../packages/auth-jwt
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../../packages/constants
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
@@ -958,6 +961,9 @@ importers:
 
   packages/grpc-utils:
     dependencies:
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../constants
       "@aimess/logger":
         specifier: workspace:*
         version: link:../logger

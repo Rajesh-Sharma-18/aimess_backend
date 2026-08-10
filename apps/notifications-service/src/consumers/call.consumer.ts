@@ -1,8 +1,10 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { t } from "@aimess/constants";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
+import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
 import { pushToUser } from "../services/push.service.js";
 
@@ -70,8 +72,7 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL_INCOMING",
-    title: caller,
-    body: isVideo ? "Incoming video call" : "Incoming voice call",
+    copy: callCopy.ringing(caller, isVideo ? "VIDEO" : "VOICE"),
     actorId: data.callerId,
     deepLink,
     // One ring per call — a re-publish must replace, never stack.
@@ -100,9 +101,11 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     // is not on the inbox allowlist either — this makes the intent explicit.)
     skipInbox: true,
     // Masked body when the user has "show preview" off — never leaks who.
-    showPreviewOverride: isVideo
-      ? "Incoming video call"
-      : "Incoming voice call",
+    showPreviewOverride: (locale) =>
+      t(
+        isVideo ? "NOTIF_CALL_INCOMING_VIDEO" : "NOTIF_CALL_INCOMING_VOICE",
+        locale
+      ),
     // FCM data map — all values MUST be strings.
     data: {
       type: "CALL_INCOMING",
@@ -133,14 +136,12 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
   const caller = data.callerName || "Someone";
   const deepLink = buildDeepLink("call", data.callId);
-  const body = isVideo ? "Missed video call" : "Missed voice call";
 
   await pushToUser({
     userId: data.calleeId,
     category: "callEnabled",
     type: "CALL_MISSED",
-    title: caller,
-    body,
+    copy: callCopy.missed(caller, isVideo ? "VIDEO" : "VOICE"),
     actorId: data.callerId,
     deepLink,
     // Distinct from the ring's `call:<id>` collapse key — the ring is long over
@@ -151,7 +152,11 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     // This DOES persist to the Notification Center (see INBOX_ALLOWED_TYPES) —
     // unlike the live ring, a missed call is exactly the kind of thing a user
     // wants to find later, so skipInbox is intentionally NOT set here.
-    showPreviewOverride: body,
+    showPreviewOverride: (locale) =>
+      t(
+        isVideo ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
+        locale
+      ),
     data: {
       type: "CALL_MISSED",
       callId: data.callId,

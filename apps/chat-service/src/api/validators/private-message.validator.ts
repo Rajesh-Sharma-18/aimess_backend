@@ -11,6 +11,7 @@ import {
   CHAT_EMOJI_MAX_CHARS,
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
+import { reportUserReasonSchema } from "../../lib/report-user.js";
 
 const messageFileSchema = z.object({
   mediaId: z.string().min(1).max(100).optional(),
@@ -181,5 +182,17 @@ export const reportMessageSchema = z.object({
     "SCAM",
     "OTHER",
   ]),
+  description: z.string().max(1000).default(""),
+});
+
+/**
+ * Report the OTHER participant of a private room — the private-chat counterpart
+ * of group's reportMemberSchema and community's createReportSchema. Reason rule
+ * is the shared one (see lib/report-user.ts) so all three surfaces accept the
+ * same vocabulary from the same dialog.
+ */
+export const reportPrivateUserSchema = z.object({
+  userId: z.string().min(5).max(100),
+  reason: reportUserReasonSchema,
   description: z.string().max(1000).default(""),
 });

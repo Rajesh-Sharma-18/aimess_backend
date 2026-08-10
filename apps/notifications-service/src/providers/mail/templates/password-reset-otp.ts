@@ -1,8 +1,11 @@
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+
 import { authOtpEmail } from "./auth-otp.js";
 
 interface PasswordResetOtpEmailParams {
   code: string;
   ttlSeconds: number;
+  locale?: SupportedLocale;
 }
 
 interface PasswordResetOtpEmail {
@@ -13,13 +16,14 @@ interface PasswordResetOtpEmail {
 export function passwordResetOtpEmail({
   code,
   ttlSeconds,
+  locale = DEFAULT_LOCALE,
 }: PasswordResetOtpEmailParams): PasswordResetOtpEmail {
   return authOtpEmail({
     code,
     ttlSeconds,
-    title: "Your AIMess password reset code",
-    intro: "Use the verification code below to reset your AIMess password.",
-    outro:
-      "If you did not request this, you can safely ignore this email; your password will not be changed.",
+    locale,
+    title: t("NOTIF_EMAIL_PASSWORD_RESET_SUBJECT", locale),
+    intro: t("NOTIF_EMAIL_PASSWORD_RESET_INTRO", locale),
+    outro: t("NOTIF_EMAIL_PASSWORD_RESET_OUTRO", locale),
   });
 }

@@ -1,16 +1,30 @@
 import type { Namespace } from "socket.io";
 import { logger } from "@aimess/logger";
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+
+/** Per-viewer rewrite of a broadcast payload (`socket.data.locale` is passed in). */
+export type PersonalizeFn = (
+  data: unknown,
+  userId: string,
+  locale: SupportedLocale
+) => unknown;
 
 /**
  * Deep checks for senderId and senderName and replaces senderName with 'You'
  * if the senderId matches the socket's viewerUserId. Emits to the room.
+ *
+ * This is also the per-recipient LOCALIZATION seam: the loop below already
+ * visits every connected socket individually, and each socket carries the
+ * locale resolved at its handshake — so one broadcast can leave the server as
+ * three different languages without the publisher knowing anything about the
+ * audience.
  */
 export async function emitPersonalizedSender(
   namespace: Namespace,
   channel: string,
   event: string,
   data: unknown,
-  personalizeFn?: (data: unknown, userId: string) => unknown,
+  personalizeFn?: PersonalizeFn,
   // When set, the named user's own sockets are skipped — every OTHER member in
   // the room still gets the event. Used for removal system messages
   // ("Admin banned X") and the removal roster event, so a still-connected
@@ -42,10 +56,12 @@ export async function emitPersonalizedSender(
       const viewerUserId = String(socket.data.userId ?? "");
       if (excludeUserId && viewerUserId === excludeUserId) continue;
       if (skipViewer && (await skipViewer(viewerUserId))) continue;
+      const locale =
+        (socket.data.locale as SupportedLocale | undefined) ?? DEFAULT_LOCALE;
       let payload = data;
 
       if (personalizeFn) {
-        payload = personalizeFn(payload, viewerUserId);
+        payload = personalizeFn(payload, viewerUserId, locale);
       }
 
       if (
@@ -56,7 +72,7 @@ export async function emitPersonalizedSender(
       ) {
         payload = {
           ...(payload as Record<string, unknown>),
-          senderName: "You",
+          senderName: t("SYS_SENDER_YOU", locale),
         };
       }
 

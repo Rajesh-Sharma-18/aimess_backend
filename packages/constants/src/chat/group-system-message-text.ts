@@ -1,4 +1,6 @@
 import { resolvePersonDisplayName } from "../community/system-message-text.js";
+import { t } from "../i18n.js";
+import { STORED_TEXT_LOCALE, type SupportedLocale } from "../locale.js";
 
 export { resolvePersonDisplayName };
 
@@ -79,24 +81,69 @@ export function chatSystemMessageBumpsActivity(event: string): boolean {
   );
 }
 
-function groupRoleArticleForm(role: string): string {
+/**
+ * Auto-delete timer presets, spelled EXACTLY as the client picker spells them
+ * (WhatsApp's wording) — note 86400 reads "24 hours", not "1 day", because that
+ * is the menu entry the system message quotes back.
+ */
+const TTL_PRESET_UNITS: Record<number, [number, "HOUR" | "DAY"]> = {
+  86400: [24, "HOUR"],
+  604800: [7, "DAY"],
+  7776000: [90, "DAY"],
+};
+
+/**
+ * Localized label for a TTL in seconds ("24 hours" / "7 ngày" / "90 วัน").
+ * Shared by the auto-delete wire block and the AUTO_DELETE_UPDATED system line
+ * so both spell the same duration the same way in every language.
+ */
+export function formatTtlDuration(
+  seconds: number | null,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  const s = Number(seconds ?? 0);
+  if (!s || s <= 0) return "";
+
+  const unit = (count: number, u: "HOUR" | "DAY" | "MINUTE"): string =>
+    t(
+      count === 1
+        ? (`SYS_DURATION_${u}_ONE` as const)
+        : (`SYS_DURATION_${u}_OTHER` as const),
+      locale,
+      { count }
+    );
+
+  const preset = TTL_PRESET_UNITS[s];
+  if (preset) return unit(preset[0], preset[1]);
+  if (s % 86400 === 0) return unit(s / 86400, "DAY");
+  if (s % 3600 === 0) return unit(s / 3600, "HOUR");
+  if (s % 60 === 0) return unit(s / 60, "MINUTE");
+  // Sub-minute custom timers are a raw count, not copy.
+  return `${s}s`;
+}
+
+function groupRoleArticleForm(role: string, locale: SupportedLocale): string {
   const r = role.toUpperCase();
-  if (r === "ADMIN") return "an admin";
-  if (r === "MODERATOR") return "a moderator";
-  return "a member";
+  if (r === "ADMIN") return t("SYS_ROLE_ADMIN_ARTICLE", locale);
+  if (r === "MODERATOR") return t("SYS_ROLE_MODERATOR_ARTICLE", locale);
+  return t("SYS_ROLE_MEMBER_ARTICLE", locale);
 }
 
 /**
- * Deterministic English fallback text per group SYSTEM event. When `viewerUserId`
- * matches the actor or subject, names are replaced with first-person "You …" forms.
+ * Localized text per group SYSTEM event. When `viewerUserId` matches the actor
+ * or subject, names are replaced with first-person "You …" forms.
+ *
+ * `locale` defaults to {@link STORED_TEXT_LOCALE} so the write path keeps
+ * baking English onto the row; read paths pass the viewer's locale.
  */
 export function buildGroupSystemFallbackText(
   event: string,
   data: Record<string, unknown>,
-  viewerUserId?: string | null
+  viewerUserId?: string | null,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = (data.actorName as string) || "Someone";
-  const target = (data.targetName as string) || "a member";
+  const actor = (data.actorName as string) || t("SYS_NAME_SOMEONE", locale);
+  const target = (data.targetName as string) || t("SYS_NAME_A_MEMBER", locale);
   const actorId = String(data.actorId ?? "").trim();
   const targetId = String(data.targetUserId ?? "").trim();
   const viewer = viewerUserId?.trim() ?? "";
@@ -105,45 +152,47 @@ export function buildGroupSystemFallbackText(
 
   switch (event) {
     case "GROUP_CREATED":
-      if (isActor) return "You created the group";
-      return `${actor} created the group`;
+      if (isActor) return t("SYS_GROUP_CREATED_SELF", locale);
+      return t("SYS_GROUP_CREATED", locale, { actor });
 
     case "MEMBER_ADDED":
-      if (isTarget) return "You were added to the group";
-      return `${actor} added ${target}`;
+      if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale);
+      return t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target });
 
     case "MEMBER_JOINED":
-      if (isActor) return "You joined the group";
-      return `${actor} joined the group`;
+      if (isActor) return t("SYS_GROUP_MEMBER_JOINED_SELF", locale);
+      return t("SYS_GROUP_MEMBER_JOINED", locale, { actor });
 
     case "MEMBER_LEFT":
-      if (isActor) return "You left the group";
-      return `${actor} left the group`;
+      if (isActor) return t("SYS_GROUP_MEMBER_LEFT_SELF", locale);
+      return t("SYS_GROUP_MEMBER_LEFT", locale, { actor });
 
     case "MEMBER_REMOVED":
-      if (isTarget) return "You were removed";
-      return `${actor} removed ${target}`;
+      if (isTarget) return t("SYS_GROUP_MEMBER_REMOVED_SELF", locale);
+      return t("SYS_GROUP_MEMBER_REMOVED", locale, { actor, target });
 
     case "MEMBER_BANNED":
-      if (isTarget) return "You were banned";
-      return `${actor} banned ${target}`;
+      if (isTarget) return t("SYS_GROUP_MEMBER_BANNED_SELF", locale);
+      return t("SYS_GROUP_MEMBER_BANNED", locale, { actor, target });
 
     case "MEMBER_UNBANNED":
-      if (isTarget) return "You were unbanned";
-      return `${actor} unbanned ${target}`;
+      if (isTarget) return t("SYS_GROUP_MEMBER_UNBANNED_SELF", locale);
+      return t("SYS_GROUP_MEMBER_UNBANNED", locale, { actor, target });
 
     case "ADMIN_ASSIGNED":
-      if (isTarget) return "You are now an admin";
-      return `${target} is now an admin`;
+      if (isTarget) return t("SYS_GROUP_ADMIN_ASSIGNED_SELF", locale);
+      return t("SYS_GROUP_ADMIN_ASSIGNED", locale, { target });
 
     case "ADMIN_REMOVED":
-      if (isTarget) return "You are now a member";
-      return `${target} is now a member`;
+      if (isTarget) return t("SYS_GROUP_ROLE_MEMBER_SELF", locale);
+      return t("SYS_GROUP_ROLE_MEMBER", locale, { target });
 
     case "OWNERSHIP_TRANSFERRED":
-      if (isActor) return `You transferred ownership to ${target}`;
-      if (isTarget) return `${actor} transferred ownership to you`;
-      return `${actor} transferred ownership to ${target}`;
+      if (isActor)
+        return t("SYS_GROUP_OWNERSHIP_TRANSFERRED_ACTOR", locale, { target });
+      if (isTarget)
+        return t("SYS_GROUP_OWNERSHIP_TRANSFERRED_TARGET", locale, { actor });
+      return t("SYS_GROUP_OWNERSHIP_TRANSFERRED", locale, { actor, target });
 
     case "ROLE_CHANGED": {
       const newRole = ((data.newRole as string) || "").toUpperCase();
@@ -152,59 +201,59 @@ export function buildGroupSystemFallbackText(
       // group (mirrors community's "the community admin" phrasing), and it
       // also covers what used to be the separate "Transfer Ownership" action.
       if (newRole === "ADMIN") {
-        if (isTarget) return "You are now the group admin";
-        return `${target} is now the group admin`;
+        if (isTarget) return t("SYS_GROUP_ROLE_ADMIN_SELF", locale);
+        return t("SYS_GROUP_ROLE_ADMIN", locale, { target });
       }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")
       ) {
-        if (isTarget) return "You are now a member";
-        return `${target} is now a member`;
+        if (isTarget) return t("SYS_GROUP_ROLE_MEMBER_SELF", locale);
+        return t("SYS_GROUP_ROLE_MEMBER", locale, { target });
       }
-      const role = groupRoleArticleForm(newRole);
-      if (isTarget) return `You are now ${role}`;
-      return `${target} is now ${role}`;
+      const role = groupRoleArticleForm(newRole, locale);
+      if (isTarget) return t("SYS_GROUP_ROLE_CHANGED_SELF", locale, { role });
+      return t("SYS_GROUP_ROLE_CHANGED", locale, { target, role });
     }
 
     case "MESSAGE_PINNED":
-      if (isActor) return "You pinned a message";
-      return `${actor} pinned a message`;
+      if (isActor) return t("SYS_GROUP_MESSAGE_PINNED_SELF", locale);
+      return t("SYS_GROUP_MESSAGE_PINNED", locale, { actor });
 
     case "MESSAGE_UNPINNED":
-      if (isActor) return "You unpinned a message";
-      return `${actor} unpinned a message`;
+      if (isActor) return t("SYS_GROUP_MESSAGE_UNPINNED_SELF", locale);
+      return t("SYS_GROUP_MESSAGE_UNPINNED", locale, { actor });
 
     case "ROOM_RENAMED": {
       const name = (data.newName as string) || "";
       if (isActor) {
         return name
-          ? `You renamed the group to "${name}"`
-          : "You renamed the group";
+          ? t("SYS_GROUP_RENAMED_SELF", locale, { name })
+          : t("SYS_GROUP_RENAMED_PLAIN_SELF", locale);
       }
       return name
-        ? `${actor} renamed the group to "${name}"`
-        : `${actor} renamed the group`;
+        ? t("SYS_GROUP_RENAMED", locale, { actor, name })
+        : t("SYS_GROUP_RENAMED_PLAIN", locale, { actor });
     }
 
     case "AVATAR_CHANGED":
-      if (isActor) return "You changed the group photo";
-      return `${actor} changed the group photo`;
+      if (isActor) return t("SYS_GROUP_AVATAR_CHANGED_SELF", locale);
+      return t("SYS_GROUP_AVATAR_CHANGED", locale, { actor });
 
     case "DESCRIPTION_CHANGED":
-      if (isActor) return "You updated the group description";
-      return `${actor} updated the group description`;
+      if (isActor) return t("SYS_GROUP_DESCRIPTION_CHANGED_SELF", locale);
+      return t("SYS_GROUP_DESCRIPTION_CHANGED", locale, { actor });
 
     case "INVITE_LINK_CREATED":
-      if (isActor) return "You created an invite link";
-      return `${actor} created an invite link`;
+      if (isActor) return t("SYS_GROUP_INVITE_LINK_CREATED_SELF", locale);
+      return t("SYS_GROUP_INVITE_LINK_CREATED", locale, { actor });
 
     case "GROUP_INVITE":
-      if (isActor) return "You shared a group invite";
-      return `${actor} shared a group invite`;
+      if (isActor) return t("SYS_GROUP_INVITE_SHARED_SELF", locale);
+      return t("SYS_GROUP_INVITE_SHARED", locale, { actor });
 
     case "MESSAGES_ENCRYPTED":
-      return "Messages are end-to-end encrypted";
+      return t("SYS_MESSAGES_ENCRYPTED", locale);
 
     // Group call rows are sender-less lifecycle rows, so the actor-based
     // wording above does not apply — they read exactly like their DM twin.
@@ -214,11 +263,12 @@ export function buildGroupSystemFallbackText(
         callType: data.callType as string,
         status: data.status as string,
         durationSec: data.durationSec as number,
+        locale,
       });
 
     default:
-      if (isActor) return "You updated the group";
-      return `${actor} updated the group`;
+      if (isActor) return t("SYS_GROUP_UPDATED_SELF", locale);
+      return t("SYS_GROUP_UPDATED", locale, { actor });
   }
 }
 
@@ -261,49 +311,58 @@ export function isTerminalCallStatus(status: string): boolean {
 }
 
 /**
- * SINGLE SOURCE OF TRUTH for a call row's English fallback text, across
- * private DM rows, group rows, inbox previews and push bodies. Clients render
- * the real card from `content.call` (`callStatus`, `direction`, `durationSec`)
- * — this string only has to be sane wherever raw text is shown.
+ * SINGLE SOURCE OF TRUTH for a call row's text, across private DM rows, group
+ * rows, inbox previews and push bodies. Clients render the real card from
+ * `content.call` (`callStatus`, `direction`, `durationSec`) — this string only
+ * has to be sane wherever raw text is shown.
  */
 export function buildCallTimelineText(params: {
   callType?: string | null;
   status?: string | null;
   durationSec?: number | null;
+  locale?: SupportedLocale;
 }): string {
-  const label =
-    String(params.callType ?? "").toUpperCase() === "VIDEO" ? "Video" : "Voice";
+  const locale = params.locale ?? STORED_TEXT_LOCALE;
+  const label = t(
+    String(params.callType ?? "").toUpperCase() === "VIDEO"
+      ? "SYS_CALL_LABEL_VIDEO"
+      : "SYS_CALL_LABEL_VOICE",
+    locale
+  );
   const status = String(params.status ?? "ENDED").toUpperCase();
   switch (status) {
     case "RINGING":
-      return `${label} call ringing`;
+      return t("SYS_CALL_RINGING", locale, { label });
     case "ANSWERED":
-      return `${label} call ongoing`;
+      return t("SYS_CALL_ONGOING", locale, { label });
     case "DECLINED":
-      return `${label} call declined`;
+      return t("SYS_CALL_DECLINED", locale, { label });
     case "CANCELLED":
-      return `${label} call cancelled`;
+      return t("SYS_CALL_CANCELLED", locale, { label });
     case "FAILED":
-      return `${label} call failed`;
+      return t("SYS_CALL_FAILED", locale, { label });
     // Same wording as the 1:1 timeline row so a missed call reads identically
     // in a DM and in a group.
     case "MISSED":
-      return `${label} call was not answered`;
+      return t("SYS_CALL_MISSED", locale, { label });
     default:
-      return `${label} call lasted ${formatCallDuration(
-        Number(params.durationSec ?? 0)
-      )}`;
+      return t("SYS_CALL_ENDED", locale, {
+        label,
+        duration: formatCallDuration(Number(params.durationSec ?? 0)),
+      });
   }
 }
 
-/** Shared deterministic English fallback text for Private SYSTEM events. */
+/** Shared localized text for Private SYSTEM events. */
 export function buildPrivateSystemFallbackText(
   event: string,
   data: Record<string, unknown>,
-  viewerUserId?: string | null
+  viewerUserId?: string | null,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = (data.actorName as string) || "Someone";
-  const target = (data.targetName as string) || "someone";
+  const actor = (data.actorName as string) || t("SYS_NAME_SOMEONE", locale);
+  const target =
+    (data.targetName as string) || t("SYS_NAME_SOMEONE_LOWER", locale);
   const actorId = String(data.actorId ?? "").trim();
   const targetId = String(data.targetUserId ?? data.peerId ?? "").trim();
   const viewer = viewerUserId?.trim() ?? "";
@@ -312,16 +371,16 @@ export function buildPrivateSystemFallbackText(
 
   switch (event) {
     case "MESSAGE_PINNED":
-      if (isActor) return "You pinned a message";
-      return `${actor} pinned a message`;
+      if (isActor) return t("SYS_GROUP_MESSAGE_PINNED_SELF", locale);
+      return t("SYS_GROUP_MESSAGE_PINNED", locale, { actor });
 
     case "MESSAGE_UNPINNED":
-      if (isActor) return "You unpinned a message";
-      return `${actor} unpinned a message`;
+      if (isActor) return t("SYS_GROUP_MESSAGE_UNPINNED_SELF", locale);
+      return t("SYS_GROUP_MESSAGE_UNPINNED", locale, { actor });
 
     case "GROUP_INVITE":
-      if (isActor) return "You shared a group invite";
-      return `${actor} shared a group invite`;
+      if (isActor) return t("SYS_GROUP_INVITE_SHARED_SELF", locale);
+      return t("SYS_GROUP_INVITE_SHARED", locale, { actor });
 
     case "CALL_STARTED":
     case "CALL_ENDED":
@@ -329,45 +388,63 @@ export function buildPrivateSystemFallbackText(
         callType: data.callType as string,
         status: data.status as string,
         durationSec: data.durationSec as number,
+        locale,
       });
 
     case "FRIENDSHIP_CREATED":
       return isActor || isTarget
-        ? `You and ${isActor ? target : actor} are now friends`
-        : `${actor} and ${target} are now friends`;
+        ? t("SYS_PRIVATE_FRIENDSHIP_CREATED_SELF", locale, {
+            other: isActor ? target : actor,
+          })
+        : t("SYS_PRIVATE_FRIENDSHIP_CREATED", locale, { actor, target });
 
     case "FRIENDSHIP_DELETED":
-      if (isActor) return `You removed ${target}`;
-      if (isTarget) return `${actor} removed you`;
-      return `${actor} removed ${target}`;
+      if (isActor)
+        return t("SYS_PRIVATE_FRIENDSHIP_DELETED_ACTOR", locale, { target });
+      if (isTarget)
+        return t("SYS_PRIVATE_FRIENDSHIP_DELETED_TARGET", locale, { actor });
+      return t("SYS_PRIVATE_FRIENDSHIP_DELETED", locale, { actor, target });
 
     case "FRIENDSHIP_BLOCKED":
-      if (isActor) return `You blocked ${target}`;
-      if (isTarget) return `${actor} blocked you`;
-      return `${actor} blocked ${target}`;
+      if (isActor)
+        return t("SYS_PRIVATE_FRIENDSHIP_BLOCKED_ACTOR", locale, { target });
+      if (isTarget)
+        return t("SYS_PRIVATE_FRIENDSHIP_BLOCKED_TARGET", locale, { actor });
+      return t("SYS_PRIVATE_FRIENDSHIP_BLOCKED", locale, { actor, target });
 
     case "FRIENDSHIP_BANNED":
-      if (isActor) return `You banned ${target}`;
-      if (isTarget) return `${actor} banned you`;
-      return `${actor} banned ${target}`;
+      if (isActor)
+        return t("SYS_PRIVATE_FRIENDSHIP_BANNED_ACTOR", locale, { target });
+      if (isTarget)
+        return t("SYS_PRIVATE_FRIENDSHIP_BANNED_TARGET", locale, { actor });
+      return t("SYS_PRIVATE_FRIENDSHIP_BANNED", locale, { actor, target });
 
     case "AUTO_DELETE_UPDATED": {
-      // `durationLabel` is prebuilt by the caller (see chat-service
-      // `lib/auto-delete.ts#formatAutoDeleteDuration`) so this stays formatting-free.
       const mode = String(data.mode ?? "OFF").toUpperCase();
-      const who = isActor ? "You" : actor;
-      if (mode === "OFF") return `${who} turned off automatic message deletion`;
+      const who = isActor ? t("SYS_SENDER_YOU", locale) : actor;
+      if (mode === "OFF")
+        return t("SYS_PRIVATE_AUTO_DELETE_OFF", locale, { who });
       if (mode === "AFTER_VIEWING")
-        return `${who} set messages to delete after viewing`;
-      const label = String(data.durationLabel ?? "").trim();
+        return t("SYS_PRIVATE_AUTO_DELETE_AFTER_VIEWING", locale, { who });
+      // Recompute from the stored `ttlSeconds` so the duration is in the READER's
+      // language; `durationLabel` is the English label baked in at write time and
+      // is only a fallback for rows written before ttlSeconds was persisted.
+      const ttl = Number(data.ttlSeconds);
+      const label =
+        Number.isFinite(ttl) && ttl > 0
+          ? formatTtlDuration(ttl, locale)
+          : String(data.durationLabel ?? "").trim();
       return label
-        ? `${who} set messages to auto-delete after ${label}`
-        : `${who} turned on automatic message deletion`;
+        ? t("SYS_PRIVATE_AUTO_DELETE_DURATION", locale, {
+            who,
+            duration: label,
+          })
+        : t("SYS_PRIVATE_AUTO_DELETE_ON", locale, { who });
     }
 
     default:
-      if (isActor) return "You updated the chat";
-      return `${actor} updated the chat`;
+      if (isActor) return t("SYS_PRIVATE_UPDATED_SELF", locale);
+      return t("SYS_PRIVATE_UPDATED", locale, { actor });
   }
 }
 
@@ -394,36 +471,50 @@ export function resolveGroupSystemSubjectUserId(
   }
 }
 
-/** Personalize a persisted third-person group SYSTEM line for one viewer. */
+/** Render a persisted group SYSTEM line for one viewer, in their language. */
 export function personalizeGroupSystemMessageForViewer(
   event: string,
   systemData: Record<string, unknown>,
   thirdPersonText: string,
-  viewerUserId: string
+  viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  if (!viewerUserId.trim()) return thirdPersonText;
+  if (!viewerUserId.trim() && locale === STORED_TEXT_LOCALE) {
+    return thirdPersonText;
+  }
   const personalized = buildGroupSystemFallbackText(
     event,
     systemData,
-    viewerUserId
+    viewerUserId,
+    locale
   );
   return personalized === thirdPersonText ? thirdPersonText : personalized;
 }
 
-/** Personalize a persisted private SYSTEM line for one viewer. */
+/** Render a persisted private SYSTEM line for one viewer, in their language. */
 export function personalizePrivateSystemMessageForViewer(
   event: string,
   systemData: Record<string, unknown>,
   thirdPersonText: string,
-  viewerUserId: string
+  viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  if (!viewerUserId.trim()) return thirdPersonText;
-  if (event === "CALL_ENDED" || event === "CALL_STARTED")
+  if (!viewerUserId.trim() && locale === STORED_TEXT_LOCALE) {
     return thirdPersonText;
+  }
+  // Call rows carry no viewer-relative wording, but they DO need translating —
+  // only the personalization pass is skipped, not the locale rebuild.
+  if (
+    (event === "CALL_ENDED" || event === "CALL_STARTED") &&
+    locale === STORED_TEXT_LOCALE
+  ) {
+    return thirdPersonText;
+  }
   const personalized = buildPrivateSystemFallbackText(
     event,
     systemData,
-    viewerUserId
+    viewerUserId,
+    locale
   );
   return personalized === thirdPersonText ? thirdPersonText : personalized;
 }

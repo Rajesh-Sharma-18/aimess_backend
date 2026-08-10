@@ -16,6 +16,7 @@ import {
 } from "../constants/media-limits.js";
 import {
   buildCommunitySystemFallbackText,
+  currentLocale,
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
@@ -1139,7 +1140,8 @@ export class CommunityMessageService {
       metadata,
       String(metadata.actorName ?? ""),
       String(metadata.targetName ?? ""),
-      viewerUserId ?? ""
+      viewerUserId ?? "",
+      currentLocale()
     );
     return rebuilt || storedText;
   }

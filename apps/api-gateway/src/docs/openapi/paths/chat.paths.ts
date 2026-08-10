@@ -672,6 +672,40 @@ const privateMessageReport = {
   },
 };
 
+const privateUserReport = {
+  post: {
+    tags: ["Chat — Private"],
+    operationId: "reportPrivateUser",
+    summary: "Report the peer of a private chat",
+    description:
+      "Reports the OTHER participant of this room (user-level, not message-level). Private-chat counterpart of `POST /chat/group-members/report` and community's `POST /communities/{id}/reports`; all three land one row in the admin moderation ledger. Repeating the same report is an idempotent no-op.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReportPrivateUserRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("User reported", "ChatReportMemberResult"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
 const privateRoomMute = {
   post: {
     tags: ["Chat — Private"],
@@ -3613,6 +3647,7 @@ export const chatPaths = {
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
   "/chat/private/messages/{messageId}": privateMessageDelete,
   "/chat/private/messages/{messageId}/report": privateMessageReport,
+  "/chat/private/rooms/{roomId}/report": privateUserReport,
   "/chat/private/rooms/{roomId}/mute": privateRoomMute,
   "/chat/private/rooms/{roomId}/unmute": privateRoomUnmute,
   "/chat/private/rooms/{roomId}/archive": privateRoomArchive,
