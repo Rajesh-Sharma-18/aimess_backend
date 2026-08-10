@@ -438,6 +438,122 @@ describe("auto-delete sweeper", () => {
     });
   });
 
+  /**
+   * §4/§21: when the message that EXPIRES is the room's last one, the inbox
+   * preview must fall back to the previous surviving message — including its
+   * TIMESTAMP, so the row moves down the list instead of sitting at the top
+   * showing a message that no longer exists. Runs the REAL deleteDirect (no
+   * spy) so the whole persisted chain is exercised, not just the entry point.
+   */
+  it("rolls the room snapshot back to the previous surviving message when the LAST message expires", async () => {
+    const { autoDeleteService } = mocks as any;
+    const prevAt = new Date("2026-08-10T10:05:00.000Z");
+    const expiredAt = new Date("2026-08-10T10:10:00.000Z");
+
+    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
+      { id: "msg-latest", roomId: ROOM, senderId: TEST_USER_ID },
+    ]);
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg-latest",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      messageType: "TEXT",
+      isDeleted: false,
+      createdAt: expiredAt,
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "msg-latest",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      sequenceNumber: 3,
+      createdAt: expiredAt,
+      deletedAt: expiredAt,
+    });
+    mocks.privateMessageRepo.findPreviousVisible.mockResolvedValue({
+      id: "msg-prev",
+      senderId: PEER,
+      content: { text: "still here" },
+      messageType: "TEXT",
+      createdAt: prevAt,
+      clientMessageId: null,
+      sequenceNumber: 2,
+      revision: 2,
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      ...room(),
+      lastMessageId: "msg-latest",
+    });
+
+    await autoDeleteService.sweepDue(new Date(), 200);
+    await new Promise((r) => setImmediate(r)); // the recalc is fire-and-forget
+
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({ id: "msg-prev", createdAt: prevAt })
+    );
+  });
+
+  /**
+   * §20 — expiry vs. a message that arrived while the sweeper was running. The
+   * recalculation re-reads the newest SURVIVING message rather than assuming
+   * "the one before the expired one", so the newer message wins and the room
+   * snapshot is never rolled back past it.
+   */
+  it("does not clobber a message that arrived after the expired one", async () => {
+    const { autoDeleteService } = mocks as any;
+    const newerAt = new Date("2026-08-10T10:12:00.000Z");
+
+    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
+      { id: "msg-expired", roomId: ROOM, senderId: TEST_USER_ID },
+    ]);
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg-expired",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      messageType: "TEXT",
+      isDeleted: false,
+      createdAt: new Date("2026-08-10T10:10:00.000Z"),
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "msg-expired",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      sequenceNumber: 3,
+      createdAt: new Date("2026-08-10T10:10:00.000Z"),
+    });
+    // A message landed between the sweep query and the recalculation.
+    mocks.privateMessageRepo.findPreviousVisible.mockResolvedValue({
+      id: "msg-newer",
+      senderId: PEER,
+      content: { text: "just arrived" },
+      messageType: "TEXT",
+      createdAt: newerAt,
+      clientMessageId: null,
+      sequenceNumber: 4,
+      revision: 4,
+    });
+    // The snapshot still points at the expired message — the newer one's own
+    // bump has not landed yet. This is the window the race lives in.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      ...room(),
+      lastMessageId: "msg-expired",
+    });
+
+    await autoDeleteService.sweepDue(new Date(), 200);
+    await new Promise((r) => setImmediate(r));
+
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({ id: "msg-newer", createdAt: newerAt })
+    );
+    // Never rolled back to anything older than what actually survives.
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps going when one message loses the delete race", async () => {
     const { autoDeleteService, chatMessageOrchestrator } = mocks as any;
     const deleteDirect = jest
