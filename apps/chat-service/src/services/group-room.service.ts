@@ -300,9 +300,19 @@ export class GroupRoomService {
     const ownRoomIds: string[] = [];
     const lastMessageIdByRoom = new Map<string, string>();
     for (const room of rooms) {
-      const senderId = (room.lastMessagePreview as { senderId?: string } | null)
-        ?.senderId;
-      if (senderId !== userId || !room.lastMessageId) continue;
+      const preview = room.lastMessagePreview as {
+        senderId?: string;
+        messageType?: string;
+      } | null;
+      const senderId = preview?.senderId;
+      // SYSTEM lines (member joined/left/removed, group updated, ...) name the
+      // acting user as sender but are not user-sent messages — no tick for them.
+      if (
+        senderId !== userId ||
+        !room.lastMessageId ||
+        String(preview?.messageType ?? "").toUpperCase() === "SYSTEM"
+      )
+        continue;
       ownRoomIds.push(room.roomId);
       lastMessageIdByRoom.set(room.roomId, room.lastMessageId);
     }

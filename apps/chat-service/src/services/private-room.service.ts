@@ -654,7 +654,14 @@ export class PrivateRoomService {
         : room.lastMessage;
       const lmSenderId = (rawLmForStatus as Record<string, unknown> | null)
         ?.senderId as string | undefined;
-      if (lmSenderId !== userId || !room.lastMessageId) continue;
+      // A SYSTEM line (friendship created, auto-delete notice, ...) carries the
+      // acting user's id but is not a user-sent message, so it must never get a
+      // delivery/read tick — even though the "I sent it" test below passes.
+      const lmType = String(
+        (rawLmForStatus as Record<string, unknown> | null)?.messageType ?? ""
+      ).toUpperCase();
+      if (lmSenderId !== userId || !room.lastMessageId || lmType === "SYSTEM")
+        continue;
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
       const cursorMap = (room.lastReadMessageIdByUser ?? {}) as Record<
         string,
