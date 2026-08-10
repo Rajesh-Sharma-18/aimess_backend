@@ -1047,10 +1047,75 @@ export class CommunityMessageService {
     });
   }
 
+  /**
+   * Zero the caller's unread on many communities at once (the sidebar's
+   * multi-select "Mark all as read").
+   *
+   * The write is only half the job: the post-read effects have to match the
+   * single-message path ({@link markMessageRead}) or the bulk call silently
+   * drops them —
+   *
+   *   1. `community:read_sync` on `user:<userId>` so the caller's OTHER tabs /
+   *      devices clear their list badges (the list query is cached, nothing
+   *      else would tell them).
+   *   2. `notifyUnreadChanged` so the Community nav-badge total is recomputed
+   *      from the DB and pushed as `chat:unread_summary` — that badge is fed
+   *      exclusively by that event, so without this it kept the pre-read count
+   *      until a reconnect.
+   *
+   * `unreadCount` per community is recounted AFTER the write against the same
+   * boundary that was persisted, so a message that lands mid-operation reports
+   * a non-zero count and receivers leave that row's badge alone (see the
+   * `read_sync` handler) instead of blanket-zeroing a genuinely unread row.
+   */
   async bulkMarkRead(userId: string, communityIds: string[]): Promise<number> {
     const ids = [...new Set(communityIds.filter(Boolean))];
     if (!ids.length) return 0;
-    return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
+
+    const readAt = new Date();
+    const updatedCount = await this.memberRepo.bulkAdvanceReadToNow(
+      userId,
+      ids,
+      readAt
+    );
+    if (!updatedCount) return 0;
+
+    let unreadAfter: Record<string, { count: number }> = {};
+    try {
+      unreadAfter = await this.messageRepo.countUnreadBulk({
+        userId,
+        thresholds: ids.map((roomId) => ({ roomId, afterDate: readAt })),
+      });
+    } catch (err: unknown) {
+      logger.warn(
+        `CommunityMessageService|bulkMarkRead|countUnread failed: ${String(err)}`
+      );
+    }
+
+    for (const communityId of ids) {
+      redis
+        .publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "community:read_sync",
+            data: {
+              communityId,
+              readerId: userId,
+              unreadCount: unreadAfter[communityId]?.count ?? 0,
+              readAt: readAt.getTime(),
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CommunityMessageService|bulkMarkRead|redis publish user failed: ${String(err)}`
+          );
+        });
+    }
+
+    notifyUnreadChanged(userId);
+
+    return updatedCount;
   }
 
   /**
