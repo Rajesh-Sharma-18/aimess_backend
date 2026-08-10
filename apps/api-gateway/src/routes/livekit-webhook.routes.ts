@@ -73,7 +73,10 @@ export function createLiveKitWebhookRouter(
         roomName
       ) {
         try {
-          await messagingClient.handleLiveKitRoomFinished({ roomName });
+          await messagingClient.handleLiveKitRoomFinished({
+            roomName,
+            eventType,
+          });
         } catch (err) {
           logger.warn(
             `livekit ${eventType} reconcile failed for room=${roomName}: ${String(err)}`

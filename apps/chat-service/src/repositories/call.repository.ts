@@ -229,10 +229,20 @@ export class CallRepository {
    * caller abandoned any prior one, so the service cancels these first (both to
    * avoid falsely marking the caller busy on their own zombie call and to stop
    * the old callee's ring immediately).
+   *
+   * `before` bounds the result to rings that predate the request doing the
+   * cleanup. Unbounded, two concurrent initiates from the same caller cancel each
+   * other's just-created rows, leaving a call that rings the callee while already
+   * ENDED in the DB. Callers hold a per-caller lock as the primary defence; this
+   * bound is the backstop for a lost or early-expired lock.
    */
-  async findCallerRinging(callerId: string): Promise<Call[]> {
+  async findCallerRinging(callerId: string, before: Date): Promise<Call[]> {
     return this.prisma.call.findMany({
-      where: { callerId, status: CallStatus.RINGING },
+      where: {
+        callerId,
+        status: CallStatus.RINGING,
+        initiatedAt: { lt: before },
+      },
     });
   }
 }

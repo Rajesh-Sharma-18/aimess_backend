@@ -321,24 +321,16 @@ export async function publishCommunityUpdated(
   const memberIds = [...new Set(p.memberIds)];
   if (memberIds.length === 0) return;
 
-  // Exclude members who just joined and haven't yet received their
-  // `community:added` personal event. Including them here causes the FE to
-  // trigger a clobbering refetch for a community it doesn't have in state yet.
-  // Chat-service sets a short-lived key on `community.member.synced(ACTIVE)`;
-  // the key expires after 60 s, well past any realistic delivery window.
-  let eligibleIds = memberIds;
-  try {
-    const flags = await p.redis.mget(
-      ...memberIds.map((id) => `community:fresh-join:${p.communityId}:${id}`)
-    );
-    eligibleIds = memberIds.filter((_, i) => flags[i] === null);
-  } catch (err) {
-    logger.warn(
-      `community:updated fresh-join check failed for ${p.communityId}: ${String(err)}`
-    );
-    // Fail-open: include all members so the bump still fires.
-  }
-  if (eligibleIds.length === 0) return;
+  // Every active member is eligible. There used to be a 60-second
+  // `community:fresh-join:*` suppression here for members who had just joined
+  // and might not have received their `community:added` event yet — but
+  // `community:added` is published SYNCHRONOUSLY by community-service at
+  // join/create time (its delivery window is milliseconds), so a 60-second
+  // blanket window silently swallowed every real list bump for a member (and
+  // for the creator, from the moment the community was created). Clients
+  // already drop a bump for a community that isn't in their list cache yet,
+  // which is the correct place for that guard.
+  const eligibleIds = memberIds;
 
   // SYSTEM activity (lifecycle lines such as "John is now a moderator") is
   // sender-less: the preview is a complete sentence. Force both senderId and

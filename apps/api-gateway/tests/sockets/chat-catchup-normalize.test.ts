@@ -4,7 +4,7 @@ const base = {
   messageId: "message-1",
   conversationId: "room-1",
   senderId: "",
-  contentType: "SYSTEM",
+  contentType: "VOICE_CALL",
   contentText: "Voice call lasted 02:05",
   contentJson: JSON.stringify({
     text: "Voice call lasted 02:05",
@@ -21,12 +21,12 @@ const base = {
 };
 
 describe("normalizeCatchupEvent", () => {
-  it("restores a private call SYSTEM row to the live message:new shape", () => {
+  it("restores a private VOICE_CALL row to the live message:new shape", () => {
     expect(normalizeCatchupEvent(base, "private")).toMatchObject({
       id: "message-1",
       roomId: "room-1",
       conversationType: "PRIVATE",
-      contentType: "SYSTEM",
+      contentType: "VOICE_CALL",
       content: { text: "Voice call lasted 02:05" },
       systemEvent: "CALL_ENDED",
       systemData: { callId: "call-1", durationSec: 125 },

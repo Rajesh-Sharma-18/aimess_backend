@@ -3,9 +3,11 @@ import type { Redis, Cluster } from "ioredis";
 
 import {
   buildGroupSystemFallbackText,
+  isTerminalCallStatus,
   resolveGroupSystemSubjectUserId,
   resolvePersonDisplayName,
 } from "@aimess/constants";
+import { readCallStatus } from "./call-chat-message.service.js";
 import type { SystemEvent } from "../types/enums.js";
 import {
   buildChatMessageEvent,
@@ -28,18 +30,49 @@ export interface PostSystemMessageParams {
   systemEvent: SystemEvent;
   /** Event-specific fields (e.g. targetUserId, newRole, newName). */
   systemData?: Record<string, unknown>;
+  /**
+   * Stored/broadcast message kind. Defaults to "SYSTEM" — the only reason to
+   * override is a lifecycle row the client renders as a dedicated card rather
+   * than a grey system line, i.e. CALL_ENDED rows which are persisted as
+   * VOICE_CALL / VIDEO_CALL. Unread accounting and sender-less rendering still
+   * follow `systemEvent`, not this field (see `shouldCountInUnread`).
+   */
+  messageType?: string;
+  /**
+   * Extra keys merged into the stored `content` alongside the derived
+   * `{ text, urls, files }` — e.g. the `call` sub-object a CALL_ENDED row
+   * carries so clients render the call card from structured metadata instead of
+   * parsing the text. Private DM call rows carry the identical sub-object.
+   */
+  contentExtra?: Record<string, unknown>;
+  /**
+   * Idempotency / upsert key. Only set by lifecycle rows that must stay a
+   * SINGLE row across many state changes — today just call rows, which use
+   * `call:<callId>` for the whole RINGING → … → ENDED sequence.
+   */
+  clientMessageId?: string | null;
+  /**
+   * When set, the real-time `message:new` fan-out to `conv:<roomId>` skips this
+   * user's own sockets (the gateway honors an envelope-level `excludeUserId`).
+   * Used by ban/kick so the removed member never receives the room line
+   * announcing their own removal, while every other member still does. The row
+   * is still persisted for the remaining members' history.
+   */
+  excludeUserId?: string | null;
 }
 
 /**
  * Posts SYSTEM messages for group lifecycle events ("X created the group",
  * "X added Y", "X left", role/rename/avatar changes, …).
  *
- * Each post: persists a `messageType: "SYSTEM"` GroupMessage with a `systemEvent`
+ * Each post: persists a GroupMessage with a `systemEvent`
  * code + structured `systemData` (clients localize from these) plus an English
  * `content.text` fallback for previews; bumps the room's `lastMessageAt` +
  * `lastMessagePreview` so the group surfaces and sorts in the unified inbox; and
  * fans out over Redis `conv:<roomId>` as `message:new` (same shape as a real
- * send). It does NOT increment unread counts — lifecycle chatter shouldn't raise
+ * send). The stored kind is "SYSTEM" unless the caller overrides it (CALL_ENDED
+ * rows persist as VOICE_CALL / VIDEO_CALL — see `PostSystemMessageParams`).
+ * It does NOT increment unread counts — lifecycle chatter shouldn't raise
  * badges. The whole operation is best-effort: failures are logged, never thrown,
  * so a lifecycle action never fails because its system message did.
  */
@@ -66,6 +99,7 @@ export class GroupSystemMessageService {
     params: PostSystemMessageParams
   ): Promise<string | null> {
     const { roomId, actorId, systemEvent } = params;
+    const messageType = params.messageType ?? "SYSTEM";
     const inData = params.systemData ?? {};
     const targetUserId =
       typeof inData.targetUserId === "string" ? inData.targetUserId : null;
@@ -110,16 +144,24 @@ export class GroupSystemMessageService {
       // from gap-fill and broke the monotonic guarantee (many rows at seq 0).
       const seq = await this.roomRepo.allocateSequence(roomId);
 
+      const content: Record<string, unknown> = {
+        text,
+        urls: [],
+        files: [],
+        ...(params.contentExtra ?? {}),
+      };
+
       const message = await this.messageRepo.create({
         roomId,
         senderId: actorId,
         senderName: actorName,
         senderAvatar: actorAvatar,
-        messageType: "SYSTEM",
+        messageType,
         systemEvent,
         systemData,
-        content: { text, urls: [], files: [] },
+        content,
         sequenceNumber: seq,
+        clientMessageId: params.clientMessageId ?? null,
       });
 
       // Bump inbox order/preview (no unread increment) — gated per-subtype so
@@ -192,7 +234,7 @@ export class GroupSystemMessageService {
           senderId: "",
           lastMessageId: message.id,
           lastMessageAt: sysServerTs,
-          preview: { contentType: "SYSTEM", text },
+          preview: { contentType: messageType, text },
           countInUnread: false,
           ...(subjectUserId && selfPreview
             ? { subjectUserId, selfPreview }
@@ -205,6 +247,9 @@ export class GroupSystemMessageService {
           `conv:${roomId}`,
           JSON.stringify({
             event: "message:new",
+            ...(params.excludeUserId
+              ? { excludeUserId: params.excludeUserId }
+              : {}),
             data: buildChatMessageEvent({
               id: message.id,
               roomId,
@@ -212,8 +257,8 @@ export class GroupSystemMessageService {
               senderId: actorId ?? "",
               senderName: actorName,
               senderAvatar: actorAvatarUrl,
-              messageType: "SYSTEM",
-              content: message.content ?? { text, urls: [], files: [] },
+              messageType,
+              content: message.content ?? content,
               reactions: [],
               serverTs: sysServerTs,
               sequenceNumber: seq,
@@ -238,6 +283,151 @@ export class GroupSystemMessageService {
         `GroupSystemMessageService|post failed event=${systemEvent} room=${roomId}: ${String(err)}`
       );
       return null;
+    }
+  }
+
+  /**
+   * GROUP twin of `CallChatMessageService.post` — ONE CALL === ONE ROW.
+   *
+   * The row is written when the group call starts ringing and then transitions
+   * IN PLACE (same message id, same `createdAt`, same `callId`) as the call is
+   * answered, declined or ends, so members see a live card instead of a pile of
+   * one-per-state rows. Insert broadcasts `message:new`, every later state
+   * broadcasts `message:edited`; both carry the full canonical ChatMessage, so
+   * a client applies either by replacing the row with that id. The bumped room
+   * revision is what replays the final state through `/changes` to members who
+   * were offline for the whole call.
+   *
+   * Best-effort like every other method here: a failure here must never roll
+   * back the authoritative call transition that triggered it.
+   */
+  async postOrUpdateCall(
+    params: PostSystemMessageParams & { callId: string }
+  ): Promise<void> {
+    const clientMessageId = `call:${params.callId}`;
+    const { roomId } = params;
+    try {
+      const existing = await this.messageRepo.findByClientMessageId(
+        roomId,
+        clientMessageId
+      );
+      if (!existing) {
+        await this.postOne({ ...params, clientMessageId });
+        return;
+      }
+
+      // Terminal is terminal — a late duplicate (retry, racing sweep, LiveKit
+      // webhook after the user's own hangup) must not rewrite an ended card.
+      const status = String(
+        (params.systemData?.status as string) ?? ""
+      ).toUpperCase();
+      const current = readCallStatus(existing.content);
+      if (isTerminalCallStatus(current) || current === status) return;
+
+      const messageType = params.messageType ?? "SYSTEM";
+      const systemData: Record<string, unknown> = {
+        ...(params.systemData ?? {}),
+        actorId: params.actorId,
+        actorName: "",
+      };
+      const text = buildGroupSystemFallbackText(params.systemEvent, systemData);
+      const content: Record<string, unknown> = {
+        text,
+        urls: [],
+        files: [],
+        ...(params.contentExtra ?? {}),
+      };
+
+      const message = await this.messageRepo.updateCallState({
+        messageId: existing.id,
+        roomId,
+        content,
+        messageType,
+        systemEvent: params.systemEvent,
+        systemData,
+        // Lifecycle rows never raise a group badge (matches postOne, where a
+        // `systemEvent`-bearing row is excluded by `shouldCountInUnread`).
+        countInUnread: false,
+      });
+
+      // The card keeps the timestamp it rang at — see CallChatMessageService.
+      const serverTs =
+        existing.createdAt instanceof Date
+          ? existing.createdAt.getTime()
+          : Date.now();
+
+      await this.redis
+        .publish(
+          `conv:${roomId}`,
+          JSON.stringify({
+            event: "message:edited",
+            data: buildChatMessageEvent({
+              id: message.id,
+              clientMessageId,
+              roomId,
+              conversationType: "GROUP",
+              senderId: "",
+              senderName: "",
+              senderAvatar: "",
+              messageType,
+              content: message.content ?? content,
+              reactions: [],
+              serverTs,
+              sequenceNumber: existing.sequenceNumber ?? 0,
+              systemEvent: params.systemEvent,
+              systemData,
+              countInUnread: false,
+            }),
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupSystemMessageService|call publish failed room=${roomId}: ${String(err)}`
+          );
+        });
+
+      // Refresh the inbox preview only while the call row is still the room's
+      // last message — otherwise a message sent mid-call would get rewound.
+      const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
+      if (
+        systemMessageBumpsActivity(params.systemEvent) &&
+        (room as { lastMessageId?: string } | null)?.lastMessageId ===
+          existing.id
+      ) {
+        await this.roomRepo
+          .updateLastMessage(roomId, {
+            _id: message.id,
+            senderId: null,
+            senderName: "",
+            messageType,
+            content: { text },
+            createdAt: existing.createdAt,
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `GroupSystemMessageService|call lastMessage failed room=${roomId}: ${String(err)}`
+            );
+          });
+
+        publishConvUpdatedSafe({
+          redis: this.redis,
+          type: "GROUP",
+          roomId,
+          fetchRecipients: async () =>
+            (
+              await this.memberRepo.findActiveMembers(roomId, { limit: 500 })
+            ).map((m) => m.userId),
+          senderId: "",
+          lastMessageId: message.id,
+          lastMessageAt: serverTs,
+          preview: { contentType: messageType, text },
+          countInUnread: false,
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        `GroupSystemMessageService|postOrUpdateCall failed callId=${params.callId} room=${roomId}: ${String(err)}`
+      );
     }
   }
 

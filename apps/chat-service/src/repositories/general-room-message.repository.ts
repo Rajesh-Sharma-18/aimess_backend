@@ -1227,7 +1227,12 @@ export class GeneralRoomMessageRepository {
     for (let round = 0; round < SEARCH_VISIBILITY_ROUNDS; round += 1) {
       const pipeline = buildTextSearchPipeline({
         match: {
-          roomId: params.roomId,
+          // `roomId` is an ObjectId column, so it must be matched as `{ $oid }`
+          // — a plain string never matches a BSON ObjectId in aggregateRaw, and
+          // that silently made every community message search return 0 rows.
+          // Private/group search pass a plain string because their `roomId` is
+          // a plain String column.
+          roomId: { $oid: params.roomId },
           deletedForAll: false,
           ...(params.readCutoff
             ? {
@@ -1235,6 +1240,7 @@ export class GeneralRoomMessageRepository {
               }
             : {}),
         },
+        field: "message",
         query: params.query,
         cursor: parseSearchCursor(cursor),
         limit: params.limit,

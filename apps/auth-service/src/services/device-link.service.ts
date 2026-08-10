@@ -4,7 +4,7 @@ import type { Request } from "express";
 
 import { ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
-import { publishQrLinkEvent } from "@aimess/redis";
+import { publishQrLinkEvent, publishQrLinkSuccess } from "@aimess/redis";
 
 import type {
   InitiateDeviceLinkInput,
@@ -51,16 +51,34 @@ export const deviceLinkService = {
     // source of truth for device metadata, shared byte-for-byte with
     // login/register, so a client can no longer poison deviceName with an
     // arbitrary string (e.g. its own raw User-Agent) by putting it in the body.
-    _input: InitiateDeviceLinkInput
+    // `clientId` is the one exception — see the fingerprint note below; it is
+    // an index key, not metadata, and never reaches the session record.
+    input: InitiateDeviceLinkInput
   ): Promise<InitiateDeviceLinkResult> {
     const context = buildSessionContext(req);
 
+    // The "one active QR per browser" index key.
+    //
+    // It must identify a BROWSER. `context.deviceId` is sha256(userAgent | ip),
+    // which does not: every visitor behind the same NAT egress IP running the
+    // same browser build collides onto one fingerprint — an office, a campus,
+    // a carrier CGNAT, or simply two tabs of the same browser. Under that
+    // collision, one visitor opening the login page silently CANCELs another
+    // visitor's still-displayed QR, whose browser then scans a dead token.
+    //
+    // So prefer the client's own opaque, persistent id and fall back to the
+    // UA+IP hash only for clients that don't send one (older builds, native).
+    // Guessing another browser's random clientId is the only way to cancel its
+    // session now, and a cancelled session can never be logged into anyway.
+    const fingerprint = input.clientId
+      ? `client:${input.clientId}`
+      : context.deviceId;
+
     // WhatsApp-like: createLinkSession automatically cancels any prior PENDING
-    // session from the same browser (identified by deviceId, the sha256 of
-    // userAgent+IP) and returns the cancelled token so we can notify the old
-    // browser tab immediately. This eliminates stale PENDING accumulation and
-    // prevents the IP-based rate limiter from firing during normal usage
-    // (refresh, multiple tabs).
+    // session from the same browser and returns the cancelled token so we can
+    // notify the old browser tab immediately. This eliminates stale PENDING
+    // accumulation and prevents the IP-based rate limiter from firing during
+    // normal usage (refresh, regeneration).
     const { linkToken, expiresAt, cancelledToken } = await createLinkSession(
       {
         deviceName: context.deviceName,
@@ -71,7 +89,7 @@ export const deviceLinkService = {
         userAgent: context.userAgent,
         countryCode: context.countryCode,
       },
-      context.deviceId
+      fingerprint
     );
 
     // If a prior session was superseded, notify its waiting browser tab
@@ -195,8 +213,10 @@ export const deviceLinkService = {
     // Finalize: SCANNED (just claimed above, same request) -> USED. NOT_SCANNED/
     // WRONG_USER/ALREADY are unreachable (this call always finalizes the exact
     // claim it just won, with the same userId) but are still guarded defensively.
-    // Pass the fingerprint key so the FINALIZE_SCRIPT can clean it up atomically
-    // (removing the device→token pointer so a fresh QR can be generated immediately).
+    // The fingerprint pointer is NOT cleaned up here — the browser's fingerprint
+    // isn't recoverable from the phone's request. It is harmless: it expires with
+    // the record, and the next createLinkSession for that browser DELs the stale
+    // pointer after the cancel script reports the token is already terminal.
     const finalize = await finalizeLoginAtomic(input.linkToken, userId);
     if (finalize !== "OK") {
       throw new NotFoundError("AUTH_DEVICE_LINK_EXPIRED");
@@ -218,7 +238,12 @@ export const deviceLinkService = {
 
     // The browser only ever receives tokens/userId over this one event, on
     // its own private `qr:{linkToken}` room — never in any other auth:qr:* event.
-    void publishQrLinkEvent(redis, input.linkToken, "auth:qr:success", {
+    //
+    // publishQrLinkSuccess (not publishQrLinkEvent) because pub/sub alone drops
+    // the event — and with it the only copy of these tokens — if the browser's
+    // socket is mid-handshake or briefly offline at this instant. It also parks
+    // a one-shot copy the gateway hands over on the browser's next subscribe.
+    void publishQrLinkSuccess(redis, input.linkToken, {
       linkToken: input.linkToken,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,

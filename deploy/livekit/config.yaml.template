@@ -1,0 +1,61 @@
+# LiveKit — PRODUCTION config template for Dev 01 (76.13.216.164).
+#
+# This is a TEMPLATE. Render it before the first `docker compose up`:
+#
+#   set -a && . ../dev01/.env.dev01 && set +a
+#   envsubst < config.yaml.template > config.yaml
+#
+# Rendering explicitly (rather than relying on the server to expand ${VARS} at
+# load time) keeps this working regardless of LiveKit's config-parsing
+# behaviour, and makes the live values inspectable with `cat config.yaml`.
+# config.yaml is gitignored — it contains the Redis password.
+#
+# ⚠️ LiveKit reads its config ONCE AT STARTUP. After re-rendering you MUST
+# `docker compose restart livekit`, otherwise it keeps advertising the OLD
+# node_ip and every call fails with "could not establish pc connection" while
+# signaling still works — which looks exactly like an application bug.
+# Verify what is actually live:
+#   docker logs aimess-livekit | grep "starting LiveKit server"   → "nodeIP"
+
+port: 7880
+log_level: info
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+
+  # This box has its public IP bound directly to eth0 (no NAT), so we advertise
+  # it explicitly rather than relying on an external-IP lookup — one less
+  # startup dependency, and it cannot guess wrong.
+  use_external_ip: false
+  node_ip: ${DEV01_IP}
+
+redis:
+  # Reuses the existing Redis on the database server. LiveKit uses it only for
+  # multi-node coordination; a single SFU works fine, but keeping it configured
+  # means adding a second node later needs no config surgery.
+  address: ${REDIS_HOST}:${REDIS_PORT}
+  password: ${REDIS_PASSWORD}
+
+# Embedded TURN over TLS. Needed by clients behind restrictive NATs and
+# corporate firewalls that block UDP outright.
+#
+# Disabled by default because it needs its own certificate for
+# livekit.ai5dev.tech on port 5349. Enable once certs are issued — see
+# deploy/README.md. Without TURN, a minority of users on locked-down networks
+# will join calls but get no audio or video.
+turn:
+  enabled: false
+  # domain: ${LIVEKIT_DOMAIN}
+  # tls_port: 5349
+  # cert_file: /etc/livekit/certs/fullchain.pem
+  # key_file: /etc/livekit/certs/privkey.pem
+
+# LiveKit signs each webhook with the api_key below and POSTs to the gateway,
+# which runs on Dev 02 and is reachable only via its public origin. This must
+# match the api_key half of LIVEKIT_KEYS.
+webhook:
+  api_key: ${LIVEKIT_API_KEY}
+  urls:
+    - ${PUBLIC_API_ORIGIN}/livekit/webhook

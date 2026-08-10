@@ -10,6 +10,7 @@ import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
 import { mediaPaths } from "../../paths/media.paths.js";
 import { streamPaths } from "../../paths/stream.paths.js";
+import { v2Paths } from "../v2/index.js";
 
 /**
  * OpenAPI paths for API v1.
@@ -29,6 +30,16 @@ export const v1Paths = {
   ...mediaPaths,
   ...streamPaths,
   ...adminPaths,
+  // The zero-loss `/changes` catch-up feed is served on V1 as well as V2 (same
+  // handler; chat-service mounts it on both surfaces). Referenced from the V2
+  // definitions rather than copied so the two can never drift. Group rooms are
+  // addressed as `/chat/groups/{roomId}` on V1 (V2 uses `/chat/group/rooms/...`).
+  "/chat/private/rooms/{roomId}/changes":
+    v2Paths["/chat/private/rooms/{roomId}/changes"],
+  "/chat/groups/{roomId}/changes":
+    v2Paths["/chat/group/rooms/{roomId}/changes"],
+  "/chat/community/rooms/{roomId}/changes":
+    v2Paths["/chat/community/rooms/{roomId}/changes"],
 };
 
 export const v1Tags = [

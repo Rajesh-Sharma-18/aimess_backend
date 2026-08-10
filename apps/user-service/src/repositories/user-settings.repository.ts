@@ -141,8 +141,10 @@ export const userSettingsRepository = {
 
   /**
    * Callee-scoped call-privacy read for the chat-service `initiateCall` gate.
-   * Returns default FRIENDS + empty allow-list when no row exists yet (matches
-   * the Prisma-schema default so unset users still receive calls from friends).
+   * Returns FRIENDS + an empty allow-list when no row exists yet. This is
+   * deliberately STRICTER than the column default (EVERYONE): profile creation
+   * always writes the row, so a missing one means something went wrong, and a
+   * failure must not hand strangers the ability to ring the user.
    */
   async findCallPrivacy(
     userId: string
@@ -159,6 +161,31 @@ export const userSettingsRepository = {
       allowedUserIds: (row?.callPrivacyAllowList ?? []).map(
         (r) => r.allowedUserId
       ),
+    };
+  },
+
+  /**
+   * The account-wide Settings → Chat block, for the chat-service send/read
+   * paths and the gateway's typing gate. No settings row yet → the schema
+   * defaults (OFF, and both indicators ON).
+   */
+  async findChatSettings(userId: string): Promise<{
+    autoDeleteTimer: string;
+    typingIndicators: boolean;
+    readReceipts: boolean;
+  }> {
+    const row = await prisma.chatSettings.findUnique({
+      where: { userId },
+      select: {
+        autoDeleteTimer: true,
+        typingIndicators: true,
+        readReceipts: true,
+      },
+    });
+    return {
+      autoDeleteTimer: row?.autoDeleteTimer ?? "OFF",
+      typingIndicators: row?.typingIndicators ?? true,
+      readReceipts: row?.readReceipts ?? true,
     };
   },
 

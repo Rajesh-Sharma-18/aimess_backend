@@ -131,6 +131,39 @@ describe("session-revoke listener", () => {
     }
   });
 
+  it('reason "logout" still disconnects but sends no auth:session_terminated notice', async () => {
+    const ownSocket = new FakeSocket();
+    const { sub, namespaces } = setup({
+      "/chat": { "session:sess-self": [ownSocket] },
+      "/community": {},
+      "/notify": {},
+      "/stream": {},
+    });
+
+    sub.emit(
+      "pmessage",
+      "session-revoke:*",
+      "session-revoke:user-1",
+      JSON.stringify({ sessionId: "sess-self", reason: "logout" })
+    );
+    await flush();
+
+    expect(ownSocket.disconnected).toBe(true);
+    for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
+      expect(
+        namespaces[nsName].emitted.find(
+          (e) => e.event === "auth:session_terminated"
+        )
+      ).toBeUndefined();
+    }
+    // Other devices must still see it leave the Linked Devices list.
+    expect(
+      namespaces["/notify"].emitted.find(
+        (e) => e.event === "session:list_updated"
+      )
+    ).toBeDefined();
+  });
+
   it("emits session:list_updated to the user's room on /notify only", async () => {
     const { sub, namespaces } = setup({
       "/chat": {},

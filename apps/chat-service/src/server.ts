@@ -31,6 +31,7 @@ import { PrivateMessageReportRepository } from "./repositories/private-message-r
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
 import { InboxService } from "./services/inbox.service.js";
+import { ConversationBulkService } from "./services/conversation-bulk.service.js";
 import { UnreadSummaryService } from "./services/unread-summary.service.js";
 import { registerUnreadSummaryPusher } from "./events/unread-summary-bridge.js";
 import { publishChatUserEvent } from "@aimess/redis";
@@ -67,6 +68,7 @@ import { PresenceService } from "./services/presence.service.js";
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
 import { InboxController } from "./api/controllers/inbox.controller.js";
+import { ConversationBulkController } from "./api/controllers/conversation-bulk.controller.js";
 import { SyncController } from "./api/controllers/sync.controller.js";
 import { PrivateMessageController } from "./api/controllers/private-message.controller.js";
 import { GroupRoomController } from "./api/controllers/group-room.controller.js";
@@ -159,6 +161,10 @@ const startServer = async () => {
 
     await waitForMongoWritablePrimary();
 
+    // Message search no longer uses `$text` — it is a case-insensitive
+    // substring match served by the `[roomId, createdAt desc]` compound index
+    // (see buildTextSearchPipeline). These text indexes are now pure write
+    // overhead on three of the hottest collections, so drop them on boot.
     for (const stale of [
       {
         collection: "private_messages",
@@ -169,45 +175,23 @@ const startServer = async () => {
         collection: "general_room_messages",
         name: "general_room_messages_message_idx",
       },
+      {
+        collection: "private_messages",
+        name: "private_messages_content_text_v2_idx",
+      },
+      {
+        collection: "group_messages",
+        name: "group_messages_content_text_v2_idx",
+      },
+      {
+        collection: "general_room_messages",
+        name: "general_room_messages_message_v2_idx",
+      },
     ]) {
       try {
         await dropMongoIndexIfExists(prisma, stale.collection, stale.name);
       } catch (err) {
         logger.warn(`Failed to drop stale text index ${stale.name}`);
-        logger.warn(err);
-      }
-    }
-
-    const textIndexes: {
-      collection: string;
-      key: Record<string, 1 | -1 | "text">;
-      name: string;
-    }[] = [
-      {
-        collection: "private_messages",
-        key: { "content.text": "text" },
-        name: "private_messages_content_text_v2_idx",
-      },
-      {
-        collection: "group_messages",
-        key: { "content.text": "text" },
-        name: "group_messages_content_text_v2_idx",
-      },
-      {
-        collection: "general_room_messages",
-        key: { message: "text" },
-        name: "general_room_messages_message_v2_idx",
-      },
-    ];
-    for (const idx of textIndexes) {
-      try {
-        await ensureMongoIndex(prisma, idx.collection, {
-          key: idx.key,
-          name: idx.name,
-          defaultLanguage: "none",
-        });
-      } catch (err) {
-        logger.warn(`Failed to create text index ${idx.name} — continuing`);
         logger.warn(err);
       }
     }
@@ -525,7 +509,9 @@ const startServer = async () => {
       // Platform-wide calling kill-switch (admin panel). Fails open.
       callFlagService,
       // GROUP call membership authorization + roster resolution.
-      groupMemberRepo
+      groupMemberRepo,
+      // GROUP call timeline audit rows (VOICE_CALL / VIDEO_CALL).
+      groupSystemMessageService
     );
 
     const communityRoomService = new CommunityRoomService(
@@ -624,6 +610,18 @@ const startServer = async () => {
       redis
     );
 
+    // Bulk (multi-select) inbox operations. Owns no domain logic — it fans
+    // each roomId out to the SAME single-conversation entry point the one-off
+    // REST routes use, so bulk and individual calls can never drift.
+    const conversationBulkService = new ConversationBulkService(
+      privateRoomService,
+      groupRoomService,
+      groupMemberService,
+      chatMessageOrchestrator,
+      privateRoomRepo,
+      groupRoomRepo
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -655,6 +653,9 @@ const startServer = async () => {
         autoDeleteService
       ),
       inboxCtrl: new InboxController(inboxService),
+      conversationBulkCtrl: new ConversationBulkController(
+        conversationBulkService
+      ),
       syncCtrl: new SyncController(syncService),
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,

@@ -4,7 +4,7 @@ import {
   getOrCreatePostgresPrismaClient,
 } from "@aimess/prisma-pg";
 
-import { env } from "./env";
+import { env } from "./env.js";
 import { logger } from "@aimess/logger";
 
 const GLOBAL_KEY = "prisma_auth_service";

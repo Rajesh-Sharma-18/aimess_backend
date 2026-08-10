@@ -208,9 +208,9 @@ communityRoutes.get(
   resolveCommunityByHandle
 );
 
-// Unified list: mode inferred from params. Pagination (before_ts/after_ts) →
-// my joined communities (cursor pagination); else q/categoryId → search across
-// public + my private communities (offset pagination). At least one required.
+// Unified list: mode inferred from params. q/categoryId/filter → search across
+// public + my private communities (offset pagination); anything else, including
+// no params at all, → my joined communities (cursor pagination). All optional.
 communityRoutes.get(
   "/mine",
   validateQuery(myCommunitiesQuerySchema),

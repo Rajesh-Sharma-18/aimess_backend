@@ -115,6 +115,41 @@ describe("createPresenceIndicator", () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
+  // Settings → Chat → Typing Indicator, off.
+  it("suppresses starts when canStart says no — but never the stop", async () => {
+    const broadcast = jest.fn();
+    const p = createPresenceIndicator({
+      startEvent: "typing:start",
+      stopEvent: "typing:stop",
+      broadcast,
+      canStart: async () => false,
+    });
+
+    p.start("room-1");
+    await Promise.resolve();
+    expect(broadcast).not.toHaveBeenCalled();
+
+    // A stop always goes out, so a switch flipped mid-burst can never strand a
+    // peer on a "…is typing" with no stop coming.
+    p.stop("room-1");
+    await Promise.resolve();
+    expect(broadcast).toHaveBeenCalledWith("room-1", "typing:stop", false);
+  });
+
+  it("broadcasts normally when canStart allows it", async () => {
+    const broadcast = jest.fn();
+    const p = createPresenceIndicator({
+      startEvent: "typing:start",
+      stopEvent: "typing:stop",
+      broadcast,
+      canStart: async () => true,
+    });
+
+    p.start("room-1");
+    await Promise.resolve();
+    expect(broadcast).toHaveBeenCalledWith("room-1", "typing:start", false);
+  });
+
   it("a throwing broadcast never escapes as an unhandled rejection", () => {
     const p = createPresenceIndicator({
       startEvent: "typing:start",
@@ -174,6 +209,40 @@ describe("createDirectRosterBroadcast", () => {
       senderId: "me",
       resolveRoster: async () => [],
       buildPayload: () => ({}),
+    });
+
+    await broadcast("room-1", "typing:start", false);
+    expect(ns.in).not.toHaveBeenCalled();
+  });
+
+  // Settings → Chat → Typing Indicator is reciprocal: a viewer who switched it
+  // off is dropped from the RECIPIENT set, not from the roster — dropping them
+  // from the roster would read as "sender not a member" and kill the event for
+  // everyone else too.
+  it("drops recipients the filter rejects, keeping the rest", async () => {
+    const peer = { id: "sa", emit: jest.fn() };
+    const { ns } = fakeNamespace([peer]);
+
+    const broadcast = createDirectRosterBroadcast({
+      namespace: ns,
+      senderId: "me",
+      resolveRoster: async () => ["me", "peer-a", "peer-b"],
+      buildPayload: () => ({}),
+      filterRecipients: async (ids) => ids.filter((id) => id !== "peer-b"),
+    });
+
+    await broadcast("room-1", "typing:start", false);
+    expect(ns.in).toHaveBeenCalledWith(["user:peer-a"]);
+  });
+
+  it("emits nothing when every recipient opted out", async () => {
+    const { ns } = fakeNamespace();
+    const broadcast = createDirectRosterBroadcast({
+      namespace: ns,
+      senderId: "me",
+      resolveRoster: async () => ["me", "peer-a"],
+      buildPayload: () => ({}),
+      filterRecipients: async () => [],
     });
 
     await broadcast("room-1", "typing:start", false);

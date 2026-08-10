@@ -109,6 +109,30 @@ export function startUserGrpcServer(): grpc.Server {
       })();
     },
 
+    // Subject-scoped Settings → Chat block: the default auto-delete timer for
+    // chat-service's send path, plus the typing-indicator / read-receipt
+    // switches the gateway and chat-service enforce on this user's behalf.
+    getChatSettings: (
+      call: grpc.ServerUnaryCall<{ userId: string }, unknown>,
+      callback: grpc.sendUnaryData<{
+        autoDeleteTimer: string;
+        typingIndicators: boolean;
+        readReceipts: boolean;
+      }>
+    ) => {
+      void (async () => {
+        try {
+          callback(
+            null,
+            await userSettingsRepository.findChatSettings(call.request.userId)
+          );
+        } catch (err) {
+          logger.error(`gRPC getChatSettings error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Viewer-scoped presence filter for the gateway's `presence:subscribe`
     // gate. Returns only the peers whose `whoCanSeeOnlineStatus` admits this
     // viewer; on any error the caller must fail CLOSED (empty list), never open.

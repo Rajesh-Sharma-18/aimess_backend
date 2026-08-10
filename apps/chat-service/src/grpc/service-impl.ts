@@ -65,11 +65,13 @@ import {
   urlFromMap,
   resolveContentFiles,
   resolveQuoteThumbnail,
+  fileMediaKey,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import {
@@ -88,13 +90,27 @@ import { resolveNotificationFriendship } from "../lib/notification-friendship.en
 async function resolveBroadcastContent(content: unknown): Promise<unknown> {
   if (!content || typeof content !== "object") return content;
   const c = content as Record<string, unknown>;
-  if (Array.isArray(c.files) && c.files.length > 0) {
-    return {
-      ...c,
-      files: await resolveContentFiles(c.files as MediaFileLike[]),
-    };
-  }
-  return content;
+  const hasFiles = Array.isArray(c.files) && c.files.length > 0;
+  // `content.sticker` lives outside files[] and needs the same resolve-on-read
+  // as REST history gives it (lib/media-resolve.ts `resolveStickerField`).
+  const sticker =
+    c.sticker && typeof c.sticker === "object"
+      ? (c.sticker as MediaFileLike)
+      : null;
+  if (!hasFiles && !sticker) return content;
+  const [files, stickerUrl] = await Promise.all([
+    hasFiles
+      ? resolveContentFiles(c.files as MediaFileLike[])
+      : Promise.resolve(null),
+    sticker ? resolveMediaUrl(fileMediaKey(sticker)) : Promise.resolve(""),
+  ]);
+  return {
+    ...c,
+    ...(files ? { files } : {}),
+    ...(sticker && stickerUrl
+      ? { sticker: { ...sticker, url: stickerUrl } }
+      : {}),
+  };
 }
 
 /** Maps an `AppError.statusCode` (HTTP convention, from `@aimess/errors`) to the
@@ -187,6 +203,9 @@ function parseMessageContent(req: {
         : fallback.files,
       ...(parsed.location ? { location: parsed.location } : {}),
       ...(parsed.contact ? { contact: parsed.contact } : {}),
+      // STICKER media lives outside files[]; dropping it here persisted an
+      // empty content blob, so the sticker vanished on the next history read.
+      ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
     };
   } catch {
     return fallback;
@@ -859,9 +878,16 @@ export function createMessagingImpl(
             },
           });
 
+          // Settings → Chat → Read Receipt, off: the read itself still lands,
+          // only the OUTBOUND receipt is withheld. Mirrors
+          // ChatMessageOrchestrator.markReadDirect — this handler is a second
+          // copy of that flow, so the gate has to exist in both.
+          const mayBroadcast = await mayBroadcastReadReceipts(req.readerId);
+
           // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
           // or below the boundary to READ (watermark), not just the boundary message.
-          await redis.publish(`conv:${req.conversationId}`, readPayload);
+          if (mayBroadcast)
+            await redis.publish(`conv:${req.conversationId}`, readPayload);
 
           // ALSO publish directly to every other participant/member's own
           // `user:<id>` channel — every socket joins that room unconditionally
@@ -873,7 +899,7 @@ export function createMessagingImpl(
           // socket wasn't (yet) joined to this specific room, going stale until
           // a manual refetch. Same direct-roster pattern already used for typing
           // (`createDirectRosterBroadcast`) and community's read_sync.
-          for (const otherId of otherUserIds) {
+          for (const otherId of mayBroadcast ? otherUserIds : []) {
             void redis
               .publish(`user:${otherId}`, readPayload)
               .catch((e: unknown) =>
@@ -1739,9 +1765,10 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { roomName?: string };
+          const req = call.request as { roomName?: string; eventType?: string };
           await deps.callService.reconcileFromLiveKitRoomFinished(
-            req.roomName ?? ""
+            req.roomName ?? "",
+            req.eventType ?? ""
           );
           callback(null, {});
         } catch (err) {

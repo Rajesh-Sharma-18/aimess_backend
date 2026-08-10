@@ -79,6 +79,22 @@ export function buildRoomMemberSyncData(
     // Keep ban/leave bookkeeping consistent with the new status.
     data.bannedAt = status === "banned" ? new Date() : null;
     data.leftAt = status === "left" ? new Date() : null;
+    // Becoming ACTIVE always starts a FRESH membership cycle, and community-service
+    // deletes the previous cycle's mute row as part of that same transition — so the
+    // mirrored write-gate flags must not survive it. Doing it here (rather than
+    // relying solely on the `community.member.mute_synced` that accompanies a
+    // rejoin) makes the clear self-healing: a dropped or out-of-order stale
+    // `{isMuted:true}` can't leave a rejoined member silently unable to send.
+    //
+    // Safe because status ACTIVE is only ever published on member CREATE and on
+    // REJOIN (see community.repository createMember/createManyMembers/
+    // reactivateMemberWithSnapshot/reactivateAdminMember) — muting an already-active
+    // member rides `mute_synced`, and a role change publishes role WITHOUT status,
+    // so neither path reaches this branch and neither can be clobbered.
+    if (status === "active") {
+      data.isMuted = false;
+      data.mutedUntil = null;
+    }
   }
   if (role) data.role = role;
   return Object.keys(data).length === 0 ? null : data;
@@ -273,23 +289,11 @@ export class CommunityRoomSyncConsumer {
           // "left", and a PENDING join-request sync must NOT purge a join line.
           const rawStatus = (event.data.status ?? "").toUpperCase();
 
-          // Mark the member as a fresh join so community:updated bumps are
-          // suppressed until community:added arrives at the client. The key
-          // expires after 60 s — well past any realistic socket delivery window.
-          if (rawStatus === "ACTIVE") {
-            await redis
-              .set(
-                `community:fresh-join:${communityId}:${userId}`,
-                "1",
-                "EX",
-                60
-              )
-              .catch((err: unknown) => {
-                logger.warn(
-                  `fresh-join key set failed community=${communityId} user=${userId}: ${String(err)}`
-                );
-              });
-          }
+          // NOTE: this used to write a 60 s `community:fresh-join:*` key that
+          // suppressed `community:updated` list bumps for the member. It was
+          // removed — see publishCommunityUpdated: `community:added` is
+          // delivered synchronously at join time, so the window only ever
+          // swallowed legitimate bumps.
 
           // Hard-deletes stale PERSONAL session lines of `types` for this user
           // and tombstones each on their own `user:<id>` channel so an
@@ -346,12 +350,22 @@ export class CommunityRoomSyncConsumer {
             const boundary = event.data.eventAt
               ? new Date(event.data.eventAt)
               : undefined;
+            const safeBoundary =
+              boundary && !Number.isNaN(boundary.getTime())
+                ? boundary
+                : undefined;
             await purgeAndTombstone(
               PERSONAL_JOIN_SESSION_TYPES,
               "join",
-              boundary && !Number.isNaN(boundary.getTime())
-                ? boundary
-                : undefined
+              safeBoundary
+            );
+            // Mute/unmute PERSONAL lines are cycle-scoped moderation history —
+            // a rejoin must start a fresh membership (see reactivateMemberWithSnapshot),
+            // so stale mute notices from the ending cycle can't outlive it either.
+            await purgeAndTombstone(
+              ["MEMBER_MUTED", "MEMBER_UNMUTED"],
+              "mute",
+              safeBoundary
             );
           }
 

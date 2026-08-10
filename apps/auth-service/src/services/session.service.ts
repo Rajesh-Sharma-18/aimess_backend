@@ -204,9 +204,11 @@ export const sessionService = {
       // Same realtime signal as revokeSession/revokeAllSessions: force-
       // disconnect this session's LIVE socket(s) and tell the user's other
       // devices to drop it from the Linked Devices list right now — reuses
-      // the existing session-revoke:<userId> channel/"terminated" payload,
-      // no new event. Fire-and-forget: a Redis hiccup must not fail logout.
-      void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+      // the existing session-revoke:<userId> channel, no new event. The
+      // "logout" reason keeps the gateway from telling THIS device its
+      // session was terminated — it is the one that asked to sign out.
+      // Fire-and-forget: a Redis hiccup must not fail logout.
+      void publishSessionRevokedEvent(redis, userId, sessionId, "logout").catch(
         () => undefined
       );
     }
