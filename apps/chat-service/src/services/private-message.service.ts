@@ -17,6 +17,7 @@ import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
@@ -2197,6 +2198,8 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
+        // Normalized tombstone (one shape across private/group/community).
+        ...tombstoneWireFields(message),
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

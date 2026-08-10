@@ -622,6 +622,46 @@ export function autoDeleteWireFields(row: unknown): {
   };
 }
 
+/**
+ * The ONE tombstone shape, stamped onto every serialized message so a client
+ * reads deletion the same way on private, group and community.
+ *
+ * The three surfaces store deletion under three different column names
+ * (`isDeleted`+`deletedAt` on private/group, `deletedForAll`+`deletedForAllAt`
+ * on community), which forced clients to branch per conversation type. These
+ * two fields are the normalized read: `deletedForEveryone` is the boolean the
+ * client acts on, `deletedAt` is epoch ms (null when not deleted).
+ *
+ * ADDITIVE — the underlying columns are still serialized alongside, unchanged.
+ *
+ * Deleted messages replay through the `/changes` feed (which deliberately does
+ * NOT filter tombstones); history pages continue to omit them, so an existing
+ * client can never start rendering rows it did not render before.
+ */
+export function tombstoneWireFields(row: unknown): {
+  deletedForEveryone: boolean;
+  deletedAt: number | null;
+} {
+  const r = (row ?? {}) as {
+    isDeleted?: boolean | null;
+    deletedForAll?: boolean | null;
+    deletedAt?: Date | string | number | null;
+    deletedForAllAt?: Date | string | number | null;
+  };
+  const raw = r.deletedAt ?? r.deletedForAllAt ?? null;
+  let at: number | null = null;
+  if (raw instanceof Date) at = raw.getTime();
+  else if (typeof raw === "number") at = raw;
+  else if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    at = Number.isFinite(parsed) ? parsed : null;
+  }
+  return {
+    deletedForEveryone: r.isDeleted === true || r.deletedForAll === true,
+    deletedAt: at,
+  };
+}
+
 export type DeleteConversationKind = ConversationKind | "COMMUNITY";
 
 export interface DeletePayloadInput {

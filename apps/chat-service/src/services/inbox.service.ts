@@ -82,6 +82,9 @@ export interface InboxItem {
   isMemberMuted: boolean | null;
   /** GROUP-only: ISO-8601 expiry of a timed member-mute; null = indefinite. */
   memberMutedUntil: string | null;
+  /** GROUP-only: epoch-ms mirror of `memberMutedUntil` (§6 — every timestamp a
+   *  client consumes is an integer epoch-ms UTC). null = indefinite / not muted. */
+  memberMutedUntilMs: number | null;
 }
 
 export interface InboxResult {
@@ -223,6 +226,7 @@ export class InboxService {
       membershipStatus: null,
       isMemberMuted: null,
       memberMutedUntil: null,
+      memberMutedUntilMs: null,
     };
   }
 
@@ -262,6 +266,7 @@ export class InboxService {
       membershipStatus: room.membershipStatus ?? null,
       isMemberMuted: room.isMemberMuted ?? false,
       memberMutedUntil: room.memberMutedUntil ?? null,
+      memberMutedUntilMs: room.memberMutedUntilMs ?? null,
     };
   }
 }

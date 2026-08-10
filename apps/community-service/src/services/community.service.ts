@@ -916,6 +916,7 @@ async function loadMuteMap(
 function muteFields(muteRow: MuteRowFragment): {
   isMuted: boolean;
   muteUntil: string | null;
+  muteUntilMs: number | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
@@ -924,6 +925,8 @@ function muteFields(muteRow: MuteRowFragment): {
   return {
     isMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
+    // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+    muteUntilMs: muteRow?.mutedUntil ? muteRow.mutedUntil.getTime() : null,
     streamEnabled: muteRow?.streamEnabled ?? true,
     chatEnabled: muteRow?.chatEnabled ?? true,
     announcementEnabled: muteRow?.announcementEnabled ?? true,

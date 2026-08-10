@@ -46,6 +46,8 @@ export type GroupRoomMembership = GroupRoom & {
   isMemberMuted?: boolean;
   /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
   memberMutedUntil?: string | null;
+  /** Epoch-ms mirror of `memberMutedUntil` (§6). null = not muted / indefinite. */
+  memberMutedUntilMs?: number | null;
   /**
    * The caller's raw `GroupMember.status` — `"ACTIVE" | "LEFT" | "KICKED"`, or
    * null for an internal/unauthenticated read. This is what lets a client
@@ -572,6 +574,11 @@ export class GroupRoomService {
         isMemberMuted && membership?.moderationMutedUntil
           ? membership.moderationMutedUntil.toISOString()
           : null,
+      // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+      memberMutedUntilMs:
+        isMemberMuted && membership?.moderationMutedUntil
+          ? membership.moderationMutedUntil.getTime()
+          : null,
     };
   }
 
@@ -930,6 +937,11 @@ export class GroupRoomService {
         memberMutedUntil:
           isMemberMuted && membership?.moderationMutedUntil
             ? membership.moderationMutedUntil.toISOString()
+            : null,
+        // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+        memberMutedUntilMs:
+          isMemberMuted && membership?.moderationMutedUntil
+            ? membership.moderationMutedUntil.getTime()
             : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,

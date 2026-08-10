@@ -42,6 +42,7 @@ import {
   type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   type CanonicalQuote,
@@ -1230,6 +1231,10 @@ export class CommunityMessageService {
     // tracks its per-room high-water and gap-checks live events. Additive; V1/V2
     // clients ignore it.
     wire.revision = m.revision ?? 0;
+
+    // Normalized tombstone (one shape across private/group/community) — the raw
+    // deletedForAll/deletedForAllAt columns stay on the wire untouched.
+    Object.assign(wire, tombstoneWireFields(m));
 
     // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
     // community") and DROP the raw `visibleToUserId` targeting column from the

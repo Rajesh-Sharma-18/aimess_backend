@@ -20,6 +20,7 @@ import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
@@ -2146,6 +2147,10 @@ export class GroupMessageService {
       if (typeof wire.senderAvatar === "string") {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }
+
+      // Normalized tombstone (one shape across private/group/community) — the
+      // raw isDeleted/deletedAt/deletedType columns stay on the wire untouched.
+      Object.assign(wire, tombstoneWireFields(message));
 
       // Stamp resolved download URLs onto attachment files (content.files[])
       // and the sticker sub-object (content.sticker) — the latter lives
