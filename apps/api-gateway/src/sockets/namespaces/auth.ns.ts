@@ -73,7 +73,9 @@ export function registerAuthNamespace(
         const pending = await takeQrLinkResult(redis, token);
         if (pending) {
           socket.emit(pending.event, pending.data);
-          logger.debug(`/auth replayed pending ${pending.event} for qr:${token}`);
+          logger.debug(
+            `/auth replayed pending ${pending.event} for qr:${token}`
+          );
         }
       })().catch((err: unknown) => {
         logger.warn(`/auth subscribe failed for qr:${token}: ${String(err)}`);

@@ -20,6 +20,14 @@ declare module "socket.io" {
     accessToken: string;
     /** Resolved once per namespace connection; reused for every typing broadcast. */
     userDetails: SocketUserDetails;
+    /**
+     * The call leg this socket owns — one connection of the user, NOT one login.
+     * Two browser tabs share a session (and so `sessionId`), so the client sends a
+     * per-page-load id with `call:answer`; this defaults to `sessionId`/`socket.id`
+     * until then. Read across gateway nodes via `fetchSockets()` to deliver
+     * `call:handled` to every device EXCEPT the one that answered.
+     */
+    callLegId?: string;
   }
 }
 

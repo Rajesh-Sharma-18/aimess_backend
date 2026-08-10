@@ -491,6 +491,11 @@ message InitiateCallRequest {
 message AnswerCallRequest {
   string call_id   = 1;
   string callee_id = 2;
+  // One connection of the user, NOT one login: two browser tabs share a session,
+  // so the client mints this per page load. The answer race is arbitrated on it —
+  // one leg per callee wins and the rest get ALREADY_ANSWERED — and only the
+  // winning leg may later end the call. Empty falls back to session granularity.
+  string leg_id    = 3;
 }
 message AnswerCallResponse {
   string             call_id = 1;
@@ -508,6 +513,7 @@ message DeclineCallResponse {
 message EndCallRequest {
   string call_id = 1;
   string user_id = 2;
+  string leg_id  = 3;
 }
 message EndCallResponse {
   string call_id      = 1;
@@ -556,6 +562,11 @@ message HandleLiveKitRoomFinishedRequest {
   // NOT interchangeable — only a real room close may cancel a RINGING call, since
   // during RINGING the caller is the room's sole participant.
   string event_type = 2;
+  // Participants still in the room when the webhook fired. A `participant_left`
+  // that leaves 2+ behind is one leg dropping out of a call that is still up
+  // (e.g. a second device of one user being evicted for duplicate identity) and
+  // must NOT end the call. -1 when the webhook did not report a count.
+  int32 remaining_participants = 3;
 }
 message HandleLiveKitRoomFinishedResponse {}
 

@@ -115,7 +115,6 @@ describe("/auth namespace — auth:qr:subscribe", () => {
     socket.emit = ((event: string, data: unknown) => {
       received.push({ event, data });
       return true;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     namespace.emit("connection", socket);
 
@@ -146,7 +145,6 @@ describe("/auth namespace — auth:qr:subscribe", () => {
     socket.emit = ((event: string) => {
       received.push(event);
       return true;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     namespace.emit("connection", socket);
 

@@ -1658,10 +1658,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; calleeId?: string };
+          const req = call.request as {
+            callId?: string;
+            calleeId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.answerCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1703,10 +1708,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; userId?: string };
+          const req = call.request as {
+            callId?: string;
+            userId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1765,10 +1775,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { roomName?: string; eventType?: string };
+          const req = call.request as {
+            roomName?: string;
+            eventType?: string;
+            remainingParticipants?: number;
+          };
           await deps.callService.reconcileFromLiveKitRoomFinished(
             req.roomName ?? "",
-            req.eventType ?? ""
+            req.eventType ?? "",
+            req.remainingParticipants ?? -1
           );
           callback(null, {});
         } catch (err) {
