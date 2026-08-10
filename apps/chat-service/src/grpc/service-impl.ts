@@ -3969,8 +3969,14 @@ export function createNotificationImpl(
             }
           };
 
-          if (existing) {
-            const plan = resolveTransition(existing.type, req.type, data);
+          // `CREATE` here means "the matched row belongs to a previous cycle of
+          // a recycled id" — fall through to the insert below so the client gets
+          // a genuine `notification:new`, leaving the old card as history.
+          const plan = existing
+            ? resolveTransition(existing.type, req.type, data)
+            : null;
+
+          if (existing && plan && plan.action !== "CREATE") {
             const existingPayload = (existing.payload ?? {}) as {
               title?: string;
               body?: string;
