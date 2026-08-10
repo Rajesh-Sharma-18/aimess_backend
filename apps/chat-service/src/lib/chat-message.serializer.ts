@@ -98,6 +98,12 @@ export function buildReplyPreviewText(
       return "Contact";
     case "LOCATION":
       return "Location";
+    // A call row's own `content.text` is its lifecycle sentence ("Voice call
+    // cancelled") — the quote names the thing replied to, not its outcome.
+    case "VOICE_CALL":
+      return "📞 Voice call";
+    case "VIDEO_CALL":
+      return "📹 Video call";
     default:
       return text;
   }
