@@ -113,10 +113,14 @@ export const mediaListQuerySchema = z.object({
  * Query schema for the community message-list endpoint.
  * Community messages carry a real per-room monotonic `sequenceNumber`
  * (allocateSequence → generalRoom.lastSequence), so the endpoint supports BOTH
- * the `(createdAt, _id)` timestamp keyset (default; works on all data with no
- * backfill) and the gap-safe `sequenceNumber` keyset (`before_seq`/`after_seq`,
- * opt-in — only trustworthy on rooms whose seq has been backfilled).
+ * the `(createdAt, _id)` timestamp keyset (works on all data with no backfill)
+ * and the gap-safe `sequenceNumber` keyset (`before_seq`/`after_seq` — what the
+ * web client pages on, and only trustworthy on rooms whose seq is backfilled).
  * Timestamps are epoch ms.
+ *
+ * Zod STRIPS unknown keys, so before `before_seq`/`after_seq` existed a client
+ * sending them silently got the NEWEST page back with a 200 — the same cursor
+ * every time, and history that never scrolled past page one.
  *
  * Precedence: `around` → `before_seq`/`after_seq` → `after_ts` (incremental sync)
  * → `before_ts` / newest page.
@@ -150,12 +154,13 @@ export const communityTimelineQuerySchema = z
       )
       .optional(),
     after_ts: z.coerce.number().int().positive().optional(),
-    around: z.string().min(1).max(100).optional(),
-    // Gap-safe sequenceNumber keyset (opt-in). before_seq → sequenceNumber < seq
-    // (newest-first); after_seq → > seq (oldest-first). Takes precedence over the
-    // *_ts params when sent. Only use on rooms whose sequenceNumber is backfilled.
+    // Gap-safe sequenceNumber keyset, same contract as private/group V1:
+    // before_seq → sequenceNumber < seq (newest-first), after_seq → > seq
+    // (oldest-first). Takes precedence over the *_ts params when sent. Only
+    // trustworthy on rooms whose sequenceNumber is backfilled.
     before_seq: z.coerce.number().int().min(0).optional(),
     after_seq: z.coerce.number().int().min(0).optional(),
+    around: z.string().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(30),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {

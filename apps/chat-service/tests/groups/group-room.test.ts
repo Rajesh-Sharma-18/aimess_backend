@@ -11,7 +11,11 @@
  */
 import request from "supertest";
 
-import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
+import {
+  buildApp,
+  mockGroupMemberships,
+  type BuiltMocks,
+} from "../helpers/app-factory.js";
 import {
   bearer,
   makeAccessToken,
@@ -149,9 +153,7 @@ describe("POST /api/chat/groups (create)", () => {
 
 describe("GET /api/chat/groups/my-groups", () => {
   it("POSITIVE: returns the caller's active groups", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
-      { roomId: "grp_1", clearedAt: null },
-    ]);
+    mockGroupMemberships(mocks, [{ roomId: "grp_1", clearedAt: null }]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       { roomId: "grp_1", name: "Devs", lastMessageAt: new Date(1) },
     ]);
@@ -169,7 +171,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   });
 
   it("EDGE: no memberships → 200 with empty data", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([]);
+    mockGroupMemberships(mocks, []);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -182,9 +184,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   // Resolve-on-read: the stored group logo object key must surface as a full
   // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves the group logo object key to a download URL", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
-      { roomId: "grp_1", clearedAt: null },
-    ]);
+    mockGroupMemberships(mocks, [{ roomId: "grp_1", clearedAt: null }]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       {
         roomId: "grp_1",
@@ -214,9 +214,10 @@ describe("GET /api/chat/groups/:roomId", () => {
       roomId: "grp_1",
       name: "Devs",
     });
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       roomId: "grp_1",
       userId: TEST_USER_ID,
+      status: "ACTIVE",
     });
 
     const res = await request(app)
@@ -227,12 +228,20 @@ describe("GET /api/chat/groups/:roomId", () => {
     expect(res.body.data.isJoined).toBe(true);
   });
 
-  it("POSITIVE: isJoined=false for a non-member viewer", async () => {
+  // A voluntary leaver keeps read access (their inbox row survives, frozen at
+  // leftAt) but is no longer "joined".
+  it("POSITIVE: isJoined=false for a member who left", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_1",
       name: "Devs",
+      lastMessageAt: null,
     });
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      roomId: "grp_1",
+      userId: TEST_USER_ID,
+      status: "LEFT",
+      leftAt: new Date(),
+    });
 
     const res = await request(app)
       .get("/api/chat/groups/grp_1")
@@ -240,6 +249,22 @@ describe("GET /api/chat/groups/:roomId", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.isJoined).toBe(false);
+  });
+
+  // The detail read used to have NO membership gate, so anyone holding a roomId
+  // could read the group's name, settings and live `lastMessagePreview` text.
+  it("NEGATIVE: 403 for a kicked/never-member viewer", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+    });
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get("/api/chat/groups/grp_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
   });
 
   it("NEGATIVE: 404 when the group does not exist", async () => {
@@ -259,7 +284,11 @@ describe("GET /api/chat/groups/:roomId", () => {
       name: "Devs",
       avatar: "group-avatars/grp_1/logo.png",
     });
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      roomId: "grp_1",
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+    });
 
     const res = await request(app)
       .get("/api/chat/groups/grp_1")

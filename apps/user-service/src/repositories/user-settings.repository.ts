@@ -165,6 +165,31 @@ export const userSettingsRepository = {
   },
 
   /**
+   * The account-wide Settings → Chat block, for the chat-service send/read
+   * paths and the gateway's typing gate. No settings row yet → the schema
+   * defaults (OFF, and both indicators ON).
+   */
+  async findChatSettings(userId: string): Promise<{
+    autoDeleteTimer: string;
+    typingIndicators: boolean;
+    readReceipts: boolean;
+  }> {
+    const row = await prisma.chatSettings.findUnique({
+      where: { userId },
+      select: {
+        autoDeleteTimer: true,
+        typingIndicators: true,
+        readReceipts: true,
+      },
+    });
+    return {
+      autoDeleteTimer: row?.autoDeleteTimer ?? "OFF",
+      typingIndicators: row?.typingIndicators ?? true,
+      readReceipts: row?.readReceipts ?? true,
+    };
+  },
+
+  /**
    * Addressee-scoped `whoCanSendFriendRequests` for the `sendRequest` gate.
    * `null` means no settings row yet → the caller's `scopeAdmits` falls back to
    * the schema default (EVERYONE), so unset users still receive requests.

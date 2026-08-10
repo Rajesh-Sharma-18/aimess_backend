@@ -1,3 +1,9 @@
+import {
+  buildCallTimelineText,
+  callContentType,
+  isTerminalCallStatus,
+  type CallTimelineStatus,
+} from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
@@ -10,11 +16,7 @@ import type { PrivateMessage } from "../generated/prisma/index.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 
-export type CallChatMessageOutcome =
-  | "ENDED"
-  | "MISSED"
-  | "DECLINED"
-  | "CANCELLED";
+export type CallChatMessageOutcome = CallTimelineStatus;
 
 export interface PostCallChatMessageParams {
   callId: string;
@@ -24,6 +26,7 @@ export interface PostCallChatMessageParams {
   callType: string;
   outcome: CallChatMessageOutcome;
   durationSec?: number;
+  /** Transition timestamp. NOT the row's timestamp — see `createdAt` below. */
   endedAt: Date;
   endedBy: string;
 }
@@ -34,27 +37,49 @@ export type GetCallMessageUserSnapshotFn = (
 
 export type GetCallMessageUserOnlineFn = (userId: string) => Promise<boolean>;
 
-const formatCallDuration = (durationSec: number): string => {
-  const total = Math.max(0, Math.floor(durationSec));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(seconds).padStart(2, "0");
-  return hours > 0
-    ? `${String(hours).padStart(2, "0")}:${mm}:${ss}`
-    : `${mm}:${ss}`;
+/** Stable across the WHOLE lifecycle of one call — the upsert key. */
+const callClientMessageId = (callId: string): string => `call:${callId}`;
+
+/** Current lifecycle state of a persisted call row ("" if it isn't one). */
+export const readCallStatus = (content: unknown): string => {
+  const call = (content as { call?: { callStatus?: unknown } } | null)?.call;
+  return String(call?.callStatus ?? "").toUpperCase();
 };
 
 /**
- * Persists call lifecycle entries into the private DM timeline.
+ * Persists the private DM timeline row for a call.
  *
- * ENDED/DECLINED/CANCELLED are all sender-less SYSTEM/CALL_ENDED audit rows
- * and therefore do not count as unread. A timed-out (MISSED) call is
- * deliberately a normal TEXT row
- * from caller to callee, so it behaves like ordinary chat (unread, inbox bump,
- * and push fallback). This service is internal-only: callers cannot forge these
- * records through the public message send API.
+ * ONE CALL === ONE ROW. The row is written the instant the call starts ringing
+ * and then transitions IN PLACE — same message id, same `callId`, same
+ * `createdAt` — through every subsequent state:
+ *
+ *   RINGING → ANSWERED → ENDED
+ *   RINGING → DECLINED | MISSED | CANCELLED | FAILED
+ *
+ * This is what makes the chat behave like WhatsApp: the callee sees the card
+ * while their phone is still ringing, and that same card becomes "Declined" /
+ * "02:14" instead of a second card appearing beneath the first. `post()` is
+ * therefore an UPSERT keyed on `clientMessageId = "call:<callId>"`: insert on
+ * first call, update on every later one. The insert broadcasts `message:new`,
+ * updates broadcast `message:edited` — both carry the full canonical
+ * ChatMessage, so a client applies either by replacing the row with that id.
+ *
+ * Every row is stored with `messageType` = VOICE_CALL or VIDEO_CALL (see
+ * `callContentType`), never SYSTEM, so the persisted kind, the live payload and
+ * every read path agree — the client never has to infer "this was a call" from
+ * `content.text`.
+ *
+ * Rows are sender-less (`senderId: ""`): nobody "sent" a call outcome, the call
+ * did — and a stable empty sender is also what keeps the upsert key stable
+ * across a lifecycle whose final actor is not known when the row is created.
+ * Direction is carried explicitly in `content.call.callerId` instead, so the
+ * client can render ↗ outgoing / ↙ incoming without guessing from `senderId`.
+ * Unread is likewise explicit: only a MISSED call raises a badge, and only on
+ * the transition INTO missed, so a ringing card never inflates a counter.
+ *
+ * This service is internal-only: callers cannot forge these records through the
+ * public message send API (VOICE_CALL/VIDEO_CALL are not in the sendable
+ * CONTENT_TYPES enum).
  */
 export class CallChatMessageService {
   constructor(
@@ -91,62 +116,132 @@ export class CallChatMessageService {
       return null;
     }
 
-    // Only MISSED stays a normal sender-visible TEXT row (unread, inbox bump,
-    // push fallback) — ENDED/DECLINED/CANCELLED are all sender-less SYSTEM
-    // audit rows, since neither side "sent" the outcome, the call itself did.
-    const isSystemOutcome = params.outcome !== "MISSED";
-    const senderId = isSystemOutcome ? "" : params.callerId;
+    const status = params.outcome;
+    const senderId = "";
     const receiverId = params.calleeId;
-    const clientMessageId = `call:${params.callId}:${params.outcome.toLowerCase()}`;
+    const clientMessageId = callClientMessageId(params.callId);
 
-    // A terminal Call transition is atomic, so normally there is one writer.
-    // Keep this deterministic lookup as a second idempotency barrier for retries.
     const existing = await this.messageRepo.findByClientMessageId(
       room.roomId,
       senderId,
       clientMessageId
     );
-    if (existing) return existing;
+
+    // Terminal is terminal: a late/duplicate transition (retry, racing sweep,
+    // LiveKit webhook arriving after the user's own hangup) must never rewrite
+    // an ENDED card back to RINGING or overwrite one outcome with another.
+    if (existing) {
+      const currentStatus = readCallStatus(existing.content);
+      if (isTerminalCallStatus(currentStatus) || currentStatus === status) {
+        return existing;
+      }
+    }
 
     const callLabel =
-      params.callType.toUpperCase() === "VIDEO" ? "Video" : "Voice";
+      params.callType.toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
     const durationSec = Math.max(0, Math.floor(params.durationSec ?? 0));
-    const text =
-      params.outcome === "ENDED"
-        ? `${callLabel} call lasted ${formatCallDuration(durationSec)}`
-        : params.outcome === "MISSED"
-          ? `${callLabel} call was not answered`
-          : params.outcome === "DECLINED"
-            ? `${callLabel} call declined`
-            : `${callLabel} call cancelled`;
-    const messageType = isSystemOutcome ? "SYSTEM" : "TEXT";
-    const systemEvent = isSystemOutcome ? SystemEvent.CALL_ENDED : null;
-    const systemData = isSystemOutcome
-      ? {
-          callId: params.callId,
-          callType: params.callType.toUpperCase(),
-          status: params.outcome,
-          durationSec,
-          callerId: params.callerId,
-          calleeId: params.calleeId,
-          endedBy: params.endedBy,
-        }
-      : null;
+    const text = buildCallTimelineText({
+      callType: callLabel,
+      status,
+      durationSec,
+    });
+    // Kind is derived from the CALL's own metadata (`call.type`), never from the
+    // rendered text — VOICE_CALL / VIDEO_CALL for every state, so a call row is
+    // identifiable as a call (and as which kind of call) on every surface: REST
+    // history, /changes, chat:catchup, live message:new/message:edited, inbox.
+    const messageType = callContentType(params.callType);
+    // CALL_STARTED while the call is live, CALL_ENDED once it settles. Both are
+    // lifecycle markers, so `shouldCountInUnread` treats the row as a system row
+    // unless `countInUnread` says otherwise — which is exactly what we want.
+    const systemEvent = isTerminalCallStatus(status)
+      ? SystemEvent.CALL_ENDED
+      : SystemEvent.CALL_STARTED;
+    const systemData = {
+      callId: params.callId,
+      callType: callLabel,
+      status,
+      durationSec,
+      callerId: params.callerId,
+      calleeId: params.calleeId,
+      endedBy: params.endedBy,
+    };
     const content = {
       text,
       urls: [],
       files: [],
       call: {
         callId: params.callId,
-        callType: params.callType.toUpperCase(),
-        outcome: params.outcome,
+        callType: callLabel,
+        callStatus: status,
+        // Legacy alias — pre-lifecycle clients read `outcome`. Same value.
+        outcome: status,
         durationSec,
+        callerId: params.callerId,
+        calleeId: params.calleeId,
       },
     };
-    const countInUnread = !isSystemOutcome;
-    const sequenceNumber = await this.roomRepo.allocateSequence(room.roomId);
+    // Only a call the callee never answered raises a badge, and only once — on
+    // the transition into MISSED, never while it is merely ringing.
+    const countInUnread = status === "MISSED";
+
+    return existing
+      ? this.applyTransition({
+          params,
+          roomId: room.roomId,
+          existing,
+          content,
+          messageType,
+          systemEvent,
+          systemData,
+          countInUnread,
+          text,
+        })
+      : this.createRow({
+          params,
+          roomId: room.roomId,
+          senderId,
+          receiverId,
+          clientMessageId,
+          content,
+          messageType,
+          systemEvent,
+          systemData,
+          countInUnread,
+          text,
+        });
+  }
+
+  /** First state of the call — normally RINGING, from `CallService.initiateCall`. */
+  private async createRow(args: {
+    params: PostCallChatMessageParams;
+    roomId: string;
+    senderId: string;
+    receiverId: string;
+    clientMessageId: string;
+    content: Record<string, unknown>;
+    messageType: string;
+    systemEvent: string;
+    systemData: Record<string, unknown>;
+    countInUnread: boolean;
+    text: string;
+  }): Promise<PrivateMessage> {
+    const {
+      params,
+      roomId,
+      senderId,
+      receiverId,
+      clientMessageId,
+      content,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+      text,
+    } = args;
+
+    const sequenceNumber = await this.roomRepo.allocateSequence(roomId);
     const message = await this.messageRepo.createMessage({
-      roomId: room.roomId,
+      roomId,
       senderId,
       receiverId,
       content,
@@ -156,13 +251,16 @@ export class CallChatMessageService {
       countInUnread,
       clientMessageId,
       sequenceNumber,
+      // The card's timestamp is when the call STARTED and never moves again,
+      // even though the row keeps changing — a WhatsApp call card shows the
+      // time it rang, not the time it was hung up.
       createdAt: params.endedAt,
     });
 
     // Keep the durable room snapshot/unread state in lockstep with the row.
     await this.roomRepo
       .updateRoomOnNewMessage({
-        roomId: room.roomId,
+        roomId,
         message: {
           _id: message.id,
           content: message.content,
@@ -183,21 +281,159 @@ export class CallChatMessageService {
         );
       });
 
-    const callerSnapshot = isSystemOutcome
-      ? { displayName: "", avatarUrl: "" }
-      : await this.getUserSnapshot(params.callerId).catch(() => ({
-          displayName: "",
-          avatarUrl: "",
-        }));
-    const serverTs = message.createdAt.getTime();
+    await this.broadcast({
+      event: "message:new",
+      roomId,
+      message,
+      clientMessageId,
+      senderId,
+      receiverId,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+      text,
+      params,
+    });
+
+    return message;
+  }
+
+  /**
+   * Every state after the first. Rewrites the SAME row and fans it out as
+   * `message:edited` so open chats swap the card in place, multi-device peers
+   * converge on one card, and `/changes` (via the bumped revision) replays the
+   * final state to anyone who was offline for the whole call.
+   */
+  private async applyTransition(args: {
+    params: PostCallChatMessageParams;
+    roomId: string;
+    existing: PrivateMessage;
+    content: Record<string, unknown>;
+    messageType: string;
+    systemEvent: string;
+    systemData: Record<string, unknown>;
+    countInUnread: boolean;
+    text: string;
+  }): Promise<PrivateMessage> {
+    const {
+      params,
+      roomId,
+      existing,
+      content,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+      text,
+    } = args;
+
+    const message = await this.messageRepo.updateCallState({
+      messageId: existing.id,
+      roomId,
+      content,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+    });
+
+    // Refresh the inbox snapshot ONLY while the call row is still the room's
+    // last message. If a real message landed mid-call, rewriting lastMessage*
+    // here would rewind the inbox row to the call and reorder the list wrongly.
+    const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
+    if (room?.lastMessageId === existing.id) {
+      await this.roomRepo
+        .updateRoomOnNewMessage({
+          roomId,
+          message: {
+            _id: message.id,
+            content: message.content,
+            senderId: "",
+            messageType,
+            systemEvent,
+            systemData,
+            createdAt: existing.createdAt,
+          },
+          receiverId: params.calleeId,
+          // A MISSED call is the one transition that raises the callee's badge.
+          unreadIncrement: countInUnread ? 1 : 0,
+        })
+        .catch((error: unknown) => {
+          logger.warn(
+            `CallChatMessageService|transition|room update failed callId=${params.callId}: ${String(error)}`
+          );
+        });
+    }
+
+    await this.broadcast({
+      event: "message:edited",
+      roomId,
+      message,
+      clientMessageId: callClientMessageId(params.callId),
+      senderId: "",
+      receiverId: params.calleeId,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+      text,
+      params,
+      // The row keeps its original timestamp across the whole lifecycle.
+      serverTsOverride: existing.createdAt.getTime(),
+      sequenceNumberOverride: existing.sequenceNumber,
+    });
+
+    return message;
+  }
+
+  /**
+   * Shared fan-out for both the insert and every transition: the canonical
+   * ChatMessage on `conv:<roomId>`, the inbox bump, and (missed calls only) the
+   * push fallback.
+   */
+  private async broadcast(args: {
+    event: "message:new" | "message:edited";
+    roomId: string;
+    message: PrivateMessage;
+    clientMessageId: string;
+    senderId: string;
+    receiverId: string;
+    messageType: string;
+    systemEvent: string;
+    systemData: Record<string, unknown>;
+    countInUnread: boolean;
+    text: string;
+    params: PostCallChatMessageParams;
+    serverTsOverride?: number;
+    sequenceNumberOverride?: number;
+  }): Promise<void> {
+    const {
+      event,
+      roomId,
+      message,
+      clientMessageId,
+      senderId,
+      receiverId,
+      messageType,
+      systemEvent,
+      systemData,
+      countInUnread,
+      text,
+      params,
+    } = args;
+
+    const serverTs = args.serverTsOverride ?? message.createdAt.getTime();
+    const sequenceNumber =
+      args.sequenceNumberOverride ?? message.sequenceNumber ?? 0;
     const wire = buildChatMessageEvent({
       id: message.id,
       clientMessageId,
-      roomId: room.roomId,
+      roomId,
       conversationType: "PRIVATE",
       senderId,
-      senderName: callerSnapshot.displayName,
-      senderAvatar: callerSnapshot.avatarUrl,
+      senderName: "",
+      senderAvatar: "",
       receiverId,
       messageType,
       content: message.content,
@@ -205,28 +441,25 @@ export class CallChatMessageService {
       serverTs,
       sequenceNumber,
       countInUnread,
-      systemEvent: systemEvent ?? undefined,
-      systemData: systemData ?? undefined,
+      systemEvent,
+      systemData,
     });
 
     await this.redis
-      .publish(
-        `conv:${room.roomId}`,
-        JSON.stringify({ event: "message:new", data: wire })
-      )
+      .publish(`conv:${roomId}`, JSON.stringify({ event, data: wire }))
       .catch((error: unknown) => {
         logger.warn(
-          `CallChatMessageService|post|message:new publish failed callId=${params.callId}: ${String(error)}`
+          `CallChatMessageService|${event} publish failed callId=${params.callId}: ${String(error)}`
         );
       });
 
     publishConvUpdatedSafe({
       redis: this.redis,
       type: "PRIVATE",
-      roomId: room.roomId,
+      roomId,
       recipientIds: [params.callerId, params.calleeId],
       senderId,
-      senderName: callerSnapshot.displayName,
+      senderName: "",
       lastMessageId: message.id,
       lastMessageAt: serverTs,
       preview: { contentType: messageType, text },
@@ -237,16 +470,21 @@ export class CallChatMessageService {
       // `unread: true/false` flag the client must optimistically +1, which can
       // drift from the room's authoritative unreadCountByUser.
       resolveUnreadCounts: async () => {
-        const r = await this.roomRepo
-          .findByRoomId(room.roomId)
-          .catch(() => null);
+        const r = await this.roomRepo.findByRoomId(roomId).catch(() => null);
         return { ...((r?.unreadCountByUser as Record<string, number>) ?? {}) };
       },
     });
 
-    if (!isSystemOutcome) {
+    // Push fallback for a call the callee never picked up. Only on the MISSED
+    // transition — a ringing card must not push (the VoIP/incoming-call push
+    // from CallService already covers that), and an ended/declined card is
+    // something the callee was demonstrably present for.
+    if (params.outcome === "MISSED") {
+      const callerSnapshot = await this.getUserSnapshot(params.callerId).catch(
+        () => ({ displayName: "", avatarUrl: "" })
+      );
       publishMessageSentSafe({
-        conversationId: room.roomId,
+        conversationId: roomId,
         conversationType: "PRIVATE",
         messageId: message.id,
         clientMessageId,
@@ -259,7 +497,5 @@ export class CallChatMessageService {
         recipientIds: [params.calleeId],
       });
     }
-
-    return message;
   }
 }

@@ -2,6 +2,16 @@
 .env
 .env.*
 !.env.example
+# Deployment templates carry no secrets and MUST be committed. Without these
+# two exceptions the `.env.*` rule above swallows them, and a fresh clone has
+# nothing to copy from on the server.
+!deploy/*/.env.*.example
+# ...but the filled-in copies next to them never get committed.
+deploy/*/.env.dev01
+deploy/*/.env.dev02
+
+# DEPLOYMENT — rendered from config.yaml.template; contains the Redis password.
+deploy/livekit/config.yaml
 
 # NODE
 node_modules
@@ -30,6 +40,14 @@ Thumbs.db
 /testing-suite
 
 *.md
+# The deployment runbook is operational, not documentation: deploy/README.md is
+# the procedure the server-side scripts reference by name, so a fresh clone on
+# a server must contain it.
+!deploy/README.md
+!deploy/ARCHITECTURE.md
+!deploy/OPERATIONS.md
+!deploy/DOMAINS-AND-STATUS.md
+!deploy/scripts/*.md
 tree-data.json
 community_*.json
 demo-frontend/

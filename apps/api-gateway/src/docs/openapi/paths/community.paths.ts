@@ -642,29 +642,23 @@ export const communityPaths = {
       summary: "List my communities (joined) / search communities",
       description:
         "Unified communities list. The mode is inferred from the params — there " +
-        "is no `scope` flag. All params are optional: omitting `cursor`, " +
-        "`before_ts`, `after_ts`, `q`, and `categoryId` returns the default " +
-        "**search mode** page (PUBLIC + joined PRIVATE, `filter=all`, page 1). The " +
-        "only mutually-exclusive rule is that `before_ts` and `after_ts` cannot " +
-        "both be sent (→ 400).\n\n" +
-        "**Joined mode** (`cursor`, `before_ts` or `after_ts` present) — " +
-        "communities where you are an ACTIVE member, ordered by `lastActivityAt` " +
-        "(latest community message, else createdAt). Pagination takes precedence " +
-        "over `q`/`categoryId` if both are sent. Returns " +
-        "`MyCommunitiesResponseData`. Two cursor forms:\n" +
-        "- **`cursor` (PREFERRED)** — the opaque compound `(lastActivityAt, id)` " +
-        "keyset token. Boundaries are EXCLUSIVE, so a community can no longer skip " +
-        "or duplicate across a page edge when two tie on `lastActivityAt`. Feed " +
-        '`pagination.nextCursor` (a `"<lastActivityAtMs>_<communityId>"` token) ' +
-        "back VERBATIM; a bare epoch-ms is accepted as a coarse first jump. " +
-        "`cursor` wins over `before_ts`/`after_ts` when both are sent.\n" +
-        "- **`before_ts` / `after_ts` (legacy)** — bare epoch ms: `before_ts` " +
-        "returns items with `lastActivityAt <= before_ts` (newest-first), " +
-        "`after_ts` returns `lastActivityAt >= after_ts` (oldest-first). " +
-        "Boundaries are INCLUSIVE, so consecutive pages can share the boundary " +
-        "item — de-duplicate by `id`. `pagination.nextCursor` comes back as bare " +
-        "epoch-ms in this mode.\n\n" +
-        "**Search mode** (`q` and/or `categoryId`, no pagination) — communities " +
+        "is no `scope` flag. All params are optional: omitting `before_ts`, " +
+        "`after_ts`, `q`, and `categoryId` returns the default **joined mode** " +
+        "newest page (your own communities only — it never falls back to public " +
+        "browse, so a user with no memberships gets an empty page). The only " +
+        "mutually-exclusive " +
+        "rule is that `before_ts` and `after_ts` cannot both be sent (→ 400).\n\n" +
+        "**Joined mode** (default, or `before_ts`/`after_ts` present) — communities where " +
+        "you are an ACTIVE member, ordered by `lastActivityAt` (latest community " +
+        "message, else createdAt). Timestamp-cursor pagination: `before_ts` " +
+        "returns items with `lastActivityAt <= before_ts` (newest-first); " +
+        "`after_ts` returns items with `lastActivityAt >= after_ts` (oldest-first); " +
+        "mutually exclusive. Boundaries are inclusive (consecutive pages can share " +
+        "the boundary item — de-duplicate by `id`). Page with " +
+        "`pagination.nextCursor` (epoch-ms) fed back as the same param. Pagination " +
+        "takes precedence over `q`/`categoryId` if both are sent. Returns " +
+        "`MyCommunitiesResponseData`.\n\n" +
+        "**Search mode** (`q`, `categoryId`, or a non-`all` `filter`, and no pagination) — communities " +
         "matching the filters across **PUBLIC communities PLUS any PRIVATE " +
         "community you are already an ACTIVE member of** (joined communities are " +
         "NOT excluded). Optional `q` searches name and handle (case-insensitive); " +

@@ -119,10 +119,13 @@ const discoverSearchSchema = z
 
 /**
  * `GET /communities/mine` — a single endpoint that serves two modes, inferred
- * from the params (no `scope` flag).
+ * from the params (no `scope` flag). Every param is optional; with none of them
+ * present the endpoint returns the JOINED newest page (the Community screen's
+ * first load) — it never falls back to public browse, so a user with no
+ * memberships gets an empty page.
  *
- *   joined mode (`cursor`, `before_ts` OR `after_ts` present) — the caller's own
- *     communities, ordered by `lastActivityAt`.
+ *   joined mode (default, or `cursor` / `before_ts` / `after_ts` present) — the
+ *     caller's own communities, ordered by `lastActivityAt`.
  *       cursor    → gap-safe compound `(lastActivityAt, id)` keyset, EXCLUSIVE.
  *                   Preferred: same-millisecond communities are returned exactly
  *                   once, so no client-side de-duplication is needed.
@@ -131,11 +134,11 @@ const discoverSearchSchema = z
  *     Timestamps are epoch milliseconds and mutually exclusive. Pagination takes
  *     precedence over `q`/`categoryId` if both are sent.
  *
- *   search mode (q and/or categoryId, no pagination) — PUBLIC communities plus
- *     any PRIVATE community the caller is already an ACTIVE member of, filtered
- *     by `q` / `categoryId`, using **offset (page) pagination**.
- *     `filter`: "all" browses every public community; "live"/"upcoming" are
- *     reserved for livestream filtering (no-op until stream-service exists).
+ *   search mode (q, categoryId, or a non-"all" filter, and no pagination) —
+ *     PUBLIC communities plus any PRIVATE community the caller is already an
+ *     ACTIVE member of, filtered by `q` / `categoryId`, using **offset (page)
+ *     pagination**. "live"/"upcoming" are reserved for livestream filtering
+ *     (no-op until stream-service exists).
  *
  * Both modes share `limit`.
  */

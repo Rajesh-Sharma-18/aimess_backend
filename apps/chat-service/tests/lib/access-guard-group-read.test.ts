@@ -1,9 +1,10 @@
 /**
  * `assertGroupReadAccess` — widens group message reads past
- * `assertGroupMember`'s ACTIVE-only gate for a member who voluntarily LEFT:
- * they keep read access to history up to (and including) `leftAt`, so the
- * chat stays visible/scrollable but read-only (WhatsApp-style), while every
- * WRITE path stays on the unchanged `assertGroupMember` ACTIVE-only check.
+ * `assertGroupMember`'s ACTIVE-only gate for a member who voluntarily LEFT or
+ * was REMOVED (kicked) by an admin: they keep read access to history up to
+ * (and including) `leftAt`/`kickedAt`, so the chat stays visible/scrollable but
+ * read-only (WhatsApp-style), while every WRITE path stays on the unchanged
+ * `assertGroupMember` ACTIVE-only check. BANNED stays denied on both axes.
  */
 import { ForbiddenError } from "@aimess/errors";
 import { assertGroupReadAccess } from "../../src/lib/access-guard.js";
@@ -39,8 +40,15 @@ describe("assertGroupReadAccess", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("denies a kicked member", async () => {
-    findByRoomAndUser.mockResolvedValue({ status: "KICKED" });
+  it("grants read access capped at kickedAt for a REMOVED member", async () => {
+    const kickedAt = new Date("2026-02-02T00:00:00.000Z");
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt });
+    const result = await assertGroupReadAccess(memberRepo, ROOM_ID, USER_ID);
+    expect(result.readCutoffBefore).toEqual(kickedAt);
+  });
+
+  it("denies a KICKED row with no kickedAt timestamp (defensive)", async () => {
+    findByRoomAndUser.mockResolvedValue({ status: "KICKED", kickedAt: null });
     await expect(
       assertGroupReadAccess(memberRepo, ROOM_ID, USER_ID)
     ).rejects.toBeInstanceOf(ForbiddenError);

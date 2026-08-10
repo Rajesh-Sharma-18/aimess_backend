@@ -123,7 +123,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       type: "AUDIO",
     });
 
-    await service.reconcileFromLiveKitRoomFinished("c1");
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
 
     expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
       "c1",
@@ -146,7 +146,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
   it("unknown room → no writes, no publishes", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue(null);
-    await service.reconcileFromLiveKitRoomFinished("nope");
+    await service.reconcileFromLiveKitRoomFinished("nope", "room_finished");
     expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
@@ -157,7 +157,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       callId: "c1",
       status: "ENDED",
     });
-    await service.reconcileFromLiveKitRoomFinished("c1");
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
     expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
@@ -173,7 +173,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       type: "AUDIO",
     });
 
-    await service.reconcileFromLiveKitRoomFinished("c1");
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
 
     expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
       "c1",
@@ -197,6 +197,50 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     );
   });
 
+  // Regression: rapid cancel-then-recall churns the caller's LiveKit connection,
+  // and during RINGING the caller is the room's ONLY participant — so treating
+  // participant_left like room_finished cancelled the brand-new call. The caller
+  // saw a 15s hang then "engine not connected"; the callee's incoming box
+  // appeared and vanished before it could be answered.
+  it("RINGING + participant_left → ignored (only room_finished may cancel a ring)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "RINGING",
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
+    });
+
+    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left");
+
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+  });
+
+  it("IN_PROGRESS + participant_left → still ends (a peer dropping ends an answered call)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: new Date(1_000_000),
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
+    });
+
+    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left");
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "IN_PROGRESS",
+      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
+    );
+  });
+
   it("RINGING with a lost claim (raced by decline/sweep) publishes nothing", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
@@ -207,7 +251,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     });
     stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
 
-    await service.reconcileFromLiveKitRoomFinished("c1");
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
 
     expect(stubs.redis.publish).not.toHaveBeenCalled();
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
@@ -226,7 +270,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     });
     stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
 
-    await service.reconcileFromLiveKitRoomFinished("c1");
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
 
     expect(stubs.redis.publish).not.toHaveBeenCalled();
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();

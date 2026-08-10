@@ -552,6 +552,10 @@ message InitiateCallResponse {
 message HandleLiveKitRoomFinishedRequest {
   // LiveKit room_name == callId by our convention (see call.service.ts).
   string room_name = 1;
+  // Originating LiveKit webhook: "room_finished" or "participant_left". They are
+  // NOT interchangeable — only a real room close may cancel a RINGING call, since
+  // during RINGING the caller is the room's sole participant.
+  string event_type = 2;
 }
 message HandleLiveKitRoomFinishedResponse {}
 

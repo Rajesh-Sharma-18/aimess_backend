@@ -65,8 +65,37 @@ export function keysetFilter(
   };
 }
 
+/** Escapes every regex metacharacter so a query like `c++ (v2)` is matched
+ *  literally instead of blowing up as an invalid pattern. */
+export function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Builds the message-search page pipeline: a case-insensitive SUBSTRING match
+ * on `field`, newest-first with an `_id` tiebreaker, bounded by a keyset cursor
+ * and a top-k `$limit`.
+ *
+ * Substring, not `$text`. The Mongo text indexes are built with
+ * `defaultLanguage: "none"` (multi-locale product — no stemmer is correct for
+ * every room), so `$text` matched whole tokens only: "test" missed "Testing"
+ * and no prefix query ever matched while the user was still typing.
+ *
+ * The usual objection to regex here — "no index can serve it" — does not hold
+ * for these queries. Every one of them pins `roomId` to a single room, and the
+ * `[roomId, createdAt desc]` compound index serves both that equality and the
+ * sort. Mongo therefore walks one room's messages in output order and stops at
+ * `limit + 1` matches, so a common term early-exits almost immediately; only a
+ * zero-match query walks the whole room. The caller debounces, and `$limit`
+ * caps the work either way.
+ *
+ * Relevance scoring goes away with `$text` ($meta: "textScore" needs it). It
+ * was never load-bearing: results have always been ordered by `createdAt`, and
+ * the score rode along only as a passthrough field.
+ */
 export function buildTextSearchPipeline(params: {
   match: Record<string, unknown>;
+  field: string;
   query: string;
   cursor: SearchKeyset | null;
   limit: number;
@@ -74,15 +103,17 @@ export function buildTextSearchPipeline(params: {
   const keyset = keysetFilter(params.cursor);
   const match: Record<string, unknown> = {
     ...params.match,
-    $text: { $search: params.query },
+    [params.field]: { $regex: escapeRegex(params.query), $options: "i" },
   };
+  // Kept as a separate stage rather than merged: `match` may already carry its
+  // own `createdAt` bound (a deletion/ban cutoff) that a merged object would
+  // silently overwrite. Mongo coalesces adjacent $match stages anyway.
   const pipeline: Record<string, unknown>[] = [{ $match: match }];
   if (Object.keys(keyset).length > 0) pipeline.push({ $match: keyset });
   pipeline.push(
-    { $addFields: { score: { $meta: "textScore" } } },
     { $sort: { createdAt: -1, _id: -1 } },
     { $limit: params.limit + 1 },
-    { $project: { _id: 1, createdAt: 1, score: 1 } }
+    { $project: { _id: 1, createdAt: 1 } }
   );
   return pipeline;
 }
@@ -116,13 +147,4 @@ export function orderByIds<T extends { id: string }>(
   return rows
     .filter((row) => order.has(row.id))
     .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-}
-
-export function isTextIndexMissing(error: unknown): boolean {
-  const message =
-    error && typeof error === "object"
-      ? ((error as { meta?: { message?: unknown } }).meta?.message ??
-        (error instanceof Error ? error.message : ""))
-      : "";
-  return /text index required|no text index/i.test(String(message));
 }

@@ -202,23 +202,49 @@ export const listMyCommunities = asyncHandler(
         .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
     }
 
-    // Else → search mode: PUBLIC communities plus PRIVATE ones the caller is an
-    // ACTIVE member of (offset pagination), filtered by q/categoryId.
-    const result = await communityService.discover(req.auth.userId, {
-      q,
-      categoryId,
-      filter,
-      page,
+    // Search mode ONLY when a search/browse filter is present, and only when no
+    // pagination param was sent (pagination keeps precedence over q/categoryId).
+    // Anything else — including a bare `?limit=50` — is the caller's JOINED list.
+    //
+    // Before this gate, "no cursor" alone fell through to discover(), so the
+    // Community screen's first load (`/mine?limit=50`) returned every PUBLIC
+    // community on the platform: for a brand-new user with zero memberships the
+    // list looked like someone else's data instead of the empty list it is.
+    const isSearch = q != null || categoryId != null || filter !== "all";
+
+    if (isSearch) {
+      // Search mode: PUBLIC communities plus PRIVATE ones the caller is an
+      // ACTIVE member of (offset pagination), filtered by q/categoryId.
+      const result = await communityService.discover(req.auth.userId, {
+        q,
+        categoryId,
+        filter,
+        page,
+        limit,
+        includeJoined: true,
+        includeChatActivity: true,
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
+        );
+    }
+
+    // No params at all → the JOINED newest page (the Community screen's first
+    // load). Stays on the legacy bare-ms path so the cursor-less default keeps
+    // the contract existing clients already page on; `cursor` above is the
+    // opt-in gap-safe upgrade.
+    const result = await communityService.listMine(req.auth.userId, {
+      direction: "before",
+      ts: new Date(),
       limit,
-      includeJoined: true,
-      includeChatActivity: true,
     });
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
-      );
+      .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
   }
 );
 

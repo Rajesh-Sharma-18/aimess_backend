@@ -2,11 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    // Required even though tsconfig.base.json sets "outDir": "dist" — TypeScript
-    // resolves a relative path against the file that DECLARES it, so inheriting it
-    // emitted to <repo-root>/dist instead of here. That left `start`
-    // (node dist/server.js) with nothing to run and made turbo's
-    // `outputs: ["dist/**"]` never match, so this package was never cached.
+    // Required even though tsconfig.base.json sets it: relative paths in an
+    // extended config resolve against the BASE file's directory, so the
+    // inherited value points at <repo-root>/dist. Every other service
+    // re-declares it for the same reason.
     "outDir": "dist"
   },
   "include": ["src"]

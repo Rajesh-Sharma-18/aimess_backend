@@ -226,12 +226,15 @@ async function emitRequestCreated(
 }
 
 /**
- * Emit `conversation:pending-friend-request` to the addressee ONLY — powers
- * the Telegram-style pending row in their private-chat conversation list,
- * live, before any room/message exists. Additive alongside the existing
- * `friend:request:received` event above (same trigger point, same transport);
- * this one carries the FULL synthetic conversation-list-row shape the
- * frontend can render without a follow-up fetch.
+ * Emit `conversation:pending-friend-request` to the addressee ONLY — feeds
+ * their Friend Requests list live, before any room/message exists. Additive
+ * alongside the existing `friend:request:received` event above (same trigger
+ * point, same transport); this one carries the requester's profile so the
+ * request renders without a follow-up fetch.
+ *
+ * It must NOT produce an inbox/conversation row: a pending request is not a
+ * conversation, and no room exists for it (a room is created on accept, in
+ * `emitConversationFriendRequestAccepted`).
  */
 async function emitConversationPendingFriendRequest(
   row: FriendshipRow,

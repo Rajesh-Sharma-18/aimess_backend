@@ -15,12 +15,22 @@
  * can assert the publish side-effect that lives inside the repository.
  */
 
-// Prisma I/O boundary — only `communityMember.update` is touched here.
+// Prisma I/O boundary. Reactivation is one interactive-free `$transaction`:
+// the member row flips to ACTIVE while the previous cycle's mute + warning rows
+// are deleted, so all three either land or none do. The mock resolves the array
+// in order, mirroring Prisma's own sequential-array semantics.
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
     communityMember: {
       update: jest.fn(),
     },
+    communityMemberMute: {
+      deleteMany: jest.fn(),
+    },
+    communityMemberWarning: {
+      deleteMany: jest.fn(),
+    },
+    $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
   },
 }));
 
@@ -44,14 +54,27 @@ jest.mock("../../src/generated/prisma/index.js", () => {
 });
 jest.unmock("../../src/repositories/community.repository.js");
 
+import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
+
 import { prisma } from "../../src/config/prisma.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
-import { publishCommunityMemberSyncedForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import {
+  publishCommunityMemberMuteSyncedForChatSafe,
+  publishCommunityMemberSyncedForChatSafe,
+} from "../../src/messaging/publish-community-chat.js";
 
-const updateMock = (
-  prisma as unknown as { communityMember: { update: jest.Mock } }
-).communityMember.update;
+const prismaMock = prisma as unknown as {
+  communityMember: { update: jest.Mock };
+  communityMemberMute: { deleteMany: jest.Mock };
+  communityMemberWarning: { deleteMany: jest.Mock };
+};
+const updateMock = prismaMock.communityMember.update;
+const deleteMutesMock = prismaMock.communityMemberMute.deleteMany;
+const deleteWarningsMock = prismaMock.communityMemberWarning.deleteMany;
 const pubSynced = publishCommunityMemberSyncedForChatSafe as jest.Mock;
+const pubMuteSynced = publishCommunityMemberMuteSyncedForChatSafe as jest.Mock;
+const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
+const pubUserEvent = publishChatUserEvent as jest.Mock;
 
 const CID = "c".repeat(24);
 const USER = "99999999-9999-4999-8999-999999999999";
@@ -77,6 +100,9 @@ const reactivatedRow = {
 describe("communityRepository.reactivateMemberWithSnapshot", () => {
   beforeEach(() => {
     updateMock.mockResolvedValue(reactivatedRow);
+    // Default: the ending cycle carried no mute (the common rejoin).
+    deleteMutesMock.mockResolvedValue({ count: 0 });
+    deleteWarningsMock.mockResolvedValue({ count: 0 });
   });
 
   it("flips the row back to ACTIVE/MEMBER, writes the fresh snapshot, and returns it", async () => {
@@ -123,6 +149,68 @@ describe("communityRepository.reactivateMemberWithSnapshot", () => {
       status: "ACTIVE",
       role: "MEMBER",
     });
+  });
+
+  // ── Fresh-membership guarantees ────────────────────────────────────────────
+  // Reported bug: admin mutes a member, the member is then removed / leaves /
+  // is banned, and on rejoining they are STILL muted — the moderation state of a
+  // membership cycle outlived the cycle itself. A rejoin must produce a member
+  // indistinguishable from someone joining for the first time.
+
+  it("clears the previous cycle's ban metadata (a rejoin is not a banned row)", async () => {
+    await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
+
+    const { data } = updateMock.mock.calls[0][0];
+    expect(data.bannedAt).toEqual({ unset: true });
+    expect(data.bannedBy).toEqual({ unset: true });
+    expect(data.banReason).toEqual({ unset: true });
+  });
+
+  it("deletes the previous cycle's mute and warning rows in the SAME write as the ACTIVE flip", async () => {
+    await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
+
+    const where = { communityId: CID, userId: USER };
+    expect(deleteMutesMock).toHaveBeenCalledWith({ where });
+    expect(deleteWarningsMock).toHaveBeenCalledWith({ where });
+    // Atomic with the status flip — never a window where the member reads as
+    // ACTIVE while the old mute row still gates them.
+    expect(
+      (prisma as unknown as { $transaction: jest.Mock }).$transaction
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: a rejoin that cleared a mute tells chat-service AND both socket channels, so the composer re-enables with no reload", async () => {
+    deleteMutesMock.mockResolvedValue({ count: 1 });
+
+    await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
+
+    // 1. Lift the mirrored write-path gate in chat-service.
+    expect(pubMuteSynced).toHaveBeenCalledWith({
+      communityId: CID,
+      userId: USER,
+      isMuted: false,
+      mutedUntil: null,
+    });
+    // 2. Real-time fan-out: the roster badge for everyone, and the member's own
+    //    channel so EVERY device they're signed in on drops the muted banner.
+    expect(pubRoomEvent.mock.calls[0][2]).toBe("community:member:unmuted");
+    expect(pubUserEvent.mock.calls[0][1]).toBe(USER);
+    expect(pubUserEvent.mock.calls[0][2]).toBe("community:member:unmuted");
+    expect(pubUserEvent.mock.calls[0][3]).toMatchObject({
+      communityId: CID,
+      memberId: USER,
+      isMuted: false,
+      mutedUntil: null,
+    });
+  });
+
+  it("stays quiet when the ending cycle had no mute (no unmute spam at the roster)", async () => {
+    deleteMutesMock.mockResolvedValue({ count: 0 });
+
+    await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
+
+    expect(pubMuteSynced).not.toHaveBeenCalled();
+    expect(pubRoomEvent).not.toHaveBeenCalled();
   });
 
   it("does NOT publish when the DB write fails (event fires only after the row is persisted)", async () => {

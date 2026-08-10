@@ -13,6 +13,7 @@ import {
 } from "../lib/quote-refresh.js";
 import {
   buildTextSearchPipeline,
+  escapeRegex,
   orderByIds,
   parseSearchCursor,
   readTextSearchPage,
@@ -57,9 +58,19 @@ export class PrivateMessageRepository {
     /** Auto-delete stamp — see lib/auto-delete.ts#computeAutoDeleteStamp. */
     autoDeleteAt?: Date | null;
     autoDeleteAfterView?: boolean;
+    /** Pre-allocated CHANGE revision; omit to allocate one here. */
+    revision?: number;
     [key: string]: unknown;
   }): Promise<PrivateMessage> {
-    const revision = await this.roomRepo.allocateRevision(data.roomId);
+    // The send path pre-allocates `revision` in the SAME room-document `$inc`
+    // that hands out `sequenceNumber`, so one message costs one room write
+    // instead of two. Two writes to one doc was the send path's contention
+    // wall under a burst — the community path merged these counters for the
+    // same reason (see GeneralRoomRepository.allocateSequenceAndRevision).
+    const revision =
+      typeof data.revision === "number"
+        ? data.revision
+        : await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,
@@ -577,6 +588,7 @@ export class PrivateMessageRepository {
           ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
           : {}),
       },
+      field: "content.text",
       query: params.query,
       cursor: parseSearchCursor(params.cursor),
       limit: params.limit,
@@ -671,6 +683,41 @@ export class PrivateMessageRepository {
         content: content as unknown as Prisma.InputJsonValue,
         editedAt: now,
         editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+        revision,
+      },
+    });
+  }
+
+  /**
+   * In-place state transition of an existing CALL row (RINGING → ANSWERED →
+   * ENDED/MISSED/DECLINED/CANCELLED/FAILED). A call is ONE timeline row for its
+   * whole lifetime, so every transition rewrites that row instead of appending
+   * a second one — see CallChatMessageService.
+   *
+   * Deliberately NOT `editMessage`: this is a server-authored lifecycle change,
+   * not a user edit, so it must not stamp `editedAt`/`editHistory` (which would
+   * render an "edited" tag on a call card). It DOES allocate a fresh room
+   * revision, which is what carries the update through `/changes` and the
+   * `sinceRevision` catch-up axis to clients that were offline.
+   */
+  async updateCallState(params: {
+    messageId: string;
+    roomId: string;
+    content: object;
+    messageType: string;
+    systemEvent: string | null;
+    systemData: object | null;
+    countInUnread: boolean;
+  }): Promise<PrivateMessage> {
+    const revision = await this.roomRepo.allocateRevision(params.roomId);
+    return this.prisma.privateMessage.update({
+      where: { id: params.messageId },
+      data: {
+        content: params.content as unknown as Prisma.InputJsonValue,
+        messageType: params.messageType,
+        systemEvent: params.systemEvent,
+        systemData: params.systemData as unknown as Prisma.InputJsonValue,
+        countInUnread: params.countInUnread,
         revision,
       },
     });
@@ -791,7 +838,7 @@ export class PrivateMessageRepository {
     userId: string,
     cutoff?: Date
   ): Promise<number> {
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapeRegex(query);
     const result = (await this.prisma.privateMessage.aggregateRaw({
       pipeline: [
         {

@@ -8,7 +8,10 @@
 import { CallService } from "../../src/services/call.service.js";
 import type { CallPrivacy } from "../../src/grpc/user-snapshot.client.js";
 
-type Redis = { publish: jest.Mock };
+// `set`/`eval` back the per-caller initiate lock (withCallerLock). Without them
+// the service's acquire throws and the lock silently fails open, so the tests
+// would never exercise it.
+type Redis = { publish: jest.Mock; set: jest.Mock; eval: jest.Mock };
 
 interface Stubs {
   callRepo: {
@@ -75,7 +78,11 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
         blockedBy: [],
       }),
     },
-    redis: { publish: jest.fn().mockResolvedValue(1) },
+    redis: {
+      publish: jest.fn().mockResolvedValue(1),
+      set: jest.fn().mockResolvedValue("OK"),
+      eval: jest.fn().mockResolvedValue(1),
+    },
     livekit: {
       mintToken: jest
         .fn()
@@ -131,6 +138,43 @@ describe("CallService.initiateCall gate", () => {
     expect(stubs.redis.publish).toHaveBeenCalledWith(
       "self:caller",
       expect.stringContaining('"calleeName":"Alice"')
+    );
+  });
+
+  // Regression: initiateCall used to be fully re-entrant. Two rapid initiates from
+  // the same caller interleaved, and one request's self-cleanup — which runs before
+  // its own row exists — flipped the row the other had just created to ENDED. The
+  // victim kept going and rang the callee for a call already dead in the DB.
+  it("holds a per-caller lock: a contended initiate is rejected before any write", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.redis.set.mockResolvedValue(null); // SET NX lost — another initiate holds it
+
+    await expect(service.initiateCall(params)).rejects.toThrow(
+      /CALL_ALREADY_IN_CALL/
+    );
+
+    expect(stubs.redis.set).toHaveBeenCalledWith(
+      "lock:call-initiate:caller",
+      expect.any(String),
+      "PX",
+      expect.any(Number),
+      "NX"
+    );
+    expect(stubs.callRepo.findCallerRinging).not.toHaveBeenCalled();
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+    expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
+  });
+
+  it("releases the caller lock once the call row is created", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+
+    await service.initiateCall(params);
+
+    expect(stubs.redis.eval).toHaveBeenCalledTimes(1);
+    // Self-cleanup must never be able to reach rings newer than this request.
+    expect(stubs.callRepo.findCallerRinging).toHaveBeenCalledWith(
+      "caller",
+      expect.any(Date)
     );
   });
 

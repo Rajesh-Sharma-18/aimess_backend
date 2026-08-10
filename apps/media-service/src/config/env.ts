@@ -63,6 +63,10 @@ const envSchema = z.object({
   // Redis — used for scan-status cache and rate-limit store
   REDIS_HOST: z.string().default("127.0.0.1"),
   REDIS_PORT: z.coerce.number().positive().default(6379),
+  // Optional so local dev against an unauthenticated Redis keeps working.
+  // Required for any shared/remote Redis, which must not be left open.
+  // Also used for the Bull connection below unless BULL_REDIS_PASSWORD is set.
+  REDIS_PASSWORD: z.string().optional(),
 
   // ClamAV antivirus scanner
   // .default() is placed before .transform() so the default value is a string
@@ -91,6 +95,10 @@ const envSchema = z.object({
   // singleton. Defaults to the same Redis as REDIS_HOST/PORT.
   BULL_REDIS_HOST: z.string().default("127.0.0.1"),
   BULL_REDIS_PORT: z.coerce.number().positive().default(6379),
+  // Only set this when Bull points at a DIFFERENT Redis than REDIS_HOST.
+  // Left unset, the Bull connection falls back to REDIS_PASSWORD (see
+  // lib/scanner.ts), so the common single-Redis deployment needs one variable.
+  BULL_REDIS_PASSWORD: z.string().optional(),
 
   // Async media-scan worker knobs.
   MEDIA_SCAN_QUEUE_NAME: z.string().default("media-scan"),

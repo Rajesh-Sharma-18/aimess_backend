@@ -70,6 +70,78 @@ export function publishQrLinkEvent(
 }
 
 /**
+ * How long the one-shot success mailbox below survives. Must comfortably
+ * outlive both the QR's own 60s TTL and a transient browser disconnect, since
+ * the tokens it holds are the ONLY copy the browser will ever be offered.
+ */
+const QR_LINK_RESULT_TTL_SECONDS = 120;
+
+export function qrLinkResultKey(linkToken: string): string {
+  return `aimess:devlink:result:${linkToken}`;
+}
+
+/**
+ * Publish `auth:qr:success` AND leave a one-shot copy in Redis.
+ *
+ * Redis pub/sub has no buffering: a message published while the browser's
+ * socket is mid-handshake, mid-reconnect, or momentarily dropped is discarded
+ * forever, and the browser never learns it was logged in. Because this one
+ * event carries the only copy of the freshly-minted tokens, losing it strands
+ * the login even though the phone reported success.
+ *
+ * So the envelope is also written to a short-lived mailbox key, which the
+ * api-gateway `/auth` namespace read-and-deletes every time a socket subscribes
+ * to `qr:<linkToken>` (including on reconnect). Live delivery stays the fast
+ * path; the mailbox is the catch-up path. Single-use by construction — the
+ * take is atomic, so the tokens can be collected exactly once.
+ *
+ * Exposure is unchanged from the pub/sub path: possession of the linkToken has
+ * always been sufficient to join the room and receive these tokens.
+ */
+export async function publishQrLinkSuccess(
+  redis: Redis | Cluster,
+  linkToken: string,
+  data: unknown
+): Promise<void> {
+  await redis.set(
+    qrLinkResultKey(linkToken),
+    JSON.stringify({ event: "auth:qr:success", data }),
+    "EX",
+    QR_LINK_RESULT_TTL_SECONDS
+  );
+  await publishQrLinkEvent(redis, linkToken, "auth:qr:success", data);
+}
+
+/** GET + DEL in one round trip so only one subscriber can ever collect it. */
+const TAKE_QR_RESULT_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if raw then redis.call('DEL', KEYS[1]) end
+return raw
+`;
+
+/**
+ * Read-and-delete the pending `auth:qr:success` envelope for a linkToken, if
+ * one is waiting. Returns null when nothing is pending (the overwhelmingly
+ * common case — every subscribe that happens before a scan).
+ */
+export async function takeQrLinkResult(
+  redis: Redis | Cluster,
+  linkToken: string
+): Promise<{ event: string; data: unknown } | null> {
+  const raw = (await redis.eval(
+    TAKE_QR_RESULT_SCRIPT,
+    1,
+    qrLinkResultKey(linkToken)
+  )) as string | null;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as { event: string; data: unknown };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Publish a "this device/session was just revoked" signal for an ALREADY-LIVE
  * socket connection to act on immediately (force-disconnect), independent of
  * whether that user happens to be connected to `/notify` right now.
@@ -80,15 +152,21 @@ export function publishQrLinkEvent(
  * never opened a `/notify` connection. Every namespace's socket carries
  * `socket.data.sessionId` (set by the shared auth middleware) — the gateway
  * disconnects only the socket(s) matching `sessionId`.
+ *
+ * `reason` separates a user's OWN sign-out on this device (`"logout"`) from a
+ * revoke it did not ask for (`"terminated"` — another device, admin, expiry).
+ * Both force-disconnect; only `"terminated"` warrants the client-facing
+ * `auth:session_terminated` notice (see api-gateway `session-revoke.ts`).
  */
 export function publishSessionRevokedEvent(
   redis: Redis | Cluster,
   userId: string,
-  sessionId: string
+  sessionId: string,
+  reason: "terminated" | "logout" = "terminated"
 ): Promise<number> {
   return redis.publish(
     `session-revoke:${userId}`,
-    JSON.stringify({ sessionId })
+    JSON.stringify({ sessionId, reason })
   );
 }
 

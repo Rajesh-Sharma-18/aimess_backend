@@ -64,6 +64,13 @@ export interface InboxItem {
   isJoined: boolean | null;
   /** GROUP-only: true when the caller voluntarily left; null for PRIVATE rows. */
   hasLeft: boolean | null;
+  /** GROUP-only: true when an admin REMOVED the caller (kicked). Read-only row,
+   *  same as `hasLeft`, different notice wording. Null for PRIVATE rows. */
+  isRemoved: boolean | null;
+  /** GROUP-only: raw `GroupMember.status` ("ACTIVE" | "LEFT" | "KICKED") so the
+   *  client renders the right composer state on a cold start without inferring
+   *  it from `isJoined === false`. Null for PRIVATE rows. */
+  membershipStatus: string | null;
   /**
    * GROUP-only: an admin/moderator has silenced the CALLER (read stays open,
    * every write is rejected with CHAT_MUTED_IN_GROUP). Distinct from `isMuted`,
@@ -212,6 +219,8 @@ export class InboxService {
       role: null,
       isJoined: null,
       hasLeft: null,
+      isRemoved: null,
+      membershipStatus: null,
       isMemberMuted: null,
       memberMutedUntil: null,
     };
@@ -249,6 +258,8 @@ export class InboxService {
       role: room.role,
       isJoined: room.isJoined,
       hasLeft: room.hasLeft,
+      isRemoved: room.isRemoved ?? false,
+      membershipStatus: room.membershipStatus ?? null,
       isMemberMuted: room.isMemberMuted ?? false,
       memberMutedUntil: room.memberMutedUntil ?? null,
     };

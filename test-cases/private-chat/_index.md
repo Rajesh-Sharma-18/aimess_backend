@@ -23,8 +23,14 @@ Module: **1:1 messaging in chat-service**. ID prefix `TC-PCHAT-NNN` (001–133).
 | `attachments.md`         | gallery/files/location/contact/GIF/sticker/voice; `GET …/media`             | 15    | 095–109 |
 | `media-upload.md`        | `POST /media/upload-url` & `/download-url` (presign)                        | 11    | 110–120 |
 | `forward-report-pins.md` | forward, report, pins                                                       | 13    | 121–133 |
+| `bulk-conversations.md`  | `POST /chat/conversations/{leave,mute,read}/bulk` (private **and** group)   | 20    | 134–153 |
 
-**Total: 11 files, 133 test cases.**
+**Total: 12 files, 153 test cases.**
+
+> `bulk-conversations.md` spans both conversation kinds — one request may mix `prv_…` and `grp_…`
+> ids — so it is filed here (with the unified inbox) rather than split across PCHAT and GCHAT.
+> See also `group-chat/moderation-mute-warn.md`: that is the OTHER mute (an admin silencing a
+> member), which these endpoints never touch.
 
 ## Endpoints / events covered
 

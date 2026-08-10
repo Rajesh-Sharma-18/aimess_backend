@@ -21,7 +21,10 @@ import {
   resolveEffectiveAutoDelete,
   validateAutoDeleteInput,
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
+  accountAutoDeleteSetting,
 } from "../../src/lib/auto-delete.js";
+import { invalidateAccountChatSettings } from "../../src/lib/account-chat-settings.js";
+import { userGrpcClient } from "../../src/grpc/user-snapshot.client.js";
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
@@ -56,11 +59,24 @@ beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
   mocks.privateRoomRepo.findByRoomId.mockResolvedValue(room());
+  // Mirrors the repository: an explicit OFF is STORED (never deleted), because
+  // it is what pins a chat against the account-wide default.
   mocks.privateRoomRepo.setAutoDelete.mockImplementation(
     async (_roomId: string, userId: string, s: any) =>
-      room(s.mode === "OFF" ? {} : { [userId]: { ...s, setAt: "" } })
+      room({ [userId]: { ...s, setAt: new Date().toISOString() } })
   );
+  invalidateAccountChatSettings();
+  setAccountTimer("OFF");
 });
+
+/** Point the (mocked) user-service at one account-wide Settings → Chat value. */
+function setAccountTimer(autoDeleteTimer: string): void {
+  (userGrpcClient.getChatSettings as jest.Mock).mockResolvedValue({
+    autoDeleteTimer,
+    typingIndicators: true,
+    readReceipts: true,
+  });
+}
 
 // ── 1. Which timer applies (§3.1 one-sided, §3.2 two different timers) ───────
 describe("effective timer resolution", () => {
@@ -97,6 +113,58 @@ describe("effective timer resolution", () => {
     expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).mode).toBe(
       "OFF"
     );
+  });
+
+  // ── Account-wide default (Settings → Chat → Auto-Delete) ──────────────────
+  // It is a FALLBACK, never an override: it only reaches a chat nobody has
+  // configured, and an explicit per-chat "Off" outranks it.
+  const days30 = accountAutoDeleteSetting("DAYS_30");
+
+  it("maps the account-wide options to day-length timers", () => {
+    expect(accountAutoDeleteSetting("DAYS_7").ttlSeconds).toBe(604800);
+    expect(accountAutoDeleteSetting("DAYS_15").ttlSeconds).toBe(1296000);
+    expect(days30.ttlSeconds).toBe(2592000);
+    expect(accountAutoDeleteSetting("OFF").mode).toBe("OFF");
+    expect(accountAutoDeleteSetting("GARBAGE").mode).toBe("OFF");
+  });
+
+  it("falls back to the sender's account default in an unconfigured chat", () => {
+    const map = parseAutoDeleteMap({});
+    expect(
+      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).ttlSeconds
+    ).toBe(2592000);
+  });
+
+  it("lets a per-chat timer — either side's — beat the account default", () => {
+    expect(
+      resolveEffectiveAutoDelete(
+        parseAutoDeleteMap({ [TEST_USER_ID]: hourTimer }),
+        TEST_USER_ID,
+        PEER,
+        days30
+      ).ttlSeconds
+    ).toBe(3600);
+    expect(
+      resolveEffectiveAutoDelete(
+        parseAutoDeleteMap({ [PEER]: hourTimer }),
+        TEST_USER_ID,
+        PEER,
+        days30
+      ).ttlSeconds
+    ).toBe(3600);
+  });
+
+  it("keeps a chat the sender explicitly turned OFF off, default or not", () => {
+    const map = parseAutoDeleteMap({
+      [TEST_USER_ID]: { mode: "OFF", ttlSeconds: null, setAt: "2026-08-08" },
+    });
+    expect(
+      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).mode
+    ).toBe("OFF");
+    // …but the PEER's own default still governs the PEER's messages.
+    expect(
+      resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID, days30).ttlSeconds
+    ).toBe(2592000);
   });
 
   it("stamps a TIMER deadline from send time, and defers AFTER_VIEWING", () => {
@@ -290,6 +358,35 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.body.data.ttlSeconds).toBe(3600);
     expect(res.body.data.self.ttlSeconds).toBe(3600);
     expect(res.body.data.peer.ttlSeconds).toBe(86400);
+  });
+
+  it("GET reports the account-wide default as the timer in force", async () => {
+    setAccountTimer("DAYS_30");
+    const res = await request(app).get(url).set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isEnabled).toBe(true);
+    expect(res.body.data.ttlSeconds).toBe(2592000);
+    expect(res.body.data.source).toBe("ACCOUNT");
+    // …while this chat itself is still unconfigured on both sides.
+    expect(res.body.data.self.mode).toBe("OFF");
+    expect(res.body.data.accountDefault.ttlSeconds).toBe(2592000);
+  });
+
+  it("records an explicit OFF so the account default stops applying here", async () => {
+    setAccountTimer("DAYS_30");
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "OFF" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateRoomRepo.setAutoDelete).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      { mode: "OFF", ttlSeconds: null }
+    );
+    expect(res.body.data.isEnabled).toBe(false);
   });
 });
 

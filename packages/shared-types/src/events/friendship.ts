@@ -120,12 +120,15 @@ export type FriendshipReadModelPayload = {
 };
 
 /**
- * Realtime events for the "pending friend-request conversation row" feature —
- * lets a private-chat conversation list show an incoming friend request as a
- * pending entry (Telegram-style) before any room/message exists, and update
- * live when it's accepted/rejected. Delivered the SAME way as
+ * Realtime friend-request state for the chat clients: an incoming request
+ * arriving, and that request being accepted/rejected. Delivered the SAME way as
  * `FriendSocketEvents` above (`user:<userId>` Redis relay → `/chat` namespace),
  * additive alongside them — not a replacement.
+ *
+ * A PENDING FRIEND REQUEST IS NOT A CONVERSATION. These events feed the Friend
+ * Requests screen/section only. A client must NOT insert an inbox/conversation
+ * row for a request — the conversation list comes exclusively from the inbox
+ * REST/socket contract, which is backed by real rooms.
  */
 export const ConversationSocketEvents = {
   PENDING_FRIEND_REQUEST: "conversation:pending-friend-request",
@@ -143,7 +146,14 @@ export type ConversationRequesterBrief = {
   avatarUrl: string | null;
 };
 
-/** Synthetic conversation-list row for an incoming pending friend request — never backed by a real chat room. */
+/**
+ * @deprecated Do NOT render this as a conversation-list row — a pending friend
+ * request is not a conversation and must not appear in the inbox. The shape is
+ * retained only as the requester-profile carrier for
+ * `conversation:pending-friend-request` (name/username/avatar for the Friend
+ * Requests UI, so no follow-up fetch is needed). Kept on the wire for clients
+ * that already read `conversation.requester`.
+ */
 export type PendingFriendRequestConversation = {
   id: string; // `pending:<friendshipId>` — never a real roomId
   type: "PRIVATE_PENDING";
