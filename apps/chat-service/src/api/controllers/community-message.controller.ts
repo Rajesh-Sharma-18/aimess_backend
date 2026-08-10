@@ -20,7 +20,6 @@ import {
   buildAvailableContext,
   buildUnavailableContext,
 } from "../../lib/message-context.js";
-import { toCanonicalMessages } from "../../lib/canonical-message.js";
 import {
   publishCommunityUpdatedSafe,
   type RecipientBump,
@@ -157,7 +156,7 @@ export class CommunityMessageController {
         limit,
       });
       const paginated = buildAroundResponse(
-        toCanonicalMessages(items as unknown as Record<string, unknown>[]),
+        items as unknown as Record<string, unknown>[],
         total,
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
@@ -196,9 +195,7 @@ export class CommunityMessageController {
       });
       const paginated = {
         ...buildTimelineResponse(
-          toCanonicalMessages(
-            result.items as unknown as Record<string, unknown>[]
-          ),
+          result.items as unknown as Record<string, unknown>[],
           result.total,
           limit,
           result.hasMore,
@@ -256,7 +253,7 @@ export class CommunityMessageController {
       res.status(HTTP_STATUS.OK).json(
         new ApiResponse(
           {
-            data: toCanonicalMessages(result.items),
+            data: result.items,
             hasMore: result.hasMore,
             // Store this as the next after_ts to page forward or re-sync.
             nextCursor: result.nextCursor,
@@ -287,9 +284,7 @@ export class CommunityMessageController {
     // ADDITIVE on every page so a client can page BOTH ways from any window.
     const paginated = {
       ...buildTimelineResponse(
-        toCanonicalMessages(
-          result.items as unknown as Record<string, unknown>[]
-        ),
+        result.items as unknown as Record<string, unknown>[],
         result.total,
         limit,
         result.hasMore,
