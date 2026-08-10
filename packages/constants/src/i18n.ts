@@ -14,6 +14,7 @@ function normalizeLocale(input?: string | null): SupportedLocale {
 
   if (primary.startsWith("en")) return "en";
   if (primary.startsWith("vi")) return "vi";
+  if (primary.startsWith("th")) return "th";
 
   return DEFAULT_LOCALE;
 }
@@ -29,14 +30,38 @@ export function resolveLocale(
   return normalizeLocale(preferredLanguage ?? acceptLanguage);
 }
 
-/** Get a localized message for the given key and locale. */
+/** Values substituted into a message's `{{placeholders}}`. */
+export type MessageParams = Record<string, string | number>;
+
+/**
+ * Substitute `{{name}}` placeholders. A placeholder with no matching param is
+ * left as-is rather than blanked, so a missing interpolation is visible in
+ * dev/test instead of silently producing "  was removed".
+ */
+export function interpolate(text: string, params?: MessageParams): string {
+  if (!params) return text;
+  return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (whole, name: string) => {
+    const value = params[name];
+    return value === undefined ? whole : String(value);
+  });
+}
+
+/**
+ * Get a localized message for the given key and locale.
+ *
+ * @example
+ * t("CHAT_MESSAGE_SENT", "th")
+ * t("SYS_GROUP_MEMBER_REMOVED", "vi", { actor: "An", target: "Bình" })
+ */
 export function t(
   key: MessageKey,
-  locale: SupportedLocale = DEFAULT_LOCALE
+  locale: SupportedLocale = DEFAULT_LOCALE,
+  params?: MessageParams
 ): string {
   const entry = MESSAGES[key];
   if (!entry) {
     return key;
   }
-  return entry[locale] ?? entry[DEFAULT_LOCALE] ?? entry.en ?? key;
+  const text = entry[locale] ?? entry[DEFAULT_LOCALE] ?? entry.en ?? key;
+  return interpolate(text, params);
 }

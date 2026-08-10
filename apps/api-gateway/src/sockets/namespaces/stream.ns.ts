@@ -6,6 +6,7 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
+import { scopeSocketLocale } from "../locale-scope.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
 // §3: bound free-text fields so a naive or abusive client cannot exceed the
@@ -451,6 +452,7 @@ export function registerStreamNamespace(
 
   streamNs.on("connection", (socket: Socket) => {
     const { userId, locale } = socket.data;
+    scopeSocketLocale(socket);
     logger.debug(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );

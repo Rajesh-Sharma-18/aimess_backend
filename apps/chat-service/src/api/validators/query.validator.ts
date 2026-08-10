@@ -147,11 +147,18 @@ export const mediaListQuerySchema = z.object({
 });
 
 /**
- * Query schema for the timestamp-paginated community message-list endpoint (V1).
- * Community messages DO carry a real per-room monotonic `sequenceNumber`
- * (allocateSequence → generalRoom.lastSequence); the V1 endpoint simply paginates
- * on the `(createdAt, _id)` timestamp keyset instead. The gap-safe seq cursors
- * (`before_seq`/`after_seq`) live on the V2 schema below. Timestamps are epoch ms.
+ * Query schema for the paginated community message-list endpoint (V1).
+ * Community messages carry a real per-room monotonic `sequenceNumber`
+ * (allocateSequence → generalRoom.lastSequence), so this endpoint accepts BOTH
+ * axes — exactly like the private/group `messageTimelineQuerySchema`:
+ *
+ * - `before_seq`/`after_seq`: gap-safe seq keyset (preferred; what the web
+ *   client pages on). They take precedence over the `*_ts` params.
+ * - `before_ts`/`after_ts`: the V1 timestamp fallback described below.
+ *
+ * Zod STRIPS unknown keys, so before these two existed a client sending
+ * `before_seq` silently got the NEWEST page back with a 200 — the same cursor
+ * every time, and history that never scrolled past page one.
  *
  * The two timestamp params are mutually exclusive:
  *
@@ -182,12 +189,20 @@ export const communityTimelineQuerySchema = z
       )
       .optional(),
     after_ts: z.coerce.number().int().positive().optional(),
+    // Gap-safe seq keyset, same contract as private/group V1: before_seq →
+    // sequenceNumber < seq (older page), after_seq → > seq (newer page).
+    before_seq: z.coerce.number().int().min(0).optional(),
+    after_seq: z.coerce.number().int().min(0).optional(),
     around: z.string().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(30),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Provide either before_ts or after_ts, not both",
     path: ["before_ts"],
+  })
+  .refine((q) => !(q.before_seq != null && q.after_seq != null), {
+    message: "Provide either before_seq or after_seq, not both",
+    path: ["before_seq"],
   });
 
 /**

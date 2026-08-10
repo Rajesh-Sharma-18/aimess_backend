@@ -20,7 +20,7 @@ import {
   publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
 import { ChatEvents } from "@aimess/shared-types";
-import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { publishUserReport } from "../lib/report-user.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -112,6 +112,21 @@ export class GroupMemberService {
       );
     }
 
+    // Resolve the existing row BEFORE the capacity check: a re-add of someone
+    // who is still ACTIVE is a no-op that must report CHAT_ALREADY_MEMBER, not
+    // a capacity failure. A KICKED/LEFT row already gave its slot back
+    // (`incMemberCount(-1)` on the removal), so a genuine re-add is measured
+    // against the freed count and succeeds whenever a slot exists.
+    const existing = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (existing && existing.status === "ACTIVE") {
+      throw new ConflictError("CHAT_ALREADY_MEMBER");
+    }
+    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
+    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
+
     if (room.memberCount >= room.memberLimit) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");
     }
@@ -131,16 +146,6 @@ export class GroupMemberService {
       );
       if (!isFriend) throw new ForbiddenError("CHAT_ADD_MEMBER_NOT_FRIEND");
     }
-
-    const existing = await this.memberRepo.findByRoomAndUser(
-      params.roomId,
-      params.userId
-    );
-    if (existing && existing.status === "ACTIVE") {
-      throw new ConflictError("CHAT_ALREADY_MEMBER");
-    }
-    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
-    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -184,6 +189,25 @@ export class GroupMemberService {
     // `community:added`. Payload is a full inbox row: the client upserts it
     // directly and must NOT back-fill from REST.
     this.emitGroupAdded(room, member, params.userId);
+
+    // Roster fan-out to everyone ALREADY in the group — the exact counterpart of
+    // the `group:member:removed` every removal path publishes. Without it an add
+    // was the only membership change with no realtime signal, so the admin's own
+    // Group Info stayed at the pre-add count and roster until a manual refresh
+    // (the add is the caller's own request, but the count lives on a socket-fed
+    // row, not on the mutation response). `group:member:updated` is reused
+    // deliberately rather than minting a `group:member:added`: its payload
+    // already carries `memberId` + `role` + the authoritative `memberCount`, and
+    // every consumer of it (roster invalidation, member count, own-role patch)
+    // is exactly the reaction an add needs. `previousRole` is empty because
+    // there was no active membership to change from.
+    await this.publishRosterChange({
+      roomId: params.roomId,
+      event: "group:member:updated",
+      memberId: params.userId,
+      actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+      extra: { role: member.role, previousRole: "" },
+    });
 
     return member;
   }
@@ -283,8 +307,15 @@ export class GroupMemberService {
     memberId: string;
     actorId: string;
     extra?: Record<string, unknown>;
+    // When set (removal only), skip this user's own sockets on the
+    // `conv:<roomId>` broadcast — the removed member must not receive a roster
+    // event carrying their own memberId (a client's generic "member removed"
+    // handler could mistake it for something to act on). They already get the
+    // authoritative `group:removed` on their personal channel. Left undefined
+    // for role updates, where the subject SHOULD hear their own change.
+    excludeUserId?: string;
   }): Promise<void> {
-    const { roomId, event, memberId, actorId, extra } = args;
+    const { roomId, event, memberId, actorId, extra, excludeUserId } = args;
     try {
       const [room, roster] = await Promise.all([
         this.roomRepo.findActiveByRoomId(roomId),
@@ -302,7 +333,11 @@ export class GroupMemberService {
       await Promise.all([
         this.redis.publish(
           `conv:${roomId}`,
-          JSON.stringify({ event, data: payload })
+          JSON.stringify({
+            event,
+            ...(excludeUserId ? { excludeUserId } : {}),
+            data: payload,
+          })
         ),
         ...roster.map((m) =>
           publishChatUserEvent(this.redis, m.userId, event, payload)
@@ -395,19 +430,24 @@ export class GroupMemberService {
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
 
+    // Evict first (see ban() for the ordering rationale), then post the removal
+    // line and roster event with the target hard-excluded — a kicked member
+    // must not receive the "Admin removed X" line about themselves either.
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.sysMsg.post({
       roomId: params.roomId,
       actorId: params.kickedBy,
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: { targetUserId: params.targetUserId },
+      excludeUserId: params.targetUserId,
     });
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.publishRosterChange({
       roomId: params.roomId,
       event: "group:member:removed",
       memberId: params.targetUserId,
       actorId: params.kickedBy,
       extra: { reason: "KICK" },
+      excludeUserId: params.targetUserId,
     });
 
     return updated;
@@ -714,19 +754,27 @@ export class GroupMemberService {
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
 
+    // Evict the target's sockets from conv:<roomId> FIRST (the gateway reacts
+    // to group:removed), so the window in which a concurrent normal message
+    // could still reach them is as small as possible. The ban system line and
+    // the roster event below are additionally hard-excluded from the target
+    // regardless of eviction timing (excludeUserId), so the target never sees
+    // its own ban announcement — remaining members still do.
+    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
     await this.sysMsg.post({
       roomId: params.roomId,
       actorId: params.bannedBy,
       systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: { targetUserId: params.targetUserId },
+      excludeUserId: params.targetUserId,
     });
-    this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
     await this.publishRosterChange({
       roomId: params.roomId,
       event: "group:member:removed",
       memberId: params.targetUserId,
       actorId: params.bannedBy,
       extra: { reason: "BAN" },
+      excludeUserId: params.targetUserId,
     });
 
     return updated;
@@ -777,13 +825,15 @@ export class GroupMemberService {
   }
 
   /**
-   * Report a member of this group. Best-effort forwards a normalized row to
-   * backoffice via the shared admin.report.ingest queue (same publisher as
-   * private message reports). No local dedupe row is persisted — backoffice
-   * owns the moderation ledger; adding one here would duplicate that state and
-   * require a new Prisma model + migration for negligible gain.
-   * ponytail: no local dedupe; add a chat-side unique index if abuse volume
-   * shows repeated backoffice ingest of the same (reporter, target, room).
+   * Report a member of this group. Goes through the shared {@link publishUserReport}
+   * sink — the same admin.report.ingest queue community-service's createReport
+   * publishes to, and the same one PrivateRoomService.reportUser uses, so all
+   * three surfaces land one identical row shape in admin_db.Report.
+   *
+   * Authorization mirrors community's report: reporter must be an ACTIVE member,
+   * target only needs a member row of ANY status (a banned member can still be
+   * reported for prior conduct), no self-report. No role gate — reporting is
+   * every member's right, not a moderator power.
    */
   async reportMember(params: {
     roomId: string;
@@ -810,17 +860,13 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    publishAdminReportIngestSafe({
-      type: "user",
-      targetId: params.targetUserId,
+    publishUserReport({
+      context: "GROUP",
+      roomId: params.roomId,
       reporterId: params.reporterId,
+      targetUserId: params.targetUserId,
       reason: params.reason,
-      details: params.description?.trim() ? params.description.trim() : null,
-      // Groups are not community-scoped.
-      communityId: null,
-      eventAt: new Date().toISOString(),
-      // No local report row; identify the ingest via room + target for admin correlation.
-      sourceReportId: `grp:${params.roomId}:${params.targetUserId}:${Date.now()}`,
+      description: params.description,
     });
 
     return { ok: true };
@@ -1011,9 +1057,12 @@ export class GroupMemberService {
      * route had NO membership check at all, so any authenticated user could
      * read any group's roster, and a removed member kept seeing Group Info
      * long after losing the group. Same read rule as the message timeline
-     * (`assertGroupReadAccess`): ACTIVE members and voluntary leavers may
-     * read; kicked/banned/non-members may not. Optional so the existing
-     * internal/test call sites keep compiling unchanged.
+     * (`assertGroupReadAccess`): ACTIVE members, voluntary leavers AND removed
+     * (kicked) members may read — Group Info stays open read-only after a
+     * removal; banned/non-members may not. `findActiveMembers` still returns
+     * only the ACTIVE roster, so a removed viewer never sees themselves listed
+     * as a member. Optional so the existing internal/test call sites keep
+     * compiling unchanged.
      */
     requesterId?: string
   ): Promise<Array<GroupMember | EnrichedGroupMember>> {

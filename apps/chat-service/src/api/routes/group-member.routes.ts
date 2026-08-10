@@ -6,6 +6,8 @@ import {
   addMemberSchema,
   leaveGroupSchema,
   kickMemberSchema,
+  banMemberSchema,
+  unbanMemberSchema,
   updateRoleSchema,
   muteGroupSchema,
   muteMemberSchema,
@@ -30,6 +32,13 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     ctrl.leave
   );
   router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
+  router.post("/ban", authenticate, validateBody(banMemberSchema), ctrl.ban);
+  router.post(
+    "/unban",
+    authenticate,
+    validateBody(unbanMemberSchema),
+    ctrl.unban
+  );
   router.post(
     "/report",
     authenticate,

@@ -7,7 +7,11 @@
  */
 import request from "supertest";
 
-import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
+import {
+  buildApp,
+  mockGroupMemberships,
+  type BuiltMocks,
+} from "../helpers/app-factory.js";
 import {
   bearer,
   makeAccessToken,
@@ -26,7 +30,7 @@ const BASE = "/api/chat/inbox";
 
 /** Default the group side to empty so private-only tests are isolated. */
 function emptyGroupSide(): void {
-  mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([]);
+  mockGroupMemberships(mocks, []);
   mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
   mocks.groupRoomRepo.countUserGroups.mockResolvedValue(0);
 }
@@ -46,7 +50,7 @@ describe("GET /api/chat/inbox", () => {
     ]);
     mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
 
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+    mockGroupMemberships(mocks, [
       {
         roomId: "grp_1",
         role: "MEMBER",
@@ -92,7 +96,7 @@ describe("GET /api/chat/inbox", () => {
   it("MEDIA: resolves the group avatar object key on the inbox item", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
     mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+    mockGroupMemberships(mocks, [
       {
         roomId: "grp_1",
         role: "MEMBER",

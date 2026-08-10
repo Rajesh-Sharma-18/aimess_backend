@@ -7,6 +7,17 @@ export const initiateDeviceLinkSchema = z.object({
   deviceType: optionalDeviceField,
   os: optionalDeviceField,
   appVersion: optionalDeviceField,
+  /**
+   * Opaque per-browser id the client generates once and keeps (localStorage).
+   * Used ONLY as the "one active QR per browser" index key — never persisted
+   * as device metadata, never trusted for identity. Charset/length constrained
+   * so it can be embedded in a Redis key safely.
+   */
+  clientId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{8,64}$/)
+    .optional(),
 });
 
 export type InitiateDeviceLinkInput = z.infer<typeof initiateDeviceLinkSchema>;

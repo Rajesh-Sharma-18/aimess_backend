@@ -1,4 +1,4 @@
-import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
@@ -19,7 +19,12 @@ import {
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { publishUserReport } from "../lib/report-user.js";
 import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
+import {
+  getAccountAutoDelete,
+  getAccountChatSettings,
+} from "../lib/account-chat-settings.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -428,10 +433,10 @@ export class PrivateRoomService {
    * including the live `friendship` (and, folded into its `status`, current
    * block) state — never computed independently per call site.
    */
-  private toRoomDetailsData(
+  private async toRoomDetailsData(
     enriched: EnrichedPrivateRoom,
     userId: string
-  ): PrivateRoomDetailsData {
+  ): Promise<PrivateRoomDetailsData> {
     const mutedBy = (enriched.mutedBy ?? {}) as Record<
       string,
       { muteUntil?: string | null }
@@ -468,7 +473,8 @@ export class PrivateRoomService {
       autoDelete: buildAutoDeleteWire(
         parseAutoDeleteMap(enriched.autoDeleteBy),
         userId,
-        enriched.peerId
+        enriched.peerId,
+        await getAccountAutoDelete(userId)
       ),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };
@@ -640,7 +646,7 @@ export class PrivateRoomService {
     const idsToResolve = new Set<string>();
     const ownRowMeta = new Map<
       string,
-      { lastMessageId: string; peerReadCursorId: string | null }
+      { lastMessageId: string; peerReadCursorId: string | null; peerId: string }
     >();
     for (const room of rooms) {
       const rawLmForStatus = perUserFallback.has(room.roomId)
@@ -658,6 +664,7 @@ export class PrivateRoomService {
       ownRowMeta.set(room.roomId, {
         lastMessageId: room.lastMessageId,
         peerReadCursorId,
+        peerId,
       });
       idsToResolve.add(room.lastMessageId);
       if (peerReadCursorId) idsToResolve.add(peerReadCursorId);
@@ -666,6 +673,27 @@ export class PrivateRoomService {
       ? await this.privateMessageRepo.findManyByIds([...idsToResolve])
       : [];
     const messageById = new Map(resolvedMessages.map((m) => [m.id, m]));
+
+    // Settings → Chat → Read Receipt, applied to the LIST tick as well as the
+    // live `message:read` event — otherwise the blue tick the socket withheld
+    // reappears on the next refresh and the switch looks broken. Reciprocal,
+    // WhatsApp-style: the viewer must allow receipts to SEE one, and the peer
+    // must allow receipts to GIVE one. Cached per user, so this is at most one
+    // lookup per distinct peer on the page.
+    const viewerSeesReceipts = (await getAccountChatSettings(userId))
+      .readReceipts;
+    const receiptPeerIds = [
+      ...new Set([...ownRowMeta.values()].map((m) => m.peerId).filter(Boolean)),
+    ];
+    const peerGivesReceipts = new Map(
+      await Promise.all(
+        receiptPeerIds.map(
+          async (id) =>
+            [id, (await getAccountChatSettings(id)).readReceipts] as const
+        )
+      )
+    );
+
     const readStatusByRoom = new Map<string, "SENT" | "DELIVERED" | "READ">();
     for (const [roomId, meta] of ownRowMeta) {
       const lastMsg = messageById.get(meta.lastMessageId) as
@@ -679,7 +707,9 @@ export class PrivateRoomService {
               | undefined
           )?.sequenceNumber ?? 0)
         : 0;
-      if (lastSeq > 0 && peerReadSeq >= lastSeq) {
+      const receiptsVisible =
+        viewerSeesReceipts && peerGivesReceipts.get(meta.peerId) !== false;
+      if (receiptsVisible && lastSeq > 0 && peerReadSeq >= lastSeq) {
         readStatusByRoom.set(roomId, "READ");
       } else {
         readStatusByRoom.set(
@@ -865,6 +895,54 @@ export class PrivateRoomService {
         })
       )
       .catch(() => {});
+  }
+
+  /**
+   * Report the peer of a private conversation — the private-chat counterpart of
+   * GroupMemberService.reportMember and community's createReport, going through
+   * the same shared {@link publishUserReport} sink.
+   *
+   * Authorization mirrors those two: the reporter must actually be in the room
+   * (never trust the client's roomId), the target must be the room's OTHER
+   * participant (so a valid room id can't be used to report an unrelated user),
+   * and self-reporting is rejected. Blocking is deliberately NOT a gate — the
+   * whole point of reporting is that it survives a hostile peer, and community
+   * doesn't gate on it either. Nothing about the peer is returned, so no
+   * privacy-masked field can leak through this path.
+   */
+  async reportUser(params: {
+    roomId: string;
+    reporterId: string;
+    targetUserId: string;
+    reason: string;
+    description?: string;
+  }): Promise<{ ok: true }> {
+    if (params.reporterId === params.targetUserId) {
+      throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
+    }
+
+    const room = await this.privateRoomRepo.findByRoomId(params.roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (!room.participants?.includes(params.reporterId)) {
+      throw new ForbiddenError("CHAT_REPORT_NOT_PARTICIPANT");
+    }
+    if (!room.participants.includes(params.targetUserId)) {
+      throw new NotFoundError("CHAT_REPORT_NOT_PARTICIPANT");
+    }
+
+    publishUserReport({
+      context: "PRIVATE",
+      roomId: params.roomId,
+      reporterId: params.reporterId,
+      targetUserId: params.targetUserId,
+      reason: params.reason,
+      description: params.description,
+    });
+
+    logger.info(
+      `Private user report: room=${params.roomId} reporter=${params.reporterId} target=${params.targetUserId}`
+    );
+    return { ok: true };
   }
 
   async clearChat(roomId: string, userId: string): Promise<void> {

@@ -71,13 +71,22 @@ export async function assertGroupMember(
 
 /**
  * Group READ access: an ACTIVE member reads everything; a member who
- * voluntarily LEFT keeps read access to history up to (and including) the
- * moment they left (WhatsApp-style — the chat stays visible, read-only, no
- * new messages). Kicked/banned/never-a-member callers are denied, same as
- * {@link assertGroupMember} — this only widens the LEFT case.
+ * voluntarily LEFT *or* was KICKED (removed by an admin/moderator) keeps read
+ * access to history up to (and including) the moment they stopped being a
+ * member (WhatsApp-style — the chat stays visible, read-only, no new
+ * messages). Banned/never-a-member callers are denied, same as
+ * {@link assertGroupMember} — this only widens LEFT/KICKED.
+ *
+ * READ and WRITE are deliberately split here: this guard is the ONLY one that
+ * widens past ACTIVE. Every write/member action keeps calling
+ * {@link assertGroupMember} (which resolves through `findActiveByRoomAndUser`),
+ * so a removed member is read-allowed / write-denied by construction.
+ *
+ * BANNED is intentionally NOT widened — a ban is a harder state than a removal
+ * and keeps its existing "no access" behavior.
  *
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` for anyone who isn't currently
- *   active or a past voluntary leaver (kicked/banned/no row).
+ *   active, a past voluntary leaver, or a removed member (banned/no row).
  */
 export async function assertGroupReadAccess(
   memberRepo: Pick<GroupMemberRepository, "findByRoomAndUser">,
@@ -86,10 +95,30 @@ export async function assertGroupReadAccess(
 ): Promise<{ member: GroupMember; readCutoffBefore?: Date }> {
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
   if (member?.status === "ACTIVE") return { member };
-  if (member?.status === "LEFT" && member.leftAt) {
-    return { member, readCutoffBefore: member.leftAt };
-  }
+  const cutoff = groupReadCutoff(member);
+  if (cutoff)
+    return { member: member as GroupMember, readCutoffBefore: cutoff };
   throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+}
+
+/**
+ * The instant a non-ACTIVE membership's read access freezes, or `null` when the
+ * row carries no historical read access at all (ACTIVE, BANNED, missing, or a
+ * LEFT/KICKED row whose timestamp was never written).
+ *
+ * Single source of truth for "how far can this ex-member read" — used by the
+ * guard above AND by the inbox/detail preview caps, so the sidebar preview and
+ * the timeline can never disagree about the cutoff.
+ */
+export function groupReadCutoff(
+  member:
+    | { status: string; leftAt?: Date | null; kickedAt?: Date | null }
+    | null
+    | undefined
+): Date | null {
+  if (member?.status === "LEFT") return member.leftAt ?? null;
+  if (member?.status === "KICKED") return member.kickedAt ?? null;
+  return null;
 }
 
 /**

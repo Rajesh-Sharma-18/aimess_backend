@@ -57,6 +57,14 @@ model Livestream {
   // resume. Drives the grace-window cutoff — distinct from lastHeartbeatAt,
   // which tracks the separate "owner's client is alive" signal.
   disconnectedAt   DateTime?
+  // SRS `client_id` of the publisher connection currently on air, recorded from
+  // the on_publish hook. A WHIP reconnect is DELETE(old)+POST(new) and SRS
+  // dispatches both hooks asynchronously, so the old session's on_unpublish can
+  // arrive AFTER the new session's on_publish. Comparing ids lets
+  // handleUnpublish drop a hook belonging to a superseded connection instead of
+  // demoting a healthily-publishing stream. Null when unknown (manual markLive,
+  // pre-existing rows) — in that case the hook is honoured as before.
+  publisherClientId String?
   lastHeartbeatAt  DateTime?
   // Last self-reported (browser WHIP) or server-polled (OBS/SRS) quality
   // snapshot. Null until the first report arrives after go-live.

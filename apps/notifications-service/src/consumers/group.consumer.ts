@@ -31,7 +31,7 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
         category: "chatEnabled",
         type,
         actorId: p.actorId,
-        ...groupCopy.memberAdded(p.groupName),
+        copy: groupCopy.memberAdded(p.groupName),
         deepLink,
         apnsThreadId: generateThreadId("GROUP", p.roomId),
         data: {
@@ -63,9 +63,9 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
         category: "chatEnabled",
         type,
         actorId: p.actorId,
-        ...(isMute
+        copy: isMute
           ? groupCopy.memberMuted(p.groupName, p.mutedUntil)
-          : groupCopy.memberUnmuted(p.groupName)),
+          : groupCopy.memberUnmuted(p.groupName),
         deepLink,
         data: {
           roomId: p.roomId,

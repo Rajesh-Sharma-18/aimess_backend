@@ -93,7 +93,7 @@ export async function setupSockets(
   );
   registerNotifyNamespace(io, notificationClient, notifySub, pub);
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
-  registerAuthNamespace(io, authSub);
+  registerAuthNamespace(io, authSub, pub);
   registerSessionRevokeListener(io, sessionRevokeSub);
   // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
   registerSessionCreatedListener(io, sessionRevokeSub);

@@ -94,8 +94,8 @@ describe("JOIN_REQUEST_APPROVED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Cool Community");
-    expect(arg.body).toBe(
+    expect(arg.copy("en").title).toBe("Cool Community");
+    expect(arg.copy("en").body).toBe(
       "Someone approved your request to join Cool Community"
     );
     expect(arg.data).toMatchObject({ requestId: RID, status: "APPROVED" });
@@ -134,8 +134,8 @@ describe("JOIN_REQUEST_REJECTED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Cool Community");
-    expect(arg.body).toBe(
+    expect(arg.copy("en").title).toBe("Cool Community");
+    expect(arg.copy("en").body).toBe(
       "Your request to join Cool Community wasn't approved"
     );
     expect(arg.data).toMatchObject({ requestId: RID, status: "REJECTED" });
@@ -185,8 +185,8 @@ describe("MEMBER_ADDED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(REQUESTER);
-    expect(arg.title).toBe("Your community");
-    expect(arg.body).toBe("You were added to Your community");
+    expect(arg.copy("en").title).toBe("Your community");
+    expect(arg.copy("en").body).toBe("You were added to Your community");
   });
 
   it("fans the moderator awareness push to admins/mods, excluding actor + joiner", async () => {
@@ -339,7 +339,7 @@ describe("community consumer — navigation deep-link", () => {
       string[],
       (id: string) => { body: string },
     ];
-    const { body } = builderFn(MOD);
+    const { body } = builderFn(MOD).copy("en");
 
     expect(body).toContain("Alice Requester");
     expect(body).toContain("Cool Community");
@@ -382,7 +382,7 @@ describe("community consumer — navigation deep-link", () => {
     await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED_PAYLOAD);
 
     const arg = push.mock.calls[0][0] as { body: string };
-    expect(arg.body).toContain("Mod McApprover");
+    expect(arg.copy("en").body).toContain("Mod McApprover");
   });
 
   it("JOIN_REQUEST_APPROVED — socket event payload navigation is a parsed OBJECT (not a string)", async () => {

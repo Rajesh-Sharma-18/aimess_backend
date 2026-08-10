@@ -38,7 +38,6 @@ jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
     publish: jest.fn(async () => 1),
-    // The ACTIVE member.synced branch writes a `community:fresh-join:*` key.
     set: jest.fn(async () => "OK"),
     on: jest.fn(),
   },
@@ -87,10 +86,18 @@ jest.mock("../../src/services/user-snapshot.service.js", () => ({
   UserSnapshotService: class {},
 }));
 
+import { PERSONAL_JOIN_SESSION_TYPES } from "@aimess/constants";
+
 import { CommunityRoomSyncConsumer } from "../../src/events/community-room-sync.consumer.js";
 import { redis } from "../../src/config/redis.js";
 
 const redisPublish = redis.publish as unknown as jest.Mock;
+
+/** The `types` array of every purge call made so far, in call order. */
+const purgedTypes = () =>
+  deletePersonalJoinMessages.mock.calls.map(
+    (c) => (c[0] as unknown as { types: readonly string[] }).types
+  );
 
 const COMMUNITY = "c".repeat(24);
 const USER = "11111111-1111-4111-8111-111111111111";
@@ -149,6 +156,7 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     expect(deletePersonalJoinMessages).toHaveBeenCalledWith({
       roomId: COMMUNITY,
       userId: USER,
+      types: PERSONAL_JOIN_SESSION_TYPES,
       beforeOrAt: new Date(EVENT_AT),
     });
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
@@ -165,8 +173,34 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
         eventAt: EVENT_AT,
       })
     );
-    expect(deletePersonalJoinMessages).toHaveBeenCalledTimes(1);
+    expect(purgedTypes()).toContainEqual(PERSONAL_JOIN_SESSION_TYPES);
   });
+
+  // A mute is scoped to the membership cycle that earned it. Leaving/being
+  // removed ends that cycle, so the "You are muted until …" / "You were unmuted"
+  // PERSONAL lines must go with it — otherwise they resurface in the timeline
+  // after a later rejoin (the member reads as freshly joined yet sees an old
+  // mute notice above it).
+  it.each(["LEFT", "BANNED"])(
+    "%s purges the cycle's mute/unmute lines, bounded by eventAt",
+    async (status) => {
+      const fake = await start();
+      await fake.deliver(
+        memberSynced({
+          communityId: COMMUNITY,
+          userId: USER,
+          status,
+          eventAt: EVENT_AT,
+        })
+      );
+      expect(deletePersonalJoinMessages).toHaveBeenCalledWith({
+        roomId: COMMUNITY,
+        userId: USER,
+        types: ["MEMBER_MUTED", "MEMBER_UNMUTED"],
+        beforeOrAt: new Date(EVENT_AT),
+      });
+    }
+  );
 
   it("REGRESSION: LEFT that purges a stale join line publishes community:message:deleted on the user's OWN channel, so an already-open client removes it without a reload", async () => {
     deletePersonalJoinMessages.mockResolvedValue(["stale-msg-1"]);
@@ -235,6 +269,44 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
   });
 
+  // The write-path gate reads the MIRRORED RoomMember.isMuted. Turning ACTIVE is
+  // always a fresh membership cycle, so the mirror must be cleared in the SAME
+  // write — if it only rode the separate `mute_synced` event, a dropped or
+  // out-of-order stale `{isMuted:true}` would leave a rejoined member silently
+  // unable to send, with no banner explaining why.
+  it("REGRESSION: ACTIVE sync clears the mirrored mute so a rejoin can send immediately", async () => {
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        status: "ACTIVE",
+        role: "MEMBER",
+        eventAt: EVENT_AT,
+      })
+    );
+    expect(upsert).toHaveBeenCalledWith(
+      COMMUNITY,
+      USER,
+      expect.objectContaining({
+        status: "active",
+        isMuted: false,
+        mutedUntil: null,
+      })
+    );
+  });
+
+  // Muting an ALREADY-active member rides `mute_synced`, and a role change
+  // publishes `role` with no `status` — so neither reaches the ACTIVE branch and
+  // neither can wipe a legitimate live mute.
+  it("role-only sync leaves the mirrored mute untouched (no status ⇒ no clear)", async () => {
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({ communityId: COMMUNITY, userId: USER, role: "MODERATOR" })
+    );
+    expect(upsert).toHaveBeenCalledWith(COMMUNITY, USER, { role: "moderator" });
+  });
+
   it("PENDING does NOT purge (gated on raw status, not mapped 'left')", async () => {
     const fake = await start();
     await fake.deliver(
@@ -256,6 +328,7 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     expect(deletePersonalJoinMessages).toHaveBeenCalledWith({
       roomId: COMMUNITY,
       userId: USER,
+      types: PERSONAL_JOIN_SESSION_TYPES,
       beforeOrAt: undefined,
     });
   });
@@ -273,6 +346,7 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     expect(deletePersonalJoinMessages).toHaveBeenCalledWith({
       roomId: COMMUNITY,
       userId: USER,
+      types: PERSONAL_JOIN_SESSION_TYPES,
       beforeOrAt: undefined,
     });
   });

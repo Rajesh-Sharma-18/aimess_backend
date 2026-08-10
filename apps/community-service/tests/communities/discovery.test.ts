@@ -105,6 +105,97 @@ describe("GET /api/v1/communities/mine", () => {
     expect(svc.discover.mock.calls[0][1].includeJoined).toBe(true);
   });
 
+  // Regression: `/mine?limit=50` (the Community screen's first load) used to
+  // fall through to discover(), so a brand-new user with zero memberships got
+  // every PUBLIC community on the platform instead of an empty list.
+  it("no params → joined mode (listMine newest page), NOT discover", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ limit: 50 })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listMine).toHaveBeenCalledTimes(1);
+    expect(svc.discover).not.toHaveBeenCalled();
+    expect(svc.listMine.mock.calls[0][1].direction).toBe("before");
+    expect(svc.listMine.mock.calls[0][1].limit).toBe(50);
+  });
+
+  it("a user with no memberships gets an empty page, not public browse", async () => {
+    svc.listMine.mockResolvedValue(paginated([]));
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ limit: 50 })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toEqual([]);
+    expect(res.body.data.pagination.totalData).toBe(0);
+    expect(svc.discover).not.toHaveBeenCalled();
+  });
+
+  it("filter=all with no q/categoryId → joined mode, not public browse", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ filter: "all" })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listMine).toHaveBeenCalledTimes(1);
+    expect(svc.discover).not.toHaveBeenCalled();
+  });
+
+  it("search mode: categoryId alone → discover with includeJoined", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ categoryId: "a".repeat(24) })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.discover).toHaveBeenCalledTimes(1);
+    expect(svc.listMine).not.toHaveBeenCalled();
+  });
+
+  it("search mode: non-'all' filter → discover (livestream browse preserved)", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ filter: "live" })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.discover).toHaveBeenCalledTimes(1);
+    expect(svc.listMine).not.toHaveBeenCalled();
+  });
+
+  it("cursor wins over q: before_ts + q → listMine, never discover", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ before_ts: 1700000000000, q: "react" })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listMine).toHaveBeenCalledTimes(1);
+    expect(svc.discover).not.toHaveBeenCalled();
+  });
+
+  it("scopes the query to the token's user, ignoring a client-sent userId", async () => {
+    const res = await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ limit: 10, userId: "b".repeat(24) })
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listMine.mock.calls[0][0]).not.toBe("b".repeat(24));
+  });
+
+  it("two tokens → two different user ids reach the service (no shared state)", async () => {
+    const userA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const userB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ limit: 10 })
+      .set(bearer(makeAccessToken({ userId: userA })));
+    await request(app)
+      .get("/api/v1/communities/mine")
+      .query({ limit: 10 })
+      .set(bearer(makeAccessToken({ userId: userB })));
+    expect(svc.listMine.mock.calls[0][0]).toBe(userA);
+    expect(svc.listMine.mock.calls[1][0]).toBe(userB);
+  });
+
   it("returns 400 when both before_ts and after_ts are sent", async () => {
     const res = await request(app)
       .get("/api/v1/communities/mine")

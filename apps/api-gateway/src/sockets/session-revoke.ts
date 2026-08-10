@@ -37,23 +37,34 @@ export function registerSessionRevokeListener(
       const userId = channel.replace("session-revoke:", "");
 
       let sessionId: string | undefined;
+      let reason: string | undefined;
       try {
-        ({ sessionId } = JSON.parse(message) as { sessionId?: string });
+        ({ sessionId, reason } = JSON.parse(message) as {
+          sessionId?: string;
+          reason?: string;
+        });
       } catch (err) {
         logger.warn(`session-revoke message parse error: ${String(err)}`);
         return;
       }
       if (!sessionId) return;
 
+      // A user signing out on this very device already knows — telling it its
+      // session was "terminated" is the remote-revoke notice and must not fire
+      // here. It still gets force-disconnected below, same as any revoke.
+      const selfInitiated = reason === "logout";
+
       for (const nsName of LIVE_NAMESPACES) {
         const ns = io.of(nsName);
         const sessionRoom = `session:${sessionId}`;
 
-        ns.to(sessionRoom).emit("auth:session_terminated", {
-          sessionId,
-          reason: "terminated",
-          message: "Your session has been terminated.",
-        });
+        if (!selfInitiated) {
+          ns.to(sessionRoom).emit("auth:session_terminated", {
+            sessionId,
+            reason: "terminated",
+            message: "Your session has been terminated.",
+          });
+        }
 
         void ns
           .in(sessionRoom)

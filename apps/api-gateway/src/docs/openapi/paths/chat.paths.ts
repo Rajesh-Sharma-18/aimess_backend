@@ -672,6 +672,40 @@ const privateMessageReport = {
   },
 };
 
+const privateUserReport = {
+  post: {
+    tags: ["Chat — Private"],
+    operationId: "reportPrivateUser",
+    summary: "Report the peer of a private chat",
+    description:
+      "Reports the OTHER participant of this room (user-level, not message-level). Private-chat counterpart of `POST /chat/group-members/report` and community's `POST /communities/{id}/reports`; all three land one row in the admin moderation ledger. Repeating the same report is an idempotent no-op.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReportPrivateUserRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("User reported", "ChatReportMemberResult"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
 const privateRoomMute = {
   post: {
     tags: ["Chat — Private"],
@@ -1901,7 +1935,9 @@ const communityMessages = {
       "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community', " +
       "MEMBER_BANNED 'You were banned from this community.', MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
       "— other members never see them in this history, even in PUBLIC communities.\n\n" +
-      "**Scroll / history mode** (`before_ts` or neither):\n" +
+      "**Scroll / history mode** (`before_seq`, `before_ts`, or neither):\n" +
+      "- `before_seq` → messages with `sequenceNumber < before_seq`, newest-first. **Preferred**: gap-safe, the same " +
+      "axis private/group page on, and it takes precedence over the `*_ts` params. Walk forward with `after_seq`.\n" +
       "- `before_ts` → messages with `createdAt <= before_ts`, newest-first.\n" +
       "- Omit both for the newest page.\n" +
       "- Response shape: `ChatCommunityMessagePage` (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`).\n" +
@@ -1927,6 +1963,25 @@ const communityMessages = {
         schema: { type: "string" },
       },
       ...messageTimelineParams({ incrementalSyncAfterTs: true }),
+      {
+        name: "before_seq",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 0 },
+        description:
+          "Preferred history cursor: returns messages with `sequenceNumber < before_seq` (newest-first, gap-safe). " +
+          "Same contract as private/group. Takes precedence over before_ts/after_ts; mutually exclusive with after_seq. " +
+          "Read the boundary from the oldest returned message's `sequenceNumber` (or `olderCursor` on a seq page).",
+      },
+      {
+        name: "after_seq",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 0 },
+        description:
+          "Forward history paging: messages with `sequenceNumber > after_seq` (oldest-first). " +
+          "Use this — NOT `after_ts`, which is the updatedAt-based incremental-sync mode — to walk toward the live edge.",
+      },
       {
         name: "around",
         in: "query",
@@ -3592,6 +3647,7 @@ export const chatPaths = {
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
   "/chat/private/messages/{messageId}": privateMessageDelete,
   "/chat/private/messages/{messageId}/report": privateMessageReport,
+  "/chat/private/rooms/{roomId}/report": privateUserReport,
   "/chat/private/rooms/{roomId}/mute": privateRoomMute,
   "/chat/private/rooms/{roomId}/unmute": privateRoomUnmute,
   "/chat/private/rooms/{roomId}/archive": privateRoomArchive,

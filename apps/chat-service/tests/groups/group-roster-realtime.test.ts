@@ -95,6 +95,109 @@ describe("POST /api/chat/group-members/kick", () => {
   });
 });
 
+/**
+ * Adding was the ONLY membership change with no roster fan-out: the DB row and
+ * the room's memberCount both moved, but nobody already in the group heard
+ * about it, so the admin's own "255/256 Members" stayed put until a hard
+ * reload. It reuses `group:member:updated` (same payload shape, same consumers)
+ * rather than minting a third roster event.
+ */
+describe("POST /api/chat/group-members/add", () => {
+  beforeEach(() => {
+    mocks.groupMemberRepo.upsert.mockResolvedValue({
+      userId: TARGET,
+      role: "MEMBER",
+      status: "ACTIVE",
+      joinedAt: new Date(),
+    });
+  });
+
+  it("REALTIME: an add announces the new roster to the room and every member", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(201);
+    expect(channelsFor("group:member:updated")).toEqual([
+      `conv:${ROOM}`,
+      `user:${TEST_USER_ID}`,
+      `user:${BYSTANDER}`,
+    ]);
+    expect(
+      publishes().find((p) => p.event === "group:member:updated")!.data
+    ).toMatchObject({
+      roomId: ROOM,
+      conversationType: "GROUP",
+      memberId: TARGET,
+      role: "MEMBER",
+      actorId: TEST_USER_ID,
+      memberCount: 2,
+    });
+  });
+
+  it("RE-ADD: a KICKED row is re-admitted as ACTIVE with every removal field cleared", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "KICKED",
+      kickedAt: new Date(),
+      kickedBy: TEST_USER_ID,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(201);
+    expect(mocks.groupMemberRepo.upsert).toHaveBeenCalledWith(
+      ROOM,
+      TARGET,
+      expect.objectContaining({
+        status: "ACTIVE",
+        leftAt: null,
+        kickedAt: null,
+        kickedBy: null,
+        kickReason: null,
+        bannedAt: null,
+        bannedBy: null,
+      })
+    );
+    // The re-added member's own channel is what un-sticks their client.
+    expect(channelsFor("group:added")).toEqual([`user:${TARGET}`]);
+  });
+
+  it("CAPACITY: a full group rejects a NEW member but the already-ACTIVE case is not a capacity error", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Testing Invites",
+      memberCount: 256,
+      memberLimit: 256,
+    });
+
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    const full = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: "brand-new-user" });
+    expect(full.status).toBe(400);
+
+    // Same full room, but the target is already in it: the membership check has
+    // to run FIRST, or "already a member" is misreported as "group is full".
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "ACTIVE",
+    });
+    const dupe = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+    expect(dupe.status).toBe(409);
+  });
+});
+
 describe("POST /api/chat/group-members/role", () => {
   it("REALTIME: group:member:updated carries the new role to the room and every member", async () => {
     mocks.groupMemberRepo.updateRole.mockResolvedValue({
@@ -144,5 +247,97 @@ describe("POST /api/chat/group-members/role", () => {
       [TARGET, "ADMIN"],
       [TEST_USER_ID, "MEMBER"],
     ]);
+  });
+});
+
+describe("POST /api/chat/group-members/ban", () => {
+  /**
+   * The banned member must NEVER receive the room event/line announcing their
+   * own ban. The room broadcast of both the roster event AND the MEMBER_BANNED
+   * system line carry an envelope-level `excludeUserId` the gateway honors to
+   * skip the target's own sockets, while every remaining member still gets it.
+   * Ordering: the eviction signal (`group:removed`) is emitted BEFORE the
+   * system line, so the window a stale socket could still catch it is minimal
+   * even before the envelope exclusion kicks in.
+   */
+  function rawEnvelopes(): Array<{
+    channel: string;
+    event: string;
+    excludeUserId?: string;
+    data: any;
+  }> {
+    return mocks.redis.publish.mock.calls.map(
+      ([channel, raw]: [string, string]) => ({
+        channel,
+        ...(JSON.parse(raw) as {
+          event: string;
+          excludeUserId?: string;
+          data: any;
+        }),
+      })
+    );
+  }
+
+  beforeEach(() => {
+    mocks.groupMemberRepo.updateStatus.mockResolvedValue({
+      userId: TARGET,
+      status: "BANNED",
+    });
+    // Let the SYSTEM message actually persist + publish so the exclusion on the
+    // `message:new` room broadcast is observable (best-effort no-op otherwise).
+    mocks.groupRoomRepo.allocateSequence.mockResolvedValue(7);
+    mocks.groupMessageRepo.create.mockResolvedValue({
+      id: "sysmsg-ban-1",
+      roomId: ROOM,
+      messageType: "SYSTEM",
+      content: { text: "banned" },
+      createdAt: new Date(),
+    });
+  });
+
+  it("route is wired and returns 200", async () => {
+    const res = await request(app)
+      .post("/api/chat/group-members/ban")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+    expect(res.status).toBe(200);
+  });
+
+  it("SECURITY: the banned target is excluded from both room broadcasts", async () => {
+    await request(app)
+      .post("/api/chat/group-members/ban")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    const envelopes = rawEnvelopes();
+
+    // Roster removal on the room channel excludes the target.
+    const roster = envelopes.find(
+      (p) => p.event === "group:member:removed" && p.channel === `conv:${ROOM}`
+    )!;
+    expect(roster.excludeUserId).toBe(TARGET);
+
+    // The MEMBER_BANNED system line on the room channel excludes the target.
+    const sysLine = envelopes.find(
+      (p) => p.event === "message:new" && p.channel === `conv:${ROOM}`
+    )!;
+    expect(sysLine.excludeUserId).toBe(TARGET);
+    expect(sysLine.data.systemEvent).toBe("MEMBER_BANNED");
+
+    // The target still gets their own eviction signal.
+    expect(channelsFor("group:removed")).toEqual([`user:${TARGET}`]);
+  });
+
+  it("ORDERING: group:removed (eviction) is emitted before the ban system line", async () => {
+    await request(app)
+      .post("/api/chat/group-members/ban")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    const events = rawEnvelopes().map((p) => `${p.event}@${p.channel}`);
+    const evictIdx = events.indexOf(`group:removed@user:${TARGET}`);
+    const sysIdx = events.indexOf(`message:new@conv:${ROOM}`);
+    expect(evictIdx).toBeGreaterThanOrEqual(0);
+    expect(sysIdx).toBeGreaterThan(evictIdx);
   });
 });

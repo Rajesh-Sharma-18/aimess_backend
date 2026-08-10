@@ -161,6 +161,10 @@ const startServer = async () => {
 
     await waitForMongoWritablePrimary();
 
+    // Message search no longer uses `$text` — it is a case-insensitive
+    // substring match served by the `[roomId, createdAt desc]` compound index
+    // (see buildTextSearchPipeline). These text indexes are now pure write
+    // overhead on three of the hottest collections, so drop them on boot.
     for (const stale of [
       {
         collection: "private_messages",
@@ -171,45 +175,23 @@ const startServer = async () => {
         collection: "general_room_messages",
         name: "general_room_messages_message_idx",
       },
+      {
+        collection: "private_messages",
+        name: "private_messages_content_text_v2_idx",
+      },
+      {
+        collection: "group_messages",
+        name: "group_messages_content_text_v2_idx",
+      },
+      {
+        collection: "general_room_messages",
+        name: "general_room_messages_message_v2_idx",
+      },
     ]) {
       try {
         await dropMongoIndexIfExists(prisma, stale.collection, stale.name);
       } catch (err) {
         logger.warn(`Failed to drop stale text index ${stale.name}`);
-        logger.warn(err);
-      }
-    }
-
-    const textIndexes: {
-      collection: string;
-      key: Record<string, 1 | -1 | "text">;
-      name: string;
-    }[] = [
-      {
-        collection: "private_messages",
-        key: { "content.text": "text" },
-        name: "private_messages_content_text_v2_idx",
-      },
-      {
-        collection: "group_messages",
-        key: { "content.text": "text" },
-        name: "group_messages_content_text_v2_idx",
-      },
-      {
-        collection: "general_room_messages",
-        key: { message: "text" },
-        name: "general_room_messages_message_v2_idx",
-      },
-    ];
-    for (const idx of textIndexes) {
-      try {
-        await ensureMongoIndex(prisma, idx.collection, {
-          key: idx.key,
-          name: idx.name,
-          defaultLanguage: "none",
-        });
-      } catch (err) {
-        logger.warn(`Failed to create text index ${idx.name} — continuing`);
         logger.warn(err);
       }
     }

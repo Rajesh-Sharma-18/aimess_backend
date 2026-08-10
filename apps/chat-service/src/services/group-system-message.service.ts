@@ -51,6 +51,14 @@ export interface PostSystemMessageParams {
    * `call:<callId>` for the whole RINGING → … → ENDED sequence.
    */
   clientMessageId?: string | null;
+  /**
+   * When set, the real-time `message:new` fan-out to `conv:<roomId>` skips this
+   * user's own sockets (the gateway honors an envelope-level `excludeUserId`).
+   * Used by ban/kick so the removed member never receives the room line
+   * announcing their own removal, while every other member still does. The row
+   * is still persisted for the remaining members' history.
+   */
+  excludeUserId?: string | null;
 }
 
 /**
@@ -239,6 +247,9 @@ export class GroupSystemMessageService {
           `conv:${roomId}`,
           JSON.stringify({
             event: "message:new",
+            ...(params.excludeUserId
+              ? { excludeUserId: params.excludeUserId }
+              : {}),
             data: buildChatMessageEvent({
               id: message.id,
               roomId,

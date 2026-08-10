@@ -16,6 +16,12 @@
  * kept pure so both the send path and the "timer changed mid-conversation"
  * re-stamp share the exact same arithmetic.
  */
+import {
+  currentLocale,
+  formatTtlDuration,
+  STORED_TEXT_LOCALE,
+  type SupportedLocale,
+} from "@aimess/constants";
 
 /** OFF = no timer. TIMER = fixed TTL from send time. AFTER_VIEWING = TTL starts on the recipient's read receipt. */
 export const AUTO_DELETE_MODES = ["OFF", "TIMER", "AFTER_VIEWING"] as const;
@@ -55,7 +61,12 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
   const r = raw as Record<string, unknown>;
   const mode = String(r.mode ?? "OFF").toUpperCase() as AutoDeleteMode;
   if (!AUTO_DELETE_MODES.includes(mode)) return AUTO_DELETE_OFF;
-  if (mode === "OFF") return AUTO_DELETE_OFF;
+  if (mode === "OFF")
+    return {
+      mode: "OFF",
+      ttlSeconds: null,
+      setAt: typeof r.setAt === "string" ? r.setAt : "",
+    };
   const ttl = Number(r.ttlSeconds);
   return {
     mode,
@@ -65,7 +76,15 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
   };
 }
 
-/** Normalize the stored `PrivateRoom.autoDeleteBy` JSON into a typed map. */
+/**
+ * Normalize the stored `PrivateRoom.autoDeleteBy` JSON into a typed map.
+ *
+ * An entry with `mode: "OFF"` is KEPT (it carries a `setAt`), because
+ * "explicitly turned off in THIS chat" and "never configured" are no longer the
+ * same state: the first must survive the account-wide default, the second must
+ * not — see {@link resolveEffectiveAutoDelete}. Every other consumer reads
+ * through {@link readAutoDeleteSetting}, which returns OFF either way.
+ */
 export function parseAutoDeleteMap(
   raw: unknown
 ): Record<string, AutoDeleteSetting> {
@@ -74,10 +93,17 @@ export function parseAutoDeleteMap(
   for (const [userId, value] of Object.entries(
     raw as Record<string, unknown>
   )) {
-    const setting = coerceSetting(value);
-    if (setting.mode !== "OFF") out[userId] = setting;
+    out[userId] = coerceSetting(value);
   }
   return out;
+}
+
+/** True when this user has made an explicit per-chat choice (including OFF). */
+export function hasExplicitAutoDelete(
+  map: Record<string, AutoDeleteSetting>,
+  userId: string
+): boolean {
+  return map[userId] !== undefined;
 }
 
 /** One user's own setting (OFF when unset). */
@@ -89,18 +115,40 @@ export function readAutoDeleteSetting(
 }
 
 /**
- * The timer that applies to a message SENT BY `senderId`. Sender's own setting
- * first, peer's as the fallback — see this module's header for why that single
- * rule covers both the one-sided and the two-different-timers case.
+ * The timer that applies to a message SENT BY `senderId`. Sender's own per-chat
+ * setting first, peer's per-chat setting next — see this module's header for why
+ * that covers both the one-sided and the two-different-timers case — and the
+ * sender's ACCOUNT-WIDE default (Settings → Chat → Auto-Delete) last.
+ *
+ * The account default is a fallback, never an override: a chat where the sender
+ * explicitly picked "Off" stays off even while the account default is on, which
+ * is why an explicit OFF is stored rather than deleted.
  */
 export function resolveEffectiveAutoDelete(
   map: Record<string, AutoDeleteSetting>,
   senderId: string,
-  peerId: string
+  peerId: string,
+  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
 ): AutoDeleteSetting {
   const own = readAutoDeleteSetting(map, senderId);
   if (own.mode !== "OFF") return own;
-  return readAutoDeleteSetting(map, peerId);
+  const peer = readAutoDeleteSetting(map, peerId);
+  if (peer.mode !== "OFF") return peer;
+  if (hasExplicitAutoDelete(map, senderId)) return AUTO_DELETE_OFF;
+  return accountDefault;
+}
+
+/** Account-wide `ChatSettings.autoDeleteTimer` (user-service) → a room setting. */
+export const ACCOUNT_AUTO_DELETE_TTL_SECONDS: Record<string, number> = {
+  DAYS_7: 7 * 24 * 3600,
+  DAYS_15: 15 * 24 * 3600,
+  DAYS_30: 30 * 24 * 3600,
+};
+
+export function accountAutoDeleteSetting(timer: string): AutoDeleteSetting {
+  const ttlSeconds = ACCOUNT_AUTO_DELETE_TTL_SECONDS[String(timer)];
+  if (!ttlSeconds) return AUTO_DELETE_OFF;
+  return { mode: "TIMER", ttlSeconds, setAt: "" };
 }
 
 export interface AutoDeleteStamp {
@@ -150,41 +198,33 @@ export function validateAutoDeleteInput(input: {
 /**
  * Human label for the system message / gear menu — "24 hours", "7 days".
  *
- * The three presets are spelled EXACTLY as the picker spells them (WhatsApp's
- * wording), because this label is what the system message quotes back: a menu
- * reading "90 Days" followed by "…set messages to auto-delete after 3 months"
- * looks like the setting didn't take. Anything else is a custom timer and gets
- * the generic humanization.
+ * Thin alias over the shared `formatTtlDuration` in `@aimess/constants`, which
+ * the SYSTEM-line renderer also uses — one spelling of a duration, in every
+ * language, on both sides of the wire. Defaults to `STORED_TEXT_LOCALE` so the
+ * label baked into an AUTO_DELETE_UPDATED row stays English, exactly as before.
  */
-const AUTO_DELETE_PRESET_LABELS: Record<number, string> = {
-  86400: "24 hours",
-  604800: "7 days",
-  7776000: "90 days",
-};
-
-export function formatAutoDeleteDuration(ttlSeconds: number | null): string {
-  const s = Number(ttlSeconds ?? 0);
-  if (!s || s <= 0) return "";
-  const preset = AUTO_DELETE_PRESET_LABELS[s];
-  if (preset) return preset;
-
-  const plural = (n: number, unit: string) =>
-    `${n} ${unit}${n === 1 ? "" : "s"}`;
-  if (s % 86400 === 0) return plural(s / 86400, "day");
-  if (s % 3600 === 0) return plural(s / 3600, "hour");
-  if (s % 60 === 0) return plural(s / 60, "minute");
-  return plural(s, "second");
+export function formatAutoDeleteDuration(
+  ttlSeconds: number | null,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  return formatTtlDuration(ttlSeconds, locale);
 }
 
 /** The wire block returned by the REST settings endpoints and the socket event. */
 export function buildAutoDeleteWire(
   map: Record<string, AutoDeleteSetting>,
   userId: string,
-  peerId: string
+  peerId: string,
+  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
 ): Record<string, unknown> {
   const mine = readAutoDeleteSetting(map, userId);
   const theirs = readAutoDeleteSetting(map, peerId);
-  const effective = resolveEffectiveAutoDelete(map, userId, peerId);
+  const effective = resolveEffectiveAutoDelete(
+    map,
+    userId,
+    peerId,
+    accountDefault
+  );
   const toWire = (s: AutoDeleteSetting) => ({
     mode: s.mode,
     ttlSeconds: s.ttlSeconds,
@@ -195,9 +235,21 @@ export function buildAutoDeleteWire(
     mode: effective.mode,
     ttlSeconds: effective.ttlSeconds,
     isEnabled: effective.mode !== "OFF",
-    label: formatAutoDeleteDuration(effective.ttlSeconds),
+    label: formatAutoDeleteDuration(effective.ttlSeconds, currentLocale()),
+    // Where that timer came from, so the UI can say "from your Chat settings"
+    // instead of showing this chat as configured when it isn't.
+    source:
+      effective.mode === "OFF"
+        ? "NONE"
+        : mine.mode !== "OFF"
+          ? "SELF"
+          : theirs.mode !== "OFF"
+            ? "PEER"
+            : "ACCOUNT",
     // Both sides, so the UI can render "you: 1 day / them: 1 hour".
     self: toWire(mine),
     peer: toWire(theirs),
+    // The caller's account-wide default (Settings → Chat → Auto-Delete).
+    accountDefault: toWire(accountDefault),
   };
 }

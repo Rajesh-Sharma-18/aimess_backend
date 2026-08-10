@@ -71,6 +71,7 @@ import {
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import {
@@ -877,9 +878,16 @@ export function createMessagingImpl(
             },
           });
 
+          // Settings → Chat → Read Receipt, off: the read itself still lands,
+          // only the OUTBOUND receipt is withheld. Mirrors
+          // ChatMessageOrchestrator.markReadDirect — this handler is a second
+          // copy of that flow, so the gate has to exist in both.
+          const mayBroadcast = await mayBroadcastReadReceipts(req.readerId);
+
           // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
           // or below the boundary to READ (watermark), not just the boundary message.
-          await redis.publish(`conv:${req.conversationId}`, readPayload);
+          if (mayBroadcast)
+            await redis.publish(`conv:${req.conversationId}`, readPayload);
 
           // ALSO publish directly to every other participant/member's own
           // `user:<id>` channel — every socket joins that room unconditionally
@@ -891,7 +899,7 @@ export function createMessagingImpl(
           // socket wasn't (yet) joined to this specific room, going stale until
           // a manual refetch. Same direct-roster pattern already used for typing
           // (`createDirectRosterBroadcast`) and community's read_sync.
-          for (const otherId of otherUserIds) {
+          for (const otherId of mayBroadcast ? otherUserIds : []) {
             void redis
               .publish(`user:${otherId}`, readPayload)
               .catch((e: unknown) =>
@@ -1650,10 +1658,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; calleeId?: string };
+          const req = call.request as {
+            callId?: string;
+            calleeId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.answerCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1695,10 +1708,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; userId?: string };
+          const req = call.request as {
+            callId?: string;
+            userId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1757,10 +1775,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { roomName?: string; eventType?: string };
+          const req = call.request as {
+            roomName?: string;
+            eventType?: string;
+            remainingParticipants?: number;
+          };
           await deps.callService.reconcileFromLiveKitRoomFinished(
             req.roomName ?? "",
-            req.eventType ?? ""
+            req.eventType ?? "",
+            req.remainingParticipants ?? -1
           );
           callback(null, {});
         } catch (err) {
@@ -3961,8 +3984,14 @@ export function createNotificationImpl(
             }
           };
 
-          if (existing) {
-            const plan = resolveTransition(existing.type, req.type, data);
+          // `CREATE` here means "the matched row belongs to a previous cycle of
+          // a recycled id" — fall through to the insert below so the client gets
+          // a genuine `notification:new`, leaving the old card as history.
+          const plan = existing
+            ? resolveTransition(existing.type, req.type, data)
+            : null;
+
+          if (existing && plan && plan.action !== "CREATE") {
             const existingPayload = (existing.payload ?? {}) as {
               title?: string;
               body?: string;

@@ -5,7 +5,11 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
+import {
+  emitPersonalizedSender,
+  type PersonalizeFn,
+} from "../emit-personalized.js";
+import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import type {
   CatchupEventDto,
   MessagingClient,
@@ -22,6 +26,7 @@ import {
   createRoomBroadcast,
 } from "../presence-indicator.js";
 import { env } from "../../config/env.js";
+import { scopeSocketLocale } from "../locale-scope.js";
 import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
@@ -286,6 +291,13 @@ const FriendCancelRequestSchema = z.object({
 interface RedisSocketEvent {
   event: string;
   data: unknown;
+  /**
+   * Envelope-only (never emitted to clients): when present, this user's own
+   * sockets are skipped for this `conv:<roomId>` broadcast. Set by the group
+   * removal path so a banned/kicked member never receives the room event
+   * announcing their own removal ("Admin banned X" / group:member:removed).
+   */
+  excludeUserId?: string;
 }
 
 /** Restore the canonical message shape stripped down by the catch-up protobuf. */
@@ -357,6 +369,29 @@ export function registerChatNamespace(
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
   /**
+   * ROOM MODEL — the security invariant this namespace rests on.
+   *
+   *   user:<id>       ONLY that user's own sockets. Everything a service
+   *                   addresses to a person (message:new, message:delivered,
+   *                   message:read/read_sync, conv:updated, calls, typing
+   *                   fan-out, friend events, settings) is delivered here, so
+   *                   NOTHING else may ever join it.
+   *   presence:<id>   Watchers of that user's online status. Joined by
+   *                   `presence:subscribe` after a whoCanSeeOnlineStatus check.
+   *                   Carries `presence:status` and nothing else.
+   *   conv:<roomId>   Participants of one conversation — membership-gated.
+   *   self:<id>       Historical alias of user:<id>; kept because call.service
+   *                   publishes call lifecycle straight to Redis `self:<id>`.
+   *   session:<id>    One device/session.
+   *
+   * `presence:subscribe` used to join the watcher into `user:<peerId>` — the
+   * same room every private event lands in — which leaked the peer's whole
+   * private stream to anyone who watched their dot. The two roles are split so
+   * the leak cannot recur: adding a new user-addressed event is now safe by
+   * default instead of requiring a hand-maintained "self-only" denylist.
+   */
+
+  /**
    * Re-run the `presence:subscribe` authorization for every socket that asked
    * to watch `subjectId`, in BOTH directions, and tell each one what it should
    * now believe. Called when the subject's privacy settings change or a
@@ -401,10 +436,10 @@ export function registerChatNamespace(
             subjectId,
           ]);
           const allowed = visible.includes(subjectId);
-          const subscribed = watcher.rooms.has(`user:${subjectId}`);
+          const subscribed = watcher.rooms.has(`presence:${subjectId}`);
 
           if (allowed && !subscribed) {
-            void watcher.join(`user:${subjectId}`);
+            void watcher.join(`presence:${subjectId}`);
             watcher.emit("presence:status", {
               userId: subjectId,
               isOnline,
@@ -418,7 +453,7 @@ export function registerChatNamespace(
               isOnline: false,
               lastSeen: null,
             });
-            void watcher.leave(`user:${subjectId}`);
+            void watcher.leave(`presence:${subjectId}`);
           }
         })
       );
@@ -468,9 +503,7 @@ export function registerChatNamespace(
           return;
         }
 
-        let personalizeFn:
-          | ((data: unknown, userId: string) => unknown)
-          | undefined;
+        let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(
             (parsed.data as { contentType?: string; messageType?: string })
@@ -483,59 +516,25 @@ export function registerChatNamespace(
           }
         }
 
-        // Call lifecycle and the chat:unread_summary badge total on `user:<id>`
-        // must NOT fan out to presence subscribers — `presence:subscribe` joins
-        // the SUBSCRIBER's own socket into the peer's `user:<peerId>` room so it
-        // can hear that peer's presence changes, which also relay through this
-        // exact room. Without this rewrite, subscribing to a peer's presence
-        // silently leaks that peer's own badge count (and, for calls, their call
-        // lifecycle) onto the subscriber's client. Redirect to `self:<id>` —
-        // joined only by the owning user's own sockets (see socket.join above) —
-        // instead of the shared identity room.
-        const isSelfOnlyEvent =
-          parsed.event.startsWith("call:") ||
-          parsed.event === "chat:unread_summary" ||
-          // A user's own privacy/notification settings. MUST stay self-only —
-          // `user:<id>` is joined by presence subscribers, i.e. the very peers
-          // some of these settings exist to hide things from.
-          parsed.event === "settings:updated" ||
-          // A conversation the user deleted-for-me/cleared from their own
-          // view. MUST stay self-only — otherwise a peer merely watching this
-          // user's presence would learn they deleted a conversation (and its
-          // roomId, which may be with a third party entirely).
-          parsed.event === "conv:deleted" ||
-          parsed.event === "conv:cleared" ||
-          // The caller's own conversation NOTIFICATION mute (multi-device
-          // sync). Same leak shape as the two above and worse in intent: the
-          // payload carries the room id, so a peer merely watching this user's
-          // presence would learn they had muted a conversation — quite
-          // possibly the one with that very peer.
-          parsed.event === "conv:muted" ||
-          parsed.event === "conv:unmuted" ||
-          // The inbox bump. Published per-recipient on `user:<recipientId>`,
-          // but that room is ALSO joined by every peer watching this user's
-          // presence — so each bump leaked one participant's room id, preview
-          // and unread state to unrelated watchers, and made their clients
-          // invalidate an inbox they have no row for. Self-only, like the two
-          // above.
-          parsed.event === "conv:updated" ||
-          // Friendship state, published per affected user on `user:<userId>`
-          // (see `emitFriendEventSafe`). Same leak shape: any peer who called
-          // presence:subscribe on this user — which the web client does for
-          // EVERY DM peer — was receiving their friend requests, accepts and
-          // rejects. A third party's client would show the request as if it
-          // were its own. Both parties still get their copy, because
-          // user-service publishes to each of them separately.
-          parsed.event.startsWith("friend:") ||
-          // The pending-friend-request conversation row. Worse than the
-          // above: the payload carries the requester's name, username and
-          // avatar plus a synthetic sidebar row, so a watcher rendered a
-          // pending request that was never addressed to them.
-          parsed.event.startsWith("conversation:");
-        const targetChannel =
-          pattern === "user:*" && isSelfOnlyEvent
-            ? `self:${channel.slice("user:".length)}`
-            : channel;
+        // Every event is delivered to the room named by the channel it was
+        // published on, and reaches nobody else: `user:<id>` holds only that
+        // user's own sockets (see the ROOM MODEL note at the top of this
+        // namespace). This used to need a hand-maintained "self-only" denylist
+        // rewriting a dozen event names onto `self:<id>`, because
+        // `presence:subscribe` put watchers INTO `user:<peerId>` — which meant
+        // any event NOT on the list (message:new, message:delivered,
+        // message:read, read_sync, typing, …) was fanned out to every peer
+        // watching the recipient's online dot. The room split removed the
+        // shared room, and with it the denylist.
+
+        // Presence is the ONE thing watchers are entitled to. It is published
+        // on `user:<subjectId>` (chat-service PresenceService), so mirror it to
+        // the watcher room. Nothing else is ever mirrored.
+        if (pattern === "user:*" && parsed.event === "presence:status") {
+          chat
+            .to(`presence:${channel.slice("user:".length)}`)
+            .emit(parsed.event, parsed.data);
+        }
 
         const callData = parsed.data as
           | { callId?: unknown; reason?: unknown }
@@ -548,12 +547,12 @@ export function registerChatNamespace(
             (parsed.event === "call:handled" &&
               callData.reason === "answered_elsewhere"));
         if (shouldMirrorJoinCallRoom) {
-          void chat.in(targetChannel).socketsJoin(`call:${callData.callId}`);
+          void chat.in(channel).socketsJoin(`call:${callData.callId}`);
         }
 
         // Presence subscriptions are authorized at `presence:subscribe` time,
-        // so a socket that joined `user:<subjectId>` while it was allowed keeps
-        // hearing that user's presence forever — including after they set
+        // so a socket that joined `presence:<subjectId>` while it was allowed
+        // keeps hearing that user's presence forever — including after they set
         // whoCanSeeOnlineStatus to NO_ONE/FRIENDS, or unfriended/blocked the
         // watcher. Both of those changes already publish on `user:<subjectId>`,
         // so re-authorize the room's watchers here: the revocation lands on the
@@ -595,12 +594,61 @@ export function registerChatNamespace(
           }
         }
 
+        // `call:handled` means "another of YOUR devices dealt with this ring", and
+        // it is addressed to the whole user — including the device that dealt with
+        // it, which must not dismiss its own live call. Deliver it to every leg
+        // except that one, and never leak the leg id to clients.
+        const handledByLegId = (
+          parsed.data as { handledByLegId?: unknown } | null | undefined
+        )?.handledByLegId;
+        if (
+          parsed.event === "call:handled" &&
+          typeof handledByLegId === "string"
+        ) {
+          const { handledByLegId: _omit, ...payload } = parsed.data as Record<
+            string,
+            unknown
+          >;
+          void (async () => {
+            try {
+              const sockets = await chat.in(channel).fetchSockets();
+              for (const s of sockets) {
+                if (s.data.callLegId === handledByLegId) continue;
+                s.emit(parsed.event, payload);
+              }
+            } catch (err) {
+              logger.warn(`/chat call:handled fan-out failed: ${String(err)}`);
+            }
+          })();
+          return;
+        }
+
+        // Honor an envelope-level excludeUserId on conv:* broadcasts only —
+        // the removal path sets it so the banned/kicked target's own sockets
+        // are skipped while every remaining member still gets the event.
+        const excludeUserId =
+          pattern === "conv:*" && typeof parsed.excludeUserId === "string"
+            ? parsed.excludeUserId
+            : undefined;
+
+        // Reciprocity for Settings → Chat → Read Receipt: chat-service already
+        // withholds the receipt of a READER who switched it off; this drops it
+        // for a VIEWER who did. It has to happen here, not at publish time — one
+        // `message:read` reaches many viewers with different settings.
+        const skipViewer =
+          parsed.event === "message:read"
+            ? (viewerUserId: string) =>
+                viewerHidesReadReceipts(userClient, viewerUserId)
+            : undefined;
+
         void emitPersonalizedSender(
           chat,
-          targetChannel,
+          channel,
           parsed.event,
           parsed.data,
-          personalizeFn
+          personalizeFn,
+          excludeUserId,
+          skipViewer
         );
 
         // Auto-join the conversation room when the user is added to a new
@@ -788,11 +836,19 @@ export function registerChatNamespace(
       groupId: z.string().min(1).optional(),
       callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
       privateRoomId: z.string().optional(),
+      legId: z.string().min(1).max(128).optional(),
     })
     .refine((v) => Boolean(v.calleeId) !== Boolean(v.groupId), {
       message: "exactly one of calleeId or groupId is required",
     });
-  const CallAnswerSchema = z.object({ callId: z.string().min(1) });
+  // `legId` identifies ONE connection of the user, not one login: two browser
+  // tabs share a session (and therefore `socket.data.sessionId`), so the client
+  // mints a per-page-load id and sends it here. Optional — a client that omits it
+  // falls back to session granularity, which is still correct for one-tab-per-device.
+  const CallAnswerSchema = z.object({
+    callId: z.string().min(1),
+    legId: z.string().min(1).max(128).optional(),
+  });
   // `intentional: true` is required so stale HMR/zombie socket listeners that
   // still auto-emit `{ callId }` (old busy auto-decline) cannot kill a live ring.
   // Only an explicit user Decline click from a current client includes the flag.
@@ -800,7 +856,10 @@ export function registerChatNamespace(
     callId: z.string().min(1),
     intentional: z.literal(true),
   });
-  const CallEndSchema = z.object({ callId: z.string().min(1) });
+  const CallEndSchema = z.object({
+    callId: z.string().min(1),
+    legId: z.string().min(1).max(128).optional(),
+  });
   const CallRejoinSchema = z.object({ callId: z.string().min(1) });
 
   // A killed app (force-quit, OOM, crash) never sends `call:end`, and for a call
@@ -831,7 +890,11 @@ export function registerChatNamespace(
     pendingCallCleanups.delete(key);
   };
 
-  const scheduleCallCleanup = (callId: string, userId: string): void => {
+  const scheduleCallCleanup = (
+    callId: string,
+    userId: string,
+    legId: string
+  ): void => {
     const key = `${callId}:${userId}`;
     if (pendingCallCleanups.has(key)) return;
     const timer = setTimeout(() => {
@@ -842,7 +905,10 @@ export function registerChatNamespace(
           // counts as present and cancels the cleanup.
           const sockets = await chat.in(`call:${callId}`).fetchSockets();
           if (sockets.some((s) => s.data.userId === userId)) return;
-          await messagingClient.endCall({ callId, userId });
+          // Carries the disconnected leg: chat-service ignores an end request
+          // from a callee leg that never answered, so a sibling tab closing can
+          // no longer take down the call the user is actually on.
+          await messagingClient.endCall({ callId, userId, legId });
           logger.info(
             `/chat call cleanup after disconnect callId=${callId} userId=${userId}`
           );
@@ -857,7 +923,14 @@ export function registerChatNamespace(
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
+    scopeSocketLocale(socket);
     const deviceId = sessionId ?? socket.id;
+    // One socket is one call leg. `deviceId` is only session-granular (two tabs
+    // share a login), so the client's per-page-load `legId` supersedes it as soon
+    // as this socket initiates or answers a call — and the disconnect cleanup then
+    // ends the call under the SAME leg that claimed it. On socket.data so other
+    // gateway nodes can read it through `fetchSockets()`.
+    socket.data.callLegId = deviceId;
     void socket.join(`user:${userId}`);
     // Private per-user room. Unlike `user:<id>` — which `presence:subscribe`
     // lets ANY peer join — only this user's own sockets are ever in `self:<id>`.
@@ -928,40 +1001,45 @@ export function registerChatNamespace(
           return;
         }
         // Idempotent: re-joining an already-tracked room is a no-op in Socket.IO.
-        // PRIVATE (default/omitted type): NOT_FOUND / FORBIDDEN stay enforced
-        // downstream at message:send time — a fixed 2-participant room has no
-        // "left" state to leak.
-        // GROUP: membership-gated HERE, before the join, using the same
-        // ACTIVE-roster oracle typing already resolves through
-        // (getRoomParticipantIds) — mirrors community.ns.ts's community:join
-        // gate. Without this, ANY stale join (a client bug, a connection that
-        // predates a leave, a future regression) leaves a former member sitting
-        // in conv:<roomId> forever, since nothing else re-checks membership on
-        // an already-open Socket.IO room.
-        if (r.data.conversationType === "group") {
-          void (async () => {
-            try {
-              const { userIds } = await messagingClient.getRoomParticipantIds({
-                conversationId: r.data.conversationId,
-                conversationType: "group",
-              });
-              if (!userIds.includes(userId)) {
-                ackError(callback, "FORBIDDEN", locale);
-                return;
-              }
-              void socket.join(`conv:${r.data.conversationId}`);
-              ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
-            } catch (err) {
-              logger.warn(
-                `/chat conv:join group membership check failed roomId=${r.data.conversationId}: ${String(err)}`
-              );
+        //
+        // `conversationId` is CLIENT-SUPPLIED, and `conv:<roomId>` is where
+        // message:new / reactions / edits / deletes / recording are broadcast —
+        // so membership is checked HERE, before the join, for BOTH kinds. Only
+        // GROUP used to be gated; PRIVATE joined unchecked on the theory that
+        // sends are still refused downstream, which protected writes but not
+        // reads: any authenticated socket could emit
+        // `conv:join {conversationId: "<someone else's room>"}` and receive that
+        // conversation's live traffic.
+        //
+        // `getRoomParticipantIds` is the same ACTIVE-roster oracle typing
+        // resolves through, and it handles both kinds: an explicit "group" uses
+        // the group roster, anything else looks the id up as a private room and
+        // falls back to the group roster when it isn't one (so legacy clients
+        // that omit `conversationType` are gated identically). It fails CLOSED —
+        // an empty roster (unknown room, blocked DM, gRPC error) denies.
+        void (async () => {
+          try {
+            const { userIds } = await messagingClient.getRoomParticipantIds({
+              conversationId: r.data.conversationId,
+              conversationType: r.data.conversationType ?? "private",
+            });
+            if (!userIds.includes(userId)) {
               ackError(callback, "FORBIDDEN", locale);
+              return;
             }
-          })();
-          return;
-        }
-        void socket.join(`conv:${r.data.conversationId}`);
-        ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
+            void socket.join(`conv:${r.data.conversationId}`);
+            ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
+          } catch (err) {
+            // Still no join — but report it as the retryable failure it is, so a
+            // client that reads the ack retries instead of treating a
+            // chat-service blip as a permanent denial. (A roster the service
+            // returns EMPTY is a verdict, not an outage, and stays FORBIDDEN.)
+            logger.warn(
+              `/chat conv:join membership check failed roomId=${r.data.conversationId}: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          }
+        })();
       }
     );
 
@@ -1243,17 +1321,17 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        // `whoCanSeeOnlineStatus` gate. Joining `user:<peerId>` is what makes a
-        // peer's presence (and every other broadcast to that room) reachable,
-        // so the filter has to happen BEFORE the join — masking on emit would
-        // be too late. Denied peers are silently dropped rather than erroring:
-        // a per-peer rejection would itself disclose the setting.
+        // `whoCanSeeOnlineStatus` gate. Joining `presence:<peerId>` is what
+        // makes a peer's presence reachable, so the filter has to happen BEFORE
+        // the join — masking on emit would be too late. Denied peers are
+        // silently dropped rather than erroring: a per-peer rejection would
+        // itself disclose the setting.
         void (async () => {
           // Record the INTENT to watch each peer, allowed or not. Nothing is
           // ever published to `presence-intent:*` — it exists so a later
           // widening (NO_ONE → EVERYONE, or becoming friends) can find the
           // sockets that asked and grant them, without the client
-          // re-subscribing. Authorization still lives entirely in `user:*`.
+          // re-subscribing.
           for (const peerId of r.data.peerIds) {
             void socket.join(`presence-intent:${peerId}`);
           }
@@ -1262,7 +1340,9 @@ export function registerChatNamespace(
             r.data.peerIds
           );
           for (const peerId of visible) {
-            void socket.join(`user:${peerId}`);
+            // NEVER `user:<peerId>` — that room carries the peer's private
+            // message/read/typing/inbox stream, not just their online dot.
+            void socket.join(`presence:${peerId}`);
           }
           ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale, {
             subscribedCount: visible.length,
@@ -1280,7 +1360,7 @@ export function registerChatNamespace(
           return;
         }
         for (const peerId of r.data.peerIds) {
-          void socket.leave(`user:${peerId}`);
+          void socket.leave(`presence:${peerId}`);
           // Drop the intent too, or a later widening would silently re-grant a
           // subscription the client explicitly gave up.
           void socket.leave(`presence-intent:${peerId}`);
@@ -1295,8 +1375,9 @@ export function registerChatNamespace(
       (_payload: unknown, callback?: (res: unknown) => void) => {
         let unsubscribedCount = 0;
         for (const room of socket.rooms) {
-          // Leave every user:* room except the socket's own identity room.
-          if (room.startsWith("user:") && room !== `user:${userId}`) {
+          // Leave every presence:* watch room. `user:<self>` is this socket's
+          // own delivery room and is never a subscription, so it is untouched.
+          if (room.startsWith("presence:")) {
             void socket.leave(room);
             unsubscribedCount++;
           }
@@ -1317,8 +1398,8 @@ export function registerChatNamespace(
       (_payload: unknown, callback?: (res: unknown) => void) => {
         const peerIds: string[] = [];
         for (const room of socket.rooms) {
-          if (room.startsWith("user:") && room !== `user:${userId}`) {
-            peerIds.push(room.slice("user:".length));
+          if (room.startsWith("presence:")) {
+            peerIds.push(room.slice("presence:".length));
           }
         }
         ackOk(callback, "SOCKET_PRESENCE_LIST_FETCHED", locale, { peerIds });
@@ -1375,6 +1456,8 @@ export function registerChatNamespace(
     const typing = createPresenceIndicator({
       startEvent: "typing:start",
       stopEvent: "typing:stop",
+      canStart: async () =>
+        (await userClient.getChatFlags(userId)).typingIndicators,
       broadcast: createDirectRosterBroadcast({
         namespace: chat,
         senderId: userId,
@@ -1407,6 +1490,8 @@ export function registerChatNamespace(
             conversationId,
             typingHints.get(conversationId)?.senderName
           ),
+        // Reciprocal: a peer who turned their own indicator off doesn't see mine.
+        filterRecipients: typingViewerFilter(userClient),
       }),
     });
 
@@ -1688,6 +1773,7 @@ export function registerChatNamespace(
             ackError(callback, "RATE_LIMITED", locale);
             return;
           }
+          socket.data.callLegId = r.data.legId ?? deviceId;
           messagingClient
             .initiateCall({
               callerId: userId,
@@ -1725,8 +1811,13 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
+        socket.data.callLegId = r.data.legId ?? deviceId;
         messagingClient
-          .answerCall({ ...r.data, calleeId: userId })
+          .answerCall({
+            callId: r.data.callId,
+            calleeId: userId,
+            legId: socket.data.callLegId,
+          })
           .then((result) => {
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
@@ -1785,7 +1876,11 @@ export function registerChatNamespace(
           return;
         }
         messagingClient
-          .endCall({ callId: r.data.callId, userId })
+          .endCall({
+            callId: r.data.callId,
+            userId,
+            legId: r.data.legId ?? socket.data.callLegId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)
           )
@@ -2004,7 +2099,11 @@ export function registerChatNamespace(
       if (!userId) return;
       for (const room of socket.rooms) {
         if (!room.startsWith("call:")) continue;
-        scheduleCallCleanup(room.slice("call:".length), userId);
+        scheduleCallCleanup(
+          room.slice("call:".length),
+          userId,
+          socket.data.callLegId ?? deviceId
+        );
       }
     });
 

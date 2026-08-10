@@ -163,40 +163,54 @@ export const listMyCommunities = asyncHandler(
     const { before_ts, after_ts, q, categoryId, filter, page, limit } =
       req.query as unknown as MyCommunitiesQuery;
 
-    // Pagination present → joined mode (the caller's communities, cursor
-    // pagination). Takes precedence over q/categoryId if both are sent.
-    if (before_ts != null || after_ts != null) {
-      const direction = after_ts != null ? "after" : "before";
-      const tsMs = after_ts ?? before_ts ?? Date.now();
+    // Search mode ONLY when a search/browse filter is present, and only when no
+    // cursor was sent (pagination keeps precedence over q/categoryId). Anything
+    // else — including a bare `?limit=50` — is the caller's JOINED list.
+    //
+    // Before this gate, "no cursor" alone fell through to discover(), so the
+    // Community screen's first load (`/mine?limit=50`) returned every PUBLIC
+    // community on the platform: for a brand-new user with zero memberships the
+    // list looked like someone else's data instead of the empty list it is.
+    // Matches listMyCommunitiesV2's mode inference.
+    const isSearch =
+      before_ts == null &&
+      after_ts == null &&
+      (q != null || categoryId != null || filter !== "all");
 
-      const result = await communityService.listMine(req.auth.userId, {
-        direction,
-        ts: new Date(tsMs),
+    if (isSearch) {
+      // Search mode: PUBLIC communities plus PRIVATE ones the caller is an
+      // ACTIVE member of (offset pagination), filtered by q/categoryId.
+      const result = await communityService.discover(req.auth.userId, {
+        q,
+        categoryId,
+        filter,
+        page,
         limit,
+        includeJoined: true,
+        includeChatActivity: true,
       });
 
       return res
         .status(HTTP_STATUS.OK)
-        .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
+        .json(
+          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
+        );
     }
 
-    // Else → search mode: PUBLIC communities plus PRIVATE ones the caller is an
-    // ACTIVE member of (offset pagination), filtered by q/categoryId.
-    const result = await communityService.discover(req.auth.userId, {
-      q,
-      categoryId,
-      filter,
-      page,
+    // Joined mode (the caller's communities, cursor pagination). No cursor →
+    // the newest page, same as V2's cursor-less default.
+    const direction = after_ts != null ? "after" : "before";
+    const tsMs = after_ts ?? before_ts ?? Date.now();
+
+    const result = await communityService.listMine(req.auth.userId, {
+      direction,
+      ts: new Date(tsMs),
       limit,
-      includeJoined: true,
-      includeChatActivity: true,
     });
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
-      );
+      .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
   }
 );
 
@@ -1357,7 +1371,7 @@ export const adminCreateCategory = asyncHandler(
     const category = await communityService.createCategory(body);
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(category, "Category created"));
+      .json(new ApiResponse(category, t("CATEGORY_CREATED", req.locale)));
   }
 );
 
@@ -1368,7 +1382,7 @@ export const adminUpdateCategory = asyncHandler(
     const category = await communityService.updateCategory(categoryId, body);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(category, "Category updated"));
+      .json(new ApiResponse(category, t("CATEGORY_UPDATED", req.locale)));
   }
 );
 
@@ -1378,7 +1392,7 @@ export const adminDeleteCategory = asyncHandler(
     await communityService.deleteCategory(categoryId);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(null, "Category deleted"));
+      .json(new ApiResponse(null, t("CATEGORY_DELETED", req.locale)));
   }
 );
 

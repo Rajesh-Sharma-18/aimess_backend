@@ -417,6 +417,143 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     );
   });
 
+  it("handleUnpublish IGNORES a stale hook from a superseded publisher — the stream stays LIVE", async () => {
+    // WHIP reconnect = DELETE(old client-a) + POST(new client-b). SRS fires both
+    // hooks async, so client-a's on_unpublish can land after client-b's
+    // on_publish already put the stream back on air. Acting on it would pin a
+    // healthily-publishing stream to RECONNECTING until the sweeper ends it.
+    const stream = makeStream({
+      status: "LIVE",
+      publisherClientId: "client-b",
+    });
+    const { service, streamRepo, eventPublisher } = makeDeps({
+      streamRepo: { findByStreamKey: jest.fn().mockResolvedValue(stream) },
+    });
+
+    await service.handleUnpublish("key-1", "client-a");
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+    expect(eventPublisher).not.toHaveBeenCalled();
+  });
+
+  it("handleUnpublish HONOURS a hook from the publisher currently on air", async () => {
+    const stream = makeStream({
+      status: "LIVE",
+      publisherClientId: "client-b",
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "RECONNECTING",
+          disconnectedAt: new Date(),
+        }),
+      },
+    });
+
+    await service.handleUnpublish("key-1", "client-b");
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "RECONNECTING" })
+    );
+  });
+
+  it("handlePublish on an already-LIVE stream records the new client id so the previous session's on_unpublish is recognised as stale", async () => {
+    const stream = makeStream({
+      status: "LIVE",
+      publisherClientId: "client-a",
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest.fn().mockResolvedValue(stream),
+      },
+    });
+
+    await expect(service.handlePublish("key-1", "client-b")).resolves.toBe(
+      true
+    );
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith("stream-1", {
+      publisherClientId: "client-b",
+    });
+  });
+
+  it("the grace sweeper RESUMES a past-grace stream that SRS still has a publisher for, instead of ending a live broadcast", async () => {
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(Date.now() - 120_000),
+    });
+    const { service, streamRepo, eventPublisher } = makeDeps({
+      streamRepo: {
+        findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({
+            ...stream,
+            status: "LIVE",
+            disconnectedAt: null,
+          }),
+      },
+      srsService: {
+        listPublishers: jest
+          .fn()
+          .mockResolvedValue([
+            { apiBase: "http://srs", streamKey: "key-1", clientId: "client-b" },
+          ]),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "LIVE", publisherClientId: "client-b" })
+    );
+    expect(eventPublisher).not.toHaveBeenCalledWith(
+      "stream.ended",
+      expect.anything()
+    );
+  });
+
+  it("the grace sweeper still ENDS a past-grace stream SRS has no publisher for", async () => {
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(Date.now() - 120_000),
+    });
+    const { service, streamRepo, eventPublisher } = makeDeps({
+      streamRepo: {
+        findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({
+            ...stream,
+            status: "ENDED",
+            endedAt: new Date(),
+          }),
+      },
+      srsService: { listPublishers: jest.fn().mockResolvedValue([]) },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "ENDED" })
+    );
+    expect(eventPublisher).toHaveBeenCalledWith(
+      "stream.ended",
+      expect.anything()
+    );
+  });
+
   it("handleUnpublish is idempotent while already RECONNECTING — does not reset disconnectedAt or re-run any side effects", async () => {
     const stream = makeStream({
       status: "RECONNECTING",

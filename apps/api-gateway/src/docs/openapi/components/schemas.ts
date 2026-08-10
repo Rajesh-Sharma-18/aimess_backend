@@ -4846,6 +4846,13 @@ export const openApiSchemas = {
       },
       os: { type: "string", maxLength: 100, example: "macOS 14" },
       appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
+      clientId: {
+        type: "string",
+        pattern: "^[A-Za-z0-9_-]{8,64}$",
+        description:
+          "Stable opaque id the client generates once and persists (e.g. localStorage). Used ONLY as the 'one active QR per browser' key, so generating a new QR supersedes only this client's previous one. Strongly recommended: without it the server falls back to a userAgent+IP hash, which collides across clients sharing a NAT egress IP and browser build — one of them would then cancel another's live QR.",
+        example: "6f1c2b7e-4d3a-4a1b-9c8f-2b7e4d3a4a1b",
+      },
     },
   },
   DeviceLinkInitiateResponseData: {
@@ -11780,21 +11787,26 @@ export const openApiSchemas = {
     properties: {
       roomId: { type: "string", minLength: 5, maxLength: 100 },
       userId: { type: "string", minLength: 5, maxLength: 100 },
-      reason: {
-        type: "string",
-        enum: [
-          "SPAM",
-          "HARASSMENT",
-          "HATE_SPEECH",
-          "NUDITY",
-          "VIOLENCE",
-          "SCAM",
-          "OTHER",
-        ],
-      },
+      // Free text, same rule as community's POST /communities/{id}/reports —
+      // NOT a closed enum, so the shared Report Member dialog's reason ids
+      // (OFFENSIVE_LANGUAGE, INAPPROPRIATE_CONTENT, SCAM_OR_FRAUD,
+      // IMPERSONATION, SPAM, OTHER) are all accepted. backoffice-service
+      // canonicalizes the value on ingest.
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
       description: { type: "string", maxLength: 1000, default: "" },
     },
     required: ["roomId", "userId", "reason"],
+  },
+  ChatReportPrivateUserRequest: {
+    type: "object",
+    description:
+      "POST /chat/private/rooms/{roomId}/report — reports the OTHER participant of the room. Same reason vocabulary as ChatReportMemberRequest.",
+    properties: {
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
+      description: { type: "string", maxLength: 1000, default: "" },
+    },
+    required: ["userId", "reason"],
   },
   ChatNotificationActionRequest: {
     type: "object",

@@ -938,6 +938,115 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
     expect(data.referenceId).toBe("msg-456");
   });
 
+  // ---- friendship cycles on a RECYCLED friendship id ----------------------
+  // user-service's `resetToPending` reuses the same Friendship.id after
+  // REJECTED / CANCELLED / UNFRIENDED, so `groupKey = friend:<friendshipId>`
+  // outlives the friendship. A new request must still arrive as a NEW card.
+  const FRIENDSHIP_ID = "fr-1";
+
+  /** A resolved card from a PREVIOUS cycle of the same friendship id. */
+  const resolvedRow = (type: string) => ({
+    id: "notif-old",
+    userId: "user-A",
+    type,
+    isRead: true,
+    entity: {},
+    actorSnapshot: {},
+    groupKey: `friend:${FRIENDSHIP_ID}`,
+    payload: { title: "old", body: "old", data: {} },
+    createdAt: new Date("2026-06-01T10:00:00.000Z"),
+    updatedAt: new Date("2026-06-01T10:00:00.000Z"),
+  });
+
+  const requestNotification = (handler: Handler) =>
+    invoke(handler, {
+      userId: "user-A",
+      actorId: "user-B",
+      type: "friend.requested",
+      title: "Friend request",
+      body: "User B wants to be your friend",
+      data: { friendshipId: FRIENDSHIP_ID, requesterId: "user-B" },
+    });
+
+  it.each([
+    ["friend.accepted", "unfriend then re-request"],
+    ["friend.rejected", "reject then re-request"],
+  ])(
+    "a new friend.requested after a resolved %s card creates a NEW row (%s)",
+    async (resolvedType) => {
+      const applyStateTransition = jest.fn();
+      const notifRepo = makeNotifRepo({
+        findActiveByGroupKey: jest.fn(async () => resolvedRow(resolvedType)),
+        applyStateTransition,
+      });
+      const handler = createNotificationImpl(
+        makeDeps({ notificationRepo: notifRepo })
+      ).createNotification as Handler;
+
+      const res = await requestNotification(handler);
+
+      expect(applyStateTransition).not.toHaveBeenCalled();
+      expect(notifRepo.create).toHaveBeenCalledTimes(1);
+      expect(res.id).toBe("notif-1");
+      const { channel, data } = notificationNew();
+      expect(channel).toBe("notify:user-A");
+      expect(data.notificationId).toBe("notif-1");
+    }
+  );
+
+  it("a redelivered friend.requested still collapses onto the live request row", async () => {
+    const applyStateTransition = jest.fn(async () => ({
+      ...resolvedRow("friend.requested"),
+      id: "notif-old",
+    }));
+    const notifRepo = makeNotifRepo({
+      findActiveByGroupKey: jest.fn(async () =>
+        resolvedRow("friend.requested")
+      ),
+      applyStateTransition,
+    });
+    const handler = createNotificationImpl(
+      makeDeps({ notificationRepo: notifRepo })
+    ).createNotification as Handler;
+
+    const res = await requestNotification(handler);
+
+    expect(applyStateTransition).toHaveBeenCalledTimes(1);
+    expect(notifRepo.create).not.toHaveBeenCalled();
+    expect(res.id).toBe("notif-old");
+    expect(published("notification:updated").data.notificationId).toBe(
+      "notif-old"
+    );
+  });
+
+  it("friend.accepted still resolves the live request card in place", async () => {
+    const applyStateTransition = jest.fn(async () => ({
+      ...resolvedRow("friend.accepted"),
+      id: "notif-old",
+    }));
+    const notifRepo = makeNotifRepo({
+      findActiveByGroupKey: jest.fn(async () =>
+        resolvedRow("friend.requested")
+      ),
+      applyStateTransition,
+    });
+    const handler = createNotificationImpl(
+      makeDeps({ notificationRepo: notifRepo })
+    ).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-A",
+      actorId: "user-B",
+      type: "friend.accepted",
+      title: "Accepted",
+      body: "You are now friends",
+      data: { friendshipId: FRIENDSHIP_ID },
+    });
+
+    expect(applyStateTransition).toHaveBeenCalledTimes(1);
+    expect(notifRepo.create).not.toHaveBeenCalled();
+  });
+
   // Test 6: getNotifications returns navigation as parsed object
   it("getNotifications returns navigation as a parsed object (not a JSON string)", async () => {
     const nav = {

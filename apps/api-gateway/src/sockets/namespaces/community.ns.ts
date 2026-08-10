@@ -19,7 +19,12 @@ import {
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
+import {
+  emitPersonalizedSender,
+  type PersonalizeFn,
+} from "../emit-personalized.js";
+import { scopeSocketLocale } from "../locale-scope.js";
+import { typingViewerFilter } from "../chat-flags.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -292,23 +297,20 @@ export function registerCommunityNamespace(
                 `🔴 [STREAM:GATEWAY:USER] user:* relay event=${parsed.event} userId=${viewerUserId} communityId=${d.communityId ?? "?"} → emitting to Socket.IO room="user:${viewerUserId}"`
               );
             }
-            let payload = parsed.data;
-            if (parsed.event === "community:message:new") {
-              payload = personalizeCommunitySocketMessage(
-                parsed.data,
-                viewerUserId
-              );
-            } else if (parsed.event === "community:updated") {
-              const d = parsed.data as {
-                senderId?: string;
-                senderName?: string;
-                [key: string]: unknown;
-              };
-              if (d && d.senderId === viewerUserId) {
-                payload = { ...d, senderName: "You" };
-              }
-            }
-            community.to(channel).emit(parsed.event, payload);
+            // Per-socket delivery (not a bare room emit) so the recipient's own
+            // locale drives both the SYSTEM-line translation and the "You"
+            // sender swap — see emitPersonalizedSender. `community:updated`
+            // needs no special case: its senderId/senderName pair is handled
+            // generically there.
+            void emitPersonalizedSender(
+              community,
+              channel,
+              parsed.event,
+              parsed.data,
+              parsed.event === "community:message:new"
+                ? personalizeCommunitySocketMessage
+                : undefined
+            );
 
             // Auto-join the typing room when the user is added to a new community
             // while their socket is connected, so they immediately receive
@@ -373,9 +375,7 @@ export function registerCommunityNamespace(
           );
         }
 
-        let personalizeFn:
-          | ((data: unknown, userId: string) => unknown)
-          | undefined;
+        let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "community:message:new") {
           personalizeFn = personalizeCommunitySocketMessage;
         }
@@ -508,6 +508,7 @@ export function registerCommunityNamespace(
 
   community.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
+    scopeSocketLocale(socket);
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/community connected userId=${userId}`);
@@ -687,12 +688,16 @@ export function registerCommunityNamespace(
     const typing = createPresenceIndicator({
       startEvent: "typing:start",
       stopEvent: "typing:stop",
+      canStart: async () =>
+        (await userClient.getChatFlags(userId)).typingIndicators,
       broadcast: createDirectRosterBroadcast({
         namespace: community,
         senderId: userId,
         resolveRoster: getActiveCommunityMemberIds,
         buildPayload: communityTypingPayload,
         isSuppressed: (communityId) => closedCommunityIds.has(communityId),
+        // Reciprocal: a member who turned their own indicator off doesn't see mine.
+        filterRecipients: typingViewerFilter(userClient),
       }),
     });
 

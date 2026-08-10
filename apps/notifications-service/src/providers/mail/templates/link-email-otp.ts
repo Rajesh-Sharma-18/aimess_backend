@@ -1,8 +1,11 @@
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+
 import { authOtpEmail } from "./auth-otp.js";
 
 interface LinkEmailOtpEmailParams {
   code: string;
   ttlSeconds: number;
+  locale?: SupportedLocale;
 }
 
 interface LinkEmailOtpEmail {
@@ -13,14 +16,14 @@ interface LinkEmailOtpEmail {
 export function linkEmailOtpEmail({
   code,
   ttlSeconds,
+  locale = DEFAULT_LOCALE,
 }: LinkEmailOtpEmailParams): LinkEmailOtpEmail {
   return authOtpEmail({
     code,
     ttlSeconds,
-    title: "Your AIMess email verification code",
-    intro:
-      "Use the verification code below to link and verify this email on your AIMess account.",
-    outro:
-      "If you did not request this, you can safely ignore this email and your account will remain unchanged.",
+    locale,
+    title: t("NOTIF_EMAIL_LINK_EMAIL_SUBJECT", locale),
+    intro: t("NOTIF_EMAIL_LINK_EMAIL_INTRO", locale),
+    outro: t("NOTIF_EMAIL_LINK_EMAIL_OUTRO", locale),
   });
 }

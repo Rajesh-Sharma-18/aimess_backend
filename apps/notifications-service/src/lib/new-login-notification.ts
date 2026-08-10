@@ -85,7 +85,7 @@ export function buildNewLoginNotification(
     type: eventType,
     // Security alert — must ignore notification settings / quiet hours.
     bypassSettings: true,
-    ...authCopy.newLogin(p.browser, location),
+    copy: authCopy.newLogin(p.browser, location),
     data,
   };
 }

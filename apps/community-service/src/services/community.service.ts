@@ -6845,6 +6845,57 @@ export const communityService = {
       });
     }
 
+    // The invite record + push notification above are NOT enough on their own:
+    // the invitation must also land as a real, persisted message in the
+    // inviter↔invitee 1:1 chat. Reuse the invite-link share pipeline
+    // (`community.invite_link_shared` → chat-service `deliverInviteLinkDm`)
+    // rather than growing a second one — it already provisions the private
+    // room, persists a SYSTEM/COMMUNITY_INVITE row, broadcasts `message:new`,
+    // bumps `conv:updated` + unread + lastActivity, and is idempotent per
+    // action via `eventAt`. History, `/changes` sync and the invitation card
+    // renderer then work with no further changes.
+    //
+    // Best-effort: link resolution talks to the DB, and a failure there must
+    // never fail an invite that has already been recorded.
+    if (allInvited.length > 0) {
+      try {
+        const shareLink = await this.resolveOrCreateShareableLink(
+          communityId,
+          callerId
+        );
+        const shareLinkData = toInviteLinkData(shareLink, community);
+        const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
+          callerId
+        );
+        for (const { inviteeId } of allInvited) {
+          publishCommunityInviteLinkSharedForChatSafe({
+            communityId,
+            communityName: community.name,
+            communityHandle: community.handle,
+            linkCode: shareLink.code,
+            inviterId: callerId,
+            recipientId: inviteeId,
+            // Same stamp as the invite_sent events above, so a redelivery of
+            // either event pair is deduped instead of doubling the card.
+            eventAt,
+            communityAvatarUrl: community.avatarUrl ?? null,
+            memberCount: community.memberCount,
+            inviteUrl: shareLinkData.url,
+            inviteDeepLink: shareLinkData.appDeepLink,
+            isPermanent:
+              shareLink.expiresAt === null && shareLink.maxUses === null,
+            inviterName: inviterSnapshot?.displayName,
+            inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
+          });
+        }
+      } catch (err) {
+        logger.error(
+          `Community invite DM fan-out failed: community=${communityId} inviter=${callerId}`,
+          err
+        );
+      }
+    }
+
     logger.info(
       `Bulk community invite: community=${communityId} inviter=${callerId} ` +
         `created=${created.length} recycled=${toRecycle.length} skipped=${userIds.length - created.length - toRecycle.length}`
@@ -8370,6 +8421,46 @@ export const communityService = {
   },
 
   /**
+   * The community's shareable invite link: the first ACTIVE link if one exists,
+   * otherwise a freshly minted permanent (never-expiring, unlimited-use) one.
+   *
+   * Shared by every path that needs a code to put on an invitation card — the
+   * invite-link Bulk Send and the direct member-invite fan-out — so both hand
+   * chat-service a link that resolves identically on the receiving end.
+   */
+  async resolveOrCreateShareableLink(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityInviteLink> {
+    const { rows } = await communityRepository.listInviteLinks({
+      communityId,
+      status: "active",
+      page: 1,
+      limit: 1,
+    });
+    if (rows.length > 0) return rows[0]!;
+
+    let created: CommunityInviteLink | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        created = await communityRepository.createInviteLink({
+          code: generateInviteCode(),
+          communityId,
+          createdBy: callerId,
+          maxUses: null,
+          autoApprove: false,
+          expiresAt: null,
+        });
+        break;
+      } catch (err) {
+        if (!isUniqueConstraintError(err) || attempt === 2) throw err;
+      }
+    }
+    if (!created) throw new Error("Failed to allocate invite-link code");
+    return created;
+  },
+
+  /**
    * Bulk-share a community invite link via system DMs.
    *
    * 1. Validates the caller is an ACTIVE member (any role — MEMBER/MOD/ADMIN).
@@ -8461,36 +8552,7 @@ export const communityService = {
         throw new ForbiddenError("COMMUNITY_INVITE_LINK_INACTIVE");
       }
     } else {
-      // Auto-pick the first active link, or create one.
-      const { rows } = await communityRepository.listInviteLinks({
-        communityId,
-        status: "active",
-        page: 1,
-        limit: 1,
-      });
-      if (rows.length > 0) {
-        linkRow = rows[0]!;
-      } else {
-        // No active link exists — create a permanent, unlimited one.
-        let created: CommunityInviteLink | null = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            created = await communityRepository.createInviteLink({
-              code: generateInviteCode(),
-              communityId,
-              createdBy: callerId,
-              maxUses: null,
-              autoApprove: false,
-              expiresAt: null,
-            });
-            break;
-          } catch (err) {
-            if (!isUniqueConstraintError(err) || attempt === 2) throw err;
-          }
-        }
-        if (!created) throw new Error("Failed to allocate invite-link code");
-        linkRow = created;
-      }
+      linkRow = await this.resolveOrCreateShareableLink(communityId, callerId);
     }
 
     // --- Validate recipients, then fan out one event per ELIGIBLE recipient ---

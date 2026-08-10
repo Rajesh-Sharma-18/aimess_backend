@@ -20,6 +20,12 @@ service UserService {
   // Internal: chat-service reads the callee's call-privacy setting to gate 1-to-1
   // calls (whoCanCallMe + allow-list). Callee-scoped, not per-caller.
   rpc GetCallPrivacy (GetCallPrivacyRequest) returns (GetCallPrivacyResponse);
+  // Internal: the account-wide Settings -> Chat block, read by chat-service (the
+  // default auto-delete timer for a chat with no timer of its own, and whether
+  // this user's read receipts may be broadcast) and by the api-gateway (whether
+  // this user's typing indicator may be broadcast). Subject-scoped: it always
+  // describes the user named in the request, never a viewer relationship.
+  rpc GetChatSettings (GetChatSettingsRequest) returns (GetChatSettingsResponse);
   // Internal: the api-gateway filters `presence:subscribe` peer lists through
   // this before joining the viewer's socket into any `user:<peerId>` room.
   // Without it, ANY authenticated socket can subscribe to ANY user's presence
@@ -67,6 +73,12 @@ message NotificationSettings {
   // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
   repeated int32 quiet_hours_days = 10;
   bool   show_preview           = 11;
+  // The user's app language (ISO 639-1: "en" | "vi" | "th"), empty when unset.
+  // Rides on this message because notifications-service already fetches and
+  // Redis-caches it per user before every push — the recipient's language and
+  // their delivery preferences are read at exactly the same moment. Additive
+  // field: older callers simply ignore it.
+  string language               = 12;
 }
 
 // Admin Panel: enrich a user list with display profile data.
@@ -170,6 +182,23 @@ message GetCallPrivacyRequest {
 message GetCallPrivacyResponse {
   string          who_can_call_me  = 1;
   repeated string allowed_user_ids = 2;
+}
+
+message GetChatSettingsRequest {
+  string user_id = 1;
+}
+
+// auto_delete_timer is "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30" — the
+// account-wide default from ChatSettings, NOT a per-chat setting.
+//
+// Both booleans default to TRUE in the schema, and proto3 cannot tell "false"
+// from "absent" — so the server ALWAYS sets them explicitly, and a caller that
+// fails to reach this RPC must fall back to true (fail open: a blip must not
+// silently stop a user's typing indicators or read receipts).
+message GetChatSettingsResponse {
+  string auto_delete_timer = 1;
+  bool   typing_indicators = 2;
+  bool   read_receipts     = 3;
 }
 
 message FilterVisiblePresenceRequest {

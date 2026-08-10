@@ -107,7 +107,10 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.moderatorRecipientIds, (userId) => ({
         userId,
-        ...communityCopy.joinRequested(p.communityName, p.requesterDisplayName),
+        copy: communityCopy.joinRequested(
+          p.communityName,
+          p.requesterDisplayName
+        ),
         ...base(
           type,
           p.communityId,
@@ -146,7 +149,7 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.recipientIds, (userId) => ({
         userId,
-        ...communityCopy.livestreamStarted(p.communityName, hostName),
+        copy: communityCopy.livestreamStarted(p.communityName, hostName),
         ...base(
           type,
           p.communityId,
@@ -184,7 +187,11 @@ async function handleCommunityEvent(
       };
       await pushToUsers(p.recipientIds, (userId) => ({
         userId,
-        ...communityCopy.livestreamEnded(p.communityName, hostName, p.duration),
+        copy: communityCopy.livestreamEnded(
+          p.communityName,
+          hostName,
+          p.duration
+        ),
         ...base(
           type,
           p.communityId,
@@ -229,7 +236,7 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        ...communityCopy.joinRequestApproved(
+        copy: communityCopy.joinRequestApproved(
           p.communityName,
           p.decidedBy.displayName
         ),
@@ -284,7 +291,7 @@ async function handleCommunityEvent(
       };
       await pushToUser({
         userId: p.userId,
-        ...communityCopy.joinRequestRejected(p.communityName),
+        copy: communityCopy.joinRequestRejected(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -352,7 +359,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberJoinedPayload;
       await pushToUser({
         userId: p.userId,
-        ...communityCopy.memberJoined(p.communityName),
+        copy: communityCopy.memberJoined(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -386,7 +393,7 @@ async function handleCommunityEvent(
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
         await pushToUser({
           userId: p.targetUserId,
-          ...communityCopy.memberAdded(p.communityName),
+          copy: communityCopy.memberAdded(p.communityName),
           ...base(
             type,
             p.communityId,
@@ -410,7 +417,7 @@ async function handleCommunityEvent(
       if (mods.length > 0) {
         await pushToUsers(mods, (userId) => ({
           userId,
-          ...communityCopy.memberAddedForModerators(p.communityName),
+          copy: communityCopy.memberAddedForModerators(p.communityName),
           ...base(
             type,
             p.communityId,
@@ -434,7 +441,7 @@ async function handleCommunityEvent(
       const p = data as CommunityAdminTransferredPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.adminTransferred(),
+        copy: communityCopy.adminTransferred(),
         ...base(
           type,
           p.communityId,
@@ -453,7 +460,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberRoleChangedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.roleChanged(p.newRole),
+        copy: communityCopy.roleChanged(p.newRole),
         ...base(
           type,
           p.communityId,
@@ -475,7 +482,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberKickedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberKicked(),
+        copy: communityCopy.memberKicked(),
         bypassSettings: true,
         ...base(
           type,
@@ -497,7 +504,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberBannedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberBanned(p.communityName),
+        copy: communityCopy.memberBanned(p.communityName),
         bypassSettings: true,
         ...base(
           type,
@@ -521,7 +528,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberUnbannedNotifyPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberUnbanned(),
+        copy: communityCopy.memberUnbanned(),
         ...base(
           type,
           p.communityId,
@@ -540,7 +547,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberMutedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberMuted(p.mutedUntil),
+        copy: communityCopy.memberMuted(p.mutedUntil),
         ...base(
           type,
           p.communityId,
@@ -562,7 +569,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberUnmutedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberUnmuted(),
+        copy: communityCopy.memberUnmuted(),
         ...base(
           type,
           p.communityId,
@@ -581,7 +588,7 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberWarnedPayload;
       await pushToUser({
         userId: p.targetUserId,
-        ...communityCopy.memberWarned(p.note),
+        copy: communityCopy.memberWarned(p.note),
         ...base(
           type,
           p.communityId,
@@ -605,7 +612,7 @@ async function handleCommunityEvent(
       const p = data as CommunityInviteSentPayload;
       await pushToUser({
         userId: p.inviteeId,
-        ...communityCopy.inviteSent(),
+        copy: communityCopy.inviteSent(),
         ...base(
           type,
           p.communityId,
@@ -628,7 +635,7 @@ async function handleCommunityEvent(
       // Notify the original inviter that their invite was accepted.
       await pushToUser({
         userId: p.inviterId,
-        ...communityCopy.inviteAccepted(),
+        copy: communityCopy.inviteAccepted(),
         ...base(
           type,
           p.communityId,
@@ -655,7 +662,7 @@ async function handleCommunityEvent(
       const recipients = p.moderatorRecipientIds;
       await pushToUsers(recipients, (userId) => ({
         userId,
-        ...communityCopy.reportCreated(),
+        copy: communityCopy.reportCreated(),
         ...base(
           type,
           p.communityId,
@@ -682,7 +689,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReportActionedPayload;
       await pushToUser({
         userId: p.reporterId,
-        ...communityCopy.reportActioned(),
+        copy: communityCopy.reportActioned(),
         ...base(
           type,
           p.communityId,
@@ -708,7 +715,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReportResolvedPayload;
       await pushToUser({
         userId: p.reporterId,
-        ...communityCopy.reportResolved(),
+        copy: communityCopy.reportResolved(),
         ...base(
           type,
           p.communityId,
@@ -735,7 +742,7 @@ async function handleCommunityEvent(
       const p = data as CommunityDeletedPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        ...communityCopy.deleted(),
+        copy: communityCopy.deleted(),
         bypassSettings: true,
         ...base(
           type,
@@ -755,7 +762,7 @@ async function handleCommunityEvent(
       const p = data as CommunityClosedNotifyPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        ...communityCopy.closed(),
+        copy: communityCopy.closed(),
         ...base(
           type,
           p.communityId,
@@ -776,7 +783,7 @@ async function handleCommunityEvent(
       const p = data as CommunityReopenedNotifyPayload;
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        ...communityCopy.reopened(p.communityName),
+        copy: communityCopy.reopened(p.communityName),
         ...base(
           type,
           p.communityId,

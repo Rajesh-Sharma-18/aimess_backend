@@ -118,6 +118,19 @@ export const userSettingsRepository = {
    * gRPC handler. Returns null when the row does not exist yet (callers default
    * to "all enabled").
    */
+  /**
+   * The user's chosen app language, or "" when they have no AppSettings row
+   * yet. Read alongside the notification preferences so a push can be rendered
+   * in the RECIPIENT's language rather than whoever triggered the event.
+   */
+  async findAppLanguage(userId: string): Promise<string> {
+    const row = await prisma.appSettings.findUnique({
+      where: { userId },
+      select: { language: true },
+    });
+    return row?.language ?? "";
+  },
+
   findNotificationSettings(
     userId: string
   ): Promise<NotificationSettingsRow | null> {
@@ -161,6 +174,31 @@ export const userSettingsRepository = {
       allowedUserIds: (row?.callPrivacyAllowList ?? []).map(
         (r) => r.allowedUserId
       ),
+    };
+  },
+
+  /**
+   * The account-wide Settings → Chat block, for the chat-service send/read
+   * paths and the gateway's typing gate. No settings row yet → the schema
+   * defaults (OFF, and both indicators ON).
+   */
+  async findChatSettings(userId: string): Promise<{
+    autoDeleteTimer: string;
+    typingIndicators: boolean;
+    readReceipts: boolean;
+  }> {
+    const row = await prisma.chatSettings.findUnique({
+      where: { userId },
+      select: {
+        autoDeleteTimer: true,
+        typingIndicators: true,
+        readReceipts: true,
+      },
+    });
+    return {
+      autoDeleteTimer: row?.autoDeleteTimer ?? "OFF",
+      typingIndicators: row?.typingIndicators ?? true,
+      readReceipts: row?.readReceipts ?? true,
     };
   },
 

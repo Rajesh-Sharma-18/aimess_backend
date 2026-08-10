@@ -111,7 +111,7 @@ describe("MEMBER_JOINED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(USER_ID);
-    expect(arg.title).toBe("Cool Community");
+    expect(arg.copy("en").title).toBe("Cool Community");
   });
 
   it("4.1 push body contains the community name", async () => {
@@ -119,7 +119,7 @@ describe("MEMBER_JOINED branch", () => {
 
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
-    expect(arg.body).toContain("Cool Community");
+    expect(arg.copy("en").body).toContain("Cool Community");
   });
 
   it("4.1 push data contains communityId and communityName", async () => {
@@ -155,7 +155,7 @@ describe("MEMBER_JOINED branch", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(USER_ID);
-    expect(arg.body).toContain("Cool Community");
+    expect(arg.copy("en").body).toContain("Cool Community");
   });
 });
 
@@ -228,6 +228,6 @@ describe("MEMBER_ADDED via self_join — no duplicate welcome push", () => {
     // Non-self_join / non-join_request_approved path DOES welcome the joiner.
     expect(push).toHaveBeenCalledTimes(1);
     expect(push.mock.calls[0][0].userId).toBe(USER_ID);
-    expect(push.mock.calls[0][0].title).toBe("Cool Community");
+    expect(push.mock.calls[0][0].copy("en").title).toBe("Cool Community");
   });
 });

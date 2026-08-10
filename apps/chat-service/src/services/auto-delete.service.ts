@@ -6,11 +6,13 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   buildAutoDeleteWire,
   formatAutoDeleteDuration,
+  hasExplicitAutoDelete,
   parseAutoDeleteMap,
   readAutoDeleteSetting,
   validateAutoDeleteInput,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
+import { getAccountAutoDelete } from "../lib/account-chat-settings.js";
 import { SystemEvent } from "../types/enums.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -64,7 +66,12 @@ export class AutoDeleteService {
   ): Promise<Record<string, unknown>> {
     const { room, peerId } = await this.loadRoom(roomId, userId);
     const map = parseAutoDeleteMap(room.autoDeleteBy);
-    return buildAutoDeleteWire(map, userId, peerId);
+    return buildAutoDeleteWire(
+      map,
+      userId,
+      peerId,
+      await getAccountAutoDelete(userId)
+    );
   }
 
   /**
@@ -83,18 +90,21 @@ export class AutoDeleteService {
     const ttlSeconds = mode === "TIMER" ? Number(input.ttlSeconds) : null;
 
     const { room, peerId } = await this.loadRoom(roomId, userId);
-    const before = readAutoDeleteSetting(
-      parseAutoDeleteMap(room.autoDeleteBy),
-      userId
-    );
+    const accountDefault = await getAccountAutoDelete(userId);
+    const mapBefore = parseAutoDeleteMap(room.autoDeleteBy);
+    const before = readAutoDeleteSetting(mapBefore, userId);
     // No-op guard: a repeated tap on the same option must not spam the chat
-    // with an identical system message or re-stamp anything.
-    if (before.mode === mode && (before.ttlSeconds ?? null) === ttlSeconds) {
-      return buildAutoDeleteWire(
-        parseAutoDeleteMap(room.autoDeleteBy),
-        userId,
-        peerId
-      );
+    // with an identical system message or re-stamp anything. Picking OFF while
+    // never having configured this chat is NOT a no-op — it is what pins the
+    // chat against the account-wide default, so it must reach the write below.
+    const alreadyRecorded =
+      mode !== "OFF" || hasExplicitAutoDelete(mapBefore, userId);
+    if (
+      alreadyRecorded &&
+      before.mode === mode &&
+      (before.ttlSeconds ?? null) === ttlSeconds
+    ) {
+      return buildAutoDeleteWire(mapBefore, userId, peerId, accountDefault);
     }
 
     const updated = await this.roomRepo.setAutoDelete(roomId, userId, {
@@ -111,7 +121,8 @@ export class AutoDeleteService {
       // peer's when the peer has no setting of their own (one-sided case —
       // the peer's messages are following THIS user's timer).
       const senderIds = [userId];
-      if (peerId && !map[peerId]) senderIds.push(peerId);
+      if (peerId && readAutoDeleteSetting(map, peerId).mode === "OFF")
+        senderIds.push(peerId);
       await this.messageRepo
         .restampPendingAutoDeletes({
           roomId,
@@ -126,7 +137,7 @@ export class AutoDeleteService {
         });
     }
 
-    const wire = buildAutoDeleteWire(map, userId, peerId);
+    const wire = buildAutoDeleteWire(map, userId, peerId, accountDefault);
 
     // §2 / §7 — both sides see a system message in the chat when the setting
     // changes. Best-effort inside the system-message service; never throws.
@@ -147,6 +158,12 @@ export class AutoDeleteService {
     // self/peer split and its own effective timer.
     for (const recipientId of [userId, peerId].filter(Boolean)) {
       const otherId = recipientId === userId ? peerId : userId;
+      // Each side's effective timer is resolved against ITS OWN account-wide
+      // default, so the peer can't be told my default is in force for them.
+      const recipientDefault =
+        recipientId === userId
+          ? accountDefault
+          : await getAccountAutoDelete(recipientId);
       void this.redis
         .publish(
           `user:${recipientId}`,
@@ -157,7 +174,12 @@ export class AutoDeleteService {
               conversationId: roomId,
               type: "PRIVATE",
               actorId: userId,
-              ...buildAutoDeleteWire(map, recipientId, otherId),
+              ...buildAutoDeleteWire(
+                map,
+                recipientId,
+                otherId,
+                recipientDefault
+              ),
             },
           })
         )

@@ -43,8 +43,8 @@ describe("buildNewLoginNotification", () => {
     expect(out.userId).toBe("user-1");
     expect(out.type).toBe(AuthEvents.SECURITY_NEW_LOGIN);
     expect(out.bypassSettings).toBe(true);
-    expect(out.title).toBe("Login Detected");
-    expect(out.body).toBe(
+    expect(out.copy("en").title).toBe("Login Detected");
+    expect(out.copy("en").body).toBe(
       "New login detected on a chrome from India. If this wasn't you, Terminate Session"
     );
     expect(out.data).toMatchObject({
@@ -66,7 +66,7 @@ describe("buildNewLoginNotification", () => {
       at: "2026-07-14T10:00:00.000Z",
     });
 
-    expect(out.body).toBe(
+    expect(out.copy("en").body).toBe(
       "New login detected on a new device. If this wasn't you, Terminate Session"
     );
     expect(out.data).toMatchObject({

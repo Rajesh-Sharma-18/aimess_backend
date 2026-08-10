@@ -12,6 +12,12 @@ export type AdminPasswordResetOtpRequestedPayload = {
   ttlSeconds: number;
   /** ISO-8601 timestamp captured at publish time. */
   requestedAt: string;
+  /**
+   * Language the request that triggered this email was made in (`x-lang`).
+   * Optional and additive: an older publisher omits it and the email falls back
+   * to the default locale, exactly as before.
+   */
+  locale?: string;
 };
 
 /**
