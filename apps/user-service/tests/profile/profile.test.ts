@@ -63,6 +63,10 @@ jest.mock("../../src/services/username.service.js", () => ({
 jest.mock("../../src/messaging/publish-profile-updated.js", () => ({
   publishProfileUpdatedSafe: jest.fn(),
 }));
+// Also keeps the real module (and its Redis client import) out of the suite.
+jest.mock("../../src/lib/profile-socket.js", () => ({
+  emitProfileUpdatedSafe: jest.fn(),
+}));
 
 import request from "supertest";
 
@@ -70,11 +74,13 @@ import { app } from "../../src/app.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { usernameService } from "../../src/services/username.service.js";
 import {
+  TEST_SESSION_ID,
   TEST_USER_ID,
   bearer,
   makeAccessToken,
   makeExpiredAccessToken,
 } from "../helpers/auth.js";
+import { emitProfileUpdatedSafe } from "../../src/lib/profile-socket.js";
 
 const repo = userProfileRepository as unknown as Record<string, jest.Mock>;
 const unameSvc = usernameService as unknown as {
@@ -174,6 +180,23 @@ describe("PATCH /api/v1/users/profiles/me", () => {
     expect(res.body.data.firstName).toBe("Jane");
     expect(res.body.data.lastName).toBe("Smith");
     expect(repo.updateProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans the change out to the user's other devices, excluding the editor", () => {
+    return request(app)
+      .patch("/api/v1/users/profiles/me")
+      .set(auth())
+      .send({ firstName: "Jane" })
+      .expect(200)
+      .then(() => {
+        expect(emitProfileUpdatedSafe).toHaveBeenCalledWith(
+          TEST_USER_ID,
+          // The PERSISTED row's updatedAt, not the request time — it is the
+          // client's ordering key.
+          "2026-04-01T00:00:00.000Z",
+          TEST_SESSION_ID
+        );
+      });
   });
 
   it("changes the username when available and no cooldown applies", async () => {
