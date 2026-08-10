@@ -108,6 +108,22 @@ export function fileMediaKey(file: MediaFileLike): string {
   );
 }
 
+const PUSH_IMAGE_TYPES = new Set(["IMAGE", "VIDEO", "GIF", "STICKER"]);
+
+/**
+ * The key a push should render inline: a video/GIF resolves to its poster frame,
+ * an image to itself. Empty for every non-visual message type.
+ */
+export function pushImageKeyOf(messageType: string, content: unknown): string {
+  if (!PUSH_IMAGE_TYPES.has((messageType ?? "").toUpperCase())) return "";
+  const files = (content as { files?: MediaFileLike[] } | null)?.files;
+  const file = Array.isArray(files) ? files[0] : undefined;
+  if (!file) return "";
+  const thumb =
+    typeof file.thumbnailObjectKey === "string" ? file.thumbnailObjectKey : "";
+  return thumb || fileMediaKey(file);
+}
+
 /**
  * Every stored key an attachment resolves from: the object itself plus its
  * poster frame. Collectors must push ALL of these into the page's

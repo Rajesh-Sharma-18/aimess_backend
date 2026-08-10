@@ -319,6 +319,9 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // Apply preview masking — title is intentionally left unchanged.
   if (!showPreview) {
     body = showPreviewOverride ?? "New message";
+    // An inline image is preview content too; masking the body but shipping the
+    // picture would defeat the setting entirely.
+    if (data && "previewImageUrl" in data) delete data.previewImageUrl;
   }
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
