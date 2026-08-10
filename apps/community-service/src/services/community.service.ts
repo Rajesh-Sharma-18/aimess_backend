@@ -7865,38 +7865,43 @@ export const communityService = {
     communityIds: string[],
     durationMinutes: number | null | undefined
   ): Promise<{ muted: string[]; skipped: string[] }> {
-    // Fetch active memberships and existing mutes in parallel.
-    const [memberships, existingMutes] = await Promise.all([
-      communityRepository.findActiveMembershipsByCommunityIds(
+    const memberships =
+      await communityRepository.findActiveMembershipsByCommunityIds(
         callerId,
         communityIds
-      ),
-      communityRepository.findMutesByUserAndCommunityIds(
-        callerId,
-        communityIds
-      ),
-    ]);
-
-    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
-    const alreadyMutedSet = new Set(existingMutes.map((m) => m.communityId));
-
-    const toMute = communityIds.filter(
-      (id) => activeMemberSet.has(id) && !alreadyMutedSet.has(id)
-    );
-    const skipped = communityIds.filter((id) => !toMute.includes(id));
-
-    if (toMute.length > 0) {
-      const mutedUntil =
-        durationMinutes == null
-          ? null
-          : new Date(Date.now() + durationMinutes * 60_000);
-      await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
-      toMute.forEach((id) =>
-        publishNotificationMuteChanged(id, callerId, true)
       );
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
+
+    // ONE timestamp for the whole batch so N sequential writes can't drift the
+    // expiry by the wall-clock cost of the loop.
+    const mutedUntil =
+      durationMinutes == null
+        ? null
+        : new Date(Date.now() + durationMinutes * 60_000);
+
+    const muted: string[] = [];
+    const skipped: string[] = [];
+
+    // UPSERT every active membership, exactly like the single-community path
+    // (`setMute`). The previous "skip anything that already has a
+    // CommunityMuteSetting row" shortcut silently no-op'd for two very common
+    // states, because a row is NOT the same thing as an active mute
+    // (`isMuteRowActive`): a LAPSED temp mute leaves its row behind (nothing
+    // garbage-collects it) and touching the per-kind notification toggles
+    // creates one too. Both render as un-muted in the list, so bulk Mute
+    // appeared to do nothing at all. Upserting is also what makes a re-mute
+    // able to change the duration, and makes the whole call idempotent.
+    for (const communityId of communityIds) {
+      if (!activeMemberSet.has(communityId)) {
+        skipped.push(communityId);
+        continue;
+      }
+      await communityRepository.upsertMute(callerId, communityId, mutedUntil);
+      publishNotificationMuteChanged(communityId, callerId, true);
+      muted.push(communityId);
     }
 
-    return { muted: toMute, skipped };
+    return { muted, skipped };
   },
 
   async bulkUnmute(

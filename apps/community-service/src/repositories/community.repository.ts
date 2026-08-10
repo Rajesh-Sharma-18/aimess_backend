@@ -2947,20 +2947,6 @@ export const communityRepository = {
     });
   },
 
-  bulkCreateMute(
-    userId: string,
-    communityIds: string[],
-    mutedUntil: Date | null
-  ) {
-    return prisma.communityMuteSetting.createMany({
-      data: communityIds.map((communityId) => ({
-        userId,
-        communityId,
-        mutedUntil,
-      })),
-    });
-  },
-
   bulkClearMute(userId: string, communityIds: string[]) {
     return prisma.communityMuteSetting.deleteMany({
       where: { userId, communityId: { in: communityIds } },

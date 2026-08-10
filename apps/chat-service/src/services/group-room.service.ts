@@ -919,9 +919,14 @@ export class GroupRoomService {
         mute?: boolean;
         muteUntil?: string | null;
       };
+      // Same rule as the push oracle (`checkGroupMute`) and as PRIVATE rooms:
+      // muted with no expiry = indefinite, expiry in the future = still muted,
+      // expiry in the past = lapsed. The old `mute === true || …` reported a
+      // timed mute as muted FOREVER (setMuted always writes `mute: true`), so
+      // the list bell contradicted the pushes the user was already getting.
       const isMuted =
-        settings.mute === true ||
-        (settings.muteUntil != null &&
+        settings.mute === true &&
+        (settings.muteUntil == null ||
           new Date(settings.muteUntil).getTime() > now);
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = membership?.status === "LEFT";
