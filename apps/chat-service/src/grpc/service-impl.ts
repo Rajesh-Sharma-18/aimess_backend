@@ -2790,6 +2790,9 @@ export function createCommunityImpl(
                   ...(lastLocation ? { location: lastLocation } : {}),
                   ...(lastContact ? { contact: lastContact } : {}),
                 }),
+                clientMessageId: req.clientMessageId ?? null,
+                seq: saved.sequenceNumber ?? 0,
+                contentType: normalizeMessageType(saved.messageType),
               });
             }
 

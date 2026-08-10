@@ -38,6 +38,7 @@ import type {
   ListReportsQuery,
   ModerationReasonInput,
   MutedMembersQuery,
+  CommunityActivityQuery,
   MyCommunitiesQuery,
   MyCommunitiesV2Query,
   MyInvitesQuery,
@@ -155,6 +156,45 @@ export const listCategories = asyncHandler(
           t("COMMUNITY_CATEGORIES_FETCHED", req.locale)
         )
       );
+  }
+);
+
+/**
+ * `GET /communities/activity?after_ts=<epoch-ms>` — reconnect replay for the
+ * community LIST (§5.3). Returns ONLY the list-activity blocks for communities
+ * whose `lastActivityAt >= after_ts`, oldest-first, so a client that missed
+ * `community:updated` events while disconnected closes the gap without a full
+ * reload and without refetching avatars/member counts it already has.
+ *
+ * Deliberately a projection of `listMine(direction: "after")` rather than a new
+ * query: one keyset, one ordering, one source of truth for what "activity"
+ * means. `nextCursor` is epoch-ms, fed straight back as `after_ts`.
+ */
+export const listCommunityActivity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { after_ts, limit } = req.query as unknown as CommunityActivityQuery;
+
+    const result = await communityService.listMine(req.auth.userId, {
+      direction: "after",
+      ts: new Date(after_ts),
+      limit,
+    });
+
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          pagination: result.pagination,
+          data: result.data.map((community) => ({
+            communityId: community.id,
+            lastActivity: community.lastActivity,
+            lastActivityAt: community.lastActivityAt,
+            unreadMessageCount: community.unreadMessageCount,
+            firstUnreadMessageId: community.firstUnreadMessageId,
+          })),
+        },
+        t("COMMUNITY_LIST_FETCHED", req.locale)
+      )
+    );
   }
 );
 

@@ -1011,6 +1011,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           activityType?: string;
           selfUserId?: string;
           selfPreview?: string;
+          clientMessageId?: string;
+          seq?: number;
+          contentType?: string;
         };
         const communityId = (req.communityId ?? "").trim();
         if (!communityId) {
@@ -1032,7 +1035,16 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             req.activityType ?? "message",
             req.messagePreview ?? "",
             req.senderUsername ?? null,
-            req.senderUserId ?? null
+            req.senderUserId ?? null,
+            null,
+            null,
+            null,
+            {
+              messageId: req.lastMessageId ?? null,
+              clientMessageId: req.clientMessageId ?? null,
+              seq: Number(req.seq ?? 0),
+              contentType: req.contentType ?? null,
+            }
           );
         }
         callback(null, { ok: true });

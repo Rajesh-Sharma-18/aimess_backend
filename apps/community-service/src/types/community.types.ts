@@ -247,6 +247,23 @@ export type CommunityLastActivity =
       username: string;
       preview: string;
       dateTime: number;
+      /**
+       * Offline-first identity of the message behind this activity. ADDITIVE:
+       * the list row previously carried a preview and a timestamp but no
+       * message id, so a client could not match the server's copy of its own
+       * optimistic message, nor order two rows tying on `dateTime`.
+       * "" / null / 0 when the activity has no message behind it (lifecycle
+       * lines, reaction overlays, pre-backfill rows).
+       */
+      messageId: string;
+      clientMessageId: string | null;
+      seq: number;
+      /** Sender of the message behind this activity — same value as `userId`
+       *  on message rows, and still populated on SYSTEM rows where `userId` is
+       *  forced null so the client never prefixes the preview. */
+      senderId: string | null;
+      /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when unknown. */
+      contentType: string;
     }
   | {
       // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
@@ -266,6 +283,23 @@ export type CommunityLastActivity =
       username: null;
       preview: string;
       dateTime: number;
+      /**
+       * Offline-first identity of the message behind this activity. ADDITIVE:
+       * the list row previously carried a preview and a timestamp but no
+       * message id, so a client could not match the server's copy of its own
+       * optimistic message, nor order two rows tying on `dateTime`.
+       * "" / null / 0 when the activity has no message behind it (lifecycle
+       * lines, reaction overlays, pre-backfill rows).
+       */
+      messageId: string;
+      clientMessageId: string | null;
+      seq: number;
+      /** Sender of the message behind this activity — same value as `userId`
+       *  on message rows, and still populated on SYSTEM rows where `userId` is
+       *  forced null so the client never prefixes the preview. */
+      senderId: string | null;
+      /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when unknown. */
+      contentType: string;
     };
 export type AdminCategoryData = {
   id: string;

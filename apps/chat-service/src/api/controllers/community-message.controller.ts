@@ -941,6 +941,9 @@ export class CommunityMessageController {
           senderUsername: recalc.senderName,
           messagePreview: recalc.preview,
           type: "message",
+          clientMessageId: recalc.clientMessageId,
+          seq: recalc.sequenceNumber,
+          contentType: normalizeMessageType(recalc.messageType),
         });
         // Synchronous companion — awaited before the response, same
         // reasoning as reactToMessage's updateReactionActivity call.

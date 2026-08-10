@@ -268,6 +268,14 @@ message UpdateMessageActivityRequest {
   // ignored in this mode.
   string selfUserId      = 8;
   string selfPreview     = 9;
+  // Offline-first list identity for the message behind this activity — mirrors
+  // the `community.activity` queue payload so the synchronous companion RPC and
+  // the async queue write the SAME columns. Without them the RPC (whichever
+  // lands first wins the forward-only guard) would blank the identity the queue
+  // had just written. Empty/0 = no client-originated message behind it.
+  string clientMessageId = 10;
+  int32  seq             = 11;
+  string contentType     = 12;  // UPPER-CASE (TEXT/IMAGE/…/SYSTEM)
 }
 message UpdateMessageActivityResponse {
   bool ok = 1;

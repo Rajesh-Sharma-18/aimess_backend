@@ -733,6 +733,9 @@ export class ChatMessageOrchestrator {
             ...(lastLocation ? { location: lastLocation } : {}),
             ...(lastContact ? { contact: lastContact } : {}),
           }),
+          clientMessageId,
+          seq: saved.sequenceNumber ?? 0,
+          contentType: normalizeMessageType(saved.messageType),
         });
       }
 
@@ -896,6 +899,9 @@ export class ChatMessageOrchestrator {
         senderUserId: params.senderId,
         senderUsername: senderName,
         messagePreview: preview,
+        clientMessageId,
+        seq: saved.sequenceNumber ?? 0,
+        contentType: normalizeMessageType(saved.messageType),
       });
 
       publishCommunityUpdatedSafe({

@@ -332,15 +332,39 @@ export function selectListPreview(
   return row.lastActivityPreview ?? null;
 }
 
+/** The "no message behind this activity" identity block — see CommunityLastActivity. */
+const EMPTY_ACTIVITY_IDENTITY = {
+  messageId: "",
+  clientMessageId: null,
+  seq: 0,
+  senderId: null,
+  contentType: "",
+} as const;
+
 export function buildLastActivity(community: {
   lastActivityAt: Date;
   lastActivityType?: string | null;
   lastActivityPreview?: string | null;
   lastActivityUsername?: string | null;
   lastActivityUserId?: string | null;
+  lastActivityMessageId?: string | null;
+  lastActivityClientMessageId?: string | null;
+  lastActivitySeq?: number | null;
+  lastActivityContentType?: string | null;
   createdAt: Date;
 }): CommunityLastActivity {
   const rawType = community.lastActivityType ?? "created";
+  // Identity of the message behind the activity, carried on BOTH branches
+  // below: a SYSTEM/lifecycle row forces `userId` to null (so the client never
+  // prefixes the preview with a name) but still has a real message behind it,
+  // and an offline client needs that identity to merge deterministically.
+  const identity = {
+    messageId: community.lastActivityMessageId ?? "",
+    clientMessageId: community.lastActivityClientMessageId ?? null,
+    seq: community.lastActivitySeq ?? 0,
+    senderId: community.lastActivityUserId ?? null,
+    contentType: community.lastActivityContentType ?? "",
+  };
 
   // Legacy ineligible activity (e.g. a "X was removed" line written by an old
   // kick/ban build before the eligibility rule): never surface it as the preview.
@@ -355,6 +379,7 @@ export function buildLastActivity(community: {
       // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single source of truth.
       preview: "Community created",
       dateTime: community.createdAt.getTime(),
+      ...EMPTY_ACTIVITY_IDENTITY,
     };
   }
 
@@ -366,6 +391,7 @@ export function buildLastActivity(community: {
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
       dateTime: community.lastActivityAt.getTime(),
+      ...identity,
     };
   }
 
@@ -398,6 +424,7 @@ export function buildLastActivity(community: {
       community.lastActivityPreview ??
       (systemType === "created" ? "Community created" : ""),
     dateTime,
+    ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
 }
 
@@ -424,6 +451,7 @@ export function applyPersonalLastActivityOverlay(
         username: null,
         preview: personal.message,
         dateTime: personal.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
       },
       lastActivityAt: personal.dateTime,
     };
@@ -447,6 +475,7 @@ export function chatLastMessageToActivity(chat: {
         username: null,
         preview: chat.message,
         dateTime: chat.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
       }
     : {
         type: "message",
@@ -454,6 +483,8 @@ export function chatLastMessageToActivity(chat: {
         username: chat.username,
         preview: chat.message,
         dateTime: chat.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
+        senderId: chat.userId || null,
       };
 }
 
@@ -471,6 +502,7 @@ export function emptyLastActivity(): {
       username: null,
       preview: "",
       dateTime: 0,
+      ...EMPTY_ACTIVITY_IDENTITY,
     },
     lastActivityAt: 0,
   };
@@ -562,6 +594,7 @@ export function applyReactionOverlay(
       username: null,
       preview,
       dateTime: reactionAt,
+      ...EMPTY_ACTIVITY_IDENTITY,
     },
     lastActivityAt: reactionAt,
   };

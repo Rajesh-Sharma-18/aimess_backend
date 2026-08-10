@@ -160,6 +160,25 @@ export const myCommunitiesQuerySchema = z
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 
 /**
+ * `GET /communities/activity?after_ts=<epoch-ms>` — the reconnect-replay
+ * channel for the community LIST.
+ *
+ * Same `lastActivityAt` keyset `GET /mine?after_ts=` uses (every accepted
+ * message bumps that column, so it IS the per-message activity clock), but the
+ * response carries only the activity blocks — no avatars, no member counts, no
+ * membership metadata. A client that dropped its socket replays the gap with
+ * one small call instead of refetching the whole list.
+ */
+export const communityActivityQuerySchema = z.object({
+  after_ts: z.coerce.number().int().nonnegative().default(0),
+  limit: limitSchema,
+});
+
+export type CommunityActivityQuery = z.infer<
+  typeof communityActivityQuerySchema
+>;
+
+/**
  * V2 query schema for `GET /api/v2/communities/mine`. Replaces V1's bare
  * epoch-ms `before_ts`/`after_ts` cursor with a single opaque compound `cursor`
  * (`"<lastActivityAtMs>_<communityId>"`), so same-millisecond communities can no

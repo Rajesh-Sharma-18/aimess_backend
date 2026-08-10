@@ -99,6 +99,10 @@ function mineActivitySelect(userId: string) {
     lastActivityPreview: true,
     lastActivityUsername: true,
     lastActivityUserId: true,
+    lastActivityMessageId: true,
+    lastActivityClientMessageId: true,
+    lastActivitySeq: true,
+    lastActivityContentType: true,
     lastActivitySelfPreview: true,
     lastActivityTargetUserId: true,
     lastActivityTargetPreview: true,
@@ -1389,7 +1393,16 @@ export const communityRepository = {
     userId: string | null,
     selfPreview: string | null = null,
     targetUserId: string | null = null,
-    targetPreview: string | null = null
+    targetPreview: string | null = null,
+    /** Offline-first list identity of the message behind this activity. Always
+     *  written (null/0 when unknown) so a bump never leaves the identity of a
+     *  PREVIOUS message pointing at the current preview. */
+    identity: {
+      messageId?: string | null;
+      clientMessageId?: string | null;
+      seq?: number | null;
+      contentType?: string | null;
+    } = {}
   ): Promise<number> {
     const result = await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
@@ -1406,6 +1419,10 @@ export const communityRepository = {
         // pair — a later non-reaction bump must clear a stale target preview too.
         lastActivityTargetUserId: targetUserId,
         lastActivityTargetPreview: targetPreview,
+        lastActivityMessageId: identity.messageId || null,
+        lastActivityClientMessageId: identity.clientMessageId || null,
+        lastActivitySeq: identity.seq ?? 0,
+        lastActivityContentType: identity.contentType || null,
       },
     });
     return result.count;
@@ -1740,6 +1757,10 @@ export const communityRepository = {
           moderationStatus: true,
           status: true,
           lastActivityUserId: true,
+          lastActivityMessageId: true,
+          lastActivityClientMessageId: true,
+          lastActivitySeq: true,
+          lastActivityContentType: true,
           lastActivitySelfPreview: true,
           category: { select: { id: true, name: true } },
         },
