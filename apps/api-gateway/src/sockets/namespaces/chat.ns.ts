@@ -5,7 +5,10 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
+import {
+  emitPersonalizedSender,
+  type PersonalizeFn,
+} from "../emit-personalized.js";
 import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import type {
   CatchupEventDto,
@@ -23,6 +26,7 @@ import {
   createRoomBroadcast,
 } from "../presence-indicator.js";
 import { env } from "../../config/env.js";
+import { scopeSocketLocale } from "../locale-scope.js";
 import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
@@ -499,9 +503,7 @@ export function registerChatNamespace(
           return;
         }
 
-        let personalizeFn:
-          | ((data: unknown, userId: string) => unknown)
-          | undefined;
+        let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(
             (parsed.data as { contentType?: string; messageType?: string })
@@ -874,6 +876,7 @@ export function registerChatNamespace(
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
+    scopeSocketLocale(socket);
     const deviceId = sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
     // Private per-user room. Unlike `user:<id>` — which `presence:subscribe`

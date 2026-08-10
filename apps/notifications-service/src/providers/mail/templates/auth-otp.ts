@@ -1,9 +1,14 @@
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+
 interface AuthOtpEmailParams {
   code: string;
   ttlSeconds: number;
+  /** Already-localized copy from the caller (see the per-flow templates). */
   title: string;
   intro: string;
   outro: string;
+  /** Recipient's language; also becomes the document's `lang` attribute. */
+  locale?: SupportedLocale;
 }
 
 interface AuthOtpEmail {
@@ -17,11 +22,19 @@ export function authOtpEmail({
   title,
   intro,
   outro,
+  locale = DEFAULT_LOCALE,
 }: AuthOtpEmailParams): AuthOtpEmail {
   const expiryMinutes = Math.round(ttlSeconds / 60);
+  const expiry = t(
+    expiryMinutes === 1
+      ? "NOTIF_EMAIL_OTP_EXPIRY_ONE"
+      : "NOTIF_EMAIL_OTP_EXPIRY_OTHER",
+    locale,
+    { count: expiryMinutes }
+  );
 
   const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="${locale}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -41,8 +54,7 @@ export function authOtpEmail({
               <td style="padding:32px;">
                 <h2 style="margin:0 0 12px 0;font-size:20px;font-weight:600;color:#111827;">${title}</h2>
                 <p style="margin:0 0 24px 0;font-size:15px;line-height:1.5;color:#4b5563;">
-                  ${intro} This code expires in
-                  <strong>${expiryMinutes} minute${expiryMinutes === 1 ? "" : "s"}</strong>.
+                  ${intro} <strong>${expiry}</strong>
                 </p>
                 <div style="text-align:center;margin:24px 0;">
                   <div style="display:inline-block;padding:18px 28px;background-color:#f3f4f6;border-radius:10px;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:32px;font-weight:700;letter-spacing:8px;color:#111827;">

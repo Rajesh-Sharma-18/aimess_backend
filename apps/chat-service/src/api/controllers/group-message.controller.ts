@@ -720,7 +720,7 @@ export class GroupMessageController {
     }
     res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(result, "Message pinned"));
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
   });
 
   unpin = asyncHandler(async (req: Request, res: Response) => {
@@ -744,7 +744,7 @@ export class GroupMessageController {
     );
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, "Message unpinned"));
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {

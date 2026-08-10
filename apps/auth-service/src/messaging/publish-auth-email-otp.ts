@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { currentLocale } from "@aimess/constants";
 import amqp from "amqplib";
 
 import {
@@ -82,6 +83,17 @@ async function getChannel(): Promise<amqp.Channel> {
   return channelPromise;
 }
 
+/**
+ * Stamp the ORIGINATING request's language onto the payload so the email is
+ * written in the language the user was using when they asked for it — there is
+ * no recipient account to read a preference from (password reset / email
+ * verification both happen outside a session). Read from the ambient locale
+ * context, which `localeMiddleware` set for this request.
+ */
+function withLocale<T extends object>(data: T): T & { locale: string } {
+  return { ...data, locale: currentLocale() };
+}
+
 async function publish(type: string, data: object): Promise<void> {
   const channel = await getChannel();
   const payload = JSON.stringify({ type, data });
@@ -93,17 +105,21 @@ async function publish(type: string, data: object): Promise<void> {
 export function publishLinkEmailOtpSafe(
   data: LinkEmailOtpRequestedPayload
 ): void {
-  void publish(AuthEvents.LINK_EMAIL_OTP_REQUESTED, data).catch((error) => {
-    logger.error("Failed to publish auth.link_email_otp_requested event");
-    logger.error(error);
-  });
+  void publish(AuthEvents.LINK_EMAIL_OTP_REQUESTED, withLocale(data)).catch(
+    (error) => {
+      logger.error("Failed to publish auth.link_email_otp_requested event");
+      logger.error(error);
+    }
+  );
 }
 
 export function publishChangeEmailOtpSafe(
   data: ChangeEmailOtpRequestedPayload
 ): void {
-  void publish(AuthEvents.CHANGE_EMAIL_OTP_REQUESTED, data).catch((error) => {
-    logger.error("Failed to publish auth.change_email_otp_requested event");
-    logger.error(error);
-  });
+  void publish(AuthEvents.CHANGE_EMAIL_OTP_REQUESTED, withLocale(data)).catch(
+    (error) => {
+      logger.error("Failed to publish auth.change_email_otp_requested event");
+      logger.error(error);
+    }
+  );
 }

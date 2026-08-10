@@ -62,7 +62,8 @@
     "docker:ps": "docker compose --env-file .env ps",
     "docker:logs": "docker compose --env-file .env logs -f",
     "tunnel:gateway": "ngrok http 3000",
-    "tunnel:minio": "ngrok http 9000"
+    "tunnel:minio": "ngrok http 9000",
+    "validate:i18n": "pnpm --filter @aimess/constants build && node scripts/validate-i18n.mjs"
   },
   "keywords": [],
   "author": "",

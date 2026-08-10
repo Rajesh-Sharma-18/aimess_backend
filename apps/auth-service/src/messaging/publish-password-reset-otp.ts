@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { currentLocale } from "@aimess/constants";
 import amqp from "amqplib";
 
 import {
@@ -89,13 +90,24 @@ async function getChannel(): Promise<amqp.Channel> {
   return channelPromise;
 }
 
+/**
+ * Stamp the ORIGINATING request's language onto the payload so the email is
+ * written in the language the user was using when they asked for it — there is
+ * no recipient account to read a preference from (password reset / email
+ * verification both happen outside a session). Read from the ambient locale
+ * context, which `localeMiddleware` set for this request.
+ */
+function withLocale<T extends object>(data: T): T & { locale: string } {
+  return { ...data, locale: currentLocale() };
+}
+
 export async function publishPasswordResetOtp(
   data: PasswordResetOtpRequestedPayload
 ): Promise<void> {
   const channel = await getChannel();
   const payload = JSON.stringify({
     type: AuthEvents.PASSWORD_RESET_OTP_REQUESTED,
-    data,
+    data: withLocale(data),
   });
   channel.sendToQueue(NOTIFICATION_QUEUE, Buffer.from(payload), {
     persistent: true,

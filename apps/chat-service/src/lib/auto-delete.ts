@@ -16,6 +16,12 @@
  * kept pure so both the send path and the "timer changed mid-conversation"
  * re-stamp share the exact same arithmetic.
  */
+import {
+  currentLocale,
+  formatTtlDuration,
+  STORED_TEXT_LOCALE,
+  type SupportedLocale,
+} from "@aimess/constants";
 
 /** OFF = no timer. TIMER = fixed TTL from send time. AFTER_VIEWING = TTL starts on the recipient's read receipt. */
 export const AUTO_DELETE_MODES = ["OFF", "TIMER", "AFTER_VIEWING"] as const;
@@ -192,30 +198,16 @@ export function validateAutoDeleteInput(input: {
 /**
  * Human label for the system message / gear menu — "24 hours", "7 days".
  *
- * The three presets are spelled EXACTLY as the picker spells them (WhatsApp's
- * wording), because this label is what the system message quotes back: a menu
- * reading "90 Days" followed by "…set messages to auto-delete after 3 months"
- * looks like the setting didn't take. Anything else is a custom timer and gets
- * the generic humanization.
+ * Thin alias over the shared `formatTtlDuration` in `@aimess/constants`, which
+ * the SYSTEM-line renderer also uses — one spelling of a duration, in every
+ * language, on both sides of the wire. Defaults to `STORED_TEXT_LOCALE` so the
+ * label baked into an AUTO_DELETE_UPDATED row stays English, exactly as before.
  */
-const AUTO_DELETE_PRESET_LABELS: Record<number, string> = {
-  86400: "24 hours",
-  604800: "7 days",
-  7776000: "90 days",
-};
-
-export function formatAutoDeleteDuration(ttlSeconds: number | null): string {
-  const s = Number(ttlSeconds ?? 0);
-  if (!s || s <= 0) return "";
-  const preset = AUTO_DELETE_PRESET_LABELS[s];
-  if (preset) return preset;
-
-  const plural = (n: number, unit: string) =>
-    `${n} ${unit}${n === 1 ? "" : "s"}`;
-  if (s % 86400 === 0) return plural(s / 86400, "day");
-  if (s % 3600 === 0) return plural(s / 3600, "hour");
-  if (s % 60 === 0) return plural(s / 60, "minute");
-  return plural(s, "second");
+export function formatAutoDeleteDuration(
+  ttlSeconds: number | null,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  return formatTtlDuration(ttlSeconds, locale);
 }
 
 /** The wire block returned by the REST settings endpoints and the socket event. */
@@ -243,7 +235,7 @@ export function buildAutoDeleteWire(
     mode: effective.mode,
     ttlSeconds: effective.ttlSeconds,
     isEnabled: effective.mode !== "OFF",
-    label: formatAutoDeleteDuration(effective.ttlSeconds),
+    label: formatAutoDeleteDuration(effective.ttlSeconds, currentLocale()),
     // Where that timer came from, so the UI can say "from your Chat settings"
     // instead of showing this chat as configured when it isn't.
     source:

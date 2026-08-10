@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { type SupportedLocale } from "@aimess/constants";
 import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
@@ -133,7 +134,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   // For community messages: title = community name (if known), body = "Sender: preview".
   // For private/group: title = sender name, body = preview text.
-  const { title, body } = chatCopy.message({
+  const copy = chatCopy.message({
     isCommunity,
     communityName: data.communityName,
     senderName: data.senderName,
@@ -162,9 +163,11 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     messageId: data.messageId,
   } satisfies NotificationNavigation);
 
-  const showPreviewOverride = chatCopy.messagePreviewHidden(
-    isCommunity ? data.communityName : undefined
-  );
+  const showPreviewOverride = (locale: SupportedLocale): string =>
+    chatCopy.messagePreviewHidden(
+      isCommunity ? data.communityName : undefined,
+      locale
+    );
 
   // Map PRIVATE → PERSONAL for thread-id generation (internal vs wire protocol naming)
   const chatType =
@@ -183,8 +186,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     // `chatEnabled` preference (the "Chat" toggle), not `announcementEnabled`.
     ...(isCommunity ? { communityPrefField: "chatEnabled" as const } : {}),
     type: "MESSAGE",
-    title,
-    body,
+    copy,
     actorId: data.senderId,
     deepLink,
     collapseKey: `conv:${data.conversationId}`,

@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { cacheGetJson, cacheSetJson, cacheDel } from "@aimess/redis";
 
 import { env } from "../config/env.js";
@@ -25,6 +26,7 @@ const ALLOW_ALL: NotificationSettings = {
   quietHoursStart: "",
   quietHoursEnd: "",
   quietHoursDays: [],
+  language: "",
 };
 
 export type NotificationCategory =
@@ -77,6 +79,18 @@ export async function getNotificationSettings(
   }
 
   return settings;
+}
+
+/**
+ * The RECIPIENT's language for a push. This is the whole point of carrying
+ * `language` on the settings payload: a single event fanned out to three users
+ * must leave the server as three different languages, and the only place that
+ * knows each recipient is here. Falls back to the default locale when the user
+ * never picked one.
+ */
+export async function getUserLocale(userId: string): Promise<SupportedLocale> {
+  const settings = await getNotificationSettings(userId);
+  return resolveLocale(null, settings.language || null);
 }
 
 /** Bust the cached entry (called from the user.settings_updated consumer). */

@@ -16,6 +16,12 @@ export type PasswordResetOtpRequestedPayload = {
   ttlSeconds: number;
   /** ISO-8601 timestamp captured at publish time. */
   requestedAt: string;
+  /**
+   * Language the request that triggered this email was made in (`x-lang`).
+   * Optional and additive: an older publisher omits it and the email falls back
+   * to the default locale, exactly as before.
+   */
+  locale?: string;
 };
 
 export type LinkEmailOtpRequestedPayload = {
@@ -24,6 +30,12 @@ export type LinkEmailOtpRequestedPayload = {
   ttlSeconds: number;
   /** ISO-8601 timestamp captured at publish time. */
   requestedAt: string;
+  /**
+   * Language the request that triggered this email was made in (`x-lang`).
+   * Optional and additive: an older publisher omits it and the email falls back
+   * to the default locale, exactly as before.
+   */
+  locale?: string;
 };
 
 export type ChangeEmailOtpRequestedPayload = {
@@ -32,6 +44,12 @@ export type ChangeEmailOtpRequestedPayload = {
   ttlSeconds: number;
   /** ISO-8601 timestamp captured at publish time. */
   requestedAt: string;
+  /**
+   * Language the request that triggered this email was made in (`x-lang`).
+   * Optional and additive: an older publisher omits it and the email falls back
+   * to the default locale, exactly as before.
+   */
+  locale?: string;
 };
 
 export type SecurityNewLoginPayload = {

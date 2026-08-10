@@ -1371,7 +1371,7 @@ export const adminCreateCategory = asyncHandler(
     const category = await communityService.createCategory(body);
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(category, "Category created"));
+      .json(new ApiResponse(category, t("CATEGORY_CREATED", req.locale)));
   }
 );
 
@@ -1382,7 +1382,7 @@ export const adminUpdateCategory = asyncHandler(
     const category = await communityService.updateCategory(categoryId, body);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(category, "Category updated"));
+      .json(new ApiResponse(category, t("CATEGORY_UPDATED", req.locale)));
   }
 );
 
@@ -1392,7 +1392,7 @@ export const adminDeleteCategory = asyncHandler(
     await communityService.deleteCategory(categoryId);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(null, "Category deleted"));
+      .json(new ApiResponse(null, t("CATEGORY_DELETED", req.locale)));
   }
 );
 

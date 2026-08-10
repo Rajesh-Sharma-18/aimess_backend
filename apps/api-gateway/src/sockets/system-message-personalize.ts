@@ -2,15 +2,22 @@ import {
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
+  STORED_TEXT_LOCALE,
   type CommunitySystemMessageType,
+  type SupportedLocale,
 } from "@aimess/constants";
 
-/** Per-viewer "You …" swap for a `community:message:new` SYSTEM payload. */
+/**
+ * Per-viewer "You …" swap AND per-viewer translation for a
+ * `community:message:new` SYSTEM payload. The row's stored text is English;
+ * `locale` is the recipient socket's own language.
+ */
 export function personalizeCommunitySocketMessage(
   data: unknown,
-  viewerUserId: string
+  viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): unknown {
-  if (!viewerUserId) return data;
+  if (!viewerUserId && locale === STORED_TEXT_LOCALE) return data;
   const d = data as Record<string, unknown>;
   const contentType = String(d.contentType ?? "").toUpperCase();
   if (contentType !== "SYSTEM") return data;
@@ -33,7 +40,8 @@ export function personalizeCommunitySocketMessage(
     thirdPersonText,
     actorName,
     targetName,
-    viewerUserId
+    viewerUserId,
+    locale
   );
   if (personalized === thirdPersonText) return data;
 
@@ -48,12 +56,13 @@ export function personalizeCommunitySocketMessage(
   };
 }
 
-/** Per-viewer "You …" swap for a group `message:new` SYSTEM payload. */
+/** Per-viewer "You …" swap AND translation for a group/private SYSTEM payload. */
 export function personalizeGroupSocketMessage(
   data: unknown,
-  viewerUserId: string
+  viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): unknown {
-  if (!viewerUserId) return data;
+  if (!viewerUserId && locale === STORED_TEXT_LOCALE) return data;
   const d = data as Record<string, unknown>;
   const conversationType = String(d.conversationType ?? "").toUpperCase();
   if (conversationType !== "GROUP" && conversationType !== "PRIVATE") {
@@ -79,13 +88,15 @@ export function personalizeGroupSocketMessage(
           systemEvent,
           systemData,
           thirdPersonText,
-          viewerUserId
+          viewerUserId,
+          locale
         )
       : personalizeGroupSystemMessageForViewer(
           systemEvent,
           systemData,
           thirdPersonText,
-          viewerUserId
+          viewerUserId,
+          locale
         );
   if (personalized === thirdPersonText) return data;
 

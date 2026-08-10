@@ -2,6 +2,12 @@ import { timingSafeEqual } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import CircuitBreaker from "opossum";
 import { logger } from "@aimess/logger";
+import {
+  currentLocale,
+  resolveLocale,
+  runWithLocale,
+  type SupportedLocale,
+} from "@aimess/constants";
 
 // ─── Service-to-service auth ────────────────────────────────────────────────
 // Internal gRPC previously trusted whatever `userId`/`requesterId` the caller
@@ -23,6 +29,15 @@ import { logger } from "@aimess/logger";
 // `config/env.ts`, which is imported before any gRPC wiring runs.
 const SERVICE_TOKEN_METADATA_KEY = "x-aimess-service-token";
 
+/**
+ * The `x-lang` request header, carried across the internal gRPC hop. A callee
+ * that renders user-facing copy (chat-service system lines, community previews)
+ * needs the ORIGINAL caller's language, and gRPC metadata is the direct
+ * analogue of the HTTP header it came from — so no request message has to grow
+ * a `locale` field and no proto has to change.
+ */
+const LOCALE_METADATA_KEY = "x-lang";
+
 const serviceToken = (): string => process.env.GRPC_SERVICE_TOKEN ?? "";
 
 /** Constant-time compare of two possibly-different-length strings. */
@@ -43,10 +58,11 @@ function safeEqual(a: string, b: string): boolean {
  * against a token-less callee (see {@link withServiceAuth} for the matching
  * ingress rule).
  */
-function serviceCallMetadata(): grpc.Metadata {
+function serviceCallMetadata(locale?: SupportedLocale): grpc.Metadata {
   const metadata = new grpc.Metadata();
   const token = serviceToken();
   if (token) metadata.set(SERVICE_TOKEN_METADATA_KEY, token);
+  metadata.set(LOCALE_METADATA_KEY, locale ?? currentLocale());
   return metadata;
 }
 
@@ -78,7 +94,6 @@ export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
     logger.warn(
       `${serviceName}: GRPC_SERVICE_TOKEN not set — internal gRPC auth is DISABLED (development only).`
     );
-    return impl;
   }
 
   const wrapped: grpc.UntypedServiceImplementation = {};
@@ -90,29 +105,47 @@ export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
       },
       callback?: grpc.sendUnaryData<unknown>
     ) => {
-      const raw = call.metadata?.get(SERVICE_TOKEN_METADATA_KEY)[0];
-      const provided = typeof raw === "string" ? raw : (raw?.toString() ?? "");
+      if (expected) {
+        const raw = call.metadata?.get(SERVICE_TOKEN_METADATA_KEY)[0];
+        const provided =
+          typeof raw === "string" ? raw : (raw?.toString() ?? "");
 
-      if (!provided || !safeEqual(provided, expected)) {
-        logger.warn(
-          `${serviceName}.${methodName}: rejected gRPC call with missing/invalid service token`
-        );
-        const err = {
-          code: grpc.status.UNAUTHENTICATED,
-          details: "Invalid or missing service token",
-        };
-        // Unary / client-streaming handlers report via the callback; server-
-        // streaming and bidi handlers have no callback and must error on the
-        // call stream instead.
-        if (typeof callback === "function") callback(err as grpc.ServiceError);
-        else call.emit?.("error", err);
-        return;
+        if (!provided || !safeEqual(provided, expected)) {
+          logger.warn(
+            `${serviceName}.${methodName}: rejected gRPC call with missing/invalid service token`
+          );
+          const err = {
+            code: grpc.status.UNAUTHENTICATED,
+            details: "Invalid or missing service token",
+          };
+          // Unary / client-streaming handlers report via the callback; server-
+          // streaming and bidi handlers have no callback and must error on the
+          // call stream instead.
+          if (typeof callback === "function")
+            callback(err as grpc.ServiceError);
+          else call.emit?.("error", err);
+          return;
+        }
       }
 
-      (handler as (c: unknown, cb?: unknown) => void)(call, callback);
+      // Publish the caller's language for the whole handler (and everything it
+      // awaits) so downstream serializers can localize without every signature
+      // between here and them growing a `locale` parameter.
+      runWithLocale(localeFromMetadata(call.metadata), () =>
+        (handler as (c: unknown, cb?: unknown) => void)(call, callback)
+      );
     };
   }
   return wrapped as T;
+}
+
+/** Read `x-lang` off an inbound call's metadata; falls back to the default locale. */
+export function localeFromMetadata(
+  metadata: grpc.Metadata | undefined
+): SupportedLocale {
+  const raw = metadata?.get(LOCALE_METADATA_KEY)[0];
+  const value = typeof raw === "string" ? raw : raw?.toString();
+  return resolveLocale(null, value ?? null);
 }
 
 /** Circuit breaker over a single-arg call: `fire(arg)` → `Promise<R>`. */

@@ -240,9 +240,12 @@ export function startUserGrpcServer(): grpc.Server {
       void (async () => {
         try {
           const { userId } = call.request;
-          const row =
-            await userSettingsRepository.findNotificationSettings(userId);
+          const [row, language] = await Promise.all([
+            userSettingsRepository.findNotificationSettings(userId),
+            userSettingsRepository.findAppLanguage(userId),
+          ]);
           callback(null, {
+            language,
             chatEnabled: row?.chatEnabled ?? true,
             callEnabled: row?.callEnabled ?? true,
             friendRequestEnabled: row?.friendRequestEnabled ?? true,

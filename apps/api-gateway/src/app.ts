@@ -1,6 +1,7 @@
 ﻿import cors, { type CorsOptions } from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { localeMiddleware } from "@aimess/utils";
 
 import { env, isCorsOriginAllowed } from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
@@ -55,6 +56,10 @@ export function createApp(
   app.use(cors(corsOptions));
 
   app.use(requestIdMiddleware);
+  // Resolve `x-lang` / `Accept-Language` once, before anything that answers a
+  // request itself or fans out to gRPC (the proxied routes forward the raw
+  // header onward, so downstream services still resolve it independently).
+  app.use(localeMiddleware);
 
   // Dedicated community link host (aimess.me): .well-known proofs + "Open in
   // app" preview. Host-gated — non-link hosts pass straight through to the API.

@@ -73,6 +73,12 @@ message NotificationSettings {
   // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
   repeated int32 quiet_hours_days = 10;
   bool   show_preview           = 11;
+  // The user's app language (ISO 639-1: "en" | "vi" | "th"), empty when unset.
+  // Rides on this message because notifications-service already fetches and
+  // Redis-caches it per user before every push — the recipient's language and
+  // their delivery preferences are read at exactly the same moment. Additive
+  // field: older callers simply ignore it.
+  string language               = 12;
 }
 
 // Admin Panel: enrich a user list with display profile data.
