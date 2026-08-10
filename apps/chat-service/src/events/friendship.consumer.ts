@@ -130,6 +130,8 @@ export class FriendshipEventConsumer {
               event,
               SystemEvent.FRIENDSHIP_CREATED
             );
+          } else {
+            await this.stampRoomActivity(event);
           }
           logger.debug(`Friendship created: ${event.userA} <-> ${event.userB}`);
           break;
@@ -233,6 +235,34 @@ export class FriendshipEventConsumer {
     } catch (err) {
       logger.warn(
         `FriendshipEventConsumer|system message failed type=${event.type}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Put a brand-new, message-less room on both inboxes.
+   *
+   * `GET /chat/inbox` keysets on `lastMessageAt` and skips NULL rows, so before
+   * this the "now friends" system message was what made an accepted friendship
+   * appear in the conversation list at all. First-time friendships no longer
+   * post that message, so the room needs its own timestamp — otherwise the new
+   * friend's chat vanished from the list on reload until someone said
+   * something. Preview stays empty: there is no message, only an opened
+   * conversation. Never overwrites a room that already has activity.
+   */
+  private async stampRoomActivity(event: FriendshipEvent): Promise<void> {
+    try {
+      const room = await this.privateRoomRepo.findByParticipantsKey(
+        buildParticipantsKey(event.userA, event.userB)
+      );
+      if (!room || room.lastMessageAt) return;
+      await prisma.privateRoom.update({
+        where: { roomId: room.roomId },
+        data: { lastMessageAt: new Date(event.timestamp || Date.now()) },
+      });
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|stampRoomActivity failed ${event.userA}<->${event.userB}: ${String(err)}`
       );
     }
   }
