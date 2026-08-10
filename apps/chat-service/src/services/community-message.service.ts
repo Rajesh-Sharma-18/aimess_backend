@@ -487,6 +487,9 @@ export class CommunityMessageService {
         message: message.message || "",
         messageType: message.messageType,
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -2427,6 +2430,10 @@ export class CommunityMessageService {
     senderName: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     // Run both queries in parallel — we need prev regardless of which message
     // was the current last. The classic check (room.lastMessageId === deletedId)
@@ -2454,6 +2461,9 @@ export class CommunityMessageService {
         content: prev.message ?? "",
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -2466,6 +2476,9 @@ export class CommunityMessageService {
         senderName: prev.senderName ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -2478,6 +2491,9 @@ export class CommunityMessageService {
       senderName: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -2504,6 +2520,10 @@ export class CommunityMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findRoomById(roomId);
@@ -2533,6 +2553,9 @@ export class CommunityMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -2544,6 +2567,9 @@ export class CommunityMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 

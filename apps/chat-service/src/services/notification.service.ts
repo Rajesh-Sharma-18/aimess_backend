@@ -219,13 +219,81 @@ export class NotificationService {
       action
     );
     if (!updated) return;
+    await this.publishActionUpdate(updated, userId, body, action);
+  }
+
+  /**
+   * Resolve every Login Detected alert whose 1-hour action window has lapsed
+   * with no user action, as "It's Me" — the SAME repo transition + realtime
+   * event the manual button goes through, only the trigger differs. The
+   * session itself is never touched (auto-approval must never sign anyone
+   * out). Rows already actioned are excluded by the query, and the atomic
+   * claim inside `recordAction` means a second node — or a user tapping at the
+   * deadline — cannot double-resolve. Returns how many rows this call actually
+   * transitioned.
+   */
+  async sweepExpiredLoginNotifications(
+    now: Date,
+    limit: number
+  ): Promise<number> {
+    const due = await this.notificationRepo.findExpiredPendingLogins(
+      now,
+      limit
+    );
+    let resolved = 0;
+    for (const row of due) {
+      // Mirrors auth-service's trustSession copy so a timed-out alert reads
+      // identically to one the user confirmed by hand.
+      const updated = await this.notificationRepo.recordAction(
+        row.id,
+        row.userId,
+        "This was you.",
+        "TRUSTED"
+      );
+      if (!updated) continue; // lost the race — another writer resolved it
+      resolved++;
+      await this.publishActionUpdate(
+        updated,
+        row.userId,
+        "This was you.",
+        "TRUSTED"
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * Realtime fan-out for a resolved action. Carries `data.actionTaken` (and the
+   * session id for login rows) so every other device swaps the buttons for the
+   * resolved line without refetching — the same contract the gRPC
+   * recordSessionAction path publishes.
+   */
+  private async publishActionUpdate(
+    updated: Notification,
+    userId: string,
+    body: string,
+    action: string
+  ): Promise<void> {
+    const payloadObj = (updated.payload ?? {}) as {
+      title?: string;
+      data?: Record<string, string>;
+    };
     try {
       await publishUserSocketEvent(this.redis, userId, "notification:updated", {
         notificationId: updated.id,
         userId,
         type: updated.type,
+        title: payloadObj.title ?? "",
         body,
         isRead: true,
+        version: updated.version ?? 1,
+        createdAt: updated.createdAt.getTime(),
+        data: {
+          actionTaken: action,
+          ...(updated.loginSessionId
+            ? { sessionId: updated.loginSessionId }
+            : {}),
+        },
       });
     } catch {
       // best-effort — the DB write already succeeded

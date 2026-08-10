@@ -632,6 +632,18 @@ export interface DeletePayloadInput {
   deletedBy: string;
   sequenceNumber?: number;
   deletedType?: string;
+  /**
+   * Tombstone metadata (§4). ADDITIVE and always emitted with a documented
+   * default, so a replayed or out-of-order delete is a no-op on the client
+   * instead of a rollback: `revision` is the room CHANGE cursor the delete was
+   * stamped with (0 = unknown, treat as "apply"), `clientMessageId` lets a
+   * client that only ever knew its optimistic row resolve identity, and
+   * `deletedAt` is epoch ms.
+   */
+  revision?: number;
+  clientMessageId?: string | null;
+  /** epoch ms */
+  deletedAt?: number;
 }
 
 /**
@@ -643,6 +655,13 @@ export interface DeletePayloadInput {
 export function buildDeletePayload(
   input: DeletePayloadInput
 ): Record<string, unknown> {
+  // Tombstone metadata shared by both shapes — see DeletePayloadInput.
+  const tombstone = {
+    revision: input.revision ?? 0,
+    clientMessageId: input.clientMessageId ?? null,
+    deletedAt: input.deletedAt ?? 0,
+    deletedForEveryone: input.scope === "forEveryone",
+  };
   if (input.conversationType === "COMMUNITY") {
     return {
       messageId: input.messageId,
@@ -650,6 +669,7 @@ export function buildDeletePayload(
       roomId: input.roomId,
       deleteType: input.scope,
       deletedBy: input.deletedBy,
+      ...tombstone,
     };
   }
   const base: Record<string, unknown> = {
@@ -658,6 +678,7 @@ export function buildDeletePayload(
     type: input.scope,
     deletedBy: input.deletedBy,
     sequenceNumber: input.sequenceNumber ?? 0,
+    ...tombstone,
   };
   if (input.conversationType === "GROUP") {
     base.deletedType = input.deletedType ?? "SELF_DELETE";

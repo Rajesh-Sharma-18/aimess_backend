@@ -3961,6 +3961,14 @@ export function createNotificationImpl(
                   userId: req.userId,
                   createdAt: row.createdAt.getTime(),
                   updatedAt: row.updatedAt.getTime(),
+                  // Login Detected only. Sent as epoch ms like the other two
+                  // timestamps (the DTO carries a Date, which would otherwise
+                  // go out as an ISO string over the socket) so a client can
+                  // start its countdown straight from the live event without a
+                  // follow-up fetch.
+                  ...(row.loginExpiresAt
+                    ? { expiresAt: row.loginExpiresAt.getTime() }
+                    : {}),
                   ...(parsedNavigation !== undefined
                     ? { navigation: parsedNavigation }
                     : {}),

@@ -4,6 +4,7 @@ import type { Redis, Cluster } from "ioredis";
 
 import { publishChatUserEvent } from "@aimess/redis";
 
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
 import {
@@ -198,6 +199,7 @@ export class GroupRoomService {
                   senderName: prev.senderName,
                   messageType: prev.messageType,
                   createdAt: prev.createdAt,
+                  ...listRowIdentity({ ...prev, id: prev.messageId }),
                 }
               : null,
           } as T;
@@ -257,6 +259,7 @@ export class GroupRoomService {
                 senderName: prev.senderName ?? "",
                 messageType: prev.messageType,
                 createdAt: prev.createdAt,
+                ...listRowIdentity(prev),
               }
             : null,
         } as T);

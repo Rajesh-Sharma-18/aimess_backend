@@ -4,6 +4,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 import type { Redis, Cluster } from "ioredis";
 
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import {
   toWireMessage,
@@ -221,6 +222,20 @@ export interface PrivateConversationLastActivity {
   username: string;
   preview: string;
   dateTime: number;
+  /**
+   * Offline-first identity/freshness quartet + the canonical content type,
+   * mirroring `CommunityLastActivity`. ADDITIVE — `PrivateConversationListItem`
+   * drops the raw `lastMessage`, so without these the private conversation list
+   * carries no message identity at all and a client can only compare
+   * timestamps. `messageId` is "" and `seq`/`revision` 0 when the row has no
+   * visible last message (or was written before this field existed).
+   */
+  messageId: string;
+  clientMessageId: string | null;
+  seq: number;
+  revision: number;
+  /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM). */
+  contentType: string;
 }
 
 export type EnrichedPrivateRoom = PrivateRoom & {
@@ -669,6 +684,7 @@ export class PrivateRoomService {
               senderId: prev.senderId,
               messageType: prev.messageType,
               createdAt: prev.createdAt.toISOString(),
+              ...listRowIdentity({ ...prev, id: prev.messageId }),
             } as unknown as PrivateRoom["lastMessage"])
           : null
       );
@@ -821,6 +837,16 @@ export class PrivateRoomService {
           ? convertMessageToPreview(lmMessageType, lmRecord.content)
           : "",
         dateTime: lastActivityAt,
+        // Identity/freshness quartet — read off the same snapshot the preview
+        // came from, so an override (delete-for-me fallback) and the shared
+        // snapshot both describe the message actually being previewed.
+        ...listRowIdentity({
+          id: (lmRecord?.messageId as string) ?? room.lastMessageId ?? "",
+          clientMessageId: (lmRecord?.clientMessageId as string) ?? null,
+          sequenceNumber: (lmRecord?.seq as number) ?? 0,
+          revision: (lmRecord?.revision as number) ?? 0,
+        }),
+        contentType: lmRecord ? lmMessageType : "",
       };
 
       // Reaction OVERLAY read-time gate (mirrors community-service's listMine
@@ -844,6 +870,14 @@ export class PrivateRoomService {
             ? (room.reactionActivityActorPreview ?? "")
             : (room.reactionActivityTargetPreview ?? "");
           lastActivity.dateTime = room.reactionActivityAt.getTime();
+          // The overlay is an ACTIVITY LINE, not a message — clear the message
+          // identity so a client merging by identity never mistakes it for an
+          // edit of whatever message it is temporarily covering.
+          lastActivity.messageId = "";
+          lastActivity.clientMessageId = null;
+          lastActivity.seq = 0;
+          lastActivity.revision = 0;
+          lastActivity.contentType = "SYSTEM";
         }
       }
 

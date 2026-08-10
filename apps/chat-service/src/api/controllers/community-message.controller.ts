@@ -787,6 +787,9 @@ export class CommunityMessageController {
       roomId: result.roomId,
       scope: type === "forEveryone" ? "forEveryone" : "forMe",
       deletedBy: userId,
+      revision: result.revision,
+      clientMessageId: result.clientMessageId,
+      deletedAt: result.deletedForAllAt?.getTime() ?? Date.now(),
       ...(type === "forEveryone"
         ? {
             deletedType:

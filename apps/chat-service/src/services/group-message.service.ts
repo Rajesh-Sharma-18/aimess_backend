@@ -321,6 +321,9 @@ export class GroupMessageService {
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       });
     } catch (err: unknown) {
       logger.warn(
@@ -931,6 +934,10 @@ export class GroupMessageService {
     senderName: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     const [room, prev] = await Promise.all([
       this.roomRepo.findByRoomId(roomId),
@@ -952,6 +959,9 @@ export class GroupMessageService {
         content: { text: prevContent.text ?? "" },
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -961,6 +971,9 @@ export class GroupMessageService {
         senderName: prev.senderName ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -973,6 +986,9 @@ export class GroupMessageService {
       senderName: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1043,6 +1059,10 @@ export class GroupMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
@@ -1072,6 +1092,9 @@ export class GroupMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -1083,6 +1106,9 @@ export class GroupMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1648,6 +1674,9 @@ export class GroupMessageService {
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       })
       .catch((err: unknown) => {
         logger.warn(
