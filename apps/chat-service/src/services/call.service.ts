@@ -39,8 +39,11 @@ import { CallStatus, CallType, SystemEvent } from "../types/enums.js";
 export type GetCallPrivacyFn = (userId: string) => Promise<CallPrivacy>;
 
 /**
- * Media-leg claims outlive the longest call we allow (CALL_MAX_DURATION_SEC) and
- * are deleted on every terminal transition, so the TTL is only a crash backstop.
+ * Media-leg claims are keyed by callId, so a stale one can never affect a later
+ * call and there is nothing to clean up on hangup — the TTL is the only reaper.
+ * Comfortably above CALL_MAX_DURATION_SEC (1h by default) so a claim cannot
+ * expire out from under a call that is still running; if it ever did, the leg
+ * checks fall back to the pre-existing user-level behaviour rather than break.
  */
 const CALL_LEG_TTL_SEC = 4 * 60 * 60;
 
