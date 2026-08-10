@@ -20,7 +20,7 @@ import {
   publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
 import { ChatEvents } from "@aimess/shared-types";
-import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import { publishUserReport } from "../lib/report-user.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -825,13 +825,15 @@ export class GroupMemberService {
   }
 
   /**
-   * Report a member of this group. Best-effort forwards a normalized row to
-   * backoffice via the shared admin.report.ingest queue (same publisher as
-   * private message reports). No local dedupe row is persisted — backoffice
-   * owns the moderation ledger; adding one here would duplicate that state and
-   * require a new Prisma model + migration for negligible gain.
-   * ponytail: no local dedupe; add a chat-side unique index if abuse volume
-   * shows repeated backoffice ingest of the same (reporter, target, room).
+   * Report a member of this group. Goes through the shared {@link publishUserReport}
+   * sink — the same admin.report.ingest queue community-service's createReport
+   * publishes to, and the same one PrivateRoomService.reportUser uses, so all
+   * three surfaces land one identical row shape in admin_db.Report.
+   *
+   * Authorization mirrors community's report: reporter must be an ACTIVE member,
+   * target only needs a member row of ANY status (a banned member can still be
+   * reported for prior conduct), no self-report. No role gate — reporting is
+   * every member's right, not a moderator power.
    */
   async reportMember(params: {
     roomId: string;
@@ -858,17 +860,13 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    publishAdminReportIngestSafe({
-      type: "user",
-      targetId: params.targetUserId,
+    publishUserReport({
+      context: "GROUP",
+      roomId: params.roomId,
       reporterId: params.reporterId,
+      targetUserId: params.targetUserId,
       reason: params.reason,
-      details: params.description?.trim() ? params.description.trim() : null,
-      // Groups are not community-scoped.
-      communityId: null,
-      eventAt: new Date().toISOString(),
-      // No local report row; identify the ingest via room + target for admin correlation.
-      sourceReportId: `grp:${params.roomId}:${params.targetUserId}:${Date.now()}`,
+      description: params.description,
     });
 
     return { ok: true };

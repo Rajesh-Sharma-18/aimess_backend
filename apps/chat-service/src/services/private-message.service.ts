@@ -84,7 +84,10 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import { personalizePrivateSystemMessageForViewer } from "@aimess/constants";
+import {
+  currentLocale,
+  personalizePrivateSystemMessageForViewer,
+} from "@aimess/constants";
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
@@ -2112,7 +2115,8 @@ export class PrivateMessageService {
           message.systemEvent,
           systemData,
           thirdPersonText,
-          viewerId
+          viewerId,
+          currentLocale()
         );
         if (personalized !== thirdPersonText && content) {
           contentForWire = { ...content, text: personalized };

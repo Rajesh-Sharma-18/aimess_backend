@@ -12,7 +12,10 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
-import { personalizeGroupSystemMessageForViewer } from "@aimess/constants";
+import {
+  currentLocale,
+  personalizeGroupSystemMessageForViewer,
+} from "@aimess/constants";
 import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
@@ -2192,7 +2195,8 @@ export class GroupMessageService {
           message.systemEvent,
           systemData,
           thirdPersonText,
-          viewerUserId
+          viewerUserId,
+          currentLocale()
         );
         if (personalized !== thirdPersonText && content) {
           wire.content = { ...content, text: personalized };

@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import type { z } from "zod";
 
 import { BadRequestError } from "@aimess/errors";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import {
@@ -29,6 +29,6 @@ export const checkAppVersion = asyncHandler(
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, "App version checked"));
+      .json(new ApiResponse(result, t("APP_VERSION_CHECKED", req.locale)));
   }
 );

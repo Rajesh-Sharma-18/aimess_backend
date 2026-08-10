@@ -4,11 +4,11 @@ export const openApiParameters = {
   LanguageHeader: {
     name: "x-lang",
     in: "header",
-    description: `Preferred response language (\`vi\` or \`en\`). Falls back to Accept-Language, then ${DEFAULT_LOCALE === "vi" ? "Vietnamese" : "English"}.`,
+    description: `Preferred response language (\`en\`, \`vi\` or \`th\`). Falls back to Accept-Language, then ${DEFAULT_LOCALE === "vi" ? "Vietnamese" : "English"}. Applies to every localizable \`message\`/\`error.message\` in the response, and is forwarded to downstream services (and their SYSTEM message text) as-is.`,
     required: false,
     schema: {
       type: "string",
-      enum: ["vi", "en"],
+      enum: ["en", "vi", "th"],
       default: DEFAULT_LOCALE,
     },
     example: DEFAULT_LOCALE,

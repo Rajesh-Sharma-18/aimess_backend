@@ -36,6 +36,10 @@ export interface MessageSentPayload {
   canReply?: boolean;
   /** Short, render-ready preview text (already truncated). */
   preview: string;
+  /** Object key of the image (or video poster) to render inline in the push. */
+  previewImageKey?: string;
+  /** Resolved from previewImageKey at the publish boundary — never a raw object key. */
+  previewImageUrl?: string;
   messageType: string;
   /** epoch ms */
   sentAt: number;
@@ -90,6 +94,9 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       // carry a full, usable avatar URL, never a raw object key. Best-effort and
       // not persisted (notifications-service forwards this into the FCM payload).
       const senderAvatar = await resolveMediaUrl(p.senderAvatar);
+      const previewImageUrl = p.previewImageKey
+        ? await resolveMediaUrl(p.previewImageKey).catch(() => "")
+        : "";
       const channel = await getChannel(url);
       const data: MessageSentPayload = {
         conversationId: p.conversationId,
@@ -102,6 +109,7 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         senderName: p.senderName,
         senderAvatar,
         preview: p.preview,
+        ...(previewImageUrl ? { previewImageUrl } : {}),
         messageType: p.messageType,
         sentAt: p.sentAt,
         recipientIds: targets,

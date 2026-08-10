@@ -1658,10 +1658,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; calleeId?: string };
+          const req = call.request as {
+            callId?: string;
+            calleeId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.answerCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1703,10 +1708,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; userId?: string };
+          const req = call.request as {
+            callId?: string;
+            userId?: string;
+            legId?: string;
+          };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
+            legId: req.legId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1765,10 +1775,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { roomName?: string; eventType?: string };
+          const req = call.request as {
+            roomName?: string;
+            eventType?: string;
+            remainingParticipants?: number;
+          };
           await deps.callService.reconcileFromLiveKitRoomFinished(
             req.roomName ?? "",
-            req.eventType ?? ""
+            req.eventType ?? "",
+            req.remainingParticipants ?? -1
           );
           callback(null, {});
         } catch (err) {
@@ -3969,8 +3984,14 @@ export function createNotificationImpl(
             }
           };
 
-          if (existing) {
-            const plan = resolveTransition(existing.type, req.type, data);
+          // `CREATE` here means "the matched row belongs to a previous cycle of
+          // a recycled id" — fall through to the insert below so the client gets
+          // a genuine `notification:new`, leaving the old card as history.
+          const plan = existing
+            ? resolveTransition(existing.type, req.type, data)
+            : null;
+
+          if (existing && plan && plan.action !== "CREATE") {
             const existingPayload = (existing.payload ?? {}) as {
               title?: string;
               body?: string;

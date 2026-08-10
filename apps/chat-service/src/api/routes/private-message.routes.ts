@@ -12,6 +12,7 @@ import {
   muteRoomSchema,
   autoDeleteSchema,
   reportMessageSchema,
+  reportPrivateUserSchema,
   sendPrivateMessageBodySchema,
   markReadBodySchema,
   reactionBodySchema,
@@ -77,6 +78,16 @@ export function createPrivateMessageRoutes(
     roomCtrl.muteRoom
   );
   router.post("/rooms/:roomId/unmute", authenticate, roomCtrl.unmuteRoom);
+
+  // Report the peer of this conversation (user-level, not message-level) —
+  // private-chat counterpart of POST /chat/group-members/report.
+  router.post(
+    "/rooms/:roomId/report",
+    authenticate,
+    sendLimit,
+    validateBody(reportPrivateUserSchema),
+    roomCtrl.reportUser
+  );
 
   // Automatically Delete Messages (disappearing messages) — per-user setting
   router.get(

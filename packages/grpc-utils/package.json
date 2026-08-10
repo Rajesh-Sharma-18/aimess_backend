@@ -11,6 +11,7 @@
     "test": "tsx tests/service-auth.test.ts"
   },
   "dependencies": {
+    "@aimess/constants": "workspace:*",
     "@aimess/logger": "workspace:*",
     "@grpc/grpc-js": "^1.14.4",
     "opossum": "^8.1.4"

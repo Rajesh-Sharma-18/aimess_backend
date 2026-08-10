@@ -36,6 +36,7 @@ import {
   resolveContentFiles,
   resolveQuoteThumbnail,
   fileMediaKey,
+  pushImageKeyOf,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -510,6 +511,9 @@ export class ChatMessageOrchestrator {
         senderName: senderName || "",
         senderAvatar: senderAvatar || "",
         preview: buildPushPreview(msg.messageType, pushText),
+        ...(pushImageKeyOf(msg.messageType, msg.content)
+          ? { previewImageKey: pushImageKeyOf(msg.messageType, msg.content) }
+          : {}),
         messageType: msg.messageType,
         sentAt: serverTs,
       };

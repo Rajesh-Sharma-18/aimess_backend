@@ -5,6 +5,7 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
+import { scopeSocketLocale } from "../locale-scope.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
 
 const NotificationsFetchSchema = z.object({
@@ -63,6 +64,7 @@ export function registerNotifyNamespace(
 
   notify.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
+    scopeSocketLocale(socket);
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/notify connected userId=${userId}`);

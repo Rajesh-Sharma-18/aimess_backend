@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { t } from "@aimess/constants";
 import {
   FriendshipEvents,
   type FriendAcceptedPayload,
@@ -36,7 +37,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        ...friendCopy.requested(p.requesterName),
+        copy: friendCopy.requested(p.requesterName),
         deepLink,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -71,14 +72,18 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        ...friendCopy.acceptedForRequester(p.addresseeName),
+        copy: friendCopy.acceptedForRequester(p.addresseeName),
+        localizedData: (locale) => ({
+          resolution: t("NOTIF_FRIEND_RESOLUTION_ACCEPTED", locale, {
+            name: p.addresseeName?.trim() || t("SYS_NAME_SOMEONE", locale),
+          }),
+        }),
         deepLink: deepLinkForRequester,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink: deepLinkForRequester,
-          resolution: `${p.addresseeName?.trim() || "Someone"} accepted your friend request.`,
           actorSnapshot: JSON.stringify({
             userId: p.addresseeId,
             displayName: p.addresseeName,
@@ -99,7 +104,10 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        ...friendCopy.acceptedForAddressee(p.requesterName),
+        copy: friendCopy.acceptedForAddressee(p.requesterName),
+        localizedData: (locale) => ({
+          resolution: t("NOTIF_FRIEND_RESOLUTION_NOW_FRIENDS", locale),
+        }),
         deepLink: deepLinkForAddressee,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -109,7 +117,6 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           // This user IS the actor — their own accept must not re-flag the row
           // unread on their other devices.
           resurface: "false",
-          resolution: "You are now friends!",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,
             displayName: p.requesterName,
@@ -133,14 +140,16 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        ...friendCopy.rejected(p.addresseeName),
+        copy: friendCopy.rejected(p.addresseeName),
+        localizedData: (locale) => ({
+          resolution: t("NOTIF_FRIEND_RESOLUTION_DECLINED", locale),
+        }),
         deepLink,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
           deepLink,
-          resolution: "Declined your friend request",
           resolutionTone: "danger",
           actorSnapshot: JSON.stringify({
             userId: p.addresseeId,
@@ -162,13 +171,15 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        ...friendCopy.rejectedSelf(p.requesterName),
+        copy: friendCopy.rejectedSelf(p.requesterName),
+        localizedData: (locale) => ({
+          resolution: t("NOTIF_FRIEND_RESOLUTION_DECLINED_SELF", locale),
+        }),
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
           resurface: "false",
-          resolution: "You declined this friend request",
           resolutionTone: "danger",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,
@@ -193,7 +204,10 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.addresseeId,
-        ...friendCopy.cancelled(p.requesterName),
+        copy: friendCopy.cancelled(p.requesterName),
+        localizedData: (locale) => ({
+          resolution: t("NOTIF_FRIEND_RESOLUTION_CANCELLED", locale),
+        }),
         dataOnly: true,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -207,7 +221,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         category: "friendRequestEnabled",
         type,
         actorId: p.requesterId,
-        ...friendCopy.cancelled(p.requesterName),
+        copy: friendCopy.cancelled(p.requesterName),
         // Silent: this event REMOVES the request row, so a visible push
         // announcing a cancellation would contradict the row disappearing.
         dataOnly: true,
@@ -220,7 +234,6 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
           // Terminal — the gRPC handler updates the addressee's existing
           // friend.requested row in place and drops Accept/Reject once it
           // sees this resolution (mirrors the reject/accept paths).
-          resolution: "The sender cancelled this friend request",
           resolutionTone: "danger",
           actorSnapshot: JSON.stringify({
             userId: p.requesterId,

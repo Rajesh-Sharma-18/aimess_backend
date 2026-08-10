@@ -247,9 +247,19 @@ export async function publishConvUpdated(
         String(lastMessage.contentType ?? "").toUpperCase() === "SYSTEM";
       const effectiveSenderId = isSystem ? "" : senderId;
       const effectiveSenderName = isSystem ? "" : senderName;
+      const absoluteUnread = p.unreadCountByRecipient?.[recipientId];
+      // `recipientId !== senderId` is the only "is this mine?" test available for
+      // a row with a real sender — but a call row is SENDER-LESS, so it holds for
+      // BOTH participants and the CALLER's own unanswered outgoing call raised an
+      // unread flag on their own inbox row. Where the authoritative per-recipient
+      // count is in hand, let it veto: a recipient the room says has zero unread
+      // never gets `unread: true`. It can only ever turn the flag off, so rows
+      // without absolute counts keep their existing behavior exactly.
       const unread =
         override === undefined
-          ? (p.countInUnread ?? !isSystem) && recipientId !== effectiveSenderId
+          ? (p.countInUnread ?? !isSystem) &&
+            recipientId !== effectiveSenderId &&
+            absoluteUnread !== 0
           : false;
       const isOffline = onlineByViewer
         ? !(onlineByViewer.get(recipientId) ?? false)
@@ -258,7 +268,6 @@ export async function publishConvUpdated(
       // every conv:updated caller (REST controllers, gRPC handlers, system
       // messages), see unread-summary-bridge.ts.
       if (unread) notifyUnreadChanged(recipientId);
-      const absoluteUnread = p.unreadCountByRecipient?.[recipientId];
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
