@@ -9,6 +9,7 @@ import { toPeerFriendshipRelationship } from "./private-room.service.js";
 import type {
   GroupRoomService,
   EnrichedGroupRoom,
+  GroupConversationLastActivity,
 } from "./group-room.service.js";
 import { toWireMessage } from "../lib/chat-message.serializer.js";
 
@@ -22,6 +23,13 @@ export type InboxDirection = "before" | "after";
 export interface InboxItem {
   type: "PRIVATE" | "GROUP";
   roomId: string;
+  /**
+   * The SHARED room snapshot timestamp — what the underlying repository queries
+   * page on. It is deliberately NOT per-viewer: after a delete-for-me / clear it
+   * still points at a message this viewer can no longer see. Render and sort on
+   * `lastActivity.dateTime` (always present now, on GROUP rows too), which is the
+   * per-viewer effective value; keep using this one only for cursors.
+   */
   lastMessageAt: Date | null;
   lastMessageId: string | null;
   lastMessage: unknown | null;
@@ -36,13 +44,20 @@ export interface InboxItem {
   // PRIVATE-only
   peer: PrivateRoomPeer | null;
   /**
-   * PRIVATE-only: community-style normalized last-activity DTO
+   * Community-style normalized last-activity DTO
    * ({type,userId,username,preview,dateTime}) — `username` always carries the
    * ACTUAL sender's live name (self included), so the client decides "You:" vs
    * "<name>:" purely from `userId === myUserId`, never from `peer.displayName`.
-   * Null on GROUP rows (they carry sender info on `lastMessage` instead).
+   *
+   * Populated for GROUP rows too (it used to be PRIVATE-only, hardcoded null),
+   * because this is the ONE field carrying the PER-VIEWER effective timestamp:
+   * `lastMessageAt` is the shared snapshot and stays stale for a viewer who
+   * deleted-for-me or cleared. `dateTime === 0` = nothing visible remains.
    */
-  lastActivity: PrivateConversationLastActivity | null;
+  lastActivity:
+    | PrivateConversationLastActivity
+    | GroupConversationLastActivity
+    | null;
   /**
    * PRIVATE-only: user-search-shaped relationship metadata for the peer —
    * identical fields as `GET /api/v1/users/search` (isFriend, relationshipStatus,
@@ -107,6 +122,17 @@ export interface InboxResult {
  * pages may share the boundary item when timestamps tie — clients should
  * de-duplicate by `roomId`.
  */
+/**
+ * The per-viewer effective activity timestamp a row must be ORDERED by:
+ * `lastActivity.dateTime` (0 when the viewer has nothing visible left), falling
+ * back to the shared snapshot only for a row that somehow carries no activity
+ * DTO at all.
+ */
+function effectiveAt(item: InboxItem): number {
+  if (item.lastActivity) return item.lastActivity.dateTime;
+  return item.lastMessageAt ? item.lastMessageAt.getTime() : 0;
+}
+
 export class InboxService {
   constructor(
     private readonly privateRoomService: PrivateRoomService,
@@ -159,17 +185,21 @@ export class InboxService {
       ...groupRooms.map((room) => this.toGroupItem(room)),
     ];
 
-    // Sort by lastMessageAt in the requested direction, with roomId as a
-    // deterministic tiebreaker so two items sharing the same millisecond order
-    // identically here and in each repository query (stable cross-page order).
-    merged.sort((a, b) => {
+    // PAGE SELECTION stays on the SHARED `lastMessageAt` — that is the column
+    // both repository queries bound on, so which rows belong to this page (and
+    // the cursor that continues it) must be decided by the same key. Choosing
+    // the page by the per-viewer timestamp instead would let a row with a newer
+    // shared timestamp fall out of the page while the cursor moved past it —
+    // silently skipping it forever.
+    const bySharedTs = (a: InboxItem, b: InboxItem): number => {
       const at = a.lastMessageAt ? a.lastMessageAt.getTime() : 0;
       const bt = b.lastMessageAt ? b.lastMessageAt.getTime() : 0;
       if (at !== bt) return direction === "before" ? bt - at : at - bt;
       return direction === "before"
         ? b.roomId.localeCompare(a.roomId)
         : a.roomId.localeCompare(b.roomId);
-    });
+    };
+    merged.sort(bySharedTs);
 
     // `hasMore` is exact: with limit+1 fetched per side, a merged length beyond
     // `limit` is the only way more rows can remain.
@@ -183,6 +213,22 @@ export class InboxService {
           ? `${lastItem.lastMessageAt.getTime()}_${lastItem.roomId}`
           : String(lastItem.lastMessageAt.getTime())
         : null;
+
+    // DISPLAY order is per-viewer (Telegram-style): a row whose last visible
+    // message this viewer deleted or cleared sits where its previous visible
+    // message actually is, not where the shared snapshot puts it. Applied to the
+    // already-selected page only, so pagination is byte-identical to before.
+    // A row that drops a long way can therefore trail into a later page's range;
+    // clients merge pages and re-sort on `lastActivity.dateTime` anyway, which is
+    // exactly the field this order is derived from.
+    page.sort((a, b) => {
+      const at = effectiveAt(a);
+      const bt = effectiveAt(b);
+      if (at !== bt) return direction === "before" ? bt - at : at - bt;
+      return direction === "before"
+        ? b.roomId.localeCompare(a.roomId)
+        : a.roomId.localeCompare(b.roomId);
+    });
 
     return {
       items: page,
@@ -249,7 +295,7 @@ export class InboxService {
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,
-      lastActivity: null,
+      lastActivity: room.lastActivity,
       isFriend: null,
       relationshipStatus: null,
       friendshipId: null,

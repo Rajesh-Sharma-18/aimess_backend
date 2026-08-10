@@ -1429,6 +1429,71 @@ export const communityRepository = {
   },
 
   /**
+   * BACKWARD counterpart of {@link updateLastActivity}, for the one case the
+   * forward-only guard cannot express: the community's last message was removed
+   * (delete-for-everyone / auto-delete / pin-line retraction), so the activity
+   * must fall back to the PREVIOUS visible message — whose `createdAt` is by
+   * definition OLDER than the stored `lastActivityAt`. Writing `Date.now()`
+   * instead (what the delete path used to do to satisfy the forward-only guard)
+   * pinned the community at the top of `GET /communities/mine` and displayed the
+   * DELETION's timestamp next to the previous message's preview.
+   *
+   * `notNewerThan` is the removed message's own `createdAt`: the rollback lands
+   * only while the stored `lastActivityAt` is not newer than it, so a message (or
+   * any other activity) that arrived after the delete always wins and is never
+   * clobbered — this is the auto-delete-sweeper-vs-new-message race guard.
+   *
+   * `activityAt: null` = the room is now EMPTY. There is no message to point at,
+   * so the row falls back to the community's own `createdAt` with the "created"
+   * activity type — the app's existing empty-community representation (see
+   * `buildLastActivity`'s `created` branch), NOT a fabricated "now".
+   */
+  async rollbackLastActivity(
+    communityId: string,
+    notNewerThan: Date,
+    activity: {
+      activityAt: Date | null;
+      type: string;
+      preview: string;
+      username: string | null;
+      userId: string | null;
+      messageId?: string | null;
+      clientMessageId?: string | null;
+      seq?: number | null;
+      contentType?: string | null;
+    }
+  ): Promise<number> {
+    const row = await prisma.community.findUnique({
+      where: { id: communityId },
+      select: { createdAt: true },
+    });
+    if (!row) return 0;
+    const empty = activity.activityAt === null;
+    const result = await prisma.community.updateMany({
+      where: { id: communityId, lastActivityAt: { lte: notNewerThan } },
+      data: {
+        lastActivityAt: activity.activityAt ?? row.createdAt,
+        lastActivityType: empty ? "created" : activity.type,
+        lastActivityPreview: empty ? "" : activity.preview,
+        lastActivityUsername: empty ? null : activity.username,
+        lastActivityUserId: empty ? null : activity.userId,
+        // Same always-overwrite rule as the forward bump: a rolled-back pointer
+        // must not keep a personalized "You …" line from the removed message.
+        lastActivitySelfPreview: null,
+        lastActivityTargetUserId: null,
+        lastActivityTargetPreview: null,
+        lastActivityMessageId: empty ? null : activity.messageId || null,
+        lastActivityClientMessageId: empty
+          ? null
+          : activity.clientMessageId || null,
+        lastActivitySeq: empty ? 0 : (activity.seq ?? 0),
+        lastActivityContentType: empty ? null : activity.contentType || null,
+      },
+    });
+    return result.count;
+  },
+
+  /**
    * Personal "self-hide" overlay for delete-for-me: writes ONLY
    * `lastActivityUserId`/`lastActivitySelfPreview` — the SAME columns already
    * used to personalize a self-referential join/role-change line — so that

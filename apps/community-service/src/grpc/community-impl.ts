@@ -1014,6 +1014,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           clientMessageId?: string;
           seq?: number;
           contentType?: string;
+          rollbackNotNewerThan?: number | string;
         };
         const communityId = (req.communityId ?? "").trim();
         if (!communityId) {
@@ -1022,11 +1023,32 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         }
 
         const selfUserId = (req.selfUserId ?? "").trim();
+        const rollbackNotNewerThan = Number(req.rollbackNotNewerThan ?? 0);
         if (selfUserId) {
           await communityRepository.setSelfLastActivityOverride(communityId, {
             userId: selfUserId,
             preview: req.selfPreview ?? "",
           });
+        } else if (rollbackNotNewerThan > 0) {
+          // The room's last message was REMOVED — move the pointer backward to
+          // the previous visible message (or to the empty state when
+          // lastMessageAt is 0). See rollbackLastActivity for the race guard.
+          const at = Number(req.lastMessageAt) || 0;
+          await communityRepository.rollbackLastActivity(
+            communityId,
+            new Date(rollbackNotNewerThan),
+            {
+              activityAt: at > 0 ? new Date(at) : null,
+              type: req.activityType ?? "message",
+              preview: req.messagePreview ?? "",
+              username: req.senderUsername ?? null,
+              userId: req.senderUserId ?? null,
+              messageId: req.lastMessageId ?? null,
+              clientMessageId: req.clientMessageId ?? null,
+              seq: Number(req.seq ?? 0),
+              contentType: req.contentType ?? null,
+            }
+          );
         } else {
           const at = new Date(Number(req.lastMessageAt) || Date.now());
           await communityRepository.updateLastActivity(

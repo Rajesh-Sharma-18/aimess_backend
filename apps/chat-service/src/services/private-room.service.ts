@@ -5,6 +5,7 @@ import type { MediaObject } from "@aimess/shared-types";
 import type { Redis, Cluster } from "ioredis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import {
   toWireMessage,
@@ -711,7 +712,24 @@ export class PrivateRoomService {
       const lmType = String(
         (rawLmForStatus as Record<string, unknown> | null)?.messageType ?? ""
       ).toUpperCase();
-      if (lmSenderId !== userId || !room.lastMessageId || lmType === "SYSTEM")
+      // A cleared / delete-conversation cutoff hides the message from this
+      // viewer entirely, so it must not carry a delivery/read tick either —
+      // otherwise an emptied row still renders a ✓✓ for a message it no longer
+      // shows. Same cutoff the preview below applies.
+      const statusCutoff = getPrivateDeletionCutoff(room, userId);
+      const lmCreatedAt = (rawLmForStatus as Record<string, unknown> | null)
+        ?.createdAt;
+      const hiddenForStatus = Boolean(
+        statusCutoff &&
+        lmCreatedAt &&
+        new Date(lmCreatedAt as string | Date) <= statusCutoff
+      );
+      if (
+        lmSenderId !== userId ||
+        !room.lastMessageId ||
+        lmType === "SYSTEM" ||
+        hiddenForStatus
+      )
         continue;
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
       const cursorMap = (room.lastReadMessageIdByUser ?? {}) as Record<
@@ -797,10 +815,18 @@ export class PrivateRoomService {
         : room.lastMessage;
       const cutoff = getPrivateDeletionCutoff(room, userId);
       const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
-      const visibleRawLm =
+      const hiddenByCutoff = Boolean(
         cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
-          ? null
-          : rawLm;
+      );
+      const visibleRawLm = hiddenByCutoff ? null : rawLm;
+      // "This viewer has NOTHING visible left in this room" — either their
+      // clear/delete-conversation cutoff swallowed the last message, or the
+      // per-user resolver walked back and found no previous-visible message.
+      // Distinct from "the shared lastMessage JSON is missing on a legacy row",
+      // which must keep falling back to the stored lastMessageAt below.
+      const nothingVisible =
+        hiddenByCutoff ||
+        (perUserFallback.has(room.roomId) && !perUserFallback.get(room.roomId));
       const lastMessage = (visibleRawLm && typeof visibleRawLm === "object"
         ? toWireMessage(visibleRawLm as { messageType?: string | null })
         : (visibleRawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
@@ -817,8 +843,15 @@ export class PrivateRoomService {
       );
       const lmDateTime = lmRecord?.createdAt
         ? new Date(lmRecord.createdAt as string | Date).getTime()
-        : (room.lastMessageAt?.getTime() ?? 0);
-      const lastActivityAt = lmDateTime || (room.lastMessageAt?.getTime() ?? 0);
+        : 0;
+      // The EFFECTIVE (per-viewer) activity timestamp. When the viewer has no
+      // visible message left it MUST be 0 — falling back to the shared
+      // `room.lastMessageAt` here is what used to leave a cleared/emptied chat
+      // pinned at the top of the list with an empty preview but the timestamp of
+      // the very message the viewer just removed.
+      const lastActivityAt = nothingVisible
+        ? 0
+        : lmDateTime || (room.lastMessageAt?.getTime() ?? 0);
       // Always carry the ACTUAL sender's live name — self included — mirroring
       // community's buildLastActivity. Previously this was forced empty when the
       // caller sent the message, and the client filled the gap by falling back to
@@ -1039,6 +1072,25 @@ export class PrivateRoomService {
         })
       )
       .catch(() => {});
+
+    // The row STAYS in the list (clear ≠ delete conversation) but now has no
+    // visible message, so its effective lastActivity is empty and it must drop
+    // to the bottom. `conv:cleared` alone left every other device — and any
+    // client that only listens for list bumps — rendering the cleared chat at
+    // the top with its old preview until a hard reload. Self-only: the peer's
+    // view is untouched by a one-sided clear.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "PRIVATE",
+      roomId,
+      recipientIds: [userId],
+      senderId: "",
+      lastMessageId: "",
+      lastMessageAt: 0,
+      preview: { contentType: "", text: "", createdAt: 0 },
+      // An emptied row is not a new message — must never raise an unread badge.
+      countInUnread: false,
+    });
   }
 
   /**

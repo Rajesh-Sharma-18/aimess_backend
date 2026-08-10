@@ -198,25 +198,31 @@ describe("REST DELETE /messages/:messageId?type=forEveryone", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(updateMessageActivity).toHaveBeenCalledWith({
-      communityId: ROOM,
-      lastMessageAt: expect.any(Number),
-      lastMessageId: "",
-      senderUserId: "",
-      senderUsername: "",
-      messagePreview: "",
-      activityType: "message",
-    });
+    // lastMessageAt 0 = "no message left to point at"; community-service then
+    // falls back to the community's own createdAt + the "created" activity type.
+    // It used to send Date.now() (the only way past the forward-only guard),
+    // which pinned an emptied community to the top of GET /communities/mine.
+    expect(updateMessageActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageAt: 0,
+        lastMessageId: "",
+        senderUserId: "",
+        senderUsername: "",
+        messagePreview: "",
+        activityType: "message",
+        rollbackNotNewerThan: expect.any(Number),
+      })
+    );
     expect(pubCommunityUpdated).toHaveBeenCalledWith(
       expect.objectContaining({
         communityId: ROOM,
         lastMessageId: "",
-        lastMessageAt: expect.any(Number),
+        // Same rule on the realtime bump: an emptied room must not carry a
+        // just-now timestamp a client would sort to the top.
+        lastMessageAt: 0,
       })
     );
-    expect(
-      pubCommunityUpdated.mock.calls.at(-1)?.[0].lastMessageAt
-    ).toBeGreaterThan(0);
   });
 });
 
@@ -422,15 +428,18 @@ describe("gRPC deleteCommunityMessage — forEveryone", () => {
       userId: TEST_USER_ID,
       deleteType: "forEveryone",
     });
-    expect(updateMessageActivity).toHaveBeenCalledWith({
-      communityId: ROOM,
-      lastMessageAt: expect.any(Number),
-      lastMessageId: "",
-      senderUserId: "",
-      senderUsername: "",
-      messagePreview: "",
-      activityType: "message",
-    });
+    expect(updateMessageActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageAt: 0,
+        lastMessageId: "",
+        senderUserId: "",
+        senderUsername: "",
+        messagePreview: "",
+        activityType: "message",
+        rollbackNotNewerThan: expect.any(Number),
+      })
+    );
   });
 });
 

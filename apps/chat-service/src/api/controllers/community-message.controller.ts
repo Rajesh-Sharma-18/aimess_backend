@@ -27,6 +27,10 @@ import {
   type RecipientBump,
 } from "../../events/publish-conv-updated.js";
 import { publishCommunityActivitySafe } from "../../events/publish-community-activity.js";
+import {
+  reconcileCommunityLastActivityAfterDelete,
+  bumpTimestampAfterDelete,
+} from "../../events/community-last-activity.js";
 import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "../../grpc/community.client.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
@@ -831,7 +835,8 @@ export class CommunityMessageController {
     if (type === "forEveryone" && result.roomId) {
       await this.recalcAndBroadcastLastMessageAfterDelete(
         result.roomId,
-        messageId
+        messageId,
+        result.createdAt
       );
     }
 
@@ -923,7 +928,8 @@ export class CommunityMessageController {
    */
   private async recalcAndBroadcastLastMessageAfterDelete(
     roomId: string,
-    deletedMessageId: string
+    deletedMessageId: string,
+    removedAt?: Date | null
   ): Promise<void> {
     try {
       const recalc = await this.service.recalculateLastMessageAfterDelete(
@@ -932,43 +938,13 @@ export class CommunityMessageController {
       );
       if (recalc === null) return;
 
-      if (recalc.hasLastMessage) {
-        publishCommunityActivitySafe({
-          communityId: roomId,
-          lastMessageAt: new Date().toISOString(),
-          lastMessageId: recalc.prevMessageId ?? "",
-          senderUserId: recalc.sentBy,
-          senderUsername: recalc.senderName,
-          messagePreview: recalc.preview,
-          type: "message",
-          clientMessageId: recalc.clientMessageId,
-          seq: recalc.sequenceNumber,
-          contentType: normalizeMessageType(recalc.messageType),
-        });
-        // Synchronous companion — awaited before the response, same
-        // reasoning as reactToMessage's updateReactionActivity call.
-        // Never blocks the delete on failure; the queue publish above
-        // remains the backstop.
-        await getCommunityReconcileClient().updateMessageActivity({
-          communityId: roomId,
-          lastMessageAt: Date.now(),
-          lastMessageId: recalc.prevMessageId ?? "",
-          senderUserId: recalc.sentBy,
-          senderUsername: recalc.senderName,
-          messagePreview: recalc.preview,
-          activityType: "message",
-        });
-      } else {
-        await getCommunityReconcileClient().updateMessageActivity({
-          communityId: roomId,
-          lastMessageAt: Date.now(),
-          lastMessageId: "",
-          senderUserId: "",
-          senderUsername: "",
-          messagePreview: "",
-          activityType: "message",
-        });
-      }
+      // Persist the ROLLED-BACK activity (previous visible message's own
+      // timestamp, or the empty state) — see events/community-last-activity.ts.
+      await reconcileCommunityLastActivityAfterDelete({
+        communityId: roomId,
+        recalc,
+        removedAt,
+      });
       // Realtime bump — fire-and-forget, the DB write above is already
       // guaranteed by the time this fires.
       publishCommunityUpdatedSafe({
@@ -989,9 +965,7 @@ export class CommunityMessageController {
         senderId: recalc.sentBy,
         senderName: recalc.senderName,
         lastMessageId: recalc.prevMessageId ?? "",
-        lastMessageAt: recalc.hasLastMessage
-          ? recalc.createdAt.getTime()
-          : Date.now(),
+        lastMessageAt: bumpTimestampAfterDelete(recalc),
         preview: {
           contentType: normalizeMessageType(recalc.messageType),
           text: recalc.preview,

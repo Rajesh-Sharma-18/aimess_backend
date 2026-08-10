@@ -18,6 +18,10 @@ import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
+  reconcileCommunityLastActivityAfterDelete,
+  bumpTimestampAfterDelete,
+} from "../events/community-last-activity.js";
+import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
@@ -3507,41 +3511,14 @@ export function createCommunityImpl(
                 result.roomId,
                 req.messageId
               );
-            if (
-              forEveryoneRecalc !== null &&
-              forEveryoneRecalc.hasLastMessage
-            ) {
-              publishCommunityActivitySafe({
+            if (forEveryoneRecalc !== null) {
+              // Persist the ROLLED-BACK activity — the previous visible
+              // message's own timestamp, never the deletion's. Shared with the
+              // REST delete path (events/community-last-activity.ts).
+              await reconcileCommunityLastActivityAfterDelete({
                 communityId: req.communityId,
-                lastMessageAt: new Date().toISOString(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                type: "message",
-              });
-              // Synchronous companion — awaited before the ack, same
-              // reasoning as reactToMessage's updateReactionActivity call.
-              // Never blocks the delete on failure; the queue publish above
-              // remains the backstop.
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                activityType: "message",
-              });
-            } else if (forEveryoneRecalc !== null) {
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: "",
-                senderUserId: "",
-                senderUsername: "",
-                messagePreview: "",
-                activityType: "message",
+                recalc: forEveryoneRecalc,
+                removedAt: result?.createdAt,
               });
             }
           }
@@ -3601,9 +3578,7 @@ export function createCommunityImpl(
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.hasLastMessage
-                ? recalc.createdAt.getTime()
-                : Date.now(),
+              lastMessageAt: bumpTimestampAfterDelete(recalc),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,

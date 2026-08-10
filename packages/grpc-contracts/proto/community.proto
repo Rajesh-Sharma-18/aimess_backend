@@ -276,6 +276,15 @@ message UpdateMessageActivityRequest {
   string clientMessageId = 10;
   int32  seq             = 11;
   string contentType     = 12;  // UPPER-CASE (TEXT/IMAGE/…/SYSTEM)
+  // ROLLBACK mode (epoch ms; 0 = off). `updateLastActivity` is forward-only, so
+  // it structurally cannot move lastActivityAt BACKWARD — which is exactly what a
+  // delete-for-everyone / auto-delete of the room's last message requires: the
+  // activity must fall back to the PREVIOUS visible message's own createdAt, not
+  // to the moment of deletion. When set, the write applies even though
+  // `lastMessageAt` is older than the stored value, but ONLY while the stored
+  // `lastActivityAt <= rollbackNotNewerThan` (the removed message's createdAt) —
+  // so a message that arrived after the delete is never clobbered.
+  int64  rollbackNotNewerThan = 13;
 }
 message UpdateMessageActivityResponse {
   bool ok = 1;

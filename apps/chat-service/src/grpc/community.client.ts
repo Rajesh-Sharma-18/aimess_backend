@@ -68,6 +68,19 @@ export interface UpdateMessageActivityParams {
    */
   selfUserId?: string;
   selfPreview?: string;
+  /**
+   * ROLLBACK mode (epoch ms; omit/0 = off). community-service's canonical bump is
+   * forward-only, so it cannot express "the last message was deleted — fall back
+   * to the previous one, which is OLDER". Set this to the REMOVED message's
+   * `createdAt` and pass the previous-visible message's real `createdAt` as
+   * `lastMessageAt`: the write then applies backward, but only while the stored
+   * `lastActivityAt` is not newer than this (a message that landed after the
+   * delete wins and the rollback is skipped).
+   */
+  rollbackNotNewerThan?: number;
+  clientMessageId?: string | null;
+  seq?: number;
+  contentType?: string;
 }
 
 export interface CheckCommunityMembershipParams {
