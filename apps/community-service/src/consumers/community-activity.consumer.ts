@@ -30,6 +30,11 @@ interface CommunityActivityMessage {
     /** First-person ("You …") preview for a self-referential SYSTEM line
      *  (role change / join) — reactions no longer use this field. */
     selfPreview?: string;
+    /** Offline-first list identity of the message behind this activity — see
+     *  chat-service `publish-community-activity.ts`. */
+    clientMessageId?: string | null;
+    seq?: number;
+    contentType?: string;
     /** Second self-referential viewer (role change / join target) — reactions
      *  no longer use this field. */
     targetUserId?: string;
@@ -128,7 +133,13 @@ export async function startCommunityActivityConsumer(): Promise<void> {
                 parsed.data.senderUserId ?? null,
                 parsed.data.selfPreview ?? null,
                 parsed.data.targetUserId ?? null,
-                parsed.data.targetPreview ?? null
+                parsed.data.targetPreview ?? null,
+                {
+                  messageId: parsed.data.lastMessageId ?? null,
+                  clientMessageId: parsed.data.clientMessageId ?? null,
+                  seq: parsed.data.seq ?? 0,
+                  contentType: parsed.data.contentType ?? null,
+                }
               );
               logger.info(
                 `[LIVE-SIDEBAR:COMMUNITY] community.activity updateLastActivity communityId=${communityId} activityType=${parsed.data.type ?? "message"} at=${at.toISOString()} updatedCount=${updatedCount} preview="${parsed.data.messagePreview ?? ""}"`

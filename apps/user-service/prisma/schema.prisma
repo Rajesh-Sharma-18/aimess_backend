@@ -89,6 +89,12 @@ model Friendship {
   addressee    UserProfile      @relation("AddresseeFriendships", fields: [addresseeId], references: [userId], onDelete: Cascade)
   status       FriendshipStatus @default(PENDING)
   acceptedAt   DateTime?        @db.Timestamptz(3)
+  // Set on the FIRST acceptance this pair ever had and never cleared again —
+  // `resetToPending` wipes `acceptedAt` when the row is recycled for a new
+  // request, so that field cannot answer "were these two ever friends?".
+  // A non-null value here is what makes a later acceptance a RE-friendship,
+  // which is the only case that posts the "now friends" chat system message.
+  firstAcceptedAt DateTime?     @db.Timestamptz(3)
   rejectedAt   DateTime?        @db.Timestamptz(3)
   cancelledAt  DateTime?        @db.Timestamptz(3)
   unfriendedAt DateTime?        @db.Timestamptz(3)

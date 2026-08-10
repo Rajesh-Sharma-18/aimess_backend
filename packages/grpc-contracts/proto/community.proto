@@ -268,6 +268,23 @@ message UpdateMessageActivityRequest {
   // ignored in this mode.
   string selfUserId      = 8;
   string selfPreview     = 9;
+  // Offline-first list identity for the message behind this activity — mirrors
+  // the `community.activity` queue payload so the synchronous companion RPC and
+  // the async queue write the SAME columns. Without them the RPC (whichever
+  // lands first wins the forward-only guard) would blank the identity the queue
+  // had just written. Empty/0 = no client-originated message behind it.
+  string clientMessageId = 10;
+  int32  seq             = 11;
+  string contentType     = 12;  // UPPER-CASE (TEXT/IMAGE/…/SYSTEM)
+  // ROLLBACK mode (epoch ms; 0 = off). `updateLastActivity` is forward-only, so
+  // it structurally cannot move lastActivityAt BACKWARD — which is exactly what a
+  // delete-for-everyone / auto-delete of the room's last message requires: the
+  // activity must fall back to the PREVIOUS visible message's own createdAt, not
+  // to the moment of deletion. When set, the write applies even though
+  // `lastMessageAt` is older than the stored value, but ONLY while the stored
+  // `lastActivityAt <= rollbackNotNewerThan` (the removed message's createdAt) —
+  // so a message that arrived after the delete is never clobbered.
+  int64  rollbackNotNewerThan = 13;
 }
 message UpdateMessageActivityResponse {
   bool ok = 1;

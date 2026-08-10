@@ -108,6 +108,8 @@ export class PrivateSystemMessageService {
               systemEvent,
               systemData,
               createdAt: message.createdAt,
+              sequenceNumber: message.sequenceNumber,
+              revision: message.revision,
             },
             receiverId: peerId,
             unreadIncrement: 0,

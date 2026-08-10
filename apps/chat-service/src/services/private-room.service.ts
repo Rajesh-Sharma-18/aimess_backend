@@ -4,6 +4,8 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 import type { Redis, Cluster } from "ioredis";
 
+import { listRowIdentity } from "../lib/list-row-identity.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import {
   toWireMessage,
@@ -37,6 +39,72 @@ import type { PresenceService } from "./presence.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
+
+/**
+ * Get-or-create the pair's private room and announce it, WITHOUT the friendship
+ * gate — the caller is responsible for having established that the two are
+ * friends. Extracted from {@link PrivateRoomService.getOrCreateRoom} (which is
+ * just this plus the gate) so the friendship consumer can reuse it: the consumer
+ * has just written the ACTIVE read-model rows itself, and re-asking
+ * `checkFriendship` there would be a pointless gRPC hop.
+ */
+export async function ensurePrivateRoom(
+  deps: {
+    privateRoomRepo: PrivateRoomRepository;
+    userSnapshotService: UserSnapshotService;
+    cacheRepo: CacheRepository;
+    redis: Redis | Cluster;
+  },
+  userId: string,
+  peerId: string
+): Promise<PrivateRoom> {
+  const participantsKey = buildParticipantsKey(userId, peerId);
+  const existing =
+    await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
+  if (existing) return existing;
+
+  const roomId = generateRoomId("prv");
+  const room = await deps.privateRoomRepo.create({
+    roomId,
+    participants: [userId, peerId].sort(),
+    participantsKey,
+  });
+
+  logger.debug(`PrivateRoomService|ensurePrivateRoom|created room=${roomId}`);
+
+  // Notify both participants that a new conversation was opened.
+  //
+  // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
+  // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
+  // therefore never returns a room that has no messages yet — a chat created by accepting a
+  // friend request showed a nameless row until the first message. Existing clients ignore the
+  // extra field; the `participants` array and every other field are unchanged.
+  const snapshots = await deps.userSnapshotService
+    .getUserSnapshotsMap([userId, peerId], deps.cacheRepo)
+    .catch(() => new Map<string, Record<string, unknown>>());
+  const briefFor = (id: string) => ({
+    id,
+    displayName: resolveDisplayName(snapshots.get(id)),
+    memberId: (snapshots.get(id)?.memberId as string) || "",
+  });
+  const convCreatedFor = (recipientId: string, otherId: string) =>
+    JSON.stringify({
+      event: "conv:created",
+      data: {
+        roomId,
+        participants: [userId, peerId],
+        peer: briefFor(otherId),
+      },
+    });
+  deps.redis
+    .publish(`user:${userId}`, convCreatedFor(userId, peerId))
+    .catch(() => {});
+  deps.redis
+    .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
+    .catch(() => {});
+
+  return room;
+}
 
 const NONE_RELATIONSHIP: ChatFriendshipInfo = {
   status: "NONE",
@@ -155,6 +223,20 @@ export interface PrivateConversationLastActivity {
   username: string;
   preview: string;
   dateTime: number;
+  /**
+   * Offline-first identity/freshness quartet + the canonical content type,
+   * mirroring `CommunityLastActivity`. ADDITIVE — `PrivateConversationListItem`
+   * drops the raw `lastMessage`, so without these the private conversation list
+   * carries no message identity at all and a client can only compare
+   * timestamps. `messageId` is "" and `seq`/`revision` 0 when the row has no
+   * visible last message (or was written before this field existed).
+   */
+  messageId: string;
+  clientMessageId: string | null;
+  seq: number;
+  revision: number;
+  /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM). */
+  contentType: string;
 }
 
 export type EnrichedPrivateRoom = PrivateRoom & {
@@ -319,9 +401,9 @@ export class PrivateRoomService {
   }
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {
-    const participantsKey = buildParticipantsKey(userId, peerId);
-    const existing =
-      await this.privateRoomRepo.findByParticipantsKey(participantsKey);
+    const existing = await this.privateRoomRepo.findByParticipantsKey(
+      buildParticipantsKey(userId, peerId)
+    );
     if (existing) return existing;
 
     const friends = await this.userServiceClient.checkFriendship(
@@ -332,47 +414,16 @@ export class PrivateRoomService {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }
 
-    const roomId = generateRoomId("prv");
-    const room = await this.privateRoomRepo.create({
-      roomId,
-      participants: [userId, peerId].sort(),
-      participantsKey,
-    });
-
-    logger.debug(`PrivateRoomService|getOrCreateRoom|created room=${roomId}`);
-
-    // Notify both participants that a new conversation was opened.
-    //
-    // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
-    // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
-    // therefore never returns a room that has no messages yet — a chat created by accepting a
-    // friend request showed a nameless row until the first message. Existing clients ignore the
-    // extra field; the `participants` array and every other field are unchanged.
-    const snapshots = await this.userSnapshotService
-      .getUserSnapshotsMap([userId, peerId], this.cacheRepo)
-      .catch(() => new Map<string, Record<string, unknown>>());
-    const briefFor = (id: string) => ({
-      id,
-      displayName: resolveDisplayName(snapshots.get(id)),
-      memberId: (snapshots.get(id)?.memberId as string) || "",
-    });
-    const convCreatedFor = (recipientId: string, otherId: string) =>
-      JSON.stringify({
-        event: "conv:created",
-        data: {
-          roomId,
-          participants: [userId, peerId],
-          peer: briefFor(otherId),
-        },
-      });
-    this.redis
-      .publish(`user:${userId}`, convCreatedFor(userId, peerId))
-      .catch(() => {});
-    this.redis
-      .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
-      .catch(() => {});
-
-    return room;
+    return ensurePrivateRoom(
+      {
+        privateRoomRepo: this.privateRoomRepo,
+        userSnapshotService: this.userSnapshotService,
+        cacheRepo: this.cacheRepo,
+        redis: this.redis,
+      },
+      userId,
+      peerId
+    );
   }
 
   /**
@@ -634,6 +685,7 @@ export class PrivateRoomService {
               senderId: prev.senderId,
               messageType: prev.messageType,
               createdAt: prev.createdAt.toISOString(),
+              ...listRowIdentity({ ...prev, id: prev.messageId }),
             } as unknown as PrivateRoom["lastMessage"])
           : null
       );
@@ -654,7 +706,31 @@ export class PrivateRoomService {
         : room.lastMessage;
       const lmSenderId = (rawLmForStatus as Record<string, unknown> | null)
         ?.senderId as string | undefined;
-      if (lmSenderId !== userId || !room.lastMessageId) continue;
+      // A SYSTEM line (friendship created, auto-delete notice, ...) carries the
+      // acting user's id but is not a user-sent message, so it must never get a
+      // delivery/read tick — even though the "I sent it" test below passes.
+      const lmType = String(
+        (rawLmForStatus as Record<string, unknown> | null)?.messageType ?? ""
+      ).toUpperCase();
+      // A cleared / delete-conversation cutoff hides the message from this
+      // viewer entirely, so it must not carry a delivery/read tick either —
+      // otherwise an emptied row still renders a ✓✓ for a message it no longer
+      // shows. Same cutoff the preview below applies.
+      const statusCutoff = getPrivateDeletionCutoff(room, userId);
+      const lmCreatedAt = (rawLmForStatus as Record<string, unknown> | null)
+        ?.createdAt;
+      const hiddenForStatus = Boolean(
+        statusCutoff &&
+        lmCreatedAt &&
+        new Date(lmCreatedAt as string | Date) <= statusCutoff
+      );
+      if (
+        lmSenderId !== userId ||
+        !room.lastMessageId ||
+        lmType === "SYSTEM" ||
+        hiddenForStatus
+      )
+        continue;
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
       const cursorMap = (room.lastReadMessageIdByUser ?? {}) as Record<
         string,
@@ -739,10 +815,18 @@ export class PrivateRoomService {
         : room.lastMessage;
       const cutoff = getPrivateDeletionCutoff(room, userId);
       const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
-      const visibleRawLm =
+      const hiddenByCutoff = Boolean(
         cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
-          ? null
-          : rawLm;
+      );
+      const visibleRawLm = hiddenByCutoff ? null : rawLm;
+      // "This viewer has NOTHING visible left in this room" — either their
+      // clear/delete-conversation cutoff swallowed the last message, or the
+      // per-user resolver walked back and found no previous-visible message.
+      // Distinct from "the shared lastMessage JSON is missing on a legacy row",
+      // which must keep falling back to the stored lastMessageAt below.
+      const nothingVisible =
+        hiddenByCutoff ||
+        (perUserFallback.has(room.roomId) && !perUserFallback.get(room.roomId));
       const lastMessage = (visibleRawLm && typeof visibleRawLm === "object"
         ? toWireMessage(visibleRawLm as { messageType?: string | null })
         : (visibleRawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
@@ -759,8 +843,15 @@ export class PrivateRoomService {
       );
       const lmDateTime = lmRecord?.createdAt
         ? new Date(lmRecord.createdAt as string | Date).getTime()
-        : (room.lastMessageAt?.getTime() ?? 0);
-      const lastActivityAt = lmDateTime || (room.lastMessageAt?.getTime() ?? 0);
+        : 0;
+      // The EFFECTIVE (per-viewer) activity timestamp. When the viewer has no
+      // visible message left it MUST be 0 — falling back to the shared
+      // `room.lastMessageAt` here is what used to leave a cleared/emptied chat
+      // pinned at the top of the list with an empty preview but the timestamp of
+      // the very message the viewer just removed.
+      const lastActivityAt = nothingVisible
+        ? 0
+        : lmDateTime || (room.lastMessageAt?.getTime() ?? 0);
       // Always carry the ACTUAL sender's live name — self included — mirroring
       // community's buildLastActivity. Previously this was forced empty when the
       // caller sent the message, and the client filled the gap by falling back to
@@ -779,6 +870,16 @@ export class PrivateRoomService {
           ? convertMessageToPreview(lmMessageType, lmRecord.content)
           : "",
         dateTime: lastActivityAt,
+        // Identity/freshness quartet — read off the same snapshot the preview
+        // came from, so an override (delete-for-me fallback) and the shared
+        // snapshot both describe the message actually being previewed.
+        ...listRowIdentity({
+          id: (lmRecord?.messageId as string) ?? room.lastMessageId ?? "",
+          clientMessageId: (lmRecord?.clientMessageId as string) ?? null,
+          sequenceNumber: (lmRecord?.seq as number) ?? 0,
+          revision: (lmRecord?.revision as number) ?? 0,
+        }),
+        contentType: lmRecord ? lmMessageType : "",
       };
 
       // Reaction OVERLAY read-time gate (mirrors community-service's listMine
@@ -802,6 +903,14 @@ export class PrivateRoomService {
             ? (room.reactionActivityActorPreview ?? "")
             : (room.reactionActivityTargetPreview ?? "");
           lastActivity.dateTime = room.reactionActivityAt.getTime();
+          // The overlay is an ACTIVITY LINE, not a message — clear the message
+          // identity so a client merging by identity never mistakes it for an
+          // edit of whatever message it is temporarily covering.
+          lastActivity.messageId = "";
+          lastActivity.clientMessageId = null;
+          lastActivity.seq = 0;
+          lastActivity.revision = 0;
+          lastActivity.contentType = "SYSTEM";
         }
       }
 
@@ -963,6 +1072,25 @@ export class PrivateRoomService {
         })
       )
       .catch(() => {});
+
+    // The row STAYS in the list (clear ≠ delete conversation) but now has no
+    // visible message, so its effective lastActivity is empty and it must drop
+    // to the bottom. `conv:cleared` alone left every other device — and any
+    // client that only listens for list bumps — rendering the cleared chat at
+    // the top with its old preview until a hard reload. Self-only: the peer's
+    // view is untouched by a one-sided clear.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "PRIVATE",
+      roomId,
+      recipientIds: [userId],
+      senderId: "",
+      lastMessageId: "",
+      lastMessageAt: 0,
+      preview: { contentType: "", text: "", createdAt: 0 },
+      // An emptied row is not a new message — must never raise an unread badge.
+      countInUnread: false,
+    });
   }
 
   /**

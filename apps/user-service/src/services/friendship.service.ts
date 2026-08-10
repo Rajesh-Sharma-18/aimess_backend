@@ -532,7 +532,9 @@ export const friendshipService = {
         });
         publishFriendshipCreatedSafe(
           friendship.requesterId,
-          friendship.addresseeId
+          friendship.addresseeId,
+          // Read from the row as it was BEFORE this acceptance stamped it.
+          Boolean(existing.firstAcceptedAt)
         );
         emitToPair(friendship, FriendSocketEvents.ACCEPTED);
         void emitConversationFriendRequestAccepted(friendship);
@@ -620,7 +622,11 @@ export const friendshipService = {
     });
     publishFriendshipCreatedSafe(
       friendship.requesterId,
-      friendship.addresseeId
+      friendship.addresseeId,
+      // `friendship` is the row as loaded BEFORE the accept, so a non-null
+      // stamp here means this pair had already been friends at some point:
+      // a RE-friendship, the only case that posts the chat system message.
+      Boolean(friendship.firstAcceptedAt)
     );
     emitToPair(updated, FriendSocketEvents.ACCEPTED);
     void emitConversationFriendRequestAccepted(updated);
@@ -778,6 +784,8 @@ export const friendshipService = {
         addresseeId: f.addresseeId,
         acceptedAt: (f.acceptedAt ?? new Date()).toISOString(),
       });
+      // Auto-connect only ever INSERTS rows for pairs with no friendship yet
+      // (createMany + skipDuplicates), so these are first-time friendships.
       publishFriendshipCreatedSafe(f.requesterId, f.addresseeId);
       emitToPair(f, FriendSocketEvents.ACCEPTED);
     }

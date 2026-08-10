@@ -1416,6 +1416,20 @@ export class GeneralRoomMessageRepository {
     });
   }
 
+  /**
+   * Stamp a pre-allocated room CHANGE revision onto a message WITHOUT touching
+   * its content — for mutations that live outside the message row but still
+   * change what a client should render (pin/unpin, moderation). The revision is
+   * allocated by the caller (which owns the GeneralRoomRepository), mirroring
+   * how `editMessage` receives one. Best-effort by contract.
+   */
+  async setRevision(messageId: string, revision: number): Promise<void> {
+    await this.prisma.generalRoomMessage.update({
+      where: { id: messageId },
+      data: { revision },
+    });
+  }
+
   async editMessage(
     messageId: string,
     text: string,

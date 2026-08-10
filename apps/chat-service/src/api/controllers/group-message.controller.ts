@@ -465,6 +465,9 @@ export class GroupMessageController {
           scope,
           deletedBy: userId,
           sequenceNumber: result.sequenceNumber,
+          revision: result.revision,
+          clientMessageId: result.clientMessageId,
+          deletedAt: result.deletedAt?.getTime() ?? Date.now(),
           deletedType:
             scope === "forMe"
               ? "SELF_DELETE"

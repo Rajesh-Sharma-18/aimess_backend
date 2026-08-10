@@ -18,6 +18,10 @@ import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
+  reconcileCommunityLastActivityAfterDelete,
+  bumpTimestampAfterDelete,
+} from "../events/community-last-activity.js";
+import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
@@ -1165,6 +1169,7 @@ export function createMessagingImpl(
             count: number;
             users: unknown[];
           }> = [];
+          let groupingFailed = false;
           try {
             const grouped = await reactionService.getMessageReactions({
               messageId: req.messageId,
@@ -1179,14 +1184,17 @@ export function createMessagingImpl(
               })
             );
           } catch (groupErr) {
-            // Non-fatal: the reaction write already succeeded (toggled above);
-            // a grouping-read failure just degrades the broadcast to an empty
-            // set rather than failing the whole react — the ack still reflects
-            // the true persisted state on the next getMessageReactions call.
+            // Non-fatal: the reaction write already succeeded (toggled above).
+            // But an EMPTY group set is not "unknown", it reads as "nobody has
+            // reacted" — broadcasting it wiped the reaction bar on every OTHER
+            // client while the reactor kept their own optimistic chip, and the
+            // two never reconverged. Skip the broadcast instead; clients pick
+            // the true state up from the next getMessageReactions/changes read.
             logger.warn(
-              `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
+              `sendReaction grouping failed, skipping broadcast: ${String(groupErr)}`
             );
             reactionGroups = [];
+            groupingFailed = true;
           }
 
           // Flatten stored reactions for the gRPC ack (V1 thin shape — the
@@ -1221,17 +1229,19 @@ export function createMessagingImpl(
               return { ...rest, avatarUrl: urlFromMap(reactAvatarMap, rawKey) };
             }),
           }));
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:reaction",
-              data: {
-                messageId: req.messageId,
-                conversationId: req.conversationId,
-                reactions: resolvedReactionGroups,
-              },
-            })
-          );
+          if (!groupingFailed) {
+            await redis.publish(
+              `conv:${req.conversationId}`,
+              JSON.stringify({
+                event: "message:reaction",
+                data: {
+                  messageId: req.messageId,
+                  conversationId: req.conversationId,
+                  reactions: resolvedReactionGroups,
+                },
+              })
+            );
+          }
 
           callback(null, {
             messageId: req.messageId,
@@ -2790,6 +2800,9 @@ export function createCommunityImpl(
                   ...(lastLocation ? { location: lastLocation } : {}),
                   ...(lastContact ? { contact: lastContact } : {}),
                 }),
+                clientMessageId: req.clientMessageId ?? null,
+                seq: saved.sequenceNumber ?? 0,
+                contentType: normalizeMessageType(saved.messageType),
               });
             }
 
@@ -3498,41 +3511,14 @@ export function createCommunityImpl(
                 result.roomId,
                 req.messageId
               );
-            if (
-              forEveryoneRecalc !== null &&
-              forEveryoneRecalc.hasLastMessage
-            ) {
-              publishCommunityActivitySafe({
+            if (forEveryoneRecalc !== null) {
+              // Persist the ROLLED-BACK activity — the previous visible
+              // message's own timestamp, never the deletion's. Shared with the
+              // REST delete path (events/community-last-activity.ts).
+              await reconcileCommunityLastActivityAfterDelete({
                 communityId: req.communityId,
-                lastMessageAt: new Date().toISOString(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                type: "message",
-              });
-              // Synchronous companion — awaited before the ack, same
-              // reasoning as reactToMessage's updateReactionActivity call.
-              // Never blocks the delete on failure; the queue publish above
-              // remains the backstop.
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                activityType: "message",
-              });
-            } else if (forEveryoneRecalc !== null) {
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: "",
-                senderUserId: "",
-                senderUsername: "",
-                messagePreview: "",
-                activityType: "message",
+                recalc: forEveryoneRecalc,
+                removedAt: result?.createdAt,
               });
             }
           }
@@ -3592,9 +3578,7 @@ export function createCommunityImpl(
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.hasLastMessage
-                ? recalc.createdAt.getTime()
-                : Date.now(),
+              lastMessageAt: bumpTimestampAfterDelete(recalc),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
@@ -3961,6 +3945,14 @@ export function createNotificationImpl(
                   userId: req.userId,
                   createdAt: row.createdAt.getTime(),
                   updatedAt: row.updatedAt.getTime(),
+                  // Login Detected only. Sent as epoch ms like the other two
+                  // timestamps (the DTO carries a Date, which would otherwise
+                  // go out as an ISO string over the socket) so a client can
+                  // start its countdown straight from the live event without a
+                  // follow-up fetch.
+                  ...(row.loginExpiresAt
+                    ? { expiresAt: row.loginExpiresAt.getTime() }
+                    : {}),
                   ...(parsedNavigation !== undefined
                     ? { navigation: parsedNavigation }
                     : {}),

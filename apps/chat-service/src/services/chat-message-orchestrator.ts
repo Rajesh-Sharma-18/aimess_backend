@@ -479,6 +479,10 @@ export class ChatMessageOrchestrator {
         preview: {
           contentType: normalizeMessageType(msg.messageType),
           text: convertMessageToPreview(msg.messageType, msg.content),
+          clientMessageId,
+          seq: msg.sequenceNumber ?? 0,
+          revision: (msg as unknown as { revision?: number }).revision ?? 0,
+          createdAt: serverTs,
         },
       };
       if (conversationType === "GROUP") {
@@ -729,6 +733,9 @@ export class ChatMessageOrchestrator {
             ...(lastLocation ? { location: lastLocation } : {}),
             ...(lastContact ? { contact: lastContact } : {}),
           }),
+          clientMessageId,
+          seq: saved.sequenceNumber ?? 0,
+          contentType: normalizeMessageType(saved.messageType),
         });
       }
 
@@ -751,6 +758,10 @@ export class ChatMessageOrchestrator {
             ...(lastLocation ? { location: lastLocation } : {}),
             ...(lastContact ? { contact: lastContact } : {}),
           }),
+          clientMessageId,
+          seq: saved.sequenceNumber ?? 0,
+          revision: (saved as unknown as { revision?: number }).revision ?? 0,
+          createdAt: sentAt,
         },
       });
 
@@ -888,6 +899,9 @@ export class ChatMessageOrchestrator {
         senderUserId: params.senderId,
         senderUsername: senderName,
         messagePreview: preview,
+        clientMessageId,
+        seq: saved.sequenceNumber ?? 0,
+        contentType: normalizeMessageType(saved.messageType),
       });
 
       publishCommunityUpdatedSafe({
@@ -903,6 +917,10 @@ export class ChatMessageOrchestrator {
         preview: {
           contentType: normalizeMessageType(saved.messageType),
           text: preview,
+          clientMessageId,
+          seq: saved.sequenceNumber ?? 0,
+          revision: (saved as unknown as { revision?: number }).revision ?? 0,
+          createdAt: sentAt,
         },
       });
 
@@ -957,6 +975,9 @@ export class ChatMessageOrchestrator {
       senderId?: string | null;
       receiverId?: string | null;
       deletedType?: string | null;
+      revision?: number;
+      clientMessageId?: string | null;
+      deletedAt?: Date | null;
     } | null;
 
     if (conversationType === "GROUP") {
@@ -993,6 +1014,9 @@ export class ChatMessageOrchestrator {
       scope: params.scope,
       deletedBy: params.userId,
       sequenceNumber: result.sequenceNumber,
+      revision: result.revision,
+      clientMessageId: result.clientMessageId,
+      deletedAt: result.deletedAt?.getTime() ?? Date.now(),
       deletedType:
         params.scope === "forMe"
           ? "SELF_DELETE"
@@ -1043,7 +1067,14 @@ export class ChatMessageOrchestrator {
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
-              preview: { contentType: recalc.messageType, text: preview },
+              preview: {
+                contentType: recalc.messageType,
+                text: preview,
+                clientMessageId: recalc.clientMessageId,
+                seq: recalc.sequenceNumber,
+                revision: recalc.revision,
+                createdAt: recalc.createdAt.getTime(),
+              },
             });
           } else {
             const participants = [
@@ -1066,7 +1097,14 @@ export class ChatMessageOrchestrator {
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
-              preview: { contentType: recalc.messageType, text: preview },
+              preview: {
+                contentType: recalc.messageType,
+                text: preview,
+                clientMessageId: recalc.clientMessageId,
+                seq: recalc.sequenceNumber,
+                revision: recalc.revision,
+                createdAt: recalc.createdAt.getTime(),
+              },
               getIsOnline: this.getIsOnline(),
             });
           }
@@ -1105,7 +1143,14 @@ export class ChatMessageOrchestrator {
             senderId: recalc.senderId ?? "",
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              clientMessageId: recalc.clientMessageId,
+              seq: recalc.sequenceNumber,
+              revision: recalc.revision,
+              createdAt: recalc.createdAt.getTime(),
+            },
           });
         })
         .catch(() => {});

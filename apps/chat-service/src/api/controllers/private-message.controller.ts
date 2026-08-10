@@ -357,6 +357,9 @@ export class PrivateMessageController {
       scope: type === "forEveryone" ? "forEveryone" : "forMe",
       deletedBy: userId,
       sequenceNumber: result.sequenceNumber,
+      revision: result.revision,
+      clientMessageId: result.clientMessageId,
+      deletedAt: result.deletedAt?.getTime() ?? Date.now(),
     });
     if (result.roomId) {
       await this.redis.publish(
@@ -430,7 +433,14 @@ export class PrivateMessageController {
             senderId: recalc.senderId,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              clientMessageId: recalc.clientMessageId,
+              seq: recalc.sequenceNumber,
+              revision: recalc.revision,
+              createdAt: recalc.createdAt.getTime(),
+            },
           });
         })
         .catch(() => {
@@ -466,7 +476,14 @@ export class PrivateMessageController {
             senderId: recalc.senderId,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
-            preview: { contentType: recalc.messageType, text: preview },
+            preview: {
+              contentType: recalc.messageType,
+              text: preview,
+              clientMessageId: recalc.clientMessageId,
+              seq: recalc.sequenceNumber,
+              revision: recalc.revision,
+              createdAt: recalc.createdAt.getTime(),
+            },
           });
         })
         .catch(() => {});
@@ -669,6 +686,10 @@ export class PrivateMessageController {
       preview: {
         contentType: result.messageType,
         text: buildMessagePreview(result.messageType, result.content),
+        clientMessageId: result.clientMessageId ?? null,
+        seq: result.sequenceNumber ?? 0,
+        revision: result.revision ?? 0,
+        createdAt: result.createdAt?.getTime() ?? Date.now(),
       },
     });
     res

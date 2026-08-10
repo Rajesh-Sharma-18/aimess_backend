@@ -17,6 +17,7 @@ import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
@@ -348,6 +349,9 @@ export class PrivateMessageService {
           systemEvent: message.systemEvent,
           systemData: message.systemData,
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: params.receiverId,
         unreadIncrement,
@@ -935,6 +939,10 @@ export class PrivateMessageService {
     senderId: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     const [room, prev] = await Promise.all([
       this.roomRepo.findByRoomId(roomId),
@@ -954,6 +962,9 @@ export class PrivateMessageService {
         content: prev.content,
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -962,6 +973,9 @@ export class PrivateMessageService {
         senderId: prev.senderId ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -973,6 +987,9 @@ export class PrivateMessageService {
       senderId: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1016,6 +1033,10 @@ export class PrivateMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
@@ -1042,6 +1063,9 @@ export class PrivateMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -1052,6 +1076,9 @@ export class PrivateMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1695,6 +1722,9 @@ export class PrivateMessageService {
           systemEvent: message.systemEvent,
           systemData: message.systemData,
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: params.receiverId,
         unreadIncrement: shouldCountInUnread({
@@ -2168,6 +2198,8 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
+        // Normalized tombstone (one shape across private/group/community).
+        ...tombstoneWireFields(message),
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

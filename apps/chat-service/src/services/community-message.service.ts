@@ -42,6 +42,7 @@ import {
   type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   type CanonicalQuote,
@@ -487,6 +488,9 @@ export class CommunityMessageService {
         message: message.message || "",
         messageType: message.messageType,
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -1043,10 +1047,75 @@ export class CommunityMessageService {
     });
   }
 
+  /**
+   * Zero the caller's unread on many communities at once (the sidebar's
+   * multi-select "Mark all as read").
+   *
+   * The write is only half the job: the post-read effects have to match the
+   * single-message path ({@link markMessageRead}) or the bulk call silently
+   * drops them —
+   *
+   *   1. `community:read_sync` on `user:<userId>` so the caller's OTHER tabs /
+   *      devices clear their list badges (the list query is cached, nothing
+   *      else would tell them).
+   *   2. `notifyUnreadChanged` so the Community nav-badge total is recomputed
+   *      from the DB and pushed as `chat:unread_summary` — that badge is fed
+   *      exclusively by that event, so without this it kept the pre-read count
+   *      until a reconnect.
+   *
+   * `unreadCount` per community is recounted AFTER the write against the same
+   * boundary that was persisted, so a message that lands mid-operation reports
+   * a non-zero count and receivers leave that row's badge alone (see the
+   * `read_sync` handler) instead of blanket-zeroing a genuinely unread row.
+   */
   async bulkMarkRead(userId: string, communityIds: string[]): Promise<number> {
     const ids = [...new Set(communityIds.filter(Boolean))];
     if (!ids.length) return 0;
-    return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
+
+    const readAt = new Date();
+    const updatedCount = await this.memberRepo.bulkAdvanceReadToNow(
+      userId,
+      ids,
+      readAt
+    );
+    if (!updatedCount) return 0;
+
+    let unreadAfter: Record<string, { count: number }> = {};
+    try {
+      unreadAfter = await this.messageRepo.countUnreadBulk({
+        userId,
+        thresholds: ids.map((roomId) => ({ roomId, afterDate: readAt })),
+      });
+    } catch (err: unknown) {
+      logger.warn(
+        `CommunityMessageService|bulkMarkRead|countUnread failed: ${String(err)}`
+      );
+    }
+
+    for (const communityId of ids) {
+      redis
+        .publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "community:read_sync",
+            data: {
+              communityId,
+              readerId: userId,
+              unreadCount: unreadAfter[communityId]?.count ?? 0,
+              readAt: readAt.getTime(),
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CommunityMessageService|bulkMarkRead|redis publish user failed: ${String(err)}`
+          );
+        });
+    }
+
+    notifyUnreadChanged(userId);
+
+    return updatedCount;
   }
 
   /**
@@ -1227,6 +1296,10 @@ export class CommunityMessageService {
     // tracks its per-room high-water and gap-checks live events. Additive; V1/V2
     // clients ignore it.
     wire.revision = m.revision ?? 0;
+
+    // Normalized tombstone (one shape across private/group/community) — the raw
+    // deletedForAll/deletedForAllAt columns stay on the wire untouched.
+    Object.assign(wire, tombstoneWireFields(m));
 
     // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
     // community") and DROP the raw `visibleToUserId` targeting column from the
@@ -2411,6 +2484,10 @@ export class CommunityMessageService {
     senderName: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     // Run both queries in parallel — we need prev regardless of which message
     // was the current last. The classic check (room.lastMessageId === deletedId)
@@ -2438,6 +2515,9 @@ export class CommunityMessageService {
         content: prev.message ?? "",
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -2450,6 +2530,9 @@ export class CommunityMessageService {
         senderName: prev.senderName ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -2462,6 +2545,9 @@ export class CommunityMessageService {
       senderName: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -2488,6 +2574,10 @@ export class CommunityMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findRoomById(roomId);
@@ -2517,6 +2607,9 @@ export class CommunityMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -2528,6 +2621,9 @@ export class CommunityMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 

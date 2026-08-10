@@ -104,6 +104,7 @@ let httpServer: Server | undefined;
 let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
 let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
 let autoDeleteSweepHandle: ReturnType<typeof setInterval> | undefined;
+let loginExpirySweepHandle: ReturnType<typeof setInterval> | undefined;
 
 /** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
  *  remainder drains on the next tick. Mirrors community's sweeper. */
@@ -111,6 +112,9 @@ const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
 
 /** Same backstop for the auto-delete sweep. */
 const AUTO_DELETE_SWEEP_MAX_BATCHES = 50;
+
+/** Same backstop for the login-detected auto-approval sweep. */
+const LOGIN_EXPIRY_SWEEP_MAX_BATCHES = 50;
 
 const startServer = async () => {
   logger.info("Chat service starting...");
@@ -821,6 +825,39 @@ const startServer = async () => {
     if (typeof autoDeleteSweepHandle.unref === "function") {
       autoDeleteSweepHandle.unref();
     }
+
+    // "Login Detected" auto-approval sweep. Load-bearing, like the auto-delete
+    // one: the deadline lives on the row, so an alert is resolved on schedule
+    // whether or not any client is running — and a service that was down when
+    // a deadline passed simply picks the row up on its next tick (the query is
+    // "past due", not "due right now", so nothing is ever stranded). Runs
+    // straight away on boot for exactly that catch-up case, then on interval.
+    // Multi-node safe via the atomic per-row claim; drains in pages.
+    const runLoginExpirySweep = async (): Promise<void> => {
+      try {
+        for (let i = 0; i < LOGIN_EXPIRY_SWEEP_MAX_BATCHES; i++) {
+          const due = await notificationService.sweepExpiredLoginNotifications(
+            new Date(),
+            env.LOGIN_EXPIRY_SWEEP_BATCH
+          );
+          if (due > 0)
+            logger.info(`Login-detected sweep auto-approved ${due} alert(s)`);
+          // Short page = drained, or the remainder was claimed by another node.
+          // Either way there is nothing more for THIS tick to do; anything left
+          // is still past-due and gets picked up on the next one.
+          if (due < env.LOGIN_EXPIRY_SWEEP_BATCH) break;
+        }
+      } catch (err) {
+        logger.warn(`loginExpirySweep failed: ${String(err)}`);
+      }
+    };
+    void runLoginExpirySweep();
+    loginExpirySweepHandle = setInterval(() => {
+      void runLoginExpirySweep();
+    }, env.LOGIN_EXPIRY_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof loginExpirySweepHandle.unref === "function") {
+      loginExpirySweepHandle.unref();
+    }
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);
@@ -844,6 +881,11 @@ async function shutdown(signal: string): Promise<void> {
   if (autoDeleteSweepHandle) {
     clearInterval(autoDeleteSweepHandle);
     autoDeleteSweepHandle = undefined;
+  }
+
+  if (loginExpirySweepHandle) {
+    clearInterval(loginExpirySweepHandle);
+    loginExpirySweepHandle = undefined;
   }
 
   await new Promise<void>((resolve) => {

@@ -3662,9 +3662,16 @@ const conversationsBulkMute = {
       "for an indefinite mute. Expiry is applied **lazily** at push time, so a " +
       "timed mute lapses on its own — no sweeper, no refresh, no re-login.\n\n" +
       "Rooms the caller cannot mute (not a participant, no longer an active " +
-      "member, room gone) are silently `skipped`, never fatal. Each updated " +
-      "room emits `conv:muted` / `conv:unmuted` on the caller's own socket " +
-      "channel so their other devices re-render without a refetch.",
+      "member, room gone) are `skipped`, never fatal — each one also appears " +
+      "in `failed` with a reason. Each updated room emits `conv:muted` / " +
+      "`conv:unmuted` on the caller's own socket channel so their other " +
+      "devices re-render without a refetch.\n\n" +
+      "PRIVATE (`prv_…`) and GROUP (`grp_…`) only. A COMMUNITY id is rejected " +
+      "per item as `UNSUPPORTED_ROOM_TYPE`; use `POST /communities/mute/bulk`.\n\n" +
+      "Field names are accepted in **camelCase or snake_case** " +
+      "(`roomIds`/`room_ids`, `durationMinutes`/`duration_minutes`) so the " +
+      "mobile clients' snake_case DTOs work unchanged. camelCase is canonical " +
+      "and wins if both are sent.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -3683,6 +3690,14 @@ const conversationsBulkMute = {
             unmute: {
               summary: "Unmute",
               value: { action: "unmute", roomIds: ["prv_abc123"] },
+            },
+            snakeCase: {
+              summary: "snake_case aliases (mobile clients)",
+              value: {
+                action: "mute",
+                room_ids: ["grp_aaa111", "grp_bbb222"],
+                duration_minutes: 10,
+              },
             },
           },
         },
@@ -3712,7 +3727,11 @@ const conversationsBulkRead = {
       "turn blue, `read_sync` reaches the caller's other devices, the nav " +
       "badge total is recomputed and the tray notification is dismissed.\n\n" +
       "Nothing else changes: no messages are deleted, no timestamps are " +
-      "rewritten and `lastActivity`/list ordering are untouched.",
+      "rewritten and `lastActivity`/list ordering are untouched.\n\n" +
+      "PRIVATE (`prv_…`) and GROUP (`grp_…`) only — a COMMUNITY id comes back " +
+      "in `failed` as `UNSUPPORTED_ROOM_TYPE`; use `POST /communities/read/bulk`.\n\n" +
+      '`roomIds` may also be sent as `room_ids`; an `action: "read"` field is ' +
+      "accepted and ignored.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,

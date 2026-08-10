@@ -32,6 +32,7 @@ const FRIENDSHIP_SELECT = {
   addresseeId: true,
   status: true,
   acceptedAt: true,
+  firstAcceptedAt: true,
   rejectedAt: true,
   cancelledAt: true,
   unfriendedAt: true,
@@ -89,6 +90,9 @@ export const friendshipRepository = {
   /**
    * Reset an existing row to PENDING with a new requester/addressee.
    * Used when re-sending after REJECTED / CANCELLED / UNFRIENDED.
+   *
+   * `firstAcceptedAt` is deliberately NOT reset — it is the only record that
+   * this pair was ever friends, and the recycled row is the same relationship.
    */
   resetToPending(id: string, requesterId: string, addresseeId: string) {
     return prisma.friendship.update({
@@ -126,6 +130,16 @@ export const friendshipRepository = {
         where: { userId: addresseeId },
         data: { friendsCount: { increment: 1 } },
         select: { userId: true, friendsCount: true },
+      }),
+      // Stamp the pair's FIRST-EVER acceptance, once. `where.firstAcceptedAt:
+      // null` makes it write-once without a read: a re-friendship leaves the
+      // original timestamp alone, so the flag survives every later
+      // `resetToPending` (which nulls `acceptedAt`) and every unfriend cycle.
+      // Callers read the PRE-accept value to decide first-time vs re-friend,
+      // so the row returned at index 0 not carrying it is deliberate.
+      prisma.friendship.updateMany({
+        where: { id, firstAcceptedAt: null },
+        data: { firstAcceptedAt: now },
       }),
     ]);
   },
@@ -201,6 +215,7 @@ export const friendshipRepository = {
           addresseeId,
           status: "ACCEPTED",
           acceptedAt: now,
+          firstAcceptedAt: now,
         })),
         skipDuplicates: true,
       });
