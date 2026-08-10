@@ -45,6 +45,7 @@ interface MessageSentPayload {
   canReply?: boolean;
   unreadCount?: number;
   preview: string;
+  previewImageUrl?: string;
   messageType: string;
   sentAt: number;
   recipientIds: string[];
@@ -220,6 +221,9 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
         : {}),
       contentType: data.messageType ?? "",
       preview: data.preview ?? "",
+      ...(data.previewImageUrl
+        ? { previewImageUrl: data.previewImageUrl }
+        : {}),
       sentAt: String(data.sentAt ?? ""),
       idempotencyKey: data.messageId,
       deepLink,
