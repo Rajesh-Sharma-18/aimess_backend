@@ -1,4 +1,4 @@
-import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
@@ -19,6 +19,7 @@ import {
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { publishUserReport } from "../lib/report-user.js";
 import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
 import {
   getAccountAutoDelete,
@@ -894,6 +895,54 @@ export class PrivateRoomService {
         })
       )
       .catch(() => {});
+  }
+
+  /**
+   * Report the peer of a private conversation — the private-chat counterpart of
+   * GroupMemberService.reportMember and community's createReport, going through
+   * the same shared {@link publishUserReport} sink.
+   *
+   * Authorization mirrors those two: the reporter must actually be in the room
+   * (never trust the client's roomId), the target must be the room's OTHER
+   * participant (so a valid room id can't be used to report an unrelated user),
+   * and self-reporting is rejected. Blocking is deliberately NOT a gate — the
+   * whole point of reporting is that it survives a hostile peer, and community
+   * doesn't gate on it either. Nothing about the peer is returned, so no
+   * privacy-masked field can leak through this path.
+   */
+  async reportUser(params: {
+    roomId: string;
+    reporterId: string;
+    targetUserId: string;
+    reason: string;
+    description?: string;
+  }): Promise<{ ok: true }> {
+    if (params.reporterId === params.targetUserId) {
+      throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
+    }
+
+    const room = await this.privateRoomRepo.findByRoomId(params.roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (!room.participants?.includes(params.reporterId)) {
+      throw new ForbiddenError("CHAT_REPORT_NOT_PARTICIPANT");
+    }
+    if (!room.participants.includes(params.targetUserId)) {
+      throw new NotFoundError("CHAT_REPORT_NOT_PARTICIPANT");
+    }
+
+    publishUserReport({
+      context: "PRIVATE",
+      roomId: params.roomId,
+      reporterId: params.reporterId,
+      targetUserId: params.targetUserId,
+      reason: params.reason,
+      description: params.description,
+    });
+
+    logger.info(
+      `Private user report: room=${params.roomId} reporter=${params.reporterId} target=${params.targetUserId}`
+    );
+    return { ok: true };
   }
 
   async clearChat(roomId: string, userId: string): Promise<void> {

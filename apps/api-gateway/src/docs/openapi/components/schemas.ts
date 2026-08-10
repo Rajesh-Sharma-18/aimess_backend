@@ -11787,21 +11787,26 @@ export const openApiSchemas = {
     properties: {
       roomId: { type: "string", minLength: 5, maxLength: 100 },
       userId: { type: "string", minLength: 5, maxLength: 100 },
-      reason: {
-        type: "string",
-        enum: [
-          "SPAM",
-          "HARASSMENT",
-          "HATE_SPEECH",
-          "NUDITY",
-          "VIOLENCE",
-          "SCAM",
-          "OTHER",
-        ],
-      },
+      // Free text, same rule as community's POST /communities/{id}/reports —
+      // NOT a closed enum, so the shared Report Member dialog's reason ids
+      // (OFFENSIVE_LANGUAGE, INAPPROPRIATE_CONTENT, SCAM_OR_FRAUD,
+      // IMPERSONATION, SPAM, OTHER) are all accepted. backoffice-service
+      // canonicalizes the value on ingest.
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
       description: { type: "string", maxLength: 1000, default: "" },
     },
     required: ["roomId", "userId", "reason"],
+  },
+  ChatReportPrivateUserRequest: {
+    type: "object",
+    description:
+      "POST /chat/private/rooms/{roomId}/report — reports the OTHER participant of the room. Same reason vocabulary as ChatReportMemberRequest.",
+    properties: {
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
+      description: { type: "string", maxLength: 1000, default: "" },
+    },
+    required: ["userId", "reason"],
   },
   ChatNotificationActionRequest: {
     type: "object",
