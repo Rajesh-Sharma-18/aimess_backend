@@ -70,6 +70,7 @@ import {
   publishFriendRequestedSafe,
   publishFriendAcceptedSafe,
   publishFriendUnfriendedSafe,
+  publishFriendshipCreatedSafe,
 } from "../../src/messaging/publish-friendship.js";
 import { emitFriendEventSafe } from "../../src/lib/friend-socket.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
@@ -88,6 +89,7 @@ const settingsRepo = userSettingsRepository as unknown as {
 const requested = publishFriendRequestedSafe as unknown as jest.Mock;
 const accepted = publishFriendAcceptedSafe as unknown as jest.Mock;
 const unfriended = publishFriendUnfriendedSafe as unknown as jest.Mock;
+const created = publishFriendshipCreatedSafe as unknown as jest.Mock;
 const emitSafe = emitFriendEventSafe as unknown as jest.Mock;
 const grpc = messagingGrpcClient as unknown as {
   getOrCreatePrivateRooms: jest.Mock;
