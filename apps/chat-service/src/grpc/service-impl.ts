@@ -1165,6 +1165,7 @@ export function createMessagingImpl(
             count: number;
             users: unknown[];
           }> = [];
+          let groupingFailed = false;
           try {
             const grouped = await reactionService.getMessageReactions({
               messageId: req.messageId,
@@ -1179,14 +1180,17 @@ export function createMessagingImpl(
               })
             );
           } catch (groupErr) {
-            // Non-fatal: the reaction write already succeeded (toggled above);
-            // a grouping-read failure just degrades the broadcast to an empty
-            // set rather than failing the whole react — the ack still reflects
-            // the true persisted state on the next getMessageReactions call.
+            // Non-fatal: the reaction write already succeeded (toggled above).
+            // But an EMPTY group set is not "unknown", it reads as "nobody has
+            // reacted" — broadcasting it wiped the reaction bar on every OTHER
+            // client while the reactor kept their own optimistic chip, and the
+            // two never reconverged. Skip the broadcast instead; clients pick
+            // the true state up from the next getMessageReactions/changes read.
             logger.warn(
-              `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
+              `sendReaction grouping failed, skipping broadcast: ${String(groupErr)}`
             );
             reactionGroups = [];
+            groupingFailed = true;
           }
 
           // Flatten stored reactions for the gRPC ack (V1 thin shape — the
@@ -1221,17 +1225,19 @@ export function createMessagingImpl(
               return { ...rest, avatarUrl: urlFromMap(reactAvatarMap, rawKey) };
             }),
           }));
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:reaction",
-              data: {
-                messageId: req.messageId,
-                conversationId: req.conversationId,
-                reactions: resolvedReactionGroups,
-              },
-            })
-          );
+          if (!groupingFailed) {
+            await redis.publish(
+              `conv:${req.conversationId}`,
+              JSON.stringify({
+                event: "message:reaction",
+                data: {
+                  messageId: req.messageId,
+                  conversationId: req.conversationId,
+                  reactions: resolvedReactionGroups,
+                },
+              })
+            );
+          }
 
           callback(null, {
             messageId: req.messageId,

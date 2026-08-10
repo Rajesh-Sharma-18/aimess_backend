@@ -495,22 +495,55 @@ const communityIdsSchema = z
   .max(50, "You can select at most 50 communities")
   .transform((ids) => [...new Set(ids)]);
 
-export const bulkMarkReadSchema = z.object({
-  communityIds: communityIdsSchema,
-});
+/**
+ * Accept snake_case field names as aliases for the canonical camelCase ones.
+ *
+ * The mobile clients serialize their DTOs snake_case, so `{ community_ids: […],
+ * duration_minutes: 10 }` was rejected 400 "communityIds Required" before it
+ * reached the service — the same defect that broke the chat bulk endpoints (see
+ * chat-service `conversation-bulk.validator.ts`, kept in sync with this).
+ * camelCase stays canonical and always wins when both are present.
+ */
+function withSnakeAliases<T extends z.ZodTypeAny>(
+  schema: T,
+  aliases: Record<string, string>
+) {
+  return z.preprocess((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return value;
+    const body = { ...(value as Record<string, unknown>) };
+    for (const [snake, camel] of Object.entries(aliases)) {
+      if (body[camel] === undefined && body[snake] !== undefined) {
+        body[camel] = body[snake];
+      }
+      delete body[snake];
+    }
+    return body;
+  }, schema);
+}
+
+export const bulkMarkReadSchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkMarkReadInput = z.infer<typeof bulkMarkReadSchema>;
 
-export const bulkMuteSchema = z.object({
-  action: z.enum(["mute", "unmute"]),
-  communityIds: communityIdsSchema,
-  durationMinutes: z
-    .number()
-    .int()
-    .min(1, "Mute duration must be at least 1 minute")
-    .max(525_600, "Mute duration must be at most 365 days")
-    .nullable()
-    .optional(),
-});
+export const bulkMuteSchema = withSnakeAliases(
+  z.object({
+    action: z.enum(["mute", "unmute"]),
+    communityIds: communityIdsSchema,
+    durationMinutes: z
+      .number()
+      .int()
+      .min(1, "Mute duration must be at least 1 minute")
+      .max(525_600, "Mute duration must be at most 365 days")
+      .nullable()
+      .optional(),
+  }),
+  { community_ids: "communityIds", duration_minutes: "durationMinutes" }
+);
 export type BulkMuteInput = z.infer<typeof bulkMuteSchema>;
 
 export const setMuteSchema = z.object({
@@ -642,16 +675,22 @@ export type LeaveReasonInput = z.infer<typeof leaveReasonSchema>;
 
 // --- Bulk leave -----------------------------------------------------------
 
-export const bulkLeaveSchema = z.object({
-  communityIds: communityIdsSchema,
-});
+export const bulkLeaveSchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkLeaveInput = z.infer<typeof bulkLeaveSchema>;
 
 // --- Bulk delete ------------------------------------------------------------
 
-export const bulkDeleteCommunitySchema = z.object({
-  communityIds: communityIdsSchema,
-});
+export const bulkDeleteCommunitySchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkDeleteCommunityInput = z.infer<
   typeof bulkDeleteCommunitySchema
 >;
