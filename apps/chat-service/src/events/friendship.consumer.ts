@@ -28,6 +28,8 @@ export interface FriendshipEvent {
   userB: string;
   status?: string;
   timestamp: number;
+  /** `friendship.created` only — this pair had been friends before. */
+  isRefriend?: boolean;
 }
 
 export class FriendshipEventConsumer {
@@ -107,18 +109,28 @@ export class FriendshipEventConsumer {
           // friendship gate would check, and user-service's later
           // getOrCreatePrivateRooms call now just finds this room.
           await this.ensureRoom(event.userA, event.userB);
-          // An unfriend->re-friend cycle would otherwise stack a fresh "now
-          // friends" bubble on top of every earlier one — remove any prior
-          // FRIENDSHIP_CREATED system messages in this room first so only the
-          // latest ever shows.
-          await this.deleteStaleFriendshipCreatedMessages(
-            event.userA,
-            event.userB
-          );
-          await this.postFriendshipSystemMessage(
-            event,
-            SystemEvent.FRIENDSHIP_CREATED
-          );
+          // The "now friends" row marks a RE-friendship, not a friendship. A
+          // first-ever acceptance opens on the clean "no conversation yet"
+          // screen — there is no history for the line to separate, so it read
+          // as noise in an otherwise empty room. `isRefriend` is decided by
+          // user-service from `Friendship.firstAcceptedAt`, the only record
+          // that survives the row being recycled for a new request; a payload
+          // without the field (older publisher) is treated as first-time.
+          if (event.isRefriend) {
+            // An unfriend->re-friend cycle would otherwise stack a fresh
+            // bubble on top of every earlier one — remove any prior
+            // FRIENDSHIP_CREATED system messages in this room first so only
+            // the latest ever shows. Skipped when nothing will be posted, so
+            // a stray event cannot silently delete a legitimate row.
+            await this.deleteStaleFriendshipCreatedMessages(
+              event.userA,
+              event.userB
+            );
+            await this.postFriendshipSystemMessage(
+              event,
+              SystemEvent.FRIENDSHIP_CREATED
+            );
+          }
           logger.debug(`Friendship created: ${event.userA} <-> ${event.userB}`);
           break;
 

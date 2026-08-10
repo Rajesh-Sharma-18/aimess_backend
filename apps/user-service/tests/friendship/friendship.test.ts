@@ -396,6 +396,66 @@ describe("POST /api/v1/users/friends/requests/:id/accept", () => {
     }
   });
 
+  // `isRefriend` decides whether chat-service posts the "You and X are now
+  // friends" SYSTEM row. It must come from `firstAcceptedAt` on the row as it
+  // was BEFORE this accept — `acceptedAt` is nulled every time the row is
+  // recycled for a new request, so it cannot tell first-time from re-friend.
+  it("publishes friendship.created with isRefriend=false for a first-ever friendship", async () => {
+    fRepo.findById.mockResolvedValue(
+      friendshipRow({
+        requesterId: OTHER,
+        addresseeId: ME,
+        status: "PENDING",
+        firstAcceptedAt: null,
+      })
+    );
+    fRepo.acceptWithCounters.mockResolvedValue([
+      friendshipRow({
+        requesterId: OTHER,
+        addresseeId: ME,
+        status: "ACCEPTED",
+        acceptedAt: new Date("2026-02-01T00:00:00.000Z"),
+      }),
+    ]);
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}/accept`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(created).toHaveBeenCalledWith(OTHER, ME, false);
+  });
+
+  it("publishes friendship.created with isRefriend=true when the pair was friends before", async () => {
+    fRepo.findById.mockResolvedValue(
+      friendshipRow({
+        requesterId: OTHER,
+        addresseeId: ME,
+        status: "PENDING",
+        // Unfriended, then re-requested: `resetToPending` cleared acceptedAt
+        // but deliberately kept this stamp from the first friendship.
+        firstAcceptedAt: new Date("2025-12-01T00:00:00.000Z"),
+        acceptedAt: null,
+      })
+    );
+    fRepo.acceptWithCounters.mockResolvedValue([
+      friendshipRow({
+        requesterId: OTHER,
+        addresseeId: ME,
+        status: "ACCEPTED",
+        acceptedAt: new Date("2026-02-01T00:00:00.000Z"),
+        firstAcceptedAt: new Date("2025-12-01T00:00:00.000Z"),
+      }),
+    ]);
+
+    const res = await request(app)
+      .post(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}/accept`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(created).toHaveBeenCalledWith(OTHER, ME, true);
+  });
+
   it("returns 404 when the request is not addressed to me (IDOR guard)", async () => {
     // I am neither requester nor addressee — addressed to someone else.
     fRepo.findById.mockResolvedValue(

@@ -117,6 +117,13 @@ export type FriendshipReadModelPayload = {
   userB: string;
   status?: string;
   timestamp: number;
+  /**
+   * `friendship.created` only: this pair has been friends BEFORE (unfriended,
+   * then re-friended). Chat-service posts the "You and X are now friends"
+   * SYSTEM row for a re-friendship only — a first-ever friendship opens on the
+   * clean "no conversation yet" screen instead. Absent/false = first time.
+   */
+  isRefriend?: boolean;
 };
 
 /**
