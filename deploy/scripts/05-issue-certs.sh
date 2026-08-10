@@ -166,6 +166,21 @@ systemctl reload nginx
 EOF
 chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 
+# LiveKit's embedded TURN reads its certificate ONCE at startup — unlike nginx
+# it cannot be reloaded — so a renewal leaves it serving the expired one. The
+# failure is invisible: signaling and direct-UDP calls keep working, and only
+# clients that need the TURN relay break, three months after anyone touched
+# this. Restart is a sub-second blip and drops no established call.
+# Dev 01 only; the container does not exist on Dev 02.
+if [ "$ROLE" = "dev01" ]; then
+  cat > /etc/letsencrypt/renewal-hooks/deploy/restart-livekit.sh <<'EOF'
+#!/bin/sh
+docker restart aimess-livekit 2>/dev/null || true
+EOF
+  chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/restart-livekit.sh
+  echo "    installed LiveKit TURN certificate-renewal hook"
+fi
+
 systemctl list-timers 'certbot*' --no-pager || true
 certbot renew --dry-run || echo "WARNING: renewal dry-run failed — investigate before the 90-day expiry."
 

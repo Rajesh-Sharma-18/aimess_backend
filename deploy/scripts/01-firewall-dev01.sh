@@ -52,9 +52,13 @@ ufw allow 443/tcp comment 'HTTPS'
 #   7880  signaling WS (also fronted by nginx)
 #   7881  RTC/TCP fallback for UDP-blocked clients
 #   50000-50100/udp  media
+#   5349  embedded TURN over TLS — the relay of last resort for clients whose
+#         network blocks the direct UDP path. Closed, those clients join the
+#         room and then time out with no media.
 # These must be open to the whole internet — participants connect from
 # arbitrary addresses, so no source restriction is possible.
 ufw allow 7881/tcp comment 'LiveKit RTC TCP fallback'
+ufw allow 5349/tcp comment 'LiveKit TURN over TLS'
 ufw allow 50000:50100/udp comment 'LiveKit media (UDP)'
 
 ufw --force enable

@@ -228,9 +228,10 @@ services:
   # LiveKit — self-hosted SFU + embedded TURN for 1-to-1 audio/video calls.
   # chat-service mints the access tokens; the browser connects to LIVEKIT_URL.
   #
-  # ⚠  The UDP media range CANNOT pass through a Cloudflare proxy. The DNS
-  # record for livekit.ai5dev.tech must be GREY-CLOUD (DNS-only), pointing
-  # straight at 76.13.216.164.
+  # ⚠  The UDP media range and TURN/TLS on 5349 CANNOT pass through a Cloudflare
+  # proxy — both go straight to the host, and Cloudflare listens on neither. The
+  # DNS record for notification.ai5dev.tech must be GREY-CLOUD (DNS-only),
+  # pointing at 76.13.216.164.
   # ===========================================================================
   livekit:
     image: livekit/livekit-server:latest
@@ -249,6 +250,11 @@ services:
 
     volumes:
       - ../livekit/config.yaml:/etc/livekit/config.yaml:ro
+      # Embedded TURN reads the same Let's Encrypt certificate nginx serves for
+      # the signaling vhost. Mounted at the identical path so the relative
+      # `live/ -> ../../archive/` symlinks still resolve inside the container,
+      # and whole-directory so a renewal is picked up without re-mounting.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
 
   # ===========================================================================
   # Website (Next.js) — https://website.ai5dev.tech
