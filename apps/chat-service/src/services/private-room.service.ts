@@ -38,6 +38,72 @@ import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
 
+/**
+ * Get-or-create the pair's private room and announce it, WITHOUT the friendship
+ * gate — the caller is responsible for having established that the two are
+ * friends. Extracted from {@link PrivateRoomService.getOrCreateRoom} (which is
+ * just this plus the gate) so the friendship consumer can reuse it: the consumer
+ * has just written the ACTIVE read-model rows itself, and re-asking
+ * `checkFriendship` there would be a pointless gRPC hop.
+ */
+export async function ensurePrivateRoom(
+  deps: {
+    privateRoomRepo: PrivateRoomRepository;
+    userSnapshotService: UserSnapshotService;
+    cacheRepo: CacheRepository;
+    redis: Redis | Cluster;
+  },
+  userId: string,
+  peerId: string
+): Promise<PrivateRoom> {
+  const participantsKey = buildParticipantsKey(userId, peerId);
+  const existing =
+    await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
+  if (existing) return existing;
+
+  const roomId = generateRoomId("prv");
+  const room = await deps.privateRoomRepo.create({
+    roomId,
+    participants: [userId, peerId].sort(),
+    participantsKey,
+  });
+
+  logger.debug(`PrivateRoomService|ensurePrivateRoom|created room=${roomId}`);
+
+  // Notify both participants that a new conversation was opened.
+  //
+  // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
+  // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
+  // therefore never returns a room that has no messages yet — a chat created by accepting a
+  // friend request showed a nameless row until the first message. Existing clients ignore the
+  // extra field; the `participants` array and every other field are unchanged.
+  const snapshots = await deps.userSnapshotService
+    .getUserSnapshotsMap([userId, peerId], deps.cacheRepo)
+    .catch(() => new Map<string, Record<string, unknown>>());
+  const briefFor = (id: string) => ({
+    id,
+    displayName: resolveDisplayName(snapshots.get(id)),
+    memberId: (snapshots.get(id)?.memberId as string) || "",
+  });
+  const convCreatedFor = (recipientId: string, otherId: string) =>
+    JSON.stringify({
+      event: "conv:created",
+      data: {
+        roomId,
+        participants: [userId, peerId],
+        peer: briefFor(otherId),
+      },
+    });
+  deps.redis
+    .publish(`user:${userId}`, convCreatedFor(userId, peerId))
+    .catch(() => {});
+  deps.redis
+    .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
+    .catch(() => {});
+
+  return room;
+}
+
 const NONE_RELATIONSHIP: ChatFriendshipInfo = {
   status: "NONE",
   direction: null,
@@ -319,9 +385,9 @@ export class PrivateRoomService {
   }
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {
-    const participantsKey = buildParticipantsKey(userId, peerId);
-    const existing =
-      await this.privateRoomRepo.findByParticipantsKey(participantsKey);
+    const existing = await this.privateRoomRepo.findByParticipantsKey(
+      buildParticipantsKey(userId, peerId)
+    );
     if (existing) return existing;
 
     const friends = await this.userServiceClient.checkFriendship(
@@ -332,47 +398,16 @@ export class PrivateRoomService {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }
 
-    const roomId = generateRoomId("prv");
-    const room = await this.privateRoomRepo.create({
-      roomId,
-      participants: [userId, peerId].sort(),
-      participantsKey,
-    });
-
-    logger.debug(`PrivateRoomService|getOrCreateRoom|created room=${roomId}`);
-
-    // Notify both participants that a new conversation was opened.
-    //
-    // ADDITIVE `peer`: the recipient's OWN view of the other participant. Without it a client can
-    // only learn the peer's name from `GET /chat/inbox`, which keysets on `lastMessageAt` and
-    // therefore never returns a room that has no messages yet — a chat created by accepting a
-    // friend request showed a nameless row until the first message. Existing clients ignore the
-    // extra field; the `participants` array and every other field are unchanged.
-    const snapshots = await this.userSnapshotService
-      .getUserSnapshotsMap([userId, peerId], this.cacheRepo)
-      .catch(() => new Map<string, Record<string, unknown>>());
-    const briefFor = (id: string) => ({
-      id,
-      displayName: resolveDisplayName(snapshots.get(id)),
-      memberId: (snapshots.get(id)?.memberId as string) || "",
-    });
-    const convCreatedFor = (recipientId: string, otherId: string) =>
-      JSON.stringify({
-        event: "conv:created",
-        data: {
-          roomId,
-          participants: [userId, peerId],
-          peer: briefFor(otherId),
-        },
-      });
-    this.redis
-      .publish(`user:${userId}`, convCreatedFor(userId, peerId))
-      .catch(() => {});
-    this.redis
-      .publish(`user:${peerId}`, convCreatedFor(peerId, userId))
-      .catch(() => {});
-
-    return room;
+    return ensurePrivateRoom(
+      {
+        privateRoomRepo: this.privateRoomRepo,
+        userSnapshotService: this.userSnapshotService,
+        cacheRepo: this.cacheRepo,
+        redis: this.redis,
+      },
+      userId,
+      peerId
+    );
   }
 
   /**

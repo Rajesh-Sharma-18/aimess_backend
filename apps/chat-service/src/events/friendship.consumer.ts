@@ -8,6 +8,7 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { PrivateSystemMessageService } from "../services/private-system-message.service.js";
+import { ensurePrivateRoom } from "../services/private-room.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { SystemEvent } from "../types/enums.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
@@ -98,6 +99,14 @@ export class FriendshipEventConsumer {
             event.userA,
             event.status || "ACTIVE"
           );
+          // The room usually does NOT exist yet at this point: user-service
+          // publishes this event and only then (fire-and-forget) asks us over
+          // gRPC to create the room, so we lose that race and the "now friends"
+          // system message below silently found no room to post into. Create it
+          // here instead — the ACTIVE rows we just wrote are exactly what the
+          // friendship gate would check, and user-service's later
+          // getOrCreatePrivateRooms call now just finds this room.
+          await this.ensureRoom(event.userA, event.userB);
           // An unfriend->re-friend cycle would otherwise stack a fresh "now
           // friends" bubble on top of every earlier one — remove any prior
           // FRIENDSHIP_CREATED system messages in this room first so only the
@@ -162,6 +171,30 @@ export class FriendshipEventConsumer {
     } catch (err) {
       logger.error("Error processing friendship event", err);
       this.channel?.nack(msg, false, false);
+    }
+  }
+
+  /**
+   * Best-effort get-or-create of the pair's private room. A failure here must
+   * not nack the friendship event — the read-model rows are already written and
+   * the room still lazily creates on first open, exactly as before.
+   */
+  private async ensureRoom(userA: string, userB: string): Promise<void> {
+    try {
+      await ensurePrivateRoom(
+        {
+          privateRoomRepo: this.privateRoomRepo,
+          userSnapshotService: this.userSnapshotService,
+          cacheRepo: this.cacheRepo,
+          redis,
+        },
+        userA,
+        userB
+      );
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|ensureRoom failed ${userA}<->${userB}: ${String(err)}`
+      );
     }
   }
 
