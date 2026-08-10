@@ -28,8 +28,8 @@ function linkKey(linkToken: string): string {
 }
 
 /**
- * Secondary index: maps a device fingerprint (derived from userAgent + IP,
- * same as buildSessionContext's `deviceId`) to the most-recently-created
+ * Secondary index: maps a device fingerprint (the caller's opaque clientId
+ * where available — see deviceLinkService.initiate) to the most-recently-created
  * PENDING QR linkToken for that device. Written atomically alongside the main
  * QR record in `createLinkSession`, deleted when the session is cancelled,
  * used, or expired. Allows "replace prior session" without a full SCAN.
@@ -162,7 +162,7 @@ return 'OK'
  */
 export async function createLinkSession(
   device: DeviceLinkDeviceInfo,
-  /** sha256(userAgent|ip) from buildSessionContext — used as the per-device index key. */
+  /** Per-browser index key; see deviceLinkService.initiate for how it's derived. */
   fingerprint: string
 ): Promise<{
   linkToken: string;

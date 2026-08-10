@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
@@ -7,10 +8,12 @@ import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 
-// auth-service compiles to CommonJS (no "type":"module"), so __dirname is a
-// global — do NOT use import.meta.
+// auth-service is ESM ("type":"module"), so derive the directory from
+// import.meta — a bare __dirname resolves to the Prisma client's globalThis
+// shim, which points at src/generated/prisma and breaks this path.
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
-  __dirname,
+  currentDir,
   "../../../../packages/grpc-contracts/proto/notification.proto"
 );
 

@@ -115,10 +115,11 @@ export class GroupMemberRepository {
   }
 
   /**
-   * Same as {@link getActiveMemberships} plus rooms the user voluntarily LEFT —
-   * feeds the inbox listing so a left group stays visible (read-only, history
-   * intact) instead of vanishing, WhatsApp-style. Kicked/banned rows are still
-   * excluded (out of scope for the voluntary-leave read-access feature).
+   * Same as {@link getActiveMemberships} plus rooms the user voluntarily LEFT
+   * or was KICKED (removed) from — feeds the inbox listing so an ex-member's
+   * group stays visible (read-only, history intact) instead of vanishing,
+   * WhatsApp-style. BANNED rows are still excluded: a ban keeps its existing
+   * harder "gone" behavior.
    */
   async getActiveOrLeftMemberships(userId: string): Promise<
     Array<{
@@ -130,12 +131,13 @@ export class GroupMemberRepository {
       clearChatAt: Date | null;
       status: string;
       leftAt: Date | null;
+      kickedAt: Date | null;
       moderationMuted: boolean;
       moderationMutedUntil: Date | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
-      where: { userId, status: { in: ["ACTIVE", "LEFT"] } },
+      where: { userId, status: { in: ["ACTIVE", "LEFT", "KICKED"] } },
       select: {
         roomId: true,
         role: true,
@@ -145,6 +147,7 @@ export class GroupMemberRepository {
         clearChatAt: true,
         status: true,
         leftAt: true,
+        kickedAt: true,
         // Moderation mute — surfaced on every inbox row so a client that was
         // offline when the mute landed restores the disabled composer on its
         // first list fetch, with no extra request.

@@ -60,8 +60,18 @@ export function createPresenceIndicator(opts: {
   stopEvent: string;
   broadcast: PresenceBroadcast;
   ttlMs?: number;
+  /**
+   * Per-user opt-out (Settings → Chat → Typing Indicator). Gates STARTS only —
+   * a stop is always delivered, so flipping the switch mid-burst can never
+   * strand a peer on a "…is typing" that no longer has a stop coming. A
+   * suppressed start makes the matching stop a harmless no-op on the client.
+   *
+   * Not consulted for the sender's own timers: the TTL still runs, it just has
+   * nothing to broadcast.
+   */
+  canStart?: () => Promise<boolean>;
 }): PresenceIndicator {
-  const { startEvent, stopEvent, broadcast } = opts;
+  const { startEvent, stopEvent, broadcast, canStart } = opts;
   const ttlMs = opts.ttlMs ?? PRESENCE_TTL_MS;
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -76,6 +86,7 @@ export function createPresenceIndicator(opts: {
   const emit = (roomId: string, event: string, fromTimer: boolean): void => {
     void (async () => {
       try {
+        if (event === startEvent && canStart && !(await canStart())) return;
         await broadcast(roomId, event, fromTimer);
       } catch (err) {
         // A presence event is best-effort — never let a roster lookup or a
@@ -147,9 +158,24 @@ export function createDirectRosterBroadcast(params: {
   buildPayload: (roomId: string) => unknown;
   /** Optional cheap pre-gate (e.g. the CLOSED-community Set). */
   isSuppressed?: (roomId: string) => boolean;
+  /**
+   * Optional per-recipient gate, applied AFTER the sender-membership check.
+   * Reciprocity (Settings → Chat → Typing Indicator): a user who turned their
+   * own indicator off is not shown anyone else's either, so they are dropped
+   * from the recipient set rather than from the roster — removing them from the
+   * roster would instead read as "sender not a member" and kill the event for
+   * everyone.
+   */
+  filterRecipients?: (userIds: string[]) => Promise<string[]>;
 }): PresenceBroadcast {
-  const { namespace, senderId, resolveRoster, buildPayload, isSuppressed } =
-    params;
+  const {
+    namespace,
+    senderId,
+    resolveRoster,
+    buildPayload,
+    isSuppressed,
+    filterRecipients,
+  } = params;
 
   return async (roomId: string, event: string): Promise<void> => {
     if (isSuppressed?.(roomId)) return;
@@ -157,8 +183,13 @@ export function createDirectRosterBroadcast(params: {
     const memberIds = await resolveRoster(roomId);
     if (!memberIds.includes(senderId)) return; // sender not an active member
 
-    const recipientIds = memberIds.filter((id) => id !== senderId);
+    let recipientIds = memberIds.filter((id) => id !== senderId);
     if (recipientIds.length === 0) return;
+
+    if (filterRecipients) {
+      recipientIds = await filterRecipients(recipientIds);
+      if (recipientIds.length === 0) return;
+    }
 
     const sockets = await namespace
       .in(recipientIds.map((id) => `user:${id}`))

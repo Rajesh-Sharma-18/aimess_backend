@@ -643,10 +643,12 @@ export const communityPaths = {
       description:
         "Unified communities list. The mode is inferred from the params — there " +
         "is no `scope` flag. All params are optional: omitting `before_ts`, " +
-        "`after_ts`, `q`, and `categoryId` returns the default **search mode** page " +
-        "(PUBLIC + joined PRIVATE, `filter=all`, page 1). The only mutually-exclusive " +
+        "`after_ts`, `q`, and `categoryId` returns the default **joined mode** " +
+        "newest page (your own communities only — it never falls back to public " +
+        "browse, so a user with no memberships gets an empty page). The only " +
+        "mutually-exclusive " +
         "rule is that `before_ts` and `after_ts` cannot both be sent (→ 400).\n\n" +
-        "**Joined mode** (`before_ts` or `after_ts` present) — communities where " +
+        "**Joined mode** (default, or `before_ts`/`after_ts` present) — communities where " +
         "you are an ACTIVE member, ordered by `lastActivityAt` (latest community " +
         "message, else createdAt). Timestamp-cursor pagination: `before_ts` " +
         "returns items with `lastActivityAt <= before_ts` (newest-first); " +
@@ -656,7 +658,7 @@ export const communityPaths = {
         "`pagination.nextCursor` (epoch-ms) fed back as the same param. Pagination " +
         "takes precedence over `q`/`categoryId` if both are sent. Returns " +
         "`MyCommunitiesResponseData`.\n\n" +
-        "**Search mode** (`q` and/or `categoryId`, no pagination) — communities " +
+        "**Search mode** (`q`, `categoryId`, or a non-`all` `filter`, and no pagination) — communities " +
         "matching the filters across **PUBLIC communities PLUS any PRIVATE " +
         "community you are already an ACTIVE member of** (joined communities are " +
         "NOT excluded). Optional `q` searches name and handle (case-insensitive); " +

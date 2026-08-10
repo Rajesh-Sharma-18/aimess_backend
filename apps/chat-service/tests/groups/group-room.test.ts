@@ -11,7 +11,11 @@
  */
 import request from "supertest";
 
-import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
+import {
+  buildApp,
+  mockGroupMemberships,
+  type BuiltMocks,
+} from "../helpers/app-factory.js";
 import {
   bearer,
   makeAccessToken,
@@ -149,9 +153,7 @@ describe("POST /api/chat/groups (create)", () => {
 
 describe("GET /api/chat/groups/my-groups", () => {
   it("POSITIVE: returns the caller's active groups", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
-      { roomId: "grp_1", clearedAt: null },
-    ]);
+    mockGroupMemberships(mocks, [{ roomId: "grp_1", clearedAt: null }]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       { roomId: "grp_1", name: "Devs", lastMessageAt: new Date(1) },
     ]);
@@ -169,7 +171,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   });
 
   it("EDGE: no memberships → 200 with empty data", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([]);
+    mockGroupMemberships(mocks, []);
 
     const res = await request(app)
       .get("/api/chat/groups/my-groups")
@@ -182,9 +184,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   // Resolve-on-read: the stored group logo object key must surface as a full
   // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
   it("MEDIA: resolves the group logo object key to a download URL", async () => {
-    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
-      { roomId: "grp_1", clearedAt: null },
-    ]);
+    mockGroupMemberships(mocks, [{ roomId: "grp_1", clearedAt: null }]);
     mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
       {
         roomId: "grp_1",

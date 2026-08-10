@@ -1,18 +1,23 @@
 /**
  * Regression coverage for the Message Search redesign.
  *
- * The original implementation matched with an unanchored case-insensitive
- * `$regex` on `content.text` (which no index can serve — a full collection
- * scan per keystroke) and paginated with `skip`, which degrades linearly and
- * shifts under concurrent inserts, so pages duplicated and dropped rows. It
- * is now an indexed `$text` match with a `(createdAt, _id)` keyset cursor and
- * a bounded top-k sort. This suite exercises the three repositories directly
- * (constructor-injected, so a hand-rolled Prisma stub is enough) to lock in:
- * `$text` matching (never `$regex`), keyset pagination (never `$skip`), the
- * stable sort + tiebreaker, compound `nextCursor`/`hasMore`, relevance score
- * pass-through, the per-user delete filter, and — for community rooms — that
- * a page shrunk by the in-memory visibility filter is refilled rather than
- * silently returned short.
+ * The original implementation paginated with `skip`, which degrades linearly
+ * and shifts under concurrent inserts, so pages duplicated and dropped rows.
+ * It now uses a `(createdAt, _id)` keyset cursor and a bounded top-k sort.
+ *
+ * Matching is a case-insensitive SUBSTRING regex, pinned to one room so the
+ * `[roomId, createdAt desc]` compound index serves both the equality and the
+ * sort. An earlier revision used `$text`, but the indexes were built with
+ * `defaultLanguage: "none"`, so it matched whole tokens only — "test" missed
+ * "Testing" and no prefix matched while the user was still typing.
+ *
+ * This suite exercises the three repositories directly (constructor-injected,
+ * so a hand-rolled Prisma stub is enough) to lock in: substring matching with
+ * the query escaped, keyset pagination (never `$skip`), the stable sort +
+ * tiebreaker, compound `nextCursor`/`hasMore`, the per-user delete filter,
+ * community's ObjectId `roomId`, and — for community rooms — that a page
+ * shrunk by the in-memory visibility filter is refilled rather than silently
+ * returned short.
  */
 
 import { PrivateMessageRepository } from "../../src/repositories/private-message.repository.js";
@@ -49,7 +54,7 @@ describe("PrivateMessageRepository.searchByText", () => {
     return { repo, findRaw, aggregateRaw, findMany };
   }
 
-  it("matches via the $text index, never an unindexed regex scan", async () => {
+  it("matches as a case-insensitive substring, not a whole-token $text query", async () => {
     const { repo, aggregateRaw, findMany } = makeRepo();
     aggregateRaw.mockResolvedValue([]);
     findMany.mockResolvedValue([]);
@@ -62,8 +67,33 @@ describe("PrivateMessageRepository.searchByText", () => {
     });
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
-    expect(pipeline[0].$match.$text).toEqual({ $search: "hello" });
-    expect(JSON.stringify(pipeline)).not.toContain("$regex");
+    expect(pipeline[0].$match["content.text"]).toEqual({
+      $regex: "hello",
+      $options: "i",
+    });
+    expect(JSON.stringify(pipeline)).not.toContain("$text");
+  });
+
+  it("escapes regex metacharacters so the query is matched literally", async () => {
+    const { repo, aggregateRaw, findMany } = makeRepo();
+    aggregateRaw.mockResolvedValue([]);
+    findMany.mockResolvedValue([]);
+
+    await repo.searchByText({
+      roomId: ROOM,
+      query: "c++ (v2).*",
+      limit: 20,
+      userId: USER,
+    });
+
+    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    expect(match["content.text"].$regex).toBe("c\\+\\+ \\(v2\\)\\.\\*");
+    expect(new RegExp(match["content.text"].$regex).test("c++ (v2).*")).toBe(
+      true
+    );
+    expect(new RegExp(match["content.text"].$regex).test("cxx v2 zz")).toBe(
+      false
+    );
   });
 
   it("sorts newest-first with an _id tiebreaker and bounds the page with top-k", async () => {
@@ -122,7 +152,6 @@ describe("PrivateMessageRepository.searchByText", () => {
     expect(page.messages.map((m) => m.id)).toEqual(["m2"]);
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).toBe(`${at.getTime()}_m2`);
-    expect(page.scores.get("m2")).toBe(2);
   });
 
   it("reports the last page with hasMore=false and a null cursor", async () => {
@@ -187,7 +216,7 @@ describe("GroupMessageRepository.searchByText", () => {
     return { repo, findRaw, aggregateRaw, findMany };
   }
 
-  it("matches via the $text index and paginates by keyset, not skip", async () => {
+  it("matches as a substring and paginates by keyset, not skip", async () => {
     const { repo, aggregateRaw, findMany } = makeRepo();
     aggregateRaw.mockResolvedValue([]);
     findMany.mockResolvedValue([]);
@@ -201,9 +230,12 @@ describe("GroupMessageRepository.searchByText", () => {
     });
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
-    expect(pipeline[0].$match.$text).toEqual({ $search: "hello" });
+    expect(pipeline[0].$match["content.text"]).toEqual({
+      $regex: "hello",
+      $options: "i",
+    });
     expect(JSON.stringify(pipeline)).not.toContain("$skip");
-    expect(JSON.stringify(pipeline)).not.toContain("$regex");
+    expect(JSON.stringify(pipeline)).not.toContain("$text");
   });
 
   it("excludes messages the caller deleted-for-me (deletedForUserIds)", async () => {
@@ -254,6 +286,26 @@ describe("GeneralRoomMessageRepository.searchByText (community)", () => {
       score: 1,
     };
   }
+
+  it("matches roomId as an ObjectId, not a plain string", async () => {
+    // `GeneralRoomMessage.roomId` is `@db.ObjectId`, so aggregateRaw must
+    // compare it as `{ $oid }` — a plain string silently matched nothing and
+    // made every community message search return an empty page. Private/group
+    // pass a plain string because their `roomId` is a plain String column.
+    const { repo, findMany, aggregateRaw } = makeRepo();
+    aggregateRaw.mockResolvedValue([]);
+    findMany.mockResolvedValue([]);
+
+    await repo.searchByText({
+      roomId: ROOM,
+      query: "hello",
+      limit: 20,
+      userId: USER,
+    });
+
+    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    expect(match.roomId).toEqual({ $oid: ROOM });
+  });
 
   it("refills a page that the in-memory visibility filter shrinks", async () => {
     const { repo, findMany, aggregateRaw } = makeRepo();

@@ -20,6 +20,7 @@ import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
+import { typingViewerFilter } from "../chat-flags.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -687,12 +688,16 @@ export function registerCommunityNamespace(
     const typing = createPresenceIndicator({
       startEvent: "typing:start",
       stopEvent: "typing:stop",
+      canStart: async () =>
+        (await userClient.getChatFlags(userId)).typingIndicators,
       broadcast: createDirectRosterBroadcast({
         namespace: community,
         senderId: userId,
         resolveRoster: getActiveCommunityMemberIds,
         buildPayload: communityTypingPayload,
         isSuppressed: (communityId) => closedCommunityIds.has(communityId),
+        // Reciprocal: a member who turned their own indicator off doesn't see mine.
+        filterRecipients: typingViewerFilter(userClient),
       }),
     });
 

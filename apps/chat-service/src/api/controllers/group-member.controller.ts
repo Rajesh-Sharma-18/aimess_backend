@@ -42,6 +42,29 @@ export class GroupMemberController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  ban = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: bannedBy } = req.auth;
+    const { roomId, userId, reason } = req.body;
+    const result = await this.service.ban({
+      roomId,
+      targetUserId: userId,
+      bannedBy,
+      reason,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  unban = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: unbannedBy } = req.auth;
+    const { roomId, userId } = req.body;
+    const result = await this.service.unban({
+      roomId,
+      targetUserId: userId,
+      unbannedBy,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   reportMember = asyncHandler(async (req: Request, res: Response) => {
     const { userId: reporterId } = req.auth;
     const { roomId, userId, reason, description } = req.body;

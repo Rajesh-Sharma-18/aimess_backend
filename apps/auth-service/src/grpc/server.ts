@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
@@ -31,12 +32,14 @@ function toAdminUserRecord(row: AuthUser): Record<string, string> {
   };
 }
 
-// auth-service compiles to CommonJS (no "type":"module"), so __dirname is a
-// global here — do NOT use import.meta. Depth is identical from src/grpc (tsx)
-// and dist/grpc (built) to the repo root.
+// auth-service is ESM ("type":"module"), so derive the directory from
+// import.meta — a bare __dirname resolves to the Prisma client's globalThis
+// shim, which points at src/generated/prisma and breaks this path. Depth is
+// identical from src/grpc (tsx) and dist/grpc (built) to the repo root.
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
-  __dirname,
-  "../../../../../packages/grpc-contracts/proto/auth.proto"
+  currentDir,
+  "../../../../packages/grpc-contracts/proto/auth.proto"
 );
 
 const authImpl: grpc.UntypedServiceImplementation = {

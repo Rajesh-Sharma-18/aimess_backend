@@ -256,10 +256,13 @@ describe("POST /api/auth/logout", () => {
     );
     // Other devices must get session:list_updated + this device's live
     // socket(s) must be force-disconnected, same as DELETE /sessions/:id.
+    // ...but tagged "logout" so the gateway does NOT tell this device its
+    // session was terminated — it is the one that asked to sign out.
     expect(publishRevoked).toHaveBeenCalledWith(
       expect.anything(),
       TEST_USER_ID,
-      TEST_SESSION_ID
+      TEST_SESSION_ID,
+      "logout"
     );
   });
 

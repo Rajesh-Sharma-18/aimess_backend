@@ -71,6 +71,7 @@ import {
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import {
@@ -877,9 +878,16 @@ export function createMessagingImpl(
             },
           });
 
+          // Settings → Chat → Read Receipt, off: the read itself still lands,
+          // only the OUTBOUND receipt is withheld. Mirrors
+          // ChatMessageOrchestrator.markReadDirect — this handler is a second
+          // copy of that flow, so the gate has to exist in both.
+          const mayBroadcast = await mayBroadcastReadReceipts(req.readerId);
+
           // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
           // or below the boundary to READ (watermark), not just the boundary message.
-          await redis.publish(`conv:${req.conversationId}`, readPayload);
+          if (mayBroadcast)
+            await redis.publish(`conv:${req.conversationId}`, readPayload);
 
           // ALSO publish directly to every other participant/member's own
           // `user:<id>` channel — every socket joins that room unconditionally
@@ -891,7 +899,7 @@ export function createMessagingImpl(
           // socket wasn't (yet) joined to this specific room, going stale until
           // a manual refetch. Same direct-roster pattern already used for typing
           // (`createDirectRosterBroadcast`) and community's read_sync.
-          for (const otherId of otherUserIds) {
+          for (const otherId of mayBroadcast ? otherUserIds : []) {
             void redis
               .publish(`user:${otherId}`, readPayload)
               .catch((e: unknown) =>

@@ -28,6 +28,33 @@ export type UserClient = {
    * the breaker is open: presence is a privacy decision, so it fails CLOSED.
    */
   filterVisiblePresence(viewerId: string, peerIds: string[]): Promise<string[]>;
+  /**
+   * The two reciprocal Settings → Chat switches for one user.
+   *
+   * WhatsApp semantics: turning a switch off both stops YOUR signal from going
+   * out AND stops you receiving anyone else's. So the same lookup answers the
+   * sender-side question ("may I broadcast?") and the recipient-side one ("may
+   * this viewer be shown someone else's?").
+   *
+   * Fails OPEN (both true) — unlike presence, a blip here must not silently
+   * break a working feature, and neither signal discloses anything sensitive.
+   *
+   * Cached: consulted per typing burst and per read receipt delivered.
+   */
+  getChatFlags(userId: string): Promise<ChatFlags>;
+};
+
+export interface ChatFlags {
+  typingIndicators: boolean;
+  readReceipts: boolean;
+}
+
+/** See {@link UserClient.getChatFlags} — one lookup per user per minute. */
+const CHAT_FLAGS_TTL_MS = 60_000;
+const CHAT_FLAGS_MAX_ENTRIES = 10_000;
+const CHAT_FLAGS_OPEN: ChatFlags = {
+  typingIndicators: true,
+  readReceipts: true,
 };
 
 export function createUserClient(): UserClient {
@@ -71,9 +98,44 @@ export function createUserClient(): UserClient {
       ).then((r) => r.visiblePeerIds ?? [])
   );
 
+  const chatSettingsBreaker = makeBreaker(
+    "user.getChatSettings",
+    (p: { userId: string }) => call<typeof p, ChatFlags>("getChatSettings", p)
+  );
+
+  const chatFlags = new Map<string, { value: ChatFlags; expiresAt: number }>();
+
   return {
     bulkGetUserSnapshots: (userIds) =>
       bulkBreaker.fire({ userIds }).catch(() => null),
+    getChatFlags: async (userId) => {
+      if (!UUID_RE.test(userId)) return CHAT_FLAGS_OPEN;
+
+      const hit = chatFlags.get(userId);
+      if (hit && hit.expiresAt > Date.now()) return hit.value;
+
+      const res = await chatSettingsBreaker
+        .fire({ userId })
+        .catch(() => null as ChatFlags | null);
+      // Only a real answer is cached — caching the fail-open default would keep
+      // a user's disabled switch acting as ON for a minute past recovery.
+      if (res === null) return CHAT_FLAGS_OPEN;
+
+      // Map preserves insertion order — drop the oldest rather than grow unbounded.
+      if (chatFlags.size >= CHAT_FLAGS_MAX_ENTRIES) {
+        const oldest = chatFlags.keys().next().value;
+        if (oldest !== undefined) chatFlags.delete(oldest);
+      }
+      const value: ChatFlags = {
+        typingIndicators: res.typingIndicators !== false,
+        readReceipts: res.readReceipts !== false,
+      };
+      chatFlags.set(userId, {
+        value,
+        expiresAt: Date.now() + CHAT_FLAGS_TTL_MS,
+      });
+      return value;
+    },
     filterVisiblePresence: (viewerId, peerIds) => {
       if (!UUID_RE.test(viewerId)) return Promise.resolve([]);
       const userIds = [...new Set(peerIds)].filter((id) => UUID_RE.test(id));

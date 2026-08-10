@@ -13,6 +13,7 @@ import {
 } from "../lib/quote-refresh.js";
 import {
   buildTextSearchPipeline,
+  escapeRegex,
   orderByIds,
   parseSearchCursor,
   readTextSearchPage,
@@ -587,6 +588,7 @@ export class PrivateMessageRepository {
           ? { createdAt: { $gt: { $date: params.cutoff.toISOString() } } }
           : {}),
       },
+      field: "content.text",
       query: params.query,
       cursor: parseSearchCursor(params.cursor),
       limit: params.limit,
@@ -836,7 +838,7 @@ export class PrivateMessageRepository {
     userId: string,
     cutoff?: Date
   ): Promise<number> {
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapeRegex(query);
     const result = (await this.prisma.privateMessage.aggregateRaw({
       pipeline: [
         {
