@@ -37,6 +37,7 @@ export const sendGroupMessageSchema = z
             // Sender-uploaded poster frame for videos/animated GIFs — zod strips
             // unknown keys, so leaving it out dropped it before persistence.
             thumbnailObjectKey: z.string().max(500).optional(),
+            mediaBatchId: z.string().max(64).optional(),
           })
         )
         .default([]),
@@ -78,6 +79,7 @@ export const sendGroupMessageBodySchema = z
             // Sender-uploaded poster frame for videos/animated GIFs — zod strips
             // unknown keys, so leaving it out dropped it before persistence.
             thumbnailObjectKey: z.string().max(500).optional(),
+            mediaBatchId: z.string().max(64).optional(),
           })
         )
         .default([]),

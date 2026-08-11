@@ -133,6 +133,7 @@ const FileAttachmentSchema = z.object({
   // ever stored with a thumbnail and every receiver had to decode a frame out of the
   // video itself over HTTP.
   thumbnailObjectKey: z.string().max(500).optional(),
+  mediaBatchId: z.string().max(64).optional(),
   // §3.5: instant-preview metadata — blurhash (image/video) renders the bubble
   // at the right aspect ratio before download; waveform (voice) paints the bars.
   blurhash: z.string().max(120).optional(),
