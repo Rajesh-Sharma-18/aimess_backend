@@ -28,6 +28,19 @@ export const FriendSocketEvents = {
   REMOVED: "friend:removed",
   BLOCKED: "friend:blocked",
   UNBLOCKED: "friend:unblocked",
+  /**
+   * "Your relationship with this peer changed — re-read it." Carries only
+   * `{ peerId }`: no verb, no status. Sent to the OTHER party on block/unblock,
+   * where naming the change would tell them they were blocked — a thing this
+   * codebase deliberately never reveals (see `blockUser`, and the identical
+   * FRIEND_BLOCKED / FRIEND_REQUEST_NOT_ALLOWED copy). The client just refetches
+   * and renders whatever it can now see, so a block, an unblock, and a deleted
+   * account are indistinguishable from the receiving side.
+   *
+   * Delivered on `self:<userId>`, NOT `user:<userId>` — the latter is joinable
+   * by any presence watcher.
+   */
+  RELATIONSHIP_SYNC: "friend:relationship:sync",
 } as const;
 
 export type FriendSocketEventType =

@@ -42,6 +42,24 @@ export function publishChatUserEvent(
 }
 
 /**
+ * Publish a server→client realtime event to a user's OWN devices only.
+ *
+ * `user:<id>` is not private — `presence:subscribe` lets any peer join that
+ * Socket.IO room to watch someone's online state, so anything published there
+ * is also delivered to those watchers. The api-gateway `/chat` namespace also
+ * psubscribes `self:*` and relays to room `self:<userId>`, which only that
+ * user's own sockets ever join. Use this for anything a peer must not see.
+ */
+export function publishChatSelfEvent(
+  redis: Redis | Cluster,
+  userId: string,
+  event: string,
+  data: unknown
+): Promise<number> {
+  return redis.publish(`self:${userId}`, JSON.stringify({ event, data }));
+}
+
+/**
  * Publish a server→client realtime event for a QR device-link (login) session.
  *
  * The api-gateway `/auth` namespace subscribes to `devlink:<linkToken>` and

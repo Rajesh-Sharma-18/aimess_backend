@@ -11,7 +11,7 @@
  * Fire-and-forget by design (mirrors `publish-friendship.ts`): a Redis
  * hiccup must never fail the friendship REST call that triggered it.
  */
-import { publishChatUserEvent } from "@aimess/redis";
+import { publishChatSelfEvent, publishChatUserEvent } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import type {
   FriendSocketEventType,
@@ -28,6 +28,23 @@ export function emitFriendEventSafe(
 ): void {
   void publishChatUserEvent(redis, userId, event, data).catch((error) => {
     logger.warn(`Failed to publish ${event} to user:${userId}`);
+    logger.warn(error);
+  });
+}
+
+/**
+ * Same as [emitFriendEventSafe] but on the private `self:<id>` room, which only
+ * that user's own sockets join. `user:<id>` is joinable by any peer via
+ * `presence:subscribe`, so an event that must not reach the other party has to
+ * go here.
+ */
+export function emitFriendSelfEventSafe(
+  userId: string,
+  event: FriendSocketEventType | ConversationSocketEventType,
+  data: unknown
+): void {
+  void publishChatSelfEvent(redis, userId, event, data).catch((error) => {
+    logger.warn(`Failed to publish ${event} to self:${userId}`);
     logger.warn(error);
   });
 }
