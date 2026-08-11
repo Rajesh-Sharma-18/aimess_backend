@@ -1,0 +1,131 @@
+/**
+ * FriendshipEventConsumer — the "You and X are now friends" SYSTEM row is
+ * gated on CONVERSATION ACTIVITY, not on whether the pair was friends before.
+ *
+ * Rule: the row separates a new chapter from an existing conversation. With
+ * nothing above it, it is noise — so a pair that never exchanged a message,
+ * media or call gets no row, however many times they unfriend and re-friend.
+ * A pair that has talked gets it on every re-friend.
+ *
+ * Activity is read from `PrivateRoom.lastSequence` (the never-decremented
+ * insert counter), so clear/delete/auto-delete cannot reclassify a pair that
+ * really did talk.
+ */
+
+const post = jest.fn(async () => undefined);
+const update = jest.fn(async () => ({}));
+const findUnique = jest.fn();
+
+jest.mock("../../src/config/redis.js", () => ({
+  redis: { publish: jest.fn(async () => 1), on: jest.fn(), del: jest.fn() },
+}));
+
+jest.mock("../../src/config/prisma.js", () => ({
+  prisma: {
+    privateRoom: {
+      findUnique: (...args: unknown[]) => findUnique(...args),
+      update: (...args: unknown[]) => update(...args),
+    },
+    privateMessage: { findMany: jest.fn(async () => []) },
+  },
+}));
+
+jest.mock("../../src/services/private-room.service.js", () => ({
+  ensurePrivateRoom: jest.fn(async () => ({ roomId: "prv_1" })),
+}));
+
+jest.mock("../../src/services/private-system-message.service.js", () => ({
+  PrivateSystemMessageService: class {
+    post = post;
+  },
+}));
+
+jest.mock("../../src/services/user-snapshot.service.js", () => ({
+  UserSnapshotService: class {
+    getUserSnapshotsMap = jest.fn(async () => new Map());
+  },
+}));
+
+jest.mock("../../src/repositories/friendship.repository.js", () => ({
+  FriendshipRepository: class {
+    createFriendship = jest.fn(async () => undefined);
+    deleteFriendship = jest.fn(async () => undefined);
+    updateFriendshipStatus = jest.fn(async () => undefined);
+  },
+}));
+
+import { FriendshipEventConsumer } from "../../src/events/friendship.consumer.js";
+
+const A = "11111111-1111-4111-8111-111111111111";
+const B = "22222222-2222-4222-8222-222222222222";
+
+function makeFakeConnection() {
+  let onMessage: ((msg: unknown) => unknown) | null = null;
+  const channel = {
+    assertExchange: jest.fn(async () => undefined),
+    assertQueue: jest.fn(async () => undefined),
+    bindQueue: jest.fn(async () => undefined),
+    consume: jest.fn(async (_q: string, cb: (msg: unknown) => unknown) => {
+      onMessage = cb;
+      return { consumerTag: "t" };
+    }),
+    ack: jest.fn(),
+    nack: jest.fn(),
+  };
+  return {
+    connection: { createChannel: jest.fn(async () => channel) },
+    deliver: (body: unknown) =>
+      onMessage?.({ content: Buffer.from(String(body)) }),
+  };
+}
+
+/** Deliver one `friendship.created` for a room with `lastSequence` inserts. */
+async function accept(lastSequence: number, isRefriend: boolean) {
+  jest.clearAllMocks();
+  findUnique.mockResolvedValue({
+    roomId: "prv_1",
+    lastSequence,
+    lastMessageAt: lastSequence > 0 ? new Date() : null,
+  });
+
+  const fake = makeFakeConnection();
+  const consumer = new FriendshipEventConsumer();
+  await consumer.start(fake.connection as never);
+  await fake.deliver(
+    JSON.stringify({
+      type: "friendship.created",
+      userA: A,
+      userB: B,
+      status: "ACTIVE",
+      timestamp: Date.now(),
+      isRefriend,
+    })
+  );
+}
+
+describe("friendship.created — system message gate", () => {
+  it("posts NO row for a first-ever friendship with no conversation", async () => {
+    await accept(0, false);
+    expect(post).not.toHaveBeenCalled();
+    // The empty room still has to appear in the inbox (which keysets on
+    // lastMessageAt and skips NULLs).
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts NO row on re-friend when the pair never exchanged anything", async () => {
+    await accept(0, true);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("posts the row on re-friend when the pair has conversation activity", async () => {
+    await accept(4, true);
+    expect(post).toHaveBeenCalledTimes(1);
+    // Activity already put the room on both inboxes — no stamping.
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("posts the row on activity even if the publisher omits isRefriend", async () => {
+    await accept(4, false);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+});

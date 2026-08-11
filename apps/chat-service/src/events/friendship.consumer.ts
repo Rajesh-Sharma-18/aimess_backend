@@ -28,7 +28,11 @@ export interface FriendshipEvent {
   userB: string;
   status?: string;
   timestamp: number;
-  /** `friendship.created` only — this pair had been friends before. */
+  /**
+   * `friendship.created` only — this pair had been friends before. Still
+   * published by user-service (`Friendship.firstAcceptedAt`), but no longer
+   * gates the "now friends" row: prior conversation activity does.
+   */
   isRefriend?: boolean;
 }
 
@@ -109,14 +113,13 @@ export class FriendshipEventConsumer {
           // friendship gate would check, and user-service's later
           // getOrCreatePrivateRooms call now just finds this room.
           await this.ensureRoom(event.userA, event.userB);
-          // The "now friends" row marks a RE-friendship, not a friendship. A
-          // first-ever acceptance opens on the clean "no conversation yet"
-          // screen — there is no history for the line to separate, so it read
-          // as noise in an otherwise empty room. `isRefriend` is decided by
-          // user-service from `Friendship.firstAcceptedAt`, the only record
-          // that survives the row being recycled for a new request; a payload
-          // without the field (older publisher) is treated as first-time.
-          if (event.isRefriend) {
+          // The "now friends" row separates a NEW chapter from an existing
+          // conversation — with nothing above it, it is just noise. So the
+          // gate is whether this pair ever exchanged anything, NOT whether
+          // they were friends before (`event.isRefriend`, now unused here):
+          // a pair that unfriends and re-friends without ever having talked
+          // still opens on the clean "no conversation yet" screen.
+          if (await this.hasConversationActivity(event.userA, event.userB)) {
             // An unfriend->re-friend cycle would otherwise stack a fresh
             // bubble on top of every earlier one — remove any prior
             // FRIENDSHIP_CREATED system messages in this room first so only
@@ -189,6 +192,42 @@ export class FriendshipEventConsumer {
   }
 
   /**
+   * Has this pair ever had conversation activity — any message, media, sticker
+   * or call row — in their private room?
+   *
+   * Source of truth is `PrivateRoom.lastSequence`, the per-room insert counter
+   * (`allocateSequence`). It is bumped once per timeline row written and is
+   * never decremented, so it survives delete-for-me, clear conversation,
+   * delete-for-everyone and the auto-delete sweeper — all of which can leave a
+   * room with zero *visible* messages after a real conversation. Counting rows
+   * or reading `lastMessage`/`lastMessageAt` would answer "is anything visible
+   * now", which is the wrong question; `lastMessageAt` in particular is also
+   * stamped on an empty room by `stampRoomActivity` below.
+   *
+   * ponytail: a SYSTEM row (auto-delete setting changed, friendship banned) in
+   * an otherwise silent room also bumps the counter and reads as activity. Add
+   * a write-once `firstActivityAt` stamped only by user sends if that matters.
+   */
+  private async hasConversationActivity(
+    userA: string,
+    userB: string
+  ): Promise<boolean> {
+    try {
+      const room = await this.privateRoomRepo.findByParticipantsKey(
+        buildParticipantsKey(userA, userB)
+      );
+      return (room?.lastSequence ?? 0) > 0;
+    } catch (err) {
+      // Unknown => treat as a fresh pair: a missing row is cheaper than a
+      // stray "now friends" bubble at the top of an empty chat.
+      logger.warn(
+        `FriendshipEventConsumer|hasConversationActivity failed ${userA}<->${userB}: ${String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /**
    * Best-effort get-or-create of the pair's private room. A failure here must
    * not nack the friendship event — the read-model rows are already written and
    * the room still lazily creates on first open, exactly as before.
@@ -244,8 +283,8 @@ export class FriendshipEventConsumer {
    *
    * `GET /chat/inbox` keysets on `lastMessageAt` and skips NULL rows, so before
    * this the "now friends" system message was what made an accepted friendship
-   * appear in the conversation list at all. First-time friendships no longer
-   * post that message, so the room needs its own timestamp — otherwise the new
+   * appear in the conversation list at all. Friendships with no prior
+   * conversation post no message, so the room needs its own timestamp — the new
    * friend's chat vanished from the list on reload until someone said
    * something. Preview stays empty: there is no message, only an opened
    * conversation. Never overwrites a room that already has activity.
