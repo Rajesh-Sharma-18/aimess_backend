@@ -23,10 +23,7 @@ import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
 import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
-import {
-  getAccountAutoDelete,
-  getAccountChatSettings,
-} from "../lib/account-chat-settings.js";
+import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -523,9 +520,7 @@ export class PrivateRoomService {
       friendship: toWireFriendship(enriched.friendship),
       autoDelete: buildAutoDeleteWire(
         parseAutoDeleteMap(enriched.autoDeleteBy),
-        userId,
-        enriched.peerId,
-        await getAccountAutoDelete(userId)
+        userId
       ),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };

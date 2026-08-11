@@ -1,16 +1,15 @@
 /**
  * Auto-delete (disappearing messages) — pure resolution logic for PRIVATE rooms.
  *
- * The setting is stored PER USER on `PrivateRoom.autoDeleteBy` (same per-user
- * JSON-map shape as `mutedBy`/`archivedBy`), so the feature is one-sided by
- * design: either participant can turn it on without the other's approval.
+ * The setting is keyed by (conversation, user): it lives in the per-user
+ * `PrivateRoom.autoDeleteBy` JSON map, same shape as `mutedBy`/`archivedBy`.
  *
- * Which timer a given message gets is decided ONCE, at send time, by
- * {@link resolveEffectiveAutoDelete}: the SENDER's own setting wins, and the
- * peer's setting applies only when the sender has none. That single rule covers
- * both documented cases — one-sided (only one user configured it, so every new
- * message follows that timer regardless of who sent it) and two-sided-different
- * (each user's messages follow their own timer).
+ * The two participants' timers are fully INDEPENDENT. A message is stamped with
+ * its SENDER's own setting for this chat and nothing else — no fallback to the
+ * peer's timer, no fallback to an account-wide default. One user turning
+ * disappearing messages on must never change what the other's menu shows or
+ * what happens to the other's messages, and a brand-new conversation therefore
+ * starts Off for both sides without anything having to initialize it.
  *
  * Nothing here touches the DB or the clock beyond the timestamp it is handed —
  * kept pure so both the send path and the "timer changed mid-conversation"
@@ -79,11 +78,9 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
 /**
  * Normalize the stored `PrivateRoom.autoDeleteBy` JSON into a typed map.
  *
- * An entry with `mode: "OFF"` is KEPT (it carries a `setAt`), because
- * "explicitly turned off in THIS chat" and "never configured" are no longer the
- * same state: the first must survive the account-wide default, the second must
- * not — see {@link resolveEffectiveAutoDelete}. Every other consumer reads
- * through {@link readAutoDeleteSetting}, which returns OFF either way.
+ * An entry with `mode: "OFF"` is KEPT rather than dropped — it carries the
+ * `setAt` of the moment the user turned it off. Both states resolve to the same
+ * timer (none), so every consumer can read through {@link readAutoDeleteSetting}.
  */
 export function parseAutoDeleteMap(
   raw: unknown
@@ -98,15 +95,7 @@ export function parseAutoDeleteMap(
   return out;
 }
 
-/** True when this user has made an explicit per-chat choice (including OFF). */
-export function hasExplicitAutoDelete(
-  map: Record<string, AutoDeleteSetting>,
-  userId: string
-): boolean {
-  return map[userId] !== undefined;
-}
-
-/** One user's own setting (OFF when unset). */
+/** One user's own setting (OFF when unset — the default for every new chat). */
 export function readAutoDeleteSetting(
   map: Record<string, AutoDeleteSetting>,
   userId: string
@@ -115,42 +104,20 @@ export function readAutoDeleteSetting(
 }
 
 /**
- * The timer that applies to a message SENT BY `senderId`. Sender's own per-chat
- * setting first, peer's per-chat setting next — see this module's header for why
- * that covers both the one-sided and the two-different-timers case — and the
- * sender's ACCOUNT-WIDE default (Settings → Chat → Auto-Delete) last.
+ * The timer that applies to a message SENT BY `senderId` — that sender's own
+ * setting for this chat, full stop.
  *
- * OFF MEANS OFF: an explicit "Off" on THIS chat outranks every fallback, the
- * peer's timer included. Both fallbacks exist to cover a chat the sender never
- * configured; once they have said "not here", nothing may re-arm their messages
- * behind a menu that reads Off. That is why an explicit OFF is stored rather
- * than deleted — "off here" and "never chose" must stay distinguishable.
+ * Deliberately a one-line alias rather than a resolution chain: it used to fall
+ * back to the peer's timer and then to the sender's account-wide default, which
+ * made one participant's choice silently govern the other's messages and gave a
+ * brand-new conversation an inherited timer nobody picked. Kept as its own
+ * named function because the send path and the re-stamp must never drift apart.
  */
 export function resolveEffectiveAutoDelete(
   map: Record<string, AutoDeleteSetting>,
-  senderId: string,
-  peerId: string,
-  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
+  senderId: string
 ): AutoDeleteSetting {
-  const own = readAutoDeleteSetting(map, senderId);
-  if (own.mode !== "OFF") return own;
-  if (hasExplicitAutoDelete(map, senderId)) return AUTO_DELETE_OFF;
-  const peer = readAutoDeleteSetting(map, peerId);
-  if (peer.mode !== "OFF") return peer;
-  return accountDefault;
-}
-
-/** Account-wide `ChatSettings.autoDeleteTimer` (user-service) → a room setting. */
-export const ACCOUNT_AUTO_DELETE_TTL_SECONDS: Record<string, number> = {
-  DAYS_7: 7 * 24 * 3600,
-  DAYS_15: 15 * 24 * 3600,
-  DAYS_30: 30 * 24 * 3600,
-};
-
-export function accountAutoDeleteSetting(timer: string): AutoDeleteSetting {
-  const ttlSeconds = ACCOUNT_AUTO_DELETE_TTL_SECONDS[String(timer)];
-  if (!ttlSeconds) return AUTO_DELETE_OFF;
-  return { mode: "TIMER", ttlSeconds, setAt: "" };
+  return readAutoDeleteSetting(map, senderId);
 }
 
 export interface AutoDeleteStamp {
@@ -212,46 +179,29 @@ export function formatAutoDeleteDuration(
   return formatTtlDuration(ttlSeconds, locale);
 }
 
-/** The wire block returned by the REST settings endpoints and the socket event. */
+/**
+ * The wire block returned by the REST settings endpoints and the socket event.
+ *
+ * ONE user's view of ONE chat. It carries no `peer` block: the peer's timer no
+ * longer affects this user's messages, so shipping it would only leak the other
+ * participant's private preference and invite a client to render it as this
+ * user's own state — which is exactly how "A set 7 days" started showing up in
+ * B's menu. `self` is kept alongside the flat fields for older clients.
+ */
 export function buildAutoDeleteWire(
   map: Record<string, AutoDeleteSetting>,
-  userId: string,
-  peerId: string,
-  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
+  userId: string
 ): Record<string, unknown> {
   const mine = readAutoDeleteSetting(map, userId);
-  const theirs = readAutoDeleteSetting(map, peerId);
-  const effective = resolveEffectiveAutoDelete(
-    map,
-    userId,
-    peerId,
-    accountDefault
-  );
-  const toWire = (s: AutoDeleteSetting) => ({
-    mode: s.mode,
-    ttlSeconds: s.ttlSeconds,
-    setAt: s.setAt ? new Date(s.setAt).getTime() : 0,
-  });
   return {
-    // What MY next message will follow.
-    mode: effective.mode,
-    ttlSeconds: effective.ttlSeconds,
-    isEnabled: effective.mode !== "OFF",
-    label: formatAutoDeleteDuration(effective.ttlSeconds, currentLocale()),
-    // Where that timer came from, so the UI can say "from your Chat settings"
-    // instead of showing this chat as configured when it isn't.
-    source:
-      effective.mode === "OFF"
-        ? "NONE"
-        : mine.mode !== "OFF"
-          ? "SELF"
-          : theirs.mode !== "OFF"
-            ? "PEER"
-            : "ACCOUNT",
-    // Both sides, so the UI can render "you: 1 day / them: 1 hour".
-    self: toWire(mine),
-    peer: toWire(theirs),
-    // The caller's account-wide default (Settings → Chat → Auto-Delete).
-    accountDefault: toWire(accountDefault),
+    mode: mine.mode,
+    ttlSeconds: mine.ttlSeconds,
+    isEnabled: mine.mode !== "OFF",
+    label: formatAutoDeleteDuration(mine.ttlSeconds, currentLocale()),
+    self: {
+      mode: mine.mode,
+      ttlSeconds: mine.ttlSeconds,
+      setAt: mine.setAt ? new Date(mine.setAt).getTime() : 0,
+    },
   };
 }

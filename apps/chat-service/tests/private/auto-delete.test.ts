@@ -21,7 +21,6 @@ import {
   resolveEffectiveAutoDelete,
   validateAutoDeleteInput,
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
-  accountAutoDeleteSetting,
 } from "../../src/lib/auto-delete.js";
 import { invalidateAccountChatSettings } from "../../src/lib/account-chat-settings.js";
 import { userGrpcClient } from "../../src/grpc/user-snapshot.client.js";
@@ -83,16 +82,14 @@ describe("effective timer resolution", () => {
   const dayTimer = { mode: "TIMER" as const, ttlSeconds: 86400, setAt: "" };
   const hourTimer = { mode: "TIMER" as const, ttlSeconds: 3600, setAt: "" };
 
-  it("applies the only configured timer to BOTH senders when one-sided", () => {
+  it("stamps a message with its SENDER's own setting, never the peer's", () => {
     const map = parseAutoDeleteMap({ [TEST_USER_ID]: dayTimer });
-    // The setter's own message…
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).ttlSeconds).toBe(
+    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID).ttlSeconds).toBe(
       86400
     );
-    // …and the peer's message, which has no setting of its own.
-    expect(resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID).ttlSeconds).toBe(
-      86400
-    );
+    // The peer configured nothing, so THEIR messages keep no timer at all —
+    // one participant turning it on must not arm the other's messages.
+    expect(resolveEffectiveAutoDelete(map, PEER).mode).toBe("OFF");
   });
 
   it("uses each sender's OWN timer when both users configured one", () => {
@@ -100,95 +97,26 @@ describe("effective timer resolution", () => {
       [TEST_USER_ID]: hourTimer,
       [PEER]: dayTimer,
     });
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).ttlSeconds).toBe(
-      3600
-    );
-    expect(resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID).ttlSeconds).toBe(
-      86400
-    );
+    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID).ttlSeconds).toBe(3600);
+    expect(resolveEffectiveAutoDelete(map, PEER).ttlSeconds).toBe(86400);
   });
 
-  it("is OFF when nobody configured it", () => {
+  // A brand-new friendship has an empty map, so this IS the new-conversation
+  // default: Off for both sides, with nothing to initialize and nothing to
+  // inherit from either user's other chats.
+  it("is OFF for both sides when nobody configured it", () => {
     const map = parseAutoDeleteMap({});
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).mode).toBe(
-      "OFF"
-    );
+    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID).mode).toBe("OFF");
+    expect(resolveEffectiveAutoDelete(map, PEER).mode).toBe("OFF");
   });
 
-  // ── Account-wide default (Settings → Chat → Auto-Delete) ──────────────────
-  // It is a FALLBACK, never an override: it only reaches a chat nobody has
-  // configured, and an explicit per-chat "Off" outranks it.
-  const days30 = accountAutoDeleteSetting("DAYS_30");
-
-  it("maps the account-wide options to day-length timers", () => {
-    expect(accountAutoDeleteSetting("DAYS_7").ttlSeconds).toBe(604800);
-    expect(accountAutoDeleteSetting("DAYS_15").ttlSeconds).toBe(1296000);
-    expect(days30.ttlSeconds).toBe(2592000);
-    expect(accountAutoDeleteSetting("OFF").mode).toBe("OFF");
-    expect(accountAutoDeleteSetting("GARBAGE").mode).toBe("OFF");
-  });
-
-  it("falls back to the sender's account default in an unconfigured chat", () => {
-    const map = parseAutoDeleteMap({});
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).ttlSeconds
-    ).toBe(2592000);
-  });
-
-  it("lets a per-chat timer — either side's — beat the account default", () => {
-    expect(
-      resolveEffectiveAutoDelete(
-        parseAutoDeleteMap({ [TEST_USER_ID]: hourTimer }),
-        TEST_USER_ID,
-        PEER,
-        days30
-      ).ttlSeconds
-    ).toBe(3600);
-    expect(
-      resolveEffectiveAutoDelete(
-        parseAutoDeleteMap({ [PEER]: hourTimer }),
-        TEST_USER_ID,
-        PEER,
-        days30
-      ).ttlSeconds
-    ).toBe(3600);
-  });
-
-  it("keeps a chat the sender explicitly turned OFF off, default or not", () => {
-    const map = parseAutoDeleteMap({
-      [TEST_USER_ID]: { mode: "OFF", ttlSeconds: null, setAt: "2026-08-08" },
-    });
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).mode
-    ).toBe("OFF");
-    // …but the PEER's own default still governs the PEER's messages.
-    expect(
-      resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID, days30).ttlSeconds
-    ).toBe(2592000);
-  });
-
-  // OFF MEANS OFF. Both fallbacks only cover a chat the sender never configured;
-  // once they picked "Off" here, no peer timer and no account default may re-arm
-  // their sends behind a gear menu that reads Off.
-  it("keeps an explicit OFF off even when the PEER has a timer", () => {
+  it("keeps an explicit OFF off while the peer has a timer running", () => {
     const map = parseAutoDeleteMap({
       [TEST_USER_ID]: { mode: "OFF", ttlSeconds: null, setAt: "2026-08-11" },
       [PEER]: dayTimer,
     });
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).mode
-    ).toBe("OFF");
-    // The peer's own messages still follow the peer's own timer.
-    expect(
-      resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID, days30).ttlSeconds
-    ).toBe(86400);
-  });
-
-  it("still lets the peer's timer govern a sender who never configured the chat", () => {
-    const map = parseAutoDeleteMap({ [PEER]: dayTimer });
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).ttlSeconds
-    ).toBe(86400);
+    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID).mode).toBe("OFF");
+    expect(resolveEffectiveAutoDelete(map, PEER).ttlSeconds).toBe(86400);
   });
 
   it("stamps a TIMER deadline from send time, and defers AFTER_VIEWING", () => {
@@ -260,17 +188,19 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.body.data.label).toBe("24 hours");
   });
 
-  it("notifies BOTH participants' devices with conv:auto_delete:updated", async () => {
+  it("notifies only the SETTER's own devices with conv:auto_delete:updated", async () => {
     await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
       .send({ mode: "TIMER", ttlSeconds: 3600 });
 
+    // Multi-device sync for the person who changed it. The peer's own timer did
+    // not change, and pushing this to them is what made one user's choice
+    // render as the other's.
     const channels = publishes()
       .filter((p) => p.event === "conv:auto_delete:updated")
-      .map((p) => p.channel)
-      .sort();
-    expect(channels).toEqual([`user:${PEER}`, `user:${TEST_USER_ID}`].sort());
+      .map((p) => p.channel);
+    expect(channels).toEqual([`user:${TEST_USER_ID}`]);
   });
 
   it("posts a SYSTEM message so the peer learns about it in-chat", async () => {
@@ -311,32 +241,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
         afterView: false,
       })
     );
-    // One-sided: the peer has no setting, so their messages follow this timer too.
-    const [args] =
-      mocks.privateMessageRepo.restampPendingAutoDeletes.mock.calls.at(-1)!;
-    expect(args.senderIds.sort()).toEqual([PEER, TEST_USER_ID].sort());
-  });
-
-  it("does not re-stamp the messages of a peer who explicitly turned this chat OFF", async () => {
-    // The send path stops arming that peer's messages once they pick Off, so
-    // re-stamping them here would resurrect the very timer they opted out of.
-    const peerOff = { mode: "OFF", ttlSeconds: null, setAt: "2026-08-11" };
-    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
-      room({ [PEER]: peerOff })
-    );
-    mocks.privateRoomRepo.setAutoDelete.mockImplementation(
-      async (_roomId: string, userId: string, s: any) =>
-        room({
-          [PEER]: peerOff,
-          [userId]: { ...s, setAt: new Date().toISOString() },
-        })
-    );
-
-    await request(app)
-      .put(url)
-      .set(bearer(makeAccessToken()))
-      .send({ mode: "TIMER", ttlSeconds: 3600 });
-
+    // ONLY the caller's own messages — the peer's follow the peer's own setting.
     const [args] =
       mocks.privateMessageRepo.restampPendingAutoDeletes.mock.calls.at(-1)!;
     expect(args.senderIds).toEqual([TEST_USER_ID]);
@@ -394,7 +299,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.status).toBe(404);
   });
 
-  it("GET returns both sides' settings", async () => {
+  it("GET returns MY setting only, never the peer's", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
       room({
         [TEST_USER_ID]: { mode: "TIMER", ttlSeconds: 3600, setAt: "" },
@@ -402,40 +307,38 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
       })
     );
     const res = await request(app).get(url).set(bearer(makeAccessToken()));
+
     expect(res.status).toBe(200);
-    // "Mine" wins for MY next message; the peer's is exposed for display.
     expect(res.body.data.ttlSeconds).toBe(3600);
     expect(res.body.data.self.ttlSeconds).toBe(3600);
-    expect(res.body.data.peer.ttlSeconds).toBe(86400);
+    // The peer's private preference is not part of this payload at all.
+    expect(res.body.data.peer).toBeUndefined();
   });
 
-  it("GET reports the account-wide default as the timer in force", async () => {
+  it("GET reports OFF for an unconfigured chat, whatever the account settings say", async () => {
     setAccountTimer("DAYS_30");
     const res = await request(app).get(url).set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.isEnabled).toBe(true);
-    expect(res.body.data.ttlSeconds).toBe(2592000);
-    expect(res.body.data.source).toBe("ACCOUNT");
-    // …while this chat itself is still unconfigured on both sides.
-    expect(res.body.data.self.mode).toBe("OFF");
-    expect(res.body.data.accountDefault.ttlSeconds).toBe(2592000);
+    expect(res.body.data.isEnabled).toBe(false);
+    expect(res.body.data.mode).toBe("OFF");
+    expect(res.body.data.ttlSeconds).toBeNull();
   });
 
-  it("records an explicit OFF so the account default stops applying here", async () => {
-    setAccountTimer("DAYS_30");
+  it("writes only the caller's own entry, whatever the body claims", async () => {
+    // Ownership comes from the access token; a userId in the body is ignored.
     const res = await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
-      .send({ mode: "OFF" });
+      .send({ mode: "TIMER", ttlSeconds: 3600, userId: PEER });
 
     expect(res.status).toBe(200);
+    expect(mocks.privateRoomRepo.setAutoDelete).toHaveBeenCalledTimes(1);
     expect(mocks.privateRoomRepo.setAutoDelete).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      { mode: "OFF", ttlSeconds: null }
+      { mode: "TIMER", ttlSeconds: 3600 }
     );
-    expect(res.body.data.isEnabled).toBe(false);
   });
 });
 

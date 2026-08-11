@@ -12,6 +12,8 @@ import { ensurePrivateRoom } from "../services/private-room.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { SystemEvent } from "../types/enums.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
+import { buildMessagePreview } from "../services/message-preview.service.js";
+import { publishConvUpdatedSafe } from "./publish-conv-updated.js";
 
 const FRIENDSHIP_EXCHANGE = "user.events";
 const FRIENDSHIP_QUEUE = "chat-service.friendship";
@@ -293,25 +295,82 @@ export class FriendshipEventConsumer {
   }
 
   /**
-   * Put a brand-new, message-less room on both inboxes.
+   * Record the friendship as the room's latest LIST activity, with no visible
+   * message behind it.
    *
-   * `GET /chat/inbox` keysets on `lastMessageAt` and skips NULL rows, so before
-   * this the "now friends" system message was what made an accepted friendship
-   * appear in the conversation list at all. Friendships with no prior
-   * conversation post no message, so the room needs its own timestamp — the new
-   * friend's chat vanished from the list on reload until someone said
-   * something. Preview stays empty: there is no message, only an opened
-   * conversation. Never overwrites a room that already has activity.
+   * Chat-room visibility and list activity are separate concerns: the bubble
+   * is hidden for a pair that never talked, but becoming friends is still the
+   * most recent thing that happened to that conversation, so the row has to
+   * carry its timestamp and sort by it. `GET /chat/inbox` keysets on
+   * `lastMessageAt` and skips NULL rows, so without this the new friend's chat
+   * sat at the bottom of the list with no time (and vanished entirely on
+   * reload) until someone said something.
+   *
+   * The bump is forward-only — an older event can never drag a live
+   * conversation backwards — and `countInUnread: false`, so no badge, no
+   * receipt, no message. The preview is whatever message is still visible in
+   * the room (usually none: empty preview, correct timestamp).
    */
   private async stampRoomActivity(event: FriendshipEvent): Promise<void> {
     try {
       const room = await this.privateRoomRepo.findByParticipantsKey(
         buildParticipantsKey(event.userA, event.userB)
       );
-      if (!room || room.lastMessageAt) return;
+      if (!room) return;
+      const at = new Date(event.timestamp || Date.now());
+      if (room.lastMessageAt && room.lastMessageAt >= at) return;
+
+      // The prune above may have deleted the very message this room's snapshot
+      // points at, which would leave the list previewing a tombstone. Rebuild
+      // it from what is actually still visible (null => empty room).
+      const visible = await this.privateMessageRepo.findPreviousVisible(
+        room.roomId
+      );
+      if (visible?.id !== room.lastMessageId) {
+        await this.privateRoomRepo.setLastMessage(
+          room.roomId,
+          visible
+            ? {
+                id: visible.id,
+                senderId: visible.senderId ?? "",
+                content: visible.content,
+                messageType: visible.messageType,
+                createdAt: visible.createdAt,
+                clientMessageId: visible.clientMessageId,
+                sequenceNumber: visible.sequenceNumber,
+                revision: visible.revision,
+              }
+            : null
+        );
+      }
+      // Stamped AFTER the snapshot rebuild, which clears `lastMessageAt` when
+      // no message survives — the friendship's own time is what the row sorts
+      // on either way.
       await prisma.privateRoom.update({
         where: { roomId: room.roomId },
-        data: { lastMessageAt: new Date(event.timestamp || Date.now()) },
+        data: { lastMessageAt: at },
+      });
+
+      publishConvUpdatedSafe({
+        redis,
+        type: "PRIVATE",
+        roomId: room.roomId,
+        recipientIds: [event.userA, event.userB],
+        senderId: "",
+        lastMessageId: visible?.id ?? "",
+        lastMessageAt: at.getTime(),
+        // Never an unread: nothing was sent, so no badge and no receipt.
+        countInUnread: false,
+        preview: visible
+          ? {
+              contentType: visible.messageType,
+              text: buildMessagePreview(visible.messageType, visible.content),
+              clientMessageId: visible.clientMessageId ?? null,
+              seq: visible.sequenceNumber,
+              revision: visible.revision,
+              createdAt: at.getTime(),
+            }
+          : { contentType: "", text: "", createdAt: at.getTime() },
       });
     } catch (err) {
       logger.warn(
