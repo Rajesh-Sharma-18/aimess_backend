@@ -34,7 +34,7 @@ export class GroupMessageController {
   ) {}
 
   /**
-   * POST /groups/:roomId/messages — send a group message. Delegates to the
+   * POST /groups/rooms/:roomId/messages — send a group message. Delegates to the
    * ChatMessageOrchestrator (send + message:new broadcast + conv:updated bump +
    * FCM push fan-out to active members). Active-membership and idempotency live
    * in the service. Returns the canonical wire message; 201 on a fresh insert,
@@ -80,7 +80,7 @@ export class GroupMessageController {
   });
 
   /**
-   * POST /groups/:roomId/read — mark this group read up to `upToMessageId`.
+   * POST /groups/rooms/:roomId/read — mark this group read up to `upToMessageId`.
    * Delegates to the ChatMessageOrchestrator (advance the group-member read
    * pointer + message:read receipt + read_sync to the reader's other devices),
    * mirroring the gRPC markMessagesRead effects. Returns { ok, readToSeq }.
@@ -101,7 +101,7 @@ export class GroupMessageController {
   });
 
   /**
-   * `GET /api/chat/groups/:roomId/messages` — the group room timeline. Supports
+   * `GET /api/chat/groups/rooms/:roomId/messages` — the group room timeline. Supports
    * every pagination axis: `before_ts`/`after_ts` (compound `(createdAt, _id)`
    * keyset), the gap-safe `before_seq`/`after_seq` sequence keyset, and
    * `around=<messageId>` for jump-to-message. See {@link listMessages}.
@@ -111,7 +111,7 @@ export class GroupMessageController {
   );
 
   /**
-   * `GET /api/chat/groups/:roomId/changes` — the ZERO-LOSS changes feed.
+   * `GET /api/chat/groups/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
    * Identical envelope to the private and community equivalents.
    */
   getChanges = asyncHandler(async (req: Request, res: Response) => {
@@ -814,7 +814,7 @@ export class GroupMessageController {
   });
 
   /**
-   * POST /groups/:roomId/messages/:messageId/reactions — add the caller's `emoji`
+   * POST /groups/rooms/:roomId/messages/:messageId/reactions — add the caller's `emoji`
    * reaction. Delegates to the orchestrator (active-member guard + idempotent
    * toggle-ON + message:reaction broadcast). Returns the updated ChatReactionGroup[]
    * under `{ reactions }`. Idempotent: re-adding an existing reaction is a no-op.
@@ -854,7 +854,7 @@ export class GroupMessageController {
   });
 
   /**
-   * DELETE /groups/:roomId/messages/:messageId/reactions/:emoji — remove the
+   * DELETE /groups/rooms/:roomId/messages/:messageId/reactions/:emoji — remove the
    * caller's `emoji` reaction. Delegates to the orchestrator (active-member guard +
    * idempotent toggle-OFF + message:reaction broadcast). Returns the updated
    * ChatReactionGroup[]. Idempotent: removing an absent reaction is a no-op.

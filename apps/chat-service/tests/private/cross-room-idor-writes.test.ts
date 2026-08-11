@@ -23,7 +23,7 @@
  *   private edit    PATCH  /api/chat/private/messages/:messageId      { content:{text} }
  *   group  edit     PATCH  /api/chat/groups/messages/:messageId       { content:{text} }
  *   private forward POST   /api/chat/private/rooms/:roomId/messages/:messageId/forward
- *   group  forward  POST   /api/chat/groups/:roomId/messages/:messageId/forward
+ *   group  forward  POST   /api/chat/groups/rooms/:roomId/messages/:messageId/forward
  */
 import request from "supertest";
 
@@ -345,7 +345,7 @@ describe("B1 cross-room IDOR — group forward (source-room bind)", () => {
     });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GRP}/messages/src/forward`)
+      .post(`/api/chat/groups/rooms/${GRP}/messages/src/forward`)
       .set(bearer(makeAccessToken()))
       .send({ targetRoomId: "grp_target_room" });
 
@@ -375,7 +375,7 @@ describe("B1 cross-room IDOR — group forward (source-room bind)", () => {
     });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GRP}/messages/src/forward`)
+      .post(`/api/chat/groups/rooms/${GRP}/messages/src/forward`)
       .set(bearer(makeAccessToken()))
       .send({ targetRoomId: "grp_target_room" });
 
@@ -408,7 +408,7 @@ describe("B1 cross-room IDOR — group forward (source-room bind)", () => {
     });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GRP}/messages/src/forward`)
+      .post(`/api/chat/groups/rooms/${GRP}/messages/src/forward`)
       .set(bearer(makeAccessToken()))
       .send({ targetRoomId: "grp_target_room" });
 

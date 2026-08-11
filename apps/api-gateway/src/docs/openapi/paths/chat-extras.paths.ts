@@ -470,7 +470,7 @@ const privatePinMessage = {
 };
 
 // --------------------------------------------------------------------------
-// GET /chat/groups/{roomId}/messages
+// GET /chat/groups/rooms/{roomId}/messages
 // --------------------------------------------------------------------------
 const groupMessages = {
   get: {
@@ -544,7 +544,7 @@ const groupMessages = {
 };
 
 // --------------------------------------------------------------------------
-// POST /chat/groups/{roomId}/read
+// POST /chat/groups/rooms/{roomId}/read
 // --------------------------------------------------------------------------
 const groupMarkRead = {
   post: {
@@ -590,7 +590,7 @@ const communityMarkRead = {
 };
 
 // --------------------------------------------------------------------------
-// POST/DELETE /chat/groups/{roomId}/messages/{messageId}/pin
+// POST/DELETE /chat/groups/rooms/{roomId}/messages/{messageId}/pin
 // --------------------------------------------------------------------------
 const groupPinMessage = {
   post: {
@@ -747,9 +747,9 @@ export const chatExtrasPaths = {
   "/chat/private/rooms/{roomId}/messages": privateMessages,
   "/chat/private/rooms/{roomId}/read": privateMarkRead,
   "/chat/private/rooms/{roomId}/messages/{messageId}/pin": privatePinMessage,
-  "/chat/groups/{roomId}/messages": groupMessages,
-  "/chat/groups/{roomId}/read": groupMarkRead,
-  "/chat/groups/{roomId}/messages/{messageId}/pin": groupPinMessage,
+  "/chat/groups/rooms/{roomId}/messages": groupMessages,
+  "/chat/groups/rooms/{roomId}/read": groupMarkRead,
+  "/chat/groups/rooms/{roomId}/messages/{messageId}/pin": groupPinMessage,
   "/chat/community/rooms/{roomId}/read": communityMarkRead,
   "/chat/sync": chatSync,
 };

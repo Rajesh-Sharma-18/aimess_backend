@@ -22,7 +22,7 @@ beforeEach(() => {
   ({ app, mocks } = buildApp());
 });
 
-describe("POST /groups/:roomId/read (mark-read → orchestrator)", () => {
+describe("POST /groups/rooms/:roomId/read (mark-read → orchestrator)", () => {
   it("POSITIVE: advances the pointer via advanceReadPointer, emits message:read + read_sync", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       roomId: ROOM,
@@ -43,7 +43,7 @@ describe("POST /groups/:roomId/read (mark-read → orchestrator)", () => {
     });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${ROOM}/read`)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
       .set(bearer(makeAccessToken()))
       .send({ upToMessageId: "507f1f77bcf86cd799439011" });
 
@@ -70,7 +70,7 @@ describe("POST /groups/:roomId/read (mark-read → orchestrator)", () => {
 
   it("NEGATIVE: an optimistic client id ('tmp-…') no-ops instead of throwing a malformed-ObjectId error", async () => {
     const res = await request(app)
-      .post(`/api/chat/groups/${ROOM}/read`)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
       .set(bearer(makeAccessToken()))
       .send({ upToMessageId: "tmp-1784266677955-0" });
 
@@ -82,7 +82,7 @@ describe("POST /groups/:roomId/read (mark-read → orchestrator)", () => {
 
   it("NEGATIVE: 400 when upToMessageId is missing", async () => {
     const res = await request(app)
-      .post(`/api/chat/groups/${ROOM}/read`)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
       .set(bearer(makeAccessToken()))
       .send({});
 

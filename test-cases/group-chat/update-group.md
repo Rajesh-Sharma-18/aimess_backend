@@ -4,8 +4,8 @@
 
 **Endpoints:**
 
-- `PATCH /api/chat/groups/:roomId` — update name/description/avatar/memberLimit (OWNER or ADMIN)
-- `GET /api/chat/groups/:roomId` — fetch a single active group
+- `PATCH /api/chat/groups/rooms/:roomId` — update name/description/avatar/memberLimit (OWNER or ADMIN)
+- `GET /api/chat/groups/rooms/:roomId` — fetch a single active group
 - `GET /api/chat/groups/my-groups` — paginated list of the caller's groups
 
 **Validation (`updateGroupSchema`, all optional):** `name` (1–100, trimmed), `description` (≤1000), `avatar` (string), `memberLimit` (int 2–5000).
@@ -21,7 +21,7 @@
 | Field                     | Value                                                                                                        |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Feature/Module**        | Group Chat / Update Group                                                                                    |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                                                                             |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                                                                       |
 | **Test Scenario**         | Owner renames the group                                                                                      |
 | **Category**              | Happy Path                                                                                                   |
 | **Priority**              | High                                                                                                         |
@@ -37,7 +37,7 @@
 | Field                     | Value                                                                                       |
 | ------------------------- | ------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                                                   |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                                                            |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                                                      |
 | **Test Scenario**         | Admin changes avatar and description together                                               |
 | **Category**              | RBAC                                                                                        |
 | **Priority**              | High                                                                                        |
@@ -53,7 +53,7 @@
 | Field                     | Value                                                  |
 | ------------------------- | ------------------------------------------------------ |
 | **Feature/Module**        | Group Chat / Update Group                              |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                       |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                 |
 | **Test Scenario**         | Plain member tries to rename                           |
 | **Category**              | RBAC                                                   |
 | **Priority**              | High                                                   |
@@ -69,7 +69,7 @@
 | Field                     | Value                                     |
 | ------------------------- | ----------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                 |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`          |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`    |
 | **Test Scenario**         | Moderator tries to update settings        |
 | **Category**              | RBAC                                      |
 | **Priority**              | High                                      |
@@ -85,7 +85,7 @@
 | Field                     | Value                                        |
 | ------------------------- | -------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                    |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`             |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`       |
 | **Test Scenario**         | Outsider updates someone else's group (IDOR) |
 | **Category**              | Security                                     |
 | **Priority**              | High                                         |
@@ -101,7 +101,7 @@
 | Field                     | Value                                                                  |
 | ------------------------- | ---------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                              |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                                       |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                                 |
 | **Test Scenario**         | Owner raises member cap                                                |
 | **Category**              | Business Rule                                                          |
 | **Priority**              | Medium                                                                 |
@@ -117,7 +117,7 @@
 | Field                     | Value                                                                 |
 | ------------------------- | --------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                             |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                                      |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                                |
 | **Test Scenario**         | name equals current value                                             |
 | **Category**              | Edge Case                                                             |
 | **Priority**              | Medium                                                                |
@@ -133,7 +133,7 @@
 | Field                     | Value                                                       |
 | ------------------------- | ----------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                   |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                            |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                      |
 | **Test Scenario**         | roomId does not exist                                       |
 | **Category**              | Error Handling                                              |
 | **Priority**              | Medium                                                      |
@@ -149,7 +149,7 @@
 | Field                     | Value                                                                                                                   |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                                                                               |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                                                                                        |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`                                                                                  |
 | **Test Scenario**         | Group already disbanded                                                                                                 |
 | **Category**              | Edge Case                                                                                                               |
 | **Priority**              | Medium                                                                                                                  |
@@ -162,26 +162,26 @@
 
 ### TC-GCHAT-023 — Invalid validation on update (name 101 chars)
 
-| Field                     | Value                            |
-| ------------------------- | -------------------------------- |
-| **Feature/Module**        | Group Chat / Update Group        |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId` |
-| **Test Scenario**         | name too long                    |
-| **Category**              | Input Validation                 |
-| **Priority**              | Low                              |
-| **Preconditions**         | Caller OWNER                     |
-| **Request Payload**       | `{ "name": "<101 chars>" }`      |
-| **Expected Response**     | `400` validation error           |
-| **Expected DB Changes**   | None                             |
-| **Expected Socket/Event** | None                             |
-| **Notes**                 | —                                |
+| Field                     | Value                                  |
+| ------------------------- | -------------------------------------- |
+| **Feature/Module**        | Group Chat / Update Group              |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId` |
+| **Test Scenario**         | name too long                          |
+| **Category**              | Input Validation                       |
+| **Priority**              | Low                                    |
+| **Preconditions**         | Caller OWNER                           |
+| **Request Payload**       | `{ "name": "<101 chars>" }`            |
+| **Expected Response**     | `400` validation error                 |
+| **Expected DB Changes**   | None                                   |
+| **Expected Socket/Event** | None                                   |
+| **Notes**                 | —                                      |
 
 ### TC-GCHAT-024 — Empty update body
 
 | Field                     | Value                                               |
 | ------------------------- | --------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                           |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId`                    |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId`              |
 | **Test Scenario**         | No fields supplied (all optional)                   |
 | **Category**              | Edge Case                                           |
 | **Priority**              | Low                                                 |
@@ -197,7 +197,7 @@
 | Field                     | Value                                    |
 | ------------------------- | ---------------------------------------- |
 | **Feature/Module**        | Group Chat / Get Room                    |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId`           |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId`     |
 | **Test Scenario**         | Fetch group metadata                     |
 | **Category**              | Happy Path                               |
 | **Priority**              | Medium                                   |
@@ -213,7 +213,7 @@
 | Field                     | Value                                 |
 | ------------------------- | ------------------------------------- |
 | **Feature/Module**        | Group Chat / Get Room                 |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId`        |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId`  |
 | **Test Scenario**         | Unknown or disbanded roomId           |
 | **Category**              | Error Handling                        |
 | **Priority**              | Medium                                |
@@ -229,7 +229,7 @@
 | Field                     | Value                                                                                                                                                 |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Get Room                                                                                                                                 |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId`                                                                                                                        |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId`                                                                                                                  |
 | **Test Scenario**         | A user who is NOT a member fetches full group metadata                                                                                                |
 | **Category**              | Security                                                                                                                                              |
 | **Priority**              | High                                                                                                                                                  |
@@ -277,7 +277,7 @@
 | Field                     | Value                                                                                                                  |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Update Group                                                                                              |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId` (×2)                                                                                  |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId` (×2)                                                                            |
 | **Test Scenario**         | Two admins PATCH a different name at the same time                                                                     |
 | **Category**              | Concurrency                                                                                                            |
 | **Priority**              | Low                                                                                                                    |

@@ -1,6 +1,6 @@
 /**
  * `getMessagesSeq` / `getMessagesAround` — the ACTUAL methods the group
- * timeline route (`GET /api/chat/groups/:roomId/messages`, no
+ * timeline route (`GET /api/chat/groups/rooms/:roomId/messages`, no
  * around/before_seq/after_seq → seq page; `?around=` → getMessagesAround)
  * calls, per `GroupMessageController.listMessages`.
  *

@@ -1,5 +1,5 @@
 /**
- * "Delete Conversation" for a group — DELETE /api/chat/groups/:roomId.
+ * "Delete Conversation" for a group — DELETE /api/chat/groups/rooms/:roomId.
  *
  * WhatsApp semantics: the caller's own list row goes away (a `clearedAt`
  * cutoff), the GROUP itself is untouched — no membership change, no disband,
@@ -25,7 +25,7 @@ beforeEach(() => {
 
 const del = () =>
   request(app)
-    .delete(`/api/chat/groups/${ROOM}`)
+    .delete(`/api/chat/groups/rooms/${ROOM}`)
     .set(bearer(makeAccessToken()));
 
 function member(status: string) {
@@ -37,7 +37,7 @@ function member(status: string) {
   });
 }
 
-describe("DELETE /api/chat/groups/:roomId (delete conversation)", () => {
+describe("DELETE /api/chat/groups/rooms/:roomId (delete conversation)", () => {
   it("POSITIVE: an ACTIVE member clears their own history, membership intact", async () => {
     member("ACTIVE");
     const res = await del();

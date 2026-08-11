@@ -3797,18 +3797,18 @@ export const chatPaths = {
   // Group rooms
   "/chat/groups": groupCreate,
   "/chat/groups/my-groups": groupMyGroups,
-  "/chat/groups/{roomId}": groupById,
-  "/chat/groups/{roomId}/clear": groupClear,
-  "/chat/groups/{roomId}/disband": groupDisband,
-  "/chat/groups/{roomId}/archive": groupArchive,
-  "/chat/groups/{roomId}/unarchive": groupUnarchive,
-  "/chat/groups/{roomId}/messages": groupMessages,
-  "/chat/groups/{roomId}/conversation": groupConversation,
-  "/chat/groups/{roomId}/media": groupMedia,
-  "/chat/groups/{roomId}/messages/search": groupSearch,
+  "/chat/groups/rooms/{roomId}": groupById,
+  "/chat/groups/rooms/{roomId}/clear": groupClear,
+  "/chat/groups/rooms/{roomId}/disband": groupDisband,
+  "/chat/groups/rooms/{roomId}/archive": groupArchive,
+  "/chat/groups/rooms/{roomId}/unarchive": groupUnarchive,
+  "/chat/groups/rooms/{roomId}/messages": groupMessages,
+  "/chat/groups/rooms/{roomId}/conversation": groupConversation,
+  "/chat/groups/rooms/{roomId}/media": groupMedia,
+  "/chat/groups/rooms/{roomId}/messages/search": groupSearch,
   "/chat/groups/messages/delete": groupMessageDelete,
   "/chat/groups/messages/{messageId}": groupMessageEdit,
-  "/chat/groups/{roomId}/pins": groupPins,
+  "/chat/groups/rooms/{roomId}/pins": groupPins,
 
   // Group members
   "/chat/group-members/add": groupMemberAdd,
@@ -3874,9 +3874,11 @@ export const chatPaths = {
     privateMessageRemoveReaction,
 
   // Groups — forward & reactions
-  "/chat/groups/{roomId}/messages/{messageId}/forward": groupMessageForward,
-  "/chat/groups/{roomId}/messages/{messageId}/reactions": groupMessageReactions,
-  "/chat/groups/{roomId}/messages/{messageId}/reactions/{emoji}":
+  "/chat/groups/rooms/{roomId}/messages/{messageId}/forward":
+    groupMessageForward,
+  "/chat/groups/rooms/{roomId}/messages/{messageId}/reactions":
+    groupMessageReactions,
+  "/chat/groups/rooms/{roomId}/messages/{messageId}/reactions/{emoji}":
     groupMessageRemoveReaction,
 
   // Unified cross-conversation-type message navigation

@@ -10,18 +10,18 @@ Module: **GROUP-CHAT** (chat-service group rooms). ID prefix `TC-GCHAT-NNN` (001
 
 ## Files
 
-| File                      | Area                                                                          | TC range |
-| ------------------------- | ----------------------------------------------------------------------------- | -------- |
-| `create-group.md`         | `POST /groups` — create, validation, rate limit                               | 001–013  |
-| `update-group.md`         | `PATCH /groups/:roomId`, `GET /groups/:roomId`, `GET /groups/my-groups`       | 014–030  |
-| `delete-group.md`         | `POST /groups/:roomId/disband`                                                | 031–039  |
-| `members.md`              | add / leave / kick / list members                                             | 040–055  |
-| `roles-permissions.md`    | `POST /group-members/role`, kick RBAC, full RBAC matrix                       | 056–071  |
-| `moderation-mute-warn.md` | mute state, admin-delete; mute/warn/prefs/ban GAP assertions                  | 072–080  |
-| `invite-links.md`         | create / revoke / preview / join / list                                       | 081–105  |
-| `group-messages.md`       | send / edit / delete / forward / reactions / timeline / search / media / pins | 106–140  |
-| `system-messages.md`      | lifecycle SYSTEM messages + catch-up                                          | 141–154  |
-| `read-unread.md`          | unread increment, read pointer, message:read                                  | 155–163  |
+| File                      | Area                                                                                | TC range |
+| ------------------------- | ----------------------------------------------------------------------------------- | -------- |
+| `create-group.md`         | `POST /groups` — create, validation, rate limit                                     | 001–013  |
+| `update-group.md`         | `PATCH /groups/rooms/:roomId`, `GET /groups/rooms/:roomId`, `GET /groups/my-groups` | 014–030  |
+| `delete-group.md`         | `POST /groups/rooms/:roomId/disband`                                                | 031–039  |
+| `members.md`              | add / leave / kick / list members                                                   | 040–055  |
+| `roles-permissions.md`    | `POST /group-members/role`, kick RBAC, full RBAC matrix                             | 056–071  |
+| `moderation-mute-warn.md` | mute state, admin-delete; mute/warn/prefs/ban GAP assertions                        | 072–080  |
+| `invite-links.md`         | create / revoke / preview / join / list                                             | 081–105  |
+| `group-messages.md`       | send / edit / delete / forward / reactions / timeline / search / media / pins       | 106–140  |
+| `system-messages.md`      | lifecycle SYSTEM messages + catch-up                                                | 141–154  |
+| `read-unread.md`          | unread increment, read pointer, message:read                                        | 155–163  |
 
 **Total: 163 test cases.**
 
@@ -49,7 +49,7 @@ Happy Path · Input Validation · Required/Optional Params · AuthN · RBAC · B
 ### Security / RBAC gaps
 
 1. **`addMember` has no RBAC or membership check on the inviter** (members.md TC-052). Any authenticated user can add arbitrary users to any active group (IDOR + privilege issue). The only gate is the group existing and not being full.
-2. **Read endpoints lack a membership gate, inconsistently:** `GET /groups/:roomId` (TC-027), `GET /group-members/:roomId` (TC-053), `GET /groups/:roomId/messages` + `/search` + `/pins` + `/messages/:id/reactions` (TC-133), and `GET /invite-links/room/:roomId` (TC-103) return data to **any authenticated user** by roomId. In contrast `/conversation` and `/media` DO enforce active membership. This inconsistency leaks group metadata, member lists, message history, and **active invite tokens**.
+2. **Read endpoints lack a membership gate, inconsistently:** `GET /groups/rooms/:roomId` (TC-027), `GET /group-members/:roomId` (TC-053), `GET /groups/rooms/:roomId/messages` + `/search` + `/pins` + `/messages/:id/reactions` (TC-133), and `GET /invite-links/room/:roomId` (TC-103) return data to **any authenticated user** by roomId. In contrast `/conversation` and `/media` DO enforce active membership. This inconsistency leaks group metadata, member lists, message history, and **active invite tokens**.
 3. **`getActiveLinks` leaks invite tokens** to non-members (TC-103) — combined with public `preview`/`join`, an outsider could enumerate and join.
 
 ### Business-rule gaps

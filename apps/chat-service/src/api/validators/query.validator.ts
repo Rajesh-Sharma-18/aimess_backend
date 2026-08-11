@@ -58,7 +58,7 @@ export const messageTimelineQuerySchema = z
 
 /**
  * Query schema for the ZERO-LOSS changes feed, shared by all three room kinds
- * (`GET /chat/private/rooms/:roomId/changes`, `GET /chat/groups/:roomId/changes`,
+ * (`GET /chat/private/rooms/:roomId/changes`, `GET /chat/groups/rooms/:roomId/changes`,
  * `GET /chat/community/rooms/:roomId/changes`). `since_revision` is the client's
  * per-room CHANGE high-water; `0` = cold start (drains from the beginning within
  * the retention horizon). One schema, so the three can never drift and a client

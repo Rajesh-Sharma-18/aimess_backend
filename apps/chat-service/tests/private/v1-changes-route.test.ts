@@ -62,7 +62,7 @@ describe("V1 changes mount — group + community", () => {
   it.each([
     // Groups address rooms as `/:roomId` on V1 — the only shape now that the
     // parallel `/api/v2` routers (which used `/rooms/:roomId`) are gone.
-    ["group", "/api/chat/groups/grp_x/changes"],
+    ["group", "/api/chat/groups/rooms/grp_x/changes"],
     ["community", "/api/chat/community/rooms/cmt_x/changes"],
   ])("%s: registered (401 from the auth gate, not a 404)", async (_n, path) => {
     const res = await request(app).get(path);

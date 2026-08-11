@@ -8563,7 +8563,7 @@ export const openApiSchemas = {
   },
   /**
    * Actual runtime shape of GET /chat/private/.../messages and
-   * GET /chat/groups/.../messages — the timestamp-paginated wrapper
+   * GET /chat/groups/rooms/.../messages — the timestamp-paginated wrapper
    * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
    */
   ChatMessagePage: {
@@ -11174,7 +11174,7 @@ export const openApiSchemas = {
           "`group:member:removed` to the remaining roster. The group does " +
           "**not** come back on reload.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
-          "`DELETE /chat/groups/{roomId}`: clears the caller's own history " +
+          "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
           "arrives.",
       },

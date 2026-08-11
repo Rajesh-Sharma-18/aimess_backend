@@ -1427,7 +1427,7 @@ export class GroupMessageService {
   private readonly REVISION_RESET_HORIZON = 10_000;
 
   /**
-   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/groups/:roomId/changes`.
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/groups/rooms/:roomId/changes`.
    * Identical contract to the private equivalent; see it for the full rationale.
    *
    * NOTE for clients: per-viewer filtering happens AFTER the page slice, so

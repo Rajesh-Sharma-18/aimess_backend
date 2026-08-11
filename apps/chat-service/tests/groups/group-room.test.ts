@@ -3,11 +3,11 @@
  * Routes (apps/chat-service/src/api/routes/group-room.routes.ts):
  *   POST  /api/chat/groups                 (create; create rate-limit + Zod body)
  *   GET   /api/chat/groups/my-groups
- *   GET   /api/chat/groups/:roomId
- *   PATCH /api/chat/groups/:roomId         (update; Zod body)
- *   POST  /api/chat/groups/:roomId/disband
- *   PATCH /api/chat/groups/:roomId/archive
- *   PATCH /api/chat/groups/:roomId/unarchive
+ *   GET   /api/chat/groups/rooms/:roomId
+ *   PATCH /api/chat/groups/rooms/:roomId         (update; Zod body)
+ *   POST  /api/chat/groups/rooms/:roomId/disband
+ *   PATCH /api/chat/groups/rooms/:roomId/archive
+ *   PATCH /api/chat/groups/rooms/:roomId/unarchive
  */
 import request from "supertest";
 
@@ -208,7 +208,7 @@ describe("GET /api/chat/groups/my-groups", () => {
   });
 });
 
-describe("GET /api/chat/groups/:roomId", () => {
+describe("GET /api/chat/groups/rooms/:roomId", () => {
   it("POSITIVE: returns the group with isJoined=true for an active member", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: "grp_1",
@@ -221,7 +221,7 @@ describe("GET /api/chat/groups/:roomId", () => {
     });
 
     const res = await request(app)
-      .get("/api/chat/groups/grp_1")
+      .get("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -244,7 +244,7 @@ describe("GET /api/chat/groups/:roomId", () => {
     });
 
     const res = await request(app)
-      .get("/api/chat/groups/grp_1")
+      .get("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -261,7 +261,7 @@ describe("GET /api/chat/groups/:roomId", () => {
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
-      .get("/api/chat/groups/grp_1")
+      .get("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(403);
@@ -271,7 +271,7 @@ describe("GET /api/chat/groups/:roomId", () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(null);
 
     const res = await request(app)
-      .get("/api/chat/groups/ghost")
+      .get("/api/chat/groups/rooms/ghost")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
@@ -291,7 +291,7 @@ describe("GET /api/chat/groups/:roomId", () => {
     });
 
     const res = await request(app)
-      .get("/api/chat/groups/grp_1")
+      .get("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -301,7 +301,7 @@ describe("GET /api/chat/groups/:roomId", () => {
   });
 });
 
-describe("PATCH /api/chat/groups/:roomId (update)", () => {
+describe("PATCH /api/chat/groups/rooms/:roomId (update)", () => {
   it("POSITIVE: admin updates the group name", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "ADMIN",
@@ -316,7 +316,7 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
     });
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1")
+      .patch("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()))
       .send({ name: "New" });
 
@@ -330,7 +330,7 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
     });
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1")
+      .patch("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()))
       .send({ name: "New" });
 
@@ -342,7 +342,7 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1")
+      .patch("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()))
       .send({ name: "New" });
 
@@ -351,7 +351,7 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
 
   it("NEGATIVE: 400 for an invalid memberLimit type", async () => {
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1")
+      .patch("/api/chat/groups/rooms/grp_1")
       .set(bearer(makeAccessToken()))
       .send({ memberLimit: "lots" });
 
@@ -359,7 +359,7 @@ describe("PATCH /api/chat/groups/:roomId (update)", () => {
   });
 });
 
-describe("POST /api/chat/groups/:roomId/disband", () => {
+describe("POST /api/chat/groups/rooms/:roomId/disband", () => {
   it("POSITIVE: the sole admin disbands the group", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "ADMIN",
@@ -370,7 +370,7 @@ describe("POST /api/chat/groups/:roomId/disband", () => {
     });
 
     const res = await request(app)
-      .post("/api/chat/groups/grp_1/disband")
+      .post("/api/chat/groups/rooms/grp_1/disband")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -383,7 +383,7 @@ describe("POST /api/chat/groups/:roomId/disband", () => {
     });
 
     const res = await request(app)
-      .post("/api/chat/groups/grp_1/disband")
+      .post("/api/chat/groups/rooms/grp_1/disband")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(400);
@@ -392,13 +392,13 @@ describe("POST /api/chat/groups/:roomId/disband", () => {
 
   it("SECURITY: 401 with a forged token", async () => {
     const res = await request(app)
-      .post("/api/chat/groups/grp_1/disband")
+      .post("/api/chat/groups/rooms/grp_1/disband")
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });
 });
 
-describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
+describe("PATCH /api/chat/groups/rooms/:roomId/archive + /unarchive", () => {
   it("POSITIVE: archives the group for an active member", async () => {
     // Authorization is membership-based (any active member may archive); the
     // group-room model checks findActiveByRoomAndUser, NOT participants[].
@@ -420,7 +420,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
     });
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1/archive")
+      .patch("/api/chat/groups/rooms/grp_1/archive")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -453,7 +453,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
     });
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1/unarchive")
+      .patch("/api/chat/groups/rooms/grp_1/unarchive")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
@@ -472,7 +472,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1/archive")
+      .patch("/api/chat/groups/rooms/grp_1/archive")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
@@ -489,7 +489,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(null);
 
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1/archive")
+      .patch("/api/chat/groups/rooms/grp_1/archive")
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
@@ -498,7 +498,7 @@ describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
 
   it("SECURITY: 401 with a forged token on archive", async () => {
     const res = await request(app)
-      .patch("/api/chat/groups/grp_1/archive")
+      .patch("/api/chat/groups/rooms/grp_1/archive")
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });

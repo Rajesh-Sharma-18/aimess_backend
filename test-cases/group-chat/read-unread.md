@@ -6,7 +6,7 @@
 
 - On a real (non-SYSTEM) send, `incUnreadForRoom` increments `unreadCount` for **all other active members**.
 - SYSTEM messages do **not** raise unread (see system-messages.md).
-- Reading is driven by **`GET /api/chat/groups/:roomId/conversation`** which, as a side effect, advances the caller's read pointer (`lastReadMessageId`, `lastReadAt`) to the newest message in the page and recomputes `unreadCount` (`countUnreadAfter`). Forward-only — never regresses.
+- Reading is driven by **`GET /api/chat/groups/rooms/:roomId/conversation`** which, as a side effect, advances the caller's read pointer (`lastReadMessageId`, `lastReadAt`) to the newest message in the page and recomputes `unreadCount` (`countUnreadAfter`). Forward-only — never regresses.
 - `GroupMemberService.markRead` exists (`{ roomId, userId, lastMessageId }`, zeroes unread) but **has no HTTP route in group-member.routes.ts** — reachable only via socket `message:read` through the gateway. Flagged.
 
 > **Socket `message:read`** (`/chat`): client emits `{ conversationId, upToMessageId }`; server publishes `message:read` `{ conversationId, readerId, upToMessageId }` to `conv:<roomId>`. (Group has no `message:delivered` — delivery receipts are private-only.)
@@ -34,7 +34,7 @@
 | Field                     | Value                                                                                                                     |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Read-Unread                                                                                                  |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation`                                                                               |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation`                                                                         |
 | **Test Scenario**         | Reading newest page clears unread                                                                                         |
 | **Category**              | DB State                                                                                                                  |
 | **Priority**              | High                                                                                                                      |
@@ -50,7 +50,7 @@
 | Field                     | Value                                                                         |
 | ------------------------- | ----------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Read-Unread                                                      |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation?pageNumber=3`                      |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation?pageNumber=3`                |
 | **Test Scenario**         | Viewing an older page when newer unread messages exist                        |
 | **Category**              | Edge Case                                                                     |
 | **Priority**              | High                                                                          |
@@ -66,7 +66,7 @@
 | Field                     | Value                                                                                                |
 | ------------------------- | ---------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Read-Unread                                                                             |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation`                                                          |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation`                                                    |
 | **Test Scenario**         | Re-reading an older page after a newer read does not regress the pointer                             |
 | **Category**              | Business Rule                                                                                        |
 | **Priority**              | Medium                                                                                               |
@@ -143,16 +143,16 @@
 
 ### TC-GCHAT-163 — Concurrent reads do not corrupt unread
 
-| Field                     | Value                                                                    |
-| ------------------------- | ------------------------------------------------------------------------ |
-| **Feature/Module**        | Group Chat / Read-Unread                                                 |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation` (×2) + socket `message:read` |
-| **Test Scenario**         | Same user reads via HTTP and socket simultaneously                       |
-| **Category**              | Concurrency                                                              |
-| **Priority**              | Low                                                                      |
-| **Preconditions**         | Caller active member with unread                                         |
-| **Request Payload**       | parallel reads                                                           |
-| **Expected Response**     | Both succeed                                                             |
-| **Expected DB Changes**   | `unreadCount` converges to a non-negative value; pointer never regresses |
-| **Expected Socket/Event** | `message:read` (socket path)                                             |
-| **Notes**                 | Forward-only guard mitigates regression; verify no negative unread.      |
+| Field                     | Value                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| **Feature/Module**        | Group Chat / Read-Unread                                                       |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation` (×2) + socket `message:read` |
+| **Test Scenario**         | Same user reads via HTTP and socket simultaneously                             |
+| **Category**              | Concurrency                                                                    |
+| **Priority**              | Low                                                                            |
+| **Preconditions**         | Caller active member with unread                                               |
+| **Request Payload**       | parallel reads                                                                 |
+| **Expected Response**     | Both succeed                                                                   |
+| **Expected DB Changes**   | `unreadCount` converges to a non-negative value; pointer never regresses       |
+| **Expected Socket/Event** | `message:read` (socket path)                                                   |
+| **Notes**                 | Forward-only guard mitigates regression; verify no negative unread.            |

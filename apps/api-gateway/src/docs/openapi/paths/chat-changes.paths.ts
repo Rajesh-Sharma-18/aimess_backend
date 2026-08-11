@@ -324,7 +324,7 @@ function reactOperation(tag: string, operationId: string) {
 
 export const chatChangesPaths = {
   "/chat/private/rooms/{roomId}/changes": privateChanges,
-  "/chat/groups/{roomId}/changes": groupChanges,
+  "/chat/groups/rooms/{roomId}/changes": groupChanges,
   "/chat/community/rooms/{roomId}/changes": communityChanges,
   "/chat/private/messages/{messageId}/react": reactOperation(
     "Chat — Private",

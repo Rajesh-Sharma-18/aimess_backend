@@ -1,17 +1,17 @@
 /**
  * Integration tests — group messages.
  * Routes (apps/chat-service/src/api/routes/group-message.routes.ts, mounted at /api/chat/groups):
- *   GET    /:roomId/messages/search
- *   GET    /:roomId/messages
- *   GET    /:roomId/conversation
- *   GET    /:roomId/media
+ *   GET    /rooms/:roomId/messages/search
+ *   GET    /rooms/:roomId/messages
+ *   GET    /rooms/:roomId/conversation
+ *   GET    /rooms/:roomId/media
  *   POST   /messages/delete            (Zod body)
  *   PATCH  /messages/:messageId        (edit; Zod body)
- *   GET    /:roomId/pins
- *   POST   /:roomId/messages/:messageId/pin
- *   DELETE /:roomId/messages/:messageId/pin
- *   POST   /:roomId/messages/:messageId/forward   (Zod body)
- *   GET    /:roomId/messages/:messageId/reactions
+ *   GET    /rooms/:roomId/pins
+ *   POST   /rooms/:roomId/messages/:messageId/pin
+ *   DELETE /rooms/:roomId/messages/:messageId/pin
+ *   POST   /rooms/:roomId/messages/:messageId/forward   (Zod body)
+ *   GET    /rooms/:roomId/messages/:messageId/reactions
  */
 import request from "supertest";
 
@@ -22,7 +22,11 @@ let app: import("express").Express;
 let mocks: BuiltMocks;
 
 const ROOM = "grp_room_1";
-const BASE = "/api/chat/groups";
+// Room-scoped group routes sit under `/rooms/:roomId`, matching private chat's
+// `/api/chat/private/rooms/:roomId`. Message-scoped ones (`/messages/:messageId`)
+// hang off the bare mount — see MESSAGE_BASE below.
+const BASE = "/api/chat/groups/rooms";
+const MESSAGE_BASE = "/api/chat/groups";
 
 beforeEach(() => {
   ({ app, mocks } = buildApp());
@@ -361,7 +365,7 @@ describe("POST /messages/delete", () => {
     });
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: MSG, roomId: ROOM });
 
@@ -383,7 +387,7 @@ describe("POST /messages/delete", () => {
     });
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: MSG, roomId: ROOM });
 
@@ -406,7 +410,7 @@ describe("POST /messages/delete", () => {
     });
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: MSG, roomId: ROOM });
 
@@ -417,7 +421,7 @@ describe("POST /messages/delete", () => {
     mocks.groupMessageRepo.findById.mockResolvedValue(null);
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: "ghost", roomId: ROOM });
 
@@ -426,7 +430,7 @@ describe("POST /messages/delete", () => {
 
   it("NEGATIVE: 400 when messageId is missing from body", async () => {
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ roomId: ROOM });
 
@@ -451,7 +455,7 @@ describe("POST /messages/delete", () => {
     });
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: MSG, roomId: ROOM }); // no `type`
 
@@ -490,7 +494,7 @@ describe("POST /messages/delete", () => {
     });
 
     const res = await request(app)
-      .post(`${BASE}/messages/delete`)
+      .post(`${MESSAGE_BASE}/messages/delete`)
       .set(bearer(makeAccessToken()))
       .send({ messageId: MSG, roomId: ROOM, type: "forMe" });
 
@@ -536,7 +540,7 @@ describe("PATCH /messages/:messageId (edit)", () => {
     });
 
     const res = await request(app)
-      .patch(`${BASE}/messages/g1`)
+      .patch(`${MESSAGE_BASE}/messages/g1`)
       .set(bearer(makeAccessToken()))
       .send({ content: { text: "edited" } });
 
@@ -558,7 +562,7 @@ describe("PATCH /messages/:messageId (edit)", () => {
     });
 
     const res = await request(app)
-      .patch(`${BASE}/messages/g1`)
+      .patch(`${MESSAGE_BASE}/messages/g1`)
       .set(bearer(makeAccessToken()))
       .send({ content: { text: "x" } });
 
@@ -567,7 +571,7 @@ describe("PATCH /messages/:messageId (edit)", () => {
 
   it("NEGATIVE: 400 with empty edit text", async () => {
     const res = await request(app)
-      .patch(`${BASE}/messages/g1`)
+      .patch(`${MESSAGE_BASE}/messages/g1`)
       .set(bearer(makeAccessToken()))
       .send({ content: { text: "" } });
 

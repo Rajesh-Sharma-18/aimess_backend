@@ -3,8 +3,8 @@
  * lastActivity (parity with Community: pin posts a line, unpin does NOT post
  * a line — it retracts the original pin's line instead).
  * Routes (apps/chat-service/src/api/routes/group-message.routes.ts):
- *   POST   /api/chat/groups/:roomId/messages/:messageId/pin
- *   DELETE /api/chat/groups/:roomId/messages/:messageId/pin
+ *   POST   /api/chat/groups/rooms/:roomId/messages/:messageId/pin
+ *   DELETE /api/chat/groups/rooms/:roomId/messages/:messageId/pin
  */
 import request from "supertest";
 
@@ -55,10 +55,10 @@ beforeEach(() => {
   mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([]);
 });
 
-describe("POST /api/chat/groups/:roomId/messages/:messageId/pin", () => {
+describe("POST /api/chat/groups/rooms/:roomId/messages/:messageId/pin", () => {
   it("POSITIVE: posts a MESSAGE_PINNED system message and bumps lastActivity", async () => {
     const res = await request(app)
-      .post(`/api/chat/groups/${ROOM}/messages/${MESSAGE_ID}/pin`)
+      .post(`/api/chat/groups/rooms/${ROOM}/messages/${MESSAGE_ID}/pin`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(201);
@@ -73,7 +73,7 @@ describe("POST /api/chat/groups/:roomId/messages/:messageId/pin", () => {
   });
 });
 
-describe("DELETE /api/chat/groups/:roomId/messages/:messageId/pin", () => {
+describe("DELETE /api/chat/groups/rooms/:roomId/messages/:messageId/pin", () => {
   it("POSITIVE: retracts the pin's system line WITHOUT posting a MESSAGE_UNPINNED message (parity with Community)", async () => {
     mocks.groupMessagePinRepo.findActivePinByMessageId.mockResolvedValue({
       id: "pin_1",
@@ -95,7 +95,7 @@ describe("DELETE /api/chat/groups/:roomId/messages/:messageId/pin", () => {
     });
 
     const res = await request(app)
-      .delete(`/api/chat/groups/${ROOM}/messages/${MESSAGE_ID}/pin`)
+      .delete(`/api/chat/groups/rooms/${ROOM}/messages/${MESSAGE_ID}/pin`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);

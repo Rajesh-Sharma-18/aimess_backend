@@ -103,7 +103,7 @@ export const bulkLeaveConversationsSchema = withSnakeAliases(
      *    counterpart of `POST /communities/leave/bulk`.
      *  - "DELETE" — the sidebar's "Delete Conversation": clears the caller's own
      *    history and leaves membership intact, identical to
-     *    `DELETE /chat/groups/{roomId}`.
+     *    `DELETE /chat/groups/rooms/{roomId}`.
      *
      * PRIVATE rows ignore this: a 1-to-1 room has no membership to leave, so the
      * only self-removal it has is delete-for-me (`DELETE /chat/private/rooms/{roomId}`),

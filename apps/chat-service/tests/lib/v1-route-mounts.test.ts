@@ -55,7 +55,7 @@ async function reachedAHandler(method: Method, path: string) {
 const MOUNTED: ReadonlyArray<readonly [Method, string]> = [
   // Zero-loss changes feed — all three room kinds.
   ["get", `/api/chat/private/rooms/${PRIVATE_ROOM}/changes`],
-  ["get", `/api/chat/groups/${ROOM}/changes`],
+  ["get", `/api/chat/groups/rooms/${ROOM}/changes`],
   ["get", `/api/chat/community/rooms/${ROOM}/changes`],
   // Room-inferred SET reaction.
   ["post", `/api/chat/private/messages/${MESSAGE}/react`],
@@ -67,14 +67,14 @@ const MOUNTED: ReadonlyArray<readonly [Method, string]> = [
 /**
  * The V1 routes these sit BESIDE. Regression guard: folding V2 in must not have
  * shadowed or replaced any of them — `DELETE /groups/messages/:id` in particular
- * shares a mount prefix with `DELETE /groups/:roomId` on the group-room router,
+ * shares a mount prefix with `DELETE /groups/rooms/:roomId` on the group-room router,
  * which is registered FIRST.
  */
 const STILL_MOUNTED: ReadonlyArray<readonly [Method, string]> = [
   ["post", "/api/chat/groups/messages/delete"],
   ["patch", `/api/chat/groups/messages/${MESSAGE}`],
-  ["delete", `/api/chat/groups/${ROOM}`],
-  ["get", `/api/chat/groups/${ROOM}/messages`],
+  ["delete", `/api/chat/groups/rooms/${ROOM}`],
+  ["get", `/api/chat/groups/rooms/${ROOM}/messages`],
   ["get", `/api/chat/private/rooms/${PRIVATE_ROOM}/messages`],
   ["get", `/api/chat/community/rooms/${ROOM}/messages`],
   ["get", `/api/chat/community/rooms/${ROOM}/sync?since_ts=1`],

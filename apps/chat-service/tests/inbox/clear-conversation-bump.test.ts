@@ -73,7 +73,7 @@ describe("POST /private/rooms/:roomId/clear", () => {
   });
 });
 
-describe("POST /groups/:roomId/clear", () => {
+describe("POST /groups/rooms/:roomId/clear", () => {
   it("emits an EMPTY conv:updated to the clearing member only", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       roomId: GROUP,
@@ -83,7 +83,7 @@ describe("POST /groups/:roomId/clear", () => {
     mocks.groupMemberRepo.setClearChatAt.mockResolvedValue(undefined);
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GROUP}/clear`)
+      .post(`/api/chat/groups/rooms/${GROUP}/clear`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);

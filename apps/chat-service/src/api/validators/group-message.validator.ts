@@ -55,7 +55,7 @@ export const sendGroupMessageSchema = z
   });
 
 /**
- * REST send body for `POST /groups/:roomId/messages`. roomId comes from the
+ * REST send body for `POST /groups/rooms/:roomId/messages`. roomId comes from the
  * path, so only the message fields live in the body. clientMessageId is optional
  * (the orchestrator defaults it) but recommended for idempotency.
  */
@@ -97,7 +97,7 @@ export const sendGroupMessageBodySchema = z
   });
 
 /**
- * REST body for `POST /groups/:roomId/read` (mark-read up to a message). roomId
+ * REST body for `POST /groups/rooms/:roomId/read` (mark-read up to a message). roomId
  * comes from the path; the caller id from the access token — so the body carries
  * only the read high-water mark.
  */
@@ -130,7 +130,7 @@ export const reactGroupMessageSchema = z.object({
 });
 
 /**
- * REST body for `POST /groups/:roomId/messages/:messageId/reactions` (add a
+ * REST body for `POST /groups/rooms/:roomId/messages/:messageId/reactions` (add a
  * reaction — idempotent toggle-ON). roomId/messageId come from the path, the
  * caller from the token, so only the emoji lives in the body. Emoji is capped
  * 1–CHAT_EMOJI_MAX_CHARS chars to match the socket reaction contract.
