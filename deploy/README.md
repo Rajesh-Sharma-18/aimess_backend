@@ -392,9 +392,11 @@ redirect to HTTPS.
    `public/firebase-messaging-sw.js` hardcodes that config, and the
    `NEXT_PUBLIC_FIREBASE_*` build values must match it or background push breaks
    while foreground notifications keep working.
-6. **TURN is disabled** in `livekit/config.yaml.template`. Users behind
-   UDP-blocking corporate firewalls will join calls with no media until it is
-   enabled with its own certificate on port 5349.
+6. **TURN is enabled** in `livekit/config.yaml.template`, reusing the existing
+   `notification.ai5dev.tech` certificate on port 5349. It is inert until that
+   record is grey-clouded: TURN speaks TLS on 5349, and a Cloudflare edge is not
+   listening there. Until then, clients behind UDP-blocking networks keep
+   joining calls and timing out with no media.
 7. **Redis is shared with the Wazuh host.** It is fast (0.42 ms) and correctly
    configured, but the app cache and your SIEM now share a failure domain.
    Consider a dedicated Redis on Dev 01 if that matters.
