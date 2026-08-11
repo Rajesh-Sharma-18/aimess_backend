@@ -103,10 +103,15 @@ export class GroupSystemMessageService {
     const inData = params.systemData ?? {};
     const targetUserId =
       typeof inData.targetUserId === "string" ? inData.targetUserId : null;
+    // Batch lifecycle rows (one add-member operation ⇒ one MEMBER_ADDED line)
+    // carry every affected member here instead of a single `targetUserId`.
+    const targetUserIds = Array.isArray(inData.targetUserIds)
+      ? inData.targetUserIds.map((id) => String(id)).filter(Boolean)
+      : [];
 
     try {
-      const ids = [actorId, targetUserId].filter((id): id is string =>
-        Boolean(id)
+      const ids = [actorId, targetUserId, ...targetUserIds].filter(
+        (id): id is string => Boolean(id)
       );
       const snapshots = ids.length
         ? await this.userSnapshotService.getUserSnapshotsMap(
@@ -121,13 +126,7 @@ export class GroupSystemMessageService {
         ? ((snapshots.get(actorId)?.avatar as string) ?? "")
         : "";
 
-      const text = buildGroupSystemFallbackText(systemEvent, {
-        actorName,
-        targetName,
-        actorId,
-        ...(targetUserId ? { targetUserId } : {}),
-        ...inData,
-      });
+      const targetNames = targetUserIds.map((id) => this.nameOf(snapshots, id));
 
       // Resolved names are folded into systemData so clients can render without
       // a second lookup, while keeping the raw ids for navigation.
@@ -136,7 +135,10 @@ export class GroupSystemMessageService {
         actorId,
         actorName,
         ...(targetUserId ? { targetUserId, targetName } : {}),
+        ...(targetUserIds.length ? { targetUserIds, targetNames } : {}),
       };
+
+      const text = buildGroupSystemFallbackText(systemEvent, systemData);
 
       // Allocate the per-room monotonic sequence (same as a real send) so
       // lifecycle/system messages flow through chat:catchup (seq > sinceSeq)
@@ -175,6 +177,9 @@ export class GroupSystemMessageService {
           messageType: message.messageType,
           content: { text },
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         });
       }
 
@@ -402,6 +407,9 @@ export class GroupSystemMessageService {
             messageType,
             content: { text },
             createdAt: existing.createdAt,
+            clientMessageId: message.clientMessageId,
+            sequenceNumber: message.sequenceNumber,
+            revision: message.revision,
           })
           .catch((err: unknown) => {
             logger.warn(

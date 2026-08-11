@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
 
@@ -361,6 +362,11 @@ export class PrivateRoomRepository {
       systemEvent?: string | null;
       systemData?: unknown;
       createdAt: Date;
+      /** Offline-first list identity (see lib/list-row-identity.ts). Optional so
+       *  every existing caller keeps compiling; absent ⇒ null/0 defaults. */
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     };
     receiverId: string;
     /** How many unread rows this send contributes (albums > 1). */
@@ -385,6 +391,7 @@ export class PrivateRoomRepository {
       systemEvent: message.systemEvent || null,
       systemData: message.systemData || null,
       createdAt: now.toISOString(),
+      ...listRowIdentity({ ...message, id: message._id }),
     };
 
     const set: Record<string, unknown> = {
@@ -643,6 +650,9 @@ export class PrivateRoomRepository {
       content: unknown;
       messageType: string;
       createdAt: Date;
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     } | null
   ): Promise<void> {
     await this.prisma.privateRoom.update({
@@ -656,6 +666,7 @@ export class PrivateRoomRepository {
               senderId: message.senderId,
               messageType: message.messageType,
               createdAt: message.createdAt.toISOString(),
+              ...listRowIdentity(message),
             } as unknown as Prisma.InputJsonValue,
           }
         : {
@@ -870,33 +881,36 @@ export class PrivateRoomRepository {
    * never-configured. Everything downstream reads through
    * `readAutoDeleteSetting`, which reports OFF for both.
    */
+  /**
+   * Write the CONVERSATION's one auto-delete timer. `userId` is recorded as who
+   * changed it (for the system message and the wire), not as an owner — either
+   * participant may set it and both then follow it.
+   *
+   * The legacy per-user `autoDeleteBy` map is cleared in the same update, so a
+   * room can never be read through both models at once.
+   */
   async setAutoDelete(
     roomId: string,
     userId: string,
-    setting: { mode: string; ttlSeconds: number | null } | null
+    setting: { mode: string; ttlSeconds: number | null }
   ): Promise<PrivateRoom | null> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
+      select: { roomId: true },
     });
     if (!existing) return null;
 
-    const autoDeleteBy = (existing.autoDeleteBy ?? {}) as Record<
-      string,
-      unknown
-    >;
-    if (!setting) {
-      delete autoDeleteBy[userId];
-    } else {
-      autoDeleteBy[userId] = {
-        mode: setting.mode,
-        ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
-        setAt: new Date().toISOString(),
-      };
-    }
-
     return this.prisma.privateRoom.update({
       where: { roomId },
-      data: { autoDeleteBy: autoDeleteBy as unknown as Prisma.InputJsonValue },
+      data: {
+        autoDelete: {
+          mode: setting.mode,
+          ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
+          setAt: new Date().toISOString(),
+          setBy: userId,
+        } as unknown as Prisma.InputJsonValue,
+        autoDeleteBy: {} as unknown as Prisma.InputJsonValue,
+      },
     });
   }
 

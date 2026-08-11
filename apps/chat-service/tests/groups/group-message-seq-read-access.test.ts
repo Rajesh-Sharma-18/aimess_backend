@@ -1,14 +1,14 @@
 /**
- * `getMessagesSeq` / `getMessagesAround` — the ACTUAL methods the V2 group
- * timeline route (`GET /api/v2/chat/group/rooms/:roomId/messages`, no
+ * `getMessagesSeq` / `getMessagesAround` — the ACTUAL methods the group
+ * timeline route (`GET /api/chat/groups/rooms/:roomId/messages`, no
  * around/before_seq/after_seq → seq page; `?around=` → getMessagesAround)
- * calls, per `GroupMessageController.listMessagesV2`.
+ * calls, per `GroupMessageController.listMessages`.
  *
  * Root-cause regression test: an earlier pass widened `getMessagesTimeline`
- * (the `before_ts`/`after_ts` V1/V2-timestamp path) from `assertGroupMember`
+ * (the `before_ts`/`after_ts` timestamp path) from `assertGroupMember`
  * to `assertGroupReadAccess` so a LEFT member could keep reading history up
  * to when they left — but the frontend's `getGroupMessages` actually calls
- * the SEQ-based V2 endpoint, which still 403'd every LEFT member because
+ * the SEQ-based read path, which still 403'd every LEFT member because
  * `getMessagesSeq`/`getMessagesAround` were still on the old ACTIVE-only
  * `assertGroupMember` guard. This file pins both seq-based methods to the
  * same read-access contract so this exact class of bug (right guard, wrong

@@ -5,8 +5,8 @@
  * Routes:
  *   POST   /api/chat/private/rooms/:roomId/messages/:messageId/reactions      (add)
  *   DELETE /api/chat/private/rooms/:roomId/messages/:messageId/reactions/:emoji (remove)
- *   POST   /api/chat/groups/:roomId/messages/:messageId/reactions             (add)
- *   DELETE /api/chat/groups/:roomId/messages/:messageId/reactions/:emoji      (remove)
+ *   POST   /api/chat/groups/rooms/:roomId/messages/:messageId/reactions             (add)
+ *   DELETE /api/chat/groups/rooms/:roomId/messages/:messageId/reactions/:emoji      (remove)
  *
  * These exercise the REAL controller → orchestrator → *MessageService path with
  * mock repos (the app-factory harness), so routing, Zod validation, the REST
@@ -260,7 +260,7 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
     mocks.groupMessageRepo.addReactions.mockResolvedValue({ id: MSG });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GROUP}/messages/${MSG}/reactions`)
+      .post(`/api/chat/groups/rooms/${GROUP}/messages/${MSG}/reactions`)
       .set(bearer(makeAccessToken()))
       .send({ emoji: EMOJI });
 
@@ -275,7 +275,7 @@ describe("GROUP react routes (orchestrator GROUP branch + member guard)", () => 
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GROUP}/messages/${MSG}/reactions`)
+      .post(`/api/chat/groups/rooms/${GROUP}/messages/${MSG}/reactions`)
       .set(bearer(makeAccessToken()))
       .send({ emoji: EMOJI });
 
@@ -331,7 +331,7 @@ describe("B1: cross-room IDOR — message does not belong to the URL room", () =
     });
 
     const res = await request(app)
-      .post(`/api/chat/groups/${GROUP}/messages/${MSG}/reactions`)
+      .post(`/api/chat/groups/rooms/${GROUP}/messages/${MSG}/reactions`)
       .set(bearer(makeAccessToken()))
       .send({ emoji: EMOJI });
 

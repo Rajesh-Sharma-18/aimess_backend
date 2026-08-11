@@ -21,6 +21,17 @@ export interface CommunityActivityPayload {
   senderUserId?: string;
   senderUsername: string;
   messagePreview: string;
+  /**
+   * Offline-first list identity for the message behind this activity (see
+   * chat-service `lib/list-row-identity.ts`). community-service denormalizes
+   * these onto `Community.lastActivity*` so `GET /communities/mine` can hand a
+   * client the same identity/freshness the message representations already
+   * carry. Omitted for activity with no client-originated message behind it.
+   */
+  clientMessageId?: string | null;
+  seq?: number;
+  /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM). */
+  contentType?: string;
   /** Activity type stored in community-service (e.g. "message", "reaction", "edited"). Defaults to "message". */
   type?: string;
   /**

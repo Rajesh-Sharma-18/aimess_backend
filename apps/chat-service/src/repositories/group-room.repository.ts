@@ -8,6 +8,7 @@ import {
   buildGroupSearchFilter,
   normalizeForSearch,
 } from "../lib/group-search.util.js";
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
@@ -203,6 +204,10 @@ export class GroupRoomRepository {
       messageType: string;
       content: { text: string };
       createdAt: Date;
+      /** Offline-first list identity (see lib/list-row-identity.ts). */
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     }
   ): Promise<GroupRoom | null> {
     // Bursty concurrent sends/system-messages all write this same document;
@@ -221,6 +226,7 @@ export class GroupRoomRepository {
             senderName: message.senderName,
             messageType: message.messageType,
             createdAt: message.createdAt,
+            ...listRowIdentity({ ...message, id: String(message._id) }),
           },
         },
       })
@@ -242,6 +248,9 @@ export class GroupRoomRepository {
       content: { text: string };
       messageType: string;
       createdAt: Date;
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     } | null
   ): Promise<void> {
     await this.prisma.groupRoom.update({
@@ -256,6 +265,7 @@ export class GroupRoomRepository {
               senderName: message.senderName,
               messageType: message.messageType,
               createdAt: message.createdAt,
+              ...listRowIdentity(message),
             },
           }
         : {
@@ -442,10 +452,13 @@ export class GroupRoomRepository {
    * Only ACTIVE groups the user belongs to (roomIds) with a lastMessageAt.
    */
   /**
-   * User Search — groups the viewer is an ACTIVE member of, optionally
-   * filtered by name, newest activity first.
+   * User Search — groups restricted to an explicit id set the caller already
+   * resolved from the viewer's own memberships, optionally filtered by name,
+   * newest activity first. There is deliberately no "every other group"
+   * variant: group existence must never imply group visibility, so the id set
+   * is always derived from the viewer's relationship to the group.
    */
-  async searchActiveForUser(
+  async searchInRoomIds(
     roomIds: string[],
     q: string | undefined,
     limit: number
@@ -458,28 +471,6 @@ export class GroupRoomRepository {
         ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
       orderBy: { lastMessageAt: "desc" },
-      take: limit,
-    });
-  }
-
-  /**
-   * User Search — groups the viewer is NOT a member of (`excludeRoomIds`
-   * covers both the viewer's own memberships and any ids already surfaced
-   * elsewhere, e.g. Recent), optionally filtered by name, largest first as a
-   * simple "suggested" ordering.
-   */
-  async searchOtherForUser(
-    excludeRoomIds: string[],
-    q: string | undefined,
-    limit: number
-  ): Promise<GroupRoom[]> {
-    return this.prisma.groupRoom.findMany({
-      where: {
-        ...(excludeRoomIds.length ? { roomId: { notIn: excludeRoomIds } } : {}),
-        status: "ACTIVE",
-        ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
-      },
-      orderBy: { memberCount: "desc" },
       take: limit,
     });
   }

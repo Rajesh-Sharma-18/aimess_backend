@@ -1,16 +1,16 @@
 /**
  * Auto-delete (disappearing messages) — pure resolution logic for PRIVATE rooms.
  *
- * The setting is stored PER USER on `PrivateRoom.autoDeleteBy` (same per-user
- * JSON-map shape as `mutedBy`/`archivedBy`), so the feature is one-sided by
- * design: either participant can turn it on without the other's approval.
+ * ONE timer belongs to the CONVERSATION, not to a participant (WhatsApp's
+ * model): either side may change it, both sides' menus then show it, and every
+ * new message from either side follows it. It lives in `PrivateRoom.autoDelete`
+ * — absent means Off, so a brand-new conversation starts Off with nothing to
+ * initialize and nothing inherited from either user's other chats or account.
  *
- * Which timer a given message gets is decided ONCE, at send time, by
- * {@link resolveEffectiveAutoDelete}: the SENDER's own setting wins, and the
- * peer's setting applies only when the sender has none. That single rule covers
- * both documented cases — one-sided (only one user configured it, so every new
- * message follows that timer regardless of who sent it) and two-sided-different
- * (each user's messages follow their own timer).
+ * `PrivateRoom.autoDeleteBy` is the LEGACY per-user map from when each side had
+ * its own timer. It is read-only now: {@link readRoomAutoDelete} falls back to
+ * its most recently set entry so rooms configured before the change keep their
+ * timer, and the first write through the new path replaces it.
  *
  * Nothing here touches the DB or the clock beyond the timestamp it is handed —
  * kept pure so both the send path and the "timer changed mid-conversation"
@@ -48,6 +48,8 @@ export interface AutoDeleteSetting {
   ttlSeconds: number | null;
   /** ISO-8601, "" when never configured. */
   setAt: string;
+  /** Who last changed it; "" when never configured or for a legacy row. */
+  setBy?: string;
 }
 
 export const AUTO_DELETE_OFF: AutoDeleteSetting = {
@@ -66,6 +68,7 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
       mode: "OFF",
       ttlSeconds: null,
       setAt: typeof r.setAt === "string" ? r.setAt : "",
+      setBy: typeof r.setBy === "string" ? r.setBy : "",
     };
   const ttl = Number(r.ttlSeconds);
   return {
@@ -73,17 +76,16 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
     ttlSeconds:
       mode === "TIMER" && Number.isFinite(ttl) && ttl > 0 ? ttl : null,
     setAt: typeof r.setAt === "string" ? r.setAt : "",
+    setBy: typeof r.setBy === "string" ? r.setBy : "",
   };
 }
 
 /**
  * Normalize the stored `PrivateRoom.autoDeleteBy` JSON into a typed map.
  *
- * An entry with `mode: "OFF"` is KEPT (it carries a `setAt`), because
- * "explicitly turned off in THIS chat" and "never configured" are no longer the
- * same state: the first must survive the account-wide default, the second must
- * not — see {@link resolveEffectiveAutoDelete}. Every other consumer reads
- * through {@link readAutoDeleteSetting}, which returns OFF either way.
+ * An entry with `mode: "OFF"` is KEPT rather than dropped — it carries the
+ * `setAt` of the moment the user turned it off. Both states resolve to the same
+ * timer (none), so every consumer can read through {@link readAutoDeleteSetting}.
  */
 export function parseAutoDeleteMap(
   raw: unknown
@@ -98,15 +100,7 @@ export function parseAutoDeleteMap(
   return out;
 }
 
-/** True when this user has made an explicit per-chat choice (including OFF). */
-export function hasExplicitAutoDelete(
-  map: Record<string, AutoDeleteSetting>,
-  userId: string
-): boolean {
-  return map[userId] !== undefined;
-}
-
-/** One user's own setting (OFF when unset). */
+/** One entry of the LEGACY per-user map (OFF when unset). */
 export function readAutoDeleteSetting(
   map: Record<string, AutoDeleteSetting>,
   userId: string
@@ -115,40 +109,28 @@ export function readAutoDeleteSetting(
 }
 
 /**
- * The timer that applies to a message SENT BY `senderId`. Sender's own per-chat
- * setting first, peer's per-chat setting next — see this module's header for why
- * that covers both the one-sided and the two-different-timers case — and the
- * sender's ACCOUNT-WIDE default (Settings → Chat → Auto-Delete) last.
+ * THE timer for a conversation — the single value every message in it follows,
+ * whoever sent it, and the single value both participants' menus show.
  *
- * The account default is a fallback, never an override: a chat where the sender
- * explicitly picked "Off" stays off even while the account default is on, which
- * is why an explicit OFF is stored rather than deleted.
+ * `autoDelete` is authoritative. A room that predates it falls back to the most
+ * recently set entry of the legacy per-user map, so a chat someone had already
+ * configured does not silently turn itself off on deploy; ties and empty maps
+ * resolve to Off, which is also the correct state for a brand-new room.
  */
-export function resolveEffectiveAutoDelete(
-  map: Record<string, AutoDeleteSetting>,
-  senderId: string,
-  peerId: string,
-  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
-): AutoDeleteSetting {
-  const own = readAutoDeleteSetting(map, senderId);
-  if (own.mode !== "OFF") return own;
-  const peer = readAutoDeleteSetting(map, peerId);
-  if (peer.mode !== "OFF") return peer;
-  if (hasExplicitAutoDelete(map, senderId)) return AUTO_DELETE_OFF;
-  return accountDefault;
-}
+export function readRoomAutoDelete(room: {
+  autoDelete?: unknown;
+  autoDeleteBy?: unknown;
+}): AutoDeleteSetting {
+  if (room.autoDelete) return coerceSetting(room.autoDelete);
 
-/** Account-wide `ChatSettings.autoDeleteTimer` (user-service) → a room setting. */
-export const ACCOUNT_AUTO_DELETE_TTL_SECONDS: Record<string, number> = {
-  DAYS_7: 7 * 24 * 3600,
-  DAYS_15: 15 * 24 * 3600,
-  DAYS_30: 30 * 24 * 3600,
-};
-
-export function accountAutoDeleteSetting(timer: string): AutoDeleteSetting {
-  const ttlSeconds = ACCOUNT_AUTO_DELETE_TTL_SECONDS[String(timer)];
-  if (!ttlSeconds) return AUTO_DELETE_OFF;
-  return { mode: "TIMER", ttlSeconds, setAt: "" };
+  let newest = AUTO_DELETE_OFF;
+  for (const [userId, setting] of Object.entries(
+    parseAutoDeleteMap(room.autoDeleteBy)
+  )) {
+    if (setting.setAt > newest.setAt)
+      newest = { ...setting, setBy: setting.setBy || userId };
+  }
+  return newest;
 }
 
 export interface AutoDeleteStamp {
@@ -210,46 +192,29 @@ export function formatAutoDeleteDuration(
   return formatTtlDuration(ttlSeconds, locale);
 }
 
-/** The wire block returned by the REST settings endpoints and the socket event. */
+/**
+ * The wire block returned by the REST settings endpoints and the socket event.
+ *
+ * One conversation, one timer — the same payload for both participants, which is
+ * what lets the socket event be published verbatim to each of them. `self` is
+ * kept as a mirror of the flat fields so clients written against the older
+ * per-user shape keep rendering the right thing.
+ */
 export function buildAutoDeleteWire(
-  map: Record<string, AutoDeleteSetting>,
-  userId: string,
-  peerId: string,
-  accountDefault: AutoDeleteSetting = AUTO_DELETE_OFF
+  setting: AutoDeleteSetting
 ): Record<string, unknown> {
-  const mine = readAutoDeleteSetting(map, userId);
-  const theirs = readAutoDeleteSetting(map, peerId);
-  const effective = resolveEffectiveAutoDelete(
-    map,
-    userId,
-    peerId,
-    accountDefault
-  );
-  const toWire = (s: AutoDeleteSetting) => ({
-    mode: s.mode,
-    ttlSeconds: s.ttlSeconds,
-    setAt: s.setAt ? new Date(s.setAt).getTime() : 0,
-  });
+  const setAt = setting.setAt ? new Date(setting.setAt).getTime() : 0;
   return {
-    // What MY next message will follow.
-    mode: effective.mode,
-    ttlSeconds: effective.ttlSeconds,
-    isEnabled: effective.mode !== "OFF",
-    label: formatAutoDeleteDuration(effective.ttlSeconds, currentLocale()),
-    // Where that timer came from, so the UI can say "from your Chat settings"
-    // instead of showing this chat as configured when it isn't.
-    source:
-      effective.mode === "OFF"
-        ? "NONE"
-        : mine.mode !== "OFF"
-          ? "SELF"
-          : theirs.mode !== "OFF"
-            ? "PEER"
-            : "ACCOUNT",
-    // Both sides, so the UI can render "you: 1 day / them: 1 hour".
-    self: toWire(mine),
-    peer: toWire(theirs),
-    // The caller's account-wide default (Settings → Chat → Auto-Delete).
-    accountDefault: toWire(accountDefault),
+    mode: setting.mode,
+    ttlSeconds: setting.ttlSeconds,
+    isEnabled: setting.mode !== "OFF",
+    label: formatAutoDeleteDuration(setting.ttlSeconds, currentLocale()),
+    setAt,
+    setBy: setting.setBy ?? "",
+    self: {
+      mode: setting.mode,
+      ttlSeconds: setting.ttlSeconds,
+      setAt,
+    },
   };
 }

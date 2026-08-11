@@ -2,7 +2,7 @@
 
 **Source:** `apps/chat-service/src/api/routes/group-room.routes.ts` · `controllers/group-room.controller.ts` (`disband`) · `services/group-room.service.ts` (`disbandGroup`) · `repositories/group-room.repository.ts` (`disband`) · `repositories/group-invite-link.repository.ts` (`revokeAllForRoom`)
 
-**Endpoint:** `POST /api/chat/groups/:roomId/disband`
+**Endpoint:** `POST /api/chat/groups/rooms/:roomId/disband`
 **Auth:** `authenticate`. No request body.
 
 **RBAC:** caller must be an ACTIVE member with role `OWNER` → else `CHAT_ONLY_OWNER_DISBAND`. Non-member → `CHAT_NOT_A_MEMBER`.
@@ -18,7 +18,7 @@
 | Field                     | Value                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Disband                                                                                           |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband`                                                                        |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband`                                                                  |
 | **Test Scenario**         | Happy path — owner disbands                                                                                    |
 | **Category**              | Happy Path                                                                                                     |
 | **Priority**              | High                                                                                                           |
@@ -31,58 +31,58 @@
 
 ### TC-GCHAT-032 — Admin cannot disband
 
-| Field                     | Value                                   |
-| ------------------------- | --------------------------------------- |
-| **Feature/Module**        | Group Chat / Disband                    |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband` |
-| **Test Scenario**         | Admin attempts disband                  |
-| **Category**              | RBAC                                    |
-| **Priority**              | High                                    |
-| **Preconditions**         | Caller is ADMIN (not owner)             |
-| **Request Payload**       | —                                       |
-| **Expected Response**     | `400` `CHAT_ONLY_OWNER_DISBAND`         |
-| **Expected DB Changes**   | None                                    |
-| **Expected Socket/Event** | None                                    |
-| **Notes**                 | Only OWNER may disband.                 |
+| Field                     | Value                                         |
+| ------------------------- | --------------------------------------------- |
+| **Feature/Module**        | Group Chat / Disband                          |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband` |
+| **Test Scenario**         | Admin attempts disband                        |
+| **Category**              | RBAC                                          |
+| **Priority**              | High                                          |
+| **Preconditions**         | Caller is ADMIN (not owner)                   |
+| **Request Payload**       | —                                             |
+| **Expected Response**     | `400` `CHAT_ONLY_OWNER_DISBAND`               |
+| **Expected DB Changes**   | None                                          |
+| **Expected Socket/Event** | None                                          |
+| **Notes**                 | Only OWNER may disband.                       |
 
 ### TC-GCHAT-033 — Member cannot disband
 
-| Field                     | Value                                   |
-| ------------------------- | --------------------------------------- |
-| **Feature/Module**        | Group Chat / Disband                    |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband` |
-| **Test Scenario**         | Plain member attempts disband           |
-| **Category**              | RBAC                                    |
-| **Priority**              | High                                    |
-| **Preconditions**         | Caller is MEMBER                        |
-| **Request Payload**       | —                                       |
-| **Expected Response**     | `400` `CHAT_ONLY_OWNER_DISBAND`         |
-| **Expected DB Changes**   | None                                    |
-| **Expected Socket/Event** | None                                    |
-| **Notes**                 | —                                       |
+| Field                     | Value                                         |
+| ------------------------- | --------------------------------------------- |
+| **Feature/Module**        | Group Chat / Disband                          |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband` |
+| **Test Scenario**         | Plain member attempts disband                 |
+| **Category**              | RBAC                                          |
+| **Priority**              | High                                          |
+| **Preconditions**         | Caller is MEMBER                              |
+| **Request Payload**       | —                                             |
+| **Expected Response**     | `400` `CHAT_ONLY_OWNER_DISBAND`               |
+| **Expected DB Changes**   | None                                          |
+| **Expected Socket/Event** | None                                          |
+| **Notes**                 | —                                             |
 
 ### TC-GCHAT-034 — Non-member cannot disband (IDOR)
 
-| Field                     | Value                                   |
-| ------------------------- | --------------------------------------- |
-| **Feature/Module**        | Group Chat / Disband                    |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband` |
-| **Test Scenario**         | Outsider disbands another group         |
-| **Category**              | Security                                |
-| **Priority**              | High                                    |
-| **Preconditions**         | Caller not a member                     |
-| **Request Payload**       | —                                       |
-| **Expected Response**     | `404` `CHAT_NOT_A_MEMBER`               |
-| **Expected DB Changes**   | None                                    |
-| **Expected Socket/Event** | None                                    |
-| **Notes**                 | —                                       |
+| Field                     | Value                                         |
+| ------------------------- | --------------------------------------------- |
+| **Feature/Module**        | Group Chat / Disband                          |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband` |
+| **Test Scenario**         | Outsider disbands another group               |
+| **Category**              | Security                                      |
+| **Priority**              | High                                          |
+| **Preconditions**         | Caller not a member                           |
+| **Request Payload**       | —                                             |
+| **Expected Response**     | `404` `CHAT_NOT_A_MEMBER`                     |
+| **Expected DB Changes**   | None                                          |
+| **Expected Socket/Event** | None                                          |
+| **Notes**                 | —                                             |
 
 ### TC-GCHAT-035 — Disband already-disbanded group
 
 | Field                     | Value                                                                                                         |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Disband                                                                                          |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband`                                                                       |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband`                                                                 |
 | **Test Scenario**         | Idempotency — disband twice                                                                                   |
 | **Category**              | Edge Case                                                                                                     |
 | **Priority**              | Medium                                                                                                        |
@@ -95,26 +95,26 @@
 
 ### TC-GCHAT-036 — Disband non-existent room
 
-| Field                     | Value                                   |
-| ------------------------- | --------------------------------------- |
-| **Feature/Module**        | Group Chat / Disband                    |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband` |
-| **Test Scenario**         | Unknown roomId                          |
-| **Category**              | Error Handling                          |
-| **Priority**              | Medium                                  |
-| **Preconditions**         | Authenticated user                      |
-| **Request Payload**       | `:roomId = grp_unknown`                 |
-| **Expected Response**     | `404` `CHAT_NOT_A_MEMBER`               |
-| **Expected DB Changes**   | None                                    |
-| **Expected Socket/Event** | None                                    |
-| **Notes**                 | —                                       |
+| Field                     | Value                                         |
+| ------------------------- | --------------------------------------------- |
+| **Feature/Module**        | Group Chat / Disband                          |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband` |
+| **Test Scenario**         | Unknown roomId                                |
+| **Category**              | Error Handling                                |
+| **Priority**              | Medium                                        |
+| **Preconditions**         | Authenticated user                            |
+| **Request Payload**       | `:roomId = grp_unknown`                       |
+| **Expected Response**     | `404` `CHAT_NOT_A_MEMBER`                     |
+| **Expected DB Changes**   | None                                          |
+| **Expected Socket/Event** | None                                          |
+| **Notes**                 | —                                             |
 
 ### TC-GCHAT-037 — Disband revokes all active invite links
 
 | Field                     | Value                                                                                                                               |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Disband                                                                                                                |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband`                                                                                             |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband`                                                                                       |
 | **Test Scenario**         | Verify link cleanup                                                                                                                 |
 | **Category**              | DB State                                                                                                                            |
 | **Priority**              | Medium                                                                                                                              |
@@ -130,7 +130,7 @@
 | Field                     | Value                                                                                                                                                      |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Disband                                                                                                                                       |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation` (post-disband)                                                                                                 |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation` (post-disband)                                                                                           |
 | **Test Scenario**         | Members can no longer read messages                                                                                                                        |
 | **Category**              | Business Rule                                                                                                                                              |
 | **Priority**              | Medium                                                                                                                                                     |
@@ -143,16 +143,16 @@
 
 ### TC-GCHAT-039 — Unauthenticated disband
 
-| Field                     | Value                                   |
-| ------------------------- | --------------------------------------- |
-| **Feature/Module**        | Group Chat / Disband                    |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/disband` |
-| **Test Scenario**         | No token                                |
-| **Category**              | AuthN                                   |
-| **Priority**              | High                                    |
-| **Preconditions**         | None                                    |
-| **Request Payload**       | —                                       |
-| **Expected Response**     | `401` Unauthorized                      |
-| **Expected DB Changes**   | None                                    |
-| **Expected Socket/Event** | None                                    |
-| **Notes**                 | —                                       |
+| Field                     | Value                                         |
+| ------------------------- | --------------------------------------------- |
+| **Feature/Module**        | Group Chat / Disband                          |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/disband` |
+| **Test Scenario**         | No token                                      |
+| **Category**              | AuthN                                         |
+| **Priority**              | High                                          |
+| **Preconditions**         | None                                          |
+| **Request Payload**       | —                                             |
+| **Expected Response**     | `401` Unauthorized                            |
+| **Expected DB Changes**   | None                                          |
+| **Expected Socket/Event** | None                                          |
+| **Notes**                 | —                                             |

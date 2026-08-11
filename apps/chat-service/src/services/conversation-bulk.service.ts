@@ -15,7 +15,20 @@ export type BulkLeaveStatus = "LEFT" | "DELETED" | "FAILED";
 export type BulkLeaveErrorCode =
   | "OWNER_CANNOT_LEAVE"
   | "NOT_MEMBER"
-  | "NOT_FOUND";
+  | "NOT_FOUND"
+  /**
+   * The id is neither `prv_…` nor `grp_…`, so this service cannot own it. In
+   * practice that means a COMMUNITY id: community mute/read state lives in
+   * community-service (`CommunityMuteSetting`) and its own room membership, and
+   * is reached through `POST /communities/{mute,read}/bulk`. Reported per item
+   * instead of quietly landing in `skipped`, which read as "already done".
+   */
+  | "UNSUPPORTED_ROOM_TYPE";
+
+export interface BulkItemFailure {
+  roomId: string;
+  errorCode: BulkLeaveErrorCode;
+}
 
 export interface BulkLeaveItemResult {
   roomId: string;
@@ -29,18 +42,28 @@ export interface BulkLeaveResult {
   summary: { requested: number; succeeded: number; failed: number };
 }
 
+/**
+ * `skipped` is retained verbatim (every id that did not succeed) so existing
+ * clients keep working; `failed` adds the REASON per id. A bulk call that
+ * reported plain success while quietly dropping half its input is the thing
+ * these fields exist to prevent.
+ */
 export interface BulkMuteResult {
   muted: string[];
   skipped: string[];
+  failed: BulkItemFailure[];
 }
 
 export interface BulkUnmuteResult {
   unmuted: string[];
   skipped: string[];
+  failed: BulkItemFailure[];
 }
 
 export interface BulkMarkReadResult {
   updatedCount: number;
+  updated: string[];
+  failed: BulkItemFailure[];
 }
 
 /**
@@ -150,8 +173,14 @@ export class ConversationBulkService {
 
     const muted: string[] = [];
     const skipped: string[] = [];
+    const failed: BulkItemFailure[] = [];
 
     for (const roomId of roomIds) {
+      if (!isChatRoomId(roomId)) {
+        skipped.push(roomId);
+        failed.push({ roomId, errorCode: "UNSUPPORTED_ROOM_TYPE" });
+        continue;
+      }
       try {
         if (resolveConversationType(roomId) === "GROUP") {
           await this.groupMemberService.muteRoom(roomId, userId, muteUntil);
@@ -160,14 +189,16 @@ export class ConversationBulkService {
         }
         muted.push(roomId);
       } catch (err) {
+        const errorCode = toBulkErrorCode(err);
         logger.warn(
-          `ConversationBulkService|mute skipped room=${roomId} user=${userId}: ${String(err)}`
+          `ConversationBulkService|mute skipped room=${roomId} user=${userId} code=${errorCode}: ${String(err)}`
         );
         skipped.push(roomId);
+        failed.push({ roomId, errorCode });
       }
     }
 
-    return { muted, skipped };
+    return { muted, skipped, failed };
   }
 
   async bulkUnmute(
@@ -176,8 +207,14 @@ export class ConversationBulkService {
   ): Promise<BulkUnmuteResult> {
     const unmuted: string[] = [];
     const skipped: string[] = [];
+    const failed: BulkItemFailure[] = [];
 
     for (const roomId of roomIds) {
+      if (!isChatRoomId(roomId)) {
+        skipped.push(roomId);
+        failed.push({ roomId, errorCode: "UNSUPPORTED_ROOM_TYPE" });
+        continue;
+      }
       try {
         if (resolveConversationType(roomId) === "GROUP") {
           await this.groupMemberService.unmuteRoom(roomId, userId);
@@ -186,14 +223,16 @@ export class ConversationBulkService {
         }
         unmuted.push(roomId);
       } catch (err) {
+        const errorCode = toBulkErrorCode(err);
         logger.warn(
-          `ConversationBulkService|unmute skipped room=${roomId} user=${userId}: ${String(err)}`
+          `ConversationBulkService|unmute skipped room=${roomId} user=${userId} code=${errorCode}: ${String(err)}`
         );
         skipped.push(roomId);
+        failed.push({ roomId, errorCode });
       }
     }
 
-    return { unmuted, skipped };
+    return { unmuted, skipped, failed };
   }
 
   /**
@@ -220,15 +259,21 @@ export class ConversationBulkService {
     userId: string,
     roomIds: string[]
   ): Promise<BulkMarkReadResult> {
-    let updatedCount = 0;
+    const updated: string[] = [];
+    const failed: BulkItemFailure[] = [];
 
     for (const roomId of roomIds) {
+      if (!isChatRoomId(roomId)) {
+        failed.push({ roomId, errorCode: "UNSUPPORTED_ROOM_TYPE" });
+        continue;
+      }
       const conversationType = resolveConversationType(roomId);
       try {
         const upToMessageId = await this.resolveLastMessageId(
           roomId,
           conversationType
         );
+        // An empty room has nothing to read — already "read", not a failure.
         if (!upToMessageId) continue;
 
         const { readToSeq } = await this.orchestrator.markReadDirect({
@@ -239,15 +284,18 @@ export class ConversationBulkService {
         });
         // readToSeq === 0 means the read was rejected downstream (not a member,
         // message not in this room, temp id) — do not report it as updated.
-        if (readToSeq > 0) updatedCount++;
+        if (readToSeq > 0) updated.push(roomId);
+        else failed.push({ roomId, errorCode: "NOT_MEMBER" });
       } catch (err) {
+        const errorCode = toBulkErrorCode(err);
         logger.warn(
-          `ConversationBulkService|markRead skipped room=${roomId} user=${userId}: ${String(err)}`
+          `ConversationBulkService|markRead skipped room=${roomId} user=${userId} code=${errorCode}: ${String(err)}`
         );
+        failed.push({ roomId, errorCode });
       }
     }
 
-    return { updatedCount };
+    return { updatedCount: updated.length, updated, failed };
   }
 
   private async resolveLastMessageId(
@@ -274,4 +322,19 @@ function toLeaveErrorCode(err: unknown): BulkLeaveErrorCode {
   if (code === "CHAT_OWNER_CANNOT_LEAVE") return "OWNER_CANNOT_LEAVE";
   if (code === "CHAT_NOT_A_MEMBER") return "NOT_MEMBER";
   return "NOT_FOUND";
+}
+
+/** Same mapping for mute/read, which have no owner-can't-leave case. */
+const toBulkErrorCode = toLeaveErrorCode;
+
+/**
+ * Room ids are server-minted with a kind prefix (`generateRoomId("grp"|"prv")`),
+ * so anything else did not come from this service — most often a COMMUNITY id
+ * (a bare ObjectId), which belongs to `POST /communities/{mute,read}/bulk`.
+ * Without this guard `resolveConversationType`'s legacy fallback classified it
+ * PRIVATE, the private lookup missed, and the id disappeared into `skipped`
+ * looking like a no-op success.
+ */
+function isChatRoomId(roomId: string): boolean {
+  return roomId.startsWith("grp_") || roomId.startsWith("prv_");
 }

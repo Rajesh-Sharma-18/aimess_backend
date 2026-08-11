@@ -42,9 +42,14 @@ model PrivateRoom {
   clearFor                  Json     @default("{}")
   mutedBy                   Json     @default("{}")
   archivedBy                Json     @default("{}")
-  // Auto-delete (disappearing messages) — PER USER, same one-sided per-user map
-  // shape as `mutedBy`: { "<userId>": { mode, ttlSeconds, setAt } }. See
-  // `lib/auto-delete.ts` for which side's timer a given message ends up with.
+  // Auto-delete (disappearing messages) — ONE timer for the CONVERSATION, which
+  // either participant may change and both then see: { mode, ttlSeconds, setAt,
+  // setBy }. Absent = Off, so a new room needs no initialization.
+  autoDelete                Json?
+  // LEGACY per-user map, { "<userId>": { mode, ttlSeconds, setAt } }, from when
+  // each side had its own timer. Read-only fallback for rooms written before
+  // `autoDelete` existed — see `lib/auto-delete.ts#readRoomAutoDelete`. Never
+  // written any more; drop the field once no room relies on it.
   autoDeleteBy              Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
@@ -553,6 +558,19 @@ model Notification {
   // top-level predicate — so excluding "don't show a device its own login
   // alert" needs a real indexed field, not a JSON-path query.
   loginSessionId String?
+  // "auth.security_new_login" rows only. A Login Detected alert stays
+  // actionable ("Terminate" / "It's Me") until `loginExpiresAt`; after that the
+  // server-side sweep resolves it exactly as "It's Me" would (see
+  // LOGIN_DETECTION_TIMEOUT_MS). Server-computed at create time — never
+  // client-supplied — so the deadline survives refresh, logout and restart.
+  //
+  // `loginResolvedAt` is the PENDING marker AND the concurrency latch: null =
+  // still actionable, non-null = already resolved by exactly one writer
+  // (user tap or sweep). Every resolution claims it with an atomic
+  // `updateMany({ loginResolvedAt: null })`, so a click racing the deadline
+  // can only produce one final state.
+  loginExpiresAt  DateTime?
+  loginResolvedAt DateTime?
 
   // Stable identity of the underlying entity/action (see lib/notification-identity.ts).
   // Two events for the same real-world thing share a groupKey, so the second one
@@ -570,6 +588,8 @@ model Notification {
   // applied: every query is userId-scoped.
   @@index([userId, isRead, isDeleted])
   @@index([userId, loginSessionId])
+  // Drives the expiry sweep (type + still-pending + past deadline).
+  @@index([type, loginResolvedAt, loginExpiresAt])
   @@index([userId, groupKey])
   @@index([userId, updatedAt(sort: Desc)])
   @@map("notifications")

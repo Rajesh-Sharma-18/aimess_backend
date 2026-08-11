@@ -30,9 +30,7 @@ function buildService(participants: string[] | null) {
   const privateRoomRepo = {
     findByRoomId: jest
       .fn()
-      .mockResolvedValue(
-        participants ? { roomId: ROOM, participants } : null
-      ),
+      .mockResolvedValue(participants ? { roomId: ROOM, participants } : null),
   };
   return new PrivateRoomService(
     privateRoomRepo as unknown as ConstructorParameters<

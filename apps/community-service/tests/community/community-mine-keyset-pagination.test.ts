@@ -1,9 +1,9 @@
 /**
- * `GET /api/v2/communities/mine` — COMPOUND-KEYSET gap-safety proof.
+ * `GET /api/v1/communities/mine?cursor=` — COMPOUND-KEYSET gap-safety proof.
  *
  * V1 `/mine` bounds only `lastActivityAt` in the WHERE (the `id` tiebreaker lives
  * only in `orderBy`), so communities sharing one `lastActivityAt` millisecond can
- * skip or duplicate across a page edge. V2's `listMineByActivityKeyset` puts the
+ * skip or duplicate across a page edge. `listMineByActivityKeyset` puts the
  * `id` tiebreaker IN the boundary (`$or[{lastActivityAt lt}, {lastActivityAt eq,
  * id lt}]`), giving a true total order.
  *
@@ -89,7 +89,7 @@ beforeEach(() => {
   countMock.mockImplementation(async () => store.length);
 });
 
-/** Traverse the whole list newest→oldest exactly as `listMineV2` does. */
+/** Traverse the whole list newest→oldest exactly as `listMineKeyset` does. */
 async function traverse(limit: number): Promise<Row[]> {
   const collected: Row[] = [];
   let cursor: { ts: Date; id: string } | null = null;
@@ -118,7 +118,7 @@ function mk(i: number, ts: number): Row {
   return { id: String(i).padStart(24, "0"), lastActivityAt: new Date(ts) };
 }
 
-describe("communities/mine V2 — compound keyset gap-safety", () => {
+describe("communities/mine cursor= — compound keyset gap-safety", () => {
   it("reaches EVERY community exactly once across dense same-millisecond clusters", async () => {
     const base = 1_784_000_000_000;
     // 97 communities, clusters of 3 share one lastActivityAt ms → clusters

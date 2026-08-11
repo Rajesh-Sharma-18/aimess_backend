@@ -1,7 +1,7 @@
 /**
- * Community SEQUENCE pagination (Cursor V2) — FULL-TRAVERSAL PROOF.
+ * Community SEQUENCE pagination — FULL-TRAVERSAL PROOF.
  *
- * V2 (`GET /api/v2/chat/community/rooms/:roomId/messages`) replaces the V1
+ * The `before_seq`/`after_seq` axis of `GET /api/chat/community/rooms/:roomId/messages` replaces the
  * `(createdAt, _id)` timestamp keyset with the monotonic `sequenceNumber` keyset
  * (`findByRoomIdSeq` / `findAroundSeq`). Because `sequenceNumber` is UNIQUE per
  * room, the seq axis is gap-safe with NO tiebreaker and NO snap-to-millisecond
@@ -253,7 +253,7 @@ function mkDoc(i: number, over: Partial<Doc>, ts: number): Doc {
   };
 }
 
-/** Walk the whole history newest→oldest by seq, exactly as the V2 service does. */
+/** Walk the whole history newest→oldest by seq, exactly as the service does. */
 async function traverseSeq(
   repo: GeneralRoomMessageRepository,
   limit: number,
@@ -283,7 +283,7 @@ async function traverseSeq(
   return collected;
 }
 
-describe("community SEQUENCE pagination (Cursor V2) — full traversal", () => {
+describe("community SEQUENCE pagination — full traversal", () => {
   it("retrieves EVERY visible message exactly once across a 731-message room with hidden/personal/deleted rows", async () => {
     const base = 1_700_000_000_000;
     const docs: Doc[] = [];

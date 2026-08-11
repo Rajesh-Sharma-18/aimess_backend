@@ -38,19 +38,35 @@ redis:
   address: ${REDIS_HOST}:${REDIS_PORT}
   password: ${REDIS_PASSWORD}
 
-# Embedded TURN over TLS. Needed by clients behind restrictive NATs and
-# corporate firewalls that block UDP outright.
+# Embedded TURN over TLS — part of livekit-server itself, NOT a separate daemon.
+# Relays media for clients whose network blocks the direct UDP path: corporate
+# and campus wifi, some mobile carriers, VPNs, symmetric NAT. Without it those
+# clients complete signaling, join the room, and then fail with
+# DisconnectReason 14 (CONNECTION_TIMEOUT) — which looks like an intermittent
+# application bug because it depends entirely on whose network each peer is on.
 #
-# Disabled by default because it needs its own certificate for
-# livekit.ai5dev.tech on port 5349. Enable once certs are issued — see
-# deploy/README.md. Without TURN, a minority of users on locked-down networks
-# will join calls but get no audio or video.
+# Reuses the SAME certificate nginx already serves for the signaling vhost
+# (deploy/nginx/sites/dev01-livekit.conf), mounted read-only into the container
+# by deploy/dev01/compose.yml. Nothing extra to issue.
+#
+# ⚠ `domain` MUST resolve straight to this host. TURN speaks TLS on 5349, not
+# HTTP on 443, so a Cloudflare-proxied record sends clients to an edge that is
+# not listening on that port and TURN is silently dead — the exact failure it
+# exists to prevent. Grey-cloud notification.ai5dev.tech before enabling this.
+#
+# ⚠ The certificate renews every 90 days and LiveKit reads it ONCE at startup.
+# deploy/scripts/05-issue-certs.sh installs a renewal hook that restarts this
+# container; without it TURN keeps serving an expired cert three months later.
 turn:
-  enabled: false
-  # domain: ${LIVEKIT_DOMAIN}
-  # tls_port: 5349
-  # cert_file: /etc/livekit/certs/fullchain.pem
-  # key_file: /etc/livekit/certs/privkey.pem
+  enabled: true
+  domain: ${LIVEKIT_DOMAIN}
+  tls_port: 5349
+  # Mounted at the SAME path inside the container as on the host, deliberately:
+  # `live/<domain>/fullchain.pem` is a relative symlink into `../../archive/`,
+  # so mounting the leaf directory alone yields two dangling links and LiveKit
+  # exits at startup. Identical paths keep every symlink resolvable.
+  cert_file: /etc/letsencrypt/live/${LIVEKIT_DOMAIN}/fullchain.pem
+  key_file: /etc/letsencrypt/live/${LIVEKIT_DOMAIN}/privkey.pem
 
 # LiveKit signs each webhook with the api_key below and POSTs to the gateway,
 # which runs on Dev 02 and is reachable only via its public origin. This must

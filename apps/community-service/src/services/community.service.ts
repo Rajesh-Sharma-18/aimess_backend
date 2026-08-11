@@ -332,15 +332,39 @@ export function selectListPreview(
   return row.lastActivityPreview ?? null;
 }
 
+/** The "no message behind this activity" identity block — see CommunityLastActivity. */
+const EMPTY_ACTIVITY_IDENTITY = {
+  messageId: "",
+  clientMessageId: null,
+  seq: 0,
+  senderId: null,
+  contentType: "",
+} as const;
+
 export function buildLastActivity(community: {
   lastActivityAt: Date;
   lastActivityType?: string | null;
   lastActivityPreview?: string | null;
   lastActivityUsername?: string | null;
   lastActivityUserId?: string | null;
+  lastActivityMessageId?: string | null;
+  lastActivityClientMessageId?: string | null;
+  lastActivitySeq?: number | null;
+  lastActivityContentType?: string | null;
   createdAt: Date;
 }): CommunityLastActivity {
   const rawType = community.lastActivityType ?? "created";
+  // Identity of the message behind the activity, carried on BOTH branches
+  // below: a SYSTEM/lifecycle row forces `userId` to null (so the client never
+  // prefixes the preview with a name) but still has a real message behind it,
+  // and an offline client needs that identity to merge deterministically.
+  const identity = {
+    messageId: community.lastActivityMessageId ?? "",
+    clientMessageId: community.lastActivityClientMessageId ?? null,
+    seq: community.lastActivitySeq ?? 0,
+    senderId: community.lastActivityUserId ?? null,
+    contentType: community.lastActivityContentType ?? "",
+  };
 
   // Legacy ineligible activity (e.g. a "X was removed" line written by an old
   // kick/ban build before the eligibility rule): never surface it as the preview.
@@ -355,6 +379,7 @@ export function buildLastActivity(community: {
       // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single source of truth.
       preview: "Community created",
       dateTime: community.createdAt.getTime(),
+      ...EMPTY_ACTIVITY_IDENTITY,
     };
   }
 
@@ -366,6 +391,7 @@ export function buildLastActivity(community: {
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
       dateTime: community.lastActivityAt.getTime(),
+      ...identity,
     };
   }
 
@@ -398,6 +424,7 @@ export function buildLastActivity(community: {
       community.lastActivityPreview ??
       (systemType === "created" ? "Community created" : ""),
     dateTime,
+    ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
 }
 
@@ -424,6 +451,7 @@ export function applyPersonalLastActivityOverlay(
         username: null,
         preview: personal.message,
         dateTime: personal.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
       },
       lastActivityAt: personal.dateTime,
     };
@@ -447,6 +475,7 @@ export function chatLastMessageToActivity(chat: {
         username: null,
         preview: chat.message,
         dateTime: chat.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
       }
     : {
         type: "message",
@@ -454,6 +483,8 @@ export function chatLastMessageToActivity(chat: {
         username: chat.username,
         preview: chat.message,
         dateTime: chat.dateTime,
+        ...EMPTY_ACTIVITY_IDENTITY,
+        senderId: chat.userId || null,
       };
 }
 
@@ -471,6 +502,7 @@ export function emptyLastActivity(): {
       username: null,
       preview: "",
       dateTime: 0,
+      ...EMPTY_ACTIVITY_IDENTITY,
     },
     lastActivityAt: 0,
   };
@@ -562,6 +594,7 @@ export function applyReactionOverlay(
       username: null,
       preview,
       dateTime: reactionAt,
+      ...EMPTY_ACTIVITY_IDENTITY,
     },
     lastActivityAt: reactionAt,
   };
@@ -883,6 +916,7 @@ async function loadMuteMap(
 function muteFields(muteRow: MuteRowFragment): {
   isMuted: boolean;
   muteUntil: string | null;
+  muteUntilMs: number | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
@@ -891,6 +925,8 @@ function muteFields(muteRow: MuteRowFragment): {
   return {
     isMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
+    // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+    muteUntilMs: muteRow?.mutedUntil ? muteRow.mutedUntil.getTime() : null,
     streamEnabled: muteRow?.streamEnabled ?? true,
     chatEnabled: muteRow?.chatEnabled ?? true,
     announcementEnabled: muteRow?.announcementEnabled ?? true,
@@ -1548,15 +1584,16 @@ type CommunityRow = NonNullable<
   Awaited<ReturnType<typeof communityRepository.findById>>
 >;
 
-/** One `/mine` page row — the shared `mineActivitySelect` shape (V1 == V2). */
+/** One `/mine` page row — the shared `mineActivitySelect` shape. */
 type MineActivityRow = Awaited<
   ReturnType<typeof communityRepository.listMineByActivity>
 >["rows"][number];
 
 /**
  * Serialize a `/mine` page of raw community rows into `CommunityListItem`s —
- * the FULL enrichment shared verbatim by V1 (`listMine`, timestamp cursor) and
- * V2 (`listMineV2`, compound keyset cursor). Only the DB boundary + the emitted
+ * the FULL enrichment shared verbatim by both pagination paths: `listMine`
+ * (legacy inclusive timestamp bound) and `listMineKeyset` (compound exclusive
+ * keyset cursor). Only the DB boundary + the emitted
  * `nextCursor` differ between the two; everything a client actually sees (chat
  * enrichment, mute/moderation state, live sender names, per-viewer lastActivity
  * reconciliation, livestream + streaming flags) is produced identically here.
@@ -2608,14 +2645,14 @@ export const communityService = {
   },
 
   /**
-   * V2 of {@link listMine} for `GET /api/v2/communities/mine`: same enriched
-   * page ({@link enrichMineCommunities}), but paged by a gap-safe COMPOUND
-   * `(lastActivityAt, id)` keyset instead of V1's bare-millisecond bound — so
-   * same-ms communities can no longer skip/duplicate at a page edge. `cursor`
-   * null → newest page; `nextCursor` is the opaque compound `"<ms>_<id>"` the
-   * client feeds straight back as the next `cursor`.
+   * The `cursor=` path of `GET /api/v1/communities/mine`: same enriched page as
+   * {@link listMine} ({@link enrichMineCommunities}), but paged by a gap-safe
+   * COMPOUND `(lastActivityAt, id)` keyset instead of the legacy bare-millisecond
+   * bound — so same-ms communities can no longer skip/duplicate at a page edge.
+   * `cursor` null → newest page; `nextCursor` is the opaque compound `"<ms>_<id>"`
+   * the client feeds straight back as the next `cursor`.
    */
-  async listMineV2(
+  async listMineKeyset(
     userId: string,
     params: { cursor: { ts: Date; id: string } | null; limit: number }
   ): Promise<PaginatedResponse<CommunityListItem>> {
@@ -7829,38 +7866,43 @@ export const communityService = {
     communityIds: string[],
     durationMinutes: number | null | undefined
   ): Promise<{ muted: string[]; skipped: string[] }> {
-    // Fetch active memberships and existing mutes in parallel.
-    const [memberships, existingMutes] = await Promise.all([
-      communityRepository.findActiveMembershipsByCommunityIds(
+    const memberships =
+      await communityRepository.findActiveMembershipsByCommunityIds(
         callerId,
         communityIds
-      ),
-      communityRepository.findMutesByUserAndCommunityIds(
-        callerId,
-        communityIds
-      ),
-    ]);
-
-    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
-    const alreadyMutedSet = new Set(existingMutes.map((m) => m.communityId));
-
-    const toMute = communityIds.filter(
-      (id) => activeMemberSet.has(id) && !alreadyMutedSet.has(id)
-    );
-    const skipped = communityIds.filter((id) => !toMute.includes(id));
-
-    if (toMute.length > 0) {
-      const mutedUntil =
-        durationMinutes == null
-          ? null
-          : new Date(Date.now() + durationMinutes * 60_000);
-      await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
-      toMute.forEach((id) =>
-        publishNotificationMuteChanged(id, callerId, true)
       );
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
+
+    // ONE timestamp for the whole batch so N sequential writes can't drift the
+    // expiry by the wall-clock cost of the loop.
+    const mutedUntil =
+      durationMinutes == null
+        ? null
+        : new Date(Date.now() + durationMinutes * 60_000);
+
+    const muted: string[] = [];
+    const skipped: string[] = [];
+
+    // UPSERT every active membership, exactly like the single-community path
+    // (`setMute`). The previous "skip anything that already has a
+    // CommunityMuteSetting row" shortcut silently no-op'd for two very common
+    // states, because a row is NOT the same thing as an active mute
+    // (`isMuteRowActive`): a LAPSED temp mute leaves its row behind (nothing
+    // garbage-collects it) and touching the per-kind notification toggles
+    // creates one too. Both render as un-muted in the list, so bulk Mute
+    // appeared to do nothing at all. Upserting is also what makes a re-mute
+    // able to change the duration, and makes the whole call idempotent.
+    for (const communityId of communityIds) {
+      if (!activeMemberSet.has(communityId)) {
+        skipped.push(communityId);
+        continue;
+      }
+      await communityRepository.upsertMute(callerId, communityId, mutedUntil);
+      publishNotificationMuteChanged(communityId, callerId, true);
+      muted.push(communityId);
     }
 
-    return { muted: toMute, skipped };
+    return { muted, skipped };
   },
 
   async bulkUnmute(

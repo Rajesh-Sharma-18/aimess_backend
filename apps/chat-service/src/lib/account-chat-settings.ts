@@ -15,11 +15,6 @@ import {
   userGrpcClient,
   type ChatSettings,
 } from "../grpc/user-snapshot.client.js";
-import {
-  accountAutoDeleteSetting,
-  AUTO_DELETE_OFF,
-  type AutoDeleteSetting,
-} from "./auto-delete.js";
 
 const TTL_MS = 60_000;
 const MAX_ENTRIES = 10_000;
@@ -60,15 +55,6 @@ export async function getAccountChatSettings(
   }
   cache.set(userId, { value, expiresAt: Date.now() + TTL_MS });
   return value;
-}
-
-/** The sender's account-wide default timer, as a room-shaped setting. */
-export async function getAccountAutoDelete(
-  userId: string
-): Promise<AutoDeleteSetting> {
-  if (!userId) return AUTO_DELETE_OFF;
-  const { autoDeleteTimer } = await getAccountChatSettings(userId);
-  return accountAutoDeleteSetting(autoDeleteTimer);
 }
 
 /**

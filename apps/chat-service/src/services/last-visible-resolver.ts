@@ -37,6 +37,11 @@ export interface VisibleLast {
    *  either shape). */
   content: unknown;
   createdAt: Date;
+  /** Offline-first list identity (see lib/list-row-identity.ts). Optional so an
+   *  adapter that cannot supply them still type-checks; absent ⇒ null/0. */
+  clientMessageId?: string | null;
+  sequenceNumber?: number | null;
+  revision?: number | null;
 }
 
 /**
@@ -156,6 +161,10 @@ export interface RecipientOverride {
   messageType: string;
   /** raw content for the caller's preview renderer */
   content: unknown;
+  /** Offline-first list identity (see lib/list-row-identity.ts). */
+  clientMessageId?: string | null;
+  sequenceNumber?: number | null;
+  revision?: number | null;
 }
 
 /**
@@ -201,6 +210,9 @@ export async function resolveForEveryoneOverrides(
             senderName: v.senderName,
             messageType: v.messageType,
             content: v.content,
+            clientMessageId: v.clientMessageId ?? null,
+            sequenceNumber: v.sequenceNumber ?? 0,
+            revision: v.revision ?? 0,
           }
         : null // the recipient has hidden everything → empty preview for them
     );

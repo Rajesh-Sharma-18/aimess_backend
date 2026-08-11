@@ -1,5 +1,19 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
 import { categoryWhere } from "../lib/notification-category.js";
+import { env } from "../config/env.js";
+
+/** The one notification type that carries the Terminate / It's Me actions. */
+export const LOGIN_DETECTED_TYPE = "auth.security_new_login";
+
+/**
+ * "Not yet resolved". Written as an explicit OR rather than the shorter
+ * `loginResolvedAt: null` because rows created before this column existed have
+ * the field ABSENT, not null — and a login alert from before the deploy must
+ * still be actionable. `isSet: false` is the only filter that reaches those.
+ */
+const PENDING_LOGIN: Record<string, unknown> = {
+  OR: [{ loginResolvedAt: null }, { loginResolvedAt: { isSet: false } }],
+};
 
 /**
  * A login-detected notification is one shared document per login event, fanned
@@ -59,15 +73,35 @@ export class NotificationRepository {
     type: string;
     [key: string]: unknown;
   }): Promise<Notification> {
-    const payload = (data.payload as object) ?? {};
+    let payload = (data.payload as object) ?? {};
+    const isLogin = data.type === LOGIN_DETECTED_TYPE;
     // Mirror payload.data.sessionId to the scalar loginSessionId column so
     // excludeSelfLoginWhere can filter on it (see the comment above) — only
     // meaningful for login-detected rows, null for every other type.
-    const sessionId =
-      data.type === "auth.security_new_login"
-        ? ((payload as { data?: Record<string, string> }).data?.sessionId ??
-          null)
-        : null;
+    const sessionId = isLogin
+      ? ((payload as { data?: Record<string, string> }).data?.sessionId ?? null)
+      : null;
+
+    // Server-computed action deadline for Login Detected rows. Also mirrored
+    // into payload.data.expiresAt (epoch ms as a string, matching the rest of
+    // that string→string context bag) because BOTH read paths — the REST
+    // serializer and the gRPC list — already ship `payload.data` verbatim, so
+    // clients get the deadline with no wire-contract change. Clients may only
+    // READ it: nothing here is taken from the inbound payload.
+    const loginExpiresAt = isLogin
+      ? new Date(Date.now() + env.LOGIN_DETECTION_TIMEOUT_MS)
+      : null;
+    if (loginExpiresAt) {
+      const p = payload as { data?: Record<string, string> };
+      payload = {
+        ...p,
+        data: {
+          ...(p.data ?? {}),
+          expiresAt: String(loginExpiresAt.getTime()),
+        },
+      };
+    }
+
     return this.prisma.notification.create({
       data: {
         userId: data.userId,
@@ -77,6 +111,8 @@ export class NotificationRepository {
         actorSnapshot: (data.actorSnapshot as object) ?? {},
         payload,
         loginSessionId: sessionId,
+        loginExpiresAt,
+        loginResolvedAt: null,
         groupKey: (data.groupKey as string | null) ?? null,
         version: 1,
         isRead: (data.isRead as boolean) ?? false,
@@ -323,9 +359,44 @@ export class NotificationRepository {
   }
 
   /**
+   * Every login-detected row that is still PENDING (never actioned) and whose
+   * server-stamped deadline has passed. Ordered oldest-first so a backlog after
+   * downtime drains in creation order.
+   *
+   * `loginExpiresAt: { not: null, lte: now }` — the `not: null` half is load
+   * bearing, NOT redundant: on MongoDB a bare `lte` also matches rows where the
+   * field is absent, which would sweep in every login row created before this
+   * column existed and resolve it instantly. `not` does not match absent
+   * fields, so those legacy rows stay untouched (exactly as they behave today).
+   */
+  async findExpiredPendingLogins(
+    now: Date,
+    limit: number
+  ): Promise<Notification[]> {
+    return this.prisma.notification.findMany({
+      where: {
+        type: LOGIN_DETECTED_TYPE,
+        isDeleted: false,
+        ...PENDING_LOGIN,
+        loginExpiresAt: { not: null, lte: now },
+      },
+      orderBy: { createdAt: "asc" },
+      take: limit,
+    });
+  }
+
+  /**
    * Persists a user-initiated action on a notification (e.g. "TERMINATE" session,
    * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
    * and marks the row read in one write. Owner-scoped (IDOR-safe).
+   *
+   * For login-detected rows this is also the single state transition:
+   * PENDING → APPROVED/TERMINATED, and nothing else. The `loginResolvedAt: null`
+   * filter on the claim makes it exactly-once across every writer — the user on
+   * device A, the user on device B, and the expiry sweep on any node — so a tap
+   * landing at the same moment as the deadline yields one winner and one final
+   * state. The loser gets null (already resolved), which every caller treats as
+   * a no-op. Returns null for a not-found / not-owned / already-resolved row.
    */
   async recordAction(
     id: string,
@@ -337,6 +408,13 @@ export class NotificationRepository {
       where: { id, userId, isDeleted: false },
     });
     if (!existing) return null;
+    if (existing.type === LOGIN_DETECTED_TYPE) {
+      const claim = await this.prisma.notification.updateMany({
+        where: { id, userId, isDeleted: false, ...PENDING_LOGIN },
+        data: { loginResolvedAt: new Date() },
+      });
+      if (claim.count === 0) return null; // someone already resolved it
+    }
     const existingPayload = (existing.payload ?? {}) as {
       title?: string;
       body?: string;

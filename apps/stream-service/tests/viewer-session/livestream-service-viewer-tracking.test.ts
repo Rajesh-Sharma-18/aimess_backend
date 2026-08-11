@@ -492,13 +492,11 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       streamRepo: {
         findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
         findByStreamKey: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "LIVE",
-            disconnectedAt: null,
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          disconnectedAt: null,
+        }),
       },
       srsService: {
         listPublishers: jest
@@ -530,13 +528,11 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     const { service, streamRepo, eventPublisher } = makeDeps({
       streamRepo: {
         findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "ENDED",
-            endedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
       },
       srsService: { listPublishers: jest.fn().mockResolvedValue([]) },
     });

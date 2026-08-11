@@ -130,7 +130,7 @@
 | Field                     | Value                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / System Messages                                                            |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId` (name) → SYSTEM                                        |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId` (name) → SYSTEM                                  |
 | **Test Scenario**         | Rename posts ROOM_RENAMED with newName                                                  |
 | **Category**              | Business Rule                                                                           |
 | **Priority**              | High                                                                                    |
@@ -146,7 +146,7 @@
 | Field                     | Value                                                                                  |
 | ------------------------- | -------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / System Messages                                                           |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId` (avatar) → SYSTEM                                     |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId` (avatar) → SYSTEM                               |
 | **Test Scenario**         | Avatar change posts AVATAR_CHANGED                                                     |
 | **Category**              | Business Rule                                                                          |
 | **Priority**              | Medium                                                                                 |
@@ -162,7 +162,7 @@
 | Field                     | Value                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / System Messages                                                                      |
-| **API/Event Name**        | `PATCH /api/chat/groups/:roomId` (description) → SYSTEM                                           |
+| **API/Event Name**        | `PATCH /api/chat/groups/rooms/:roomId` (description) → SYSTEM                                     |
 | **Test Scenario**         | Description change posts DESCRIPTION_CHANGED                                                      |
 | **Category**              | Business Rule                                                                                     |
 | **Priority**              | Medium                                                                                            |

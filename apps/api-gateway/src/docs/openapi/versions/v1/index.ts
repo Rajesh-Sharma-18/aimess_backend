@@ -7,10 +7,10 @@ import { chatPaths } from "../../paths/chat.paths.js";
 import { communityPaths } from "../../paths/community.paths.js";
 import { userPaths } from "../../paths/user.paths.js";
 import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
+import { chatChangesPaths } from "../../paths/chat-changes.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
 import { mediaPaths } from "../../paths/media.paths.js";
 import { streamPaths } from "../../paths/stream.paths.js";
-import { v2Paths } from "../v2/index.js";
 
 /**
  * OpenAPI paths for API v1.
@@ -26,20 +26,13 @@ export const v1Paths = {
   ...communityPaths,
   ...chatPaths,
   ...chatExtrasPaths,
+  // Folded onto v1 when /api/v2 was retired: the zero-loss /changes feeds and the
+  // room-inferred SET-reaction routes. All keys are new — no overrides.
+  ...chatChangesPaths,
   ...devicesPaths,
   ...mediaPaths,
   ...streamPaths,
   ...adminPaths,
-  // The zero-loss `/changes` catch-up feed is served on V1 as well as V2 (same
-  // handler; chat-service mounts it on both surfaces). Referenced from the V2
-  // definitions rather than copied so the two can never drift. Group rooms are
-  // addressed as `/chat/groups/{roomId}` on V1 (V2 uses `/chat/group/rooms/...`).
-  "/chat/private/rooms/{roomId}/changes":
-    v2Paths["/chat/private/rooms/{roomId}/changes"],
-  "/chat/groups/{roomId}/changes":
-    v2Paths["/chat/group/rooms/{roomId}/changes"],
-  "/chat/community/rooms/{roomId}/changes":
-    v2Paths["/chat/community/rooms/{roomId}/changes"],
 };
 
 export const v1Tags = [

@@ -26,6 +26,7 @@ const messageFileSchema = z.object({
   // Sender-uploaded poster frame for videos/animated GIFs. Was missing here, so zod
   // stripped it and receivers had to decode a frame out of the video over HTTP.
   thumbnailObjectKey: z.string().max(500).optional(),
+  mediaBatchId: z.string().max(64).optional(),
   // §3.5: instant-preview metadata (image/video blur + voice waveform).
   blurhash: z.string().max(120).optional(),
   waveform: z.array(z.number()).max(2048).optional(),

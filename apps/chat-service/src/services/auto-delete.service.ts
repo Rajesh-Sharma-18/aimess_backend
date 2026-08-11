@@ -6,13 +6,10 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   buildAutoDeleteWire,
   formatAutoDeleteDuration,
-  hasExplicitAutoDelete,
-  parseAutoDeleteMap,
-  readAutoDeleteSetting,
+  readRoomAutoDelete,
   validateAutoDeleteInput,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
-import { getAccountAutoDelete } from "../lib/account-chat-settings.js";
 import { SystemEvent } from "../types/enums.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -59,24 +56,19 @@ export class AutoDeleteService {
     return { room, peerId };
   }
 
-  /** Current setting for both sides + which one MY next message will follow. */
+  /** This conversation's timer — the same answer for either participant. */
   async getSettings(
     roomId: string,
     userId: string
   ): Promise<Record<string, unknown>> {
-    const { room, peerId } = await this.loadRoom(roomId, userId);
-    const map = parseAutoDeleteMap(room.autoDeleteBy);
-    return buildAutoDeleteWire(
-      map,
-      userId,
-      peerId,
-      await getAccountAutoDelete(userId)
-    );
+    const { room } = await this.loadRoom(roomId, userId);
+    return buildAutoDeleteWire(readRoomAutoDelete(room));
   }
 
   /**
-   * Set/change/clear the caller's own timer. One-sided by design: the peer is
-   * informed (system message + realtime event) but never asked to approve.
+   * Set/change/clear THE conversation's timer. Either participant may do it and
+   * both then follow it; `userId` comes from the request's auth context (never
+   * the body) and is recorded only as who made the change.
    */
   async updateSetting(
     roomId: string,
@@ -90,43 +82,31 @@ export class AutoDeleteService {
     const ttlSeconds = mode === "TIMER" ? Number(input.ttlSeconds) : null;
 
     const { room, peerId } = await this.loadRoom(roomId, userId);
-    const accountDefault = await getAccountAutoDelete(userId);
-    const mapBefore = parseAutoDeleteMap(room.autoDeleteBy);
-    const before = readAutoDeleteSetting(mapBefore, userId);
-    // No-op guard: a repeated tap on the same option must not spam the chat
-    // with an identical system message or re-stamp anything. Picking OFF while
-    // never having configured this chat is NOT a no-op — it is what pins the
-    // chat against the account-wide default, so it must reach the write below.
-    const alreadyRecorded =
-      mode !== "OFF" || hasExplicitAutoDelete(mapBefore, userId);
-    if (
-      alreadyRecorded &&
-      before.mode === mode &&
-      (before.ttlSeconds ?? null) === ttlSeconds
-    ) {
-      return buildAutoDeleteWire(mapBefore, userId, peerId, accountDefault);
+    const before = readRoomAutoDelete(room);
+    // No-op guard: a repeated tap on the same option must not spam the chat with
+    // an identical system message, re-stamp anything, or wake the other client.
+    if (before.mode === mode && (before.ttlSeconds ?? null) === ttlSeconds) {
+      return buildAutoDeleteWire(before);
     }
 
     const updated = await this.roomRepo.setAutoDelete(roomId, userId, {
       mode,
       ttlSeconds,
     });
-    const map = parseAutoDeleteMap(updated?.autoDeleteBy ?? {});
+    if (!updated) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const after = readRoomAutoDelete(updated);
 
     // §8.8 — a timer CHANGE (longer or shorter) applies to messages already
     // counting down. Turning it OFF does NOT: §7 is explicit that messages that
     // already have a timer keep deleting on schedule.
     if (mode !== "OFF") {
-      // Which messages this user's setting governs: always their own, plus the
-      // peer's when the peer has no setting of their own (one-sided case —
-      // the peer's messages are following THIS user's timer).
-      const senderIds = [userId];
-      if (peerId && readAutoDeleteSetting(map, peerId).mode === "OFF")
-        senderIds.push(peerId);
+      // BOTH participants' pending messages: one timer governs the whole
+      // conversation, so leaving the peer's messages on the old deadline would
+      // split the chat into two schedules again.
       await this.messageRepo
         .restampPendingAutoDeletes({
           roomId,
-          senderIds,
+          senderIds: [userId, peerId].filter(Boolean),
           ttlSeconds,
           afterView: mode === "AFTER_VIEWING",
         })
@@ -137,7 +117,7 @@ export class AutoDeleteService {
         });
     }
 
-    const wire = buildAutoDeleteWire(map, userId, peerId, accountDefault);
+    const wire = buildAutoDeleteWire(after);
 
     // §2 / §7 — both sides see a system message in the chat when the setting
     // changes. Best-effort inside the system-message service; never throws.
@@ -153,37 +133,23 @@ export class AutoDeleteService {
       },
     });
 
-    // §8.4 — every device of BOTH participants updates the gear-menu state
-    // without a refresh. Per-recipient payload so each side sees its own
-    // self/peer split and its own effective timer.
+    // §8.4 — every device of BOTH participants updates without a refresh. The
+    // timer belongs to the conversation, so both sides get the SAME payload,
+    // and it is published only AFTER the write above succeeded. `user:<id>` is
+    // per-user and reaches every session that user has open, whatever screen
+    // they are on; nobody outside this pair is subscribed to either channel.
+    const payload = JSON.stringify({
+      event: "conv:auto_delete:updated",
+      data: {
+        roomId,
+        conversationId: roomId,
+        type: "PRIVATE",
+        actorId: userId,
+        ...wire,
+      },
+    });
     for (const recipientId of [userId, peerId].filter(Boolean)) {
-      const otherId = recipientId === userId ? peerId : userId;
-      // Each side's effective timer is resolved against ITS OWN account-wide
-      // default, so the peer can't be told my default is in force for them.
-      const recipientDefault =
-        recipientId === userId
-          ? accountDefault
-          : await getAccountAutoDelete(recipientId);
-      void this.redis
-        .publish(
-          `user:${recipientId}`,
-          JSON.stringify({
-            event: "conv:auto_delete:updated",
-            data: {
-              roomId,
-              conversationId: roomId,
-              type: "PRIVATE",
-              actorId: userId,
-              ...buildAutoDeleteWire(
-                map,
-                recipientId,
-                otherId,
-                recipientDefault
-              ),
-            },
-          })
-        )
-        .catch(() => {});
+      void this.redis.publish(`user:${recipientId}`, payload).catch(() => {});
     }
 
     return wire;

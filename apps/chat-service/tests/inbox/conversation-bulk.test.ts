@@ -102,7 +102,10 @@ describe("POST /conversations/leave/bulk", () => {
   });
 
   it("POSITIVE: groupAction DELETE clears history and keeps membership", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    // Delete Conversation reads the membership row at ANY list-visible status
+    // (ACTIVE/LEFT/KICKED), not the ACTIVE-only finder — a removed member has
+    // to be able to delete their read-only row too.
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       roomId: GROUP_ROOM,
       userId: TEST_USER_ID,
       status: "ACTIVE",
@@ -229,6 +232,7 @@ describe("POST /conversations/mute/bulk", () => {
     expect(res.body.data).toEqual({
       muted: [PRIVATE_ROOM, GROUP_ROOM],
       skipped: [],
+      failed: [],
     });
 
     // durationMinutes is resolved against the SERVER clock, once for the batch.
@@ -297,6 +301,7 @@ describe("POST /conversations/mute/bulk", () => {
     expect(res.body.data).toEqual({
       unmuted: [PRIVATE_ROOM, GROUP_ROOM],
       skipped: [],
+      failed: [],
     });
     expect(mocks.privateRoomRepo.setUnmuted).toHaveBeenCalledWith(
       PRIVATE_ROOM,
@@ -330,6 +335,60 @@ describe("POST /conversations/mute/bulk", () => {
     expect(res.body.data).toEqual({
       muted: [PRIVATE_ROOM],
       skipped: [PRIVATE_ROOM_2],
+      // `skipped` alone can't be told apart from "already done" — the reason is
+      // what lets the client show the row as failed instead of muted.
+      failed: [{ roomId: PRIVATE_ROOM_2, errorCode: "NOT_FOUND" }],
+    });
+  });
+
+  // The exact payload the iOS client sends. camelCase stays canonical; these
+  // aliases exist because the mobile DTOs serialize snake_case and every such
+  // request used to die at the validator with 400 "roomIds Required".
+  it("POSITIVE: accepts the snake_case payload (room_ids / duration_minutes)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post("/api/chat/conversations/mute/bulk")
+      .set(auth())
+      .send({
+        duration_minutes: 10,
+        room_ids: [GROUP_ROOM],
+        action: "mute",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      muted: [GROUP_ROOM],
+      skipped: [],
+      failed: [],
+    });
+    const [, , until] = mocks.groupMemberRepo.setMuted.mock.calls[0];
+    expect(until.getTime()).toBeGreaterThan(Date.now());
+    expect(until.getTime()).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
+  });
+
+  it("NEGATIVE: a COMMUNITY id is reported UNSUPPORTED_ROOM_TYPE, never a silent no-op", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: PRIVATE_ROOM,
+      participants: [TEST_USER_ID, "peer_1"],
+    });
+    const communityId = "a".repeat(24);
+
+    const res = await request(app)
+      .post("/api/chat/conversations/mute/bulk")
+      .set(auth())
+      .send({ action: "mute", room_ids: [PRIVATE_ROOM, communityId] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      muted: [PRIVATE_ROOM],
+      skipped: [communityId],
+      failed: [{ roomId: communityId, errorCode: "UNSUPPORTED_ROOM_TYPE" }],
     });
   });
 
@@ -382,7 +441,11 @@ describe("POST /conversations/read/bulk", () => {
       .send({ roomIds: [PRIVATE_ROOM] });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ updatedCount: 1 });
+    expect(res.body.data).toEqual({
+      updatedCount: 1,
+      updated: [PRIVATE_ROOM],
+      failed: [],
+    });
 
     // Boundary comes from the server, never the client.
     expect(mocks.privateRoomRepo.markReadUpTo).toHaveBeenCalledWith({
@@ -425,7 +488,11 @@ describe("POST /conversations/read/bulk", () => {
       .send({ roomIds: [GROUP_ROOM] });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ updatedCount: 1 });
+    expect(res.body.data).toEqual({
+      updatedCount: 1,
+      updated: [GROUP_ROOM],
+      failed: [],
+    });
     expect(mocks.groupMemberRepo.advanceReadPointer).toHaveBeenCalledWith(
       GROUP_ROOM,
       TEST_USER_ID,
@@ -448,8 +515,28 @@ describe("POST /conversations/read/bulk", () => {
       .send({ roomIds: [PRIVATE_ROOM] });
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ updatedCount: 0 });
+    // Nothing to read is already read — not a failure.
+    expect(res.body.data).toEqual({
+      updatedCount: 0,
+      updated: [],
+      failed: [],
+    });
     expect(mocks.privateRoomRepo.markReadUpTo).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE: accepts the snake_case payload (room_ids, plus an ignored action)", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: PRIVATE_ROOM,
+      participants: [TEST_USER_ID, "peer_1"],
+      lastMessageId: null,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/conversations/read/bulk")
+      .set(auth())
+      .send({ room_ids: [PRIVATE_ROOM], action: "read" });
+
+    expect(res.status).toBe(200);
   });
 
   it("NEGATIVE: 400 when roomIds is missing", async () => {

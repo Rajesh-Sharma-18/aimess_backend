@@ -31,6 +31,10 @@ export function renderCommunityOverrides(
       preview: {
         contentType: normalizeMessageType(o.messageType),
         text: convertMessageToPreview(o.messageType, o.content),
+        clientMessageId: o.clientMessageId ?? null,
+        seq: o.sequenceNumber ?? 0,
+        revision: o.revision ?? 0,
+        createdAt: o.lastMessageAt,
       },
     });
   }
@@ -55,6 +59,10 @@ export function renderConvOverrides(
       preview: {
         contentType: o.messageType,
         text: buildMessagePreview(o.messageType, o.content),
+        clientMessageId: o.clientMessageId ?? null,
+        seq: o.sequenceNumber ?? 0,
+        revision: o.revision ?? 0,
+        createdAt: o.lastMessageAt,
       },
     });
   }

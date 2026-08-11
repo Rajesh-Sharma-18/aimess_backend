@@ -2,10 +2,19 @@ import { z } from "zod";
 
 import { reportUserReasonSchema } from "../../lib/report-user.js";
 
-export const addMemberSchema = z.object({
-  roomId: z.string().min(5).max(100),
-  userId: z.string().min(5).max(100),
-});
+// `userIds` is the batch form (one operation ⇒ one grouped MEMBER_ADDED line);
+// `userId` stays for the single-member callers already on the wire. The cap
+// matches the group member limit — capacity itself is still enforced per add.
+export const addMemberSchema = z
+  .object({
+    roomId: z.string().min(5).max(100),
+    userId: z.string().min(5).max(100).optional(),
+    userIds: z.array(z.string().min(5).max(100)).min(1).max(256).optional(),
+  })
+  .refine((body) => Boolean(body.userId) || Boolean(body.userIds?.length), {
+    message: "userId or userIds is required",
+    path: ["userId"],
+  });
 
 export const leaveGroupSchema = z.object({
   reason: z.string().max(100).optional(),

@@ -148,7 +148,13 @@ export const messagingGrpcClient = {
     }
   },
 
-  /** Groups the viewer does NOT belong to, excluding `excludeRoomIds`. */
+  /**
+   * Groups the viewer is not an ACTIVE member of but which are still in their
+   * conversation list (left/removed without deleting the conversation),
+   * excluding `excludeRoomIds`. Never groups the viewer has no relationship
+   * with — chat-service derives the candidate set from the viewer's own
+   * membership rows.
+   */
   async listOtherGroups(
     viewerId: string,
     q: string | undefined,

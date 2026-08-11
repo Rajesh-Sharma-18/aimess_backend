@@ -89,6 +89,14 @@ export class GroupMemberService {
        * a direct add MUST be performed by an active ADMIN/MODERATOR.
        */
       skipActorAuthz?: boolean;
+      /**
+       * Batch add ({@link addMembers}): suppress the per-member MEMBER_ADDED
+       * system line and the `group:added` inbox push. The batch posts ONE
+       * grouped system line for the whole operation and then emits
+       * `group:added` — in that order, so the new member's inbox row carries
+       * the grouped preview rather than a pre-add one.
+       */
+      deferAnnouncements?: boolean;
     }
   ): Promise<GroupMember> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
@@ -163,12 +171,14 @@ export class GroupMemberService {
     await this.roomRepo.incMemberCount(params.roomId, 1);
 
     const systemEvent = opts?.systemEvent ?? SystemEvent.MEMBER_ADDED;
-    await this.sysMsg.post({
-      roomId: params.roomId,
-      actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
-      systemEvent,
-      systemData: { targetUserId: params.userId },
-    });
+    if (!opts?.deferAnnouncements) {
+      await this.sysMsg.post({
+        roomId: params.roomId,
+        actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+        systemEvent,
+        systemData: { targetUserId: params.userId },
+      });
+    }
 
     // Out-of-room push/inbox for the added member (additive to the in-room SYSTEM
     // message above). Skip invite-link self-joins (systemEvent MEMBER_JOINED) —
@@ -188,7 +198,9 @@ export class GroupMemberService {
     // Their personal `user:<id>` channel can — same reason community fans out
     // `community:added`. Payload is a full inbox row: the client upserts it
     // directly and must NOT back-fill from REST.
-    this.emitGroupAdded(room, member, params.userId);
+    if (!opts?.deferAnnouncements) {
+      this.emitGroupAdded(room, member, params.userId);
+    }
 
     // Roster fan-out to everyone ALREADY in the group — the exact counterpart of
     // the `group:member:removed` every removal path publishes. Without it an add
@@ -210,6 +222,74 @@ export class GroupMemberService {
     });
 
     return member;
+  }
+
+  /**
+   * Adds MANY members in ONE operation and announces them with ONE grouped
+   * MEMBER_ADDED system line ("Krish added Jane, Peter and 3 others") — the
+   * WhatsApp behaviour. The batch relationship lives on the row itself
+   * (`systemData.targetUserIds`), so it survives reload, reconnect and REST
+   * history; clients never time-group anything.
+   *
+   * Per-member failures (already a member, not a friend, capacity reached) are
+   * reported in `skipped` and are NOT named in the system line — only members
+   * this operation actually added. Request-level failures (unknown room, caller
+   * not staff) still throw, so an unauthorized batch is rejected whole.
+   */
+  async addMembers(params: {
+    roomId: string;
+    userIds: string[];
+    invitedBy: string;
+  }): Promise<{
+    added: GroupMember[];
+    skipped: { userId: string; reason: string }[];
+  }> {
+    const room = await this.roomRepo.findActiveByRoomId(params.roomId);
+    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // Fail the whole request (not each member) when the caller may not add.
+    await assertGroupMember(this.memberRepo, params.roomId, params.invitedBy, {
+      roles: ["ADMIN", "MODERATOR"],
+    });
+
+    const added: GroupMember[] = [];
+    const skipped: { userId: string; reason: string }[] = [];
+    // Duplicate ids in one request must not add (or announce) the same member
+    // twice — the second pass would resolve to CHAT_ALREADY_MEMBER anyway.
+    for (const userId of [...new Set(params.userIds.filter(Boolean))]) {
+      try {
+        added.push(
+          await this.addMember(
+            { roomId: params.roomId, userId, invitedBy: params.invitedBy },
+            { deferAnnouncements: true }
+          )
+        );
+      } catch (err) {
+        skipped.push({
+          userId,
+          reason: err instanceof Error ? err.message : "CHAT_ADD_MEMBER_FAILED",
+        });
+      }
+    }
+
+    if (added.length > 0) {
+      await this.sysMsg.post({
+        roomId: params.roomId,
+        actorId: params.invitedBy,
+        systemEvent: SystemEvent.MEMBER_ADDED,
+        // A single successful add keeps the classic one-target shape, so nothing
+        // downstream (self-preview subject resolution, existing clients) changes.
+        systemData:
+          added.length === 1
+            ? { targetUserId: added[0]!.userId }
+            : { targetUserIds: added.map((member) => member.userId) },
+      });
+      // After the grouped line, so each new member's inbox row is seeded with it.
+      for (const member of added) {
+        this.emitGroupAdded(room, member, member.userId);
+      }
+    }
+
+    return { added, skipped };
   }
 
   /**

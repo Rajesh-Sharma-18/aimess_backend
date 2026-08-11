@@ -18,6 +18,7 @@ import {
 } from "../messaging/publish-friendship.js";
 import {
   emitFriendEventSafe,
+  emitFriendSelfEventSafe,
   emitFriendEventToPairSafe,
 } from "../lib/friend-socket.js";
 import {
@@ -532,7 +533,9 @@ export const friendshipService = {
         });
         publishFriendshipCreatedSafe(
           friendship.requesterId,
-          friendship.addresseeId
+          friendship.addresseeId,
+          // Read from the row as it was BEFORE this acceptance stamped it.
+          Boolean(existing.firstAcceptedAt)
         );
         emitToPair(friendship, FriendSocketEvents.ACCEPTED);
         void emitConversationFriendRequestAccepted(friendship);
@@ -620,7 +623,11 @@ export const friendshipService = {
     });
     publishFriendshipCreatedSafe(
       friendship.requesterId,
-      friendship.addresseeId
+      friendship.addresseeId,
+      // `friendship` is the row as loaded BEFORE the accept, so a non-null
+      // stamp here means this pair had already been friends at some point:
+      // a RE-friendship, the only case that posts the chat system message.
+      Boolean(friendship.firstAcceptedAt)
     );
     emitToPair(updated, FriendSocketEvents.ACCEPTED);
     void emitConversationFriendRequestAccepted(updated);
@@ -778,6 +785,8 @@ export const friendshipService = {
         addresseeId: f.addresseeId,
         acceptedAt: (f.acceptedAt ?? new Date()).toISOString(),
       });
+      // Auto-connect only ever INSERTS rows for pairs with no friendship yet
+      // (createMany + skipDuplicates), so these are first-time friendships.
       publishFriendshipCreatedSafe(f.requesterId, f.addresseeId);
       emitToPair(f, FriendSocketEvents.ACCEPTED);
     }
@@ -1153,6 +1162,16 @@ export const friendshipService = {
       ...blockedView,
       relationship: toSearchRelationship(blockedView),
     });
+
+    // …but the blocked party's screens still have to stop offering "Send Friend
+    // Request" to someone who blocked them. This says only "re-read your
+    // relationship with this peer" — no verb, no status — so they refetch and
+    // discover exactly what the REST layer already lets them discover (a 404 on
+    // the profile), and nothing more. Self-room only: `user:<id>` is joinable by
+    // presence watchers.
+    emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
+      peerId: blockerId,
+    });
   },
 
   async unblockUser(blockerId: string, blockedId: string): Promise<void> {
@@ -1200,6 +1219,12 @@ export const friendshipService = {
       targetUserId: blockedId,
       ...unblockedView,
       relationship: toSearchRelationship(unblockedView),
+    });
+
+    // Same neutral signal as the block path — without it the other side stays
+    // stuck on "profile unavailable" until they restart the app.
+    emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
+      peerId: blockerId,
     });
   },
 

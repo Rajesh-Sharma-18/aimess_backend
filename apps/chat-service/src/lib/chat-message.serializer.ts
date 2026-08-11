@@ -98,6 +98,12 @@ export function buildReplyPreviewText(
       return "Contact";
     case "LOCATION":
       return "Location";
+    // A call row's own `content.text` is its lifecycle sentence ("Voice call
+    // cancelled") — the quote names the thing replied to, not its outcome.
+    case "VOICE_CALL":
+      return "📞 Voice call";
+    case "VIDEO_CALL":
+      return "📹 Video call";
     default:
       return text;
   }
@@ -622,6 +628,46 @@ export function autoDeleteWireFields(row: unknown): {
   };
 }
 
+/**
+ * The ONE tombstone shape, stamped onto every serialized message so a client
+ * reads deletion the same way on private, group and community.
+ *
+ * The three surfaces store deletion under three different column names
+ * (`isDeleted`+`deletedAt` on private/group, `deletedForAll`+`deletedForAllAt`
+ * on community), which forced clients to branch per conversation type. These
+ * two fields are the normalized read: `deletedForEveryone` is the boolean the
+ * client acts on, `deletedAt` is epoch ms (null when not deleted).
+ *
+ * ADDITIVE — the underlying columns are still serialized alongside, unchanged.
+ *
+ * Deleted messages replay through the `/changes` feed (which deliberately does
+ * NOT filter tombstones); history pages continue to omit them, so an existing
+ * client can never start rendering rows it did not render before.
+ */
+export function tombstoneWireFields(row: unknown): {
+  deletedForEveryone: boolean;
+  deletedAt: number | null;
+} {
+  const r = (row ?? {}) as {
+    isDeleted?: boolean | null;
+    deletedForAll?: boolean | null;
+    deletedAt?: Date | string | number | null;
+    deletedForAllAt?: Date | string | number | null;
+  };
+  const raw = r.deletedAt ?? r.deletedForAllAt ?? null;
+  let at: number | null = null;
+  if (raw instanceof Date) at = raw.getTime();
+  else if (typeof raw === "number") at = raw;
+  else if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    at = Number.isFinite(parsed) ? parsed : null;
+  }
+  return {
+    deletedForEveryone: r.isDeleted === true || r.deletedForAll === true,
+    deletedAt: at,
+  };
+}
+
 export type DeleteConversationKind = ConversationKind | "COMMUNITY";
 
 export interface DeletePayloadInput {
@@ -632,6 +678,18 @@ export interface DeletePayloadInput {
   deletedBy: string;
   sequenceNumber?: number;
   deletedType?: string;
+  /**
+   * Tombstone metadata (§4). ADDITIVE and always emitted with a documented
+   * default, so a replayed or out-of-order delete is a no-op on the client
+   * instead of a rollback: `revision` is the room CHANGE cursor the delete was
+   * stamped with (0 = unknown, treat as "apply"), `clientMessageId` lets a
+   * client that only ever knew its optimistic row resolve identity, and
+   * `deletedAt` is epoch ms.
+   */
+  revision?: number;
+  clientMessageId?: string | null;
+  /** epoch ms */
+  deletedAt?: number;
 }
 
 /**
@@ -643,6 +701,13 @@ export interface DeletePayloadInput {
 export function buildDeletePayload(
   input: DeletePayloadInput
 ): Record<string, unknown> {
+  // Tombstone metadata shared by both shapes — see DeletePayloadInput.
+  const tombstone = {
+    revision: input.revision ?? 0,
+    clientMessageId: input.clientMessageId ?? null,
+    deletedAt: input.deletedAt ?? 0,
+    deletedForEveryone: input.scope === "forEveryone",
+  };
   if (input.conversationType === "COMMUNITY") {
     return {
       messageId: input.messageId,
@@ -650,6 +715,7 @@ export function buildDeletePayload(
       roomId: input.roomId,
       deleteType: input.scope,
       deletedBy: input.deletedBy,
+      ...tombstone,
     };
   }
   const base: Record<string, unknown> = {
@@ -658,6 +724,7 @@ export function buildDeletePayload(
     type: input.scope,
     deletedBy: input.deletedBy,
     sequenceNumber: input.sequenceNumber ?? 0,
+    ...tombstone,
   };
   if (input.conversationType === "GROUP") {
     base.deletedType = input.deletedType ?? "SELF_DELETE";

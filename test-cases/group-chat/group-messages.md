@@ -269,7 +269,7 @@
 | Field                     | Value                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Forward                                                                           |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/messages/:messageId/forward`                                               |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/messages/:messageId/forward`                                         |
 | **Test Scenario**         | Member forwards a message to a group they belong to                                                       |
 | **Category**              | Happy Path                                                                                                |
 | **Priority**              | High                                                                                                      |
@@ -282,42 +282,42 @@
 
 ### TC-GCHAT-122 — Forward to a group you're not a member of
 
-| Field                     | Value                                                       |
-| ------------------------- | ----------------------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Forward                             |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/messages/:messageId/forward` |
-| **Test Scenario**         | Forward into a group outsider                               |
-| **Category**              | Security                                                    |
-| **Priority**              | High                                                        |
-| **Preconditions**         | Caller not a member of `targetRoomId`                       |
-| **Request Payload**       | `{ "targetRoomId":"grp_other" }`                            |
-| **Expected Response**     | `403` `CHAT_NOT_A_MEMBER`                                   |
-| **Expected DB Changes**   | None                                                        |
-| **Expected Socket/Event** | None                                                        |
-| **Notes**                 | `ForbiddenError`.                                           |
+| Field                     | Value                                                             |
+| ------------------------- | ----------------------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Forward                                   |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/messages/:messageId/forward` |
+| **Test Scenario**         | Forward into a group outsider                                     |
+| **Category**              | Security                                                          |
+| **Priority**              | High                                                              |
+| **Preconditions**         | Caller not a member of `targetRoomId`                             |
+| **Request Payload**       | `{ "targetRoomId":"grp_other" }`                                  |
+| **Expected Response**     | `403` `CHAT_NOT_A_MEMBER`                                         |
+| **Expected DB Changes**   | None                                                              |
+| **Expected Socket/Event** | None                                                              |
+| **Notes**                 | `ForbiddenError`.                                                 |
 
 ### TC-GCHAT-123 — Forward a deleted source message
 
-| Field                     | Value                                                       |
-| ------------------------- | ----------------------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Forward                             |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/messages/:messageId/forward` |
-| **Test Scenario**         | Source message tombstoned                                   |
-| **Category**              | Edge Case                                                   |
-| **Priority**              | Medium                                                      |
-| **Preconditions**         | Source `isDeleted=true`                                     |
-| **Request Payload**       | `{ "targetRoomId":"grp_y" }`                                |
-| **Expected Response**     | `404` `CHAT_MESSAGE_NOT_FOUND`                              |
-| **Expected DB Changes**   | None                                                        |
-| **Expected Socket/Event** | None                                                        |
-| **Notes**                 | —                                                           |
+| Field                     | Value                                                             |
+| ------------------------- | ----------------------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Forward                                   |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/messages/:messageId/forward` |
+| **Test Scenario**         | Source message tombstoned                                         |
+| **Category**              | Edge Case                                                         |
+| **Priority**              | Medium                                                            |
+| **Preconditions**         | Source `isDeleted=true`                                           |
+| **Request Payload**       | `{ "targetRoomId":"grp_y" }`                                      |
+| **Expected Response**     | `404` `CHAT_MESSAGE_NOT_FOUND`                                    |
+| **Expected DB Changes**   | None                                                              |
+| **Expected Socket/Event** | None                                                              |
+| **Notes**                 | —                                                                 |
 
 ### TC-GCHAT-124 — Forward idempotency (duplicate clientMessageId)
 
 | Field                     | Value                                                                                                                                 |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Forward                                                                                                       |
-| **API/Event Name**        | `POST /api/chat/groups/:roomId/messages/:messageId/forward`                                                                           |
+| **API/Event Name**        | `POST /api/chat/groups/rooms/:roomId/messages/:messageId/forward`                                                                     |
 | **Test Scenario**         | Re-forward same clientMessageId into target                                                                                           |
 | **Category**              | Edge Case                                                                                                                             |
 | **Priority**              | Medium                                                                                                                                |
@@ -333,7 +333,7 @@
 | Field                     | Value                                                                                                        |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Feature/Module**        | Group Chat / Messages — Reactions                                                                            |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages/:messageId/reactions`                                                 |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages/:messageId/reactions`                                           |
 | **Test Scenario**         | List who reacted with each emoji                                                                             |
 | **Category**              | Happy Path                                                                                                   |
 | **Priority**              | Medium                                                                                                       |
@@ -346,19 +346,19 @@
 
 ### TC-GCHAT-126 — Reactions on non-existent message
 
-| Field                     | Value                                                        |
-| ------------------------- | ------------------------------------------------------------ |
-| **Feature/Module**        | Group Chat / Messages — Reactions                            |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages/:messageId/reactions` |
-| **Test Scenario**         | messageId unknown                                            |
-| **Category**              | Error Handling                                               |
-| **Priority**              | Low                                                          |
-| **Preconditions**         | Active member                                                |
-| **Request Payload**       | —                                                            |
-| **Expected Response**     | `404` `CHAT_MESSAGE_NOT_FOUND`                               |
-| **Expected DB Changes**   | None                                                         |
-| **Expected Socket/Event** | None                                                         |
-| **Notes**                 | `getReactions` returns null → NotFound.                      |
+| Field                     | Value                                                              |
+| ------------------------- | ------------------------------------------------------------------ |
+| **Feature/Module**        | Group Chat / Messages — Reactions                                  |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages/:messageId/reactions` |
+| **Test Scenario**         | messageId unknown                                                  |
+| **Category**              | Error Handling                                                     |
+| **Priority**              | Low                                                                |
+| **Preconditions**         | Active member                                                      |
+| **Request Payload**       | —                                                                  |
+| **Expected Response**     | `404` `CHAT_MESSAGE_NOT_FOUND`                                     |
+| **Expected DB Changes**   | None                                                               |
+| **Expected Socket/Event** | None                                                               |
+| **Notes**                 | `getReactions` returns null → NotFound.                            |
 
 ### TC-GCHAT-127 — Toggle reaction via socket
 
@@ -381,7 +381,7 @@
 | Field                     | Value                                                                                                                          |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **Feature/Module**        | Group Chat / Messages — Timeline                                                                                               |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages?before_ts=<ms>&limit=30`                                                                |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages?before_ts=<ms>&limit=30`                                                          |
 | **Test Scenario**         | Newest-first page older than a timestamp                                                                                       |
 | **Category**              | Pagination/Filter/Sort                                                                                                         |
 | **Priority**              | High                                                                                                                           |
@@ -394,42 +394,42 @@
 
 ### TC-GCHAT-129 — Timeline with both before_ts and after_ts (validation)
 
-| Field                     | Value                                                          |
-| ------------------------- | -------------------------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Timeline                               |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages?before_ts=1&after_ts=2` |
-| **Test Scenario**         | Mutually-exclusive params both set                             |
-| **Category**              | Input Validation                                               |
-| **Priority**              | Medium                                                         |
-| **Preconditions**         | —                                                              |
-| **Request Payload**       | both timestamps                                                |
-| **Expected Response**     | `400` "Provide either before_ts or after_ts, not both"         |
-| **Expected DB Changes**   | None                                                           |
-| **Expected Socket/Event** | None                                                           |
-| **Notes**                 | `.refine`.                                                     |
+| Field                     | Value                                                                |
+| ------------------------- | -------------------------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Timeline                                     |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages?before_ts=1&after_ts=2` |
+| **Test Scenario**         | Mutually-exclusive params both set                                   |
+| **Category**              | Input Validation                                                     |
+| **Priority**              | Medium                                                               |
+| **Preconditions**         | —                                                                    |
+| **Request Payload**       | both timestamps                                                      |
+| **Expected Response**     | `400` "Provide either before_ts or after_ts, not both"               |
+| **Expected DB Changes**   | None                                                                 |
+| **Expected Socket/Event** | None                                                                 |
+| **Notes**                 | `.refine`.                                                           |
 
 ### TC-GCHAT-130 — Timeline limit over max (validation)
 
-| Field                     | Value                                             |
-| ------------------------- | ------------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Timeline                  |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages?limit=101` |
-| **Test Scenario**         | limit > 100                                       |
-| **Category**              | Input Validation                                  |
-| **Priority**              | Low                                               |
-| **Preconditions**         | —                                                 |
-| **Request Payload**       | `limit=101`                                       |
-| **Expected Response**     | `400` validation error                            |
-| **Expected DB Changes**   | None                                              |
-| **Expected Socket/Event** | None                                              |
-| **Notes**                 | max 100.                                          |
+| Field                     | Value                                                   |
+| ------------------------- | ------------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Timeline                        |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages?limit=101` |
+| **Test Scenario**         | limit > 100                                             |
+| **Category**              | Input Validation                                        |
+| **Priority**              | Low                                                     |
+| **Preconditions**         | —                                                       |
+| **Request Payload**       | `limit=101`                                             |
+| **Expected Response**     | `400` validation error                                  |
+| **Expected DB Changes**   | None                                                    |
+| **Expected Socket/Event** | None                                                    |
+| **Notes**                 | max 100.                                                |
 
 ### TC-GCHAT-131 — Conversation page advances read pointer
 
 | Field                     | Value                                                                                                        |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Feature/Module**        | Group Chat / Messages — Conversation                                                                         |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation?pageNumber=1&limit=30`                                            |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation?pageNumber=1&limit=30`                                      |
 | **Test Scenario**         | Member opens conversation, read pointer moves                                                                |
 | **Category**              | DB State                                                                                                     |
 | **Priority**              | High                                                                                                         |
@@ -445,7 +445,7 @@
 | Field                     | Value                                                             |
 | ------------------------- | ----------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Conversation                              |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/conversation`                       |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/conversation`                 |
 | **Test Scenario**         | Non-member reads conversation                                     |
 | **Category**              | Security                                                          |
 | **Priority**              | High                                                              |
@@ -461,7 +461,7 @@
 | Field                     | Value                                                                                                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Timeline                                                                                                                                                |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages`                                                                                                                                         |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages`                                                                                                                                   |
 | **Test Scenario**         | Non-member reads message history                                                                                                                                                |
 | **Category**              | Security                                                                                                                                                                        |
 | **Priority**              | High                                                                                                                                                                            |
@@ -474,42 +474,42 @@
 
 ### TC-GCHAT-134 — Search messages by text
 
-| Field                     | Value                                                  |
-| ------------------------- | ------------------------------------------------------ |
-| **Feature/Module**        | Group Chat / Messages — Search                         |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages/search?q=hello` |
-| **Test Scenario**         | Find messages containing a term                        |
-| **Category**              | Happy Path                                             |
-| **Priority**              | Medium                                                 |
-| **Preconditions**         | Room has matching messages                             |
-| **Request Payload**       | query `q`, `limit`, `page`                             |
-| **Expected Response**     | `200` matching list (`CHAT_MESSAGES_SEARCHED`)         |
-| **Expected DB Changes**   | None                                                   |
-| **Expected Socket/Event** | None                                                   |
-| **Notes**                 | Empty/whitespace `q` → empty list, no DB query.        |
+| Field                     | Value                                                        |
+| ------------------------- | ------------------------------------------------------------ |
+| **Feature/Module**        | Group Chat / Messages — Search                               |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages/search?q=hello` |
+| **Test Scenario**         | Find messages containing a term                              |
+| **Category**              | Happy Path                                                   |
+| **Priority**              | Medium                                                       |
+| **Preconditions**         | Room has matching messages                                   |
+| **Request Payload**       | query `q`, `limit`, `page`                                   |
+| **Expected Response**     | `200` matching list (`CHAT_MESSAGES_SEARCHED`)               |
+| **Expected DB Changes**   | None                                                         |
+| **Expected Socket/Event** | None                                                         |
+| **Notes**                 | Empty/whitespace `q` → empty list, no DB query.              |
 
 ### TC-GCHAT-135 — Search with empty q
 
-| Field                     | Value                                             |
-| ------------------------- | ------------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Search                    |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/messages/search?q=` |
-| **Test Scenario**         | Blank query                                       |
-| **Category**              | Edge Case                                         |
-| **Priority**              | Low                                               |
-| **Preconditions**         | —                                                 |
-| **Request Payload**       | `q=""`                                            |
-| **Expected Response**     | `200` empty list, `CHAT_NO_MESSAGES_FOUND`        |
-| **Expected DB Changes**   | None                                              |
-| **Expected Socket/Event** | None                                              |
-| **Notes**                 | Short-circuits before repo.                       |
+| Field                     | Value                                                   |
+| ------------------------- | ------------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Search                          |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/messages/search?q=` |
+| **Test Scenario**         | Blank query                                             |
+| **Category**              | Edge Case                                               |
+| **Priority**              | Low                                                     |
+| **Preconditions**         | —                                                       |
+| **Request Payload**       | `q=""`                                                  |
+| **Expected Response**     | `200` empty list, `CHAT_NO_MESSAGES_FOUND`              |
+| **Expected DB Changes**   | None                                                    |
+| **Expected Socket/Event** | None                                                    |
+| **Notes**                 | Short-circuits before repo.                             |
 
 ### TC-GCHAT-136 — List shared media (filtered by type)
 
 | Field                     | Value                                                                                           |
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Media                                                                   |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/media?type=IMAGE&limit=30`                                        |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/media?type=IMAGE&limit=30`                                  |
 | **Test Scenario**         | Media gallery for a group                                                                       |
 | **Category**              | Pagination/Filter/Sort                                                                          |
 | **Priority**              | Medium                                                                                          |
@@ -522,26 +522,26 @@
 
 ### TC-GCHAT-137 — Media invalid type (validation)
 
-| Field                     | Value                                         |
-| ------------------------- | --------------------------------------------- |
-| **Feature/Module**        | Group Chat / Messages — Media                 |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/media?type=XYZ` |
-| **Test Scenario**         | Bad type enum                                 |
-| **Category**              | Input Validation                              |
-| **Priority**              | Low                                           |
-| **Preconditions**         | —                                             |
-| **Request Payload**       | `type=XYZ`                                    |
-| **Expected Response**     | `400` validation error                        |
-| **Expected DB Changes**   | None                                          |
-| **Expected Socket/Event** | None                                          |
-| **Notes**                 | —                                             |
+| Field                     | Value                                               |
+| ------------------------- | --------------------------------------------------- |
+| **Feature/Module**        | Group Chat / Messages — Media                       |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/media?type=XYZ` |
+| **Test Scenario**         | Bad type enum                                       |
+| **Category**              | Input Validation                                    |
+| **Priority**              | Low                                                 |
+| **Preconditions**         | —                                                   |
+| **Request Payload**       | `type=XYZ`                                          |
+| **Expected Response**     | `400` validation error                              |
+| **Expected DB Changes**   | None                                                |
+| **Expected Socket/Event** | None                                                |
+| **Notes**                 | —                                                   |
 
 ### TC-GCHAT-138 — List pinned messages
 
 | Field                     | Value                                                                                                                                     |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Pins                                                                                                              |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/pins`                                                                                                       |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/pins`                                                                                                 |
 | **Test Scenario**         | Fetch pinned messages                                                                                                                     |
 | **Category**              | Pagination/Filter/Sort                                                                                                                    |
 | **Priority**              | Low                                                                                                                                       |
@@ -557,7 +557,7 @@
 | Field                     | Value                                                |
 | ------------------------- | ---------------------------------------------------- |
 | **Feature/Module**        | Group Chat / Messages — Media                        |
-| **API/Event Name**        | `GET /api/chat/groups/:roomId/media`                 |
+| **API/Event Name**        | `GET /api/chat/groups/rooms/:roomId/media`           |
 | **Test Scenario**         | Non-member lists media                               |
 | **Category**              | Security                                             |
 | **Priority**              | Medium                                               |

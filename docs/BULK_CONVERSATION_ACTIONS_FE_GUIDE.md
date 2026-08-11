@@ -55,7 +55,7 @@ membership, so they always run delete-for-me).
 | `groupAction`     | Group behaviour                                                                                                                                                     | Equivalent single endpoint                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | `LEAVE` (default) | Membership removed for real. MEMBER_LEFT system message, member count −1, remaining members get `group:member:removed`. **The group does not come back on reload.** | `POST /chat/group-members/{roomId}/leave` |
-| `DELETE`          | Your own history is cleared, you stay a member, and the room reappears when a new message arrives.                                                                  | `DELETE /chat/groups/{roomId}`            |
+| `DELETE`          | Your own history is cleared, you stay a member, and the room reappears when a new message arrives.                                                                  | `DELETE /chat/groups/rooms/{roomId}`      |
 
 > Wire your existing **"Delete Conversation"** control to `groupAction: "DELETE"` — that is what it
 > has always done. Use `LEAVE` for an explicit "Leave group" control, and say so in the confirm

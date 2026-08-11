@@ -53,6 +53,7 @@ import {
   listCommunityMemberWarnings,
   listCommunityMutedMembers,
   listCommunityReports,
+  listCommunityActivity,
   listMyCommunities,
   listMyInvites,
   listMyJoinRequests,
@@ -119,6 +120,7 @@ import {
   listReportsQuerySchema,
   moderationReasonSchema,
   mutedMembersQuerySchema,
+  communityActivityQuerySchema,
   myCommunitiesQuerySchema,
   myInvitesQuerySchema,
   myJoinRequestsQuerySchema,
@@ -215,6 +217,15 @@ communityRoutes.get(
   "/mine",
   validateQuery(myCommunitiesQuerySchema),
   listMyCommunities
+);
+
+// Reconnect replay for the community LIST: the activity blocks only, keyed on
+// the SAME `lastActivityAt` clock as `/mine?after_ts=`. Registered before any
+// `/:id` route so "activity" is never captured as a community id.
+communityRoutes.get(
+  "/activity",
+  validateQuery(communityActivityQuerySchema),
+  listCommunityActivity
 );
 
 // Deprecated alias — public browse/search excluding joined communities. Kept for

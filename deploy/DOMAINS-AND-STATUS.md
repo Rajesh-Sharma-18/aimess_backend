@@ -30,15 +30,15 @@ works", so here is the honest split:
 
 ### Not working
 
-| Problem                                             | Impact                                                                                                                  | Needs                                                |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| **notifications-service is down** — restart-looping | **No push notifications at all.** RabbitMQ queues buffer durably, so nothing is lost; it drains when the service starts | APNs credentials, or approval to make APNs lazy-init |
-| **`minio.ai5dev.tech` is Cloudflare-proxied**       | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log       | Grey-cloud the record                                |
-| **`notification.ai5dev.tech` is proxied**           | Calls connect and then carry **no audio or video** — UDP cannot cross a Cloudflare proxy                                | Grey-cloud the record                                |
-| ~~SRS hooks point at the other environment~~        | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing     | done — `deploy/scripts/07-srs-add-hook.md`           |
-| `APPLE_CLIENT_IDS` is a placeholder                 | Apple Sign-In rejects tokens                                                                                            | Apple Service ID                                     |
-| Website social/Giphy/Maps keys blank                | Those buttons and features inert                                                                                        | Keys + one website rebuild                           |
-| **No database backups**                             | Total loss if a disk fails                                                                                              | Scheduling — see OPERATIONS.md §13                   |
+| Problem                                             | Impact                                                                                                                                                                       | Needs                                                |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **notifications-service is down** — restart-looping | **No push notifications at all.** RabbitMQ queues buffer durably, so nothing is lost; it drains when the service starts                                                      | APNs credentials, or approval to make APNs lazy-init |
+| **`minio.ai5dev.tech` is Cloudflare-proxied**       | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                            | Grey-cloud the record                                |
+| **`notification.ai5dev.tech` is proxied**           | **TURN (TLS 5349) is unreachable** — Cloudflare does not listen on that port. Calls fail _intermittently_: whoever's network blocks direct UDP has no fallback and times out | Grey-cloud the record                                |
+| ~~SRS hooks point at the other environment~~        | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                          | done — `deploy/scripts/07-srs-add-hook.md`           |
+| `APPLE_CLIENT_IDS` is a placeholder                 | Apple Sign-In rejects tokens                                                                                                                                                 | Apple Service ID                                     |
+| Website social/Giphy/Maps keys blank                | Those buttons and features inert                                                                                                                                             | Keys + one website rebuild                           |
+| **No database backups**                             | Total loss if a disk fails                                                                                                                                                   | Scheduling — see OPERATIONS.md §13                   |
 
 ---
 
@@ -72,10 +72,10 @@ the vhost files so nobody is misled later.
 
 Both currently resolve to `104.21.93.157 / 172.67.211.185` — proxied.
 
-| Record                     | Set to                         | Because                                                                                                                                                                        |
-| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `minio.ai5dev.tech`        | **DNS-only → `76.13.216.164`** | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO |
-| `notification.ai5dev.tech` | **DNS-only → `76.13.216.164`** | LiveKit media is UDP 50000-50100 direct to the host. Proxied, signaling succeeds and the call joins — with no media. Looks exactly like an app bug                             |
+| Record                     | Set to                         | Because                                                                                                                                                                                                                                                                |
+| -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `minio.ai5dev.tech`        | **DNS-only → `76.13.216.164`** | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO                                                                                         |
+| `notification.ai5dev.tech` | **DNS-only → `76.13.216.164`** | LiveKit media is UDP 50000-50100 and TURN/TLS 5349, both direct to the host. Cloudflare carries neither, so the TURN relay is unreachable while proxied. Direct-UDP clients still connect — which is why calls fail only _sometimes_, and look exactly like an app bug |
 
 Everything else can stay proxied.
 
@@ -83,12 +83,12 @@ Everything else can stay proxied.
 
 ## 3. Server and port reference
 
-| Server    | IP               | SSH   | Public ports                         |
-| --------- | ---------------- | ----- | ------------------------------------ |
-| Dev 01    | `76.13.216.164`  | 22223 | 80, 443, 7881/tcp, 50000-50100/udp   |
-| Dev 02    | `76.13.216.171`  | 22223 | 80, 443                              |
-| DB / SIEM | `187.77.130.157` | 22223 | 80\*, 443 (Wazuh), 1514, 1515, 55000 |
-| Stream    | `72.62.69.126`   | 22223 | 80, 443, 1935 (RTMP)                 |
+| Server    | IP               | SSH   | Public ports                                 |
+| --------- | ---------------- | ----- | -------------------------------------------- |
+| Dev 01    | `76.13.216.164`  | 22223 | 80, 443, 5349/tcp, 7881/tcp, 50000-50100/udp |
+| Dev 02    | `76.13.216.171`  | 22223 | 80, 443                                      |
+| DB / SIEM | `187.77.130.157` | 22223 | 80\*, 443 (Wazuh), 1514, 1515, 55000         |
+| Stream    | `72.62.69.126`   | 22223 | 80, 443, 1935 (RTMP)                         |
 
 Restricted, not public:
 
@@ -143,7 +143,7 @@ flowchart LR
 
 Two direct paths bypass nginx entirely and must not be proxied:
 
-- **LiveKit media** — UDP `50000-50100` and TCP `7881` straight to `76.13.216.164`
+- **LiveKit media** — UDP `50000-50100`, TCP `7881`, and TURN/TLS `5349` straight to `76.13.216.164`
 - **RTMP ingest** — TCP `1935` straight to `72.62.69.126`
 
 ### Admin traffic

@@ -26,20 +26,20 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
     ctrl.create
   );
   router.get("/my-groups", authenticate, ctrl.getUserGroups);
-  router.get("/:roomId", authenticate, ctrl.getRoom);
+  router.get("/rooms/:roomId", authenticate, ctrl.getRoom);
   router.patch(
-    "/:roomId",
+    "/rooms/:roomId",
     authenticate,
     validateBody(updateGroupSchema),
     ctrl.update
   );
-  router.post("/:roomId/disband", authenticate, ctrl.disband);
-  router.post("/:roomId/clear", authenticate, ctrl.clearChat);
+  router.post("/rooms/:roomId/disband", authenticate, ctrl.disband);
+  router.post("/rooms/:roomId/clear", authenticate, ctrl.clearChat);
   // Delete Conversation: clears the caller's own history, stays a member —
   // distinct from group-member's POST /:roomId/leave.
-  router.delete("/:roomId", authenticate, ctrl.clearConversation);
-  router.patch("/:roomId/archive", authenticate, ctrl.archiveRoom);
-  router.patch("/:roomId/unarchive", authenticate, ctrl.unarchiveRoom);
+  router.delete("/rooms/:roomId", authenticate, ctrl.clearConversation);
+  router.patch("/rooms/:roomId/archive", authenticate, ctrl.archiveRoom);
+  router.patch("/rooms/:roomId/unarchive", authenticate, ctrl.unarchiveRoom);
 
   return router;
 }

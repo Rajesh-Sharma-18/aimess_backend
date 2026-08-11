@@ -4,6 +4,10 @@ import type { Redis, Cluster } from "ioredis";
 
 import { publishChatUserEvent } from "@aimess/redis";
 
+import { listRowIdentity } from "../lib/list-row-identity.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
+import { normalizeMessageType } from "../lib/chat-message.serializer.js";
+import { convertMessageToPreview } from "./message-preview.service.js";
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
 import {
@@ -36,6 +40,14 @@ export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
   isJoined: boolean;
   /**
+   * Per-viewer effective last activity (see {@link GroupConversationLastActivity}).
+   * Optional here so the non-list producers of this type keep compiling; the two
+   * list builders always populate it.
+   */
+  lastActivity?: GroupConversationLastActivity;
+  /** Epoch-ms mirror of `lastActivity.dateTime`. */
+  lastActivityAt?: number;
+  /**
    * True when an admin/moderator silenced the CALLER — they can still read
    * everything but cannot send/react/edit/pin. Distinct from `isMuted`, which
    * is the caller's own NOTIFICATION mute. Same names community's detail
@@ -45,6 +57,8 @@ export type GroupRoomMembership = GroupRoom & {
   isMemberMuted?: boolean;
   /** ISO-8601 expiry; null = indefinite when `isMemberMuted`, or not muted. */
   memberMutedUntil?: string | null;
+  /** Epoch-ms mirror of `memberMutedUntil` (§6). null = not muted / indefinite. */
+  memberMutedUntilMs?: number | null;
   /**
    * The caller's raw `GroupMember.status` — `"ACTIVE" | "LEFT" | "KICKED"`, or
    * null for an internal/unauthenticated read. This is what lets a client
@@ -71,8 +85,96 @@ function isVisibleAfterClear(
   return lastMs > clearedAt.getTime();
 }
 
+/**
+ * Normalized per-viewer last-activity DTO for a GROUP row — the same shape
+ * `PrivateConversationLastActivity` / `CommunityLastActivity` already expose, so
+ * every list surface finally answers "what happened last, and when, FOR ME" in
+ * one field with one meaning.
+ *
+ * Why it exists: `GroupRoom.lastMessageAt` is the SHARED snapshot and is what
+ * the list query paginates on, so it cannot be rewritten per viewer without
+ * breaking the cursor. But after a delete-for-me / clear-chat / ex-member cutoff
+ * the group list already swaps in a per-viewer `lastMessagePreview` — with no
+ * matching timestamp, which left a client sorting on `lastMessageAt` holding the
+ * timestamp of a message it is no longer being shown. `dateTime` here IS that
+ * missing per-viewer timestamp (0 when nothing visible remains), and it is the
+ * field a list should sort on.
+ */
+export interface GroupConversationLastActivity {
+  type: "message";
+  userId: string | null;
+  username: string;
+  preview: string;
+  /** epoch ms; 0 = this viewer has no visible message left in the room. */
+  dateTime: number;
+  messageId: string;
+  clientMessageId: string | null;
+  seq: number;
+  revision: number;
+  /** UPPER-CASE canonical content type (TEXT/IMAGE/…/SYSTEM); "" when empty. */
+  contentType: string;
+}
+
+const EMPTY_GROUP_LAST_ACTIVITY: GroupConversationLastActivity = {
+  type: "message",
+  userId: null,
+  username: "",
+  preview: "",
+  dateTime: 0,
+  messageId: "",
+  clientMessageId: null,
+  seq: 0,
+  revision: 0,
+  contentType: "",
+};
+
+/**
+ * Build the per-viewer `lastActivity` from whatever `lastMessagePreview` the
+ * per-user passes (delete-for-me override / clear-chat cap / ex-member cap) left
+ * on the row.
+ *
+ * `fallbackAt` is used ONLY when the preview is absent because the stored row
+ * never had one (a legacy row written before `lastMessagePreview` existed) —
+ * pass the shared `lastMessageAt` there. When one of the per-user passes REMOVED
+ * the preview, callers pass 0: that is the viewer having nothing visible left,
+ * and it must not silently inherit the shared timestamp (the exact bug that kept
+ * a cleared chat pinned to the top of the list).
+ */
+export function buildGroupLastActivity(
+  lastMessagePreview: unknown,
+  fallbackAt: number
+): GroupConversationLastActivity {
+  const lp = lastMessagePreview as Record<string, unknown> | null;
+  if (!lp) return { ...EMPTY_GROUP_LAST_ACTIVITY, dateTime: fallbackAt };
+  const contentType = normalizeMessageType(
+    (lp.messageType as string) ?? "TEXT"
+  );
+  const createdAt = lp.createdAt
+    ? new Date(lp.createdAt as string | Date).getTime()
+    : 0;
+  return {
+    type: "message",
+    userId: (lp.senderId as string) || null,
+    username: (lp.senderName as string) || "",
+    preview: convertMessageToPreview(contentType, { text: lp.text ?? "" }),
+    dateTime: createdAt,
+    messageId: (lp.messageId as string) || "",
+    clientMessageId: (lp.clientMessageId as string) ?? null,
+    seq: (lp.seq as number) ?? 0,
+    revision: (lp.revision as number) ?? 0,
+    contentType,
+  };
+}
+
 export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
+  /**
+   * Per-viewer effective last activity + its epoch-ms timestamp. Mirrors the
+   * private/community list rows. `lastMessageAt` above stays the SHARED snapshot
+   * (the pagination cursor); this is the value a list must render and sort on.
+   */
+  lastActivity: GroupConversationLastActivity;
+  lastActivityAt: number;
   unreadCount: number;
   role: string;
   /** True when the caller voluntarily left this group — kept in the inbox
@@ -198,6 +300,7 @@ export class GroupRoomService {
                   senderName: prev.senderName,
                   messageType: prev.messageType,
                   createdAt: prev.createdAt,
+                  ...listRowIdentity({ ...prev, id: prev.messageId }),
                 }
               : null,
           } as T;
@@ -257,6 +360,7 @@ export class GroupRoomService {
                 senderName: prev.senderName ?? "",
                 messageType: prev.messageType,
                 createdAt: prev.createdAt,
+                ...listRowIdentity(prev),
               }
             : null,
         } as T);
@@ -264,6 +368,33 @@ export class GroupRoomService {
     );
     if (!capped.size) return rooms;
     return rooms.map((room) => capped.get(room.roomId) ?? room);
+  }
+
+  /**
+   * Per-viewer effective activity for a page, keyed by roomId.
+   *
+   * `raw` is the untouched repository page and `rooms` the same page after the
+   * per-user passes. A row whose preview those passes REMOVED has nothing
+   * visible left for this viewer → dateTime 0 (it drops down the list). A row
+   * that simply never had a stored preview is a legacy row → keep the shared
+   * `lastMessageAt` so it does not sink for everyone.
+   */
+  private lastActivityByRoom<T extends GroupRoom>(
+    raw: T[],
+    rooms: T[]
+  ): Map<string, GroupConversationLastActivity> {
+    const rawHadPreview = new Set(
+      raw.filter((r) => r.lastMessagePreview).map((r) => r.roomId)
+    );
+    return new Map(
+      rooms.map((r) => [
+        r.roomId,
+        buildGroupLastActivity(
+          r.lastMessagePreview,
+          rawHadPreview.has(r.roomId) ? 0 : (r.lastMessageAt?.getTime() ?? 0)
+        ),
+      ])
+    );
   }
 
   private applyClearChatPreviewCap<T extends GroupRoom>(
@@ -300,9 +431,19 @@ export class GroupRoomService {
     const ownRoomIds: string[] = [];
     const lastMessageIdByRoom = new Map<string, string>();
     for (const room of rooms) {
-      const senderId = (room.lastMessagePreview as { senderId?: string } | null)
-        ?.senderId;
-      if (senderId !== userId || !room.lastMessageId) continue;
+      const preview = room.lastMessagePreview as {
+        senderId?: string;
+        messageType?: string;
+      } | null;
+      const senderId = preview?.senderId;
+      // SYSTEM lines (member joined/left/removed, group updated, ...) name the
+      // acting user as sender but are not user-sent messages — no tick for them.
+      if (
+        senderId !== userId ||
+        !room.lastMessageId ||
+        String(preview?.messageType ?? "").toUpperCase() === "SYSTEM"
+      )
+        continue;
       ownRoomIds.push(room.roomId);
       lastMessageIdByRoom.set(room.roomId, room.lastMessageId);
     }
@@ -559,6 +700,11 @@ export class GroupRoomService {
         isMemberMuted && membership?.moderationMutedUntil
           ? membership.moderationMutedUntil.toISOString()
           : null,
+      // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+      memberMutedUntilMs:
+        isMemberMuted && membership?.moderationMutedUntil
+          ? membership.moderationMutedUntil.getTime()
+          : null,
     };
   }
 
@@ -683,13 +829,18 @@ export class GroupRoomService {
    * member stays ACTIVE, keeps receiving new messages, and the room reappears
    * in their inbox the moment one arrives, showing only messages sent after
    * this cutoff. Distinct from Leave, which removes membership entirely.
+   *
+   * Allowed for LEFT/KICKED members too, not just ACTIVE ones: their read-only
+   * row is still in their conversation list, so "Delete Conversation" has to be
+   * able to remove it — and once it is gone the group also stops being
+   * searchable for them (see the gRPC `searchUserGroups` visibility rule).
+   * BANNED is excluded, matching the inbox, which never lists it.
    */
   async clearConversation(roomId: string, userId: string): Promise<void> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const member = await this.memberRepo.findByRoomAndUser(roomId, userId);
+    if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
+      throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    }
     await this.memberRepo.setClearedAt(roomId, userId);
 
     // Notify the user's other devices the conversation was cleared from their view.
@@ -721,6 +872,23 @@ export class GroupRoomService {
         })
       )
       .catch(() => {});
+
+    // Same reasoning as PrivateRoomService.clearChat: the row stays but is now
+    // empty for THIS member only, so its effective lastActivity is 0 and the
+    // list must re-sort without a reload. Self-only — every other member keeps
+    // the shared preview.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "GROUP",
+      roomId,
+      recipientIds: [userId],
+      senderId: "",
+      lastMessageId: "",
+      lastMessageAt: 0,
+      preview: { contentType: "", text: "", createdAt: 0 },
+      // An emptied row is not a new message — must never raise an unread badge.
+      countInUnread: false,
+    });
   }
 
   async getUserGroups(
@@ -747,12 +915,19 @@ export class GroupRoomService {
     );
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
+    const activityByRoom = this.lastActivityByRoom(rawRooms, rooms);
     // Every row here is a group the caller is an ACTIVE member of.
-    return rooms.map((room) => ({
-      ...room,
-      avatar: urlFromMap(avatarUrls, room.avatar),
-      isJoined: true,
-    }));
+    return rooms.map((room) => {
+      const lastActivity =
+        activityByRoom.get(room.roomId) ?? EMPTY_GROUP_LAST_ACTIVITY;
+      return {
+        ...room,
+        avatar: urlFromMap(avatarUrls, room.avatar),
+        isJoined: true,
+        lastActivity,
+        lastActivityAt: lastActivity.dateTime,
+      };
+    });
   }
 
   async countUserGroups(userId: string, q?: string): Promise<number> {
@@ -891,6 +1066,7 @@ export class GroupRoomService {
       rooms,
       params.userId
     );
+    const activityByRoom = this.lastActivityByRoom(rawRooms, rooms);
 
     const now = Date.now();
     return rooms.map((room) => {
@@ -899,16 +1075,28 @@ export class GroupRoomService {
         mute?: boolean;
         muteUntil?: string | null;
       };
+      // Same rule as the push oracle (`checkGroupMute`) and as PRIVATE rooms:
+      // muted with no expiry = indefinite, expiry in the future = still muted,
+      // expiry in the past = lapsed. The old `mute === true || …` reported a
+      // timed mute as muted FOREVER (setMuted always writes `mute: true`), so
+      // the list bell contradicted the pushes the user was already getting.
       const isMuted =
-        settings.mute === true ||
-        (settings.muteUntil != null &&
+        settings.mute === true &&
+        (settings.muteUntil == null ||
           new Date(settings.muteUntil).getTime() > now);
       const isJoined = membership?.status === "ACTIVE";
       const hasLeft = membership?.status === "LEFT";
       const isRemoved = membership?.status === "KICKED";
       const isMemberMuted = isGroupMemberMuted(membership);
+      // Per-viewer effective activity, read off the SAME preview the per-user
+      // passes above produced (delete-for-me override / clear-chat cap /
+      // ex-member cap), so preview and timestamp can never disagree.
+      const lastActivity =
+        activityByRoom.get(room.roomId) ?? EMPTY_GROUP_LAST_ACTIVITY;
       return {
         ...room,
+        lastActivity,
+        lastActivityAt: lastActivity.dateTime,
         avatar: urlFromMap(avatarUrls, room.avatar),
         membershipStatus: membership?.status ?? null,
         isRemoved,
@@ -917,6 +1105,11 @@ export class GroupRoomService {
         memberMutedUntil:
           isMemberMuted && membership?.moderationMutedUntil
             ? membership.moderationMutedUntil.toISOString()
+            : null,
+        // Epoch-ms mirror (§6). ISO string above kept for existing clients.
+        memberMutedUntilMs:
+          isMemberMuted && membership?.moderationMutedUntil
+            ? membership.moderationMutedUntil.getTime()
             : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,

@@ -8563,7 +8563,7 @@ export const openApiSchemas = {
   },
   /**
    * Actual runtime shape of GET /chat/private/.../messages and
-   * GET /chat/groups/.../messages — the timestamp-paginated wrapper
+   * GET /chat/groups/rooms/.../messages — the timestamp-paginated wrapper
    * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
    */
   ChatMessagePage: {
@@ -8984,11 +8984,48 @@ export const openApiSchemas = {
   },
   ChatAddMemberRequest: {
     type: "object",
+    description:
+      "Supply either `userId` (single member) or `userIds` (batch). A batch is ONE " +
+      "add operation: it posts a single grouped MEMBER_ADDED system message " +
+      '("X added A, B and C") and responds with ChatAddMembersResult instead of a ' +
+      "single member.",
     properties: {
       roomId: { type: "string", minLength: 5 },
       userId: { type: "string", minLength: 5 },
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 256,
+        items: { type: "string", minLength: 5 },
+      },
     },
-    required: ["roomId", "userId"],
+    required: ["roomId"],
+  },
+  ChatAddMembersResult: {
+    type: "object",
+    description:
+      "Batch add result. `added` lists the members this operation actually added " +
+      "(the only ones named in the grouped system message); `skipped` reports the " +
+      "per-member reason each other id was not added (CHAT_ALREADY_MEMBER, " +
+      "CHAT_ADD_MEMBER_NOT_FRIEND, CHAT_GROUP_MEMBER_LIMIT_REACHED, …).",
+    properties: {
+      added: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatGroupMember" },
+      },
+      skipped: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            userId: { type: "string" },
+            reason: { type: "string" },
+          },
+          required: ["userId", "reason"],
+        },
+      },
+    },
+    required: ["added", "skipped"],
   },
   ChatKickMemberRequest: {
     type: "object",
@@ -11137,7 +11174,7 @@ export const openApiSchemas = {
           "`group:member:removed` to the remaining roster. The group does " +
           "**not** come back on reload.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
-          "`DELETE /chat/groups/{roomId}`: clears the caller's own history " +
+          "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
           "arrives.",
       },
@@ -11208,15 +11245,39 @@ export const openApiSchemas = {
       },
     },
   },
+  ChatBulkItemFailure: {
+    type: "object",
+    description:
+      "Why one room did not change. Lets the client mark that row failed " +
+      "instead of showing it as done.",
+    properties: {
+      roomId: { type: "string" },
+      errorCode: {
+        type: "string",
+        enum: ["NOT_MEMBER", "NOT_FOUND", "UNSUPPORTED_ROOM_TYPE"],
+        description:
+          "`UNSUPPORTED_ROOM_TYPE` — the id is neither `prv_…` nor `grp_…`, " +
+          "almost always a COMMUNITY id. Community mute/read state lives in " +
+          "community-service; send those to " +
+          "`POST /communities/mute/bulk` or `POST /communities/read/bulk`.",
+      },
+    },
+    required: ["roomId", "errorCode"],
+  },
   ChatBulkMuteResult: {
     type: "object",
     description:
-      "Rooms actually updated vs. silently skipped (not a participant, no " +
-      "longer an active member, room gone).",
+      "Rooms actually updated vs. skipped (not a participant, no longer an " +
+      "active member, room gone, or not a chat room id). `skipped` lists every " +
+      "id that did not change; `failed` gives the reason for each.",
     properties: {
       muted: { type: "array", items: { type: "string" } },
       unmuted: { type: "array", items: { type: "string" } },
       skipped: { type: "array", items: { type: "string" } },
+      failed: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatBulkItemFailure" },
+      },
     },
   },
   ChatBulkMarkReadRequest: {
@@ -11232,9 +11293,14 @@ export const openApiSchemas = {
       updatedCount: {
         type: "integer",
         description:
-          "Rooms whose read pointer actually advanced. An empty conversation, " +
-          "one already fully read, or one the caller can no longer read is " +
-          "skipped and not counted.",
+          "Rooms whose read pointer actually advanced (=== `updated.length`). " +
+          "An empty conversation or one already fully read is not counted and " +
+          "is not a failure.",
+      },
+      updated: { type: "array", items: { type: "string" } },
+      failed: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatBulkItemFailure" },
       },
     },
     required: ["updatedCount"],

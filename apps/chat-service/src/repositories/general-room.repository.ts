@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { listRowIdentity } from "../lib/list-row-identity.js";
 
 /** A `PrismaClient` or the interactive-transaction client Prisma hands the callback in `$transaction(async (tx) => ...)`. */
 type PrismaOrTx = PrismaClient | Prisma.TransactionClient;
@@ -157,6 +158,10 @@ export class GeneralRoomRepository {
       message: string;
       messageType: string;
       createdAt: Date;
+      /** Offline-first list identity (see lib/list-row-identity.ts). */
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     }
   ): Promise<GeneralRoom | null> {
     // Same hot document as allocateSequence — bursty concurrent sends to one
@@ -174,6 +179,7 @@ export class GeneralRoomRepository {
             senderName: message.senderName,
             messageType: message.messageType,
             createdAt: message.createdAt,
+            ...listRowIdentity({ ...message, id: String(message._id) }),
           },
         },
       })
@@ -277,6 +283,9 @@ export class GeneralRoomRepository {
       content: string;
       messageType: string;
       createdAt: Date;
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     } | null
   ): Promise<void> {
     await this.prisma.generalRoom.update({
@@ -291,6 +300,7 @@ export class GeneralRoomRepository {
               senderName: message.senderName,
               messageType: message.messageType,
               createdAt: message.createdAt,
+              ...listRowIdentity(message),
             },
           }
         : {

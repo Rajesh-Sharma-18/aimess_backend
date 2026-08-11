@@ -17,6 +17,7 @@ import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
@@ -33,13 +34,11 @@ import {
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import {
   computeAutoDeleteStamp,
-  parseAutoDeleteMap,
-  resolveEffectiveAutoDelete,
+  readRoomAutoDelete,
   AUTO_DELETE_NONE,
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
   type AutoDeleteStamp,
 } from "../lib/auto-delete.js";
-import { getAccountAutoDelete } from "../lib/account-chat-settings.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
   computeSeqAroundCursors,
@@ -247,10 +246,7 @@ export class PrivateMessageService {
       this.roomRepo.allocateSequenceBlock(id, count)
     );
     const roomBefore = firstAllocation.room;
-    const autoDelete = await this.autoDeleteStampFromRoom(
-      roomBefore,
-      params.senderId
-    );
+    const autoDelete = this.autoDeleteStampFromRoom(roomBefore);
 
     const created: PrivateMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
@@ -348,6 +344,9 @@ export class PrivateMessageService {
           systemEvent: message.systemEvent,
           systemData: message.systemData,
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: params.receiverId,
         unreadIncrement,
@@ -675,7 +674,7 @@ export class PrivateMessageService {
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
 
-  /** Raw message lookup — the V2 delete/react routes resolve their room from the message. */
+  /** Raw message lookup — the path-param react route resolves its room from the message. */
   findMessageById(messageId: string): Promise<PrivateMessage | null> {
     return this.messageRepo.findById(messageId);
   }
@@ -773,26 +772,20 @@ export class PrivateMessageService {
   }
 
   /**
-   * The auto-delete columns a message sent by `senderId` into `roomId` must
-   * carry. Reads the room's per-user `autoDeleteBy` map and applies the
-   * sender-first-then-peer-then-account-default rule (see lib/auto-delete.ts).
-   * Fails OPEN — a lookup error must never block a send, it just means no timer
-   * on that message.
+   * The auto-delete columns a new message in `roomId` must carry: THE
+   * conversation's timer, which both participants share (see lib/auto-delete.ts).
+   * Read from the room row the caller already loaded, so a setting changed a
+   * moment ago is in force for the very next send — there is no cached copy to
+   * go stale. Fails OPEN — a lookup error must never block a send, it just
+   * means no timer on that message.
    */
-  private async autoDeleteStampFromRoom(
-    room: { participants?: string[]; autoDeleteBy?: unknown; roomId?: string },
-    senderId: string
-  ): Promise<AutoDeleteStamp> {
+  private autoDeleteStampFromRoom(room: {
+    autoDelete?: unknown;
+    autoDeleteBy?: unknown;
+    roomId?: string;
+  }): AutoDeleteStamp {
     try {
-      const peerId = (room.participants ?? []).find((id) => id !== senderId);
-      const map = parseAutoDeleteMap(room.autoDeleteBy);
-      const setting = resolveEffectiveAutoDelete(
-        map,
-        senderId,
-        peerId ?? "",
-        await getAccountAutoDelete(senderId)
-      );
-      return computeAutoDeleteStamp(setting, new Date());
+      return computeAutoDeleteStamp(readRoomAutoDelete(room), new Date());
     } catch (err) {
       logger.warn(
         `PrivateMessageService|autoDeleteStampFromRoom failed room=${room.roomId}: ${String(err)}`
@@ -935,6 +928,10 @@ export class PrivateMessageService {
     senderId: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     const [room, prev] = await Promise.all([
       this.roomRepo.findByRoomId(roomId),
@@ -954,6 +951,9 @@ export class PrivateMessageService {
         content: prev.content,
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -962,6 +962,9 @@ export class PrivateMessageService {
         senderId: prev.senderId ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -973,6 +976,9 @@ export class PrivateMessageService {
       senderId: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1016,6 +1022,10 @@ export class PrivateMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
@@ -1042,6 +1052,9 @@ export class PrivateMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -1052,6 +1065,9 @@ export class PrivateMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1423,7 +1439,7 @@ export class PrivateMessageService {
   private readonly REVISION_RESET_HORIZON = 10_000;
 
   /**
-   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/private/rooms/:roomId/changes`.
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/private/rooms/:roomId/changes`.
    *
    * Every message whose room CHANGE `revision > sinceRevision`, current state, ordered
    * revision ASC — inserts AND mutations (edit/delete-for-everyone/reaction), regardless
@@ -1650,10 +1666,7 @@ export class PrivateMessageService {
     const seq = targetAllocation.sequenceNumber;
     // §8.1 — a forward does NOT inherit the source message's timer; it is a new
     // message in the TARGET chat and follows that chat's own setting.
-    const autoDelete = await this.autoDeleteStampFromRoom(
-      targetAllocation.room,
-      params.senderId
-    );
+    const autoDelete = this.autoDeleteStampFromRoom(targetAllocation.room);
 
     let message: PrivateMessage;
     try {
@@ -1695,6 +1708,9 @@ export class PrivateMessageService {
           systemEvent: message.systemEvent,
           systemData: message.systemData,
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: params.receiverId,
         unreadIncrement: shouldCountInUnread({
@@ -2168,6 +2184,8 @@ export class PrivateMessageService {
           urlMap
         ),
         reactionGroups,
+        // Normalized tombstone (one shape across private/group/community).
+        ...tombstoneWireFields(message),
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

@@ -211,6 +211,17 @@ export const sessionService = {
       void publishSessionRevokedEvent(redis, userId, sessionId, "logout").catch(
         () => undefined
       );
+
+      // Close out this session's "Login Detected" alert on the user's OTHER
+      // devices (the signing-out device never sees its own). The session is
+      // gone, so leaving the alert pending would let the 1-hour sweep later
+      // resolve it as "This was you." about a session that no longer exists.
+      recordSessionActionSafe({
+        userId,
+        sessionId,
+        action: "TERMINATED",
+        body: "Session terminated.",
+      });
     }
   },
 
@@ -346,6 +357,16 @@ export const sessionService = {
         void publishSessionRevokedEvent(redis, userId, sessionId).catch(
           () => undefined
         );
+        // Same notification close-out single-session revoke does. Without it a
+        // still-pending "Login Detected" alert for a session killed here would
+        // sit unresolved until its 1-hour deadline and then be auto-approved —
+        // claiming "This was you." about a session that no longer exists.
+        recordSessionActionSafe({
+          userId,
+          sessionId,
+          action: "TERMINATED",
+          body: "Session terminated.",
+        });
       }
     }
 

@@ -161,7 +161,26 @@ export class PrivatePinService {
         });
     }
 
+    // §3: a pin/unpin is a server-side mutation of the message, so bump its
+    // CHANGE cursor — otherwise the pin never reaches an offline client via
+    // /changes and the client's monotonic merge has no way to order it.
+    await this.bumpRevisions(roomId, [msg.id, replacedPin?.messageId]);
+
     return { pin, pinnedCount, replacedPin, idempotent: false };
+  }
+
+  /** Best-effort `revision` bump for messages whose PIN state just changed. */
+  private async bumpRevisions(
+    roomId: string,
+    messageIds: Array<string | null | undefined>
+  ): Promise<void> {
+    for (const id of new Set(messageIds.filter(Boolean) as string[])) {
+      await this.messageRepo.touchRevision(roomId, id).catch((err: unknown) => {
+        logger.warn(
+          `PrivatePinService|touchRevision failed message=${id}: ${String(err)}`
+        );
+      });
+    }
   }
 
   async unpin(params: {
@@ -208,6 +227,8 @@ export class PrivatePinService {
         actorId: userId,
       });
     }
+
+    await this.bumpRevisions(roomId, [messageId]);
 
     return { pin: unpinnedPin, pinnedCount, retractedSystemMessageId };
   }

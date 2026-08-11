@@ -18,6 +18,10 @@ import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
+  reconcileCommunityLastActivityAfterDelete,
+  bumpTimestampAfterDelete,
+} from "../events/community-last-activity.js";
+import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
@@ -1165,6 +1169,7 @@ export function createMessagingImpl(
             count: number;
             users: unknown[];
           }> = [];
+          let groupingFailed = false;
           try {
             const grouped = await reactionService.getMessageReactions({
               messageId: req.messageId,
@@ -1179,14 +1184,17 @@ export function createMessagingImpl(
               })
             );
           } catch (groupErr) {
-            // Non-fatal: the reaction write already succeeded (toggled above);
-            // a grouping-read failure just degrades the broadcast to an empty
-            // set rather than failing the whole react — the ack still reflects
-            // the true persisted state on the next getMessageReactions call.
+            // Non-fatal: the reaction write already succeeded (toggled above).
+            // But an EMPTY group set is not "unknown", it reads as "nobody has
+            // reacted" — broadcasting it wiped the reaction bar on every OTHER
+            // client while the reactor kept their own optimistic chip, and the
+            // two never reconverged. Skip the broadcast instead; clients pick
+            // the true state up from the next getMessageReactions/changes read.
             logger.warn(
-              `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
+              `sendReaction grouping failed, skipping broadcast: ${String(groupErr)}`
             );
             reactionGroups = [];
+            groupingFailed = true;
           }
 
           // Flatten stored reactions for the gRPC ack (V1 thin shape — the
@@ -1221,17 +1229,19 @@ export function createMessagingImpl(
               return { ...rest, avatarUrl: urlFromMap(reactAvatarMap, rawKey) };
             }),
           }));
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:reaction",
-              data: {
-                messageId: req.messageId,
-                conversationId: req.conversationId,
-                reactions: resolvedReactionGroups,
-              },
-            })
-          );
+          if (!groupingFailed) {
+            await redis.publish(
+              `conv:${req.conversationId}`,
+              JSON.stringify({
+                event: "message:reaction",
+                data: {
+                  messageId: req.messageId,
+                  conversationId: req.conversationId,
+                  reactions: resolvedReactionGroups,
+                },
+              })
+            );
+          }
 
           callback(null, {
             messageId: req.messageId,
@@ -2459,8 +2469,16 @@ export function createMessagingImpl(
     },
 
     // User Search: list/search groups for a viewer — ACTIVE (member),
-    // OTHER (not a member, excluding given roomIds), or BY_IDS (resolve
-    // specific roomIds, e.g. to refresh a recently-viewed group's metadata).
+    // OTHER (not an active member but the group is still in the viewer's
+    // conversation list), or BY_IDS (resolve specific roomIds, e.g. to refresh
+    // a recently-viewed group's metadata).
+    //
+    // Visibility rule, enforced here for every mode: a group is searchable ONLY
+    // when the viewer is an ACTIVE member of it, OR the group still sits in the
+    // viewer's own conversation list. Group existence — public, name-matching,
+    // previously-joined, or a stale Recent row — never grants visibility. The
+    // candidate id set therefore always comes from the viewer's own membership
+    // rows (one query), never from an unbounded "every other group" scan.
     searchUserGroups: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -2480,30 +2498,58 @@ export function createMessagingImpl(
           const roomIds = (req.roomIds ?? []).filter(Boolean);
           const limit = Math.min(Math.max(req.limit || 10, 1), 100);
 
-          const activeRoomIds = viewerId
-            ? await deps.groupMemberRepo.getActiveRoomIds(viewerId)
+          // Same membership source the unified inbox lists a group from
+          // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
+          // lookup, so search visibility can never drift from what the user's
+          // conversation list actually shows.
+          const memberships = viewerId
+            ? await deps.groupMemberRepo.getActiveOrLeftMemberships(viewerId)
             : [];
+          const activeRoomIds = memberships
+            .filter((m) => m.status === "ACTIVE")
+            .map((m) => m.roomId);
           const activeSet = new Set(activeRoomIds);
+          const clearedByRoom = new Map(
+            memberships.map((m) => [m.roomId, m.clearedAt])
+          );
+
+          // Non-active viewer: the group stays visible only while the
+          // conversation survives their own "Delete Conversation" cutoff —
+          // the same `isVisibleAfterClear` gate GroupRoomService applies to
+          // the inbox.
+          const isSearchable = (g: {
+            roomId: string;
+            lastMessageAt: Date | null;
+          }) => {
+            if (activeSet.has(g.roomId)) return true;
+            if (!clearedByRoom.has(g.roomId)) return false;
+            const clearedAt = clearedByRoom.get(g.roomId) ?? null;
+            if (!clearedAt) return true;
+            return (g.lastMessageAt?.getTime() ?? 0) > clearedAt.getTime();
+          };
 
           let rows;
           if (mode === "OTHER") {
-            const excludeSet = new Set([...activeRoomIds, ...roomIds]);
-            rows = await deps.groupRoomRepo.searchOtherForUser(
-              [...excludeSet],
+            const excludeSet = new Set(roomIds);
+            const candidateIds = memberships
+              .map((m) => m.roomId)
+              .filter((id) => !activeSet.has(id) && !excludeSet.has(id));
+            rows = await deps.groupRoomRepo.searchInRoomIds(
+              candidateIds,
               q,
               limit
             );
           } else if (mode === "BY_IDS") {
             rows = await deps.groupRoomRepo.findManyByRoomIds(roomIds);
           } else {
-            rows = await deps.groupRoomRepo.searchActiveForUser(
+            rows = await deps.groupRoomRepo.searchInRoomIds(
               activeRoomIds,
               q,
               limit
             );
           }
 
-          const groups = rows.map((g) => ({
+          const groups = rows.filter(isSearchable).map((g) => ({
             roomId: g.roomId,
             name: g.name,
             avatar: g.avatar,
@@ -2790,6 +2836,9 @@ export function createCommunityImpl(
                   ...(lastLocation ? { location: lastLocation } : {}),
                   ...(lastContact ? { contact: lastContact } : {}),
                 }),
+                clientMessageId: req.clientMessageId ?? null,
+                seq: saved.sequenceNumber ?? 0,
+                contentType: normalizeMessageType(saved.messageType),
               });
             }
 
@@ -3498,41 +3547,14 @@ export function createCommunityImpl(
                 result.roomId,
                 req.messageId
               );
-            if (
-              forEveryoneRecalc !== null &&
-              forEveryoneRecalc.hasLastMessage
-            ) {
-              publishCommunityActivitySafe({
+            if (forEveryoneRecalc !== null) {
+              // Persist the ROLLED-BACK activity — the previous visible
+              // message's own timestamp, never the deletion's. Shared with the
+              // REST delete path (events/community-last-activity.ts).
+              await reconcileCommunityLastActivityAfterDelete({
                 communityId: req.communityId,
-                lastMessageAt: new Date().toISOString(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                type: "message",
-              });
-              // Synchronous companion — awaited before the ack, same
-              // reasoning as reactToMessage's updateReactionActivity call.
-              // Never blocks the delete on failure; the queue publish above
-              // remains the backstop.
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
-                senderUserId: forEveryoneRecalc.sentBy,
-                senderUsername: forEveryoneRecalc.senderName,
-                messagePreview: forEveryoneRecalc.preview,
-                activityType: "message",
-              });
-            } else if (forEveryoneRecalc !== null) {
-              await getCommunityReconcileClient().updateMessageActivity({
-                communityId: req.communityId,
-                lastMessageAt: Date.now(),
-                lastMessageId: "",
-                senderUserId: "",
-                senderUsername: "",
-                messagePreview: "",
-                activityType: "message",
+                recalc: forEveryoneRecalc,
+                removedAt: result?.createdAt,
               });
             }
           }
@@ -3592,9 +3614,7 @@ export function createCommunityImpl(
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.hasLastMessage
-                ? recalc.createdAt.getTime()
-                : Date.now(),
+              lastMessageAt: bumpTimestampAfterDelete(recalc),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
@@ -3961,6 +3981,14 @@ export function createNotificationImpl(
                   userId: req.userId,
                   createdAt: row.createdAt.getTime(),
                   updatedAt: row.updatedAt.getTime(),
+                  // Login Detected only. Sent as epoch ms like the other two
+                  // timestamps (the DTO carries a Date, which would otherwise
+                  // go out as an ISO string over the socket) so a client can
+                  // start its countdown straight from the live event without a
+                  // follow-up fetch.
+                  ...(row.loginExpiresAt
+                    ? { expiresAt: row.loginExpiresAt.getTime() }
+                    : {}),
                   ...(parsedNavigation !== undefined
                     ? { navigation: parsedNavigation }
                     : {}),

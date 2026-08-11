@@ -11,7 +11,7 @@
  * Fire-and-forget by design (mirrors `publish-friendship.ts`): a Redis
  * hiccup must never fail the friendship REST call that triggered it.
  */
-import { publishChatUserEvent } from "@aimess/redis";
+import { publishChatSelfEvent, publishChatUserEvent } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import type {
   FriendSocketEventType,
@@ -33,14 +33,30 @@ export function emitFriendEventSafe(
 }
 
 /**
+ * Same as [emitFriendEventSafe] but on the private `self:<id>` room, which only
+ * that user's own sockets ever join — nothing else can be joined into it. Use
+ * for anything the other party must never receive.
+ */
+export function emitFriendSelfEventSafe(
+  userId: string,
+  event: FriendSocketEventType | ConversationSocketEventType,
+  data: unknown
+): void {
+  void publishChatSelfEvent(redis, userId, event, data).catch((error) => {
+    logger.warn(`Failed to publish ${event} to self:${userId}`);
+    logger.warn(error);
+  });
+}
+
+/**
  * Push a settings change to the owner's OTHER logged-in devices.
  *
- * Rides the same `user:<userId>` channel, but the /chat relay redirects
- * `settings:updated` to the `self:<userId>` room (see the `isSelfOnlyEvent`
- * list in `chat.ns.ts`). That redirect is load-bearing, not an optimization:
- * `presence:subscribe` lets a peer join `user:<peerId>`, so publishing a user's
- * own privacy settings to the shared identity room would hand them to exactly
- * the people those settings exist to exclude.
+ * Stays on the `user:<userId>` channel deliberately: the /chat relay watches
+ * `user:*` for `settings:updated` to re-authorize that user's presence
+ * watchers when a privacy scope narrows or widens (see `chat.ns.ts`). Moving
+ * it to `self:<id>` would silently drop that revocation. `user:<id>` now holds
+ * only the user's own sockets — presence watchers live in `presence:<id>` —
+ * so the settings payload is not exposed by staying here.
  */
 export function emitSettingsUpdatedSafe(
   userId: string,

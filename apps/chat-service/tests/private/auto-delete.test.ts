@@ -2,10 +2,10 @@
  * Automatically Delete Messages (disappearing messages) — PRIVATE 1:1 chats.
  *
  * Covers the four things the feature can silently get wrong:
- *   1. WHICH timer a message gets (one-sided vs. two different timers) — the
- *      pure resolution rules, since every other leg depends on them;
- *   2. the setting write: persisted, system message posted, and BOTH users'
- *      devices told over `conv:auto_delete:updated`;
+ *   1. WHICH timer a message gets — ONE per conversation, with the legacy
+ *      per-user map still readable, since every other leg depends on it;
+ *   2. the setting write: persisted first, system message posted, and BOTH
+ *      users' devices told over `conv:auto_delete:updated`;
  *   3. "After Viewing" arming only on the RECIPIENT's read receipt;
  *   4. the sweeper deleting due messages through the SAME delete-for-everyone
  *      path a manual delete uses (so tombstone/unread/preview all still fire).
@@ -17,11 +17,9 @@ import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import {
   computeAutoDeleteStamp,
   formatAutoDeleteDuration,
-  parseAutoDeleteMap,
-  resolveEffectiveAutoDelete,
+  readRoomAutoDelete,
   validateAutoDeleteInput,
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
-  accountAutoDeleteSetting,
 } from "../../src/lib/auto-delete.js";
 import { invalidateAccountChatSettings } from "../../src/lib/account-chat-settings.js";
 import { userGrpcClient } from "../../src/grpc/user-snapshot.client.js";
@@ -41,12 +39,13 @@ function publishes(): Array<{ channel: string; event: string; data: any }> {
   );
 }
 
-function room(autoDeleteBy: Record<string, unknown> = {}) {
+function room(autoDelete: Record<string, unknown> | null = null) {
   return {
     id: "room-oid",
     roomId: ROOM,
     participants: [TEST_USER_ID, PEER],
-    autoDeleteBy,
+    autoDelete,
+    autoDeleteBy: {},
     mutedBy: {},
     archivedBy: {},
     unreadCountByUser: {},
@@ -59,11 +58,11 @@ beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
   mocks.privateRoomRepo.findByRoomId.mockResolvedValue(room());
-  // Mirrors the repository: an explicit OFF is STORED (never deleted), because
-  // it is what pins a chat against the account-wide default.
+  // Mirrors the repository: ONE record for the conversation, stamped with who
+  // changed it. An explicit OFF is stored like any other value.
   mocks.privateRoomRepo.setAutoDelete.mockImplementation(
     async (_roomId: string, userId: string, s: any) =>
-      room({ [userId]: { ...s, setAt: new Date().toISOString() } })
+      room({ ...s, setAt: new Date().toISOString(), setBy: userId })
   );
   invalidateAccountChatSettings();
   setAccountTimer("OFF");
@@ -81,90 +80,46 @@ function setAccountTimer(autoDeleteTimer: string): void {
 // ── 1. Which timer applies (§3.1 one-sided, §3.2 two different timers) ───────
 describe("effective timer resolution", () => {
   const dayTimer = { mode: "TIMER" as const, ttlSeconds: 86400, setAt: "" };
-  const hourTimer = { mode: "TIMER" as const, ttlSeconds: 3600, setAt: "" };
 
-  it("applies the only configured timer to BOTH senders when one-sided", () => {
-    const map = parseAutoDeleteMap({ [TEST_USER_ID]: dayTimer });
-    // The setter's own message…
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).ttlSeconds).toBe(
-      86400
-    );
-    // …and the peer's message, which has no setting of its own.
-    expect(resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID).ttlSeconds).toBe(
-      86400
-    );
+  it("gives BOTH participants' messages the conversation's one timer", () => {
+    const setting = readRoomAutoDelete(room({ ...dayTimer, setBy: PEER }));
+    expect(setting.ttlSeconds).toBe(86400);
+    expect(setting.setBy).toBe(PEER);
   });
 
-  it("uses each sender's OWN timer when both users configured one", () => {
-    const map = parseAutoDeleteMap({
-      [TEST_USER_ID]: hourTimer,
-      [PEER]: dayTimer,
+  // A brand-new friendship has no `autoDelete` record at all, so this IS the
+  // new-conversation default: Off, with nothing to initialize and nothing
+  // inherited from either user's other chats or account settings.
+  it("is OFF for a room nobody has configured", () => {
+    expect(readRoomAutoDelete(room()).mode).toBe("OFF");
+    expect(readRoomAutoDelete({}).mode).toBe("OFF");
+  });
+
+  it("falls back to the newest entry of the LEGACY per-user map", () => {
+    // Rooms written before the timer became conversation-wide must not silently
+    // turn themselves off on deploy.
+    const legacy = readRoomAutoDelete({
+      autoDeleteBy: {
+        [TEST_USER_ID]: {
+          mode: "TIMER",
+          ttlSeconds: 3600,
+          setAt: "2026-08-01",
+        },
+        [PEER]: { mode: "TIMER", ttlSeconds: 86400, setAt: "2026-08-09" },
+      },
     });
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).ttlSeconds).toBe(
-      3600
-    );
-    expect(resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID).ttlSeconds).toBe(
-      86400
-    );
+    expect(legacy.ttlSeconds).toBe(86400);
+    expect(legacy.setBy).toBe(PEER);
   });
 
-  it("is OFF when nobody configured it", () => {
-    const map = parseAutoDeleteMap({});
-    expect(resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER).mode).toBe(
-      "OFF"
-    );
-  });
-
-  // ── Account-wide default (Settings → Chat → Auto-Delete) ──────────────────
-  // It is a FALLBACK, never an override: it only reaches a chat nobody has
-  // configured, and an explicit per-chat "Off" outranks it.
-  const days30 = accountAutoDeleteSetting("DAYS_30");
-
-  it("maps the account-wide options to day-length timers", () => {
-    expect(accountAutoDeleteSetting("DAYS_7").ttlSeconds).toBe(604800);
-    expect(accountAutoDeleteSetting("DAYS_15").ttlSeconds).toBe(1296000);
-    expect(days30.ttlSeconds).toBe(2592000);
-    expect(accountAutoDeleteSetting("OFF").mode).toBe("OFF");
-    expect(accountAutoDeleteSetting("GARBAGE").mode).toBe("OFF");
-  });
-
-  it("falls back to the sender's account default in an unconfigured chat", () => {
-    const map = parseAutoDeleteMap({});
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).ttlSeconds
-    ).toBe(2592000);
-  });
-
-  it("lets a per-chat timer — either side's — beat the account default", () => {
-    expect(
-      resolveEffectiveAutoDelete(
-        parseAutoDeleteMap({ [TEST_USER_ID]: hourTimer }),
-        TEST_USER_ID,
-        PEER,
-        days30
-      ).ttlSeconds
-    ).toBe(3600);
-    expect(
-      resolveEffectiveAutoDelete(
-        parseAutoDeleteMap({ [PEER]: hourTimer }),
-        TEST_USER_ID,
-        PEER,
-        days30
-      ).ttlSeconds
-    ).toBe(3600);
-  });
-
-  it("keeps a chat the sender explicitly turned OFF off, default or not", () => {
-    const map = parseAutoDeleteMap({
-      [TEST_USER_ID]: { mode: "OFF", ttlSeconds: null, setAt: "2026-08-08" },
+  it("prefers the conversation record over the legacy map", () => {
+    const setting = readRoomAutoDelete({
+      autoDelete: { mode: "TIMER", ttlSeconds: 3600, setAt: "2026-08-01" },
+      autoDeleteBy: {
+        [PEER]: { mode: "TIMER", ttlSeconds: 86400, setAt: "2026-08-09" },
+      },
     });
-    expect(
-      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).mode
-    ).toBe("OFF");
-    // …but the PEER's own default still governs the PEER's messages.
-    expect(
-      resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID, days30).ttlSeconds
-    ).toBe(2592000);
+    expect(setting.ttlSeconds).toBe(3600);
   });
 
   it("stamps a TIMER deadline from send time, and defers AFTER_VIEWING", () => {
@@ -236,17 +191,40 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.body.data.label).toBe("24 hours");
   });
 
-  it("notifies BOTH participants' devices with conv:auto_delete:updated", async () => {
+  it("notifies BOTH participants' devices with the SAME payload", async () => {
     await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
       .send({ mode: "TIMER", ttlSeconds: 3600 });
 
-    const channels = publishes()
-      .filter((p) => p.event === "conv:auto_delete:updated")
-      .map((p) => p.channel)
-      .sort();
-    expect(channels).toEqual([`user:${PEER}`, `user:${TEST_USER_ID}`].sort());
+    // One timer per conversation, so the peer's open screen must flip without a
+    // refresh — and `user:<id>` reaches every session that user has open, on
+    // whatever screen, while nobody outside the pair is subscribed to either.
+    const events = publishes().filter(
+      (p) => p.event === "conv:auto_delete:updated"
+    );
+    expect(events.map((e) => e.channel).sort()).toEqual(
+      [`user:${PEER}`, `user:${TEST_USER_ID}`].sort()
+    );
+    expect(events[0].data).toEqual(events[1].data);
+    expect(events[0].data.ttlSeconds).toBe(3600);
+    expect(events[0].data.roomId).toBe(ROOM);
+    expect(events[0].data.actorId).toBe(TEST_USER_ID);
+  });
+
+  it("publishes nothing when the write itself fails", async () => {
+    // The event is the other client's only signal, so it must never announce a
+    // change the database did not take.
+    mocks.privateRoomRepo.setAutoDelete.mockResolvedValue(null);
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 3600 });
+
+    expect(res.status).toBe(404);
+    expect(
+      publishes().filter((p) => p.event === "conv:auto_delete:updated")
+    ).toHaveLength(0);
   });
 
   it("posts a SYSTEM message so the peer learns about it in-chat", async () => {
@@ -269,9 +247,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
 
   it("re-stamps messages already counting down when the timer CHANGES (§8.8)", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
-      room({
-        [TEST_USER_ID]: { mode: "TIMER", ttlSeconds: 86400, setAt: "" },
-      })
+      room({ mode: "TIMER", ttlSeconds: 86400, setAt: "", setBy: TEST_USER_ID })
     );
     await request(app)
       .put(url)
@@ -287,7 +263,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
         afterView: false,
       })
     );
-    // One-sided: the peer has no setting, so their messages follow this timer too.
+    // BOTH senders — one timer governs the whole conversation.
     const [args] =
       mocks.privateMessageRepo.restampPendingAutoDeletes.mock.calls.at(-1)!;
     expect(args.senderIds.sort()).toEqual([PEER, TEST_USER_ID].sort());
@@ -295,7 +271,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
 
   it("leaves already-armed messages alone when turned OFF (§7)", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
-      room({ [TEST_USER_ID]: { mode: "TIMER", ttlSeconds: 3600, setAt: "" } })
+      room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID })
     );
     const res = await request(app)
       .put(url)
@@ -311,7 +287,7 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
 
   it("is a no-op (no system message, no re-stamp) when nothing changed", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
-      room({ [TEST_USER_ID]: { mode: "TIMER", ttlSeconds: 3600, setAt: "" } })
+      room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID })
     );
     await request(app)
       .put(url)
@@ -345,48 +321,43 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     expect(res.status).toBe(404);
   });
 
-  it("GET returns both sides' settings", async () => {
+  it("GET returns the same conversation timer to either participant", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
-      room({
-        [TEST_USER_ID]: { mode: "TIMER", ttlSeconds: 3600, setAt: "" },
-        [PEER]: { mode: "TIMER", ttlSeconds: 86400, setAt: "" },
-      })
+      room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: PEER })
     );
     const res = await request(app).get(url).set(bearer(makeAccessToken()));
+
     expect(res.status).toBe(200);
-    // "Mine" wins for MY next message; the peer's is exposed for display.
+    // Set by the PEER, read by this caller — same answer.
     expect(res.body.data.ttlSeconds).toBe(3600);
     expect(res.body.data.self.ttlSeconds).toBe(3600);
-    expect(res.body.data.peer.ttlSeconds).toBe(86400);
+    expect(res.body.data.setBy).toBe(PEER);
   });
 
-  it("GET reports the account-wide default as the timer in force", async () => {
+  it("GET reports OFF for an unconfigured chat, whatever the account settings say", async () => {
     setAccountTimer("DAYS_30");
     const res = await request(app).get(url).set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.isEnabled).toBe(true);
-    expect(res.body.data.ttlSeconds).toBe(2592000);
-    expect(res.body.data.source).toBe("ACCOUNT");
-    // …while this chat itself is still unconfigured on both sides.
-    expect(res.body.data.self.mode).toBe("OFF");
-    expect(res.body.data.accountDefault.ttlSeconds).toBe(2592000);
+    expect(res.body.data.isEnabled).toBe(false);
+    expect(res.body.data.mode).toBe("OFF");
+    expect(res.body.data.ttlSeconds).toBeNull();
   });
 
-  it("records an explicit OFF so the account default stops applying here", async () => {
-    setAccountTimer("DAYS_30");
+  it("writes only the caller's own entry, whatever the body claims", async () => {
+    // Ownership comes from the access token; a userId in the body is ignored.
     const res = await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
-      .send({ mode: "OFF" });
+      .send({ mode: "TIMER", ttlSeconds: 3600, userId: PEER });
 
     expect(res.status).toBe(200);
+    expect(mocks.privateRoomRepo.setAutoDelete).toHaveBeenCalledTimes(1);
     expect(mocks.privateRoomRepo.setAutoDelete).toHaveBeenCalledWith(
       ROOM,
       TEST_USER_ID,
-      { mode: "OFF", ttlSeconds: null }
+      { mode: "TIMER", ttlSeconds: 3600 }
     );
-    expect(res.body.data.isEnabled).toBe(false);
   });
 });
 
@@ -436,6 +407,122 @@ describe("auto-delete sweeper", () => {
       userId: TEST_USER_ID,
       scope: "forEveryone",
     });
+  });
+
+  /**
+   * §4/§21: when the message that EXPIRES is the room's last one, the inbox
+   * preview must fall back to the previous surviving message — including its
+   * TIMESTAMP, so the row moves down the list instead of sitting at the top
+   * showing a message that no longer exists. Runs the REAL deleteDirect (no
+   * spy) so the whole persisted chain is exercised, not just the entry point.
+   */
+  it("rolls the room snapshot back to the previous surviving message when the LAST message expires", async () => {
+    const { autoDeleteService } = mocks as any;
+    const prevAt = new Date("2026-08-10T10:05:00.000Z");
+    const expiredAt = new Date("2026-08-10T10:10:00.000Z");
+
+    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
+      { id: "msg-latest", roomId: ROOM, senderId: TEST_USER_ID },
+    ]);
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg-latest",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      messageType: "TEXT",
+      isDeleted: false,
+      createdAt: expiredAt,
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "msg-latest",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      sequenceNumber: 3,
+      createdAt: expiredAt,
+      deletedAt: expiredAt,
+    });
+    mocks.privateMessageRepo.findPreviousVisible.mockResolvedValue({
+      id: "msg-prev",
+      senderId: PEER,
+      content: { text: "still here" },
+      messageType: "TEXT",
+      createdAt: prevAt,
+      clientMessageId: null,
+      sequenceNumber: 2,
+      revision: 2,
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      ...room(),
+      lastMessageId: "msg-latest",
+    });
+
+    await autoDeleteService.sweepDue(new Date(), 200);
+    await new Promise((r) => setImmediate(r)); // the recalc is fire-and-forget
+
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({ id: "msg-prev", createdAt: prevAt })
+    );
+  });
+
+  /**
+   * §20 — expiry vs. a message that arrived while the sweeper was running. The
+   * recalculation re-reads the newest SURVIVING message rather than assuming
+   * "the one before the expired one", so the newer message wins and the room
+   * snapshot is never rolled back past it.
+   */
+  it("does not clobber a message that arrived after the expired one", async () => {
+    const { autoDeleteService } = mocks as any;
+    const newerAt = new Date("2026-08-10T10:12:00.000Z");
+
+    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
+      { id: "msg-expired", roomId: ROOM, senderId: TEST_USER_ID },
+    ]);
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg-expired",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      messageType: "TEXT",
+      isDeleted: false,
+      createdAt: new Date("2026-08-10T10:10:00.000Z"),
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "msg-expired",
+      roomId: ROOM,
+      senderId: TEST_USER_ID,
+      receiverId: PEER,
+      sequenceNumber: 3,
+      createdAt: new Date("2026-08-10T10:10:00.000Z"),
+    });
+    // A message landed between the sweep query and the recalculation.
+    mocks.privateMessageRepo.findPreviousVisible.mockResolvedValue({
+      id: "msg-newer",
+      senderId: PEER,
+      content: { text: "just arrived" },
+      messageType: "TEXT",
+      createdAt: newerAt,
+      clientMessageId: null,
+      sequenceNumber: 4,
+      revision: 4,
+    });
+    // The snapshot still points at the expired message — the newer one's own
+    // bump has not landed yet. This is the window the race lives in.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      ...room(),
+      lastMessageId: "msg-expired",
+    });
+
+    await autoDeleteService.sweepDue(new Date(), 200);
+    await new Promise((r) => setImmediate(r));
+
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({ id: "msg-newer", createdAt: newerAt })
+    );
+    // Never rolled back to anything older than what actually survives.
+    expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledTimes(1);
   });
 
   it("keeps going when one message loses the delete race", async () => {

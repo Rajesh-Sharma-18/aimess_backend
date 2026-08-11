@@ -60,10 +60,9 @@ describe("GET /api/chat/private/rooms/:roomId/changes (V1 mount)", () => {
 
 describe("V1 changes mount — group + community", () => {
   it.each([
-    // groups address rooms as `/:roomId` on V1 (the shape clients call), and
-    // the V2 router's `/rooms/:roomId` shape is mounted here too.
-    ["group", "/api/chat/groups/grp_x/changes"],
-    ["group (V2 path shape)", "/api/chat/groups/rooms/grp_x/changes"],
+    // Groups address rooms as `/:roomId` on V1 — the only shape now that the
+    // parallel `/api/v2` routers (which used `/rooms/:roomId`) are gone.
+    ["group", "/api/chat/groups/rooms/grp_x/changes"],
     ["community", "/api/chat/community/rooms/cmt_x/changes"],
   ])("%s: registered (401 from the auth gate, not a 404)", async (_n, path) => {
     const res = await request(app).get(path);
