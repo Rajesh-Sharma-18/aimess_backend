@@ -175,6 +175,9 @@ export class GroupSystemMessageService {
           messageType: message.messageType,
           content: { text },
           createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         });
       }
 
@@ -402,6 +405,9 @@ export class GroupSystemMessageService {
             messageType,
             content: { text },
             createdAt: existing.createdAt,
+            clientMessageId: message.clientMessageId,
+            sequenceNumber: message.sequenceNumber,
+            revision: message.revision,
           })
           .catch((err: unknown) => {
             logger.warn(

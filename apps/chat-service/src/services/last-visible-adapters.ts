@@ -26,6 +26,9 @@ export function communityVisibilitySource(
             messageType: m.messageType,
             content: m.message ?? "",
             createdAt: m.createdAt,
+            clientMessageId: m.clientMessageId ?? null,
+            sequenceNumber: m.sequenceNumber,
+            revision: m.revision,
           }
         : null;
     },
@@ -57,6 +60,9 @@ export function privateVisibilitySource(
             messageType: m.messageType,
             content: m.content,
             createdAt: m.createdAt,
+            clientMessageId: m.clientMessageId ?? null,
+            sequenceNumber: m.sequenceNumber,
+            revision: m.revision,
           }
         : null;
     },
@@ -85,6 +91,9 @@ export function groupVisibilitySource(
             messageType: m.messageType,
             content: m.content,
             createdAt: m.createdAt,
+            clientMessageId: m.clientMessageId ?? null,
+            sequenceNumber: m.sequenceNumber,
+            revision: m.revision,
           }
         : null;
     },

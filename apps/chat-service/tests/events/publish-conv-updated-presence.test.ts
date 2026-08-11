@@ -61,9 +61,20 @@ describe("publishConvUpdated — isOffline", () => {
     expect(senderMsg.data.isOffline).toBe(true);
     // "other" recipient's peer is "sender" (online) -> isOffline false.
     expect(otherMsg.data.isOffline).toBe(false);
-    // Existing fields untouched.
+    // Existing fields untouched. `lastMessage` is now self-describing: the
+    // caller's preview PLUS the identity/freshness quartet and the sender
+    // mirrored in, so assert a superset rather than exact equality.
     expect(senderMsg.data.lastMessageId).toBe("msg-1");
-    expect(senderMsg.data.lastMessage).toEqual(basePreview);
+    expect(senderMsg.data.lastMessage).toMatchObject(basePreview);
+    expect(senderMsg.data.lastMessage).toEqual({
+      ...basePreview,
+      clientMessageId: null,
+      seq: 0,
+      revision: 0,
+      senderId: "sender",
+      senderName: "",
+      createdAt: 1,
+    });
   });
 
   it("PRIVACY: a peer hidden from this viewer is reported offline, not leaked", async () => {

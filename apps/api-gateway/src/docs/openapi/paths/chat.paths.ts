@@ -111,6 +111,37 @@ function messageTimelineParams(opts?: { incrementalSyncAfterTs?: boolean }) {
   ];
 }
 
+/**
+ * before_seq / after_seq pair — the gap-safe `sequenceNumber` keyset, available on
+ * the private, group AND community timelines. `sequenceNumber` is a server-assigned
+ * monotonic counter, so it matches display order by definition where
+ * `(createdAt, id)` can invert. Opt-in: only trustworthy on rooms whose
+ * `sequenceNumber` has been backfilled (`> 0`); otherwise use `before_ts`.
+ * Takes precedence over the `*_ts` params when both are sent.
+ */
+function seqKeysetParams() {
+  return [
+    {
+      name: "before_seq",
+      in: "query" as const,
+      required: false,
+      schema: { type: "integer" as const, minimum: 0 },
+      description:
+        "Gap-safe seq keyset (opt-in, backfilled rooms only): returns messages with " +
+        "sequenceNumber < before_seq, newest-first. Outranks before_ts/after_ts.",
+    },
+    {
+      name: "after_seq",
+      in: "query" as const,
+      required: false,
+      schema: { type: "integer" as const, minimum: 0 },
+      description:
+        "Gap-safe seq keyset (opt-in, backfilled rooms only): returns messages with " +
+        "sequenceNumber > after_seq, oldest-first. Outranks before_ts/after_ts.",
+    },
+  ];
+}
+
 function limitParam(defaultVal: number, max = 100) {
   return {
     name: "limit",
@@ -250,6 +281,44 @@ const communityConversation = conversationPath(
 );
 
 const groupMessageEdit = {
+  delete: {
+    tags: ["Chat — Groups"],
+    operationId: "deleteGroupMessageByPath",
+    summary: "Delete a group message (path-param form)",
+    description:
+      "Deletes a group message, resolving the room server-side FROM the message — so " +
+      "the path shape matches the private and community deletes and a client needs no " +
+      "per-conversation-type branch.\n\n" +
+      "`type=forMe` hides the message for the caller only; `type=forEveryone` (the " +
+      "DEFAULT when `type` is omitted) tombstones it for the room. Broadcasts " +
+      "`message:delete` with the canonical tombstone — byte-identical to the socket " +
+      "payload.\n\n" +
+      "The body-carried `POST /chat/groups/messages/delete` remains available and " +
+      "behaves identically; both share one implementation.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      messageIdPathParam,
+      {
+        name: "type",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "string" as const,
+          enum: ["forMe", "forEveryone"],
+          default: "forEveryone",
+        },
+        description:
+          "Delete scope. Omitted ⇒ `forEveryone` (backward-compatible with existing clients).",
+      },
+    ],
+    responses: {
+      ...successResponse("Message deleted", "ChatDeleteTombstone"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
   patch: {
     tags: ["Chat — Groups"],
     operationId: "editGroupMessage",
@@ -405,27 +474,59 @@ const chatInbox = {
     operationId: "getUnifiedInbox",
     summary: "Unified inbox (private + group)",
     description:
-      "Merged, timestamp-ordered list of the authenticated user's private rooms and group chats. " +
-      "Timestamps are epoch milliseconds and mutually exclusive: `before_ts` returns items with " +
-      "`lastMessageAt <= before_ts` (newest-first); `after_ts` returns items with `lastMessageAt >= after_ts` " +
-      "(oldest-first). Omit both for the newest page. Boundaries are inclusive, so consecutive pages can " +
-      "share the boundary item — de-duplicate by `roomId`. Continue paging with `pagination.nextCursor` " +
-      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
+      "Merged, timestamp-ordered list of the authenticated user's private rooms and group chats.\n\n" +
+      "**`before_cursor` / `after_cursor` (PREFERRED).** The opaque compound " +
+      "`(lastMessageAt, roomId)` keyset token. Boundaries are EXCLUSIVE, so consecutive " +
+      "pages never share a row when two conversations tie on `lastMessageAt` — no " +
+      "client-side de-duplication needed. Omit both for the newest page, then echo " +
+      '`pagination.nextCursor` (a `"<lastMessageAtMs>_<roomId>"` token) back verbatim. ' +
+      "A bare epoch-ms is accepted as a coarse jump (exclusive, no tiebreaker).\n\n" +
+      "**`before_ts` / `after_ts` (legacy).** Bare epoch milliseconds, mutually " +
+      "exclusive: `before_ts` returns items with `lastMessageAt <= before_ts` " +
+      "(newest-first); `after_ts` returns items with `lastMessageAt >= after_ts` " +
+      "(oldest-first). Boundaries are INCLUSIVE, so consecutive pages can share the " +
+      "boundary item — de-duplicate by `roomId`.\n\n" +
+      "`*_cursor` wins over `*_ts` when both are sent. Both modes return the same " +
+      "`ChatInboxPage` envelope.",
     security: [{ bearerAuth: [] }],
     parameters: [
+      {
+        name: "before_cursor",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "string" as const,
+          pattern: "^\\d+(_[A-Za-z0-9_-]{1,64})?$",
+        },
+        description:
+          'Older page (newest-first). Opaque compound token "<ms>_<roomId>"; echo ' +
+          "`pagination.nextCursor` back verbatim.",
+      },
+      {
+        name: "after_cursor",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "string" as const,
+          pattern: "^\\d+(_[A-Za-z0-9_-]{1,64})?$",
+        },
+        description: "Newer page (oldest-first). Same token format.",
+      },
       {
         name: "before_ts",
         in: "query" as const,
         required: false,
         schema: { type: "integer" as const, minimum: 1 },
-        description: "Epoch ms. Returns items with lastMessageAt <= before_ts.",
+        description:
+          "Legacy. Epoch ms. Returns items with lastMessageAt <= before_ts (inclusive).",
       },
       {
         name: "after_ts",
         in: "query" as const,
         required: false,
         schema: { type: "integer" as const, minimum: 1 },
-        description: "Epoch ms. Returns items with lastMessageAt >= after_ts.",
+        description:
+          "Legacy. Epoch ms. Returns items with lastMessageAt >= after_ts (inclusive).",
       },
       limitParam(20),
     ],
@@ -542,13 +643,20 @@ const privateMessages = {
     operationId: "getPrivateMessages",
     summary: "Get private messages",
     description:
-      "Timestamp-paginated message history for a private room. Timestamps are epoch " +
-      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
-      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
-      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
-      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
-      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
-      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
+      "Message history for a private room. Three pagination axes, in this precedence " +
+      "order: `around` → `before_seq`/`after_seq` → `before_ts`/`after_ts`.\n\n" +
+      "**`before_ts` / `after_ts`** — the compound `(createdAt, _id)` keyset. Send a plain " +
+      "epoch-ms for the first page or a coarse jump, then feed `pagination.nextCursor` " +
+      '(a compound `"<ms>_<messageId>"` token) back VERBATIM. The `_id` tiebreaker makes ' +
+      "continuation EXCLUSIVE, so consecutive pages never share a boundary message and " +
+      "messages sharing one millisecond stay reachable exactly once. Mutually exclusive; " +
+      "omit both for the newest page.\n\n" +
+      "**`before_seq` / `after_seq`** — the gap-safe monotonic `sequenceNumber` keyset " +
+      "(opt-in; see the param docs).\n\n" +
+      "**`around=<messageId>`** — a jump-to-message window; adds " +
+      "`hasMoreOlder`/`hasMoreNewer` + `olderCursor`/`newerCursor`.\n\n" +
+      "Every page carries `pinnedMessage` (the room's current active pin summary, or " +
+      "`null`) so the pinned banner hydrates without a second round-trip.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1090,13 +1198,20 @@ const groupMessages = {
     operationId: "getGroupMessages",
     summary: "Get group messages",
     description:
-      "Timestamp-paginated message history for a group room. Timestamps are epoch " +
-      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
-      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
-      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
-      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
-      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
-      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
+      "Message history for a group room. Three pagination axes, in this precedence " +
+      "order: `around` → `before_seq`/`after_seq` → `before_ts`/`after_ts`.\n\n" +
+      "**`before_ts` / `after_ts`** — the compound `(createdAt, _id)` keyset. Send a plain " +
+      "epoch-ms for the first page or a coarse jump, then feed `pagination.nextCursor` " +
+      '(a compound `"<ms>_<messageId>"` token) back VERBATIM. The `_id` tiebreaker makes ' +
+      "continuation EXCLUSIVE, so consecutive pages never share a boundary message and " +
+      "messages sharing one millisecond stay reachable exactly once. Mutually exclusive; " +
+      "omit both for the newest page.\n\n" +
+      "**`before_seq` / `after_seq`** — the gap-safe monotonic `sequenceNumber` keyset " +
+      "(opt-in; see the param docs).\n\n" +
+      "**`around=<messageId>`** — a jump-to-message window; adds " +
+      "`hasMoreOlder`/`hasMoreNewer` + `olderCursor`/`newerCursor`.\n\n" +
+      "Every page carries `pinnedMessage` (the room's current active pin summary, or " +
+      "`null`) so the pinned banner hydrates without a second round-trip.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1963,6 +2078,7 @@ const communityMessages = {
         schema: { type: "string" },
       },
       ...messageTimelineParams({ incrementalSyncAfterTs: true }),
+      ...seqKeysetParams(),
       {
         name: "before_seq",
         in: "query",
@@ -3546,9 +3662,16 @@ const conversationsBulkMute = {
       "for an indefinite mute. Expiry is applied **lazily** at push time, so a " +
       "timed mute lapses on its own — no sweeper, no refresh, no re-login.\n\n" +
       "Rooms the caller cannot mute (not a participant, no longer an active " +
-      "member, room gone) are silently `skipped`, never fatal. Each updated " +
-      "room emits `conv:muted` / `conv:unmuted` on the caller's own socket " +
-      "channel so their other devices re-render without a refetch.",
+      "member, room gone) are `skipped`, never fatal — each one also appears " +
+      "in `failed` with a reason. Each updated room emits `conv:muted` / " +
+      "`conv:unmuted` on the caller's own socket channel so their other " +
+      "devices re-render without a refetch.\n\n" +
+      "PRIVATE (`prv_…`) and GROUP (`grp_…`) only. A COMMUNITY id is rejected " +
+      "per item as `UNSUPPORTED_ROOM_TYPE`; use `POST /communities/mute/bulk`.\n\n" +
+      "Field names are accepted in **camelCase or snake_case** " +
+      "(`roomIds`/`room_ids`, `durationMinutes`/`duration_minutes`) so the " +
+      "mobile clients' snake_case DTOs work unchanged. camelCase is canonical " +
+      "and wins if both are sent.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -3567,6 +3690,14 @@ const conversationsBulkMute = {
             unmute: {
               summary: "Unmute",
               value: { action: "unmute", roomIds: ["prv_abc123"] },
+            },
+            snakeCase: {
+              summary: "snake_case aliases (mobile clients)",
+              value: {
+                action: "mute",
+                room_ids: ["grp_aaa111", "grp_bbb222"],
+                duration_minutes: 10,
+              },
             },
           },
         },
@@ -3596,7 +3727,11 @@ const conversationsBulkRead = {
       "turn blue, `read_sync` reaches the caller's other devices, the nav " +
       "badge total is recomputed and the tray notification is dismissed.\n\n" +
       "Nothing else changes: no messages are deleted, no timestamps are " +
-      "rewritten and `lastActivity`/list ordering are untouched.",
+      "rewritten and `lastActivity`/list ordering are untouched.\n\n" +
+      "PRIVATE (`prv_…`) and GROUP (`grp_…`) only — a COMMUNITY id comes back " +
+      "in `failed` as `UNSUPPORTED_ROOM_TYPE`; use `POST /communities/read/bulk`.\n\n" +
+      '`roomIds` may also be sent as `room_ids`; an `action: "read"` field is ' +
+      "accepted and ignored.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,

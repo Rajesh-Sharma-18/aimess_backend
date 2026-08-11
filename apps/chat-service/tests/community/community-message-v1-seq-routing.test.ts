@@ -48,7 +48,7 @@ const PAGE_RESULT = {
 function makeController() {
   const service = {
     getMessagesTimeline: jest.fn().mockResolvedValue(PAGE_RESULT),
-    getMessagesSeqV2: jest.fn().mockResolvedValue(PAGE_RESULT),
+    getMessagesSeqKeyset: jest.fn().mockResolvedValue(PAGE_RESULT),
     getMessagesSince: jest.fn().mockResolvedValue({
       items: [],
       hasMore: false,
@@ -116,7 +116,7 @@ describe("getMessages (V1) — seq cursor routing", () => {
   it("before_seq → seq keyset, direction 'before'", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { before_seq: "100", limit: "30" });
-    expect(service.getMessagesSeqV2).toHaveBeenCalledWith({
+    expect(service.getMessagesSeqKeyset).toHaveBeenCalledWith({
       roomId: "room-1",
       userId: "user-1",
       direction: "before",
@@ -129,7 +129,7 @@ describe("getMessages (V1) — seq cursor routing", () => {
   it("after_seq → seq keyset, direction 'after' (NOT the after_ts sync path)", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { after_seq: "50" });
-    expect(service.getMessagesSeqV2).toHaveBeenCalledWith(
+    expect(service.getMessagesSeqKeyset).toHaveBeenCalledWith(
       expect.objectContaining({ direction: "after", seq: 50 })
     );
     expect(service.getMessagesSince).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe("getMessages (V1) — seq cursor routing", () => {
   it("seq wins over the *_ts cursors when both are sent", async () => {
     const { controller, service } = makeController();
     await invoke(controller, { before_seq: "7", before_ts: "1782133107521" });
-    expect(service.getMessagesSeqV2).toHaveBeenCalledWith(
+    expect(service.getMessagesSeqKeyset).toHaveBeenCalledWith(
       expect.objectContaining({ seq: 7 })
     );
     expect(service.getMessagesTimeline).not.toHaveBeenCalled();
@@ -148,7 +148,7 @@ describe("getMessages (V1) — seq cursor routing", () => {
     const { controller, service } = makeController();
     await invoke(controller, { around: "msg-9", before_seq: "7" });
     expect(service.getMessagesAround).toHaveBeenCalled();
-    expect(service.getMessagesSeqV2).not.toHaveBeenCalled();
+    expect(service.getMessagesSeqKeyset).not.toHaveBeenCalled();
   });
 
   it("no cursor → newest page on the timestamp keyset (V1 default, unchanged)", async () => {
@@ -157,7 +157,7 @@ describe("getMessages (V1) — seq cursor routing", () => {
     expect(service.getMessagesTimeline).toHaveBeenCalledWith(
       expect.objectContaining({ direction: "before", inclusive: true })
     );
-    expect(service.getMessagesSeqV2).not.toHaveBeenCalled();
+    expect(service.getMessagesSeqKeyset).not.toHaveBeenCalled();
   });
 
   it("seq page keeps the V1 envelope: data/hasMore/nextCursor + both cursors", async () => {

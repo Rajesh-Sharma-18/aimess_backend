@@ -99,15 +99,20 @@ export class RoomMemberRepository {
     });
   }
 
-  /** Advance lastReadAt to now for the user's active rows across many rooms. */
+  /**
+   * Advance lastReadAt to `readAt` (default: now) for the user's active rows
+   * across many rooms. The caller may pass the boundary so the same instant can
+   * be reused for the post-write unread recount and the read_sync payload.
+   */
   async bulkAdvanceReadToNow(
     userId: string,
-    roomIds: string[]
+    roomIds: string[],
+    readAt: Date = new Date()
   ): Promise<number> {
     if (!roomIds.length) return 0;
     const result = await this.prisma.roomMember.updateMany({
       where: { userId, status: "active", roomId: { in: roomIds } },
-      data: { lastReadAt: new Date() },
+      data: { lastReadAt: readAt },
     });
     return result.count;
   }

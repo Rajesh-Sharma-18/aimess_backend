@@ -416,6 +416,8 @@ export class GroupInviteLinkService {
           systemEvent: SystemEvent.GROUP_INVITE,
           systemData,
           createdAt,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: recipientId,
       })

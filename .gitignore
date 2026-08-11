@@ -70,5 +70,20 @@ FRONTEND_MEDIA_AND_CHAT_INTEGRATION_GUIDE.md
 stream-app/
 .pnpm-store
 *.mjs
+# The blanket *.mjs rule above silently swallowed first-party build tooling: every
+# committed .mjs in this repo had to be `git add -f`'d, and
+# apps/stream-service/scripts/prisma-generate-if-needed.mjs sat in that service's
+# build script for a month while never existing in any checkout.
+#
+# These negations re-include only *.mjs, never whole directories — a bare
+# `!tooling/**` would also resurrect node_modules/, dist/ and .turbo/ beneath it,
+# because those are ignored by pattern rather than by an ignored parent directory.
+# Generated/vendored .mjs outside these paths stays ignored.
+!/*.config.mjs
+!/scripts/**/*.mjs
+!/tools/**/*.mjs
+!/tooling/*/scripts/**/*.mjs
+!/apps/*/scripts/**/*.mjs
+!/packages/*/scripts/**/*.mjs
 stream_*.json
 test-ui

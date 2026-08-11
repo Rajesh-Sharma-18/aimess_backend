@@ -8,6 +8,7 @@ import {
   buildGroupSearchFilter,
   normalizeForSearch,
 } from "../lib/group-search.util.js";
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
@@ -203,6 +204,10 @@ export class GroupRoomRepository {
       messageType: string;
       content: { text: string };
       createdAt: Date;
+      /** Offline-first list identity (see lib/list-row-identity.ts). */
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     }
   ): Promise<GroupRoom | null> {
     // Bursty concurrent sends/system-messages all write this same document;
@@ -221,6 +226,7 @@ export class GroupRoomRepository {
             senderName: message.senderName,
             messageType: message.messageType,
             createdAt: message.createdAt,
+            ...listRowIdentity({ ...message, id: String(message._id) }),
           },
         },
       })
@@ -242,6 +248,9 @@ export class GroupRoomRepository {
       content: { text: string };
       messageType: string;
       createdAt: Date;
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     } | null
   ): Promise<void> {
     await this.prisma.groupRoom.update({
@@ -256,6 +265,7 @@ export class GroupRoomRepository {
               senderName: message.senderName,
               messageType: message.messageType,
               createdAt: message.createdAt,
+              ...listRowIdentity(message),
             },
           }
         : {

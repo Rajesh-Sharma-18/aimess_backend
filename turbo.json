@@ -1,6 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "concurrency": "20",
+  // Percentage of logical CPUs, not a fixed count. A hardcoded 20 launched 20
+  // parallel `prisma generate`/`tsc` processes regardless of the machine; on a
+  // 4-core dev box that OOM'd and killed the build with SIGABRT (exit 134) on
+  // whichever service happened to be running. Scaling with core count keeps the
+  // build honest on a laptop and still saturates a big CI runner.
+  "concurrency": "100%",
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

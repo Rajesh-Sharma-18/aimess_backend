@@ -542,15 +542,14 @@ export function createChatClient(): ChatClient {
 
     bulkMarkCommunityRead: async (params) => {
       if (!params.communityIds.length) return 0;
-      try {
-        const res = await bulkMarkBreaker.fire(params);
-        return Number(res.updatedCount ?? 0);
-      } catch (err) {
-        logger.warn(
-          `chat.bulkMarkCommunityRead failed; degrading to no-op: ${String(err)}`
-        );
-        return 0;
-      }
+      // NO degrade-to-0 here, unlike the read-only calls above: this is the
+      // only write in "Mark all as read", and swallowing the failure returned
+      // HTTP 200 `{updatedCount: 0}` for a read that never happened — the
+      // client zeroed its badges optimistically, had nothing to roll back on,
+      // and the counts reappeared on the next reload. Let it throw so the
+      // route fails loudly and the caller rolls back.
+      const res = await bulkMarkBreaker.fire(params);
+      return Number(res.updatedCount ?? 0);
     },
 
     ensureCommunityRoom: async (params) => {

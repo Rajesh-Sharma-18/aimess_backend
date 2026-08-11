@@ -23,6 +23,11 @@ jest.mock("../../src/config/redis.js", () => ({
   redis: { publish: jest.fn().mockResolvedValue(1) },
 }));
 
+// Nav-badge bridge — observable stand-in for the registered pusher.
+jest.mock("../../src/events/unread-summary-bridge.js", () => ({
+  notifyUnreadChanged: jest.fn(),
+}));
+
 // Media resolve — return empty map so no S3 client is constructed.
 jest.mock("../../src/lib/media-resolve.js", () => ({
   resolveMediaUrlMap: jest.fn().mockResolvedValue(new Map()),
@@ -40,6 +45,7 @@ jest.mock("../../src/lib/media-resolve.js", () => ({
 import { ForbiddenError, NotFoundError, BadRequestError } from "@aimess/errors";
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
 import { redis } from "../../src/config/redis.js";
+import { notifyUnreadChanged } from "../../src/events/unread-summary-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -192,6 +198,68 @@ describe("CommunityMessageService.markMessageRead", () => {
     expect(userPayload.event).toBe("community:read_sync");
     expect(userPayload.data.communityId).toBe(COMMUNITY_ID);
     expect(userPayload.data.upToMessageId).toBe(MESSAGE_ID);
+  });
+
+  it("bulkMarkRead fires the SAME post-read effects as the single path", async () => {
+    const OTHER_ID = "e".repeat(24);
+    const { service, memberRepo } = buildService({
+      memberRepo: { bulkAdvanceReadToNow: jest.fn().mockResolvedValue(2) },
+      messageRepo: {
+        // COMMUNITY_ID took a message after the read boundary; OTHER_ID is clean.
+        countUnreadBulk: jest.fn().mockResolvedValue({
+          [COMMUNITY_ID]: { count: 1, firstUnreadMessageId: MESSAGE_ID },
+        }),
+      },
+    });
+
+    const updated = await service.bulkMarkRead(READER_ID, [
+      COMMUNITY_ID,
+      OTHER_ID,
+      COMMUNITY_ID, // duplicate — must be collapsed
+    ]);
+
+    expect(updated).toBe(2);
+    expect(memberRepo.bulkAdvanceReadToNow).toHaveBeenCalledWith(
+      READER_ID,
+      [COMMUNITY_ID, OTHER_ID],
+      expect.any(Date)
+    );
+
+    // One read_sync per community, all on the caller's own user channel.
+    expect(redisMock.publish).toHaveBeenCalledTimes(2);
+    const payloads = redisMock.publish.mock.calls.map(
+      ([channel, body]: [string, string]) => ({
+        channel,
+        ...(JSON.parse(body) as {
+          event: string;
+          data: Record<string, number>;
+        }),
+      })
+    );
+    expect(payloads.every((p) => p.channel === `user:${READER_ID}`)).toBe(true);
+    expect(payloads.every((p) => p.event === "community:read_sync")).toBe(true);
+    // The race guard: a message that landed mid-operation keeps its badge.
+    expect(
+      payloads.find((p) => p.data.communityId === COMMUNITY_ID)!.data
+    ).toMatchObject({ unreadCount: 1 });
+    expect(
+      payloads.find((p) => p.data.communityId === OTHER_ID)!.data
+    ).toMatchObject({ unreadCount: 0 });
+
+    // Nav-badge total recomputed for the reader.
+    expect(notifyUnreadChanged).toHaveBeenCalledWith(READER_ID);
+  });
+
+  it("bulkMarkRead is a no-op when no membership row advanced", async () => {
+    const { service } = buildService({
+      memberRepo: { bulkAdvanceReadToNow: jest.fn().mockResolvedValue(0) },
+    });
+
+    await expect(service.bulkMarkRead(READER_ID, [COMMUNITY_ID])).resolves.toBe(
+      0
+    );
+    expect(redisMock.publish).not.toHaveBeenCalled();
+    expect(notifyUnreadChanged).not.toHaveBeenCalled();
   });
 
   it("throws ForbiddenError when reader is not an active member", async () => {

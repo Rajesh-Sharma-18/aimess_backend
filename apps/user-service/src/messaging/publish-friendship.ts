@@ -96,14 +96,20 @@ async function publishToUserEvents(
   );
 }
 
+/**
+ * `isRefriend` — this pair had been friends before. Only that case gets the
+ * "now friends" chat system row; see `FriendshipReadModelPayload`.
+ */
 export function publishFriendshipCreatedSafe(
   userA: string,
-  userB: string
+  userB: string,
+  isRefriend = false
 ): void {
   void publishToUserEvents(FriendshipReadModelEvents.FRIENDSHIP_CREATED, {
     userA,
     userB,
     status: "ACTIVE",
+    isRefriend,
   }).catch((error) => {
     logger.error("Failed to publish friendship.created");
     logger.error(error);

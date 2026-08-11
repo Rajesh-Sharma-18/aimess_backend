@@ -38,8 +38,8 @@ import type {
   ListReportsQuery,
   ModerationReasonInput,
   MutedMembersQuery,
+  CommunityActivityQuery,
   MyCommunitiesQuery,
-  MyCommunitiesV2Query,
   MyInvitesQuery,
   MyJoinRequestsQuery,
   MyReportsQuery,
@@ -158,24 +158,99 @@ export const listCategories = asyncHandler(
   }
 );
 
+/**
+ * `GET /communities/activity?after_ts=<epoch-ms>` — reconnect replay for the
+ * community LIST (§5.3). Returns ONLY the list-activity blocks for communities
+ * whose `lastActivityAt >= after_ts`, oldest-first, so a client that missed
+ * `community:updated` events while disconnected closes the gap without a full
+ * reload and without refetching avatars/member counts it already has.
+ *
+ * Deliberately a projection of `listMine(direction: "after")` rather than a new
+ * query: one keyset, one ordering, one source of truth for what "activity"
+ * means. `nextCursor` is epoch-ms, fed straight back as `after_ts`.
+ */
+export const listCommunityActivity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { after_ts, limit } = req.query as unknown as CommunityActivityQuery;
+
+    const result = await communityService.listMine(req.auth.userId, {
+      direction: "after",
+      ts: new Date(after_ts),
+      limit,
+    });
+
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          pagination: result.pagination,
+          data: result.data.map((community) => ({
+            communityId: community.id,
+            lastActivity: community.lastActivity,
+            lastActivityAt: community.lastActivityAt,
+            unreadMessageCount: community.unreadMessageCount,
+            firstUnreadMessageId: community.firstUnreadMessageId,
+          })),
+        },
+        t("COMMUNITY_LIST_FETCHED", req.locale)
+      )
+    );
+  }
+);
+
 export const listMyCommunities = asyncHandler(
   async (req: Request, res: Response) => {
-    const { before_ts, after_ts, q, categoryId, filter, page, limit } =
+    const { cursor, before_ts, after_ts, q, categoryId, filter, page, limit } =
       req.query as unknown as MyCommunitiesQuery;
 
+    // Joined mode, gap-safe path. `cursor` is OPAQUE — EITHER a bare epoch-ms
+    // (coarse jump, no tiebreaker) OR the "<ms>_<id>" nextCursor handed back
+    // verbatim. Checked BEFORE before_ts/after_ts so a client that sends both
+    // gets the exclusive compound keyset (the strictly better boundary).
+    if (cursor != null) {
+      const sep = cursor.indexOf("_");
+      const ms = Number(sep === -1 ? cursor : cursor.slice(0, sep));
+      const id = sep === -1 ? "" : cursor.slice(sep + 1);
+
+      const result = await communityService.listMineKeyset(req.auth.userId, {
+        // A bare-ms cursor has no id tiebreaker; use an all-`f` ObjectId sentinel
+        // so the compound boundary degrades to a pure `lastActivityAt < ms` bound
+        // (every real id sorts strictly below it), matching a coarse first jump.
+        cursor: { ts: new Date(ms), id: id || "ffffffffffffffffffffffff" },
+        limit,
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
+    }
+
+    // Legacy timestamp pagination → joined mode (the caller's communities,
+    // INCLUSIVE bare-ms bound). Takes precedence over q/categoryId if both are
+    // sent. Retained verbatim for backward compatibility.
+    if (before_ts != null || after_ts != null) {
+      const direction = after_ts != null ? "after" : "before";
+      const tsMs = after_ts ?? before_ts ?? Date.now();
+
+      const result = await communityService.listMine(req.auth.userId, {
+        direction,
+        ts: new Date(tsMs),
+        limit,
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
+    }
+
     // Search mode ONLY when a search/browse filter is present, and only when no
-    // cursor was sent (pagination keeps precedence over q/categoryId). Anything
-    // else — including a bare `?limit=50` — is the caller's JOINED list.
+    // pagination param was sent (pagination keeps precedence over q/categoryId).
+    // Anything else — including a bare `?limit=50` — is the caller's JOINED list.
     //
     // Before this gate, "no cursor" alone fell through to discover(), so the
     // Community screen's first load (`/mine?limit=50`) returned every PUBLIC
     // community on the platform: for a brand-new user with zero memberships the
     // list looked like someone else's data instead of the empty list it is.
-    // Matches listMyCommunitiesV2's mode inference.
-    const isSearch =
-      before_ts == null &&
-      after_ts == null &&
-      (q != null || categoryId != null || filter !== "all");
+    const isSearch = q != null || categoryId != null || filter !== "all";
 
     if (isSearch) {
       // Search mode: PUBLIC communities plus PRIVATE ones the caller is an
@@ -197,73 +272,13 @@ export const listMyCommunities = asyncHandler(
         );
     }
 
-    // Joined mode (the caller's communities, cursor pagination). No cursor →
-    // the newest page, same as V2's cursor-less default.
-    const direction = after_ts != null ? "after" : "before";
-    const tsMs = after_ts ?? before_ts ?? Date.now();
-
+    // No params at all → the JOINED newest page (the Community screen's first
+    // load). Stays on the legacy bare-ms path so the cursor-less default keeps
+    // the contract existing clients already page on; `cursor` above is the
+    // opt-in gap-safe upgrade.
     const result = await communityService.listMine(req.auth.userId, {
-      direction,
-      ts: new Date(tsMs),
-      limit,
-    });
-
-    return res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
-  }
-);
-
-/**
- * `GET /api/v2/communities/mine` — V2 of {@link listMyCommunities}. The joined
- * list now pages on an opaque COMPOUND cursor (`"<lastActivityAtMs>_<id>"`)
- * instead of V1's `before_ts`/`after_ts`, closing the same-millisecond skip/dup
- * at page edges. Search mode (q/categoryId) is byte-identical to V1.
- *
- * Mode inference: q/categoryId present → search (offset); otherwise joined
- * (cursor). Unlike V1 (which needed a cursor param to enter joined mode), the
- * V2 default with no params IS the joined newest page — the sidebar's first load.
- */
-export const listMyCommunitiesV2 = asyncHandler(
-  async (req: Request, res: Response) => {
-    const { cursor, q, categoryId, filter, page, limit } =
-      req.query as unknown as MyCommunitiesV2Query;
-
-    // Search mode only when a search filter is present (matches V1's search mode).
-    if (q != null || categoryId != null) {
-      const result = await communityService.discover(req.auth.userId, {
-        q,
-        categoryId,
-        filter,
-        page,
-        limit,
-        includeJoined: true,
-        includeChatActivity: true,
-      });
-
-      return res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
-        );
-    }
-
-    // Joined mode: compound-keyset cursor pagination. The cursor is opaque —
-    // EITHER a bare epoch-ms (first page / coarse jump, no tiebreaker) OR the
-    // "<ms>_<id>" nextCursor handed back verbatim. Absent → newest page.
-    let parsedCursor: { ts: Date; id: string } | null = null;
-    if (cursor) {
-      const sep = cursor.indexOf("_");
-      const ms = Number(sep === -1 ? cursor : cursor.slice(0, sep));
-      const id = sep === -1 ? "" : cursor.slice(sep + 1);
-      // A bare-ms cursor has no id tiebreaker; use an all-`f` ObjectId sentinel
-      // so the compound boundary degrades to a pure `lastActivityAt < ms` bound
-      // (every real id sorts strictly below it), matching a first/coarse jump.
-      parsedCursor = { ts: new Date(ms), id: id || "ffffffffffffffffffffffff" };
-    }
-
-    const result = await communityService.listMineV2(req.auth.userId, {
-      cursor: parsedCursor,
+      direction: "before",
+      ts: new Date(),
       limit,
     });
 

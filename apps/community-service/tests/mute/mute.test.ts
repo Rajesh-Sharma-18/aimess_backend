@@ -158,6 +158,28 @@ describe("bulk mute / unmute / mark-read", () => {
     expect(svc.bulkMarkRead).toHaveBeenCalledWith(SELF, [CID]);
   });
 
+  // The mobile clients serialize snake_case; both spellings must reach the
+  // service identically. camelCase stays canonical.
+  it("POST /mute/bulk accepts community_ids / duration_minutes", async () => {
+    svc.bulkMute.mockResolvedValue({ muted: [CID], skipped: [] });
+    const res = await request(app)
+      .post("/api/v1/communities/mute/bulk")
+      .set(auth())
+      .send({ action: "mute", community_ids: [CID], duration_minutes: 10 });
+    expect(res.status).toBe(200);
+    expect(svc.bulkMute).toHaveBeenCalledWith(SELF, [CID], 10);
+  });
+
+  it("POST /read/bulk accepts community_ids", async () => {
+    svc.bulkMarkRead.mockResolvedValue({ updatedCount: 1 });
+    const res = await request(app)
+      .post("/api/v1/communities/read/bulk")
+      .set(auth())
+      .send({ community_ids: [CID], action: "read" });
+    expect(res.status).toBe(200);
+    expect(svc.bulkMarkRead).toHaveBeenCalledWith(SELF, [CID]);
+  });
+
   it("POST /read/bulk 400 when more than 50 ids are sent", async () => {
     const ids = Array.from({ length: 51 }, () => "a".repeat(24));
     const res = await request(app)

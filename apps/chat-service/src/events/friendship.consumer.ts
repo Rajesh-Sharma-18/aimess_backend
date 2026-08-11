@@ -8,6 +8,7 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { PrivateSystemMessageService } from "../services/private-system-message.service.js";
+import { ensurePrivateRoom } from "../services/private-room.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import { SystemEvent } from "../types/enums.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
@@ -27,6 +28,8 @@ export interface FriendshipEvent {
   userB: string;
   status?: string;
   timestamp: number;
+  /** `friendship.created` only — this pair had been friends before. */
+  isRefriend?: boolean;
 }
 
 export class FriendshipEventConsumer {
@@ -98,18 +101,38 @@ export class FriendshipEventConsumer {
             event.userA,
             event.status || "ACTIVE"
           );
-          // An unfriend->re-friend cycle would otherwise stack a fresh "now
-          // friends" bubble on top of every earlier one — remove any prior
-          // FRIENDSHIP_CREATED system messages in this room first so only the
-          // latest ever shows.
-          await this.deleteStaleFriendshipCreatedMessages(
-            event.userA,
-            event.userB
-          );
-          await this.postFriendshipSystemMessage(
-            event,
-            SystemEvent.FRIENDSHIP_CREATED
-          );
+          // The room usually does NOT exist yet at this point: user-service
+          // publishes this event and only then (fire-and-forget) asks us over
+          // gRPC to create the room, so we lose that race and the "now friends"
+          // system message below silently found no room to post into. Create it
+          // here instead — the ACTIVE rows we just wrote are exactly what the
+          // friendship gate would check, and user-service's later
+          // getOrCreatePrivateRooms call now just finds this room.
+          await this.ensureRoom(event.userA, event.userB);
+          // The "now friends" row marks a RE-friendship, not a friendship. A
+          // first-ever acceptance opens on the clean "no conversation yet"
+          // screen — there is no history for the line to separate, so it read
+          // as noise in an otherwise empty room. `isRefriend` is decided by
+          // user-service from `Friendship.firstAcceptedAt`, the only record
+          // that survives the row being recycled for a new request; a payload
+          // without the field (older publisher) is treated as first-time.
+          if (event.isRefriend) {
+            // An unfriend->re-friend cycle would otherwise stack a fresh
+            // bubble on top of every earlier one — remove any prior
+            // FRIENDSHIP_CREATED system messages in this room first so only
+            // the latest ever shows. Skipped when nothing will be posted, so
+            // a stray event cannot silently delete a legitimate row.
+            await this.deleteStaleFriendshipCreatedMessages(
+              event.userA,
+              event.userB
+            );
+            await this.postFriendshipSystemMessage(
+              event,
+              SystemEvent.FRIENDSHIP_CREATED
+            );
+          } else {
+            await this.stampRoomActivity(event);
+          }
           logger.debug(`Friendship created: ${event.userA} <-> ${event.userB}`);
           break;
 
@@ -165,6 +188,30 @@ export class FriendshipEventConsumer {
     }
   }
 
+  /**
+   * Best-effort get-or-create of the pair's private room. A failure here must
+   * not nack the friendship event — the read-model rows are already written and
+   * the room still lazily creates on first open, exactly as before.
+   */
+  private async ensureRoom(userA: string, userB: string): Promise<void> {
+    try {
+      await ensurePrivateRoom(
+        {
+          privateRoomRepo: this.privateRoomRepo,
+          userSnapshotService: this.userSnapshotService,
+          cacheRepo: this.cacheRepo,
+          redis,
+        },
+        userA,
+        userB
+      );
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|ensureRoom failed ${userA}<->${userB}: ${String(err)}`
+      );
+    }
+  }
+
   private async postFriendshipSystemMessage(
     event: FriendshipEvent,
     systemEvent: SystemEvent
@@ -188,6 +235,34 @@ export class FriendshipEventConsumer {
     } catch (err) {
       logger.warn(
         `FriendshipEventConsumer|system message failed type=${event.type}: ${String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Put a brand-new, message-less room on both inboxes.
+   *
+   * `GET /chat/inbox` keysets on `lastMessageAt` and skips NULL rows, so before
+   * this the "now friends" system message was what made an accepted friendship
+   * appear in the conversation list at all. First-time friendships no longer
+   * post that message, so the room needs its own timestamp — otherwise the new
+   * friend's chat vanished from the list on reload until someone said
+   * something. Preview stays empty: there is no message, only an opened
+   * conversation. Never overwrites a room that already has activity.
+   */
+  private async stampRoomActivity(event: FriendshipEvent): Promise<void> {
+    try {
+      const room = await this.privateRoomRepo.findByParticipantsKey(
+        buildParticipantsKey(event.userA, event.userB)
+      );
+      if (!room || room.lastMessageAt) return;
+      await prisma.privateRoom.update({
+        where: { roomId: room.roomId },
+        data: { lastMessageAt: new Date(event.timestamp || Date.now()) },
+      });
+    } catch (err) {
+      logger.warn(
+        `FriendshipEventConsumer|stampRoomActivity failed ${event.userA}<->${event.userB}: ${String(err)}`
       );
     }
   }

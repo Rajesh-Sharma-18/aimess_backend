@@ -693,12 +693,23 @@ export const communityPaths = {
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
         {
+          name: "cursor",
+          in: "query",
+          required: false,
+          schema: { type: "string", pattern: "^\\d+(_[a-fA-F0-9]{24})?$" },
+          description:
+            'Joined mode, PREFERRED. Opaque compound cursor "<lastActivityAtMs>_<communityId>" ' +
+            "(or a bare epoch-ms for a coarse first jump). Boundaries are EXCLUSIVE. Omit for " +
+            "the newest page; feed `pagination.nextCursor` back verbatim to page older. " +
+            "Outranks before_ts/after_ts.",
+        },
+        {
           name: "before_ts",
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "Joined mode. Epoch ms. Returns items with lastActivityAt <= before_ts (newest-first).",
+            "Joined mode, legacy. Epoch ms. Returns items with lastActivityAt <= before_ts (newest-first, INCLUSIVE).",
         },
         {
           name: "after_ts",
@@ -706,7 +717,7 @@ export const communityPaths = {
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "Joined mode. Epoch ms. Returns items with lastActivityAt >= after_ts (oldest-first).",
+            "Joined mode, legacy. Epoch ms. Returns items with lastActivityAt >= after_ts (oldest-first, INCLUSIVE).",
         },
         {
           name: "q",

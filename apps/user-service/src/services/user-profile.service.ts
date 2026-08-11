@@ -49,6 +49,7 @@ import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
+import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -471,9 +472,15 @@ export const userProfileService = {
     logger.info(`User profile soft-deleted for userId=${data.userId}`);
   },
 
+  /**
+   * `editorSessionId` is the caller's own session. It is excluded from the
+   * realtime fan-out below so the editing device does not receive an echo of
+   * the change it already got back in this call's HTTP response.
+   */
   async updateProfile(
     userId: string,
-    input: UpdateProfileInput
+    input: UpdateProfileInput,
+    editorSessionId?: string
   ): Promise<UserProfileData> {
     const profile = await userProfileRepository.findByUserId(userId);
 
@@ -579,6 +586,15 @@ export const userProfileService = {
       isProfileCompleted: isProfileComplete(updated),
       updatedAt: updated.updatedAt.toISOString(),
     });
+
+    // Separate delivery mechanism, not a replacement for the RabbitMQ fanout
+    // above: that one keeps other SERVICES' denormalized snapshots fresh, this
+    // one tells the user's own other DEVICES to re-fetch. Both must fire.
+    emitProfileUpdatedSafe(
+      userId,
+      updated.updatedAt.toISOString(),
+      editorSessionId
+    );
 
     if (updateData.username && updateData.username !== previousUsername) {
       await userCache.onUsernameReleased(previousUsername);

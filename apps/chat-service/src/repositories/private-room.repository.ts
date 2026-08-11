@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
 
@@ -361,6 +362,11 @@ export class PrivateRoomRepository {
       systemEvent?: string | null;
       systemData?: unknown;
       createdAt: Date;
+      /** Offline-first list identity (see lib/list-row-identity.ts). Optional so
+       *  every existing caller keeps compiling; absent ⇒ null/0 defaults. */
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     };
     receiverId: string;
     /** How many unread rows this send contributes (albums > 1). */
@@ -385,6 +391,7 @@ export class PrivateRoomRepository {
       systemEvent: message.systemEvent || null,
       systemData: message.systemData || null,
       createdAt: now.toISOString(),
+      ...listRowIdentity({ ...message, id: message._id }),
     };
 
     const set: Record<string, unknown> = {
@@ -643,6 +650,9 @@ export class PrivateRoomRepository {
       content: unknown;
       messageType: string;
       createdAt: Date;
+      clientMessageId?: string | null;
+      sequenceNumber?: number | null;
+      revision?: number | null;
     } | null
   ): Promise<void> {
     await this.prisma.privateRoom.update({
@@ -656,6 +666,7 @@ export class PrivateRoomRepository {
               senderId: message.senderId,
               messageType: message.messageType,
               createdAt: message.createdAt.toISOString(),
+              ...listRowIdentity(message),
             } as unknown as Prisma.InputJsonValue,
           }
         : {

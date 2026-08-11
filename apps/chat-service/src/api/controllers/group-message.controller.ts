@@ -3,7 +3,6 @@ import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
-import { V2_TIMELINE_LIMIT } from "../validators/query.validator.js";
 import { NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
@@ -12,7 +11,6 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
   buildAroundResponse,
-  buildTimelinePageV2,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -103,95 +101,17 @@ export class GroupMessageController {
   });
 
   /**
-   * `GET /api/chat/group/rooms/:roomId/messages` — V1 timestamp cursor.
-   * Frozen: V2 clients use {@link getMessagesV2}.
+   * `GET /api/chat/groups/:roomId/messages` — the group room timeline. Supports
+   * every pagination axis: `before_ts`/`after_ts` (compound `(createdAt, _id)`
+   * keyset), the gap-safe `before_seq`/`after_seq` sequence keyset, and
+   * `around=<messageId>` for jump-to-message. See {@link listMessages}.
    */
   getMessages = asyncHandler((req: Request, res: Response) =>
     this.listMessages(req, res, "before_ts", "after_ts")
   );
 
   /**
-   * `GET /api/v2/chat/group/rooms/:roomId/messages` — Cursor V2. Identical
-   * handler, response and business logic to V1; the ONLY difference is that the
-   * opaque compound `(createdAt, id)` keyset token arrives on
-   * `before_cursor`/`after_cursor`, so V2 exposes no timestamp-shaped params.
-   * Mirrors the private V2 contract exactly (see `PrivateMessageController`).
-   */
-  getMessagesV2 = asyncHandler((req: Request, res: Response) =>
-    this.listMessagesV2(req, res)
-  );
-
-  /**
-   * V2 timeline — `before_seq`/`after_seq`/`around` only. Byte-identical contract
-   * to PrivateMessageController.listMessagesV2; the two must not drift.
-   */
-  private async listMessagesV2(req: Request, res: Response) {
-    const { userId } = req.auth;
-    const roomId = req.params.roomId as string;
-    const limit = Number(req.query.limit) || V2_TIMELINE_LIMIT;
-    const around = req.query.around as string | undefined;
-
-    const send = (payload: { items: unknown[] } & Record<string, unknown>) =>
-      res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(
-            payload,
-            payload.items.length
-              ? t("CHAT_MESSAGES_FETCHED", req.locale)
-              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
-          )
-        );
-
-    if (around) {
-      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
-        await this.messageService.getMessagesAround({
-          roomId,
-          userId,
-          messageId: around,
-          limit,
-        });
-      const [wire, pinnedMessage] = await Promise.all([
-        this.messageService.enrichForWire(items, userId),
-        this.pinService.getActivePinSummary(roomId, userId),
-      ]);
-      send({
-        ...buildTimelinePageV2(wire, limit, {
-          hasMoreOlder,
-          hasMoreNewer,
-          olderCursor,
-          newerCursor,
-        }),
-        pinnedMessage,
-      });
-      return;
-    }
-
-    const beforeSeq =
-      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
-    const afterSeq =
-      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
-
-    const result = await this.messageService.getMessagesSeq({
-      roomId,
-      userId,
-      direction: afterSeq != null ? "after" : "before",
-      seq: afterSeq ?? beforeSeq ?? null,
-      limit,
-    });
-    const [wire, pinnedMessage] = await Promise.all([
-      this.messageService.enrichForWire(result.items, userId),
-      this.pinService.getActivePinSummary(roomId, userId),
-    ]);
-    send({
-      ...buildTimelinePageV2(wire, limit, result.cursors),
-      roomRevision: result.roomRevision,
-      pinnedMessage,
-    });
-  }
-
-  /**
-   * V2 — `GET /api/v2/chat/group/rooms/:roomId/changes` — the ZERO-LOSS changes feed.
+   * `GET /api/chat/groups/:roomId/changes` — the ZERO-LOSS changes feed.
    * Identical envelope to the private and community equivalents.
    */
   getChanges = asyncHandler(async (req: Request, res: Response) => {
@@ -224,21 +144,23 @@ export class GroupMessageController {
   });
 
   /**
-   * Shared timeline core for V1 + V2. `olderKey`/`newerKey` name the query params
-   * carrying the opaque compound cursor — the single axis that differs between the
-   * two versions. Everything else is version-agnostic.
+   * The group room timeline. `olderKey`/`newerKey` name the query params carrying
+   * the opaque compound `(createdAt, _id)` cursor.
+   *
+   * Pagination precedence: `around` (jump-to-message) → `before_seq`/`after_seq`
+   * (gap-safe sequence keyset) → the compound timestamp keyset → newest page.
    */
   private async listMessages(
     req: Request,
     res: Response,
-    olderKey: "before_ts" | "before_cursor",
-    newerKey: "after_ts" | "after_cursor"
+    olderKey: "before_ts",
+    newerKey: "after_ts"
   ) {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 30;
 
-    // V2 §3.2: prefer seq-based keyset cursors (gap-safe) when present.
+    // Prefer seq-based keyset cursors (gap-safe) when present.
     const beforeSeq =
       req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
     const afterSeq =
@@ -249,9 +171,14 @@ export class GroupMessageController {
     // FE can hydrate per-message "seen by" state WITHOUT waiting for a live
     // `message:read` event (see GroupMessageService.getMemberReadCursors).
     // Best-effort: never blocks/fails the message page itself.
-    const memberReadSeq = await this.messageService
-      .getMemberReadCursors(roomId, userId)
-      .catch(() => ({}) as Record<string, number>);
+    // pinnedMessage rides along on every page so the pinned banner hydrates from
+    // the timeline call itself instead of a second round-trip.
+    const [memberReadSeq, pinnedMessage] = await Promise.all([
+      this.messageService
+        .getMemberReadCursors(roomId, userId)
+        .catch(() => ({}) as Record<string, number>),
+      this.pinService.getActivePinSummary(roomId, userId),
+    ]);
 
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
@@ -275,7 +202,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, memberReadSeq },
+            { ...paginated, memberReadSeq, pinnedMessage },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -316,7 +243,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, memberReadSeq },
+            { ...paginated, memberReadSeq, pinnedMessage },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -362,7 +289,9 @@ export class GroupMessageController {
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ ...paginated, memberReadSeq }, msg));
+      .json(
+        new ApiResponse({ ...paginated, memberReadSeq, pinnedMessage }, msg)
+      );
   }
 
   getConversation = asyncHandler(async (req: Request, res: Response) => {
@@ -491,11 +420,12 @@ export class GroupMessageController {
   });
 
   /**
-   * V2 delete — same path shape as private/community (`DELETE /messages/:messageId
-   * ?type=`), so a client needs no per-conversation-type special case. The room is
-   * resolved from the message instead of being passed in the body.
+   * `DELETE /groups/messages/:messageId?type=` — same path shape as
+   * private/community, so a client needs no per-conversation-type special case.
+   * The room is resolved from the message instead of being passed in the body.
+   * The body-carried `POST /groups/messages/delete` stays available.
    */
-  deleteMessageV2 = asyncHandler(async (req: Request, res: Response) => {
+  deleteMessageByPath = asyncHandler(async (req: Request, res: Response) => {
     const messageId = req.params.messageId as string;
     const message = await this.messageService.findMessageById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -535,6 +465,9 @@ export class GroupMessageController {
           scope,
           deletedBy: userId,
           sequenceNumber: result.sequenceNumber,
+          revision: result.revision,
+          clientMessageId: result.clientMessageId,
+          deletedAt: result.deletedAt?.getTime() ?? Date.now(),
           deletedType:
             scope === "forMe"
               ? "SELF_DELETE"
@@ -886,8 +819,8 @@ export class GroupMessageController {
    * toggle-ON + message:reaction broadcast). Returns the updated ChatReactionGroup[]
    * under `{ reactions }`. Idempotent: re-adding an existing reaction is a no-op.
    */
-  /** V2 `POST /messages/:messageId/react` — see PrivateMessageController.setReactionV2. */
-  setReactionV2 = asyncHandler(async (req: Request, res: Response) => {
+  /** `POST /groups/messages/:messageId/react` — see PrivateMessageController.setReaction. */
+  setReaction = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
     const { emoji } = req.body as { emoji: string };
