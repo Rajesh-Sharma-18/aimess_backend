@@ -2469,8 +2469,16 @@ export function createMessagingImpl(
     },
 
     // User Search: list/search groups for a viewer — ACTIVE (member),
-    // OTHER (not a member, excluding given roomIds), or BY_IDS (resolve
-    // specific roomIds, e.g. to refresh a recently-viewed group's metadata).
+    // OTHER (not an active member but the group is still in the viewer's
+    // conversation list), or BY_IDS (resolve specific roomIds, e.g. to refresh
+    // a recently-viewed group's metadata).
+    //
+    // Visibility rule, enforced here for every mode: a group is searchable ONLY
+    // when the viewer is an ACTIVE member of it, OR the group still sits in the
+    // viewer's own conversation list. Group existence — public, name-matching,
+    // previously-joined, or a stale Recent row — never grants visibility. The
+    // candidate id set therefore always comes from the viewer's own membership
+    // rows (one query), never from an unbounded "every other group" scan.
     searchUserGroups: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -2490,30 +2498,58 @@ export function createMessagingImpl(
           const roomIds = (req.roomIds ?? []).filter(Boolean);
           const limit = Math.min(Math.max(req.limit || 10, 1), 100);
 
-          const activeRoomIds = viewerId
-            ? await deps.groupMemberRepo.getActiveRoomIds(viewerId)
+          // Same membership source the unified inbox lists a group from
+          // (ACTIVE + LEFT + KICKED, BANNED excluded) — one query, no per-group
+          // lookup, so search visibility can never drift from what the user's
+          // conversation list actually shows.
+          const memberships = viewerId
+            ? await deps.groupMemberRepo.getActiveOrLeftMemberships(viewerId)
             : [];
+          const activeRoomIds = memberships
+            .filter((m) => m.status === "ACTIVE")
+            .map((m) => m.roomId);
           const activeSet = new Set(activeRoomIds);
+          const clearedByRoom = new Map(
+            memberships.map((m) => [m.roomId, m.clearedAt])
+          );
+
+          // Non-active viewer: the group stays visible only while the
+          // conversation survives their own "Delete Conversation" cutoff —
+          // the same `isVisibleAfterClear` gate GroupRoomService applies to
+          // the inbox.
+          const isSearchable = (g: {
+            roomId: string;
+            lastMessageAt: Date | null;
+          }) => {
+            if (activeSet.has(g.roomId)) return true;
+            if (!clearedByRoom.has(g.roomId)) return false;
+            const clearedAt = clearedByRoom.get(g.roomId) ?? null;
+            if (!clearedAt) return true;
+            return (g.lastMessageAt?.getTime() ?? 0) > clearedAt.getTime();
+          };
 
           let rows;
           if (mode === "OTHER") {
-            const excludeSet = new Set([...activeRoomIds, ...roomIds]);
-            rows = await deps.groupRoomRepo.searchOtherForUser(
-              [...excludeSet],
+            const excludeSet = new Set(roomIds);
+            const candidateIds = memberships
+              .map((m) => m.roomId)
+              .filter((id) => !activeSet.has(id) && !excludeSet.has(id));
+            rows = await deps.groupRoomRepo.searchInRoomIds(
+              candidateIds,
               q,
               limit
             );
           } else if (mode === "BY_IDS") {
             rows = await deps.groupRoomRepo.findManyByRoomIds(roomIds);
           } else {
-            rows = await deps.groupRoomRepo.searchActiveForUser(
+            rows = await deps.groupRoomRepo.searchInRoomIds(
               activeRoomIds,
               q,
               limit
             );
           }
 
-          const groups = rows.map((g) => ({
+          const groups = rows.filter(isSearchable).map((g) => ({
             roomId: g.roomId,
             name: g.name,
             avatar: g.avatar,

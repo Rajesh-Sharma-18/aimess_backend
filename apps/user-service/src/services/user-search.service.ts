@@ -84,6 +84,12 @@ export type SearchGroupItem = {
   avatar: string;
   description: string;
   memberCount: number;
+  /**
+   * True when the viewer is an ACTIVE member. `false` here does NOT mean "any
+   * group that happens to match the query" — a row only exists at all when the
+   * viewer is an active member OR the group is still in their conversation
+   * list, so `false` specifically means "left/removed, conversation kept".
+   */
   isActiveMember: boolean;
 };
 
@@ -386,7 +392,10 @@ export const userSearchService = {
 
     // ---------------------------------------------------------------------
     // Other — max `limit` (default 10, paginated): non-friends (isFriend
-    // === false), groups the viewer isn't an active member of. A user here
+    // === false), plus groups the viewer is no longer an active member of but
+    // which are STILL in their conversation list (left/removed, conversation
+    // not deleted). Groups the viewer has no relationship with never reach
+    // this bucket — chat-service enforces that, not this filter. A user here
     // may still carry a `roomId` (e.g. unfriended peers) — that's fine,
     // roomId is conversation metadata only and plays no role in bucketing.
     // ---------------------------------------------------------------------

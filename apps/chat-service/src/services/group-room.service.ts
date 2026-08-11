@@ -829,13 +829,18 @@ export class GroupRoomService {
    * member stays ACTIVE, keeps receiving new messages, and the room reappears
    * in their inbox the moment one arrives, showing only messages sent after
    * this cutoff. Distinct from Leave, which removes membership entirely.
+   *
+   * Allowed for LEFT/KICKED members too, not just ACTIVE ones: their read-only
+   * row is still in their conversation list, so "Delete Conversation" has to be
+   * able to remove it — and once it is gone the group also stops being
+   * searchable for them (see the gRPC `searchUserGroups` visibility rule).
+   * BANNED is excluded, matching the inbox, which never lists it.
    */
   async clearConversation(roomId: string, userId: string): Promise<void> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const member = await this.memberRepo.findByRoomAndUser(roomId, userId);
+    if (!member || !["ACTIVE", "LEFT", "KICKED"].includes(member.status)) {
+      throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    }
     await this.memberRepo.setClearedAt(roomId, userId);
 
     // Notify the user's other devices the conversation was cleared from their view.

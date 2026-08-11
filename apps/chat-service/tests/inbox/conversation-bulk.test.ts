@@ -102,7 +102,10 @@ describe("POST /conversations/leave/bulk", () => {
   });
 
   it("POSITIVE: groupAction DELETE clears history and keeps membership", async () => {
-    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+    // Delete Conversation reads the membership row at ANY list-visible status
+    // (ACTIVE/LEFT/KICKED), not the ACTIVE-only finder — a removed member has
+    // to be able to delete their read-only row too.
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       roomId: GROUP_ROOM,
       userId: TEST_USER_ID,
       status: "ACTIVE",

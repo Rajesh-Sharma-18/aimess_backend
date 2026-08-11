@@ -158,13 +158,16 @@ export class GroupMemberRepository {
   }
 
   /**
-   * "Delete Conversation" for a group: the member stays ACTIVE (unlike Leave)
-   * but hides all history up to now — mirrors PrivateRoomRepository.setDeletedFor.
+   * "Delete Conversation" for a group: membership is untouched (unlike Leave)
+   * but all history up to now is hidden — mirrors PrivateRoomRepository.setDeletedFor.
    * Also zeroes unread state so a phantom count doesn't survive the cutoff.
+   * Status is not filtered here: a LEFT/KICKED member still has the read-only
+   * row in their list and must be able to delete it. The caller
+   * (GroupRoomService.clearConversation) owns the status check.
    */
   async setClearedAt(roomId: string, userId: string): Promise<void> {
     await this.prisma.groupMember.updateMany({
-      where: { roomId, userId, status: "ACTIVE" },
+      where: { roomId, userId },
       data: {
         clearedAt: new Date(),
         unreadCount: 0,
