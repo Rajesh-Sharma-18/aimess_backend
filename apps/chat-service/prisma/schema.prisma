@@ -42,9 +42,14 @@ model PrivateRoom {
   clearFor                  Json     @default("{}")
   mutedBy                   Json     @default("{}")
   archivedBy                Json     @default("{}")
-  // Auto-delete (disappearing messages) — PER USER, same one-sided per-user map
-  // shape as `mutedBy`: { "<userId>": { mode, ttlSeconds, setAt } }. See
-  // `lib/auto-delete.ts` for which side's timer a given message ends up with.
+  // Auto-delete (disappearing messages) — ONE timer for the CONVERSATION, which
+  // either participant may change and both then see: { mode, ttlSeconds, setAt,
+  // setBy }. Absent = Off, so a new room needs no initialization.
+  autoDelete                Json?
+  // LEGACY per-user map, { "<userId>": { mode, ttlSeconds, setAt } }, from when
+  // each side had its own timer. Read-only fallback for rooms written before
+  // `autoDelete` existed — see `lib/auto-delete.ts#readRoomAutoDelete`. Never
+  // written any more; drop the field once no room relies on it.
   autoDeleteBy              Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?

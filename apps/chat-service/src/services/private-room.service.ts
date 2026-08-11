@@ -22,7 +22,7 @@ import {
 import { privateVisibilitySource } from "./last-visible-adapters.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
-import { buildAutoDeleteWire, parseAutoDeleteMap } from "../lib/auto-delete.js";
+import { buildAutoDeleteWire, readRoomAutoDelete } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -518,10 +518,7 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
-      autoDelete: buildAutoDeleteWire(
-        parseAutoDeleteMap(enriched.autoDeleteBy),
-        userId
-      ),
+      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(enriched)),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };
   }

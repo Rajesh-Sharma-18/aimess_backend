@@ -34,8 +34,7 @@ import {
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import {
   computeAutoDeleteStamp,
-  parseAutoDeleteMap,
-  resolveEffectiveAutoDelete,
+  readRoomAutoDelete,
   AUTO_DELETE_NONE,
   AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
   type AutoDeleteStamp,
@@ -247,10 +246,7 @@ export class PrivateMessageService {
       this.roomRepo.allocateSequenceBlock(id, count)
     );
     const roomBefore = firstAllocation.room;
-    const autoDelete = this.autoDeleteStampFromRoom(
-      roomBefore,
-      params.senderId
-    );
+    const autoDelete = this.autoDeleteStampFromRoom(roomBefore);
 
     const created: PrivateMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
@@ -776,20 +772,20 @@ export class PrivateMessageService {
   }
 
   /**
-   * The auto-delete columns a message sent by `senderId` into `roomId` must
-   * carry: the SENDER's own setting for this chat and nothing else — not the
-   * peer's timer, not an account-wide default (see lib/auto-delete.ts).
-   * Fails OPEN — a lookup error must never block a send, it just means no timer
-   * on that message.
+   * The auto-delete columns a new message in `roomId` must carry: THE
+   * conversation's timer, which both participants share (see lib/auto-delete.ts).
+   * Read from the room row the caller already loaded, so a setting changed a
+   * moment ago is in force for the very next send — there is no cached copy to
+   * go stale. Fails OPEN — a lookup error must never block a send, it just
+   * means no timer on that message.
    */
-  private autoDeleteStampFromRoom(
-    room: { participants?: string[]; autoDeleteBy?: unknown; roomId?: string },
-    senderId: string
-  ): AutoDeleteStamp {
+  private autoDeleteStampFromRoom(room: {
+    autoDelete?: unknown;
+    autoDeleteBy?: unknown;
+    roomId?: string;
+  }): AutoDeleteStamp {
     try {
-      const map = parseAutoDeleteMap(room.autoDeleteBy);
-      const setting = resolveEffectiveAutoDelete(map, senderId);
-      return computeAutoDeleteStamp(setting, new Date());
+      return computeAutoDeleteStamp(readRoomAutoDelete(room), new Date());
     } catch (err) {
       logger.warn(
         `PrivateMessageService|autoDeleteStampFromRoom failed room=${room.roomId}: ${String(err)}`
@@ -1670,10 +1666,7 @@ export class PrivateMessageService {
     const seq = targetAllocation.sequenceNumber;
     // §8.1 — a forward does NOT inherit the source message's timer; it is a new
     // message in the TARGET chat and follows that chat's own setting.
-    const autoDelete = this.autoDeleteStampFromRoom(
-      targetAllocation.room,
-      params.senderId
-    );
+    const autoDelete = this.autoDeleteStampFromRoom(targetAllocation.room);
 
     let message: PrivateMessage;
     try {

@@ -1,18 +1,20 @@
 /**
- * Live probe (real Mongo + the running chat-service, no mocks): is the private
- * auto-delete setting really per (conversation, user)?
+ * Live probe (real Mongo, real Redis, the running chat-service — no mocks):
+ * does a private chat's auto-delete timer belong to the CONVERSATION and reach
+ * BOTH participants in real time?
  *
- * Creates a throwaway private room between two synthetic users, drives the REAL
- * REST endpoints with minted access tokens, and asserts that neither user's
- * timer ever moves because of the other's. Also re-reads a real room to prove an
- * unconfigured chat reports OFF regardless of anyone's account-wide setting.
- * Deletes everything it created.
+ * Creates throwaway rooms between synthetic users, drives the REAL REST
+ * endpoints with minted access tokens, and listens on the `user:<id>` Redis
+ * channels the socket gateway fans out from. Deletes everything it creates.
  *
  *   MONGO_DATABASE_URL=mongodb://localhost:27018/aimess_chat?directConnection=true \
- *   JWT_ACCESS_SECRET=<dev secret> BASE=http://localhost:3004 \
+ *   JWT_ACCESS_SECRET=<dev secret> REDIS_URL=redis://localhost:6379 \
+ *   BASE=http://localhost:3004 \
  *   pnpm exec tsx scripts/probe-auto-delete-source.ts [existingRoomId]
  */
 import { randomUUID } from "node:crypto";
+
+import Redis from "ioredis";
 
 import { signAccessToken } from "@aimess/auth-jwt";
 
@@ -21,6 +23,7 @@ import { buildParticipantsKey, generateRoomId } from "../src/lib/room-id.js";
 
 const BASE = process.env.BASE ?? "http://localhost:3004";
 const SECRET = process.env.JWT_ACCESS_SECRET ?? "";
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const EXISTING_ROOM = process.argv[2] ?? "";
 
 let failed = 0;
@@ -64,83 +67,161 @@ async function api(
   return json.data;
 }
 
+/** Everything published to `user:<id>` while the probe runs, per user. */
+type Inbox = Map<string, Record<string, unknown>[]>;
+
 async function main(): Promise<void> {
   if (!SECRET) throw new Error("JWT_ACCESS_SECRET is required");
   const prisma = new PrismaClient();
+  const sub = new Redis(REDIS_URL);
+
   const A = randomUUID();
   const B = randomUUID();
-  const roomId = generateRoomId("prv");
+  const C = randomUUID();
   const [TA, TB] = [mint(A), mint(B)];
+  const roomAB = generateRoomId("prv");
+  const roomAC = generateRoomId("prv");
+
+  const inbox: Inbox = new Map([
+    [A, []],
+    [B, []],
+  ]);
+  sub.on("message", (channel: string, raw: string) => {
+    const userId = channel.slice("user:".length);
+    const parsed = JSON.parse(raw) as { event: string; data: unknown };
+    if (parsed.event !== "conv:auto_delete:updated") return;
+    inbox.get(userId)?.push(parsed.data as Record<string, unknown>);
+  });
+  await sub.subscribe(`user:${A}`, `user:${B}`);
+
+  /** Wait for the fan-out to land — it is published after the HTTP reply. */
+  const settle = () => new Promise((r) => setTimeout(r, 400));
+  const drain = () => {
+    const snapshot = {
+      A: [...(inbox.get(A) ?? [])],
+      B: [...(inbox.get(B) ?? [])],
+    };
+    inbox.set(A, []);
+    inbox.set(B, []);
+    return snapshot;
+  };
 
   try {
-    await prisma.privateRoom.create({
-      data: {
-        roomId,
-        participants: [A, B].sort(),
-        participantsKey: buildParticipantsKey(A, B),
-      },
-    });
+    for (const [roomId, peer] of [
+      [roomAB, B],
+      [roomAC, C],
+    ] as const) {
+      await prisma.privateRoom.create({
+        data: {
+          roomId,
+          participants: [A, peer].sort(),
+          participantsKey: buildParticipantsKey(A, peer),
+        },
+      });
+    }
 
-    // A brand-new conversation: Off on both sides, nothing inherited.
-    check("new room: A = OFF", (await api(TA, roomId, "GET")).mode === "OFF");
-    check("new room: B = OFF", (await api(TB, roomId, "GET")).mode === "OFF");
+    // A brand-new conversation: Off for both, nothing inherited or initialized.
+    check("new room: A = OFF", (await api(TA, roomAB, "GET")).mode === "OFF");
+    check("new room: B = OFF", (await api(TB, roomAB, "GET")).mode === "OFF");
+    drain();
 
-    // A turns it on. B must not move.
-    await api(TA, roomId, "PUT", { mode: "TIMER", ttlSeconds: 604800 });
-    const a1 = await api(TA, roomId, "GET");
-    const b1 = await api(TB, roomId, "GET");
-    check("A set 7d: A = 604800", a1.ttlSeconds === 604800, JSON.stringify(a1));
-    check("A set 7d: B still OFF", b1.mode === "OFF", JSON.stringify(b1));
-    check("payload carries no peer block", b1.peer === undefined);
-
-    // B picks its own, different timer. A must not move.
-    await api(TB, roomId, "PUT", { mode: "TIMER", ttlSeconds: 86400 });
-    const a2 = await api(TA, roomId, "GET");
-    const b2 = await api(TB, roomId, "GET");
-    check("B set 24h: A still 604800", a2.ttlSeconds === 604800);
-    check("B set 24h: B = 86400", b2.ttlSeconds === 86400);
-
-    // A body-supplied userId must never write the other participant's entry.
-    await api(TA, roomId, "PUT", {
-      mode: "TIMER",
-      ttlSeconds: 3600,
-      userId: B,
-    });
-    const a3 = await api(TA, roomId, "GET");
-    const b3 = await api(TB, roomId, "GET");
-    check("spoofed userId: A changed to 3600", a3.ttlSeconds === 3600);
-    check("spoofed userId: B untouched at 86400", b3.ttlSeconds === 86400);
-
-    // A turns it back off; B keeps its own timer.
-    await api(TA, roomId, "PUT", { mode: "OFF" });
-    check("A off: A = OFF", (await api(TA, roomId, "GET")).mode === "OFF");
+    // Off -> 7 Days, set by A.
+    await api(TA, roomAB, "PUT", { mode: "TIMER", ttlSeconds: 604800 });
+    await settle();
+    let events = drain();
     check(
-      "A off: B still 86400",
-      (await api(TB, roomId, "GET")).ttlSeconds === 86400
+      "A sets 7d: A notified",
+      events.A.length === 1,
+      JSON.stringify(events.A)
+    );
+    check(
+      "A sets 7d: B notified",
+      events.B.length === 1,
+      JSON.stringify(events.B)
+    );
+    check(
+      "A sets 7d: both got the same payload",
+      JSON.stringify(events.A[0]) === JSON.stringify(events.B[0])
+    );
+    check("A sets 7d: event carries roomId", events.B[0]?.roomId === roomAB);
+    check("A sets 7d: event carries ttl", events.B[0]?.ttlSeconds === 604800);
+    check(
+      "A sets 7d: B READS 7d",
+      (await api(TB, roomAB, "GET")).ttlSeconds === 604800
+    );
+
+    // The other direction: B changes it, A must be told.
+    await api(TB, roomAB, "PUT", { mode: "TIMER", ttlSeconds: 86400 });
+    await settle();
+    events = drain();
+    check("B sets 24h: A notified", events.A[0]?.ttlSeconds === 86400);
+    check("B sets 24h: setBy is B", events.A[0]?.setBy === B);
+    check(
+      "B sets 24h: A READS 24h",
+      (await api(TA, roomAB, "GET")).ttlSeconds === 86400
+    );
+
+    // 7 Days -> Off.
+    await api(TA, roomAB, "PUT", { mode: "OFF" });
+    await settle();
+    events = drain();
+    check("A sets Off: B notified", events.B[0]?.mode === "OFF");
+    check("A sets Off: isEnabled false", events.B[0]?.isEnabled === false);
+    check(
+      "A sets Off: B READS Off",
+      (await api(TB, roomAB, "GET")).mode === "OFF"
+    );
+
+    // A repeat of the value in force must not wake either client.
+    await api(TA, roomAB, "PUT", { mode: "OFF" });
+    await settle();
+    events = drain();
+    check(
+      "no-op change publishes nothing",
+      events.A.length === 0 && events.B.length === 0
+    );
+
+    // Scoped: an unrelated conversation of the same user is untouched.
+    await api(TA, roomAB, "PUT", { mode: "TIMER", ttlSeconds: 604800 });
+    await settle();
+    drain();
+    check(
+      "unrelated room A-C still OFF",
+      (await api(mint(A), roomAC, "GET")).mode === "OFF"
     );
 
     const stored = await prisma.privateRoom.findUnique({
-      where: { roomId },
-      select: { autoDeleteBy: true },
+      where: { roomId: roomAB },
+      select: { autoDelete: true, autoDeleteBy: true },
     });
-    console.log(`stored map: ${JSON.stringify(stored?.autoDeleteBy)}`);
+    check(
+      "stored as ONE conversation record",
+      JSON.stringify(stored?.autoDeleteBy) === "{}",
+      JSON.stringify(stored)
+    );
 
     if (EXISTING_ROOM) {
       const room = await prisma.privateRoom.findUnique({
         where: { roomId: EXISTING_ROOM },
-        select: { participants: true, autoDeleteBy: true },
+        select: { participants: true, autoDelete: true, autoDeleteBy: true },
       });
-      const viewer = room?.participants?.[0] ?? "";
-      const wire = await api(mint(viewer), EXISTING_ROOM, "GET");
+      const wires = await Promise.all(
+        (room?.participants ?? []).map((id) =>
+          api(mint(id), EXISTING_ROOM, "GET")
+        )
+      );
       check(
-        `${EXISTING_ROOM}: unconfigured chat reports OFF`,
-        wire.mode === "OFF",
-        `map=${JSON.stringify(room?.autoDeleteBy)} wire=${JSON.stringify(wire)}`
+        `${EXISTING_ROOM}: both participants read the same timer`,
+        wires.length === 2 && wires[0].mode === wires[1].mode,
+        `stored=${JSON.stringify(room?.autoDelete)} wires=${JSON.stringify(wires)}`
       );
     }
   } finally {
-    await prisma.privateMessage.deleteMany({ where: { roomId } });
-    await prisma.privateRoom.deleteMany({ where: { roomId } });
+    await sub.quit();
+    for (const roomId of [roomAB, roomAC]) {
+      await prisma.privateMessage.deleteMany({ where: { roomId } });
+      await prisma.privateRoom.deleteMany({ where: { roomId } });
+    }
     await prisma.$disconnect();
   }
 

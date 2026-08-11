@@ -1,15 +1,16 @@
 /**
  * Auto-delete (disappearing messages) — pure resolution logic for PRIVATE rooms.
  *
- * The setting is keyed by (conversation, user): it lives in the per-user
- * `PrivateRoom.autoDeleteBy` JSON map, same shape as `mutedBy`/`archivedBy`.
+ * ONE timer belongs to the CONVERSATION, not to a participant (WhatsApp's
+ * model): either side may change it, both sides' menus then show it, and every
+ * new message from either side follows it. It lives in `PrivateRoom.autoDelete`
+ * — absent means Off, so a brand-new conversation starts Off with nothing to
+ * initialize and nothing inherited from either user's other chats or account.
  *
- * The two participants' timers are fully INDEPENDENT. A message is stamped with
- * its SENDER's own setting for this chat and nothing else — no fallback to the
- * peer's timer, no fallback to an account-wide default. One user turning
- * disappearing messages on must never change what the other's menu shows or
- * what happens to the other's messages, and a brand-new conversation therefore
- * starts Off for both sides without anything having to initialize it.
+ * `PrivateRoom.autoDeleteBy` is the LEGACY per-user map from when each side had
+ * its own timer. It is read-only now: {@link readRoomAutoDelete} falls back to
+ * its most recently set entry so rooms configured before the change keep their
+ * timer, and the first write through the new path replaces it.
  *
  * Nothing here touches the DB or the clock beyond the timestamp it is handed —
  * kept pure so both the send path and the "timer changed mid-conversation"
@@ -47,6 +48,8 @@ export interface AutoDeleteSetting {
   ttlSeconds: number | null;
   /** ISO-8601, "" when never configured. */
   setAt: string;
+  /** Who last changed it; "" when never configured or for a legacy row. */
+  setBy?: string;
 }
 
 export const AUTO_DELETE_OFF: AutoDeleteSetting = {
@@ -65,6 +68,7 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
       mode: "OFF",
       ttlSeconds: null,
       setAt: typeof r.setAt === "string" ? r.setAt : "",
+      setBy: typeof r.setBy === "string" ? r.setBy : "",
     };
   const ttl = Number(r.ttlSeconds);
   return {
@@ -72,6 +76,7 @@ function coerceSetting(raw: unknown): AutoDeleteSetting {
     ttlSeconds:
       mode === "TIMER" && Number.isFinite(ttl) && ttl > 0 ? ttl : null,
     setAt: typeof r.setAt === "string" ? r.setAt : "",
+    setBy: typeof r.setBy === "string" ? r.setBy : "",
   };
 }
 
@@ -95,7 +100,7 @@ export function parseAutoDeleteMap(
   return out;
 }
 
-/** One user's own setting (OFF when unset — the default for every new chat). */
+/** One entry of the LEGACY per-user map (OFF when unset). */
 export function readAutoDeleteSetting(
   map: Record<string, AutoDeleteSetting>,
   userId: string
@@ -104,20 +109,28 @@ export function readAutoDeleteSetting(
 }
 
 /**
- * The timer that applies to a message SENT BY `senderId` — that sender's own
- * setting for this chat, full stop.
+ * THE timer for a conversation — the single value every message in it follows,
+ * whoever sent it, and the single value both participants' menus show.
  *
- * Deliberately a one-line alias rather than a resolution chain: it used to fall
- * back to the peer's timer and then to the sender's account-wide default, which
- * made one participant's choice silently govern the other's messages and gave a
- * brand-new conversation an inherited timer nobody picked. Kept as its own
- * named function because the send path and the re-stamp must never drift apart.
+ * `autoDelete` is authoritative. A room that predates it falls back to the most
+ * recently set entry of the legacy per-user map, so a chat someone had already
+ * configured does not silently turn itself off on deploy; ties and empty maps
+ * resolve to Off, which is also the correct state for a brand-new room.
  */
-export function resolveEffectiveAutoDelete(
-  map: Record<string, AutoDeleteSetting>,
-  senderId: string
-): AutoDeleteSetting {
-  return readAutoDeleteSetting(map, senderId);
+export function readRoomAutoDelete(room: {
+  autoDelete?: unknown;
+  autoDeleteBy?: unknown;
+}): AutoDeleteSetting {
+  if (room.autoDelete) return coerceSetting(room.autoDelete);
+
+  let newest = AUTO_DELETE_OFF;
+  for (const [userId, setting] of Object.entries(
+    parseAutoDeleteMap(room.autoDeleteBy)
+  )) {
+    if (setting.setAt > newest.setAt)
+      newest = { ...setting, setBy: setting.setBy || userId };
+  }
+  return newest;
 }
 
 export interface AutoDeleteStamp {
@@ -182,26 +195,26 @@ export function formatAutoDeleteDuration(
 /**
  * The wire block returned by the REST settings endpoints and the socket event.
  *
- * ONE user's view of ONE chat. It carries no `peer` block: the peer's timer no
- * longer affects this user's messages, so shipping it would only leak the other
- * participant's private preference and invite a client to render it as this
- * user's own state — which is exactly how "A set 7 days" started showing up in
- * B's menu. `self` is kept alongside the flat fields for older clients.
+ * One conversation, one timer — the same payload for both participants, which is
+ * what lets the socket event be published verbatim to each of them. `self` is
+ * kept as a mirror of the flat fields so clients written against the older
+ * per-user shape keep rendering the right thing.
  */
 export function buildAutoDeleteWire(
-  map: Record<string, AutoDeleteSetting>,
-  userId: string
+  setting: AutoDeleteSetting
 ): Record<string, unknown> {
-  const mine = readAutoDeleteSetting(map, userId);
+  const setAt = setting.setAt ? new Date(setting.setAt).getTime() : 0;
   return {
-    mode: mine.mode,
-    ttlSeconds: mine.ttlSeconds,
-    isEnabled: mine.mode !== "OFF",
-    label: formatAutoDeleteDuration(mine.ttlSeconds, currentLocale()),
+    mode: setting.mode,
+    ttlSeconds: setting.ttlSeconds,
+    isEnabled: setting.mode !== "OFF",
+    label: formatAutoDeleteDuration(setting.ttlSeconds, currentLocale()),
+    setAt,
+    setBy: setting.setBy ?? "",
     self: {
-      mode: mine.mode,
-      ttlSeconds: mine.ttlSeconds,
-      setAt: mine.setAt ? new Date(mine.setAt).getTime() : 0,
+      mode: setting.mode,
+      ttlSeconds: setting.ttlSeconds,
+      setAt,
     },
   };
 }

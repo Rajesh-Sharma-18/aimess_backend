@@ -881,33 +881,36 @@ export class PrivateRoomRepository {
    * never-configured. Everything downstream reads through
    * `readAutoDeleteSetting`, which reports OFF for both.
    */
+  /**
+   * Write the CONVERSATION's one auto-delete timer. `userId` is recorded as who
+   * changed it (for the system message and the wire), not as an owner — either
+   * participant may set it and both then follow it.
+   *
+   * The legacy per-user `autoDeleteBy` map is cleared in the same update, so a
+   * room can never be read through both models at once.
+   */
   async setAutoDelete(
     roomId: string,
     userId: string,
-    setting: { mode: string; ttlSeconds: number | null } | null
+    setting: { mode: string; ttlSeconds: number | null }
   ): Promise<PrivateRoom | null> {
     const existing = await this.prisma.privateRoom.findUnique({
       where: { roomId },
+      select: { roomId: true },
     });
     if (!existing) return null;
 
-    const autoDeleteBy = (existing.autoDeleteBy ?? {}) as Record<
-      string,
-      unknown
-    >;
-    if (!setting) {
-      delete autoDeleteBy[userId];
-    } else {
-      autoDeleteBy[userId] = {
-        mode: setting.mode,
-        ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
-        setAt: new Date().toISOString(),
-      };
-    }
-
     return this.prisma.privateRoom.update({
       where: { roomId },
-      data: { autoDeleteBy: autoDeleteBy as unknown as Prisma.InputJsonValue },
+      data: {
+        autoDelete: {
+          mode: setting.mode,
+          ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
+          setAt: new Date().toISOString(),
+          setBy: userId,
+        } as unknown as Prisma.InputJsonValue,
+        autoDeleteBy: {} as unknown as Prisma.InputJsonValue,
+      },
     });
   }
 

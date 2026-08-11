@@ -6,8 +6,7 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   buildAutoDeleteWire,
   formatAutoDeleteDuration,
-  parseAutoDeleteMap,
-  readAutoDeleteSetting,
+  readRoomAutoDelete,
   validateAutoDeleteInput,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
@@ -57,19 +56,19 @@ export class AutoDeleteService {
     return { room, peerId };
   }
 
-  /** The CALLER's own timer for this chat. The peer's is none of their business. */
+  /** This conversation's timer — the same answer for either participant. */
   async getSettings(
     roomId: string,
     userId: string
   ): Promise<Record<string, unknown>> {
     const { room } = await this.loadRoom(roomId, userId);
-    return buildAutoDeleteWire(parseAutoDeleteMap(room.autoDeleteBy), userId);
+    return buildAutoDeleteWire(readRoomAutoDelete(room));
   }
 
   /**
-   * Set/change/clear the caller's own timer. `userId` comes from the request's
-   * auth context, never from the body — one participant can never write the
-   * other's entry in the map, and the peer's setting is left untouched here.
+   * Set/change/clear THE conversation's timer. Either participant may do it and
+   * both then follow it; `userId` comes from the request's auth context (never
+   * the body) and is recorded only as who made the change.
    */
   async updateSetting(
     roomId: string,
@@ -83,32 +82,31 @@ export class AutoDeleteService {
     const ttlSeconds = mode === "TIMER" ? Number(input.ttlSeconds) : null;
 
     const { room, peerId } = await this.loadRoom(roomId, userId);
-    const mapBefore = parseAutoDeleteMap(room.autoDeleteBy);
-    const before = readAutoDeleteSetting(mapBefore, userId);
+    const before = readRoomAutoDelete(room);
     // No-op guard: a repeated tap on the same option must not spam the chat with
-    // an identical system message or re-stamp anything. "Off on a chat I never
-    // configured" is a no-op again now that nothing else could have armed it.
+    // an identical system message, re-stamp anything, or wake the other client.
     if (before.mode === mode && (before.ttlSeconds ?? null) === ttlSeconds) {
-      return buildAutoDeleteWire(mapBefore, userId);
+      return buildAutoDeleteWire(before);
     }
 
     const updated = await this.roomRepo.setAutoDelete(roomId, userId, {
       mode,
       ttlSeconds,
     });
-    const map = parseAutoDeleteMap(updated?.autoDeleteBy ?? {});
+    if (!updated) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const after = readRoomAutoDelete(updated);
 
     // §8.8 — a timer CHANGE (longer or shorter) applies to messages already
     // counting down. Turning it OFF does NOT: §7 is explicit that messages that
     // already have a timer keep deleting on schedule.
     if (mode !== "OFF") {
-      // Only the caller's OWN messages. The peer's messages follow the peer's
-      // own setting — including the peer's Off — so touching them here would be
-      // one user's change rewriting the other user's state.
+      // BOTH participants' pending messages: one timer governs the whole
+      // conversation, so leaving the peer's messages on the old deadline would
+      // split the chat into two schedules again.
       await this.messageRepo
         .restampPendingAutoDeletes({
           roomId,
-          senderIds: [userId],
+          senderIds: [userId, peerId].filter(Boolean),
           ttlSeconds,
           afterView: mode === "AFTER_VIEWING",
         })
@@ -119,7 +117,7 @@ export class AutoDeleteService {
         });
     }
 
-    const wire = buildAutoDeleteWire(map, userId);
+    const wire = buildAutoDeleteWire(after);
 
     // §2 / §7 — both sides see a system message in the chat when the setting
     // changes. Best-effort inside the system-message service; never throws.
@@ -135,25 +133,24 @@ export class AutoDeleteService {
       },
     });
 
-    // §8.4 — the SETTER's other devices update the gear-menu state without a
-    // refresh. Only theirs: the peer's own timer did not change, and sending
-    // them this payload is what made one user's choice render as the other's.
-    // The peer still learns about it from the system message above.
-    void this.redis
-      .publish(
-        `user:${userId}`,
-        JSON.stringify({
-          event: "conv:auto_delete:updated",
-          data: {
-            roomId,
-            conversationId: roomId,
-            type: "PRIVATE",
-            actorId: userId,
-            ...wire,
-          },
-        })
-      )
-      .catch(() => {});
+    // §8.4 — every device of BOTH participants updates without a refresh. The
+    // timer belongs to the conversation, so both sides get the SAME payload,
+    // and it is published only AFTER the write above succeeded. `user:<id>` is
+    // per-user and reaches every session that user has open, whatever screen
+    // they are on; nobody outside this pair is subscribed to either channel.
+    const payload = JSON.stringify({
+      event: "conv:auto_delete:updated",
+      data: {
+        roomId,
+        conversationId: roomId,
+        type: "PRIVATE",
+        actorId: userId,
+        ...wire,
+      },
+    });
+    for (const recipientId of [userId, peerId].filter(Boolean)) {
+      void this.redis.publish(`user:${recipientId}`, payload).catch(() => {});
+    }
 
     return wire;
   }
