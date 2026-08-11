@@ -104,12 +104,20 @@ export const bulkLeaveConversationsSchema = withSnakeAliases(
      *  - "DELETE" — the sidebar's "Delete Conversation": clears the caller's own
      *    history and leaves membership intact, identical to
      *    `DELETE /chat/groups/rooms/{roomId}`.
+     *  - "LEAVE_AND_DELETE" — both, in that order: the sidebar's "Delete
+     *    Conversation" on a group the caller is still ACTIVE in. WhatsApp
+     *    semantics — you leave AND the row disappears, rather than lingering as
+     *    the read-only LEFT row a plain "LEAVE" leaves behind. Idempotent: a
+     *    caller who is already not ACTIVE still gets their conversation
+     *    cleared, and emits no second MEMBER_LEFT.
      *
      * PRIVATE rows ignore this: a 1-to-1 room has no membership to leave, so the
      * only self-removal it has is delete-for-me (`DELETE /chat/private/rooms/{roomId}`),
      * which is what they always run.
      */
-    groupAction: z.enum(["LEAVE", "DELETE"]).default("LEAVE"),
+    groupAction: z
+      .enum(["LEAVE", "DELETE", "LEAVE_AND_DELETE"])
+      .default("LEAVE"),
   }),
   { room_ids: "roomIds", group_action: "groupAction" }
 );

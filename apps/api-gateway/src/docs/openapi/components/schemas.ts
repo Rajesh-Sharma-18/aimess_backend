@@ -11162,7 +11162,7 @@ export const openApiSchemas = {
       roomIds: { $ref: "#/components/schemas/ChatBulkConversationIds" },
       groupAction: {
         type: "string",
-        enum: ["LEAVE", "DELETE"],
+        enum: ["LEAVE", "DELETE", "LEAVE_AND_DELETE"],
         default: "LEAVE",
         description:
           "What to do with the GROUP rows in `roomIds` (PRIVATE rows ignore " +
@@ -11172,11 +11172,19 @@ export const openApiSchemas = {
           "`POST /chat/group-members/{roomId}/leave`: MEMBER_LEFT system " +
           "message, member count decrement, `group:removed` to the leaver and " +
           "`group:member:removed` to the remaining roster. The group does " +
-          "**not** come back on reload.\n" +
+          "**not** come back on reload, but the row stays in the caller's " +
+          "list read-only.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
           "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
-          "arrives.",
+          "arrives.\n" +
+          "- `LEAVE_AND_DELETE` — both, in that order. WhatsApp semantics for " +
+          '"Delete Conversation" on a group the caller is still ACTIVE in: ' +
+          "membership ends AND the row disappears. Idempotent — a caller who " +
+          "is already not ACTIVE still gets the clear, and no second " +
+          "MEMBER_LEFT or `group:removed` is emitted. Reports `LEFT`. Only " +
+          "`OWNER_CANNOT_LEAVE` still fails: the owner must transfer " +
+          "ownership or disband.",
       },
     },
   },

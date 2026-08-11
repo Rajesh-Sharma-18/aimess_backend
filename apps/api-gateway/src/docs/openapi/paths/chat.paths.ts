@@ -3604,7 +3604,12 @@ const conversationsBulkLeave = {
       "membership for real (`group:removed` to the leaver, " +
       "`group:member:removed` + MEMBER_LEFT system message to the rest, " +
       "member count decremented — the group does not return on reload), " +
-      "`DELETE` only clears the caller's history and keeps membership.\n\n" +
+      "`DELETE` only clears the caller's history and keeps membership, and " +
+      "`LEAVE_AND_DELETE` does both so the row also disappears from the " +
+      "caller's list — the sidebar's \"Delete Conversation\" on a group the " +
+      "caller is still ACTIVE in. `LEAVE_AND_DELETE` is idempotent: a caller " +
+      "who is already not ACTIVE still gets the clear and emits no second " +
+      "leave.\n\n" +
       "A group ADMIN cannot leave while other members remain — that item " +
       "fails with `OWNER_CANNOT_LEAVE` (mirrors community's " +
       "`ADMIN_CANNOT_LEAVE`); transfer ownership or disband first.",
