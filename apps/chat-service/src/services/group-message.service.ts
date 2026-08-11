@@ -12,11 +12,15 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
-import { personalizeGroupSystemMessageForViewer } from "@aimess/constants";
+import {
+  currentLocale,
+  personalizeGroupSystemMessageForViewer,
+} from "@aimess/constants";
 import { buildReactionTargetPreview } from "./message-preview.service.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   buildReactionGroups,
@@ -318,6 +322,9 @@ export class GroupMessageService {
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       });
     } catch (err: unknown) {
       logger.warn(
@@ -713,7 +720,7 @@ export class GroupMessageService {
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
 
-  /** Raw message lookup — the V2 delete route resolves its room from the message. */
+  /** Raw message lookup — the path-param delete route resolves its room from the message. */
   findMessageById(messageId: string): Promise<GroupMessage | null> {
     return this.messageRepo.findById(messageId);
   }
@@ -928,6 +935,10 @@ export class GroupMessageService {
     senderName: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     const [room, prev] = await Promise.all([
       this.roomRepo.findByRoomId(roomId),
@@ -949,6 +960,9 @@ export class GroupMessageService {
         content: { text: prevContent.text ?? "" },
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -958,6 +972,9 @@ export class GroupMessageService {
         senderName: prev.senderName ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -970,6 +987,9 @@ export class GroupMessageService {
       senderName: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1040,6 +1060,10 @@ export class GroupMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findByRoomId(roomId);
@@ -1069,6 +1093,9 @@ export class GroupMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -1080,6 +1107,9 @@ export class GroupMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -1397,7 +1427,7 @@ export class GroupMessageService {
   private readonly REVISION_RESET_HORIZON = 10_000;
 
   /**
-   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/v2/chat/group/rooms/:roomId/changes`.
+   * ZERO-LOSS CHANGES FEED (REST) — `GET /api/chat/groups/:roomId/changes`.
    * Identical contract to the private equivalent; see it for the full rationale.
    *
    * NOTE for clients: per-viewer filtering happens AFTER the page slice, so
@@ -1645,6 +1675,9 @@ export class GroupMessageService {
         messageType: message.messageType,
         content: { text: (messageContent.text as string) || "" },
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -2115,6 +2148,10 @@ export class GroupMessageService {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }
 
+      // Normalized tombstone (one shape across private/group/community) — the
+      // raw isDeleted/deletedAt/deletedType columns stay on the wire untouched.
+      Object.assign(wire, tombstoneWireFields(message));
+
       // Stamp resolved download URLs onto attachment files (content.files[])
       // and the sticker sub-object (content.sticker) — the latter lives
       // outside `files[]` and is otherwise never resolve-on-read.
@@ -2192,7 +2229,8 @@ export class GroupMessageService {
           message.systemEvent,
           systemData,
           thirdPersonText,
-          viewerUserId
+          viewerUserId,
+          currentLocale()
         );
         if (personalized !== thirdPersonText && content) {
           wire.content = { ...content, text: personalized };

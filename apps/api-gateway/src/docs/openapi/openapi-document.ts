@@ -1,6 +1,5 @@
 import { isApiVersion, type ApiVersion } from "../../versioning/types.js";
 import { v1Components, v1Paths, v1Tags } from "./versions/v1/index.js";
-import { v2Components, v2Paths, v2Tags } from "./versions/v2/index.js";
 
 export function normalizeGatewayBaseUrl(url: string): string {
   return url
@@ -31,11 +30,6 @@ const versionSpecs: Record<ApiVersion, VersionSpec> = {
     paths: v1Paths,
     tags: v1Tags,
     components: v1Components,
-  },
-  v2: {
-    paths: v2Paths,
-    tags: v2Tags,
-    components: v2Components,
   },
 };
 

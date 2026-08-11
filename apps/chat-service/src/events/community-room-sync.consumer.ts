@@ -668,6 +668,8 @@ export class CommunityRoomSyncConsumer {
           systemEvent: "COMMUNITY_INVITE",
           systemData,
           createdAt,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
         },
         receiverId: recipientId,
       })

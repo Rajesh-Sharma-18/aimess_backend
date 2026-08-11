@@ -12,6 +12,7 @@ import {
   muteRoomSchema,
   autoDeleteSchema,
   reportMessageSchema,
+  reportPrivateUserSchema,
   sendPrivateMessageBodySchema,
   markReadBodySchema,
   reactionBodySchema,
@@ -22,6 +23,7 @@ import {
   messageSearchQuerySchema,
   mediaListQuerySchema,
   privateConversationListQuerySchema,
+  roomChangesQuerySchema,
 } from "../validators/query.validator.js";
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
@@ -76,6 +78,16 @@ export function createPrivateMessageRoutes(
     roomCtrl.muteRoom
   );
   router.post("/rooms/:roomId/unmute", authenticate, roomCtrl.unmuteRoom);
+
+  // Report the peer of this conversation (user-level, not message-level) —
+  // private-chat counterpart of POST /chat/group-members/report.
+  router.post(
+    "/rooms/:roomId/report",
+    authenticate,
+    sendLimit,
+    validateBody(reportPrivateUserSchema),
+    roomCtrl.reportUser
+  );
 
   // Automatically Delete Messages (disappearing messages) — per-user setting
   router.get(
@@ -133,6 +145,16 @@ export function createPrivateMessageRoutes(
     messageCtrl.getMessages
   );
 
+  // Zero-loss changes feed — every message whose room CHANGE `revision >
+  // since_revision` (inserts AND edits/deletes/reactions), current state. Same
+  // contract as the group and community equivalents.
+  router.get(
+    "/rooms/:roomId/changes",
+    authenticate,
+    validateQuery(roomChangesQuerySchema),
+    messageCtrl.getChanges
+  );
+
   // Shared media / docs listing for a room
   router.get(
     "/rooms/:roomId/media",
@@ -166,6 +188,18 @@ export function createPrivateMessageRoutes(
     sendLimit,
     validateQuery(deleteMessageQuerySchema),
     messageCtrl.deleteMessage
+  );
+
+  // Single-write SET reaction. The room is resolved FROM the message, so an
+  // offline queue can drain a reaction with only (messageId, emoji) and no
+  // per-conversation-type branch. The room-scoped add/remove toggle pair below
+  // stays available for clients that already know the room.
+  router.post(
+    "/messages/:messageId/react",
+    authenticate,
+    sendLimit,
+    validateBody(reactionBodySchema),
+    messageCtrl.setReaction
   );
 
   // Get pins in a room

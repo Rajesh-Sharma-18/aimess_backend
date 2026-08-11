@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
 import {
   AdminUserEvents,
   AuthEvents,
@@ -17,9 +18,11 @@ import {
 } from "./notification-eligibility.service.js";
 import {
   getNotificationSettings,
+  getUserLocale,
   isDeliveryAllowed,
   type NotificationCategory,
 } from "./notification-settings.service.js";
+import type { LocalizedCopy } from "../lib/notification-copy.js";
 
 type CommunityPrefField =
   | "chatEnabled"
@@ -109,8 +112,18 @@ export interface PushInput {
   category: NotificationCategory;
   /** Domain event type, persisted on the inbox row (e.g. community.member_added). */
   type: string;
-  title: string;
-  body: string;
+  /**
+   * PREFERRED. A copy builder from `notification-copy.ts`, invoked here once the
+   * RECIPIENT's language is known. Consumers pass this instead of pre-rendered
+   * strings so a single event fanned out to users with different languages
+   * produces a different sentence per user — the actor's language never leaks
+   * into anyone else's notification.
+   */
+  copy?: LocalizedCopy;
+  /** Pre-rendered title. Only for text that is data, not copy (a person's name). */
+  title?: string;
+  /** Pre-rendered body. Prefer `copy` — this cannot be localized. */
+  body?: string;
   /**
    * Notification-Center heading. `null` = render the row with NO heading (the
    * body is already a self-describing sentence). `undefined` = reuse `title`.
@@ -121,6 +134,12 @@ export interface PushInput {
   actorId?: string;
   /** Extra string→string context (entity ids, roster, etc.). */
   data?: Record<string, string>;
+  /**
+   * Additional `data` entries that are USER-FACING TEXT (e.g. the friend-request
+   * card's `resolution` line), so they must be rendered in the recipient's
+   * language like `copy`. Merged over `data`.
+   */
+  localizedData?: (locale: SupportedLocale) => Record<string, string>;
 
   /** Canonical deep-link for navigation on notification click. */
   deepLink?: string;
@@ -160,7 +179,7 @@ export interface PushInput {
    * fetched settings, body is replaced with this value (or "New message").
    * The title is never modified.
    */
-  showPreviewOverride?: string;
+  showPreviewOverride?: string | ((locale: SupportedLocale) => string);
   /**
    * When true, skip the `CreateNotification` inbox write (and the
    * `notification:new`/`notification:count_update` `/notify` socket events
@@ -222,9 +241,8 @@ export async function pushToUser(input: PushInput): Promise<void> {
     userId,
     category,
     type,
-    title,
     actorId,
-    data,
+    data: rawData,
     deepLink,
     collapseKey,
     apnsThreadId,
@@ -239,7 +257,19 @@ export async function pushToUser(input: PushInput): Promise<void> {
     apnsCategory,
   } = input;
 
-  let body = input.body;
+  // Resolve the RECIPIENT's language before any copy is materialized. Cached in
+  // Redis alongside their notification settings, so this is the same round-trip
+  // the settings gate below already pays.
+  const locale = await getUserLocale(userId).catch(() => DEFAULT_LOCALE);
+  const rendered = input.copy?.(locale);
+  const title = rendered?.title ?? input.title ?? "";
+  const inboxTitleOverride =
+    input.inboxTitle !== undefined ? input.inboxTitle : rendered?.inboxTitle;
+
+  let body = rendered?.body ?? input.body ?? "";
+  const data = input.localizedData
+    ? { ...(rawData ?? {}), ...input.localizedData(locale) }
+    : rawData;
 
   let allowed = true;
   // NotificationSettings from gRPC does not yet expose showPreview at the
@@ -318,10 +348,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
   // Apply preview masking — title is intentionally left unchanged.
   if (!showPreview) {
-    body = showPreviewOverride ?? "New message";
-    // An inline image is preview content too; masking the body but shipping the
-    // picture would defeat the setting entirely.
-    if (data && "previewImageUrl" in data) delete data.previewImageUrl;
+    body =
+      typeof showPreviewOverride === "function"
+        ? showPreviewOverride(locale)
+        : (showPreviewOverride ?? t("NOTIF_CHAT_NEW_MESSAGE", locale));
   }
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
@@ -330,7 +360,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // important-events-only, everything else stays FCM+realtime-only.
   if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
-      const { inboxTitle } = input;
+      const inboxTitle = inboxTitleOverride;
       await chatNotificationClient.createNotification({
         userId,
         actorId,

@@ -24,6 +24,18 @@ interface BumpPreview {
   contentType: string;
   text: string;
   /**
+   * Offline-first identity/freshness quartet for the previewed message (see
+   * lib/list-row-identity.ts). ADDITIVE and optional: a caller that omits them
+   * publishes exactly the payload it always did, and the publisher fills the
+   * documented defaults (null / 0) so the shape stays single and stable.
+   */
+  clientMessageId?: string | null;
+  seq?: number;
+  revision?: number;
+  /** epoch ms — the previewed message's own createdAt (== the row's
+   *  `lastMessageAt`, nested here so `lastMessage` is self-describing). */
+  createdAt?: number;
+  /**
    * COMMUNITY_INVITATION cards only — mirrors the message's `systemAction`
    * (see `chat-message.serializer.ts`) so the inbox/list row can render an
    * "Invitation" chip and navigate straight to the community without a
@@ -98,6 +110,29 @@ interface PublishConvUpdatedParams {
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
 const EMPTY_BUMP_PREVIEW: BumpPreview = { contentType: "", text: "" };
+
+/**
+ * The ONE documented `lastMessage` shape both bumps emit. Every field is always
+ * present (defaults null/0/"") so a consumer never has to support several
+ * shapes — the exact complaint the offline-first clients raised. The caller's
+ * `senderId`/`senderName`/`lastMessageAt` are mirrored INTO the object as well
+ * as staying at the top level, so the existing top-level fields keep working
+ * byte-for-byte while `lastMessage` becomes self-describing.
+ */
+function bumpLastMessage(
+  preview: BumpPreview,
+  ctx: { senderId: string; senderName: string; createdAt: number }
+): Record<string, unknown> {
+  return {
+    ...preview,
+    clientMessageId: preview.clientMessageId ?? null,
+    seq: preview.seq ?? 0,
+    revision: preview.revision ?? 0,
+    senderId: ctx.senderId,
+    senderName: ctx.senderName,
+    createdAt: preview.createdAt ?? ctx.createdAt,
+  };
+}
 
 /**
  * Fire-and-forget `conv:updated` bump. The recipient list may be supplied
@@ -247,9 +282,19 @@ export async function publishConvUpdated(
         String(lastMessage.contentType ?? "").toUpperCase() === "SYSTEM";
       const effectiveSenderId = isSystem ? "" : senderId;
       const effectiveSenderName = isSystem ? "" : senderName;
+      const absoluteUnread = p.unreadCountByRecipient?.[recipientId];
+      // `recipientId !== senderId` is the only "is this mine?" test available for
+      // a row with a real sender — but a call row is SENDER-LESS, so it holds for
+      // BOTH participants and the CALLER's own unanswered outgoing call raised an
+      // unread flag on their own inbox row. Where the authoritative per-recipient
+      // count is in hand, let it veto: a recipient the room says has zero unread
+      // never gets `unread: true`. It can only ever turn the flag off, so rows
+      // without absolute counts keep their existing behavior exactly.
       const unread =
         override === undefined
-          ? (p.countInUnread ?? !isSystem) && recipientId !== effectiveSenderId
+          ? (p.countInUnread ?? !isSystem) &&
+            recipientId !== effectiveSenderId &&
+            absoluteUnread !== 0
           : false;
       const isOffline = onlineByViewer
         ? !(onlineByViewer.get(recipientId) ?? false)
@@ -258,7 +303,6 @@ export async function publishConvUpdated(
       // every conv:updated caller (REST controllers, gRPC handlers, system
       // messages), see unread-summary-bridge.ts.
       if (unread) notifyUnreadChanged(recipientId);
-      const absoluteUnread = p.unreadCountByRecipient?.[recipientId];
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -267,7 +311,11 @@ export async function publishConvUpdated(
             type: p.type,
             roomId: p.roomId,
             lastMessageId,
-            lastMessage,
+            lastMessage: bumpLastMessage(lastMessage, {
+              senderId: effectiveSenderId,
+              senderName: effectiveSenderName,
+              createdAt: lastMessageAt,
+            }),
             lastMessageAt,
             senderId: effectiveSenderId,
             senderName: effectiveSenderName,
@@ -361,7 +409,14 @@ export async function publishCommunityUpdated(
               communityId: p.communityId,
               roomId: p.roomId,
               lastMessageId: override?.lastMessageId ?? "",
-              lastMessage: override?.preview ?? EMPTY_BUMP_PREVIEW,
+              lastMessage: bumpLastMessage(
+                override?.preview ?? EMPTY_BUMP_PREVIEW,
+                {
+                  senderId: override?.senderId ?? "",
+                  senderName: override?.senderName ?? "",
+                  createdAt: override?.lastMessageAt ?? p.lastMessageAt,
+                }
+              ),
               lastMessageAt: override?.lastMessageAt ?? p.lastMessageAt,
               senderId: override?.senderId ?? "",
               senderName: override?.senderName ?? "",
@@ -388,7 +443,11 @@ export async function publishCommunityUpdated(
             communityId: p.communityId,
             roomId: p.roomId,
             lastMessageId: p.lastMessageId,
-            lastMessage,
+            lastMessage: bumpLastMessage(lastMessage, {
+              senderId,
+              senderName,
+              createdAt: p.lastMessageAt,
+            }),
             lastMessageAt: p.lastMessageAt,
             senderId,
             senderName,

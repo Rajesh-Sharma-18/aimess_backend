@@ -86,6 +86,18 @@ model Community {
   lastActivityPreview  String?
   lastActivityUsername String?
   lastActivityUserId   String?
+  // Offline-first list identity of the message behind lastActivity*, denormalized
+  // from the same `community.activity` event as the preview. Without these the
+  // community list row carried a preview and a timestamp but no message identity,
+  // so a client could not tell the server's copy of its own optimistic message
+  // from a different message sent in the same millisecond, and could not order
+  // two rows that tie on `lastActivityAt`. Nullable/0 for pre-backfill rows and
+  // for lifecycle activity that has no client-originated message behind it.
+  lastActivityMessageId       String?
+  lastActivityClientMessageId String?
+  lastActivitySeq             Int?
+  /// UPPER-CASE canonical content type (TEXT/IMAGE/VOICE/…/SYSTEM).
+  lastActivityContentType     String?
   // First-person ("You …") variant of lastActivityPreview for self-referential
   // SYSTEM lines (role change / join). When the viewer's id === lastActivityUserId
   // the list renders this instead of the third-person preview. Opaque string —

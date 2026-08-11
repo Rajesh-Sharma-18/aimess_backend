@@ -290,6 +290,8 @@ export interface CallStatusResult {
 export interface AnswerCallParams {
   callId: string;
   calleeId: string;
+  /** The leg racing to answer. Only one leg per callee wins; the rest get CONFLICT. */
+  legId?: string;
 }
 export interface DeclineCallParams {
   callId: string;
@@ -298,6 +300,8 @@ export interface DeclineCallParams {
 export interface EndCallParams {
   callId: string;
   userId: string;
+  /** A callee leg that did not answer cannot end the call. */
+  legId?: string;
 }
 export interface EndCallResult {
   callId: string;
@@ -356,6 +360,8 @@ export interface MessagingClient {
   handleLiveKitRoomFinished(p: {
     roomName: string;
     eventType: string;
+    /** Participants left in the room; -1 when the webhook didn't report one. */
+    remainingParticipants?: number;
   }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
@@ -668,6 +674,7 @@ export function createMessagingClient(): MessagingClient {
       call<unknown, CallStatusResult>("answerCall", {
         callId: p.callId,
         calleeId: p.calleeId,
+        legId: p.legId ?? "",
       })
   );
 
@@ -684,6 +691,7 @@ export function createMessagingClient(): MessagingClient {
     call<unknown, EndCallResult>("endCall", {
       callId: p.callId,
       userId: p.userId,
+      legId: p.legId ?? "",
     })
   );
 
@@ -710,10 +718,15 @@ export function createMessagingClient(): MessagingClient {
 
   const handleLiveKitRoomFinishedBreaker = makeBreaker(
     "messaging.handleLiveKitRoomFinished",
-    (p: { roomName: string; eventType: string }) =>
+    (p: {
+      roomName: string;
+      eventType: string;
+      remainingParticipants?: number;
+    }) =>
       call<unknown, Record<string, never>>("handleLiveKitRoomFinished", {
         roomName: p.roomName,
         eventType: p.eventType,
+        remainingParticipants: p.remainingParticipants ?? -1,
       })
   );
 

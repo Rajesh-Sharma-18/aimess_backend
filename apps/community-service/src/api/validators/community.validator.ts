@@ -124,12 +124,15 @@ const discoverSearchSchema = z
  * first load) — it never falls back to public browse, so a user with no
  * memberships gets an empty page.
  *
- *   joined mode (default, or before_ts/after_ts present) — the caller's own communities,
- *     ordered by `lastActivityAt`, using **cursor (timestamp) pagination**.
- *     Timestamps are epoch milliseconds and mutually exclusive:
- *       before_ts → lastActivityAt <= before_ts (newest-first)
- *       after_ts  → lastActivityAt >= after_ts  (oldest-first)
- *     Pagination takes precedence over `q`/`categoryId` if both are sent.
+ *   joined mode (default, or `cursor` / `before_ts` / `after_ts` present) — the
+ *     caller's own communities, ordered by `lastActivityAt`.
+ *       cursor    → gap-safe compound `(lastActivityAt, id)` keyset, EXCLUSIVE.
+ *                   Preferred: same-millisecond communities are returned exactly
+ *                   once, so no client-side de-duplication is needed.
+ *       before_ts → lastActivityAt <= before_ts (newest-first), INCLUSIVE
+ *       after_ts  → lastActivityAt >= after_ts  (oldest-first), INCLUSIVE
+ *     Timestamps are epoch milliseconds and mutually exclusive. Pagination takes
+ *     precedence over `q`/`categoryId` if both are sent.
  *
  *   search mode (q, categoryId, or a non-"all" filter, and no pagination) —
  *     PUBLIC communities plus any PRIVATE community the caller is already an
@@ -141,9 +144,26 @@ const discoverSearchSchema = z
  */
 export const myCommunitiesQuerySchema = z
   .object({
-    // joined-mode cursor pagination
+    // joined-mode cursor pagination — legacy bare epoch-ms bounds (INCLUSIVE, so
+    // consecutive pages share the boundary row when `lastActivityAt` ties and the
+    // client has to de-duplicate by id). Kept for backward compatibility.
     before_ts: z.coerce.number().int().positive().optional(),
     after_ts: z.coerce.number().int().positive().optional(),
+    // Joined-mode compound keyset cursor — the gap-safe replacement for
+    // before_ts/after_ts. EITHER a plain epoch-ms ("1784104753870") OR the opaque
+    // compound token "<lastActivityAtMs>_<communityId>" handed back as
+    // `pagination.nextCursor`. Kept as a string so the id tiebreaker survives
+    // (coercing to a number would drop it). Boundaries are EXCLUSIVE, so
+    // same-millisecond communities are returned exactly once across pages.
+    //
+    // Precedence: `cursor` wins over before_ts/after_ts when both are sent.
+    cursor: z
+      .string()
+      .regex(
+        /^\d+(_[a-fA-F0-9]{24})?$/,
+        "cursor must be epoch-ms or the compound cursor '<ms>_<communityId>'"
+      )
+      .optional(),
     // search-mode filters + offset pagination
     q: discoverSearchSchema.optional(),
     categoryId: categoryIdSchema.optional(),
@@ -158,6 +178,25 @@ export const myCommunitiesQuerySchema = z
   });
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
+
+/**
+ * `GET /communities/activity?after_ts=<epoch-ms>` — the reconnect-replay
+ * channel for the community LIST.
+ *
+ * Same `lastActivityAt` keyset `GET /mine?after_ts=` uses (every accepted
+ * message bumps that column, so it IS the per-message activity clock), but the
+ * response carries only the activity blocks — no avatars, no member counts, no
+ * membership metadata. A client that dropped its socket replays the gap with
+ * one small call instead of refetching the whole list.
+ */
+export const communityActivityQuerySchema = z.object({
+  after_ts: z.coerce.number().int().nonnegative().default(0),
+  limit: limitSchema,
+});
+
+export type CommunityActivityQuery = z.infer<
+  typeof communityActivityQuerySchema
+>;
 
 /**
  * V2 query schema for `GET /api/v2/communities/mine`. Replaces V1's bare
@@ -476,22 +515,55 @@ const communityIdsSchema = z
   .max(50, "You can select at most 50 communities")
   .transform((ids) => [...new Set(ids)]);
 
-export const bulkMarkReadSchema = z.object({
-  communityIds: communityIdsSchema,
-});
+/**
+ * Accept snake_case field names as aliases for the canonical camelCase ones.
+ *
+ * The mobile clients serialize their DTOs snake_case, so `{ community_ids: […],
+ * duration_minutes: 10 }` was rejected 400 "communityIds Required" before it
+ * reached the service — the same defect that broke the chat bulk endpoints (see
+ * chat-service `conversation-bulk.validator.ts`, kept in sync with this).
+ * camelCase stays canonical and always wins when both are present.
+ */
+function withSnakeAliases<T extends z.ZodTypeAny>(
+  schema: T,
+  aliases: Record<string, string>
+) {
+  return z.preprocess((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return value;
+    const body = { ...(value as Record<string, unknown>) };
+    for (const [snake, camel] of Object.entries(aliases)) {
+      if (body[camel] === undefined && body[snake] !== undefined) {
+        body[camel] = body[snake];
+      }
+      delete body[snake];
+    }
+    return body;
+  }, schema);
+}
+
+export const bulkMarkReadSchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkMarkReadInput = z.infer<typeof bulkMarkReadSchema>;
 
-export const bulkMuteSchema = z.object({
-  action: z.enum(["mute", "unmute"]),
-  communityIds: communityIdsSchema,
-  durationMinutes: z
-    .number()
-    .int()
-    .min(1, "Mute duration must be at least 1 minute")
-    .max(525_600, "Mute duration must be at most 365 days")
-    .nullable()
-    .optional(),
-});
+export const bulkMuteSchema = withSnakeAliases(
+  z.object({
+    action: z.enum(["mute", "unmute"]),
+    communityIds: communityIdsSchema,
+    durationMinutes: z
+      .number()
+      .int()
+      .min(1, "Mute duration must be at least 1 minute")
+      .max(525_600, "Mute duration must be at most 365 days")
+      .nullable()
+      .optional(),
+  }),
+  { community_ids: "communityIds", duration_minutes: "durationMinutes" }
+);
 export type BulkMuteInput = z.infer<typeof bulkMuteSchema>;
 
 export const setMuteSchema = z.object({
@@ -623,16 +695,22 @@ export type LeaveReasonInput = z.infer<typeof leaveReasonSchema>;
 
 // --- Bulk leave -----------------------------------------------------------
 
-export const bulkLeaveSchema = z.object({
-  communityIds: communityIdsSchema,
-});
+export const bulkLeaveSchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkLeaveInput = z.infer<typeof bulkLeaveSchema>;
 
 // --- Bulk delete ------------------------------------------------------------
 
-export const bulkDeleteCommunitySchema = z.object({
-  communityIds: communityIdsSchema,
-});
+export const bulkDeleteCommunitySchema = withSnakeAliases(
+  z.object({
+    communityIds: communityIdsSchema,
+  }),
+  { community_ids: "communityIds" }
+);
 export type BulkDeleteCommunityInput = z.infer<
   typeof bulkDeleteCommunitySchema
 >;

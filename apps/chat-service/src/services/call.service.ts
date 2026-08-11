@@ -39,6 +39,15 @@ import { CallStatus, CallType, SystemEvent } from "../types/enums.js";
 export type GetCallPrivacyFn = (userId: string) => Promise<CallPrivacy>;
 
 /**
+ * Media-leg claims are keyed by callId, so a stale one can never affect a later
+ * call and there is nothing to clean up on hangup — the TTL is the only reaper.
+ * Comfortably above CALL_MAX_DURATION_SEC (1h by default) so a claim cannot
+ * expire out from under a call that is still running; if it ever did, the leg
+ * checks fall back to the pre-existing user-level behaviour rather than break.
+ */
+const CALL_LEG_TTL_SEC = 4 * 60 * 60;
+
+/**
  * Fetch caller display name + presigned avatar URL for the `call:incoming`
  * event so the callee's FE can render the ringing UI without a second lookup.
  * Returns empty strings on failure — a lookup miss must never block a call.
@@ -180,6 +189,81 @@ export class CallService {
     }
   }
 
+  /**
+   * The one leg of `userId` that owns this call's media.
+   *
+   * Call signalling is broadcast to `self:<userId>` — every device of the user —
+   * so without this key nothing in the system can tell the device that answered
+   * from the three that merely watched it ring. That is what let a sibling tab
+   * show live controls and hang up a call it was never on.
+   *
+   * Redis rather than a Call column because a GROUP call needs one leg PER callee,
+   * which a scalar field cannot express, and because the winner is decided by an
+   * atomic SET NX — the same primitive `withCallerLock` already relies on.
+   */
+  private legKey(callId: string, userId: string): string {
+    return `call:leg:${callId}:${userId}`;
+  }
+
+  /**
+   * Claim the media leg for `legId`. Re-claiming with the same legId wins (a
+   * socket reconnect or a retried answer is not a second device).
+   *
+   * Fails CLOSED, unlike `withCallerLock`: if Redis is unreachable we cannot tell
+   * two devices apart, and letting both through is precisely the failure this
+   * guards — two legs join LiveKit under one identity, the newer evicts the older,
+   * and the `participant_left` webhook ends the call for BOTH parties. A ring the
+   * user has to tap again is the cheaper failure.
+   */
+  private async claimCallLeg(
+    callId: string,
+    userId: string,
+    legId: string
+  ): Promise<boolean> {
+    const key = this.legKey(callId, userId);
+    const won = await this.redis.set(key, legId, "EX", CALL_LEG_TTL_SEC, "NX");
+    if (won === "OK") return true;
+    return (await this.redis.get(key)) === legId;
+  }
+
+  /** Token-checked release, so a retaken claim is never deleted out from under. */
+  private async releaseCallLeg(
+    callId: string,
+    userId: string,
+    legId: string
+  ): Promise<void> {
+    try {
+      await this.redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1,
+        this.legKey(callId, userId),
+        legId
+      );
+    } catch (err) {
+      logger.warn(`CallService|releaseCallLeg|failed: ${String(err)}`);
+    }
+  }
+
+  /**
+   * True when `legId` is not the leg that owns `userId`'s side of this call.
+   * An absent claim means nobody claimed it (older client, pre-answer) — not a
+   * mismatch — so it returns false and the caller keeps its previous behaviour.
+   */
+  private async isForeignLeg(
+    callId: string,
+    userId: string,
+    legId?: string
+  ): Promise<boolean> {
+    if (!legId) return false;
+    try {
+      const holder = await this.redis.get(this.legKey(callId, userId));
+      return Boolean(holder) && holder !== legId;
+    } catch (err) {
+      logger.warn(`CallService|isForeignLeg|read failed: ${String(err)}`);
+      return false;
+    }
+  }
+
   async initiateCall(params: {
     callerId: string;
     calleeId: string;
@@ -314,19 +398,17 @@ export class CallService {
           { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
         );
         if (!won) continue;
-        await this.redis
-          .publish(
-            `self:${stale.calleeId}`,
-            JSON.stringify({
-              event: "call:cancelled",
-              data: { callId: stale.callId },
-            })
-          )
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|initiateCall|self-cleanup publish failed: ${String(err)}`
-            )
-          );
+        // Fans out to the caller's own `self:` channel too, not just the
+        // callee's: the caller's OTHER devices are showing an outgoing-mirror
+        // banner for this abandoned ring and have no other way to learn it died.
+        await this.publishToCallAndParticipants(
+          stale,
+          JSON.stringify({
+            event: "call:cancelled",
+            data: { callId: stale.callId },
+          }),
+          "initiateCall|self-cleanup"
+        );
         // The abandoned ring already has a "Ringing…" card in the timeline —
         // settle it here, or it would sit ringing forever (the missed sweep skips
         // it now that this row is no longer RINGING).
@@ -689,15 +771,50 @@ export class CallService {
   async answerCall(params: {
     callId: string;
     calleeId: string;
+    legId?: string;
   }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+
+    // Decide WHICH of this user's devices is answering before anything else, and
+    // before a token exists. Every device of the callee is ringing with the same
+    // credentials, so a loser that walks away from here with a token joins the
+    // room as a second leg under the same LiveKit identity, evicts the leg that
+    // really answered, and the eviction webhook ends the call for both parties.
+    const legId = params.legId;
+    if (
+      legId &&
+      !(await this.claimCallLeg(params.callId, params.calleeId, legId))
+    ) {
+      throw new ConflictError("CALL_ALREADY_ANSWERED");
+    }
+
+    try {
+      return await this.answerCallClaimed(params, call, legId);
+    } catch (err) {
+      // Hand the leg back so the user can answer from any device on a retry — a
+      // failed answer must not wedge a still-ringing call. Not for a lost race:
+      // that claim belongs to the winner.
+      if (legId && !(err instanceof ConflictError)) {
+        await this.releaseCallLeg(params.callId, params.calleeId, legId);
+      }
+      throw err;
+    }
+  }
+
+  private async answerCallClaimed(
+    params: { callId: string; calleeId: string },
+    call: Call,
+    legId: string | undefined
+  ): Promise<Call & { livekit: LiveKitCredentials }> {
     const livekit = await this.livekit.mintToken(
       params.callId,
       params.calleeId
     );
+    // Already answered — by THIS leg (a retry or a reconnect after the claim
+    // landed), because a foreign leg could not have got past claimCallLeg.
     if (call.status === CallStatus.IN_PROGRESS) return { ...call, livekit };
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
@@ -733,6 +850,9 @@ export class CallService {
     );
     if (!won) {
       const again = await this.callRepo.findByCallId(params.callId);
+      // Lost the status CAS to another CALLEE (group call) — this device may not
+      // adopt their call. A second leg of the SAME callee never reaches here; it
+      // was already turned away by the leg claim.
       if (again?.status === CallStatus.IN_PROGRESS)
         return { ...again, livekit };
       throw new BadRequestError("CALL_NOT_RINGING");
@@ -749,14 +869,18 @@ export class CallService {
         updated,
         JSON.stringify({
           event: "call:answered",
-          data: { callId: params.callId },
+          // Who picked up, so a device that is still legitimately ringing (a
+          // GROUP call's other members) doesn't mistake someone else's answer
+          // for "answered on my other device".
+          data: { callId: params.callId, answeredByUserId: params.calleeId },
         }),
         "answerCall"
       ),
       this.publishCallHandled(
         params.calleeId,
         params.callId,
-        "answered_elsewhere"
+        "answered_elsewhere",
+        legId
       ),
     ]);
 
@@ -933,17 +1057,27 @@ export class CallService {
     return updated;
   }
 
+  /**
+   * "This ring was dealt with on another of your devices."
+   *
+   * Addressed to `self:<calleeId>`, which includes the device that acted — so the
+   * payload names the leg that handled it and the gateway drops the message for
+   * that one socket. Without `handledByLegId` the acting device would dismiss its
+   * own live call, which is why the web client used to ignore this event whenever
+   * it had answered, disarming it for the devices that actually needed it.
+   */
   private async publishCallHandled(
     calleeId: string,
     callId: string,
-    reason: "answered_elsewhere" | "declined_elsewhere"
+    reason: "answered_elsewhere" | "declined_elsewhere",
+    handledByLegId?: string
   ): Promise<void> {
     await this.redis
       .publish(
         `self:${calleeId}`,
         JSON.stringify({
           event: "call:handled",
-          data: { callId, reason },
+          data: { callId, reason, handledByLegId },
         })
       )
       .catch((err: unknown) => {
@@ -954,6 +1088,7 @@ export class CallService {
   async endCall(params: {
     callId: string;
     userId: string;
+    legId?: string;
   }): Promise<Call & { durationSec: number }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -969,6 +1104,23 @@ export class CallService {
     ];
     // Idempotent hangup — double-tap / teardown-after-terminal must not error.
     if (!activeStatuses.includes(call.status)) {
+      return { ...call, durationSec: call.durationSec ?? 0 };
+    }
+
+    // Authorization is per LEG, not per user: `userId` alone would let any of the
+    // callee's other devices hang up the call the answering one is on — a stale
+    // banner, a background tab closing, a client build that never learned it lost
+    // the answer race. Silently a no-op, since from that device's point of view
+    // there is nothing to end. The caller side stays user-scoped on purpose: its
+    // mirror devices are allowed to cancel their own outgoing call.
+    if (
+      call.status === CallStatus.IN_PROGRESS &&
+      this.isCallee(call, params.userId) &&
+      (await this.isForeignLeg(params.callId, params.userId, params.legId))
+    ) {
+      logger.info(
+        `CallService|endCall|ignored from non-answering leg callId=${params.callId} userId=${params.userId}`
+      );
       return { ...call, durationSec: call.durationSec ?? 0 };
     }
 
@@ -1007,28 +1159,20 @@ export class CallService {
       updatedAt: endedAt,
     };
 
-    // Pre-answer cancel: rung callee(s) never joined `call:<id>` room, reach
-    // them via their personal `self:<id>` channel with `call:cancelled`
-    // instead. GROUP calls loop the whole rung roster; 1:1 is the same single
-    // publish it always was.
+    // Pre-answer cancel: rung callee(s) never joined the `call:<id>` room, so
+    // `call:cancelled` has to reach them on their personal `self:<id>` channel.
+    // It goes to the CALLER's `self:` channel too — the caller's other devices
+    // are showing an outgoing-mirror banner for this ring and would otherwise
+    // never learn it was cancelled, leaving the banner up forever.
     if (wasRinging) {
       const targets = this.ringTargets(call);
-      await Promise.all(
-        targets.map((calleeId) =>
-          this.redis
-            .publish(
-              `self:${calleeId}`,
-              JSON.stringify({
-                event: "call:cancelled",
-                data: { callId: params.callId },
-              })
-            )
-            .catch((err: unknown) => {
-              logger.warn(
-                `CallService|endCall|cancel publish failed calleeId=${calleeId}: ${String(err)}`
-              );
-            })
-        )
+      await this.publishToCallAndParticipants(
+        updated,
+        JSON.stringify({
+          event: "call:cancelled",
+          data: { callId: params.callId },
+        }),
+        "endCall|cancel"
       );
 
       for (const calleeId of targets) {
@@ -1289,10 +1433,23 @@ export class CallService {
    */
   async reconcileFromLiveKitRoomFinished(
     callId: string,
-    eventType: string
+    eventType: string,
+    remainingParticipants = -1
   ): Promise<void> {
     const call = await this.callRepo.findByCallId(callId);
     if (!call) return; // room name wasn't a callId — ignore
+
+    // Both parties are still in the room, so the call is plainly not over: what
+    // left was an extra leg. LiveKit evicts the older connection when a second
+    // device of the same user joins with the same participant identity, and
+    // honouring that eviction here would end a perfectly live call for everyone.
+    // -1 means the webhook reported no count — behave as before.
+    if (eventType === "participant_left" && remainingParticipants >= 2) {
+      logger.info(
+        `CallService|reconcile|ignoring participant_left with ${remainingParticipants} still in room call=${callId}`
+      );
+      return;
+    }
 
     if (call.status === CallStatus.RINGING) {
       // `participant_left` must never cancel a ringing call. During RINGING the

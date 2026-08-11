@@ -322,6 +322,9 @@ export class CommunitySystemMessageService {
             message: message.message ?? "",
             messageType: message.messageType,
             createdAt: message.createdAt,
+            clientMessageId: message.clientMessageId,
+            sequenceNumber: message.sequenceNumber,
+            revision: message.revision,
           })
           .catch((err: unknown) => {
             logger.warn(

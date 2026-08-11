@@ -25,6 +25,8 @@ export interface NotificationSettings {
   quietHoursStart: string;
   quietHoursEnd: string;
   quietHoursDays: number[];
+  /** ISO 639-1 app language ("en" | "vi" | "th"), "" when the user never set one. */
+  language: string;
 }
 
 export interface UserSettingsClient {

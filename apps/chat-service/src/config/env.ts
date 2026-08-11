@@ -124,6 +124,19 @@ const envSchema = z.object({
   AUTO_DELETE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(30),
   AUTO_DELETE_SWEEP_BATCH: z.coerce.number().positive().default(200),
 
+  // "Login Detected" auto-approval. The alert stays actionable for this long;
+  // once the deadline passes with no user action the sweep resolves it exactly
+  // as "It's Me" does (the session is NEVER auto-terminated). Backend-owned:
+  // the deadline is stamped on the row at create time, so closing the browser,
+  // refreshing, or restarting the service does not reset or lose it.
+  // Overridable (tests use ~1s) but the production default is 1 hour.
+  LOGIN_DETECTION_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(60 * 60 * 1000),
+  LOGIN_EXPIRY_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(60),
+  LOGIN_EXPIRY_SWEEP_BATCH: z.coerce.number().positive().default(200),
+
   // Hard ceiling on an IN_PROGRESS call. Without it a client that dies before
   // sending `call:end` (crash, force-kill, dead network) leaves the row active
   // forever and BOTH participants are permanently "busy" — no future call can

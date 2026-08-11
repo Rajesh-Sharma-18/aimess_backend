@@ -38,6 +38,15 @@ export interface NotificationDTO {
   resolutionTone?: string;
   /** Action the viewer already took on this row ("TERMINATED" | "TRUSTED"). */
   actionTaken?: string;
+  /**
+   * Login Detected rows only: the server-owned deadline after which an
+   * un-actioned alert is auto-approved ("It's Me"). Clients render the
+   * countdown from THIS value — never from a locally started timer — so a
+   * refresh at 10:45 on an 11:00 deadline still shows 15 minutes, not a fresh
+   * hour. Absent once resolved is irrelevant: `actionTaken` is the authority
+   * on whether the buttons still apply.
+   */
+  expiresAt?: Date;
   /** Kept for backward compatibility with clients that dug into it. */
   payload: Record<string, unknown>;
   actor?: {
@@ -182,6 +191,7 @@ export async function serializeNotification(
       ? { resolutionTone: data.resolutionTone }
       : {}),
     ...(nonEmpty(data.actionTaken) ? { actionTaken: data.actionTaken } : {}),
+    ...(row.loginExpiresAt ? { expiresAt: row.loginExpiresAt } : {}),
     payload: payloadObj as Record<string, unknown>,
     ...(actor ? { actor } : {}),
     ...(community ? { community } : {}),

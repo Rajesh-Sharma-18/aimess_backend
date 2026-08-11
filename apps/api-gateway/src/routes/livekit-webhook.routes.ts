@@ -40,7 +40,7 @@ export function createLiveKitWebhookRouter(
       }
       let event: {
         event?: string;
-        room?: { name?: string };
+        room?: { name?: string; numParticipants?: number };
       };
       try {
         // WebhookReceiver.receive expects a stringified body. express.raw gives
@@ -76,6 +76,10 @@ export function createLiveKitWebhookRouter(
           await messagingClient.handleLiveKitRoomFinished({
             roomName,
             eventType,
+            // Both peers still in the room means this `participant_left` was an
+            // extra leg dropping out (duplicate-identity eviction, a second
+            // device), not the call ending — chat-service uses it to decide.
+            remainingParticipants: event.room?.numParticipants ?? -1,
           });
         } catch (err) {
           logger.warn(

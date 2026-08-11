@@ -22,7 +22,8 @@ export const updateProfile = asyncHandler(
 
     const profile = await userProfileService.updateProfile(
       req.auth.userId,
-      body
+      body,
+      req.auth.sessionId
     );
 
     return res

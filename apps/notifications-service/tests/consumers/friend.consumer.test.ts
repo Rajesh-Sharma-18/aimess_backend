@@ -68,7 +68,7 @@ describe("FRIEND_REQUESTED", () => {
     expect(push).toHaveBeenCalledTimes(1);
     const arg = push.mock.calls[0][0];
     expect(arg.userId).toBe(ADDRESSEE);
-    expect(arg.body).toBe("John sent you a friend request");
+    expect(arg.copy("en").body).toBe("John sent you a friend request");
   });
 
   it("falls back to 'Someone' when requesterName is absent", async () => {
@@ -79,7 +79,7 @@ describe("FRIEND_REQUESTED", () => {
       createdAt: "2026-07-17T10:00:00.000Z",
     });
 
-    expect(push.mock.calls[0][0].body).toBe(
+    expect(push.mock.calls[0][0].copy("en").body).toBe(
       "Someone sent you a friend request"
     );
   });
@@ -101,18 +101,22 @@ describe("FRIEND_ACCEPTED", () => {
     const toRequester = push.mock.calls.find(
       (c) => c[0].userId === REQUESTER
     )?.[0];
-    expect(toRequester.title).toBe("Alex");
-    expect(toRequester.body).toBe("Alex accepted your friend request");
-    expect(toRequester.data.resolution).toBe(
+    expect(toRequester.copy("en").title).toBe("Alex");
+    expect(toRequester.copy("en").body).toBe(
+      "Alex accepted your friend request"
+    );
+    expect(toRequester.localizedData("en").resolution).toBe(
       "Alex accepted your friend request."
     );
 
     const toAddressee = push.mock.calls.find(
       (c) => c[0].userId === ADDRESSEE
     )?.[0];
-    expect(toAddressee.title).toBe("John");
-    expect(toAddressee.body).toBe("You and John are now friends");
-    expect(toAddressee.data.resolution).toBe("You are now friends!");
+    expect(toAddressee.copy("en").title).toBe("John");
+    expect(toAddressee.copy("en").body).toBe("You and John are now friends");
+    expect(toAddressee.localizedData("en").resolution).toBe(
+      "You are now friends!"
+    );
   });
 });
 
@@ -132,9 +136,13 @@ describe("FRIEND_REJECTED", () => {
     const toRequester = push.mock.calls.find(
       (c) => c[0].userId === REQUESTER
     )?.[0];
-    expect(toRequester.title).toBe("Alex");
-    expect(toRequester.body).toBe("Alex declined your friend request");
-    expect(toRequester.data.resolution).toBe("Declined your friend request");
+    expect(toRequester.copy("en").title).toBe("Alex");
+    expect(toRequester.copy("en").body).toBe(
+      "Alex declined your friend request"
+    );
+    expect(toRequester.localizedData("en").resolution).toBe(
+      "Declined your friend request"
+    );
     expect(toRequester.data.resolutionTone).toBe("danger");
 
     // The decliner's own copy of the request must settle in place across their
@@ -143,7 +151,7 @@ describe("FRIEND_REJECTED", () => {
       (c) => c[0].userId === ADDRESSEE
     )?.[0];
     expect(toAddressee.data.resurface).toBe("false");
-    expect(toAddressee.data.resolution).toBe(
+    expect(toAddressee.localizedData("en").resolution).toBe(
       "You declined this friend request"
     );
   });
@@ -165,7 +173,9 @@ describe("FRIEND_CANCELLED", () => {
     const toAddressee = push.mock.calls.find(
       (c) => c[0].userId === ADDRESSEE
     )?.[0];
-    expect(toAddressee.body).toBe("John cancelled their friend request");
+    expect(toAddressee.copy("en").body).toBe(
+      "John cancelled their friend request"
+    );
     // Silent: announcing a cancellation would contradict the row disappearing.
     expect(toAddressee.dataOnly).toBe(true);
     expect(

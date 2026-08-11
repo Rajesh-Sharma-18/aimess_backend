@@ -618,6 +618,22 @@ export class PrivateMessageRepository {
     };
   }
 
+  /**
+   * Bump this message's CHANGE cursor WITHOUT touching its content — for
+   * mutations that live outside the message row but still change what a client
+   * should render (pin/unpin, moderation). Without this, a pin never appeared
+   * on the `/changes` feed, so an offline client had no way to learn about it.
+   * Best-effort by contract: callers treat a failure as non-fatal.
+   */
+  async touchRevision(roomId: string, messageId: string): Promise<number> {
+    const revision = await this.roomRepo.allocateRevision(roomId);
+    await this.prisma.privateMessage.update({
+      where: { id: messageId },
+      data: { revision },
+    });
+    return revision;
+  }
+
   async addReactions(
     messageId: string,
     roomId: string,

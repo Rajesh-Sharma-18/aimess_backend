@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { asyncHandler, ApiResponse } from "@aimess/utils";
 import { BadRequestError } from "@aimess/errors";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 import {
   uploadUrlSchema,
@@ -69,7 +69,9 @@ export class MediaController {
       requesterId: req.auth.userId,
     });
 
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(null, "Upload cancelled"));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("MEDIA_UPLOAD_CANCELLED", req.locale)));
   });
 
   getDownloadUrl = asyncHandler(async (req: Request, res: Response) => {

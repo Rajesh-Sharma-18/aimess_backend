@@ -11208,15 +11208,39 @@ export const openApiSchemas = {
       },
     },
   },
+  ChatBulkItemFailure: {
+    type: "object",
+    description:
+      "Why one room did not change. Lets the client mark that row failed " +
+      "instead of showing it as done.",
+    properties: {
+      roomId: { type: "string" },
+      errorCode: {
+        type: "string",
+        enum: ["NOT_MEMBER", "NOT_FOUND", "UNSUPPORTED_ROOM_TYPE"],
+        description:
+          "`UNSUPPORTED_ROOM_TYPE` — the id is neither `prv_…` nor `grp_…`, " +
+          "almost always a COMMUNITY id. Community mute/read state lives in " +
+          "community-service; send those to " +
+          "`POST /communities/mute/bulk` or `POST /communities/read/bulk`.",
+      },
+    },
+    required: ["roomId", "errorCode"],
+  },
   ChatBulkMuteResult: {
     type: "object",
     description:
-      "Rooms actually updated vs. silently skipped (not a participant, no " +
-      "longer an active member, room gone).",
+      "Rooms actually updated vs. skipped (not a participant, no longer an " +
+      "active member, room gone, or not a chat room id). `skipped` lists every " +
+      "id that did not change; `failed` gives the reason for each.",
     properties: {
       muted: { type: "array", items: { type: "string" } },
       unmuted: { type: "array", items: { type: "string" } },
       skipped: { type: "array", items: { type: "string" } },
+      failed: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatBulkItemFailure" },
+      },
     },
   },
   ChatBulkMarkReadRequest: {
@@ -11232,9 +11256,14 @@ export const openApiSchemas = {
       updatedCount: {
         type: "integer",
         description:
-          "Rooms whose read pointer actually advanced. An empty conversation, " +
-          "one already fully read, or one the caller can no longer read is " +
-          "skipped and not counted.",
+          "Rooms whose read pointer actually advanced (=== `updated.length`). " +
+          "An empty conversation or one already fully read is not counted and " +
+          "is not a failure.",
+      },
+      updated: { type: "array", items: { type: "string" } },
+      failed: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatBulkItemFailure" },
       },
     },
     required: ["updatedCount"],
@@ -11787,21 +11816,26 @@ export const openApiSchemas = {
     properties: {
       roomId: { type: "string", minLength: 5, maxLength: 100 },
       userId: { type: "string", minLength: 5, maxLength: 100 },
-      reason: {
-        type: "string",
-        enum: [
-          "SPAM",
-          "HARASSMENT",
-          "HATE_SPEECH",
-          "NUDITY",
-          "VIOLENCE",
-          "SCAM",
-          "OTHER",
-        ],
-      },
+      // Free text, same rule as community's POST /communities/{id}/reports —
+      // NOT a closed enum, so the shared Report Member dialog's reason ids
+      // (OFFENSIVE_LANGUAGE, INAPPROPRIATE_CONTENT, SCAM_OR_FRAUD,
+      // IMPERSONATION, SPAM, OTHER) are all accepted. backoffice-service
+      // canonicalizes the value on ingest.
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
       description: { type: "string", maxLength: 1000, default: "" },
     },
     required: ["roomId", "userId", "reason"],
+  },
+  ChatReportPrivateUserRequest: {
+    type: "object",
+    description:
+      "POST /chat/private/rooms/{roomId}/report — reports the OTHER participant of the room. Same reason vocabulary as ChatReportMemberRequest.",
+    properties: {
+      userId: { type: "string", minLength: 5, maxLength: 100 },
+      reason: { type: "string", minLength: 3, maxLength: 1000 },
+      description: { type: "string", maxLength: 1000, default: "" },
+    },
+    required: ["userId", "reason"],
   },
   ChatNotificationActionRequest: {
     type: "object",

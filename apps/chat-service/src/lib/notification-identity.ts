@@ -7,6 +7,19 @@ const FRIEND_TYPES = new Set<string>([
   "friend.cancelled",
 ]);
 
+/**
+ * States a friendship card can END a cycle in. A friendship row id is RECYCLED
+ * by user-service (`resetToPending` reuses the same `Friendship.id` after
+ * REJECTED / CANCELLED / UNFRIENDED), so `friend:<friendshipId>` is stable
+ * across cycles — a brand new request would otherwise be swallowed by the
+ * resolved card of the PREVIOUS friendship and go out as `notification:updated`
+ * instead of `notification:new`. See {@link resolveTransition}.
+ */
+const RESOLVED_FRIEND_TYPES = new Set<string>([
+  "friend.accepted",
+  "friend.rejected",
+]);
+
 export type NotificationAction = "CREATE" | "UPDATE" | "DELETE";
 
 export interface TransitionPlan {
@@ -75,6 +88,15 @@ export function resolveTransition(
 ): TransitionPlan {
   if (DELETE_ON_ARRIVAL.has(incomingType)) {
     return { action: "DELETE", resurface: false };
+  }
+  // A NEW request against an already-resolved card is a new friendship cycle on
+  // a recycled friendship id — it gets its OWN card (and therefore a real
+  // `notification:new`), never an in-place rewrite of the old outcome.
+  if (
+    incomingType === "friend.requested" &&
+    RESOLVED_FRIEND_TYPES.has(existingType)
+  ) {
+    return { action: "CREATE", resurface: true };
   }
   const explicit = nonEmpty(data.resurface);
   if (explicit === "true") return { action: "UPDATE", resurface: true };

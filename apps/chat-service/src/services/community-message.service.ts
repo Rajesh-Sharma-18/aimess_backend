@@ -16,6 +16,7 @@ import {
 } from "../constants/media-limits.js";
 import {
   buildCommunitySystemFallbackText,
+  currentLocale,
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
@@ -41,6 +42,7 @@ import {
   type StoredReactor,
   toWireMessage,
   buildCanonicalQuote,
+  tombstoneWireFields,
   buildReplyQuoteSnapshot,
   buildReplyPreviewText,
   type CanonicalQuote,
@@ -486,6 +488,9 @@ export class CommunityMessageService {
         message: message.message || "",
         messageType: message.messageType,
         createdAt: message.createdAt,
+        clientMessageId: message.clientMessageId,
+        sequenceNumber: message.sequenceNumber,
+        revision: message.revision,
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -1042,10 +1047,75 @@ export class CommunityMessageService {
     });
   }
 
+  /**
+   * Zero the caller's unread on many communities at once (the sidebar's
+   * multi-select "Mark all as read").
+   *
+   * The write is only half the job: the post-read effects have to match the
+   * single-message path ({@link markMessageRead}) or the bulk call silently
+   * drops them —
+   *
+   *   1. `community:read_sync` on `user:<userId>` so the caller's OTHER tabs /
+   *      devices clear their list badges (the list query is cached, nothing
+   *      else would tell them).
+   *   2. `notifyUnreadChanged` so the Community nav-badge total is recomputed
+   *      from the DB and pushed as `chat:unread_summary` — that badge is fed
+   *      exclusively by that event, so without this it kept the pre-read count
+   *      until a reconnect.
+   *
+   * `unreadCount` per community is recounted AFTER the write against the same
+   * boundary that was persisted, so a message that lands mid-operation reports
+   * a non-zero count and receivers leave that row's badge alone (see the
+   * `read_sync` handler) instead of blanket-zeroing a genuinely unread row.
+   */
   async bulkMarkRead(userId: string, communityIds: string[]): Promise<number> {
     const ids = [...new Set(communityIds.filter(Boolean))];
     if (!ids.length) return 0;
-    return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
+
+    const readAt = new Date();
+    const updatedCount = await this.memberRepo.bulkAdvanceReadToNow(
+      userId,
+      ids,
+      readAt
+    );
+    if (!updatedCount) return 0;
+
+    let unreadAfter: Record<string, { count: number }> = {};
+    try {
+      unreadAfter = await this.messageRepo.countUnreadBulk({
+        userId,
+        thresholds: ids.map((roomId) => ({ roomId, afterDate: readAt })),
+      });
+    } catch (err: unknown) {
+      logger.warn(
+        `CommunityMessageService|bulkMarkRead|countUnread failed: ${String(err)}`
+      );
+    }
+
+    for (const communityId of ids) {
+      redis
+        .publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "community:read_sync",
+            data: {
+              communityId,
+              readerId: userId,
+              unreadCount: unreadAfter[communityId]?.count ?? 0,
+              readAt: readAt.getTime(),
+            },
+          })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CommunityMessageService|bulkMarkRead|redis publish user failed: ${String(err)}`
+          );
+        });
+    }
+
+    notifyUnreadChanged(userId);
+
+    return updatedCount;
   }
 
   /**
@@ -1139,7 +1209,8 @@ export class CommunityMessageService {
       metadata,
       String(metadata.actorName ?? ""),
       String(metadata.targetName ?? ""),
-      viewerUserId ?? ""
+      viewerUserId ?? "",
+      currentLocale()
     );
     return rebuilt || storedText;
   }
@@ -1225,6 +1296,10 @@ export class CommunityMessageService {
     // tracks its per-room high-water and gap-checks live events. Additive; V1/V2
     // clients ignore it.
     wire.revision = m.revision ?? 0;
+
+    // Normalized tombstone (one shape across private/group/community) — the raw
+    // deletedForAll/deletedForAllAt columns stay on the wire untouched.
+    Object.assign(wire, tombstoneWireFields(m));
 
     // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
     // community") and DROP the raw `visibleToUserId` targeting column from the
@@ -1347,15 +1422,15 @@ export class CommunityMessageService {
   }
 
   /**
-   * V2 sequence timeline page
-   * (`GET /api/v2/chat/community/rooms/:roomId/messages`). Gap-safe monotonic
-   * `sequenceNumber` keyset — the SAME shared core as the V1 timestamp path
+   * The `before_seq`/`after_seq` sequence timeline page of
+   * `GET /chat/community/rooms/:roomId/messages`. Gap-safe monotonic
+   * `sequenceNumber` keyset — the SAME shared core as the timestamp path
    * ({@link getTimelinePageShared}); only the cursor axis differs, so a
    * same-millisecond burst can never split across a page boundary. `seq === null`
    * → newest page; `nextCursor` is the plain seq string the client feeds back as
    * `before_seq` (older) / `after_seq` (newer).
    */
-  async getMessagesSeqV2(params: {
+  async getMessagesSeqKeyset(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
@@ -1379,14 +1454,15 @@ export class CommunityMessageService {
   }
 
   /**
-   * Shared community-timeline page core for BOTH the V1 timestamp endpoint and
-   * the V2 sequence endpoint. The ONLY thing that differs between them is the
-   * pagination axis, fully encapsulated in the {@link PaginationCursor} + its
-   * adapter (fetch the page, stringify the `nextCursor`). Access guards,
+   * Shared community-timeline page core for BOTH pagination axes of
+   * `GET /chat/community/rooms/:roomId/messages`. The ONLY thing that differs
+   * between them is the axis, fully encapsulated in the {@link PaginationCursor}
+   * + its adapter (fetch the page, stringify the `nextCursor`). Access guards,
    * membership/ban resolution, the history-visible `total`, ordering,
    * reaction-snapshot enrichment, media URL resolution and serialization are
-   * identical and live here once — so V1 and V2 return byte-identical message
-   * objects and envelopes. V1 passes a TIMESTAMP cursor; V2 a SEQUENCE cursor.
+   * identical and live here once — so both axes return byte-identical message
+   * objects and envelopes. `before_ts`/`after_ts` pass a TIMESTAMP cursor;
+   * `before_seq`/`after_seq` a SEQUENCE cursor.
    */
   private async getTimelinePageShared(params: {
     roomId: string;
@@ -1731,25 +1807,8 @@ export class CommunityMessageService {
   }
 
   /**
-   * V2 seq-anchored jump-to-message window. Same shared core as V1
-   * ({@link getAroundWindowShared}); the SEQUENCE strategy anchors the window on
-   * the message's `sequenceNumber` and returns seq continuation cursors
-   * (`olderCursor`/`newerCursor` fed back as `before_seq`/`after_seq`).
-   */
-  async getMessagesAroundV2(params: {
-    roomId: string;
-    userId: string;
-    messageId: string;
-    limit: number;
-  }): Promise<
-    { items: CommunityMessageWire[]; total: number } & AroundCursors
-  > {
-    return this.getAroundWindowShared({ ...params, strategy: "SEQUENCE" });
-  }
-
-  /**
-   * Shared jump-to-message window core for the V1 (date-anchored) and V2
-   * (seq-anchored) `around` reads. The window anchors on the message row itself;
+   * Shared jump-to-message window core for the date-anchored and seq-anchored
+   * `around` reads. The window anchors on the message row itself;
    * the adapter reads only the cursor's STRATEGY (not its boundary), so a
    * strategy-tagged placeholder cursor selects the seq-vs-date window query AND
    * the matching continuation-cursor format. Access guard, `total`, media
@@ -2425,6 +2484,10 @@ export class CommunityMessageService {
     senderName: string;
     createdAt: Date;
     hasLastMessage: boolean;
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
   } | null> {
     // Run both queries in parallel — we need prev regardless of which message
     // was the current last. The classic check (room.lastMessageId === deletedId)
@@ -2452,6 +2515,9 @@ export class CommunityMessageService {
         content: prev.message ?? "",
         messageType: prev.messageType,
         createdAt: prev.createdAt,
+        clientMessageId: prev.clientMessageId,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       });
       return {
         prevMessageId: prev.id,
@@ -2464,6 +2530,9 @@ export class CommunityMessageService {
         senderName: prev.senderName ?? "",
         createdAt: prev.createdAt,
         hasLastMessage: true,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
 
@@ -2476,6 +2545,9 @@ export class CommunityMessageService {
       senderName: "",
       createdAt: new Date(0),
       hasLastMessage: false,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 
@@ -2502,6 +2574,10 @@ export class CommunityMessageService {
     hasLastMessage: boolean;
     /** True iff the deleted message was the viewer's last visible message — the
      *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    /** Offline-first list identity of the new previous-visible last message. */
+    clientMessageId: string | null;
+    sequenceNumber: number;
+    revision: number;
     wasEffectiveLast: boolean;
   } | null> {
     const room = await this.roomRepo.findRoomById(roomId);
@@ -2531,6 +2607,9 @@ export class CommunityMessageService {
         createdAt: prev.createdAt,
         hasLastMessage: true,
         wasEffectiveLast,
+        clientMessageId: prev.clientMessageId ?? null,
+        sequenceNumber: prev.sequenceNumber,
+        revision: prev.revision,
       };
     }
     return {
@@ -2542,6 +2621,9 @@ export class CommunityMessageService {
       createdAt: new Date(0),
       hasLastMessage: false,
       wasEffectiveLast: true,
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     };
   }
 

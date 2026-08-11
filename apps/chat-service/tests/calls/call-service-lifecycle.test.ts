@@ -24,7 +24,13 @@ function buildService() {
       findByRoomId: jest.fn(),
       findByParticipantsKey: jest.fn(),
     },
-    redis: { publish: jest.fn().mockResolvedValue(1) },
+    redis: {
+      publish: jest.fn().mockResolvedValue(1),
+      // Media-leg claim: SET NX succeeds by default (nobody holds the leg).
+      set: jest.fn().mockResolvedValue("OK"),
+      get: jest.fn().mockResolvedValue(null),
+      eval: jest.fn().mockResolvedValue(1),
+    },
     livekit: { mintToken: jest.fn() },
     friendshipRepo: { areFriends: jest.fn() },
     getCallPrivacy: jest.fn(),
@@ -325,6 +331,188 @@ describe("CallService.endCall chat messages", () => {
     expect(stubs.redis.publish).toHaveBeenCalledWith(
       "self:u2",
       expect.stringContaining("call:cancelled")
+    );
+    // Regression: the caller's OTHER devices show an outgoing-mirror banner for
+    // this ring. Without a publish on the caller's own channel they never learn
+    // it was cancelled and the banner stays up forever, blocking later calls.
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:u1",
+      expect.stringContaining("call:cancelled")
+    );
+  });
+});
+
+/**
+ * Media-leg ownership. Call signalling is broadcast to `self:<userId>` — every
+ * device of the user — so without a per-leg claim nothing can tell the device
+ * that answered from the ones that only watched it ring, and a sibling tab ends
+ * up able to hang up a call it was never on.
+ */
+describe("CallService — call leg ownership", () => {
+  const ringingCall = {
+    callId: "c1",
+    status: "RINGING",
+    callerId: "u1",
+    calleeId: "u2",
+    privateRoomId: "r1",
+    type: "AUDIO",
+  };
+
+  it("a second device answering the same ring is rejected, not told it won", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.redis.set.mockResolvedValue(null); // legA already holds the claim
+    stubs.redis.get.mockResolvedValue("legA");
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "u2", legId: "legB" })
+    ).rejects.toThrow("CALL_ALREADY_ANSWERED");
+
+    // Never mint a token for the loser: holding one is what let it join LiveKit,
+    // evict the answering leg, and take the whole call down with it.
+    expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("the SAME leg re-answering still wins (retry / socket reconnect)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.redis.set.mockResolvedValue(null);
+    stubs.redis.get.mockResolvedValue("legA");
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "t" });
+
+    const result = await service.answerCall({
+      callId: "c1",
+      calleeId: "u2",
+      legId: "legA",
+    });
+
+    expect(result.status).toBe("IN_PROGRESS");
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:u2",
+      expect.stringContaining("call:handled")
+    );
+  });
+
+  it("`call:handled` names the winning leg so the gateway can skip that device", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "t" });
+
+    await service.answerCall({ callId: "c1", calleeId: "u2", legId: "legA" });
+
+    const handled = stubs.redis.publish.mock.calls.find((c: unknown[]) =>
+      String(c[1]).includes("call:handled")
+    );
+    expect(JSON.parse(String(handled?.[1])).data).toEqual(
+      expect.objectContaining({ handledByLegId: "legA" })
+    );
+    // And `call:answered` says WHO picked up, so a group callee still free to
+    // join doesn't mistake it for their own device answering.
+    const answered = stubs.redis.publish.mock.calls.find((c: unknown[]) =>
+      String(c[1]).includes("call:answered")
+    );
+    expect(JSON.parse(String(answered?.[1])).data).toEqual(
+      expect.objectContaining({ answeredByUserId: "u2" })
+    );
+  });
+
+  it("fails CLOSED when Redis is unreachable — never grants the call to both", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.redis.set.mockRejectedValue(new Error("redis down"));
+
+    await expect(
+      service.answerCall({ callId: "c1", calleeId: "u2", legId: "legA" })
+    ).rejects.toThrow("redis down");
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("endCall from a callee leg that did not answer is a silent no-op", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    const result = await service.endCall({
+      callId: "c1",
+      userId: "u2",
+      legId: "legB",
+    });
+
+    expect(result.status).toBe("IN_PROGRESS");
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("endCall from the answering leg still ends the call", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    await service.endCall({ callId: "c1", userId: "u2", legId: "legA" });
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "IN_PROGRESS",
+      expect.objectContaining({ status: "ENDED", endedBy: "u2" })
+    );
+  });
+
+  it("the CALLER's other devices may still hang up (spec §4.2 mirror hangup)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    await service.endCall({
+      callId: "c1",
+      userId: "u1",
+      legId: "some-other-leg",
+    });
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalled();
+  });
+
+  it("participant_left with both peers still in the room does NOT end the call", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+
+    // A duplicate-identity eviction: one extra leg left, the call is still up.
+    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left", 2);
+
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("participant_left that leaves one peer behind still ends the call", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 30_000),
+    });
+
+    await service.reconcileFromLiveKitRoomFinished("c1", "participant_left", 1);
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "IN_PROGRESS",
+      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
     );
   });
 });

@@ -174,6 +174,10 @@ describe("resolveForEveryoneOverrides (per-recipient delete-for-everyone)", () =
       senderName: "Bob",
       messageType: "TEXT",
       content: "their earlier message",
+      // Offline-first list identity — defaults when the fixture omits them.
+      clientMessageId: null,
+      sequenceNumber: 0,
+      revision: 0,
     });
   });
 

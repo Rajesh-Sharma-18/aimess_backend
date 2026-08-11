@@ -5,7 +5,10 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
+import {
+  emitPersonalizedSender,
+  type PersonalizeFn,
+} from "../emit-personalized.js";
 import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import type {
   CatchupEventDto,
@@ -23,6 +26,7 @@ import {
   createRoomBroadcast,
 } from "../presence-indicator.js";
 import { env } from "../../config/env.js";
+import { scopeSocketLocale } from "../locale-scope.js";
 import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
@@ -500,9 +504,7 @@ export function registerChatNamespace(
           return;
         }
 
-        let personalizeFn:
-          | ((data: unknown, userId: string) => unknown)
-          | undefined;
+        let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(
             (parsed.data as { contentType?: string; messageType?: string })
@@ -591,6 +593,35 @@ export function registerChatNamespace(
               void resyncPresenceWatchers(candidate);
             }
           }
+        }
+
+        // `call:handled` means "another of YOUR devices dealt with this ring", and
+        // it is addressed to the whole user — including the device that dealt with
+        // it, which must not dismiss its own live call. Deliver it to every leg
+        // except that one, and never leak the leg id to clients.
+        const handledByLegId = (
+          parsed.data as { handledByLegId?: unknown } | null | undefined
+        )?.handledByLegId;
+        if (
+          parsed.event === "call:handled" &&
+          typeof handledByLegId === "string"
+        ) {
+          const { handledByLegId: _omit, ...payload } = parsed.data as Record<
+            string,
+            unknown
+          >;
+          void (async () => {
+            try {
+              const sockets = await chat.in(channel).fetchSockets();
+              for (const s of sockets) {
+                if (s.data.callLegId === handledByLegId) continue;
+                s.emit(parsed.event, payload);
+              }
+            } catch (err) {
+              logger.warn(`/chat call:handled fan-out failed: ${String(err)}`);
+            }
+          })();
+          return;
         }
 
         // Honor an envelope-level excludeUserId on conv:* broadcasts only —
@@ -806,11 +837,19 @@ export function registerChatNamespace(
       groupId: z.string().min(1).optional(),
       callType: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
       privateRoomId: z.string().optional(),
+      legId: z.string().min(1).max(128).optional(),
     })
     .refine((v) => Boolean(v.calleeId) !== Boolean(v.groupId), {
       message: "exactly one of calleeId or groupId is required",
     });
-  const CallAnswerSchema = z.object({ callId: z.string().min(1) });
+  // `legId` identifies ONE connection of the user, not one login: two browser
+  // tabs share a session (and therefore `socket.data.sessionId`), so the client
+  // mints a per-page-load id and sends it here. Optional — a client that omits it
+  // falls back to session granularity, which is still correct for one-tab-per-device.
+  const CallAnswerSchema = z.object({
+    callId: z.string().min(1),
+    legId: z.string().min(1).max(128).optional(),
+  });
   // `intentional: true` is required so stale HMR/zombie socket listeners that
   // still auto-emit `{ callId }` (old busy auto-decline) cannot kill a live ring.
   // Only an explicit user Decline click from a current client includes the flag.
@@ -818,7 +857,10 @@ export function registerChatNamespace(
     callId: z.string().min(1),
     intentional: z.literal(true),
   });
-  const CallEndSchema = z.object({ callId: z.string().min(1) });
+  const CallEndSchema = z.object({
+    callId: z.string().min(1),
+    legId: z.string().min(1).max(128).optional(),
+  });
   const CallRejoinSchema = z.object({ callId: z.string().min(1) });
 
   // A killed app (force-quit, OOM, crash) never sends `call:end`, and for a call
@@ -849,7 +891,11 @@ export function registerChatNamespace(
     pendingCallCleanups.delete(key);
   };
 
-  const scheduleCallCleanup = (callId: string, userId: string): void => {
+  const scheduleCallCleanup = (
+    callId: string,
+    userId: string,
+    legId: string
+  ): void => {
     const key = `${callId}:${userId}`;
     if (pendingCallCleanups.has(key)) return;
     const timer = setTimeout(() => {
@@ -860,7 +906,10 @@ export function registerChatNamespace(
           // counts as present and cancels the cleanup.
           const sockets = await chat.in(`call:${callId}`).fetchSockets();
           if (sockets.some((s) => s.data.userId === userId)) return;
-          await messagingClient.endCall({ callId, userId });
+          // Carries the disconnected leg: chat-service ignores an end request
+          // from a callee leg that never answered, so a sibling tab closing can
+          // no longer take down the call the user is actually on.
+          await messagingClient.endCall({ callId, userId, legId });
           logger.info(
             `/chat call cleanup after disconnect callId=${callId} userId=${userId}`
           );
@@ -875,7 +924,14 @@ export function registerChatNamespace(
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
+    scopeSocketLocale(socket);
     const deviceId = sessionId ?? socket.id;
+    // One socket is one call leg. `deviceId` is only session-granular (two tabs
+    // share a login), so the client's per-page-load `legId` supersedes it as soon
+    // as this socket initiates or answers a call — and the disconnect cleanup then
+    // ends the call under the SAME leg that claimed it. On socket.data so other
+    // gateway nodes can read it through `fetchSockets()`.
+    socket.data.callLegId = deviceId;
     void socket.join(`user:${userId}`);
     // Private per-user room. Unlike `user:<id>` — which `presence:subscribe`
     // lets ANY peer join — only this user's own sockets are ever in `self:<id>`.
@@ -1718,6 +1774,7 @@ export function registerChatNamespace(
             ackError(callback, "RATE_LIMITED", locale);
             return;
           }
+          socket.data.callLegId = r.data.legId ?? deviceId;
           messagingClient
             .initiateCall({
               callerId: userId,
@@ -1755,8 +1812,13 @@ export function registerChatNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
+        socket.data.callLegId = r.data.legId ?? deviceId;
         messagingClient
-          .answerCall({ ...r.data, calleeId: userId })
+          .answerCall({
+            callId: r.data.callId,
+            calleeId: userId,
+            legId: socket.data.callLegId,
+          })
           .then((result) => {
             // Callee joins `call:<callId>` on answer — mirrors the caller's
             // join at initiate. Both peers now receive `call:ended` etc.
@@ -1815,7 +1877,11 @@ export function registerChatNamespace(
           return;
         }
         messagingClient
-          .endCall({ callId: r.data.callId, userId })
+          .endCall({
+            callId: r.data.callId,
+            userId,
+            legId: r.data.legId ?? socket.data.callLegId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)
           )
@@ -2034,7 +2100,11 @@ export function registerChatNamespace(
       if (!userId) return;
       for (const room of socket.rooms) {
         if (!room.startsWith("call:")) continue;
-        scheduleCallCleanup(room.slice("call:".length), userId);
+        scheduleCallCleanup(
+          room.slice("call:".length),
+          userId,
+          socket.data.callLegId ?? deviceId
+        );
       }
     });
 
