@@ -118,11 +118,12 @@ export class AutoDeleteService {
     // already have a timer keep deleting on schedule.
     if (mode !== "OFF") {
       // Which messages this user's setting governs: always their own, plus the
-      // peer's when the peer has no setting of their own (one-sided case —
-      // the peer's messages are following THIS user's timer).
+      // peer's when the peer never configured this chat (one-sided case — the
+      // peer's messages are following THIS user's timer). A peer who explicitly
+      // chose Off is excluded: `resolveEffectiveAutoDelete` no longer arms their
+      // sends, so re-stamping them here would contradict the send path.
       const senderIds = [userId];
-      if (peerId && readAutoDeleteSetting(map, peerId).mode === "OFF")
-        senderIds.push(peerId);
+      if (peerId && !hasExplicitAutoDelete(map, peerId)) senderIds.push(peerId);
       await this.messageRepo
         .restampPendingAutoDeletes({
           roomId,

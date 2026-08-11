@@ -120,9 +120,11 @@ export function readAutoDeleteSetting(
  * that covers both the one-sided and the two-different-timers case — and the
  * sender's ACCOUNT-WIDE default (Settings → Chat → Auto-Delete) last.
  *
- * The account default is a fallback, never an override: a chat where the sender
- * explicitly picked "Off" stays off even while the account default is on, which
- * is why an explicit OFF is stored rather than deleted.
+ * OFF MEANS OFF: an explicit "Off" on THIS chat outranks every fallback, the
+ * peer's timer included. Both fallbacks exist to cover a chat the sender never
+ * configured; once they have said "not here", nothing may re-arm their messages
+ * behind a menu that reads Off. That is why an explicit OFF is stored rather
+ * than deleted — "off here" and "never chose" must stay distinguishable.
  */
 export function resolveEffectiveAutoDelete(
   map: Record<string, AutoDeleteSetting>,
@@ -132,9 +134,9 @@ export function resolveEffectiveAutoDelete(
 ): AutoDeleteSetting {
   const own = readAutoDeleteSetting(map, senderId);
   if (own.mode !== "OFF") return own;
+  if (hasExplicitAutoDelete(map, senderId)) return AUTO_DELETE_OFF;
   const peer = readAutoDeleteSetting(map, peerId);
   if (peer.mode !== "OFF") return peer;
-  if (hasExplicitAutoDelete(map, senderId)) return AUTO_DELETE_OFF;
   return accountDefault;
 }
 

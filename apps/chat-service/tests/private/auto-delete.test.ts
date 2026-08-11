@@ -167,6 +167,30 @@ describe("effective timer resolution", () => {
     ).toBe(2592000);
   });
 
+  // OFF MEANS OFF. Both fallbacks only cover a chat the sender never configured;
+  // once they picked "Off" here, no peer timer and no account default may re-arm
+  // their sends behind a gear menu that reads Off.
+  it("keeps an explicit OFF off even when the PEER has a timer", () => {
+    const map = parseAutoDeleteMap({
+      [TEST_USER_ID]: { mode: "OFF", ttlSeconds: null, setAt: "2026-08-11" },
+      [PEER]: dayTimer,
+    });
+    expect(
+      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).mode
+    ).toBe("OFF");
+    // The peer's own messages still follow the peer's own timer.
+    expect(
+      resolveEffectiveAutoDelete(map, PEER, TEST_USER_ID, days30).ttlSeconds
+    ).toBe(86400);
+  });
+
+  it("still lets the peer's timer govern a sender who never configured the chat", () => {
+    const map = parseAutoDeleteMap({ [PEER]: dayTimer });
+    expect(
+      resolveEffectiveAutoDelete(map, TEST_USER_ID, PEER, days30).ttlSeconds
+    ).toBe(86400);
+  });
+
   it("stamps a TIMER deadline from send time, and defers AFTER_VIEWING", () => {
     const sentAt = new Date("2026-08-05T10:00:00.000Z");
     expect(
@@ -291,6 +315,31 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
     const [args] =
       mocks.privateMessageRepo.restampPendingAutoDeletes.mock.calls.at(-1)!;
     expect(args.senderIds.sort()).toEqual([PEER, TEST_USER_ID].sort());
+  });
+
+  it("does not re-stamp the messages of a peer who explicitly turned this chat OFF", async () => {
+    // The send path stops arming that peer's messages once they pick Off, so
+    // re-stamping them here would resurrect the very timer they opted out of.
+    const peerOff = { mode: "OFF", ttlSeconds: null, setAt: "2026-08-11" };
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
+      room({ [PEER]: peerOff })
+    );
+    mocks.privateRoomRepo.setAutoDelete.mockImplementation(
+      async (_roomId: string, userId: string, s: any) =>
+        room({
+          [PEER]: peerOff,
+          [userId]: { ...s, setAt: new Date().toISOString() },
+        })
+    );
+
+    await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 3600 });
+
+    const [args] =
+      mocks.privateMessageRepo.restampPendingAutoDeletes.mock.calls.at(-1)!;
+    expect(args.senderIds).toEqual([TEST_USER_ID]);
   });
 
   it("leaves already-armed messages alone when turned OFF (§7)", async () => {
