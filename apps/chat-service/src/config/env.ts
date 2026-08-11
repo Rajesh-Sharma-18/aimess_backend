@@ -109,6 +109,29 @@ const envSchema = z.object({
   CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
 
+  // Presence liveness.
+  //
+  // A device session is believed live for PRESENCE_SESSION_TTL_SEC without a
+  // refresh; the api-gateway refreshes every live socket well inside that
+  // window (packet-driven keepalive in chat.ns.ts, plus the client's own
+  // `presence:heartbeat`). The TTL therefore only has to survive a couple of
+  // missed refreshes — it is the backstop for the case where NO `disconnect`
+  // event ever arrives (killed process, dead TCP path, crashed gateway node).
+  //
+  // The sweep is what turns that silent expiry into an actual OFFLINE event:
+  // without it a stale session just rots and every watcher keeps a green dot.
+  // Worst-case detection latency is roughly TTL + sweep interval.
+  PRESENCE_SESSION_TTL_SEC: z.coerce.number().positive().default(150),
+  PRESENCE_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(30),
+  PRESENCE_SWEEP_BATCH: z.coerce.number().positive().default(500),
+  // Status key retention. Must comfortably outlive any live session: if it
+  // expired under a still-online user, their eventual disconnect would compute
+  // offline→offline, publish nothing, and strand every watcher on "Online".
+  PRESENCE_STATUS_TTL_SEC: z.coerce
+    .number()
+    .positive()
+    .default(60 * 60 * 24),
+
   // Auto-unmute sweep for TIMED group moderation mutes. Enforcement itself is
   // lazy (a lapsed `moderationMutedUntil` stops blocking immediately), so this
   // sweep only delivers the realtime `group:member:unmuted` signal and clears

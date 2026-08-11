@@ -161,6 +161,28 @@ export function buildApp(): BuiltApp {
 
   // -- Mock repositories --
   const cacheRepo = repoMock();
+  // PresenceService reads status + lastSeen + version in ONE batched call.
+  // Default it from the same per-user mocks specs already program
+  // (`getUserPresence` / `getUserPresences` / `getLastSeen`), so a spec keeps
+  // stubbing whichever of those it finds natural and never has to know a
+  // snapshot shape exists.
+  cacheRepo.getPresenceSnapshots = jest.fn(async (userIds: string[]) => {
+    const statuses = (await cacheRepo.getUserPresences(userIds)) as
+      | Map<string, string | null>
+      | undefined;
+    const snapshots = new Map();
+    for (const userId of userIds) {
+      const status =
+        statuses?.get(userId) ?? (await cacheRepo.getUserPresence(userId));
+      snapshots.set(userId, {
+        userId,
+        isOnline: status === "online",
+        lastSeen: (await cacheRepo.getLastSeen(userId)) ?? null,
+        version: 0,
+      });
+    }
+    return snapshots;
+  });
   const privateRoomRepo = repoMock();
   const privateMessageRepo = repoMock();
   const privateMessagePinRepo = repoMock();
@@ -256,7 +278,6 @@ export function buildApp(): BuiltApp {
   const presenceService = new PresenceService(
     cacheRepo,
     redis,
-    privateRoomRepo,
     undefined,
     presenceVisibilityGate
   );

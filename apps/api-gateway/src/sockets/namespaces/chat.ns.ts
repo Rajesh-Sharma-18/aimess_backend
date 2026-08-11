@@ -2,6 +2,7 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
+import { readPresenceSnapshots } from "@aimess/redis";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
@@ -40,6 +41,13 @@ const MAX_URLS = 20; // link previews per message
 const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const MAX_NAME_LEN = 120; // denormalized senderName fanned out to the room
 const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
+
+/**
+ * How often a live socket refreshes its presence device session. Must be
+ * comfortably under chat-service's PRESENCE_SESSION_TTL_SEC (150 s) so a couple
+ * of dropped refreshes still don't expire a healthy connection.
+ */
+const PRESENCE_REFRESH_MS = Number(process.env.PRESENCE_REFRESH_MS ?? 45_000);
 
 const CALL_INITIATE_RATE_MAX = 5; // call attempts allowed per caller…
 const CALL_INITIATE_RATE_WINDOW_SEC = 60; // …per this window
@@ -423,11 +431,14 @@ export function registerChatNamespace(
         .fetchSockets();
       if (watchers.length === 0) return;
 
-      // One Redis read for the whole pass — `user:online:<id>` is the same key
-      // the gateway maintains on connect/heartbeat, so it needs no new RPC.
-      const isOnline =
-        (await redisPub.exists(`user:online:${subjectId}`).catch(() => 0)) ===
-        1;
+      // One Redis read for the whole pass, straight from the CANONICAL presence
+      // state chat-service writes. This used to read the gateway's own
+      // `user:online:<id>` flag, which was set on connect and deleted on any
+      // disconnect — so a user with two tabs was reported offline the moment
+      // either one closed, disagreeing with the presence:status stream itself.
+      const subject = (await readPresenceSnapshots(redisPub, [subjectId])).get(
+        subjectId
+      );
 
       await Promise.all(
         watchers.map(async (watcher) => {
@@ -443,12 +454,18 @@ export function registerChatNamespace(
             void watcher.join(`presence:${subjectId}`);
             watcher.emit("presence:status", {
               userId: subjectId,
-              isOnline,
-              lastSeen: null,
+              isOnline: subject?.isOnline ?? false,
+              lastSeen: subject?.lastSeen ?? null,
+              version: subject?.version ?? 0,
             });
             return;
           }
           if (!allowed && subscribed) {
+            // Revocation, not a state report — so it carries NO `version`.
+            // A version-less presence:status is unconditional by contract
+            // (see BACKEND_PRESENCE_MOBILE.md): version-guarding this one would
+            // let a stale-but-higher version keep the green dot lit for a
+            // viewer who is no longer allowed to see it.
             watcher.emit("presence:status", {
               userId: subjectId,
               isOnline: false,
@@ -957,18 +974,33 @@ export function registerChatNamespace(
       }
     );
 
-    // Presence key for FCM routing: notifications-service checks this before
-    // pushing to avoid sending FCM to a user who is actively connected.
-    // TTL = 300 s; refreshed on every presence:heartbeat so the key stays alive
-    // as long as the socket is open. On clean disconnect the key is deleted
-    // immediately; the TTL handles unclean disconnects (TCP drops etc.).
-    redisPub
-      .set(`user:online:${userId}`, "1", "EX", 300)
-      .catch((err: unknown) =>
-        logger.warn(
-          `/chat presence set failed userId=${userId}: ${String(err)}`
-        )
-      );
+    // Presence is per SOCKET, not per session. `sessionId` identifies a LOGIN —
+    // two browser tabs share one — so keying the device session by it made the
+    // first tab to close report the whole session disconnected, and the user
+    // went grey while still connected in the other tab. `socket.id` is unique
+    // per connection across gateway nodes, so "any live socket" is exactly the
+    // multi-device rule presence needs. `deviceId` above stays session-granular
+    // because call legs genuinely are per login.
+    const presenceDeviceId = socket.id;
+    let socketAppState = "FOREGROUND";
+
+    // Server-driven liveness. Clients are asked to send `presence:heartbeat`,
+    // but presence must not DEPEND on their cooperation — a mobile client that
+    // never heartbeats would silently expire while its socket is wide open.
+    // Any traffic on the connection (including engine.io's own ping/pong, which
+    // never stops while the transport is healthy) refreshes the device session,
+    // throttled so this costs one gRPC call per socket per refresh window.
+    let lastPresenceRefreshAt = 0;
+    const refreshPresence = (appState: string, force = false): void => {
+      const now = Date.now();
+      if (!force && now - lastPresenceRefreshAt < PRESENCE_REFRESH_MS) return;
+      lastPresenceRefreshAt = now;
+      messagingClient
+        .presenceHeartbeat({ userId, deviceId: presenceDeviceId, appState })
+        .catch((err: unknown) =>
+          logger.warn(`/chat presence refresh error: ${String(err)}`)
+        );
+    };
 
     // Mark the user online in chat-service presence (best-effort).
     if (userId) {
@@ -980,10 +1012,11 @@ export function registerChatNamespace(
         (socket.handshake.query?.clientType as string) ||
         (socket.handshake.headers["x-client-type"] as string) ||
         "unknown";
+      lastPresenceRefreshAt = Date.now();
       messagingClient
         .presenceConnect({
           userId,
-          deviceId,
+          deviceId: presenceDeviceId,
           platform,
           clientType,
           appState: "FOREGROUND",
@@ -991,6 +1024,13 @@ export function registerChatNamespace(
         .catch((err: unknown) =>
           logger.warn(`/chat presence:connect error: ${String(err)}`)
         );
+
+      // Engine.io's server-sent ping is answered by a client `pong`, which
+      // arrives here — so a healthy transport keeps presence alive on its own,
+      // with no cooperation from the application layer.
+      const onEnginePacket = (): void => refreshPresence(socketAppState);
+      socket.conn.on("packet", onEnginePacket);
+      socket.on("disconnect", () => socket.conn.off("packet", onEnginePacket));
     }
 
     socket.on(
@@ -1294,24 +1334,22 @@ export function registerChatNamespace(
       }
     );
 
-    // Feature 18/19: Presence heartbeat + peer subscription
+    // Feature 18/19: Presence heartbeat + peer subscription.
+    //
+    // The client heartbeat is now only about APP STATE (foreground/background).
+    // Liveness itself is server-driven (see refreshPresence above), so a client
+    // that stops beating no longer goes grey while its socket is still open,
+    // and a client that keeps beating after its process died cannot happen.
+    // An app-state CHANGE is forced through immediately — backgrounding is a
+    // real presence input, not a keepalive, and must not be swallowed by the
+    // refresh throttle.
     socket.on("presence:heartbeat", (payload: unknown) => {
       const appState =
         (payload as { appState?: string } | undefined)?.appState ??
         "FOREGROUND";
-      // Refresh the FCM-routing online key on every heartbeat.
-      redisPub
-        .set(`user:online:${userId}`, "1", "EX", 300)
-        .catch((err: unknown) =>
-          logger.warn(
-            `/chat presence heartbeat set failed userId=${userId}: ${String(err)}`
-          )
-        );
-      messagingClient
-        .presenceHeartbeat({ userId, deviceId, appState })
-        .catch((err: unknown) =>
-          logger.warn(`/chat presence:heartbeat error: ${String(err)}`)
-        );
+      const changed = appState !== socketAppState;
+      socketAppState = appState;
+      refreshPresence(appState, changed);
     });
 
     socket.on(
@@ -1345,8 +1383,16 @@ export function registerChatNamespace(
             // message/read/typing/inbox stream, not just their online dot.
             void socket.join(`presence:${peerId}`);
           }
+          // The ack CARRIES the current state, it does not merely confirm the
+          // join. Socket events are delivery, not durable state: a client that
+          // was disconnected while a peer flipped would otherwise sit on a
+          // stale dot until the peer flipped AGAIN. Subscribing is exactly the
+          // moment to reconcile, and it costs one pipelined Redis read — no
+          // extra REST round trip, and nothing to invalidate on reconnect.
+          const snapshots = await readPresenceSnapshots(redisPub, visible);
           ackOk(callback, "SOCKET_PRESENCE_SUBSCRIBED", locale, {
             subscribedCount: visible.length,
+            statuses: [...snapshots.values()],
           });
         })();
       }
@@ -2121,15 +2167,11 @@ export function registerChatNamespace(
       recording.flush();
 
       if (userId) {
-        redisPub
-          .del(`user:online:${userId}`)
-          .catch((err: unknown) =>
-            logger.warn(
-              `/chat presence del failed userId=${userId}: ${String(err)}`
-            )
-          );
+        // Only THIS socket's session ends here. chat-service re-derives the
+        // aggregate from whatever sessions remain, so another tab or the phone
+        // keeps the user online and no offline event is published.
         messagingClient
-          .presenceDisconnect({ userId, deviceId })
+          .presenceDisconnect({ userId, deviceId: presenceDeviceId })
           .catch((err: unknown) =>
             logger.warn(`/chat presence:disconnect error: ${String(err)}`)
           );

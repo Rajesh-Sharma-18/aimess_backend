@@ -32,7 +32,7 @@ import {
   resolveDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
-import type { PresenceService } from "./presence.service.js";
+import type { PresenceService, PresenceView } from "./presence.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 import type { ChatFriendshipInfo } from "../grpc/user-snapshot.client.js";
@@ -207,6 +207,8 @@ export interface PrivateRoomPeer {
   avatarUrlExpiresIn: number | null;
   isDeletedUser: boolean;
   isOnline: boolean;
+  /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
+  lastSeen: number | null;
 }
 
 /**
@@ -282,6 +284,8 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   isOnline: boolean;
   /** True when the peer is offline — negation of isOnline, from the existing presence pipeline. */
   isOffline: boolean;
+  /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
+  lastSeen: number | null;
   unreadMessageCount: number;
   lastActivityAt: number;
   lastActivity: PrivateConversationLastActivity;
@@ -305,6 +309,7 @@ function toConversationListItem(
     isDeletedUser: room.peer.isDeletedUser,
     isOnline: room.peer.isOnline,
     isOffline: !room.peer.isOnline,
+    lastSeen: room.peer.lastSeen,
     unreadMessageCount: room.unreadMessageCount,
     lastActivityAt: room.lastActivityAt,
     lastActivity: room.lastActivity,
@@ -339,6 +344,8 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   isOnline: boolean;
   /** True when the peer is offline — negation of isOnline, from the existing presence pipeline. */
   isOffline: boolean;
+  /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
+  lastSeen: number | null;
   isMuted: boolean;
   muteUntil: number | null;
   unreadMessageCount: number;
@@ -510,6 +517,7 @@ export class PrivateRoomService {
       avatarUrlExpiresIn: enriched.peer.avatarUrlExpiresIn,
       isOnline: enriched.peer.isOnline,
       isOffline: !enriched.peer.isOnline,
+      lastSeen: enriched.peer.lastSeen,
       isMuted: enriched.isMuted,
       muteUntil,
       unreadMessageCount: enriched.unreadMessageCount,
@@ -618,14 +626,19 @@ export class PrivateRoomService {
       ? await this.friendshipGrpcClient.checkFriendships(userId, peerIds)
       : new Map<string, ChatFriendshipInfo>();
 
-    // Real-time presence — reuses PresenceService (same `presence:user:<id>`
-    // Redis source conv:updated reads) rather than the user-snapshot's
+    // Real-time presence — reuses PresenceService (the same canonical Redis
+    // state `presence:status` is published from) rather than the user-snapshot's
     // `isOnline` field, which user-service never populates (always false).
     // Viewer-scoped: a peer whose `whoCanSeeOnlineStatus` excludes this caller
     // reads as offline here, exactly as they do on every other surface.
-    const onlineByPeer = this.presenceService
-      ? await this.presenceService.getPresenceManyFor(userId, peerIds)
-      : new Map<string, boolean>();
+    //
+    // `lastSeen` rides along because this response IS the client's presence
+    // hydration: a conversation opened while the peer is already offline must
+    // render "Last seen …" immediately, and no further `presence:status` is
+    // coming (nothing changed) to supply it.
+    const presenceByPeer = this.presenceService
+      ? await this.presenceService.getPresenceViewsFor(userId, peerIds)
+      : new Map<string, PresenceView>();
 
     // Resolve peer avatar object keys → full download URLs (resolve on read).
     const avatarUrls = await resolveMediaUrlMap(
@@ -927,7 +940,8 @@ export class PrivateRoomService {
             urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
           isDeletedUser: snapshot.isDeletedUser === true,
-          isOnline: onlineByPeer.get(peerId) ?? false,
+          isOnline: presenceByPeer.get(peerId)?.isOnline ?? false,
+          lastSeen: presenceByPeer.get(peerId)?.lastSeen ?? null,
         },
         lastActivityAt,
         lastActivity,

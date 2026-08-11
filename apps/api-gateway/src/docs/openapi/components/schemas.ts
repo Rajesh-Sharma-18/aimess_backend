@@ -8119,6 +8119,12 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },
       isOnline: { type: "boolean" },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
+      },
     },
     required: [
       "id",
@@ -8237,6 +8243,12 @@ export const openApiSchemas = {
         description:
           "Negation of isOnline, from the existing presence pipeline.",
       },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
+      },
       isMuted: {
         type: "boolean",
         description: "Mirrors CommunityData.isMuted.",
@@ -8314,6 +8326,12 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "Negation of isOnline, from the same real-time presence pipeline as conv:updated's isOffline.",
+      },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
       },
       unreadMessageCount: {
         type: "integer",
@@ -11334,10 +11352,22 @@ export const openApiSchemas = {
   },
   ChatPresence: {
     type: "object",
+    description:
+      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns the same shape as a genuinely-offline user, so the setting itself stays undisclosed.",
     properties: {
       userId: { type: "string" },
       isOnline: { type: "boolean" },
-      lastSeen: { type: "integer", nullable: true },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          "Server-generated epoch ms of the moment this user's LAST session ended. Render only while isOnline is false.",
+      },
+      version: {
+        type: "integer",
+        description:
+          "Monotonic per-user counter, advanced only on a real ONLINE<->OFFLINE flip. Compare against the `version` on presence:status so a late socket event cannot overwrite a newer state.",
+      },
     },
   },
   CommunityPinResponse: {
