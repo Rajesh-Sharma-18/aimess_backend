@@ -173,17 +173,21 @@ export const autoDeleteSchema = z.object({
   ttlSeconds: z.number().int().positive().nullish(),
 });
 
+/**
+ * Free text, same rule as reportPrivateUserSchema / community's
+ * createReportSchema — NOT a closed enum. The shared report dialog sends
+ * OFFENSIVE_LANGUAGE / INAPPROPRIATE_CONTENT / SCAM_OR_FRAUD / IMPERSONATION,
+ * none of which the old enum here allowed, so five of its six reasons 400'd.
+ * backoffice-service's normalizeReportReason canonicalizes whatever arrives.
+ *
+ * `roomId` is optional and purely a cross-check: the service resolves the real
+ * room from the message and rejects a mismatch, so a client cannot report a
+ * message while claiming it belongs to another conversation.
+ */
 export const reportMessageSchema = z.object({
-  reason: z.enum([
-    "SPAM",
-    "HARASSMENT",
-    "HATE_SPEECH",
-    "NUDITY",
-    "VIOLENCE",
-    "SCAM",
-    "OTHER",
-  ]),
+  reason: reportUserReasonSchema,
   description: z.string().max(1000).default(""),
+  roomId: z.string().min(5).max(300).optional(),
 });
 
 /**

@@ -163,6 +163,9 @@ export type RelatedReport = {
 };
 
 /** The full report detail returned by GET /reports/{reportId}. */
+/** Which kind of conversation a report was filed from. */
+export type ConversationKind = "PRIVATE" | "GROUP" | "COMMUNITY";
+
 export type ReportDetail = {
   reportId: string;
   reportType: ReportType;
@@ -179,6 +182,11 @@ export type ReportDetail = {
   // Resolved live from community-service via communityId on every read —
   // never persisted, so it can't go stale.
   communityName: string | null;
+  // Conversation the report was filed from — private room id / group room id /
+  // community id + which of the three. Null on rows ingested before the context
+  // was carried, so the FE must render it as optional.
+  roomId: string | null;
+  roomType: ConversationKind | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
@@ -370,6 +378,9 @@ export type MessageReportBlock = {
   media: MediaObject[];
   sentAt: number | null;
   senderId: string | null;
+  /** Conversation the reported message lives in (see ReportDetail.roomId). */
+  roomId: string | null;
+  roomType: ConversationKind | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -468,6 +479,9 @@ export type ReportModerationDetail = {
   updatedAt: number;
   reporter: ReportModerationUserRef | null;
   reportedUser: ReportModerationUserRef | null;
+  // Conversation the report was filed from (null for legacy rows).
+  roomId: string | null;
+  roomType: ConversationKind | null;
   // Present for COMMUNITY / LIVESTREAM / MESSAGE reports (omitted for USER).
   community?: CommunityReportBlock | null;
   communityAdmin?: ReportModerationUserRef | null;

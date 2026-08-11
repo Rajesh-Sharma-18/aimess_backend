@@ -370,6 +370,12 @@ model Report {
   // admin.report.ingest event so getCore can hydrate reportedUser for non-USER
   // report types without a cross-service lookup on every read.
   reportedUserId String? @db.Uuid
+  // Conversation the report was filed from — private room id / group room id /
+  // community id, plus which of the three. Carried on the
+  // admin.report.ingest event. Null on every pre-existing row (nothing carried
+  // it before), so reads must treat it as optional.
+  roomId     String?
+  roomType   String? // PRIVATE | GROUP | COMMUNITY
   status     String   @default("open") // open | reviewing | resolved | dismissed
   priority   String   @default("normal")
   assignedTo String?  @db.Uuid
@@ -397,6 +403,7 @@ model Report {
   @@index([reporterId])
   @@index([communityId])
   @@index([reportedUserId])
+  @@index([roomType, roomId])
 }
 
 model ReportNote {

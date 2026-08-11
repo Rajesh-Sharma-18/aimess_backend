@@ -839,15 +839,17 @@ export class PrivateMessageController {
   reportMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { reason, description } = req.body as {
+    const { reason, description, roomId } = req.body as {
       reason: string;
       description?: string;
+      roomId?: string;
     };
     const result = await this.messageService.reportMessage({
       messageId,
       reporterId: userId,
       reason,
       description,
+      roomId,
     });
     res
       .status(HTTP_STATUS.CREATED)

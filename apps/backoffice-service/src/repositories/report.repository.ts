@@ -23,6 +23,7 @@ import type {
   ActionOnReportedUser,
   BulkResult,
   BulkResultItem,
+  ConversationKind,
   DismissReason,
   DismissResult,
   EvidenceItem,
@@ -680,6 +681,8 @@ type RawReportRow = {
   createdAt: Date;
   updatedAt: Date;
   reportedUserId: string | null;
+  roomId: string | null;
+  roomType: string | null;
 };
 
 /** Batched profile/status/moderator-name lookups for a page of report rows. */
@@ -1088,6 +1091,8 @@ export class PrismaReportRepository implements ReportRepository {
       communityName: row.communityId
         ? (ctx.communityNames.get(row.communityId) ?? null)
         : null,
+      roomId: row.roomId ?? null,
+      roomType: (row.roomType as ConversationKind | null) ?? null,
       // Not carried by AdminReportIngestPayload — see file-header note.
       sourceService: "unknown",
       createdAt: row.createdAt.getTime(),

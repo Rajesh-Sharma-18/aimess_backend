@@ -1182,14 +1182,32 @@ export class PrivateMessageService {
     );
   }
 
+  /**
+   * Report a MESSAGE (not its sender). The reported target is the message; the
+   * sender rides along as `reportedUserId` so a moderator can act on the person
+   * without the message identity being thrown away. This used to publish
+   * `type: "user"` with the sender as `targetId`, which collapsed every private
+   * message report into a plain user report the moment it left this service —
+   * the messageId never reached admin_db.
+   *
+   * Nothing here trusts the client beyond the messageId: the room, the sender
+   * and the reporter's access are all resolved from the stored message.
+   * `roomId`, when supplied, must MATCH the message's own room — a client
+   * cannot report a message while naming a different conversation.
+   */
   async reportMessage(params: {
     messageId: string;
     reporterId: string;
     reason: string;
     description?: string;
+    /** Conversation the client believes the message belongs to (optional). */
+    roomId?: string;
   }): Promise<PrivateMessageReport> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    if (params.roomId && params.roomId !== message.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const room = await this.roomRepo.findByRoomId(message.roomId);
     if (!room || !room.participants?.includes(params.reporterId))
@@ -1208,13 +1226,16 @@ export class PrivateMessageService {
         description: params.description ?? "",
       });
       publishAdminReportIngestSafe({
-        type: "user",
-        targetId: message.senderId ?? "",
+        type: "message",
+        targetId: message.id,
         reporterId: params.reporterId,
         reason: params.reason,
         details: params.description?.trim() ? params.description.trim() : null,
         // Private (1-to-1) messages are never community-scoped.
         communityId: null,
+        reportedUserId: message.senderId ?? null,
+        roomId: message.roomId,
+        roomType: "PRIVATE",
         eventAt: new Date().toISOString(),
         sourceReportId: report.id,
       });

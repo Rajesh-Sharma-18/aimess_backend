@@ -21,6 +21,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     findOpenReportByReporterAndTarget: jest.fn(),
     findReportByReporterAndTarget: jest.fn(),
+    findReportByReporterAndMessage: jest.fn(),
     createReport: jest.fn(),
     findActiveMemberIdsByRoles: jest.fn(),
     createAuditLog: jest.fn(),
@@ -65,6 +66,7 @@ beforeEach(() => {
   });
   repo.findOpenReportByReporterAndTarget.mockResolvedValue(null);
   repo.findReportByReporterAndTarget.mockResolvedValue(null);
+  repo.findReportByReporterAndMessage.mockResolvedValue(null);
   repo.findActiveMemberIdsByRoles.mockResolvedValue([]);
   repo.createAuditLog.mockResolvedValue(undefined);
   repo.createReport.mockImplementation(
@@ -115,7 +117,14 @@ describe("createReport — admin.report.ingest carries communityId", () => {
 
   it("includes the community's communityId for a reported-message report", async () => {
     chat.mockReturnValue({
-      getCommunityMessageById: jest.fn(async () => ({ found: false })),
+      getCommunityMessageById: jest.fn(async () => ({
+        found: true,
+        message: "spam",
+        contentType: "TEXT",
+        postedAt: 0,
+        senderId: TARGET,
+        media: [],
+      })),
     });
 
     await communityService.createReport(CID, SELF, {

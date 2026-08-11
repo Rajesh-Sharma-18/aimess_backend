@@ -1401,9 +1401,18 @@ export class GroupMessageService {
     messageId: string;
     reporterId: string;
     reportReason: string;
+    description?: string;
+    /** Room from the request path — must match the message's own room. */
+    roomId?: string;
   }): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The reported message must actually live in the conversation the caller
+    // named; otherwise a member of group A could report a message in group B
+    // through A's path. Membership is then checked against the message's REAL
+    // room, never the path's.
+    if (params.roomId && params.roomId !== message.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     await assertGroupMember(this.memberRepo, message.roomId, params.reporterId);
     const updated = await this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
@@ -1414,9 +1423,11 @@ export class GroupMessageService {
       targetId: params.messageId,
       reporterId: params.reporterId,
       reason: params.reportReason,
-      details: null,
+      details: params.description?.trim() ? params.description.trim() : null,
       communityId: null,
       reportedUserId: message.senderId ?? null,
+      roomId: message.roomId,
+      roomType: "GROUP",
       eventAt: new Date().toISOString(),
       sourceReportId: `group:${params.messageId}:${params.reporterId}`,
     });

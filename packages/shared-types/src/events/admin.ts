@@ -96,6 +96,14 @@ export type AdminReportIngestPayload = {
    * Omitted for `user` (already the target) and `community` reports.
    */
   reportedUserId?: string | null;
+  /**
+   * Conversation the report was filed from. `roomId` is the private room id,
+   * group room id, or community id; `roomType` names which. Carried so a
+   * moderator reading admin_db.Report can tell WHERE a reported user/message
+   * lives — previously only community reports had any context at all.
+   */
+  roomId?: string | null;
+  roomType?: "PRIVATE" | "GROUP" | "COMMUNITY" | null;
   /** ISO-8601 timestamp captured at publish time. */
   eventAt: string;
   sourceReportId: string;

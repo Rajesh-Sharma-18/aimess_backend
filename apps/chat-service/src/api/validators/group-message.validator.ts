@@ -14,6 +14,8 @@ import {
 
 export const reportGroupMessageSchema = z.object({
   reportReason: z.string().min(1).max(200).trim(),
+  /** Reporter's free text for the "OTHER" reason — was dropped before. */
+  description: z.string().max(1000).default(""),
 });
 
 export const sendGroupMessageSchema = z

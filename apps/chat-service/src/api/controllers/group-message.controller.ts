@@ -399,11 +399,16 @@ export class GroupMessageController {
   reportMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { reportReason } = req.body as { reportReason: string };
+    const { reportReason, description } = req.body as {
+      reportReason: string;
+      description?: string;
+    };
     const result = await this.messageService.report({
       messageId,
       reporterId: userId,
       reportReason,
+      description,
+      roomId: req.params.roomId as string,
     });
     res
       .status(HTTP_STATUS.CREATED)
