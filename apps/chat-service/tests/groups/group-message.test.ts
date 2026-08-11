@@ -769,6 +769,28 @@ describe("POST /:roomId/messages/:messageId/report", () => {
     expect(mocks.groupMessageRepo.addReport).not.toHaveBeenCalled();
   });
 
+  // The path's roomId is a claim, not a fact: a message that lives elsewhere is
+  // not reportable through this group's URL, even before the membership check.
+  it("SECURITY: 404 when the path roomId is not the message's room", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: "some-other-room",
+      senderId: "other-user",
+      content: { text: "hi" },
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post(`${BASE}/${ROOM}/messages/g1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reportReason: "SPAM" });
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupMessageRepo.addReport).not.toHaveBeenCalled();
+  });
+
   it("NEGATIVE: 404 reporting a message that doesn't exist", async () => {
     mocks.groupMessageRepo.findById.mockResolvedValue(null);
 
