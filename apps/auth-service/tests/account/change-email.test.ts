@@ -208,6 +208,37 @@ describe("POST /api/auth/change-email/verify", () => {
     expect(otpRepo.incrementAttempts).toHaveBeenCalledWith("otp-1");
   });
 
+  it("returns 400 once the attempt cap is reached, without touching the email", async () => {
+    otpRepo.findLatestActive.mockResolvedValue({
+      id: "otp-1",
+      userId: TEST_USER_ID,
+      attempts: 5,
+      maxAttempts: 5,
+      codeHash: "hashed",
+    });
+
+    const res = await request(app)
+      .post("/api/auth/change-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ oldEmail: OLD, newEmail: NEW, code: "123456" });
+
+    expect(res.status).toBe(400);
+    expect(repo.updateVerifiedEmail).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the loser of a concurrent claim hits the unique index (P2002)", async () => {
+    repo.updateVerifiedEmail.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/change-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ oldEmail: OLD, newEmail: NEW, code: "123456" });
+
+    expect(res.status).toBe(409);
+  });
+
   it("returns 400 on a malformed code", async () => {
     const res = await request(app)
       .post("/api/auth/change-email/verify")
