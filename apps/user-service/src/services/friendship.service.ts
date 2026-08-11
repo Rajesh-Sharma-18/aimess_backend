@@ -18,6 +18,7 @@ import {
 } from "../messaging/publish-friendship.js";
 import {
   emitFriendEventSafe,
+  emitFriendSelfEventSafe,
   emitFriendEventToPairSafe,
 } from "../lib/friend-socket.js";
 import {
@@ -1161,6 +1162,16 @@ export const friendshipService = {
       ...blockedView,
       relationship: toSearchRelationship(blockedView),
     });
+
+    // …but the blocked party's screens still have to stop offering "Send Friend
+    // Request" to someone who blocked them. This says only "re-read your
+    // relationship with this peer" — no verb, no status — so they refetch and
+    // discover exactly what the REST layer already lets them discover (a 404 on
+    // the profile), and nothing more. Self-room only: `user:<id>` is joinable by
+    // presence watchers.
+    emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
+      peerId: blockerId,
+    });
   },
 
   async unblockUser(blockerId: string, blockedId: string): Promise<void> {
@@ -1208,6 +1219,12 @@ export const friendshipService = {
       targetUserId: blockedId,
       ...unblockedView,
       relationship: toSearchRelationship(unblockedView),
+    });
+
+    // Same neutral signal as the block path — without it the other side stays
+    // stuck on "profile unavailable" until they restart the app.
+    emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
+      peerId: blockerId,
     });
   },
 
