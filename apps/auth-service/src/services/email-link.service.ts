@@ -23,6 +23,8 @@ import {
   verifyAndConsumeOtp,
 } from "../lib/otp.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
+import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
+import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
 import { publishLinkEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
@@ -141,11 +143,13 @@ export const emailLinkService = {
     // Atomic: links email + sets primaryAccount in one transaction so that a
     // concurrent getAccountSummary gRPC call from user-service can never read
     // a half-written state (email present but primaryAccount still null).
-    const result = await authRepository.linkVerifiedEmailAndSetPrimary(
-      userId,
-      email,
-      AuthProvider.EMAIL
-    );
+    const result = await authRepository
+      .linkVerifiedEmailAndSetPrimary(userId, email, AuthProvider.EMAIL)
+      .catch(rethrowAsEmailConflict);
+
+    // The verifying device already has the new state in its HTTP response; this
+    // tells the user's OTHER sessions to re-fetch their profile.
+    emitProfileUpdatedSafe(userId);
 
     return {
       userId: result.id,

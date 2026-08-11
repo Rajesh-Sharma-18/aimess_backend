@@ -29,6 +29,9 @@ jest.mock("../../src/messaging/publish-auth-email-otp.js", () => ({
   publishChangeEmailOtpSafe: jest.fn(),
   publishLinkEmailOtpSafe: jest.fn(),
 }));
+jest.mock("../../src/lib/profile-socket.js", () => ({
+  emitProfileUpdatedSafe: jest.fn(),
+}));
 
 import request from "supertest";
 

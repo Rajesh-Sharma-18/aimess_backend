@@ -35,6 +35,13 @@ jest.mock("../../src/messaging/publish-user-created.js", () => ({
   publishUserCreatedSafe: jest.fn(),
 }));
 
+// --- notifications-service gRPC client: the real module resolves its proto
+//     path from `import.meta.url` at import time (unparsable in CJS-mode Jest)
+//     and pulls in native @grpc/grpc-js. Stub it, same as user-service does.
+jest.mock("../../src/grpc/notification.client.js", () => ({
+  recordSessionActionSafe: jest.fn(),
+}));
+
 // --- External identity verifiers (pull in ESM-only google-auth-library /
 //     jose). Empty module by default; social-login specs re-mock with fns.
 jest.mock("../../src/lib/google-id-token.js", () => ({

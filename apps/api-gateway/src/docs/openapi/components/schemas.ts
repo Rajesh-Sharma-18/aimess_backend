@@ -4424,6 +4424,11 @@ export const openApiSchemas = {
         nullable: true,
         description: "Primary account email from auth-service.",
       },
+      emailVerified: {
+        type: "boolean",
+        description:
+          "True once `email` has been proven by OTP (link-email / change-email). False when unset, pending verification, or auth-service is unavailable.",
+      },
       isGoogleLogin: {
         type: "boolean",
         description:
@@ -4487,6 +4492,7 @@ export const openApiSchemas = {
       "bio",
       "account",
       "email",
+      "emailVerified",
       "isGoogleLogin",
       "isAppleLogin",
       "primaryAccount",
