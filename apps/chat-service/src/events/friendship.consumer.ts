@@ -119,16 +119,20 @@ export class FriendshipEventConsumer {
           // they were friends before (`event.isRefriend`, now unused here):
           // a pair that unfriends and re-friends without ever having talked
           // still opens on the clean "no conversation yet" screen.
+          //
+          // Always drop earlier FRIENDSHIP_CREATED rows, whether or not a new
+          // one follows: an unfriend->re-friend cycle would otherwise stack a
+          // bubble on top of every earlier one, and rooms that got the row
+          // under the old "any re-friend posts it" rule would keep showing it
+          // forever. A pruned row is never a loss — if this pair has activity
+          // it is immediately reposted below with the current timestamp.
+          await this.deleteStaleFriendshipCreatedMessages(
+            event.userA,
+            event.userB
+          );
+          // Order is irrelevant to the gate: the prune only touches SYSTEM
+          // rows, which the activity check already ignores.
           if (await this.hasConversationActivity(event.userA, event.userB)) {
-            // An unfriend->re-friend cycle would otherwise stack a fresh
-            // bubble on top of every earlier one — remove any prior
-            // FRIENDSHIP_CREATED system messages in this room first so only
-            // the latest ever shows. Skipped when nothing will be posted, so
-            // a stray event cannot silently delete a legitimate row.
-            await this.deleteStaleFriendshipCreatedMessages(
-              event.userA,
-              event.userB
-            );
             await this.postFriendshipSystemMessage(
               event,
               SystemEvent.FRIENDSHIP_CREATED
@@ -195,18 +199,23 @@ export class FriendshipEventConsumer {
    * Has this pair ever had conversation activity — any message, media, sticker
    * or call row — in their private room?
    *
-   * Source of truth is `PrivateRoom.lastSequence`, the per-room insert counter
-   * (`allocateSequence`). It is bumped once per timeline row written and is
-   * never decremented, so it survives delete-for-me, clear conversation,
-   * delete-for-everyone and the auto-delete sweeper — all of which can leave a
-   * room with zero *visible* messages after a real conversation. Counting rows
-   * or reading `lastMessage`/`lastMessageAt` would answer "is anything visible
-   * now", which is the wrong question; `lastMessageAt` in particular is also
-   * stamped on an empty room by `stampRoomActivity` below.
+   * Only what a PERSON put in the room counts. SYSTEM rows do not: an
+   * auto-delete setting change, a ban notice, or an earlier "now friends" row
+   * are all things the app wrote into an otherwise silent chat. Counting them
+   * made the bug self-perpetuating — one such row meant every later re-friend
+   * qualified, so the bubble came back for pairs that had never talked.
    *
-   * ponytail: a SYSTEM row (auto-delete setting changed, friendship banned) in
-   * an otherwise silent room also bumps the counter and reads as activity. Add
-   * a write-once `firstActivityAt` stamped only by user sends if that matters.
+   * `PrivateRoom.lastSequence` (the per-room insert counter) is therefore only
+   * the cheap pre-filter: 0 means nothing was EVER written, no query needed.
+   * Above 0, the answer is whether a non-SYSTEM row exists — matched on the
+   * `[roomId, messageType, createdAt]` index and deliberately NOT filtered by
+   * `isDeleted`/`deletedFor`/`clearFor`, because delete-for-me, clear
+   * conversation and delete-for-everyone all keep the row: "did they talk"
+   * must not become "is anything visible now".
+   *
+   * ponytail: the auto-delete sweeper HARD-deletes, so a conversation that
+   * fully expired reads as never-happened. Stamp a write-once
+   * `PrivateRoom.firstActivityAt` on send if that gap ever matters.
    */
   private async hasConversationActivity(
     userA: string,
@@ -216,7 +225,12 @@ export class FriendshipEventConsumer {
       const room = await this.privateRoomRepo.findByParticipantsKey(
         buildParticipantsKey(userA, userB)
       );
-      return (room?.lastSequence ?? 0) > 0;
+      if (!room || room.lastSequence <= 0) return false;
+      const human = await prisma.privateMessage.findFirst({
+        where: { roomId: room.roomId, messageType: { not: "SYSTEM" } },
+        select: { id: true },
+      });
+      return human !== null;
     } catch (err) {
       // Unknown => treat as a fresh pair: a missing row is cheaper than a
       // stray "now friends" bubble at the top of an empty chat.

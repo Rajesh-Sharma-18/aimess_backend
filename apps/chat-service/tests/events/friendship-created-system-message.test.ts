@@ -7,14 +7,17 @@
  * media or call gets no row, however many times they unfriend and re-friend.
  * A pair that has talked gets it on every re-friend.
  *
- * Activity is read from `PrivateRoom.lastSequence` (the never-decremented
- * insert counter), so clear/delete/auto-delete cannot reclassify a pair that
- * really did talk.
+ * Activity means a NON-SYSTEM row exists. `lastSequence` (never decremented)
+ * is only the cheap "nothing was ever written" pre-filter, so clear/delete
+ * cannot reclassify a pair that really did talk, while the app's own SYSTEM
+ * rows (auto-delete setting changed, an earlier "now friends") do not fake it.
  */
 
 const post = jest.fn(async () => undefined);
 const update = jest.fn(async () => ({}));
 const findUnique = jest.fn();
+const findFirst = jest.fn();
+const findMany = jest.fn(async () => []);
 
 jest.mock("../../src/config/redis.js", () => ({
   redis: { publish: jest.fn(async () => 1), on: jest.fn(), del: jest.fn() },
@@ -26,7 +29,10 @@ jest.mock("../../src/config/prisma.js", () => ({
       findUnique: (...args: unknown[]) => findUnique(...args),
       update: (...args: unknown[]) => update(...args),
     },
-    privateMessage: { findMany: jest.fn(async () => []) },
+    privateMessage: {
+      findFirst: (...args: unknown[]) => findFirst(...args),
+      findMany: (...args: unknown[]) => findMany(...args),
+    },
   },
 }));
 
@@ -79,14 +85,22 @@ function makeFakeConnection() {
   };
 }
 
-/** Deliver one `friendship.created` for a room with `lastSequence` inserts. */
-async function accept(lastSequence: number, isRefriend: boolean) {
+/**
+ * Deliver one `friendship.created` for a room holding `inserts` timeline rows,
+ * `humanTalked` of which are real (non-SYSTEM) messages.
+ */
+async function accept(
+  inserts: number,
+  isRefriend: boolean,
+  humanTalked = inserts > 0
+) {
   jest.clearAllMocks();
   findUnique.mockResolvedValue({
     roomId: "prv_1",
-    lastSequence,
-    lastMessageAt: lastSequence > 0 ? new Date() : null,
+    lastSequence: inserts,
+    lastMessageAt: inserts > 0 ? new Date() : null,
   });
+  findFirst.mockResolvedValue(humanTalked ? { id: "msg_1" } : null);
 
   const fake = makeFakeConnection();
   const consumer = new FriendshipEventConsumer();
@@ -127,5 +141,25 @@ describe("friendship.created — system message gate", () => {
   it("posts the row on activity even if the publisher omits isRefriend", async () => {
     await accept(4, false);
     expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT count the app's own SYSTEM rows as conversation", async () => {
+    // Room holds only SYSTEM rows — an auto-delete setting change, or a "now
+    // friends" bubble posted by the older build. Both bump lastSequence.
+    await accept(2, true, false);
+    expect(post).not.toHaveBeenCalled();
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ messageType: { not: "SYSTEM" } }),
+      })
+    );
+  });
+
+  it("prunes earlier FRIENDSHIP_CREATED rows even when posting none", async () => {
+    // Self-heals rooms that got the bubble under the old "any re-friend posts
+    // it" rule: the stale row is removed and nothing replaces it.
+    await accept(2, true, false);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(post).not.toHaveBeenCalled();
   });
 });
