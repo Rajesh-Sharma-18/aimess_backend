@@ -200,6 +200,46 @@ describe("POST /conversations/leave/bulk", () => {
       ).toBe(true);
     });
 
+    // A MODERATOR is an ordinary leaver: the only role the leave gate rejects is
+    // ADMIN, so moderation rights never trap someone in a group. (They come back
+    // as a plain MEMBER if re-added — see group-member.test.ts REJOIN.)
+    it("POSITIVE: a MODERATOR leaves and is cleared, same as a member", async () => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MODERATOR",
+      });
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MODERATOR",
+      });
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
+        { userId: "member_2" },
+      ]);
+
+      const res = await call();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toEqual({
+        roomId: GROUP_ROOM,
+        type: "GROUP",
+        status: "LEFT",
+      });
+      expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID,
+        "LEFT",
+        expect.objectContaining({ leftAt: expect.any(Date) })
+      );
+      expect(mocks.groupMemberRepo.setClearedAt).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID
+      );
+    });
+
     // Scenario 6/7 — a double-click, a second device, or an admin who removed
     // the caller while the confirm dialog sat open. The membership has already
     // ended, which IS the caller's intent, so the clear still runs.
