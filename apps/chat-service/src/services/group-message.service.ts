@@ -38,6 +38,12 @@ import {
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
+import {
+  assertMaySeeReadReceipts,
+  buildReadReceipts,
+  readersAtOrPast,
+  type ReadReceiptsPayload,
+} from "../lib/read-receipts.js";
 import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
@@ -1897,6 +1903,49 @@ export class GroupMessageService {
       cursors[m.userId] = seqById.get(m.lastReadMessageId as string) ?? 0;
     }
     return cursors;
+  }
+
+  /**
+   * Per-message "Viewed by" sheet for a GROUP message. Sender-only.
+   *
+   * Only ACTIVE members are considered, so a member who left, was kicked or was
+   * banned disappears from the sheet (`findActiveMembers` is the same roster the
+   * ticks and typing fan-out use). `getMessageContext` supplies the membership
+   * guard plus the deleted/cleared checks.
+   */
+  async getReadReceipts(
+    roomId: string,
+    messageId: string,
+    userId: string
+  ): Promise<ReadReceiptsPayload> {
+    const message = await this.getMessageContext(roomId, messageId, userId);
+    if (message.senderId !== userId)
+      throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
+    await assertMaySeeReadReceipts(userId);
+
+    const members = (await this.memberRepo.findActiveMembers(roomId)).filter(
+      (m) => m.userId !== userId && m.lastReadMessageId
+    );
+    const uniqueReadIds = [
+      ...new Set(members.map((m) => m.lastReadMessageId as string)),
+    ];
+    const seqById = new Map(
+      (await this.messageRepo.findManyByIds(uniqueReadIds)).map((m) => [
+        m.id,
+        (m as { sequenceNumber?: number }).sequenceNumber ?? 0,
+      ])
+    );
+
+    return buildReadReceipts({
+      messageId,
+      candidates: readersAtOrPast(
+        members,
+        seqById,
+        message.sequenceNumber ?? 0
+      ),
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
   }
 
   /**

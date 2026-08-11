@@ -3323,6 +3323,134 @@ const unifiedMessageContext = {
 };
 
 // =============================================================================
+// GET /chat/messages/{messageId}/read-receipts — per-message "Viewed by" sheet
+// =============================================================================
+const unifiedMessageReadReceipts = {
+  get: {
+    tags: ["Chat — Messages"],
+    operationId: "getMessageReadReceipts",
+    summary: "List who has read one message (private, group, or community)",
+    description: [
+      "Backs the message context-menu action **View Read Receipts** — the WhatsApp 'Info' / Telegram 'Seen by' sheet. Same `(conversationType, roomId, messageId)` triple as `/context`.",
+      "",
+      "**Sender-only.** Anyone other than the message's own sender gets `403 CHAT_NOT_MESSAGE_SENDER`; hide the menu item for messages you didn't send. A caller who has switched Settings → Chat → Read Receipt **off** gets `403 CHAT_READ_RECEIPTS_DISABLED` (reciprocal, WhatsApp-style: give none, get none) — hide the menu item entirely in that case. A deleted, cleared or auto-deleted message returns `410` — show no sheet.",
+      "",
+      "Readers who have themselves disabled read receipts never appear. Members who left, were removed or were banned are excluded (only the ACTIVE roster is considered). `readAt` is when that reader's read pointer last advanced — exact for the newest message, the batch instant for an older one caught up in bulk.",
+      "",
+      "Capped at the 200 most recently-read users; `hasMore: true` means more readers exist than are listed (render '200+').",
+      "",
+      "Live updates need no polling: the existing `message:read` (`/chat`) and `community:message:read` (`/community`) socket events already carry `readerId` + `read_to_seq`, so a reader whose watermark reaches this message's `sequenceNumber` can be appended client-side.",
+    ].join("\n"),
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "messageId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "The message whose readers to list. Must be your own.",
+      },
+      {
+        name: "conversationType",
+        in: "query" as const,
+        required: true,
+        schema: {
+          type: "string" as const,
+          enum: ["PRIVATE", "GROUP", "COMMUNITY"],
+        },
+        description: "The conversation type the message belongs to.",
+      },
+      {
+        name: "roomId",
+        in: "query" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description:
+          "The room the message belongs to (private room id, group room id, or community id).",
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Readers of this message, most recent first",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      type: "object" as const,
+                      required: [
+                        "messageId",
+                        "totalReadCount",
+                        "hasMore",
+                        "users",
+                      ],
+                      properties: {
+                        messageId: { type: "string" as const },
+                        totalReadCount: {
+                          type: "integer" as const,
+                          description:
+                            "Number of users in `users` — the 'Seen by N' figure.",
+                          example: 12,
+                        },
+                        hasMore: {
+                          type: "boolean" as const,
+                          description:
+                            "More readers exist than the 200 returned.",
+                        },
+                        users: {
+                          type: "array" as const,
+                          items: {
+                            type: "object" as const,
+                            properties: {
+                              userId: { type: "string" as const },
+                              fullName: {
+                                type: "string" as const,
+                                example: "John Doe",
+                              },
+                              username: {
+                                type: "string" as const,
+                                example: "john",
+                              },
+                              avatar: {
+                                type: "string" as const,
+                                description: 'Presigned URL, or `""`.',
+                              },
+                              readAt: {
+                                type: "integer" as const,
+                                nullable: true,
+                                description: "Epoch ms.",
+                                example: 1754728291000,
+                              },
+                              isOnline: { type: "boolean" as const },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "410": {
+        description:
+          "`CHAT_MESSAGE_DELETED` — the message is deleted, cleared or auto-deleted. Show no sheet.",
+      },
+    },
+  },
+};
+
+// =============================================================================
 // Groups — forward & reactions
 // =============================================================================
 const groupMessageForward = {
@@ -3888,6 +4016,7 @@ export const chatPaths = {
 
   // Unified cross-conversation-type message navigation
   "/chat/messages/{messageId}/context": unifiedMessageContext,
+  "/chat/messages/{messageId}/read-receipts": unifiedMessageReadReceipts,
 
   // Calls
   "/chat/calls": callHistory,

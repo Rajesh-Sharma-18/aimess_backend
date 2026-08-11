@@ -230,6 +230,21 @@ export class GeneralRoomMessageRepository {
     });
   }
 
+  /**
+   * Batched id → message lookup (read-pointer resolution for the per-message
+   * "Viewed by" sheet). Mirrors GroupMessageRepository#findManyByIds.
+   */
+  async findSequencesByIds(
+    ids: string[]
+  ): Promise<Array<{ id: string; sequenceNumber: number }>> {
+    const valid = ids.filter((id) => /^[0-9a-f]{24}$/i.test(id));
+    if (!valid.length) return [];
+    return this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: valid } },
+      select: { id: true, sequenceNumber: true },
+    });
+  }
+
   async findById(messageId: string): Promise<GeneralRoomMessage | null> {
     if (!/^[0-9a-f]{24}$/i.test(messageId)) return null;
     return this.prisma.generalRoomMessage.findUnique({

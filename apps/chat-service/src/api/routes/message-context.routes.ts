@@ -26,5 +26,15 @@ export function createMessageContextRoutes(
     ctrl.getContext
   );
 
+  // GET /api/chat/messages/:messageId/read-receipts?conversationType=…&roomId=…
+  // Per-message "Viewed by" sheet. Same (conversationType, roomId) query
+  // contract as /context, so it reuses the same validator.
+  router.get(
+    "/:messageId/read-receipts",
+    authenticate,
+    validateQuery(messageContextQuerySchema),
+    ctrl.getReadReceipts
+  );
+
   return router;
 }

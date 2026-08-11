@@ -41,6 +41,12 @@ import {
 } from "../lib/auto-delete.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import {
+  assertMaySeeReadReceipts,
+  buildReadReceipts,
+  type ReadReceiptCandidate,
+  type ReadReceiptsPayload,
+} from "../lib/read-receipts.js";
+import {
   computeSeqAroundCursors,
   type AroundCursors,
   computeSeqPageCursors,
@@ -845,6 +851,54 @@ export class PrivateMessageService {
     const msg = await this.messageRepo.findById(messageId);
     const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
     return typeof seq === "number" ? seq : 0;
+  }
+
+  /**
+   * Per-message "Viewed by" sheet for a PRIVATE message (there is exactly one
+   * possible reader: the peer). Sender-only — see `lib/read-receipts.ts` for
+   * why this is derived from the read watermark rather than a per-message row.
+   *
+   * `getMessageContext` supplies the access guard (participant) and the
+   * deleted/cleared/auto-deleted checks, so a message the caller can no longer
+   * see raises 410 and the client shows no sheet.
+   */
+  async getReadReceipts(
+    roomId: string,
+    messageId: string,
+    userId: string
+  ): Promise<ReadReceiptsPayload> {
+    const message = await this.getMessageContext(roomId, messageId, userId);
+    if (message.senderId !== userId)
+      throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
+    await assertMaySeeReadReceipts(userId);
+
+    const room = await this.roomRepo.findByRoomId(roomId);
+    const peerId = (room?.participants ?? []).find((id) => id !== userId);
+    const candidates: ReadReceiptCandidate[] = [];
+    if (peerId) {
+      const readMessageId = (
+        (room?.lastReadMessageIdByUser ?? {}) as Record<string, string>
+      )[peerId];
+      if (readMessageId) {
+        const peerSeq = await this.getMessageSequence(readMessageId);
+        if (peerSeq >= (message.sequenceNumber ?? 0)) {
+          const readAtRaw = (
+            (room?.lastReadAtByUser ?? {}) as Record<string, string>
+          )[peerId];
+          candidates.push({
+            userId: peerId,
+            readAt: readAtRaw ? new Date(readAtRaw) : null,
+          });
+        }
+      }
+    }
+
+    return buildReadReceipts({
+      messageId,
+      candidates,
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
   }
 
   /** Absolute per-user unread for a private room — used on conv:updated. */
