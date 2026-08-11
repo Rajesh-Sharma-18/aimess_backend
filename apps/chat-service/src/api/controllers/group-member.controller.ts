@@ -11,10 +11,25 @@ export class GroupMemberController {
 
   addMember = asyncHandler(async (req: Request, res: Response) => {
     const { userId: actorId } = req.auth;
-    const { roomId, userId } = req.body;
+    const { roomId, userId, userIds } = req.body as {
+      roomId: string;
+      userId?: string;
+      userIds?: string[];
+    };
+    // Batch form → ONE grouped MEMBER_ADDED system line for the whole
+    // operation, and a per-member { added, skipped } report.
+    if (userIds?.length) {
+      const result = await this.service.addMembers({
+        roomId,
+        userIds,
+        invitedBy: actorId,
+      });
+      res.status(HTTP_STATUS.CREATED).json(new ApiResponse(result));
+      return;
+    }
     const member = await this.service.addMember({
       roomId,
-      userId,
+      userId: userId as string,
       invitedBy: actorId,
     });
     res.status(HTTP_STATUS.CREATED).json(new ApiResponse(member));

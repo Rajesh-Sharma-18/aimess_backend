@@ -8984,11 +8984,48 @@ export const openApiSchemas = {
   },
   ChatAddMemberRequest: {
     type: "object",
+    description:
+      "Supply either `userId` (single member) or `userIds` (batch). A batch is ONE " +
+      "add operation: it posts a single grouped MEMBER_ADDED system message " +
+      '("X added A, B and C") and responds with ChatAddMembersResult instead of a ' +
+      "single member.",
     properties: {
       roomId: { type: "string", minLength: 5 },
       userId: { type: "string", minLength: 5 },
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 256,
+        items: { type: "string", minLength: 5 },
+      },
     },
-    required: ["roomId", "userId"],
+    required: ["roomId"],
+  },
+  ChatAddMembersResult: {
+    type: "object",
+    description:
+      "Batch add result. `added` lists the members this operation actually added " +
+      "(the only ones named in the grouped system message); `skipped` reports the " +
+      "per-member reason each other id was not added (CHAT_ALREADY_MEMBER, " +
+      "CHAT_ADD_MEMBER_NOT_FRIEND, CHAT_GROUP_MEMBER_LIMIT_REACHED, …).",
+    properties: {
+      added: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatGroupMember" },
+      },
+      skipped: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            userId: { type: "string" },
+            reason: { type: "string" },
+          },
+          required: ["userId", "reason"],
+        },
+      },
+    },
+    required: ["added", "skipped"],
   },
   ChatKickMemberRequest: {
     type: "object",

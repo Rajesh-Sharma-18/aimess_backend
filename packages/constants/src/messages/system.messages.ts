@@ -49,6 +49,12 @@ export const SYSTEM_MESSAGES = {
     en: "You",
     th: "คุณ",
   },
+  /** Object form of "you" — used inside a name LIST ("Krish added you and Jane"). */
+  SYS_NAME_YOU_OBJECT: {
+    vi: "bạn",
+    en: "you",
+    th: "คุณ",
+  },
   SYS_ROLE_ADMIN_ARTICLE: {
     vi: "quản trị viên",
     en: "an admin",
@@ -63,6 +69,25 @@ export const SYSTEM_MESSAGES = {
     vi: "thành viên",
     en: "a member",
     th: "สมาชิก",
+  },
+
+  // ── Name lists ("A, B and C", "A, B, C and 3 others") ───────────────────
+  // Only the JOINING words are translated; the comma separator between the
+  // leading items is punctuation, not copy.
+  SYS_LIST_AND: {
+    vi: "{{a}} và {{b}}",
+    en: "{{a}} and {{b}}",
+    th: "{{a}} และ{{b}}",
+  },
+  SYS_LIST_OTHERS_ONE: {
+    vi: "{{list}} và {{count}} người khác",
+    en: "{{list}} and {{count}} other",
+    th: "{{list}} และอีก {{count}} คน",
+  },
+  SYS_LIST_OTHERS_OTHER: {
+    vi: "{{list}} và {{count}} người khác",
+    en: "{{list}} and {{count}} others",
+    th: "{{list}} และอีก {{count}} คน",
   },
 
   // ── Durations (mute / livestream / call) ────────────────────────────────
@@ -186,6 +211,18 @@ export const SYSTEM_MESSAGES = {
     vi: "Bạn đã được thêm vào nhóm",
     en: "You were added to the group",
     th: "คุณถูกเพิ่มเข้ากลุ่ม",
+  },
+  // WhatsApp-style grouped add: ONE line per add-member operation, listing every
+  // member that operation actually added ("Krish added Jane, Peter and 3 others").
+  SYS_GROUP_MEMBERS_ADDED: {
+    vi: "{{actor}} đã thêm {{targets}}",
+    en: "{{actor}} added {{targets}}",
+    th: "{{actor}}เพิ่ม{{targets}}",
+  },
+  SYS_GROUP_MEMBERS_ADDED_SELF: {
+    vi: "Bạn đã thêm {{targets}}",
+    en: "You added {{targets}}",
+    th: "คุณเพิ่ม{{targets}}",
   },
   SYS_GROUP_MEMBER_JOINED: {
     vi: "{{actor}} đã tham gia nhóm",

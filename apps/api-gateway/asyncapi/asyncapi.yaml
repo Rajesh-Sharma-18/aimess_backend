@@ -2496,6 +2496,31 @@ components:
               actorName: "Alice"
               targetUserId: "user_ghi789"
               targetName: "Bob"
+        - name: Group system message (batch add — one operation, one grouped line)
+          payload:
+            id: "msg_sys_002"
+            messageId: "msg_sys_002"
+            roomId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: GROUP
+            senderId: ""
+            senderName: ""
+            senderRole: ""
+            contentType: SYSTEM
+            content: {}
+            reactions: []
+            isDeleted: false
+            deletedType: ""
+            editedAt: 0
+            serverTs: 1749465310000
+            sentAt: 1749465310000
+            sequenceNumber: 90
+            systemEvent: MEMBER_ADDED
+            systemData:
+              actorId: "user_abc123"
+              actorName: "Alice"
+              targetUserIds: ["user_ghi789", "user_jkl012", "user_mno345"]
+              targetNames: ["Bob", "Carol", "Dave"]
     MessageEdited:
       name: "message:edited"
       title: "message:edited"
@@ -5769,8 +5794,12 @@ components:
           type: object
           description: >-
             actorId/actorName (+ targetUserId/targetName, newRole, newName where
-            relevant). For CALL_STARTED/CALL_ENDED: callId, callType, status,
-            durationSec, callerId, calleeId, endedBy.
+            relevant). A MEMBER_ADDED row produced by a BATCH add (one
+            add-member operation, many members) carries targetUserIds +
+            targetNames (parallel arrays, added members only) INSTEAD of the
+            single targetUserId/targetName, and renders as one grouped line
+            ("Krish added Jane, Peter and 3 others"). For CALL_STARTED/CALL_ENDED:
+            callId, callType, status, durationSec, callerId, calleeId, endedBy.
           additionalProperties: true
       required:
         [

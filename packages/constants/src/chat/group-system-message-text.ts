@@ -122,6 +122,64 @@ export function formatTtlDuration(
   return `${s}s`;
 }
 
+/**
+ * How many names a grouped system line spells out before collapsing the rest
+ * into "and N others" (WhatsApp behaviour — a 50-member add must not render a
+ * 50-name bubble).
+ */
+const GROUPED_NAME_LIMIT = 3;
+
+/** "A", "A and B", "A, B and C", "A, B, C and 3 others". */
+function formatNameList(labels: string[], locale: SupportedLocale): string {
+  if (labels.length === 0) return "";
+  if (labels.length === 1) return labels[0]!;
+  if (labels.length <= GROUPED_NAME_LIMIT) {
+    return t("SYS_LIST_AND", locale, {
+      a: labels.slice(0, -1).join(", "),
+      b: labels[labels.length - 1]!,
+    });
+  }
+  const rest = labels.length - GROUPED_NAME_LIMIT;
+  return t(
+    rest === 1 ? "SYS_LIST_OTHERS_ONE" : "SYS_LIST_OTHERS_OTHER",
+    locale,
+    {
+      list: labels.slice(0, GROUPED_NAME_LIMIT).join(", "),
+      count: rest,
+    }
+  );
+}
+
+/**
+ * Display labels for a BATCH system line's `targetUserIds` / `targetNames`
+ * (one add-member operation ⇒ one row), or null when the row is the classic
+ * single-target shape. The viewer, if they are one of the targets, is rendered
+ * as "you" and hoisted to the front so they still see themselves named even
+ * when the list overflows into "and N others".
+ */
+function groupedTargetLabels(
+  data: Record<string, unknown>,
+  viewer: string,
+  locale: SupportedLocale
+): string[] | null {
+  const rawIds = data.targetUserIds;
+  if (!Array.isArray(rawIds) || rawIds.length < 2) return null;
+  const names = Array.isArray(data.targetNames) ? data.targetNames : [];
+  const entries = rawIds.map((id, i) => ({
+    id: String(id),
+    label: String(names[i] ?? "").trim() || t("SYS_NAME_A_MEMBER", locale),
+  }));
+  const viewerIndex = viewer
+    ? entries.findIndex((entry) => entry.id === viewer)
+    : -1;
+  if (viewerIndex >= 0) {
+    const [self] = entries.splice(viewerIndex, 1);
+    self!.label = t("SYS_NAME_YOU_OBJECT", locale);
+    entries.unshift(self!);
+  }
+  return entries.map((entry) => entry.label);
+}
+
 function groupRoleArticleForm(role: string, locale: SupportedLocale): string {
   const r = role.toUpperCase();
   if (r === "ADMIN") return t("SYS_ROLE_ADMIN_ARTICLE", locale);
@@ -155,9 +213,21 @@ export function buildGroupSystemFallbackText(
       if (isActor) return t("SYS_GROUP_CREATED_SELF", locale);
       return t("SYS_GROUP_CREATED", locale, { actor });
 
-    case "MEMBER_ADDED":
+    case "MEMBER_ADDED": {
+      // Batch add (one operation, many members) → ONE grouped line. The actor is
+      // the same for every viewer; only the wording is personalized.
+      const grouped = groupedTargetLabels(data, viewer, locale);
+      if (grouped) {
+        const targets = formatNameList(grouped, locale);
+        return isActor
+          ? t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets })
+          : t("SYS_GROUP_MEMBERS_ADDED", locale, { actor, targets });
+      }
       if (isTarget) return t("SYS_GROUP_MEMBER_ADDED_SELF", locale);
+      if (isActor)
+        return t("SYS_GROUP_MEMBERS_ADDED_SELF", locale, { targets: target });
       return t("SYS_GROUP_MEMBER_ADDED", locale, { actor, target });
+    }
 
     case "MEMBER_JOINED":
       if (isActor) return t("SYS_GROUP_MEMBER_JOINED_SELF", locale);

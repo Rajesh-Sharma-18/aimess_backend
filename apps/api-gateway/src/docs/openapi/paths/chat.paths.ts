@@ -1287,7 +1287,11 @@ const groupMemberAdd = {
   post: {
     tags: ["Chat — Groups"],
     operationId: "addGroupMember",
-    summary: "Add member to group",
+    summary: "Add member(s) to group",
+    description:
+      "Single add (`userId`) responds with the created ChatGroupMember. Batch add " +
+      "(`userIds`) is ONE operation — one grouped system message — and responds " +
+      "with ChatAddMembersResult (`added` / `skipped`).",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
