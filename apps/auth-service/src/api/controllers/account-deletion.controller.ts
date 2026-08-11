@@ -4,6 +4,7 @@ import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type { DeleteAccountInput } from "../validators/account-deletion.validator.js";
+import { resolveClientIp } from "../../lib/session-context.js";
 import { accountDeletionService } from "../../services/account-deletion.service.js";
 
 export const deleteAccount = asyncHandler(
@@ -11,7 +12,11 @@ export const deleteAccount = asyncHandler(
     const { password } = req.body as DeleteAccountInput;
     const result = await accountDeletionService.deleteAccount(
       req.auth.userId,
-      password
+      password,
+      {
+        ip: resolveClientIp(req),
+        userAgent: req.headers["user-agent"] ?? null,
+      }
     );
 
     return res

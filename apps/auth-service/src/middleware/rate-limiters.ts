@@ -37,6 +37,25 @@ export const qrGenerationRateLimiter = rateLimit({
   },
 });
 
+/**
+ * Account deletion: 5 attempts/hour/user. Password-confirmed and irreversible,
+ * so the only traffic this can throttle is someone brute-forcing the password
+ * of a session they already stole. Keyed by user (falls back to IP pre-auth).
+ */
+export const deleteAccountRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: env.DELETE_ACCOUNT_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
+  keyGenerator: (req: Request) =>
+    req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
+  message: {
+    success: false,
+    message: "Too many attempts, please try again later.",
+  },
+});
+
 /** QR login scan: configurable requests/minute/user (authenticated endpoint). */
 export const qrScanRateLimiter = rateLimit({
   windowMs: 60 * 1000,

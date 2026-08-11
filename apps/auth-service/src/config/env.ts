@@ -55,6 +55,9 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
+  /** Max DELETE /auth/account attempts per hour per user (irreversible action). */
+  DELETE_ACCOUNT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
+
   /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 

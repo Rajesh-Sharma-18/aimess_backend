@@ -277,6 +277,13 @@ export const authRepository = {
         data: { revokedAt: now },
       });
 
+      // Drop every Google/Apple link in the same transaction: the provider `sub`
+      // must stop resolving to this account (social-auth.service looks the user
+      // up by LinkedAccount) and must be free to link elsewhere. We store no
+      // provider access/refresh tokens (only `sub`/email/displayName), so there
+      // is nothing to revoke remotely — removing the row IS the revocation.
+      await tx.linkedAccount.deleteMany({ where: { userId } });
+
       await tx.authUser.update({
         where: { id: userId },
         data: {

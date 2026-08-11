@@ -1,13 +1,21 @@
 import { BadRequestError, UnauthorizedError } from "@aimess/errors";
+import { publishSessionRevokedEvent } from "@aimess/redis";
 import bcrypt from "bcryptjs";
 
+import { redis } from "../config/redis.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import { markSessionsRevoked } from "../lib/session-active-cache.js";
 import { publishUserDeletedSafe } from "../messaging/publish-user-deleted.js";
 import { authRepository } from "../repositories/auth.repository.js";
+import { recordAuditEventSafe } from "./audit.service.js";
 
 export type DeleteAccountResult = {
   deletedAt: string;
+};
+
+export type DeleteAccountContext = {
+  ip?: string | null;
+  userAgent?: string | null;
 };
 
 export const accountDeletionService = {
@@ -23,7 +31,8 @@ export const accountDeletionService = {
    */
   async deleteAccount(
     userId: string,
-    password?: string
+    password?: string,
+    context: DeleteAccountContext = {}
   ): Promise<DeleteAccountResult> {
     // Throws AUTH_ACCOUNT_NOT_ACTIVE if already deleted / not active.
     const user = await loadActiveAuthUser(userId);
@@ -44,6 +53,26 @@ export const accountDeletionService = {
       await authRepository.softDeleteUser(userId);
 
     await markSessionsRevoked(revokedSessionIds);
+
+    // Kick every still-connected device NOW instead of waiting for its access
+    // token to expire — same per-session signal "Logout Device"/"Sign out from
+    // all other devices" already use (api-gateway session-revoke.ts). Includes
+    // the caller's own session: the account is gone, so every socket must drop.
+    for (const sessionId of revokedSessionIds) {
+      void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+        () => undefined
+      );
+    }
+
+    recordAuditEventSafe({
+      event: "ACCOUNT_DELETED",
+      targetType: "auth_user",
+      targetId: userId,
+      userId,
+      metadata: { revokedSessionCount: revokedSessionIds.length },
+      ip: context.ip ?? null,
+      userAgent: context.userAgent ?? null,
+    });
 
     publishUserDeletedSafe({
       userId,

@@ -23,6 +23,11 @@ process.env.JWT_REFRESH_EXPIRES_IN_REMEMBER_ME = "2592000";
 process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
 process.env.RABBITMQ_URL = "amqp://localhost:5672";
 
+// Rate limiters are per-process, so a spec file firing many requests would trip
+// the production ceiling. Specs that assert throttling set their own value
+// before importing the app (see tests/account/account-deletion-rate-limit.test.ts).
+process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = "100";
+
 // Keep OTP deterministic if any code path reaches it under test.
 process.env.OTP_DEV_FIXED_CODE = "123456";
 
