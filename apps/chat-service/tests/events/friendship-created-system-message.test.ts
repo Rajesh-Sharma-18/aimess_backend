@@ -121,9 +121,37 @@ describe("friendship.created — system message gate", () => {
   it("posts NO row for a first-ever friendship with no conversation", async () => {
     await accept(0, false);
     expect(post).not.toHaveBeenCalled();
-    // The empty room still has to appear in the inbox (which keysets on
-    // lastMessageAt and skips NULLs).
+    // Hidden in the chat room, but still the room's latest LIST activity:
+    // GET /chat/inbox keysets on lastMessageAt and skips NULLs, so without the
+    // stamp the new friend's row has no time and sorts last.
     expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { lastMessageAt: expect.any(Date) },
+      })
+    );
+  });
+
+  it("does not drag the row backwards when the event is older than the room", async () => {
+    jest.clearAllMocks();
+    findUnique.mockResolvedValue({
+      roomId: "prv_1",
+      lastSequence: 0,
+      lastMessageAt: new Date(Date.now() + 60_000),
+    });
+    findFirst.mockResolvedValue(null);
+    const fake = makeFakeConnection();
+    const consumer = new FriendshipEventConsumer();
+    await consumer.start(fake.connection as never);
+    await fake.deliver(
+      JSON.stringify({
+        type: "friendship.created",
+        userA: A,
+        userB: B,
+        timestamp: Date.now(),
+      })
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("posts NO row on re-friend when the pair never exchanged anything", async () => {
