@@ -8,6 +8,13 @@ import {
 } from "@aimess/errors";
 import { redis } from "../config/redis.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
+import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
+import {
+  assertMaySeeReadReceipts,
+  buildReadReceipts,
+  readersAtOrPast,
+  type ReadReceiptsPayload,
+} from "../lib/read-receipts.js";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -2749,17 +2756,25 @@ export class CommunityMessageService {
       readAt,
     };
 
-    // Broadcast to all community room members.
-    redis
-      .publish(
-        `community:${params.communityId}`,
-        JSON.stringify({ event: "community:message:read", data: readPayload })
-      )
-      .catch((err: unknown) => {
-        logger.warn(
-          `CommunityMessageService|markMessageRead|redis publish community failed: ${String(err)}`
-        );
-      });
+    // Broadcast to all community room members — but only if the READER still
+    // shows read receipts (Settings → Chat). Same sender-side gate private and
+    // group already apply in ChatMessageOrchestrator.markReadDirect; community
+    // was publishing the reader's identity to the whole room regardless.
+    // Gates the room broadcast ONLY: the pointer above, `community:read_sync`
+    // below, the unread recount and the nav badge are the reader's own state
+    // and must keep working with the switch off.
+    if (await mayBroadcastReadReceipts(params.readerId)) {
+      redis
+        .publish(
+          `community:${params.communityId}`,
+          JSON.stringify({ event: "community:message:read", data: readPayload })
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `CommunityMessageService|markMessageRead|redis publish community failed: ${String(err)}`
+          );
+        });
+    }
 
     // Sync to reader's own other devices. `readerId` + `unreadCount` are what let a SECOND device
     // actually clear its badge — without them the receiver knows a read happened but not whose or
@@ -3073,5 +3088,51 @@ export class CommunityMessageService {
    */
   async assertMember(roomId: string, userId: string): Promise<void> {
     await assertCommunityMember(this.memberRepo, roomId, userId);
+  }
+
+  /**
+   * Per-message "Viewed by" sheet for a COMMUNITY message. Sender-only.
+   *
+   * The candidate set comes from `findActiveReadersSince(createdAt)`, NOT from
+   * the roster: a 5 000-member community is answered by loading only the members
+   * whose read pointer moved after this message existed. Banned and departed
+   * members are excluded by that query's status filter.
+   */
+  async getReadReceipts(
+    roomId: string,
+    messageId: string,
+    userId: string
+  ): Promise<ReadReceiptsPayload> {
+    await assertCommunityMember(this.memberRepo, roomId, userId);
+    const message = await this.findMessageById(messageId, roomId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.deletedForAll) throw new GoneError("CHAT_MESSAGE_DELETED");
+    if (message.sentBy !== userId)
+      throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
+    await assertMaySeeReadReceipts(userId);
+
+    const members = (
+      await this.memberRepo.findActiveReadersSince(roomId, message.createdAt)
+    ).filter((m) => m.userId !== userId && m.lastReadMessageId);
+    const uniqueReadIds = [
+      ...new Set(members.map((m) => m.lastReadMessageId as string)),
+    ];
+    const seqById = new Map(
+      (await this.messageRepo.findSequencesByIds(uniqueReadIds)).map((m) => [
+        m.id,
+        m.sequenceNumber ?? 0,
+      ])
+    );
+
+    return buildReadReceipts({
+      messageId,
+      candidates: readersAtOrPast(
+        members,
+        seqById,
+        message.sequenceNumber ?? 0
+      ),
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
   }
 }

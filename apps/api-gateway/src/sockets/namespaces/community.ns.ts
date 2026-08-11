@@ -24,7 +24,7 @@ import {
   type PersonalizeFn,
 } from "../emit-personalized.js";
 import { scopeSocketLocale } from "../locale-scope.js";
-import { typingViewerFilter } from "../chat-flags.js";
+import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -395,13 +395,26 @@ export function registerCommunityNamespace(
         // removed/banned user's OWN sockets from the broadcast — see the block
         // after this one) instead of going through the generic room broadcast,
         // so its handling is deliberately skipped here.
+        // Reciprocity for Settings → Chat → Read Receipt, recipient half.
+        // chat-service already withholds the receipt of a READER who switched
+        // it off; this drops it for a VIEWER who did. It cannot happen at
+        // publish time — one `community:message:read` reaches every member of
+        // the room, each with their own setting. Mirrors chat.ns.ts.
+        const skipViewer =
+          parsed.event === "community:message:read"
+            ? (viewerUserId: string) =>
+                viewerHidesReadReceipts(userClient, viewerUserId)
+            : undefined;
+
         if (parsed.event !== "community:member:removed") {
           void emitPersonalizedSender(
             community,
             channel,
             parsed.event,
             parsed.data,
-            personalizeFn
+            personalizeFn,
+            undefined,
+            skipViewer
           );
 
           if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {

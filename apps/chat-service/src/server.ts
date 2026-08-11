@@ -95,6 +95,7 @@ import {
   closeEventConsumers,
 } from "./events/index.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
+import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
 import {
   ensureMongoIndex,
   dropMongoIndexIfExists,
@@ -750,6 +751,11 @@ const startServer = async () => {
     // pull communities from community-service over gRPC and provision any missing
     // rooms / deactivate rooms of deleted communities. Self-heals dropped events.
     void reconcileCommunityRooms();
+
+    // Drop the cached Settings → Chat block the moment a user flips a switch,
+    // so read receipts / typing stop (or resume) on the next event instead of
+    // on the next cache expiry.
+    startChatSettingsInvalidationListener();
 
     // Call sweepers — both multi-node safe (atomic per-row updateMany):
     //   1. RINGING  → MISSED after CALL_RINGING_TIMEOUT_SEC (never answered).

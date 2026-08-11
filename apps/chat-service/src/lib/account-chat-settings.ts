@@ -60,9 +60,14 @@ export async function getAccountChatSettings(
 /**
  * May this user's read receipts be shown to the people they read?
  *
- * One-way by design: turning the switch off hides MY receipts from others, it
- * does not hide theirs from me. WhatsApp's reciprocal rule would mean filtering
- * the `conv:<roomId>` broadcast per recipient, which that channel cannot do.
+ * The SENDER half of the reciprocal rule — it answers "may I publish this
+ * reader's receipt at all". The other half (a VIEWER who switched receipts off
+ * must not be shown anyone else's) cannot be decided here: one `message:read` /
+ * `community:message:read` broadcast reaches many viewers with different
+ * settings, so it is enforced per recipient at delivery, in the gateway's
+ * `sockets/chat-flags.ts`. REST list ticks apply both halves themselves — see
+ * `PrivateRoomService.enrichConversations` and
+ * `GroupRoomService.computeLastMessageReadStatuses`.
  */
 export async function mayBroadcastReadReceipts(
   userId: string

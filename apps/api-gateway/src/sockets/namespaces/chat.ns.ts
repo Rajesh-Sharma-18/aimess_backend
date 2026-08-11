@@ -575,6 +575,15 @@ export function registerChatNamespace(
         // watcher. Both of those changes already publish on `user:<subjectId>`,
         // so re-authorize the room's watchers here: the revocation lands on the
         // same event that caused it, with no client action needed.
+        // A Settings → Chat switch just moved: drop the cached typing /
+        // read-receipt flags for that user so the next typing burst or receipt
+        // is judged on the new value instead of up to a minute of stale cache.
+        // Every gateway instance psubscribes `user:*`, so this reaches all of
+        // their in-process caches, not just the one that served the PATCH.
+        if (pattern === "user:*" && parsed.event === "settings:updated") {
+          userClient.invalidateChatFlags?.(channel.slice("user:".length));
+        }
+
         if (
           pattern === "user:*" &&
           (parsed.event === "settings:updated" ||

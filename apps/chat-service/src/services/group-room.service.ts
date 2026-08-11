@@ -5,6 +5,7 @@ import type { Redis, Cluster } from "ioredis";
 import { publishChatUserEvent } from "@aimess/redis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
+import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
@@ -458,6 +459,30 @@ export class GroupRoomService {
       )
     );
 
+    // Settings → Chat → Read Receipt, applied to the group LIST tick the same
+    // way PrivateRoomService.enrichConversations applies it — otherwise the
+    // blue tick the socket withheld reappears on the next refresh and the
+    // switch looks broken. Reciprocal, WhatsApp-style: the VIEWER must allow
+    // receipts to see one, and a member who disabled them gives none, so they
+    // never count towards "everyone has read it". Cached per user (60s TTL), so
+    // this is one lookup per distinct member on the page, not one per room.
+    const viewerSeesReceipts = (await getAccountChatSettings(userId))
+      .readReceipts;
+    const otherMemberIds = new Set<string>();
+    for (const roomId of ownRoomIds) {
+      for (const member of activeMembersByRoom.get(roomId) ?? []) {
+        if (member.userId !== userId) otherMemberIds.add(member.userId);
+      }
+    }
+    const memberGivesReceipts = new Map(
+      await Promise.all(
+        [...otherMemberIds].map(
+          async (id) =>
+            [id, (await getAccountChatSettings(id)).readReceipts] as const
+        )
+      )
+    );
+
     const idsToResolve = new Set<string>();
     for (const roomId of ownRoomIds) {
       idsToResolve.add(lastMessageIdByRoom.get(roomId) as string);
@@ -487,10 +512,12 @@ export class GroupRoomService {
         (m) => m.userId !== userId
       );
       const allRead =
+        viewerSeesReceipts &&
         others.length > 0 &&
         lastSeq > 0 &&
         others.every(
           (m) =>
+            memberGivesReceipts.get(m.userId) !== false &&
             (m.lastReadMessageId
               ? (seqById.get(m.lastReadMessageId) ?? 0)
               : 0) >= lastSeq
