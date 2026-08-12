@@ -6,6 +6,7 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 import type {
   InitiateDeviceLinkInput,
   ScanDeviceLinkInput,
+  DeviceLinkResultInput,
 } from "../validators/device-link.validator.js";
 import { deviceLinkService } from "../../services/device-link.service.js";
 
@@ -19,6 +20,22 @@ export const initiateDeviceLink = asyncHandler(
       .json(
         new ApiResponse(result, t("AUTH_DEVICE_LINK_INITIATED", req.locale))
       );
+  }
+);
+
+/**
+ * Browser-side pull of a QR outcome. Always 200 — a still-PENDING or already-
+ * expired QR is a normal poll answer, not an error, and must not be surfaced to
+ * the waiting browser as a failure.
+ */
+export const getDeviceLinkResult = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as DeviceLinkResultInput;
+    const result = await deviceLinkService.result(body);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("AUTH_DEVICE_LINK_STATUS", req.locale)));
   }
 );
 

@@ -30,3 +30,10 @@ export const scanDeviceLinkSchema = z.object({
 });
 
 export type ScanDeviceLinkInput = z.infer<typeof scanDeviceLinkSchema>;
+
+/** Browser polling for its own QR's outcome — the linkToken is the only credential. */
+export const deviceLinkResultSchema = z.object({
+  linkToken: z.string().trim().min(1, "Link token is required"),
+});
+
+export type DeviceLinkResultInput = z.infer<typeof deviceLinkResultSchema>;
