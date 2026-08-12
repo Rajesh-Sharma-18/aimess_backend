@@ -114,10 +114,13 @@ describe("ChatMessageOrchestrator.deleteDirect", () => {
       scope: "forEveryone",
     });
 
+    // `bySystem: false` — a user-initiated delete keeps every actor check. Only
+    // the auto-delete sweeper passes true (see tests/groups/group-auto-delete).
     expect(groupMessageService.deleteMessage).toHaveBeenCalledWith(
       MSG_ID,
       USER_ID,
-      ROOM_ID
+      ROOM_ID,
+      false
     );
     expect(tombstone).toMatchObject({
       messageId: MSG_ID,

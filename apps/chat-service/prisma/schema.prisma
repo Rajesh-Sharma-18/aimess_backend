@@ -196,6 +196,12 @@ model GroupRoom {
   lastSequence       Int       @default(0)
   // Zero-loss sync CHANGE cursor (Telegram `pts`) — see PrivateRoom.lastRevision.
   lastRevision       Int       @default(0)
+  // Auto-delete (disappearing messages) — ONE timer for the whole GROUP:
+  // { mode, ttlSeconds, setAt, setBy }. Absent = Off, so an existing group needs
+  // no backfill. Only ADMIN/MODERATOR may change it (WhatsApp), but every
+  // member's messages follow it. Same shape and same reader as
+  // PrivateRoom.autoDelete — see `lib/auto-delete.ts#readRoomAutoDelete`.
+  autoDelete         Json?
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
@@ -265,6 +271,11 @@ model GroupMessage {
   createdAt          DateTime  @default(now())
   editedAt           DateTime?
   editHistory        Json      @default("[]")
+  // Auto-delete (disappearing messages) — identical semantics to
+  // PrivateMessage.autoDeleteAt / autoDeleteAfterView, swept by
+  // GroupAutoDeleteService. Both null/false = no timer.
+  autoDeleteAt        DateTime?
+  autoDeleteAfterView Boolean  @default(false)
 
   // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
   // get a deterministic, index-backed total order with early-termination preserved.
@@ -282,6 +293,10 @@ model GroupMessage {
   @@index([isDeleted])
   @@index([deletedType])
   @@index([deletedAt])
+  // Backs the auto-delete sweeper: WHERE autoDeleteAt <= now AND isDeleted = false.
+  @@index([autoDeleteAt])
+  // Backs arming "After Viewing" messages on a read receipt.
+  @@index([roomId, autoDeleteAfterView])
   @@map("group_messages")
 }
 

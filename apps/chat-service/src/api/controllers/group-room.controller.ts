@@ -5,9 +5,41 @@ import { HTTP_STATUS, t } from "@aimess/constants";
 
 import { buildPaginatedResponse } from "../../lib/pagination.js";
 import type { GroupRoomService } from "../../services/group-room.service.js";
+import type { GroupAutoDeleteService } from "../../services/group-auto-delete.service.js";
 
 export class GroupRoomController {
-  constructor(private readonly service: GroupRoomService) {}
+  constructor(
+    private readonly service: GroupRoomService,
+    private readonly autoDeleteService: GroupAutoDeleteService
+  ) {}
+
+  // Automatically Delete Messages (disappearing messages). ONE timer for the
+  // whole group: any member may read it, only an admin/moderator may change it,
+  // and every member's messages then follow it.
+  getAutoDelete = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.autoDeleteService.getSettings(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_AUTO_DELETE_FETCHED", req.locale)));
+  });
+
+  setAutoDelete = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { mode, ttlSeconds } = req.body as {
+      mode: string;
+      ttlSeconds?: number | null;
+    };
+    const result = await this.autoDeleteService.updateSetting(roomId, userId, {
+      mode,
+      ttlSeconds: ttlSeconds ?? null,
+    });
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_AUTO_DELETE_UPDATED", req.locale)));
+  });
 
   create = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

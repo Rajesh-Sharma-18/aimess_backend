@@ -652,6 +652,9 @@ export function createMessagingImpl(
                     ? updated.createdAt.getTime()
                     : Date.now(),
                 sequenceNumber: updated.sequenceNumber,
+                // An edit re-emits the whole message; without the deadline the
+                // client drops the countdown it was already rendering.
+                ...autoDeleteWireFields(updated),
               }),
             })
           );
@@ -1376,6 +1379,9 @@ export function createMessagingImpl(
                   countInUnread: (
                     message as unknown as { countInUnread?: boolean | null }
                   ).countInUnread,
+                  // A forward is a brand-new message in the TARGET room and
+                  // carries THAT room's timer.
+                  ...autoDeleteWireFields(message),
                 }),
               })
             );

@@ -84,7 +84,119 @@ export class GroupMessageRepository {
         deletedAt: (data.deletedAt as Date) ?? null,
         deletedBy: (data.deletedBy as string) ?? null,
         createdAt: (data.createdAt as Date) ?? new Date(),
+        autoDeleteAt: (data.autoDeleteAt as Date | null) ?? null,
+        autoDeleteAfterView: (data.autoDeleteAfterView as boolean) ?? false,
       },
+    });
+  }
+
+  // ───────────────────────── auto-delete (disappearing messages) ────────────
+  // Direct mirror of PrivateMessageRepository's block — read its comments for
+  // the reasoning, especially the `not: null` guard below, which is load-bearing
+  // rather than defensive.
+
+  /**
+   * Arm every "After Viewing" message this reader RECEIVED in the room: the
+   * deadline only starts once a recipient has actually seen it. The reader's own
+   * messages are skipped (they have trivially "viewed" them).
+   *
+   * A group has many recipients, so the FIRST reader arms the message for
+   * everyone — matching the private rule ("delete shortly after it is viewed")
+   * rather than waiting for the slowest member, which in a large group would
+   * mean "never".
+   *
+   * Idempotent: a second read receipt matches nothing because `autoDeleteAt` is
+   * already set.
+   */
+  async armAfterViewing(
+    roomId: string,
+    readerId: string,
+    deleteAt: Date
+  ): Promise<number> {
+    const res = await this.prisma.groupMessage.updateMany({
+      where: {
+        roomId,
+        senderId: { not: readerId },
+        autoDeleteAfterView: true,
+        autoDeleteAt: null,
+        isDeleted: false,
+      },
+      data: { autoDeleteAt: deleteAt },
+    });
+    return res.count;
+  }
+
+  /**
+   * One page of group messages whose auto-delete deadline has passed.
+   *
+   * `not: null` is LOAD-BEARING: on MongoDB, Prisma's `lte` on a nullable
+   * DateTime ALSO matches rows whose value is explicitly `null` (BSON orders
+   * Null before Date and the comparison is not type-bracketed). Every message we
+   * write sets `autoDeleteAt: null` when it has no timer, so without this guard
+   * the sweeper treats "no timer" as "overdue" and deletes the entire group.
+   * This exact bug destroyed 53 messages on the dev DB when the private sweeper
+   * shipped — do not "simplify" it away.
+   */
+  async findDueAutoDeletes(
+    now: Date,
+    limit: number
+  ): Promise<Array<{ id: string; roomId: string; senderId: string | null }>> {
+    return this.prisma.groupMessage.findMany({
+      where: {
+        AND: [{ autoDeleteAt: { not: null } }, { autoDeleteAt: { lte: now } }],
+        isDeleted: false,
+      },
+      orderBy: { autoDeleteAt: "asc" },
+      take: limit,
+      select: { id: true, roomId: true, senderId: true },
+    });
+  }
+
+  /**
+   * Re-stamp still-pending messages after an admin CHANGES the timer (both
+   * lengthening and shortening apply to messages already counting down). Only
+   * rows that ALREADY have a timer are touched — a change never retroactively
+   * puts a deadline on messages sent while the feature was off.
+   *
+   * Unlike private this needs no sender filter: one timer governs the whole
+   * group, so every member's pending messages move together.
+   *
+   * `autoDeleteAt = createdAt + ttl` is per-row arithmetic, which the typed
+   * client can't express in one `updateMany`; same raw-command pattern as
+   * `lib/quote-refresh.ts` so it stays a single indexed write.
+   */
+  async restampPendingAutoDeletes(params: {
+    roomId: string;
+    /** TIMER: seconds from createdAt. AFTER_VIEWING: null. */
+    ttlSeconds: number | null;
+    afterView: boolean;
+  }): Promise<void> {
+    const { roomId, ttlSeconds, afterView } = params;
+    const set = afterView
+      ? { autoDeleteAfterView: true, autoDeleteAt: null }
+      : {
+          autoDeleteAfterView: false,
+          autoDeleteAt: {
+            $add: ["$createdAt", Math.round((ttlSeconds ?? 0) * 1000)],
+          },
+        };
+    await this.prisma.$runCommandRaw({
+      update: "group_messages",
+      updates: [
+        {
+          q: {
+            roomId,
+            isDeleted: false,
+            $or: [
+              { autoDeleteAt: { $ne: null } },
+              { autoDeleteAfterView: true },
+            ],
+          },
+          // Pipeline form — required for the `$createdAt + ttl` expression.
+          u: [{ $set: set }],
+          multi: true,
+        },
+      ],
     });
   }
 
@@ -972,6 +1084,9 @@ export class GroupMessageRepository {
     forwardData: object;
     clientMessageId?: string | null;
     sequenceNumber?: number;
+    /** Auto-delete stamp of the TARGET room — a forward is a brand new message there. */
+    autoDeleteAt?: Date | null;
+    autoDeleteAfterView?: boolean;
   }): Promise<GroupMessage> {
     const revision = await this.roomRepo.allocateRevision(data.roomId);
     return this.prisma.groupMessage.create({
@@ -994,6 +1109,8 @@ export class GroupMessageRepository {
         reactions: {},
         isDeleted: false,
         deletedForUserIds: [],
+        autoDeleteAt: data.autoDeleteAt ?? null,
+        autoDeleteAfterView: data.autoDeleteAfterView ?? false,
       },
     });
   }

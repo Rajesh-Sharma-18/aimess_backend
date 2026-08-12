@@ -45,6 +45,11 @@ const envSchema = z
     STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
     /** chat-service gRPC endpoint — resolves rooms/groups for User Search. */
     CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
+    /**
+     * community-service gRPC endpoint — resolves a community's active roster so
+     * the "Add Members" picker can exclude people who are already in it.
+     */
+    COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
 
     MINIO_ENDPOINT: z.string().url(),
     /**

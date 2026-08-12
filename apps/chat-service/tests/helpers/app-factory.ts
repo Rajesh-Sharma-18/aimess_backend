@@ -38,6 +38,7 @@ import { GroupMessageService } from "../../src/services/group-message.service.js
 import { GroupMemberService } from "../../src/services/group-member.service.js";
 import { GroupInviteLinkService } from "../../src/services/group-invite-link.service.js";
 import { GroupPinService } from "../../src/services/group-pin.service.js";
+import { GroupAutoDeleteService } from "../../src/services/group-auto-delete.service.js";
 import { NotificationService } from "../../src/services/notification.service.js";
 import { UnreadSummaryService } from "../../src/services/unread-summary.service.js";
 import { CommunityRoomService } from "../../src/services/community-room.service.js";
@@ -146,6 +147,8 @@ export interface BuiltMocks {
   privateMessageService: PrivateMessageService;
   chatMessageOrchestrator: ChatMessageOrchestrator;
   autoDeleteService: AutoDeleteService;
+  groupAutoDeleteService: GroupAutoDeleteService;
+  groupMessageService: GroupMessageService;
 }
 
 export interface BuiltApp {
@@ -238,6 +241,17 @@ export function buildApp(): BuiltApp {
   for (const repo of [privateRoomRepo, groupRoomRepo]) {
     repo.getRoomRevision.mockResolvedValue(0);
   }
+  // The group send/forward path takes the first sequence number and the room's
+  // auto-delete timer off ONE write. Delegating to `allocateSequence` keeps every
+  // spec that already stubs that (and asserts on the seq it returns) working
+  // untouched; the room carries no `autoDelete`, i.e. the timer is Off, which is
+  // what every pre-existing group spec assumes.
+  groupRoomRepo.allocateSequenceWithRoom.mockImplementation(
+    async (roomId: string) => ({
+      sequenceNumber: await groupRoomRepo.allocateSequence(roomId),
+      room: { roomId },
+    })
+  );
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();
@@ -476,6 +490,15 @@ export function buildApp(): BuiltApp {
     chatMessageOrchestrator,
     redis
   );
+  const groupAutoDeleteService = new GroupAutoDeleteService(
+    groupRoomRepo,
+    groupMemberRepo,
+    groupMessageRepo,
+    groupSystemMessageService,
+    groupPinService,
+    chatMessageOrchestrator,
+    redis
+  );
 
   // -- Real controllers --
   const controllers: Controllers = {
@@ -494,7 +517,10 @@ export function buildApp(): BuiltApp {
       redis,
       chatMessageOrchestrator
     ),
-    groupRoomCtrl: new GroupRoomController(groupRoomService),
+    groupRoomCtrl: new GroupRoomController(
+      groupRoomService,
+      groupAutoDeleteService
+    ),
     groupMessageCtrl: new GroupMessageController(
       groupMessageService,
       groupPinService,
@@ -556,6 +582,8 @@ export function buildApp(): BuiltApp {
       privateMessageService,
       chatMessageOrchestrator,
       autoDeleteService,
+      groupAutoDeleteService,
+      groupMessageService,
     },
   };
 }

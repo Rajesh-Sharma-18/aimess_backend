@@ -40,6 +40,7 @@ import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { PrivateSystemMessageService } from "./services/private-system-message.service.js";
 import { AutoDeleteService } from "./services/auto-delete.service.js";
+import { GroupAutoDeleteService } from "./services/group-auto-delete.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
 import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
@@ -651,6 +652,19 @@ const startServer = async () => {
       redis
     );
 
+    // The same feature for GROUP rooms — one timer per group, admin-set. Same
+    // construction order and the same reason: its sweeper deletes through
+    // `deleteDirect` too.
+    const groupAutoDeleteService = new GroupAutoDeleteService(
+      groupRoomRepo,
+      groupMemberRepo,
+      groupMessageRepo,
+      groupSystemMessageService,
+      groupPinService,
+      chatMessageOrchestrator,
+      redis
+    );
+
     // Bulk (multi-select) inbox operations. Owns no domain logic — it fans
     // each roomId out to the SAME single-conversation entry point the one-off
     // REST routes use, so bulk and individual calls can never drift.
@@ -704,7 +718,10 @@ const startServer = async () => {
         redis,
         chatMessageOrchestrator
       ),
-      groupRoomCtrl: new GroupRoomController(groupRoomService),
+      groupRoomCtrl: new GroupRoomController(
+        groupRoomService,
+        groupAutoDeleteService
+      ),
       groupMessageCtrl: new GroupMessageController(
         groupMessageService,
         groupPinService,
@@ -848,21 +865,30 @@ const startServer = async () => {
     // message disappears on schedule even when neither client is running
     // (§5.2 offline sender, §8.4 offline device). Drains in pages.
     autoDeleteSweepHandle = setInterval(() => {
-      void (async () => {
-        try {
-          for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
-            const n = await autoDeleteService.sweepDue(
-              new Date(),
-              env.AUTO_DELETE_SWEEP_BATCH
-            );
-            if (n > 0)
-              logger.info(`Auto-delete sweep processed ${n} message(s)`);
-            if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+      // Private and group drain independently and are caught separately, so a
+      // failure on one conversation type can never stall the other.
+      for (const [label, sweep] of [
+        ["private", (n: number) => autoDeleteService.sweepDue(new Date(), n)],
+        [
+          "group",
+          (n: number) => groupAutoDeleteService.sweepDue(new Date(), n),
+        ],
+      ] as const) {
+        void (async () => {
+          try {
+            for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
+              const n = await sweep(env.AUTO_DELETE_SWEEP_BATCH);
+              if (n > 0)
+                logger.info(
+                  `Auto-delete sweep (${label}) processed ${n} message(s)`
+                );
+              if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+            }
+          } catch (err) {
+            logger.warn(`autoDeleteSweep(${label}) failed: ${String(err)}`);
           }
-        } catch (err) {
-          logger.warn(`autoDeleteSweep failed: ${String(err)}`);
-        }
-      })();
+        })();
+      }
     }, env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000);
     if (typeof autoDeleteSweepHandle.unref === "function") {
       autoDeleteSweepHandle.unref();

@@ -188,6 +188,13 @@ export interface DeleteDirectParams {
   messageId: string;
   userId: string;
   scope: "forMe" | "forEveryone";
+  /**
+   * Server-initiated delete (the auto-delete sweeper). Skips the actor
+   * permission checks — the expired timer is the authority, and the nominal
+   * `userId` (the original sender) may have left the group or be muted by then.
+   * Set only from inside the service; no request path can reach it.
+   */
+  bySystem?: boolean;
 }
 
 export interface DeleteDirectResult {
@@ -1002,7 +1009,8 @@ export class ChatMessageOrchestrator {
           : await this.groupMessageService.deleteMessage(
               params.messageId,
               params.userId,
-              params.roomId
+              params.roomId,
+              params.bySystem === true
             );
     } else {
       result =
