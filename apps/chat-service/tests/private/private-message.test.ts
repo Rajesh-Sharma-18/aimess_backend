@@ -746,13 +746,32 @@ describe("POST /messages/:messageId/report", () => {
     expect(res.status).toBe(403);
   });
 
-  it("NEGATIVE: 400 for an invalid report reason enum", async () => {
+  // The reason is free text (≥3 chars), NOT a closed enum — the shared report
+  // dialog's vocabulary lives on the client and the backoffice canonicalizes it.
+  // Only an empty/too-short reason is rejected here.
+  it("NEGATIVE: 400 for a too-short report reason", async () => {
     const res = await request(app)
       .post(`/api/chat/private/messages/msg_1/report`)
       .set(bearer(makeAccessToken()))
-      .send({ reason: "NOT_A_REASON" });
+      .send({ reason: "x" });
 
     expect(res.status).toBe(400);
+  });
+
+  it("SECURITY: 404 when the roomId does not match the message's room", async () => {
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_1",
+      roomId: ROOM,
+      senderId: "peer",
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/private/messages/msg_1/report`)
+      .set(bearer(makeAccessToken()))
+      .send({ reason: "SPAM", roomId: "prv_other_room" });
+
+    expect(res.status).toBe(404);
+    expect(mocks.privateMessageReportRepo.create).not.toHaveBeenCalled();
   });
 });
 

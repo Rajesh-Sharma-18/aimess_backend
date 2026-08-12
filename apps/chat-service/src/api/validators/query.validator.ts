@@ -243,7 +243,9 @@ const compoundRoomCursor = z
  *   `pagination.nextCursor` back verbatim.
  * - `before_ts` / `after_ts` (legacy) — a bare epoch-ms bound, INCLUSIVE, so
  *   pages share the boundary row on a tie and clients de-dupe by `roomId`.
- *   Retained for backward compatibility.
+ *   Retained for backward compatibility. They now ALSO accept the compound
+ *   token: `nextCursor` is always compound, and a legacy client that echoes it
+ *   into `before_ts` used to get a 400 from `z.coerce.number()` (NaN).
  *
  * `*_cursor` wins over `*_ts` when both are sent. Omit all for the newest page.
  */
@@ -251,8 +253,8 @@ export const inboxQuerySchema = z
   .object({
     before_cursor: compoundRoomCursor.optional(),
     after_cursor: compoundRoomCursor.optional(),
-    before_ts: z.coerce.number().int().positive().optional(),
-    after_ts: z.coerce.number().int().positive().optional(),
+    before_ts: compoundRoomCursor.optional(),
+    after_ts: compoundRoomCursor.optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {

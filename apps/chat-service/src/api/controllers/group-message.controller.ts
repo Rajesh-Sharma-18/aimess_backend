@@ -399,11 +399,16 @@ export class GroupMessageController {
   reportMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { reportReason } = req.body as { reportReason: string };
+    const { reportReason, description } = req.body as {
+      reportReason: string;
+      description?: string;
+    };
     const result = await this.messageService.report({
       messageId,
       reporterId: userId,
       reportReason,
+      description,
+      roomId: req.params.roomId as string,
     });
     res
       .status(HTTP_STATUS.CREATED)
@@ -647,6 +652,15 @@ export class GroupMessageController {
             pinnedAt,
             action: "pinned",
             pinnedCount: result.pinnedCount,
+            // The pinned snapshot's text, so a client can render the pinned
+            // banner for a message that is NOT in its loaded window (pin an old
+            // message, or a device that just reconnected). Community's
+            // `community:message:pinned` has carried `pin.contentPinned` from
+            // the start; the group/private event carried only the id, which is
+            // why the banner came up blank on those clients.
+            text:
+              (result.pin.contentPinned as unknown as { text?: string } | null)
+                ?.text ?? "",
           },
         })
       );

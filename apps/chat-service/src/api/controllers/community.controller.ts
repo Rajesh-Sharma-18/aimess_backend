@@ -10,12 +10,12 @@ export class CommunityController {
   constructor(private readonly service: CommunityRoomService) {}
 
   getRooms = asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.auth?.userId || null;
+    const { userId } = req.auth;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const [rooms, totalCount] = await Promise.all([
-      this.service.getRooms(userId),
-      this.service.countRooms(),
+      this.service.getRooms(userId, page, limit),
+      this.service.countRooms(userId),
     ]);
     const paginated = buildListResponse(rooms, totalCount, page, limit);
     const msg = paginated.data.length
@@ -25,12 +25,13 @@ export class CommunityController {
   });
 
   searchRooms = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const { query } = req.query as { query: string };
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const [rooms, totalCount] = await Promise.all([
-      this.service.searchRooms(query),
-      this.service.countSearchResults(query),
+      this.service.searchRooms(query, userId, page, limit),
+      this.service.countSearchResults(query, userId),
     ]);
     const paginated = buildListResponse(rooms, totalCount, page, limit);
     const msg = paginated.data.length

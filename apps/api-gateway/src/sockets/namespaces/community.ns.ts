@@ -24,7 +24,7 @@ import {
   type PersonalizeFn,
 } from "../emit-personalized.js";
 import { scopeSocketLocale } from "../locale-scope.js";
-import { typingViewerFilter } from "../chat-flags.js";
+import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -386,6 +386,16 @@ export function registerCommunityNamespace(
           "community:member:removed",
           "community:member:muted",
           "community:member:unmuted",
+          // Roster SIZE and the pinned message are sidebar-visible state, not
+          // open-chat state: `community:<id>` only holds sockets that called
+          // community:join (i.e. the ONE community currently open), so without
+          // this mirror the member count on every other list row — and the pin
+          // banner on a second tab — stayed at whatever the last REST read said.
+          // The roster DELTA events above were already mirrored here; the count
+          // and the pin were the two that were not.
+          "community:stats:updated",
+          "community:message:pinned",
+          "community:message:unpinned",
           "community:stream:started",
           "community:stream:ended",
           "community:stream:updated",
@@ -395,13 +405,26 @@ export function registerCommunityNamespace(
         // removed/banned user's OWN sockets from the broadcast — see the block
         // after this one) instead of going through the generic room broadcast,
         // so its handling is deliberately skipped here.
+        // Reciprocity for Settings → Chat → Read Receipt, recipient half.
+        // chat-service already withholds the receipt of a READER who switched
+        // it off; this drops it for a VIEWER who did. It cannot happen at
+        // publish time — one `community:message:read` reaches every member of
+        // the room, each with their own setting. Mirrors chat.ns.ts.
+        const skipViewer =
+          parsed.event === "community:message:read"
+            ? (viewerUserId: string) =>
+                viewerHidesReadReceipts(userClient, viewerUserId)
+            : undefined;
+
         if (parsed.event !== "community:member:removed") {
           void emitPersonalizedSender(
             community,
             channel,
             parsed.event,
             parsed.data,
-            personalizeFn
+            personalizeFn,
+            undefined,
+            skipViewer
           );
 
           if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {

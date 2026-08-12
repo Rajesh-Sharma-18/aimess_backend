@@ -46,6 +46,8 @@ import { ForbiddenError, NotFoundError, BadRequestError } from "@aimess/errors";
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
 import { redis } from "../../src/config/redis.js";
 import { notifyUnreadChanged } from "../../src/events/unread-summary-bridge.js";
+import { userGrpcClient } from "../../src/grpc/user-snapshot.client.js";
+import { invalidateAccountChatSettings } from "../../src/lib/account-chat-settings.js";
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -198,6 +200,59 @@ describe("CommunityMessageService.markMessageRead", () => {
     expect(userPayload.event).toBe("community:read_sync");
     expect(userPayload.data.communityId).toBe(COMMUNITY_ID);
     expect(userPayload.data.upToMessageId).toBe(MESSAGE_ID);
+  });
+
+  // Settings → Chat → Read Receipt, community edition. The switch governs what
+  // OTHERS learn, so only the room broadcast may be withheld — the pointer, the
+  // reader's own `community:read_sync` and the nav badge must keep working, or
+  // turning receipts off would stop the reader's unread from ever clearing.
+  it("withholds the community:message:read room broadcast when the reader disabled read receipts", async () => {
+    invalidateAccountChatSettings();
+    (userGrpcClient.getChatSettings as jest.Mock).mockResolvedValue({
+      autoDeleteTimer: "OFF",
+      typingIndicators: true,
+      readReceipts: false,
+    });
+
+    const { service, memberRepo } = buildService({
+      memberRepo: {
+        findByRoomAndUser: jest.fn().mockResolvedValue({ status: "active" }),
+        advanceReadPointer: jest.fn().mockResolvedValue(undefined),
+      },
+      messageRepo: {
+        findById: jest.fn().mockResolvedValue({
+          id: MESSAGE_ID,
+          roomId: ROOM_ID,
+          createdAt: new Date(),
+        }),
+      },
+    });
+
+    const result = await service.markMessageRead({
+      communityId: COMMUNITY_ID,
+      roomId: ROOM_ID,
+      readerId: READER_ID,
+      upToMessageId: MESSAGE_ID,
+    });
+
+    expect(result.ok).toBe(true);
+    // The read itself is unaffected — only its visibility to other members is.
+    expect(memberRepo.advanceReadPointer).toHaveBeenCalled();
+    expect(notifyUnreadChanged).toHaveBeenCalledWith(READER_ID);
+
+    const channels = redisMock.publish.mock.calls.map(
+      ([channel]: [string]) => channel
+    );
+    expect(channels).not.toContain(`community:${COMMUNITY_ID}`);
+    expect(channels).toContain(`user:${READER_ID}`);
+
+    // Leave the shared cache clean for the tests after this one.
+    invalidateAccountChatSettings();
+    (userGrpcClient.getChatSettings as jest.Mock).mockResolvedValue({
+      autoDeleteTimer: "OFF",
+      typingIndicators: true,
+      readReceipts: true,
+    });
   });
 
   it("bulkMarkRead fires the SAME post-read effects as the single path", async () => {

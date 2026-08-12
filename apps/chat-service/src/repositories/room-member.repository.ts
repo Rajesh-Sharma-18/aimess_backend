@@ -169,6 +169,52 @@ export class RoomMemberRepository {
   }
 
   /**
+   * ACTIVE members whose read pointer moved at/after `since` — the candidate
+   * readers of a message created at `since`, for the per-message "Viewed by"
+   * sheet. A pointer can only advance to `now`, so anyone who read this message
+   * necessarily has `lastReadAt >= message.createdAt`; the caller still verifies
+   * by sequenceNumber (a later read of an EARLIER message also passes this
+   * filter). The point is to never load a 5 000-member roster to answer "who
+   * read this" — banned/left members are excluded by the same status filter.
+   *
+   * Legacy rows with a null `lastReadAt` are skipped: no timestamp, no receipt.
+   */
+  async findActiveReadersSince(
+    roomId: string,
+    since: Date
+  ): Promise<
+    Array<{
+      userId: string;
+      lastReadMessageId: string | null;
+      lastReadAt: Date | null;
+    }>
+  > {
+    const rows = await this.prisma.roomMember.findMany({
+      where: { roomId, status: "active", lastReadAt: { gte: since } },
+      select: { userId: true, lastReadMessageId: true, lastReadAt: true },
+    });
+    // Mongo's Prisma range filters also match an explicit null (the same trap
+    // the auto-delete sweeper hit with `lte`), so re-assert it in code.
+    return rows.filter((r) => r.lastReadAt != null);
+  }
+
+  /**
+   * Room ids the user holds a VISIBLE membership row in (ACTIVE or BANNED) — the
+   * membership half of the community room list/search visibility rule. BANNED is
+   * included on purpose: a banned member keeps the community in their list (they
+   * just can't act in it), the same READ/WRITE split
+   * {@link assertCommunityReadAccess} applies. Ids only, so a user in thousands
+   * of communities still costs one projected query.
+   */
+  async findVisibleRoomIdsByUser(userId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: { userId, status: { in: ["active", "banned"] } },
+      select: { roomId: true },
+    });
+    return rows.map((r) => r.roomId);
+  }
+
+  /**
    * Bulk: a user's ACTIVE + BANNED member rows across many rooms — the basis for
    * member-only community-chat summaries. BANNED rows are included (with
    * `bannedAt`) so the caller can clamp a banned member's summary to a read

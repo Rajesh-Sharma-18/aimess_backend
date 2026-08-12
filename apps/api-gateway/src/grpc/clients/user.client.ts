@@ -42,6 +42,18 @@ export type UserClient = {
    * Cached: consulted per typing burst and per read receipt delivered.
    */
   getChatFlags(userId: string): Promise<ChatFlags>;
+  /**
+   * Drop this user's cached flags so the very next lookup re-reads them.
+   *
+   * Called from the `settings:updated` relay in chat.ns — without it a switch
+   * flipped mid-conversation would keep its old value for up to the TTL, which
+   * reads to the user as "the toggle did nothing".
+   *
+   * Optional so the many hand-rolled `userClient` stubs in the socket test
+   * suites keep compiling and running — a missing invalidator only costs
+   * freshness, never correctness (the TTL still expires).
+   */
+  invalidateChatFlags?(userId: string): void;
 };
 
 export interface ChatFlags {
@@ -135,6 +147,9 @@ export function createUserClient(): UserClient {
         expiresAt: Date.now() + CHAT_FLAGS_TTL_MS,
       });
       return value;
+    },
+    invalidateChatFlags: (userId) => {
+      chatFlags.delete(userId);
     },
     filterVisiblePresence: (viewerId, peerIds) => {
       if (!UUID_RE.test(viewerId)) return Promise.resolve([]);

@@ -12,6 +12,9 @@ export type ConversationType = "PRIVATE" | "GROUP";
 
 export type BulkLeaveStatus = "LEFT" | "DELETED" | "FAILED";
 
+/** What `bulkLeave` does to a GROUP row — see the validator for the contract. */
+export type GroupBulkLeaveAction = "LEAVE" | "DELETE" | "LEAVE_AND_DELETE";
+
 export type BulkLeaveErrorCode =
   | "OWNER_CANNOT_LEAVE"
   | "NOT_MEMBER"
@@ -99,15 +102,16 @@ export class ConversationBulkService {
    * Remove multiple conversations from the caller's list in one call.
    *
    * PRIVATE → `deleteForMe` (the only self-removal a 1-to-1 room has).
-   * GROUP   → real membership removal (`groupAction: "LEAVE"`, default) or
-   *           history clear (`groupAction: "DELETE"`), see the validator.
+   * GROUP   → real membership removal (`groupAction: "LEAVE"`, default),
+   *           history clear (`groupAction: "DELETE"`), or both
+   *           (`groupAction: "LEAVE_AND_DELETE"`), see the validator.
    *
    * Always 200: inspect each item's `status`/`errorCode` and the `summary`.
    */
   async bulkLeave(
     userId: string,
     roomIds: string[],
-    groupAction: "LEAVE" | "DELETE"
+    groupAction: GroupBulkLeaveAction
   ): Promise<BulkLeaveResult> {
     const results: BulkLeaveItemResult[] = [];
     let succeeded = 0;
@@ -117,7 +121,10 @@ export class ConversationBulkService {
       const type = resolveConversationType(roomId);
       try {
         if (type === "GROUP") {
-          if (groupAction === "LEAVE") {
+          if (groupAction === "LEAVE_AND_DELETE") {
+            await this.leaveAndDelete(roomId, userId);
+            results.push({ roomId, type, status: "LEFT" });
+          } else if (groupAction === "LEAVE") {
             await this.groupMemberService.leave(roomId, userId);
             results.push({ roomId, type, status: "LEFT" });
           } else {
@@ -143,6 +150,42 @@ export class ConversationBulkService {
       results,
       summary: { requested: roomIds.length, succeeded, failed },
     };
+  }
+
+  /**
+   * `groupAction: "LEAVE_AND_DELETE"` — the sidebar's "Delete Conversation" on a
+   * group the caller is still an ACTIVE member of. WhatsApp semantics: you leave
+   * the group AND the row goes away, instead of lingering as the read-only LEFT
+   * row a plain "LEAVE" produces.
+   *
+   * Composed from the two existing single-conversation operations, in this
+   * order, so neither grows a second implementation:
+   *
+   *   1. `GroupMemberService.leave` — MEMBER_LEFT system message, memberCount
+   *      decrement, `group:removed` to the leaver, roster fan-out to the rest.
+   *   2. `GroupRoomService.clearConversation` — the caller's own `clearedAt`
+   *      cutoff, which is what takes the row out of their inbox and their group
+   *      search results. Accepts LEFT members, so step 1 does not lock it out.
+   *
+   * IDEMPOTENT by construction. `leave` throws CHAT_NOT_A_MEMBER when the caller
+   * is not ACTIVE — a double-click, a second device that already ran this, or an
+   * admin who removed them while the confirm dialog sat open. In every one of
+   * those the membership is ALREADY ended, which is the caller's intent, so the
+   * clear still runs and the item reports LEFT. No duplicate MEMBER_LEFT line
+   * and no duplicate `group:removed` can be emitted, because only the call that
+   * actually flipped the status gets past `leave`.
+   *
+   * CHAT_OWNER_CANNOT_LEAVE is NOT swallowed: the owner has to transfer
+   * ownership or disband, and silently clearing their conversation while they
+   * stay in the group would be the wrong half of the operation.
+   */
+  private async leaveAndDelete(roomId: string, userId: string): Promise<void> {
+    try {
+      await this.groupMemberService.leave(roomId, userId);
+    } catch (err) {
+      if (toLeaveErrorCode(err) !== "NOT_MEMBER") throw err;
+    }
+    await this.groupRoomService.clearConversation(roomId, userId);
   }
 
   /**
@@ -321,6 +364,10 @@ function toLeaveErrorCode(err: unknown): BulkLeaveErrorCode {
   const code = (err as { message?: string })?.message ?? "";
   if (code === "CHAT_OWNER_CANNOT_LEAVE") return "OWNER_CANNOT_LEAVE";
   if (code === "CHAT_NOT_A_MEMBER") return "NOT_MEMBER";
+  // The private-room guard's own "you aren't in this room" code — same meaning
+  // as CHAT_NOT_A_MEMBER, so it must report NOT_MEMBER rather than degrading to
+  // the catch-all NOT_FOUND ("this room doesn't exist").
+  if (code === "CHAT_NOT_PARTICIPANT") return "NOT_MEMBER";
   return "NOT_FOUND";
 }
 

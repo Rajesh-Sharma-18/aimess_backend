@@ -23,6 +23,16 @@ process.env.JWT_REFRESH_EXPIRES_IN_REMEMBER_ME = "2592000";
 process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
 process.env.RABBITMQ_URL = "amqp://localhost:5672";
 
+// Rate limiters are per-process, so a spec file firing many requests would trip
+// the production ceiling. Specs that assert throttling set their own value
+// before importing the app (see tests/account/account-deletion-rate-limit.test.ts).
+process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = "100";
+process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = "100";
+// sensitiveAuthRateLimiter is per-IP and now mounted on login/register/social/
+// forgot-password — every spec in this process shares one IP, so the production
+// ceiling of 20 would 429 partway through the auth suites.
+process.env.SENSITIVE_AUTH_RATE_LIMIT_MAX = "10000";
+
 // Keep OTP deterministic if any code path reaches it under test.
 process.env.OTP_DEV_FIXED_CODE = "123456";
 

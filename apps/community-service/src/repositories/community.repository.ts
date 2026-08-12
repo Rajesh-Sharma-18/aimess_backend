@@ -2923,6 +2923,30 @@ export const communityRepository = {
         communityId: params.communityId,
         reporterId: params.reporterId,
         targetUserId: params.targetUserId,
+        // MEMBER reports only. A message report also stores the sender in
+        // targetUserId, and "I reported user B" must not block "I reported a
+        // message B sent" (or vice versa) — they are different targets.
+        reportedMessageId: null,
+      },
+    });
+  },
+
+  /**
+   * Duplicate guard for MESSAGE-targeted reports: one report per (reporter,
+   * message), any status. Deliberately keyed on the message, not on the sender,
+   * so reporting several messages from the same person is allowed while
+   * double-reporting one message is not.
+   */
+  findReportByReporterAndMessage(params: {
+    communityId: string;
+    reporterId: string;
+    reportedMessageId: string;
+  }) {
+    return prisma.communityReport.findFirst({
+      where: {
+        communityId: params.communityId,
+        reporterId: params.reporterId,
+        reportedMessageId: params.reportedMessageId,
       },
     });
   },

@@ -559,6 +559,11 @@ export class PrivateMessageController {
             pinnedAt,
             action: "pinned",
             pinnedCount: result.pinnedCount,
+            // See the group controller: the pinned snapshot's text lets a client
+            // render the banner for a message outside its loaded window.
+            text:
+              (result.pin.contentPinned as unknown as { text?: string } | null)
+                ?.text ?? "",
           },
         })
       );
@@ -839,15 +844,17 @@ export class PrivateMessageController {
   reportMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { reason, description } = req.body as {
+    const { reason, description, roomId } = req.body as {
       reason: string;
       description?: string;
+      roomId?: string;
     };
     const result = await this.messageService.reportMessage({
       messageId,
       reporterId: userId,
       reason,
       description,
+      roomId,
     });
     res
       .status(HTTP_STATUS.CREATED)

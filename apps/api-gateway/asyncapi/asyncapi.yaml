@@ -619,16 +619,37 @@ operations:
   chat.presenceHeartbeat:
     action: send
     channel: { $ref: "#/channels/chat" }
-    summary: "presence:heartbeat — keep presence alive (fire-and-forget)"
+    summary: "presence:heartbeat — report app state (fire-and-forget)"
     description: |
-      The server renews the device-presence TTL on each heartbeat; the TTL is **10 minutes**.
-      Stop sending heartbeats and the user will appear offline to peers after ~10 minutes.
-      Recommended client interval: every 30–60 s while the app is in the foreground.
+      Liveness itself is SERVER-driven: the gateway refreshes the device session
+      from traffic on the socket (including the transport's own ping/pong), so a
+      client that never heartbeats does NOT go offline while its socket is open.
+
+      Send this to report an app-state CHANGE — `FOREGROUND` when the app or tab
+      becomes visible, `BACKGROUND` when it is hidden. A state change is applied
+      immediately, not throttled. Sending it periodically (30–60 s) is harmless
+      and still supported.
+
+      A user is ONLINE while any session is FOREGROUND, or BACKGROUND and active
+      within the background grace window (5 min). Presence expires only when
+      every session's TTL lapses (~150 s without a refresh) — a stale-session
+      sweep then publishes the OFFLINE with a server-stamped `lastSeen`.
     messages: [{ $ref: "#/channels/chat/messages/presenceHeartbeat" }]
   chat.presenceSubscribe:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "presence:subscribe — watch peers' presence"
+    description: |
+      Joins `presence:<peerId>` for every peer the caller is allowed to see
+      (`whoCanSeeOnlineStatus`). Denied peers are silently skipped — a per-peer
+      rejection would itself disclose the setting.
+
+      The ack CARRIES the current state, so this doubles as the reconcile point
+      after a reconnect: `data` is
+      `{ subscribedCount: number, statuses: PresenceStatusPayload[] }`.
+      Re-subscribe on every `connect` and apply `statuses` — that is how a flip
+      missed while the socket was down is corrected, with no refetch and no
+      waiting for the peer to flip again.
     messages: [{ $ref: "#/channels/chat/messages/presenceSubscribe" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -2881,6 +2902,11 @@ components:
       name: "presence:status"
       title: "presence:status"
       payload: { $ref: "#/components/schemas/PresenceStatusPayload" }
+      summary: |
+        A watched peer's ONLINE/OFFLINE state changed. Emitted only on a real
+        transition — never as a keepalive — and only to `presence:<subjectId>`,
+        which is joined by `presence:subscribe` after a whoCanSeeOnlineStatus
+        check. A user with several devices stays ONLINE until the LAST one goes.
       examples:
         - name: Peer came online
           payload:
@@ -2888,12 +2914,19 @@ components:
             isOnline: true
             lastActiveAt: 1749465700000
             lastSeen: null
+            version: 7
         - name: Peer went offline
           payload:
             userId: "user_abc123"
             isOnline: false
             lastActiveAt: 1749465700000
             lastSeen: 1749465700000
+            version: 8
+        - name: Presence access revoked (unfriended / setting changed)
+          payload:
+            userId: "user_abc123"
+            isOnline: false
+            lastSeen: null
     CallIncoming:
       name: "call:incoming"
       title: "call:incoming"
@@ -6177,8 +6210,19 @@ components:
           {
             type: integer,
             nullable: true,
-            description: "epoch ms; null while online.",
+            description:
+              "Server-generated epoch ms of the moment the user's LAST session
+              ended. Render only while isOnline is false.",
           }
+        version:
+          type: integer
+          description: >
+            Monotonic per-user counter, advanced ONLY on a real ONLINE<->OFFLINE
+            flip. Discard an event whose version is lower than the one already
+            applied for that user, so a delayed "online" cannot resurrect a dot
+            the user has since turned off. ABSENT means "apply unconditionally":
+            the gateway omits it when revoking presence visibility, which must
+            never be suppressed by a stale-but-higher version.
     CallIncomingPayload:
       type: object
       properties:

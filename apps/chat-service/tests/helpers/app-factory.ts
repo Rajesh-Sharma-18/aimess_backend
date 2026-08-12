@@ -21,6 +21,7 @@
 import type { Express } from "express";
 
 import { createApp } from "../../src/app.js";
+import { TEST_USER_ID, TEST_PEER_ID } from "./auth.js";
 import type { Controllers } from "../../src/api/routes/index.js";
 
 // -- Real services --
@@ -161,6 +162,28 @@ export function buildApp(): BuiltApp {
 
   // -- Mock repositories --
   const cacheRepo = repoMock();
+  // PresenceService reads status + lastSeen + version in ONE batched call.
+  // Default it from the same per-user mocks specs already program
+  // (`getUserPresence` / `getUserPresences` / `getLastSeen`), so a spec keeps
+  // stubbing whichever of those it finds natural and never has to know a
+  // snapshot shape exists.
+  cacheRepo.getPresenceSnapshots = jest.fn(async (userIds: string[]) => {
+    const statuses = (await cacheRepo.getUserPresences(userIds)) as
+      | Map<string, string | null>
+      | undefined;
+    const snapshots = new Map();
+    for (const userId of userIds) {
+      const status =
+        statuses?.get(userId) ?? (await cacheRepo.getUserPresence(userId));
+      snapshots.set(userId, {
+        userId,
+        isOnline: status === "online",
+        lastSeen: (await cacheRepo.getLastSeen(userId)) ?? null,
+        version: 0,
+      });
+    }
+    return snapshots;
+  });
   const privateRoomRepo = repoMock();
   const privateMessageRepo = repoMock();
   const privateMessagePinRepo = repoMock();
@@ -196,6 +219,16 @@ export function buildApp(): BuiltApp {
     id: "room",
     status: "active",
   });
+  // Default: the caller is a participant of whatever private room the spec
+  // addresses. `assertPrivateParticipant` now runs on the WRITE paths too
+  // (send/forward/mark-read/reactions — AUDIT-103/104/105/113), not just the
+  // reads, so without this every private spec would 404 on CHAT_ROOM_NOT_FOUND.
+  // `participants` is also what the peer/`receiverId` is derived from, so a spec
+  // asserting on a specific peer overrides this with its own room.
+  privateRoomRepo.findByRoomId.mockResolvedValue({
+    roomId: "prv_room",
+    participants: [TEST_USER_ID, TEST_PEER_ID],
+  });
   // Every timeline page probes one row beyond each seq edge for the bidirectional
   // continuation block and reads the room's change high-water. Default both so a
   // spec only stubs them when it actually asserts on continuation/revision.
@@ -225,6 +258,9 @@ export function buildApp(): BuiltApp {
   const userSnapshotService = new UserSnapshotService();
   const userServiceClient: any = {
     checkFriendship: jest.fn(async () => true),
+    // The send path gates on friendship AND on the block list; without this the
+    // happy path threw "isFriendshipBlocked is not a function" → 500.
+    isFriendshipBlocked: jest.fn(async () => false),
   };
   // Live gRPC friendship lookup for private-room list/details responses (the
   // `friendship` field) — distinct from userServiceClient's local send-gate
@@ -256,7 +292,6 @@ export function buildApp(): BuiltApp {
   const presenceService = new PresenceService(
     cacheRepo,
     redis,
-    privateRoomRepo,
     undefined,
     presenceVisibilityGate
   );

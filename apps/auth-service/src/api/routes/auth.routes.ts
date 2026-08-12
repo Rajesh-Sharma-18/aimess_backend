@@ -22,10 +22,11 @@ import {
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
-  // loginSchema,
+  loginSchema,
   registerSchema,
   validateAccountSchema,
 } from "../validators/auth.validator.js";
+import { sensitiveAuthRateLimiter } from "../../middleware/rate-limiters.js";
 import {
   requestPasswordResetOtpSchema,
   resetPasswordSchema,
@@ -44,27 +45,57 @@ authRoutes.post(
   validateBody(validateAccountSchema),
   validateAccount
 );
-authRoutes.post("/register", validateBody(registerSchema), register);
-// authRoutes.post("/login", validateBody(loginSchema), login);
-authRoutes.post("/login", login);
+// `sensitiveAuthRateLimiter` was declared with its own env knobs and then
+// imported by NOTHING, so every credential-guessing surface below was
+// unthrottled. It is per-IP, which is the only key available before a caller is
+// authenticated; the per-account lockout (AUTH_MAX_FAILED_LOGINS) remains the
+// defence against a distributed attempt.
+authRoutes.post(
+  "/register",
+  sensitiveAuthRateLimiter,
+  validateBody(registerSchema),
+  register
+);
+// The validator was commented out, so a missing `account` threw inside the
+// service (500 instead of 400) and an object `account` / non-string `password`
+// reached the repository and bcrypt.
+authRoutes.post(
+  "/login",
+  sensitiveAuthRateLimiter,
+  validateBody(loginSchema),
+  login
+);
 authRoutes.post("/refresh", validateBody(refreshTokenSchema), refreshTokens);
 authRoutes.post("/token", validateBody(refreshTokenSchema), issueAccessToken);
 authRoutes.post("/logout", authenticateAccessToken, logout);
-authRoutes.post("/google", validateBody(googleLoginSchema), loginWithGoogle);
-authRoutes.post("/apple", validateBody(appleLoginSchema), loginWithApple);
+authRoutes.post(
+  "/google",
+  sensitiveAuthRateLimiter,
+  validateBody(googleLoginSchema),
+  loginWithGoogle
+);
+authRoutes.post(
+  "/apple",
+  sensitiveAuthRateLimiter,
+  validateBody(appleLoginSchema),
+  loginWithApple
+);
 
 authRoutes.post(
   "/forgot-password/request",
+  sensitiveAuthRateLimiter,
   validateBody(requestPasswordResetOtpSchema),
   requestPasswordResetOtp
 );
 authRoutes.post(
   "/forgot-password/verify",
+  sensitiveAuthRateLimiter,
   validateBody(verifyPasswordResetOtpSchema),
   verifyPasswordResetOtp
 );
 authRoutes.post(
   "/forgot-password/reset",
+  sensitiveAuthRateLimiter,
   validateBody(resetPasswordSchema),
   resetPassword
 );

@@ -305,9 +305,16 @@ export async function scanLiveLinkTokens(): Promise<string[]> {
     );
     cursor = next;
     for (const key of keys) {
-      // Skip the fingerprint index keys — only sweep main session records.
-      if (key.includes(":fp:")) continue;
-      tokens.push(key.replace("aimess:devlink:", ""));
+      const suffix = key.replace("aimess:devlink:", "");
+      // Only bare `aimess:devlink:<uuid>` records are sweepable. Every other
+      // key under this prefix is a sidecar with a namespaced suffix — the
+      // fingerprint index (`fp:<hash>`) and the one-shot success mailbox
+      // (`result:<uuid>`, written by publishQrLinkSuccess). Feeding either to
+      // MARK_EXPIRED_SCRIPT makes its cjson.decode yield a record with no
+      // `expiresAt`, and the Lua comparison against nil throws — aborting the
+      // whole sweep tick, so nothing expires while a mailbox key is alive.
+      if (suffix.includes(":")) continue;
+      tokens.push(suffix);
     }
   } while (cursor !== "0");
   return tokens;

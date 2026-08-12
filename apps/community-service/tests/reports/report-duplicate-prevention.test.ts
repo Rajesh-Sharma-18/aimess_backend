@@ -13,6 +13,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     findOpenReportByReporterAndTarget: jest.fn(),
     findReportByReporterAndTarget: jest.fn(),
+    findReportByReporterAndMessage: jest.fn(),
     createReport: jest.fn(),
     findActiveMemberIdsByRoles: jest.fn(),
     createAuditLog: jest.fn(),
@@ -65,6 +66,7 @@ beforeEach(() => {
   });
   repo.findOpenReportByReporterAndTarget.mockResolvedValue(null);
   repo.findReportByReporterAndTarget.mockResolvedValue(null);
+  repo.findReportByReporterAndMessage.mockResolvedValue(null);
   repo.findActiveMemberIdsByRoles.mockResolvedValue([]);
   repo.createAuditLog.mockResolvedValue(undefined);
   repo.createReport.mockImplementation(

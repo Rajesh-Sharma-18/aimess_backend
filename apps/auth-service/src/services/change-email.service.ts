@@ -8,6 +8,8 @@ import type {
 } from "../api/validators/change-email.validator.js";
 import { OtpPurpose } from "../generated/prisma/client.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
+import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
+import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
 import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
 import { sendEmailOtp } from "../lib/send-email-otp.js";
 import { env } from "../config/env.js";
@@ -114,7 +116,10 @@ export const changeEmailService = {
 
     await otpRepository.markConsumed(otp.id);
 
-    const updated = await authRepository.updateVerifiedEmail(userId, newEmail);
+    const updated = await authRepository
+      .updateVerifiedEmail(userId, newEmail)
+      .catch(rethrowAsEmailConflict);
+    emitProfileUpdatedSafe(userId);
     publishEmailChangedSafe({
       userId: updated.id,
       newEmail,

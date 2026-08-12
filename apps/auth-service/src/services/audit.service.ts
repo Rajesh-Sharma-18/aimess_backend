@@ -21,7 +21,8 @@ export type AuthAuditEvent =
   | "QR_EXPIRED"
   | "BROWSER_LOGGED_IN"
   | "LINKED_DEVICE_CREATED"
-  | "LINKED_DEVICE_REVOKED";
+  | "LINKED_DEVICE_REVOKED"
+  | "ACCOUNT_DELETED";
 
 export interface RecordAuditEventInput {
   event: AuthAuditEvent;

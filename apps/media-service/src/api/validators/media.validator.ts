@@ -10,15 +10,43 @@ export const VALID_CATEGORIES = [
   "GROUP_CHAT_ATTACHMENT",
 ] as const;
 
-export const uploadUrlSchema = z.object({
-  category: z.enum(VALID_CATEGORIES),
-  contentType: z.string().min(1).max(128),
-  contentLength: z.coerce.number().int().positive(),
-  // The entity the file belongs to (roomId / groupId / communityId for chat
-  // categories). Recorded in the media registry so downloads can be authorized
-  // against membership of that resource. Optional for public avatars/covers.
-  resourceId: z.string().min(1).max(200).optional(),
-});
+/**
+ * Categories whose download authorization is membership-based. For these the
+ * registry's `resourceId` is the ONLY thing that can answer "may this user
+ * fetch this file" — the object key carries the uploader's id, not the room's
+ * — so an upload that omits it produces a file nothing can authorize later.
+ */
+export const MEMBERSHIP_SCOPED_CATEGORIES = new Set<string>([
+  "CHAT_ATTACHMENT",
+  "COMMUNITY_CHAT_ATTACHMENT",
+  "GROUP_CHAT_ATTACHMENT",
+]);
+
+export const uploadUrlSchema = z
+  .object({
+    category: z.enum(VALID_CATEGORIES),
+    contentType: z.string().min(1).max(128),
+    contentLength: z.coerce.number().int().positive(),
+    // The entity the file belongs to (roomId / groupId / communityId for chat
+    // categories). Recorded in the media registry so downloads can be authorized
+    // against membership of that resource. Optional for public avatars/covers,
+    // REQUIRED for the chat categories (see below).
+    resourceId: z.string().min(1).max(200).optional(),
+  })
+  .superRefine((v, ctx) => {
+    // Chat attachments used to accept a missing resourceId and store null.
+    // The download guard then had nothing to check membership against and fell
+    // back to a prefix-only check that let ANY authenticated user fetch the
+    // object. Requiring it here is what makes the download side able to fail
+    // closed without breaking well-formed uploads.
+    if (MEMBERSHIP_SCOPED_CATEGORIES.has(v.category) && !v.resourceId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["resourceId"],
+        message: "resourceId is required for chat attachment uploads",
+      });
+    }
+  });
 
 export const downloadUrlSchema = z.object({
   // Normally an internal storage key; also accepts an external http(s) URL

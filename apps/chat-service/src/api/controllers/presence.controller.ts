@@ -18,12 +18,19 @@ export class PresenceController {
   getPresence = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.params.userId as string;
     const { userId: viewerId } = req.auth;
-    const [isOnline, lastSeen] = await Promise.all([
-      this.presenceService.getPresenceFor(viewerId, userId),
-      this.presenceService.getLastSeenFor(viewerId, userId),
-    ]);
-    res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ userId, isOnline, lastSeen }));
+    // One viewer-scoped read for status + lastSeen + version, so a client
+    // hydrating from REST starts with the same version the socket events
+    // carry and can tell a late event from a newer one.
+    const view = (
+      await this.presenceService.getPresenceViewsFor(viewerId, [userId])
+    ).get(userId);
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse({
+        userId,
+        isOnline: view?.isOnline ?? false,
+        lastSeen: view?.lastSeen ?? null,
+        version: view?.version ?? 0,
+      })
+    );
   });
 }

@@ -15,15 +15,29 @@ jest.mock("../../src/repositories/session.repository.js", () => ({
     listActiveSessionIds: jest.fn(async () => []),
   },
 }));
+jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
+  publishSessionRevokedEvent: jest.fn(async () => 0),
+}));
 
 import request from "supertest";
 import bcrypt from "bcryptjs";
 
+import { publishSessionRevokedEvent } from "@aimess/redis";
+
 import app from "../../src/app.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
-import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
+import { sessionRepository } from "../../src/repositories/session.repository.js";
+import {
+  bearer,
+  makeAccessToken,
+  TEST_SESSION_ID,
+  TEST_USER_ID,
+} from "../helpers/auth.js";
 
 const repo = authRepository as unknown as Record<string, jest.Mock>;
+const sessions = sessionRepository as unknown as Record<string, jest.Mock>;
+const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 
 const CURRENT = "CurrentPass123";
 let currentHash: string;
@@ -46,7 +60,10 @@ function activeUser(overrides: Record<string, unknown> = {}) {
 
 describe("POST /api/auth/change-password", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     repo.findByIdForAccountOps.mockResolvedValue(activeUser());
+    // Default: the caller is the only live device, so nothing gets revoked.
+    sessions.listActiveSessionIds.mockResolvedValue([{ id: TEST_SESSION_ID }]);
   });
 
   it("changes the password with the correct current password → 200", async () => {
@@ -58,9 +75,48 @@ describe("POST /api/auth/change-password", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(repo.updatePasswordHash).toHaveBeenCalledTimes(1);
+    // Every OTHER device is signed out; the caller's own session is spared.
     expect(repo.revokeSessionsAfterPasswordChange).toHaveBeenCalledWith(
-      TEST_USER_ID
+      TEST_USER_ID,
+      TEST_SESSION_ID
     );
+  });
+
+  it("force-disconnects the other devices but not the caller's session", async () => {
+    sessions.listActiveSessionIds.mockResolvedValue([
+      { id: TEST_SESSION_ID },
+      { id: "other-session-1" },
+      { id: "other-session-2" },
+    ]);
+
+    const res = await request(app)
+      .post("/api/auth/change-password")
+      .set(bearer(makeAccessToken()))
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+
+    expect(res.status).toBe(200);
+    expect(publishRevoked.mock.calls.map((call) => call[2])).toEqual([
+      "other-session-1",
+      "other-session-2",
+    ]);
+  });
+
+  it("does not revoke anything when the current password is wrong", async () => {
+    sessions.listActiveSessionIds.mockResolvedValue([
+      { id: TEST_SESSION_ID },
+      { id: "other-session-1" },
+    ]);
+
+    await request(app)
+      .post("/api/auth/change-password")
+      .set(bearer(makeAccessToken()))
+      .send({
+        currentPassword: "WrongCurrent99",
+        newPassword: "BrandNewPass456",
+      });
+
+    expect(repo.revokeSessionsAfterPasswordChange).not.toHaveBeenCalled();
+    expect(publishRevoked).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an incorrect current password", async () => {

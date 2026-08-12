@@ -49,6 +49,52 @@ describe("POST /api/chat/group-members/add", () => {
     expect(mocks.groupMemberRepo.upsert).toHaveBeenCalled();
   });
 
+  // Rejoining is a FRESH membership, never a restore. A moderator who leaves
+  // and is added back comes in as a plain MEMBER — the upsert always writes the
+  // role, so the stale MODERATOR on the LEFT row cannot survive the re-add and
+  // silently hand moderation rights back.
+  it("REJOIN: a former MODERATOR is re-added as a plain MEMBER", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      memberCount: 2,
+      memberLimit: 50,
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    // The leftover row from before they left, still carrying MODERATOR.
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: "returning-user",
+      role: "MODERATOR",
+      status: "LEFT",
+    });
+    mocks.groupMemberRepo.upsert.mockResolvedValue({
+      roomId: ROOM,
+      userId: "returning-user",
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: "returning-user" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.groupMemberRepo.upsert).toHaveBeenCalledWith(
+      ROOM,
+      "returning-user",
+      // …and the removal stamps are cleared, so the row is not read back as
+      // still-left/still-kicked once it is ACTIVE again.
+      expect.objectContaining({
+        role: "MEMBER",
+        status: "ACTIVE",
+        leftAt: null,
+        kickedAt: null,
+      })
+    );
+  });
+
   // AUDIT H3 — addMember must authorize the actor (require ADMIN).
   it("SECURITY: 403 when a plain MEMBER tries to add someone", async () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
@@ -166,6 +212,31 @@ describe("POST /api/chat/group-members/:roomId/leave", () => {
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,
       expect.stringContaining('"event":"group:removed"')
+    );
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining('"reason":"LEAVE"')
+    );
+  });
+
+  // A MODERATOR leaves exactly like a MEMBER: the ONLY role the leave gate
+  // rejects is ADMIN, so moderation rights never trap someone in a group.
+  it("POSITIVE: a MODERATOR can leave, same as a plain member", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MODERATOR",
+    });
+    mocks.groupMemberRepo.updateStatus.mockResolvedValue({ status: "LEFT" });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/leave`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      "LEFT",
+      expect.objectContaining({ leftAt: expect.any(Date) })
     );
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `user:${TEST_USER_ID}`,

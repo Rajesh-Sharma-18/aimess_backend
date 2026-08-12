@@ -2094,6 +2094,9 @@ export const authPaths = {
         "**Business rules:**\n" +
         "- 30-day grace window: the account is not immediately destroyed; a future reactivation flow can restore it.\n" +
         "- All FCM device tokens are unregistered.\n" +
+        "- Every linked Google/Apple account row is removed in the same transaction, so the provider `sub` is free to link to another account. AIMess stores no provider access/refresh tokens (only `sub`/email/displayName), so there is nothing to revoke with the provider.\n" +
+        "- Every still-connected socket is force-disconnected immediately (same `session-revoke` signal as 'Logout Device'); other devices do not wait for token expiry.\n" +
+        "- Rate limited to 5 attempts/hour per user (`429`).\n" +
         "- `400 AUTH_PASSWORD_REQUIRED` — if the account has a password hash but the request body omits `password`.\n" +
         "- `401 AUTH_PASSWORD_INCORRECT` — wrong password supplied.",
       security: [{ bearerAuth: [] }],

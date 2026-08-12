@@ -4424,6 +4424,11 @@ export const openApiSchemas = {
         nullable: true,
         description: "Primary account email from auth-service.",
       },
+      emailVerified: {
+        type: "boolean",
+        description:
+          "True once `email` has been proven by OTP (link-email / change-email). False when unset, pending verification, or auth-service is unavailable.",
+      },
       isGoogleLogin: {
         type: "boolean",
         description:
@@ -4487,6 +4492,7 @@ export const openApiSchemas = {
       "bio",
       "account",
       "email",
+      "emailVerified",
       "isGoogleLogin",
       "isAppleLogin",
       "primaryAccount",
@@ -8119,6 +8125,12 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },
       isOnline: { type: "boolean" },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
+      },
     },
     required: [
       "id",
@@ -8237,6 +8249,12 @@ export const openApiSchemas = {
         description:
           "Negation of isOnline, from the existing presence pipeline.",
       },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
+      },
       isMuted: {
         type: "boolean",
         description: "Mirrors CommunityData.isMuted.",
@@ -8314,6 +8332,12 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "Negation of isOnline, from the same real-time presence pipeline as conv:updated's isOffline.",
+      },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          'Server-generated epoch ms of the moment this user\'s LAST session ended. Render only while isOnline is false. Hydrate the chat header / conversation row from this so an already-offline peer shows "Last seen …" immediately, without waiting for a presence:status that is not coming.',
       },
       unreadMessageCount: {
         type: "integer",
@@ -11162,7 +11186,7 @@ export const openApiSchemas = {
       roomIds: { $ref: "#/components/schemas/ChatBulkConversationIds" },
       groupAction: {
         type: "string",
-        enum: ["LEAVE", "DELETE"],
+        enum: ["LEAVE", "DELETE", "LEAVE_AND_DELETE"],
         default: "LEAVE",
         description:
           "What to do with the GROUP rows in `roomIds` (PRIVATE rows ignore " +
@@ -11172,11 +11196,19 @@ export const openApiSchemas = {
           "`POST /chat/group-members/{roomId}/leave`: MEMBER_LEFT system " +
           "message, member count decrement, `group:removed` to the leaver and " +
           "`group:member:removed` to the remaining roster. The group does " +
-          "**not** come back on reload.\n" +
+          "**not** come back on reload, but the row stays in the caller's " +
+          "list read-only.\n" +
           '- `DELETE` — the sidebar\'s "Delete Conversation", identical to ' +
           "`DELETE /chat/groups/rooms/{roomId}`: clears the caller's own history " +
           "and keeps membership, so the room reappears when a new message " +
-          "arrives.",
+          "arrives.\n" +
+          "- `LEAVE_AND_DELETE` — both, in that order. WhatsApp semantics for " +
+          '"Delete Conversation" on a group the caller is still ACTIVE in: ' +
+          "membership ends AND the row disappears. Idempotent — a caller who " +
+          "is already not ACTIVE still gets the clear, and no second " +
+          "MEMBER_LEFT or `group:removed` is emitted. Reports `LEFT`. Only " +
+          "`OWNER_CANNOT_LEAVE` still fails: the owner must transfer " +
+          "ownership or disband.",
       },
     },
   },
@@ -11326,10 +11358,22 @@ export const openApiSchemas = {
   },
   ChatPresence: {
     type: "object",
+    description:
+      "Peer presence as THIS caller is allowed to see it. A peer whose whoCanSeeOnlineStatus excludes the caller returns the same shape as a genuinely-offline user, so the setting itself stays undisclosed.",
     properties: {
       userId: { type: "string" },
       isOnline: { type: "boolean" },
-      lastSeen: { type: "integer", nullable: true },
+      lastSeen: {
+        type: "integer",
+        nullable: true,
+        description:
+          "Server-generated epoch ms of the moment this user's LAST session ended. Render only while isOnline is false.",
+      },
+      version: {
+        type: "integer",
+        description:
+          "Monotonic per-user counter, advanced only on a real ONLINE<->OFFLINE flip. Compare against the `version` on presence:status so a late socket event cannot overwrite a newer state.",
+      },
     },
   },
   CommunityPinResponse: {

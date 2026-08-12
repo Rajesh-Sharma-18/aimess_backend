@@ -13,15 +13,22 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 jest.mock("../../src/messaging/publish-user-deleted.js", () => ({
   publishUserDeletedSafe: jest.fn(),
 }));
+jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
+  publishSessionRevokedEvent: jest.fn(async () => 0),
+}));
 
 import request from "supertest";
 import bcrypt from "bcryptjs";
+
+import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import app from "../../src/app.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
 const repo = authRepository as unknown as Record<string, jest.Mock>;
+const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 
 const PASSWORD = "Password123";
 let passwordHash: string;
@@ -117,6 +124,29 @@ describe("DELETE /api/auth/account", () => {
 
     expect(res.status).toBe(401);
     expect(repo.findByIdForAccountOps).not.toHaveBeenCalled();
+  });
+
+  it("force-disconnects every revoked session on the live socket layer", async () => {
+    const res = await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(publishRevoked).toHaveBeenCalledTimes(2);
+    expect(publishRevoked.mock.calls.map((call) => call[2])).toEqual([
+      "sess-1",
+      "sess-2",
+    ]);
+  });
+
+  it("publishes nothing to the socket layer when the password is wrong", async () => {
+    await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: "WrongPassword99" });
+
+    expect(publishRevoked).not.toHaveBeenCalled();
   });
 
   it("returns 400 when the password is an empty string", async () => {

@@ -20,6 +20,17 @@ import type {
 
 import { redis } from "../config/redis.js";
 
+/**
+ * Fan-out channel for "this user's Settings → Chat switches changed, drop your
+ * cached copy". Sole subscriber: chat-service
+ * (`src/startup/chat-settings-invalidation.ts`) — keep the two literals in step.
+ *
+ * Not lifted into `@aimess/redis` on purpose: that package ships from `dist`,
+ * so a shared constant would make this one-line change a package rebuild for
+ * every developer and every deploy.
+ */
+const CHAT_SETTINGS_INVALIDATE_CHANNEL = "chat-settings:invalidate";
+
 /** Publish one realtime friendship (or conversation) event to one user's devices. Never throws. */
 export function emitFriendEventSafe(
   userId: string,
@@ -68,6 +79,25 @@ export function emitSettingsUpdatedSafe(
       logger.warn(error);
     }
   );
+
+  // Bust every service-side cache of this user's Settings → Chat switches in
+  // the same breath. chat-service and the gateway each hold a 60s TTL copy
+  // (they are read once per send / per read receipt / per typing burst), and
+  // without this a user who turns Read Receipt or Typing Indicator off keeps
+  // broadcasting for up to a minute — the switch reads as broken.
+  //
+  // Deliberately its OWN narrow channel rather than having those services
+  // psubscribe `user:*`: that pattern carries every conversation event in the
+  // product, and a cache invalidation has no business reading them.
+  void redis
+    .publish(
+      CHAT_SETTINGS_INVALIDATE_CHANNEL,
+      JSON.stringify({ userId, at: Date.now() })
+    )
+    .catch((error) => {
+      logger.warn(`Failed to publish chat-settings invalidation for ${userId}`);
+      logger.warn(error);
+    });
 }
 
 /** Publish the same realtime event to two users at once (e.g. both sides of a friendship change). */

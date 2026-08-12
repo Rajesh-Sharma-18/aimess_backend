@@ -46,6 +46,7 @@ jest.mock("../../src/lib/resolve-auth-account.js", () => ({
     account: {
       account: "johndoe",
       email: "john@example.com",
+      emailVerified: true,
       primaryAccount: "EMAIL",
       providers: [],
     },
@@ -121,6 +122,27 @@ describe("GET /api/v1/users/profiles/me", () => {
     expect(res.body.data.dateOfBirth).toBe("1995-06-15");
     expect(res.body.data.avatarUrl).toBeNull();
     expect(repo.findByUserId).toHaveBeenCalledWith(TEST_USER_ID);
+  });
+
+  it("surfaces the auth-service emailVerified flag so the client can pick link vs verified state", async () => {
+    repo.findByUserId.mockResolvedValue(profileRecord());
+    const resolveSummary = (
+      await import("../../src/lib/resolve-auth-account.js")
+    ).resolveAuthAccountSummary as unknown as jest.Mock;
+
+    const verified = await request(app)
+      .get("/api/v1/users/profiles/me")
+      .set(auth());
+    expect(verified.body.data.emailVerified).toBe(true);
+
+    resolveSummary.mockResolvedValueOnce({
+      account: { account: "johndoe", email: "john@example.com", providers: [] },
+      accountStatus: "live",
+    });
+    const pending = await request(app)
+      .get("/api/v1/users/profiles/me")
+      .set(auth());
+    expect(pending.body.data.emailVerified).toBe(false);
   });
 
   it("returns 404 when the profile does not exist", async () => {

@@ -14,6 +14,8 @@ const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET as string;
 
 export const TEST_USER_ID = "11111111-1111-4111-8111-111111111111";
 export const TEST_SESSION_ID = "22222222-2222-4222-8222-222222222222";
+/** The other side of the default private room the app-factory hands out. */
+export const TEST_PEER_ID = "33333333-3333-4333-8333-333333333333";
 
 /** A valid Bearer access token (default: TEST_USER_ID / TEST_SESSION_ID). */
 export function makeAccessToken(

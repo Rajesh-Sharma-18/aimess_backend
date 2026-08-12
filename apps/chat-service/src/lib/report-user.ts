@@ -60,6 +60,8 @@ export function publishUserReport(params: {
     details: details ? details : null,
     // Groups and private rooms are never community-scoped.
     communityId: null,
+    roomId: params.roomId,
+    roomType: params.context,
     eventAt: new Date().toISOString(),
     sourceReportId: `${CONTEXT_PREFIX[params.context]}:${params.roomId}:${params.reporterId}:${params.targetUserId}`,
   });

@@ -37,6 +37,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberByUserId: jest.fn(),
     findOpenReportByReporterAndTarget: jest.fn(),
     findReportByReporterAndTarget: jest.fn(),
+    findReportByReporterAndMessage: jest.fn(),
     createReport: jest.fn(),
     findActiveMemberIdsByRoles: jest.fn(),
     createAuditLog: jest.fn(),
@@ -70,6 +71,7 @@ beforeEach(() => {
   });
   repo.findOpenReportByReporterAndTarget.mockResolvedValue(null);
   repo.findReportByReporterAndTarget.mockResolvedValue(null);
+  repo.findReportByReporterAndMessage.mockResolvedValue(null);
   repo.findActiveMemberIdsByRoles.mockResolvedValue([]);
   repo.createAuditLog.mockResolvedValue(undefined);
   // Echo the create payload back as the persisted row.
@@ -137,7 +139,11 @@ describe("createReport — resolve reported content from chat-service", () => {
     expect(dto.reportedContentPostedAt).toBe("2026-02-02T10:00:00.000Z");
   });
 
-  it("stores the message id with NULL content when the message is gone (found:false)", async () => {
+  // The lookup is scoped by communityId, so "not found" also covers a messageId
+  // from a DIFFERENT community: a client cannot file a report against a message
+  // we can't verify belongs here. Previously this was best-effort and stored the
+  // unverified id.
+  it("REJECTS the report when the message does not resolve in this community", async () => {
     setChatSnapshot({
       found: false,
       message: "",
@@ -147,20 +153,36 @@ describe("createReport — resolve reported content from chat-service", () => {
       media: [],
     });
 
+    await expect(
+      communityService.createReport(CID, SELF, {
+        targetUserId: TARGET,
+        reason: "SPAM",
+        reportedMessageId: MSG,
+      })
+    ).rejects.toThrow("COMMUNITY_MESSAGE_NOT_FOUND");
+
+    expect(repo.createReport).not.toHaveBeenCalled();
+  });
+
+  it("files the report against the message's REAL sender, ignoring the client's targetUserId", async () => {
+    setChatSnapshot({
+      found: true,
+      message: "hi",
+      contentType: "TEXT",
+      postedAt: POSTED_MS,
+      senderId: TARGET,
+      media: [],
+    });
+
     await communityService.createReport(CID, SELF, {
-      targetUserId: TARGET,
+      // Tampered payload: some unrelated member.
+      targetUserId: "44444444-4444-4444-4444-444444444444",
       reason: "SPAM",
       reportedMessageId: MSG,
     });
 
     expect(repo.createReport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reportedMessageId: MSG,
-        reportedContentText: null,
-        reportedContentType: null,
-        reportedContentPostedAt: null,
-        reportedContentMedia: null,
-      })
+      expect.objectContaining({ targetUserId: TARGET, reportedMessageId: MSG })
     );
   });
 

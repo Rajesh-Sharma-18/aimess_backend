@@ -3,9 +3,6 @@ import type { Redis, Cluster } from "ioredis";
 import { logger } from "@aimess/logger";
 
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
-import { normalizeMessageType } from "../lib/chat-message.serializer.js";
-import { convertMessageToPreview } from "./message-preview.service.js";
 
 /**
  * Hook contract the presence service uses to trigger delivered-tick backfill
@@ -17,10 +14,15 @@ export interface PresenceBackfillHooks {
 }
 
 /**
- * `whoCanSeeOnlineStatus` gate (user-service). Both directions are needed:
- * viewer-scoped for reads ("which of these peers may I see?") and
- * subject-scoped for fan-out ("who may hear that I just went offline?").
- * Implementations MUST fail CLOSED — an empty set on transport failure.
+ * `whoCanSeeOnlineStatus` gate (user-service). Implementations MUST fail
+ * CLOSED — an empty set on transport failure.
+ *
+ * `filterVisiblePresence` is the viewer-scoped read ("which of these peers may
+ * I see?") and is the one this service uses. `filterPresenceViewers` is the
+ * subject-scoped inverse ("who may hear that I went offline?"); it exists on
+ * the gRPC surface and is kept here for parity, but presence fan-out no longer
+ * needs it — `presence:status` is delivered to the `presence:<subjectId>` room,
+ * whose membership was already gated at `presence:subscribe` time.
  */
 export interface PresenceVisibilityGate {
   filterVisiblePresence(
@@ -33,28 +35,41 @@ export interface PresenceVisibilityGate {
   ): Promise<Set<string>>;
 }
 
+/**
+ * What a client needs to render a peer's presence, and to decide whether an
+ * arriving event is newer than what it already shows.
+ */
+export interface PresenceView {
+  userId: string;
+  isOnline: boolean;
+  /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
+  lastSeen: number | null;
+  /** Monotonic per-user counter; advances ONLY on an ONLINE↔OFFLINE flip. */
+  version: number;
+}
+
 export class PresenceService {
   private readonly backgroundTimeoutMs: number;
-  /** Cap on how many private rooms get a presence-driven conv:updated bump per status flip. */
-  private static readonly PRESENCE_BUMP_ROOM_LIMIT = 500;
+  /**
+   * How long an ONLINE belief stays credible without a device-session refresh.
+   * Must exceed the device-session TTL, or the sweeper would keep re-checking
+   * users whose sessions are simply not due to expire yet.
+   */
+  private readonly staleAfterMs: number;
   private privateBackfill?: PresenceBackfillHooks;
   private groupBackfill?: PresenceBackfillHooks;
 
   constructor(
     private readonly cacheRepo: CacheRepository,
     private readonly redis: Redis | Cluster | null,
-    // ponytail: optional so existing callers/tests that construct PresenceService
-    // without a PrivateRoomRepository keep working — presence-driven conv:updated
-    // fan-out is simply skipped when omitted.
-    private readonly privateRoomRepo?: PrivateRoomRepository,
-    options?: { backgroundTimeoutMs?: number },
-    // Optional like the repo above, but it fails CLOSED, not open: with no gate
-    // wired, every viewer-scoped read returns "offline" and the presence bump
-    // is skipped entirely. Presence is a privacy decision — a missing
-    // dependency must not turn into an open disclosure.
+    options?: { backgroundTimeoutMs?: number; staleAfterMs?: number },
+    // Optional, and it fails CLOSED, not open: with no gate wired, every
+    // viewer-scoped read returns "offline". Presence is a privacy decision — a
+    // missing dependency must not turn into an open disclosure.
     private readonly visibilityGate?: PresenceVisibilityGate
   ) {
     this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 5 * 60 * 1000;
+    this.staleAfterMs = options?.staleAfterMs || 3 * 60 * 1000;
   }
 
   /**
@@ -139,9 +154,18 @@ export class PresenceService {
   }
 
   /**
-   * Recompute aggregate online status for a user based on all their device sessions.
-   * If any device is FOREGROUND and connected, user is online.
-   * Emits presence change to all watchers via `watch:{userId}` room.
+   * Re-derive aggregate online status from this user's device sessions and, if
+   * it actually flipped, broadcast it.
+   *
+   * "Online" means AT LEAST ONE live session — never "the last socket that
+   * happened to report in". That is what makes multi-device work: a browser
+   * closing while the phone stays connected recomputes to online again and
+   * publishes nothing, because nothing changed.
+   *
+   * The status write, the version bump and the `lastSeen` stamp happen inside
+   * one Redis script, so `changed` is decided exactly once no matter how many
+   * chat-service replicas call this concurrently — which is also what stops two
+   * replicas from publishing contradictory events with out-of-order versions.
    */
   async recompute(userId: string): Promise<void> {
     try {
@@ -158,23 +182,28 @@ export class PresenceService {
         return false;
       });
 
-      const previousStatus = await this.cacheRepo.getUserPresence(userId);
-      await this.cacheRepo.setUserPresence(userId, isOnline);
+      const transition = await this.cacheRepo.applyPresenceTransition(
+        userId,
+        isOnline,
+        now
+      );
 
-      // When the user is no longer online, persist a "last seen" timestamp.
-      let lastSeen: number | null = null;
-      if (!isOnline) {
-        lastSeen = now;
-        await this.cacheRepo.setLastSeen(userId, lastSeen);
-      }
+      // Keep the sweeper index in step on EVERY recompute, not just on a flip:
+      // a still-online user needs a fresh staleness deadline or the sweeper
+      // would re-check them forever.
+      await this.cacheRepo
+        .setOnlineIndex(userId, isOnline, now + this.staleAfterMs)
+        .catch((err: unknown) =>
+          logger.warn(
+            `PresenceService|onlineIndex|userId=${userId}|error=${String(err)}`
+          )
+        );
 
-      // Emit presence change if status changed
-      const prevOnline = previousStatus === "online";
       // Offline→online transition: sweep any messages that landed while the
       // user was offline and mark them delivered — fires one `message:delivered`
       // per affected room so senders' ticks catch up without waiting for the
       // client to individually ack each incoming message on catchup.
-      if (!prevOnline && isOnline) {
+      if (transition.changed && isOnline) {
         if (this.privateBackfill) {
           void this.privateBackfill
             .backfillDeliveredOnPresenceConnect(userId)
@@ -194,7 +223,11 @@ export class PresenceService {
             );
         }
       }
-      if (prevOnline !== isOnline && this.redis) {
+
+      if (transition.changed && this.redis) {
+        // Published on `user:<subjectId>`; the gateway mirrors ONLY this event
+        // to the `presence:<subjectId>` watcher room, which is join-gated by
+        // whoCanSeeOnlineStatus. Nothing here is a broadcast.
         await this.redis.publish(
           `user:${userId}`,
           JSON.stringify({
@@ -205,23 +238,69 @@ export class PresenceService {
               lastActiveAt: isOnline
                 ? now
                 : Number(sessions[0]?.lastActiveAt ?? now),
-              lastSeen,
+              lastSeen: transition.lastSeen,
+              version: transition.version,
             },
           })
-        );
-        // Bump `conv:updated` for every peer this user shares a private room
-        // with, so their conversation-list row picks up the new `isOffline`
-        // without a refetch — only rooms this user actually participates in,
-        // never a broadcast.
-        void this.publishPresenceBumpToPeers(userId, !isOnline).catch((err) =>
-          logger.warn(
-            `PresenceService|presenceBump|userId=${userId}|error=${String(err)}`
-          )
         );
       }
     } catch (error) {
       logger.error(`PresenceService|recompute|userId=${userId}|error=${error}`);
     }
+  }
+
+  /**
+   * Re-derive presence for every user whose ONLINE belief has outlived its
+   * staleness deadline, and let {@link recompute} emit the resulting OFFLINE.
+   *
+   * Without this, an unclean disappearance is invisible: the device-session
+   * hashes quietly expire, but no code path reads them again, so no
+   * `presence:status` is ever published and every watcher keeps a green dot
+   * until they happen to refetch. That is the "still shows Online until a hard
+   * refresh" symptom.
+   *
+   * Idempotent and multi-node safe — the transition script decides `changed`
+   * atomically, so N replicas sweeping the same user still produce one event.
+   * Returns how many users were re-derived.
+   */
+  async sweepStaleSessions(limit: number): Promise<number> {
+    const staleUserIds = await this.cacheRepo.getStaleOnlineUserIds(
+      Date.now(),
+      limit
+    );
+    for (const userId of staleUserIds) {
+      await this.recompute(userId);
+    }
+    return staleUserIds.length;
+  }
+
+  /**
+   * Viewer-scoped presence for many peers in one pass — what a conversation
+   * list, a room-details response, or a `presence:subscribe` ack needs to show
+   * the right state immediately, without waiting for the next flip.
+   * Peers the viewer may not see are reported offline with no last-seen.
+   */
+  async getPresenceViewsFor(
+    viewerId: string,
+    peerIds: string[]
+  ): Promise<Map<string, PresenceView>> {
+    const views = new Map<string, PresenceView>(
+      peerIds.map((id) => [
+        id,
+        { userId: id, isOnline: false, lastSeen: null, version: 0 },
+      ])
+    );
+    if (peerIds.length === 0 || !this.visibilityGate) return views;
+
+    const visible = await this.visibilityGate.filterVisiblePresence(
+      viewerId,
+      peerIds
+    );
+    if (visible.size === 0) return views;
+
+    const snapshots = await this.cacheRepo.getPresenceSnapshots([...visible]);
+    for (const [id, snapshot] of snapshots) views.set(id, snapshot);
+    return views;
   }
 
   async connect(
@@ -242,13 +321,20 @@ export class PresenceService {
     await this.recompute(userId);
   }
 
+  /**
+   * One socket went away. This is NOT "the user is offline" — `recompute`
+   * decides that from the sessions that remain, so another tab or the phone
+   * still holding a connection keeps them online. `lastSeen` is stamped by the
+   * transition script at the moment the LAST session goes, never here: writing
+   * it on every socket close would move the timestamp while the user is still
+   * online, and the value would be wrong for exactly as long as they stayed.
+   */
   async disconnect(userId: string, deviceId: string): Promise<void> {
     await this.cacheRepo.setDisconnected({
       userId,
       deviceId,
       nowMs: Date.now(),
     });
-    await this.cacheRepo.setLastSeen(userId, Date.now());
     await this.recompute(userId);
   }
 
@@ -274,64 +360,21 @@ export class PresenceService {
     return this.cacheRepo.getLastSeen(userId);
   }
 
-  /**
-   * Re-publish `conv:updated` (existing shape + `isOffline`) to every peer this
-   * user shares a private room with, using the room's own last-known message —
-   * no content changed, only the peer's live presence. Skipped when no
-   * PrivateRoomRepository was injected (tests) or the user has no rooms.
-   * ponytail: shared-preview only (no per-recipient delete-for-me override) —
-   * matches the fallback shape other bump call sites already use when overrides
-   * aren't in hand; upgrade if a peer reports a stale preview on presence bumps.
+  /*
+   * REMOVED — presence used to ALSO fan out as a `conv:updated` carrying
+   * `isOffline`, to every private room the user was in (capped at 500 publishes
+   * per flip). It was a second, lossy presence channel:
+   *
+   *  - `conv:updated` is a conversation-list BUMP. Rebuilding one from a room's
+   *    stored columns meant a room with no messages yet republished
+   *    `lastMessageAt: 0` and an empty preview, so a peer merely going online
+   *    reset that row's sort key and blanked its last-message text.
+   *  - It could disagree with `presence:status`, which is the actual contract,
+   *    leaving the conversation list and the chat header showing different
+   *    states for the same peer — the exact divergence this work had to fix.
+   *
+   * Presence now travels on `presence:status` alone. The conversation list gets
+   * its initial state from the REST inbox (`peer.isOnline` / `peer.lastSeen`)
+   * and every change from that one event.
    */
-  private async publishPresenceBumpToPeers(
-    userId: string,
-    isOffline: boolean
-  ): Promise<void> {
-    if (!this.privateRoomRepo || !this.redis || !this.visibilityGate) return;
-    const rooms = await this.privateRoomRepo.findRoomsForPresenceBump(
-      userId,
-      PresenceService.PRESENCE_BUMP_ROOM_LIMIT
-    );
-    if (!Array.isArray(rooms) || rooms.length === 0) return;
-
-    // `whoCanSeeOnlineStatus` gate. Sharing a DM room is NOT consent to see
-    // presence — a peer can be a stranger, or an ex-friend after an unfriend.
-    // Denied peers get no bump at all rather than a bump with a stale
-    // `isOffline`: the ARRIVAL of the event is itself the disclosure.
-    const allowed = await this.visibilityGate.filterPresenceViewers(
-      userId,
-      rooms.map((room) => room.peerId)
-    );
-    if (allowed.size === 0) return;
-
-    const pipeline = this.redis.pipeline();
-    for (const room of rooms) {
-      if (!allowed.has(room.peerId)) continue;
-      const lm = room.lastMessage as Record<string, unknown> | null;
-      const messageType = normalizeMessageType(
-        (lm?.messageType as string) ?? "TEXT"
-      );
-      pipeline.publish(
-        `user:${room.peerId}`,
-        JSON.stringify({
-          event: "conv:updated",
-          data: {
-            type: "PRIVATE",
-            roomId: room.roomId,
-            lastMessageId: room.lastMessageId ?? "",
-            lastMessage: {
-              contentType: messageType,
-              text: lm ? convertMessageToPreview(messageType, lm.content) : "",
-            },
-            lastMessageAt: room.lastMessageAt?.getTime() ?? 0,
-            senderId: (lm?.senderId as string) ?? "",
-            senderName: "",
-            unread: false,
-            isOffline,
-          },
-        })
-      );
-    }
-    await pipeline.exec();
-  }
 }

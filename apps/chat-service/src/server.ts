@@ -95,6 +95,7 @@ import {
   closeEventConsumers,
 } from "./events/index.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
+import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
 import {
   ensureMongoIndex,
   dropMongoIndexIfExists,
@@ -105,6 +106,7 @@ let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
 let groupMuteSweepHandle: ReturnType<typeof setInterval> | undefined;
 let autoDeleteSweepHandle: ReturnType<typeof setInterval> | undefined;
 let loginExpirySweepHandle: ReturnType<typeof setInterval> | undefined;
+let presenceSweepHandle: ReturnType<typeof setInterval> | undefined;
 
 /** Backstop so a huge mute backlog can't hold the DB for a whole tick — the
  *  remainder drains on the next tick. Mirrors community's sweeper. */
@@ -316,7 +318,10 @@ const startServer = async () => {
     }
 
     // 2. Instantiate repositories (inject Prisma client)
-    const cacheRepo = new CacheRepository(redis);
+    const cacheRepo = new CacheRepository(redis, {
+      deviceTtlSeconds: env.PRESENCE_SESSION_TTL_SEC,
+      statusTtlSeconds: env.PRESENCE_STATUS_TTL_SEC,
+    });
     const privateRoomRepo = new PrivateRoomRepository(prisma);
     const privateMessageRepo = new PrivateMessageRepository(
       prisma,
@@ -351,13 +356,18 @@ const startServer = async () => {
     );
 
     // Constructed early so it can be injected into PrivateRoomService (REST
-    // isOnline/isOffline) and ChatMessageOrchestrator (conv:updated isOffline)
-    // below — single source of truth for real-time presence.
+    // isOnline/isOffline/lastSeen) and ChatMessageOrchestrator below — single
+    // source of truth for real-time presence.
     const presenceService = new PresenceService(
       cacheRepo,
       redis,
-      privateRoomRepo,
-      undefined,
+      {
+        // An ONLINE belief outlives the session TTL by one sweep interval, so
+        // the sweeper only wakes for sessions that really are past due.
+        staleAfterMs:
+          (env.PRESENCE_SESSION_TTL_SEC + env.PRESENCE_SWEEP_INTERVAL_SEC) *
+          1000,
+      },
       // whoCanSeeOnlineStatus gate — without it every presence read here would
       // bypass the setting the socket `presence:subscribe` path already honors.
       userGrpcClient
@@ -742,6 +752,11 @@ const startServer = async () => {
     // rooms / deactivate rooms of deleted communities. Self-heals dropped events.
     void reconcileCommunityRooms();
 
+    // Drop the cached Settings → Chat block the moment a user flips a switch,
+    // so read receipts / typing stop (or resume) on the next event instead of
+    // on the next cache expiry.
+    startChatSettingsInvalidationListener();
+
     // Call sweepers — both multi-node safe (atomic per-row updateMany):
     //   1. RINGING  → MISSED after CALL_RINGING_TIMEOUT_SEC (never answered).
     //   2. IN_PROGRESS → ENDED after CALL_MAX_DURATION_SEC (answered, then the
@@ -826,6 +841,30 @@ const startServer = async () => {
       autoDeleteSweepHandle.unref();
     }
 
+    // Presence staleness sweep. Load-bearing: a socket can vanish without ever
+    // producing a `disconnect` (killed process, dead TCP path, a gateway node
+    // that went down with its sockets open). The device-session hashes then
+    // expire silently — and silence is the bug, because a peer's dot only ever
+    // changes when `presence:status` is published. This tick re-derives exactly
+    // the users whose ONLINE belief is past due and lets PresenceService emit
+    // the OFFLINE + server-stamped lastSeen. Multi-node safe: the transition is
+    // decided atomically in Redis, so N replicas still produce one event.
+    presenceSweepHandle = setInterval(() => {
+      void (async () => {
+        try {
+          const n = await presenceService.sweepStaleSessions(
+            env.PRESENCE_SWEEP_BATCH
+          );
+          if (n > 0) logger.info(`Presence sweep re-derived ${n} user(s)`);
+        } catch (err) {
+          logger.warn(`presenceSweep failed: ${String(err)}`);
+        }
+      })();
+    }, env.PRESENCE_SWEEP_INTERVAL_SEC * 1000);
+    if (typeof presenceSweepHandle.unref === "function") {
+      presenceSweepHandle.unref();
+    }
+
     // "Login Detected" auto-approval sweep. Load-bearing, like the auto-delete
     // one: the deadline lives on the row, so an alert is resolved on schedule
     // whether or not any client is running — and a service that was down when
@@ -886,6 +925,11 @@ async function shutdown(signal: string): Promise<void> {
   if (loginExpirySweepHandle) {
     clearInterval(loginExpirySweepHandle);
     loginExpirySweepHandle = undefined;
+  }
+
+  if (presenceSweepHandle) {
+    clearInterval(presenceSweepHandle);
+    presenceSweepHandle = undefined;
   }
 
   await new Promise<void>((resolve) => {

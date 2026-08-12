@@ -49,6 +49,25 @@ export async function assertPrivateParticipant(
 }
 
 /**
+ * The OTHER participant of a private room, resolved from the room record.
+ *
+ * This is the ONLY authority on "who receives this DM". A client-supplied
+ * `receiverId` must never reach persistence, socket fan-out, unread counting or
+ * push targeting: omitting it silently dropped delivery to the real peer, and
+ * forging it delivered `message:new` / `conv:updated` / a push to a third party
+ * who is not in the room at all.
+ *
+ * Returns `""` for a malformed room (no second participant) so callers degrade
+ * to "no peer" rather than fanning out to an empty-string channel.
+ */
+export function privateRoomPeerId(
+  room: Pick<PrivateRoom, "participants">,
+  userId: string
+): string {
+  return (room.participants ?? []).find((id) => id && id !== userId) ?? "";
+}
+
+/**
  * Group: the caller MUST be an ACTIVE member. When `roles` is supplied the
  * member's role must be one of them (e.g. ADMIN for management actions).
  *

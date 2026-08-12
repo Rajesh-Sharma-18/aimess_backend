@@ -64,28 +64,54 @@ async function start() {
     }
 
     // Partial unique index on CommunityReport(communityId, reporterId,
-    // targetUserId) — enforces "a user can report another user only once per
-    // community, regardless of report status" at the DB level. Scoped with
-    // partialFilterExpression to rows where targetUserId is an actual string
-    // (i.e. member-targeted reports only), so community-level reports
+    // targetUserId, reportedMessageId) — enforces "a user can report another
+    // user only once per community, regardless of report status" at the DB
+    // level. Scoped with partialFilterExpression to rows where targetUserId is
+    // an actual string (i.e. targeted reports only), so community-level reports
     // (targetUserId stored as an explicit null) are never constrained by it —
     // Prisma cannot express partial/filtered indexes in the MongoDB schema,
     // so (like invitationCode above) we create it idempotently here.
+    //
+    // reportedMessageId is part of the key because a MESSAGE report also stores
+    // the sender in targetUserId: without it, "report user B" and "report a
+    // message B sent" collided on one unique slot and the second 409'd even
+    // though they are different targets. Member reports keep reportedMessageId
+    // null, so their uniqueness rule is unchanged.
     try {
       await prisma.$runCommandRaw({
         createIndexes: "community_reports",
         indexes: [
           {
-            key: { communityId: 1, reporterId: 1, targetUserId: 1 },
-            name: "community_reports_reporter_target_unique",
+            key: {
+              communityId: 1,
+              reporterId: 1,
+              targetUserId: 1,
+              reportedMessageId: 1,
+            },
+            name: "community_reports_reporter_target_message_unique",
             unique: true,
             partialFilterExpression: { targetUserId: { $type: "string" } },
           },
         ],
       });
       logger.info(
-        "Index ready: community_reports.(communityId, reporterId, targetUserId) (partial unique)"
+        "Index ready: community_reports.(communityId, reporterId, targetUserId, reportedMessageId) (partial unique)"
       );
+      // Superseded by the index above — a pure (community, reporter, target)
+      // unique would still reject a message report about an already-reported
+      // member. Dropped only after the replacement exists; a missing old index
+      // (fresh DB / second boot) is not an error.
+      try {
+        await prisma.$runCommandRaw({
+          dropIndexes: "community_reports",
+          index: "community_reports_reporter_target_unique",
+        });
+        logger.info(
+          "Dropped superseded index: community_reports_reporter_target_unique"
+        );
+      } catch {
+        // IndexNotFound — nothing to drop.
+      }
     } catch (indexErr) {
       logger.warn(
         "Could not create community_reports duplicate-report unique index — falling back to service-level dedup only"

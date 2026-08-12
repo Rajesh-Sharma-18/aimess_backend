@@ -38,6 +38,12 @@ import {
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
+import {
+  assertMaySeeReadReceipts,
+  buildReadReceipts,
+  readersAtOrPast,
+  type ReadReceiptsPayload,
+} from "../lib/read-receipts.js";
 import { isObjectId } from "../lib/object-id.js";
 import {
   computeSeqAroundCursors,
@@ -1401,9 +1407,18 @@ export class GroupMessageService {
     messageId: string;
     reporterId: string;
     reportReason: string;
+    description?: string;
+    /** Room from the request path — must match the message's own room. */
+    roomId?: string;
   }): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The reported message must actually live in the conversation the caller
+    // named; otherwise a member of group A could report a message in group B
+    // through A's path. Membership is then checked against the message's REAL
+    // room, never the path's.
+    if (params.roomId && params.roomId !== message.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     await assertGroupMember(this.memberRepo, message.roomId, params.reporterId);
     const updated = await this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
@@ -1414,9 +1429,11 @@ export class GroupMessageService {
       targetId: params.messageId,
       reporterId: params.reporterId,
       reason: params.reportReason,
-      details: null,
+      details: params.description?.trim() ? params.description.trim() : null,
       communityId: null,
       reportedUserId: message.senderId ?? null,
+      roomId: message.roomId,
+      roomType: "GROUP",
       eventAt: new Date().toISOString(),
       sourceReportId: `group:${params.messageId}:${params.reporterId}`,
     });
@@ -1889,6 +1906,49 @@ export class GroupMessageService {
   }
 
   /**
+   * Per-message "Viewed by" sheet for a GROUP message. Sender-only.
+   *
+   * Only ACTIVE members are considered, so a member who left, was kicked or was
+   * banned disappears from the sheet (`findActiveMembers` is the same roster the
+   * ticks and typing fan-out use). `getMessageContext` supplies the membership
+   * guard plus the deleted/cleared checks.
+   */
+  async getReadReceipts(
+    roomId: string,
+    messageId: string,
+    userId: string
+  ): Promise<ReadReceiptsPayload> {
+    const message = await this.getMessageContext(roomId, messageId, userId);
+    if (message.senderId !== userId)
+      throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
+    await assertMaySeeReadReceipts(userId);
+
+    const members = (await this.memberRepo.findActiveMembers(roomId)).filter(
+      (m) => m.userId !== userId && m.lastReadMessageId
+    );
+    const uniqueReadIds = [
+      ...new Set(members.map((m) => m.lastReadMessageId as string)),
+    ];
+    const seqById = new Map(
+      (await this.messageRepo.findManyByIds(uniqueReadIds)).map((m) => [
+        m.id,
+        (m as { sequenceNumber?: number }).sequenceNumber ?? 0,
+      ])
+    );
+
+    return buildReadReceipts({
+      messageId,
+      candidates: readersAtOrPast(
+        members,
+        seqById,
+        message.sequenceNumber ?? 0
+      ),
+      userSnapshotService: this.userSnapshotService,
+      cacheRepo: this.cacheRepo,
+    });
+  }
+
+  /**
    * Explicit "mark read up to `upToMessageId`" action — the REST/gRPC
    * mark-read entry point. Routes through the SAME guarded, forward-only,
    * accurate-unread pointer advance (`memberRepo.advanceReadPointer`) that
@@ -2022,6 +2082,17 @@ export class GroupMessageService {
     };
   }
 
+  /**
+   * The reactor list for one group message — userId + displayName + avatar of
+   * everyone who reacted, i.e. a roster disclosure, so it takes the same guard
+   * as every other group read: `assertGroupReadAccess` (ACTIVE members, plus
+   * LEFT/KICKED members capped at their cutoff), then the message bound to the
+   * room and clamped to that cutoff.
+   *
+   * It previously ran no check at all and ignored `params.roomId` entirely, so a
+   * bare `messageId` returned the reactors of any group message to any
+   * authenticated caller.
+   */
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
@@ -2036,6 +2107,18 @@ export class GroupMessageService {
       }
     >;
   }> {
+    const { readCutoffBefore } = await assertGroupReadAccess(
+      this.memberRepo,
+      params.roomId,
+      params.requesterId
+    );
+    const message = await this.messageRepo.findById(params.messageId);
+    // NotFound, never Forbidden — a foreign message's existence isn't leaked.
+    if (!message || message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (readCutoffBefore && message.createdAt > readCutoffBefore)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 

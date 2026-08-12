@@ -130,4 +130,39 @@ export class MessageContextController {
       )
     );
   });
+
+  /**
+   * `GET /chat/messages/:messageId/read-receipts?conversationType=…&roomId=…`
+   *
+   * The per-message "Viewed by" sheet (WhatsApp "Info", Telegram "Seen by").
+   * Same unified triple as `getContext`, same delegation rule: each conversation
+   * type answers with its OWN access guard and its own active-member roster.
+   *
+   * Sender-only by design — every service raises 403 `CHAT_NOT_MESSAGE_SENDER`
+   * for anyone else, and 403 `CHAT_READ_RECEIPTS_DISABLED` when the caller has
+   * switched Settings → Chat → Read Receipt off (reciprocity: no receipts given,
+   * none received). A deleted/expired message raises 410 — no sheet.
+   */
+  getReadReceipts = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const roomId = req.query.roomId as string;
+    const conversationType = (
+      req.query.conversationType as string
+    ).toUpperCase() as MessageConversationType;
+
+    if (!CONVERSATION_TYPES.includes(conversationType)) {
+      throw new BadRequestError("CHAT_INVALID_CONVERSATION_TYPE");
+    }
+
+    const service =
+      conversationType === "PRIVATE"
+        ? this.privateService
+        : conversationType === "GROUP"
+          ? this.groupService
+          : this.communityService;
+
+    const data = await service.getReadReceipts(roomId, messageId, userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(data));
+  });
 }

@@ -152,6 +152,11 @@ export const COMMUNITY_MESSAGES = {
     en: "Community member not found",
     th: "ไม่พบสมาชิกคอมมูนิตี้",
   },
+  COMMUNITY_MESSAGE_NOT_FOUND: {
+    vi: "Không tìm thấy tin nhắn trong cộng đồng này",
+    en: "Message not found in this community",
+    th: "ไม่พบข้อความในคอมมูนิตี้นี้",
+  },
   COMMUNITY_MEMBER_CANNOT_MODIFY_SELF: {
     vi: "Bạn không thể thay đổi vai trò của chính mình",
     en: "You cannot change your own role",

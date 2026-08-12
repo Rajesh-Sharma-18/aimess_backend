@@ -130,6 +130,203 @@ describe("POST /conversations/leave/bulk", () => {
     expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
   });
 
+  // "Delete Conversation" on a group the caller is still ACTIVE in: WhatsApp
+  // semantics — leave AND drop the row, instead of the read-only LEFT row a
+  // plain "LEAVE" leaves behind.
+  describe('groupAction "LEAVE_AND_DELETE"', () => {
+    const activeMember = () => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MEMBER",
+      });
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MEMBER",
+      });
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
+        { userId: "member_2" },
+      ]);
+    };
+
+    const call = () =>
+      request(app)
+        .post("/api/chat/conversations/leave/bulk")
+        .set(auth())
+        .send({ roomIds: [GROUP_ROOM], groupAction: "LEAVE_AND_DELETE" });
+
+    it("POSITIVE: an active member leaves AND the row is cleared, in one call", async () => {
+      activeMember();
+
+      const res = await call();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toEqual({
+        roomId: GROUP_ROOM,
+        type: "GROUP",
+        status: "LEFT",
+      });
+      // Both halves ran — real membership removal…
+      expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID,
+        "LEFT",
+        expect.objectContaining({ leftAt: expect.any(Date) })
+      );
+      expect(mocks.groupRoomRepo.incMemberCount).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        -1
+      );
+      // …and the caller's own clearedAt cutoff, which is what takes the row out
+      // of their inbox and their group search results.
+      expect(mocks.groupMemberRepo.setClearedAt).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID
+      );
+      // The existing leave fan-out is unchanged: the leaver hears group:removed,
+      // the remaining roster hears group:member:removed.
+      expect(
+        publishedOn(`user:${TEST_USER_ID}`).filter(
+          (e) => e.event === "group:removed"
+        )
+      ).toHaveLength(1);
+      expect(
+        publishedOn(`conv:${GROUP_ROOM}`).some(
+          (e) => e.event === "group:member:removed"
+        )
+      ).toBe(true);
+    });
+
+    // A MODERATOR is an ordinary leaver: the only role the leave gate rejects is
+    // ADMIN, so moderation rights never trap someone in a group. (They come back
+    // as a plain MEMBER if re-added — see group-member.test.ts REJOIN.)
+    it("POSITIVE: a MODERATOR leaves and is cleared, same as a member", async () => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MODERATOR",
+      });
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "MODERATOR",
+      });
+      mocks.groupMemberRepo.findActiveMembers.mockResolvedValue([
+        { userId: "member_2" },
+      ]);
+
+      const res = await call();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toEqual({
+        roomId: GROUP_ROOM,
+        type: "GROUP",
+        status: "LEFT",
+      });
+      expect(mocks.groupMemberRepo.updateStatus).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID,
+        "LEFT",
+        expect.objectContaining({ leftAt: expect.any(Date) })
+      );
+      expect(mocks.groupMemberRepo.setClearedAt).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID
+      );
+    });
+
+    // Scenario 6/7 — a double-click, a second device, or an admin who removed
+    // the caller while the confirm dialog sat open. The membership has already
+    // ended, which IS the caller's intent, so the clear still runs.
+    it("IDEMPOTENT: already not a member — still clears, emits no second leave", async () => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "LEFT",
+        role: "MEMBER",
+      });
+
+      const res = await call();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toEqual({
+        roomId: GROUP_ROOM,
+        type: "GROUP",
+        status: "LEFT",
+      });
+      expect(mocks.groupMemberRepo.setClearedAt).toHaveBeenCalledWith(
+        GROUP_ROOM,
+        TEST_USER_ID
+      );
+      // No duplicate status flip, no duplicate member-count decrement, and no
+      // second MEMBER_LEFT / group:removed for the remaining members to render.
+      expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
+      expect(mocks.groupRoomRepo.incMemberCount).not.toHaveBeenCalled();
+      expect(
+        publishedOn(`user:${TEST_USER_ID}`).some(
+          (e) => e.event === "group:removed"
+        )
+      ).toBe(false);
+    });
+
+    // The owner has to transfer ownership or disband — clearing their
+    // conversation while they stay in the group would be the wrong half.
+    it("NEGATIVE: the owner fails with OWNER_CANNOT_LEAVE and is NOT cleared", async () => {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        roomId: GROUP_ROOM,
+        userId: TEST_USER_ID,
+        status: "ACTIVE",
+        role: "ADMIN",
+      });
+
+      const res = await call();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toEqual({
+        roomId: GROUP_ROOM,
+        type: "GROUP",
+        status: "FAILED",
+        errorCode: "OWNER_CANNOT_LEAVE",
+      });
+      expect(mocks.groupMemberRepo.setClearedAt).not.toHaveBeenCalled();
+      expect(mocks.groupMemberRepo.updateStatus).not.toHaveBeenCalled();
+    });
+
+    // Scenario 10 — the action is GROUP-only; a private row in the same call is
+    // still plain delete-for-me, with no membership concept involved.
+    it("PRIVATE rows ignore the action and still run delete-for-me", async () => {
+      activeMember();
+      mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+        roomId: PRIVATE_ROOM,
+        participants: [TEST_USER_ID, "peer_1"],
+      });
+
+      const res = await request(app)
+        .post("/api/chat/conversations/leave/bulk")
+        .set(auth())
+        .send({
+          roomIds: [PRIVATE_ROOM, GROUP_ROOM],
+          groupAction: "LEAVE_AND_DELETE",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results).toEqual([
+        { roomId: PRIVATE_ROOM, type: "PRIVATE", status: "DELETED" },
+        { roomId: GROUP_ROOM, type: "GROUP", status: "LEFT" },
+      ]);
+      expect(mocks.privateRoomRepo.setDeletedFor).toHaveBeenCalledWith(
+        PRIVATE_ROOM,
+        TEST_USER_ID
+      );
+    });
+  });
+
   it("NEGATIVE: partial failure — the admin row fails, the others still complete", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
       roomId: PRIVATE_ROOM,

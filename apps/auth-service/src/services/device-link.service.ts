@@ -4,11 +4,16 @@ import type { Request } from "express";
 
 import { ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
-import { publishQrLinkEvent, publishQrLinkSuccess } from "@aimess/redis";
+import {
+  publishQrLinkEvent,
+  publishQrLinkSuccess,
+  takeQrLinkResult,
+} from "@aimess/redis";
 
 import type {
   InitiateDeviceLinkInput,
   ScanDeviceLinkInput,
+  DeviceLinkResultInput,
 } from "../api/validators/device-link.validator.js";
 import { redis } from "../config/redis.js";
 import { DeviceType } from "../generated/prisma/client.js";
@@ -24,8 +29,10 @@ import type { SessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { recordAuditEventSafe } from "./audit.service.js";
 import type {
+  DeviceLinkResultResponse,
   InitiateDeviceLinkResult,
   LoginDeviceLinkResult,
+  QrLinkSuccessPayload,
 } from "../types/device-link.types.js";
 
 /** Map a free-text device type from the new device onto the Prisma enum. */
@@ -125,6 +132,58 @@ export const deviceLinkService = {
     // coordinates correctly across replicas.
 
     return { linkToken, expiresAt };
+  },
+
+  /**
+   * Pull the outcome of a QR session — the browser-facing counterpart of the
+   * `auth:qr:success` push, and the reason a completed scan can no longer strand
+   * the browser on "waiting".
+   *
+   * The push path is Redis pub/sub, which buffers nothing: an `auth:qr:success`
+   * published while the browser's `/auth` socket is mid-handshake, blocked by a
+   * proxy, backgrounded, or already torn down (the browser rotates its QR every
+   * TTL and drops the old room with it) is discarded forever — while the phone
+   * that scanned has already been told the login succeeded. `publishQrLinkSuccess`
+   * parks a one-shot copy in Redis for exactly this case, but until now only a
+   * gateway `auth:qr:subscribe` could collect it, so a browser with no working
+   * socket had no way to reach it at all.
+   *
+   * This endpoint collects that same one-shot envelope over plain HTTP, so the
+   * browser can poll and become authenticated with the socket missed, delayed,
+   * or never connected. Single-use is preserved — `takeQrLinkResult` is an
+   * atomic GET+DEL, so the tokens go to whichever path arrives first and to
+   * nobody twice; a second call reports CONSUMED, not another set of tokens.
+   * Exposure is unchanged: possession of the linkToken has always been the bar
+   * for receiving them.
+   */
+  async result(
+    input: DeviceLinkResultInput
+  ): Promise<DeviceLinkResultResponse> {
+    const pending = await takeQrLinkResult(redis, input.linkToken);
+    if (pending) {
+      return {
+        status: "SUCCESS",
+        session: pending.data as QrLinkSuccessPayload,
+      };
+    }
+
+    const record = await getLinkSession(input.linkToken);
+    if (!record) return { status: "NOT_FOUND", session: null };
+
+    switch (record.state) {
+      // The login completed; its envelope went to an earlier collector (the
+      // socket relay, or this browser's own previous poll).
+      case "USED":
+        return { status: "CONSUMED", session: null };
+      case "CANCELLED":
+        return { status: "CANCELLED", session: null };
+      default:
+        // PENDING/SCANNED past its deadline reads as EXPIRED whether or not the
+        // sweeper has reached it yet — claim/finalize enforce the same instant.
+        return new Date(record.expiresAt).getTime() <= Date.now()
+          ? { status: "EXPIRED", session: null }
+          : { status: "PENDING", session: null };
+    }
   },
 
   /**

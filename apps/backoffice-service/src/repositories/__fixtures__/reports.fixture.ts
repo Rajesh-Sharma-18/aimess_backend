@@ -431,6 +431,8 @@ function build(seed: Seed, i: number): ReportDetail {
       : "messaging-service",
     communityId: isCommunity(seed.targetType) ? `comm_${n}` : null,
     communityName: isCommunity(seed.targetType) ? `Community ${n}` : null,
+    roomId: isCommunity(seed.targetType) ? `comm_${n}` : null,
+    roomType: isCommunity(seed.targetType) ? "COMMUNITY" : null,
     createdAt: Date.parse(seed.createdAt),
     updatedAt: Date.parse(shift(seed.createdAt, HOUR)),
     resolvedAt,

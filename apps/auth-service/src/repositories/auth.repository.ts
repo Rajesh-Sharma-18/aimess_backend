@@ -211,20 +211,36 @@ export const authRepository = {
     });
   },
 
-  revokeSessionsAfterPasswordChange(userId: string) {
+  /**
+   * `exceptSessionId` keeps the device that performed the change signed in —
+   * a signed-in password change must not log the user out of the very screen
+   * they are on. Password RESET passes nothing (there is no trusted session to
+   * spare), so it still revokes everything.
+   */
+  revokeSessionsAfterPasswordChange(userId: string, exceptSessionId?: string) {
     const now = new Date();
 
     return prisma.$transaction(async (tx) => {
       await tx.session.updateMany({
-        where: { userId, revokedAt: null },
+        where: {
+          userId,
+          revokedAt: null,
+          ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}),
+        },
         data: {
           revokedAt: now,
           revokedReason: SessionRevokeReason.PASSWORD_CHANGED,
         },
       });
 
+      // The surviving session's refresh token has to survive with it, or the
+      // kept device dies at the next silent refresh instead of staying signed in.
       await tx.refreshToken.updateMany({
-        where: { userId, revokedAt: null },
+        where: {
+          userId,
+          revokedAt: null,
+          ...(exceptSessionId ? { sessionId: { not: exceptSessionId } } : {}),
+        },
         data: { revokedAt: now },
       });
     });
@@ -276,6 +292,13 @@ export const authRepository = {
         where: { userId, revokedAt: null },
         data: { revokedAt: now },
       });
+
+      // Drop every Google/Apple link in the same transaction: the provider `sub`
+      // must stop resolving to this account (social-auth.service looks the user
+      // up by LinkedAccount) and must be free to link elsewhere. We store no
+      // provider access/refresh tokens (only `sub`/email/displayName), so there
+      // is nothing to revoke remotely — removing the row IS the revocation.
+      await tx.linkedAccount.deleteMany({ where: { userId } });
 
       await tx.authUser.update({
         where: { id: userId },

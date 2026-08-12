@@ -7257,8 +7257,6 @@ export const communityService = {
       throw new ForbiddenError("COMMUNITY_FORBIDDEN");
     }
 
-    const targetUserId = input.targetUserId ?? null;
-
     // A1.5: "OTHER" requires a non-empty custom description (defense-in-depth —
     // the validator already rejects empty/whitespace-only values). Predefined
     // reasons never persist a description, even if the client sent one.
@@ -7270,13 +7268,74 @@ export const communityService = {
       throw new BadRequestError("COMMUNITY_REPORT_OTHER_REASON_REQUIRED");
     }
 
-    // A2: cannot self-report.
+    // Message-level report: resolve the reported content from chat-service so the
+    // moderator card shows the actual message (text + media + posted-at). RAW
+    // object keys are stored and resolved to presigned URLs on read.
+    //
+    // This lookup is SCOPED BY communityId, so it doubles as the security check:
+    // a messageId belonging to another community (or to no message at all) is
+    // simply not found, and the report is rejected instead of being filed
+    // against an unrelated conversation. It is no longer best-effort for that
+    // reason — a report naming a message we cannot verify is not a report we can
+    // act on. A FE-provided snapshot still fills display fields the resolver
+    // leaves empty.
+    let reportedContentType = input.reportedContentType ?? null;
+    let reportedContentText = input.reportedContentText ?? null;
+    let reportedContentPostedAt = input.reportedContentPostedAt ?? null;
+    let reportedContentMedia:
+      | {
+          objectKey: string;
+          contentType?: string | null;
+          fileName?: string | null;
+          size?: number | null;
+        }[]
+      | null = input.reportedContentMedia ?? null;
+    // Message sender resolved from the chat snapshot. This is the AUTHORITATIVE
+    // reported user for a message report — the client's own `targetUserId` never
+    // overrides it, so a tampered payload cannot pin someone else's name to a
+    // message they did not send.
+    let resolvedMessageSenderId: string | null = null;
+    if (input.reportedMessageId) {
+      const snap = await getChatClient().getCommunityMessageById({
+        communityId,
+        messageId: input.reportedMessageId,
+      });
+      if (!snap?.found) {
+        throw new NotFoundError("COMMUNITY_MESSAGE_NOT_FOUND");
+      }
+      reportedContentText = snap.message || null;
+      reportedContentType = snap.contentType || null;
+      reportedContentPostedAt = snap.postedAt ? new Date(snap.postedAt) : null;
+      reportedContentMedia = snap.media.length
+        ? snap.media.map((m) => ({
+            objectKey: m.objectKey,
+            contentType: m.contentType || null,
+            fileName: m.fileName || null,
+            size: m.size || null,
+          }))
+        : null;
+      resolvedMessageSenderId = snap.senderId || null;
+    }
+
+    // The reported user: for a MESSAGE report it is whoever actually sent the
+    // message; for a MEMBER report it is the selected member. Server-resolved
+    // wins by construction — the client's targetUserId only survives when there
+    // is no message to resolve a sender from.
+    const targetUserId = input.reportedMessageId
+      ? (resolvedMessageSenderId ?? input.targetUserId ?? null)
+      : (input.targetUserId ?? null);
+
+    // A2: cannot self-report — checked against the RESOLVED target, so
+    // "report my own message" is caught even when the client sent no
+    // targetUserId at all.
     if (targetUserId && targetUserId === callerId) {
       throw new BadRequestError("COMMUNITY_REPORT_CANNOT_TARGET_SELF");
     }
 
-    // A4: when targeting a member, that member row must exist (any status).
-    if (targetUserId) {
+    // A4: a MEMBER report needs an actual member row (any status). A MESSAGE
+    // report does not — the verified message is itself the proof of relevance,
+    // and its sender may since have left the community.
+    if (targetUserId && !input.reportedMessageId) {
       const targetMember = await communityRepository.findMemberByUserId(
         communityId,
         targetUserId
@@ -7286,14 +7345,26 @@ export const communityService = {
       }
     }
 
-    // A5: dedup, split by report kind.
-    // - Member-targeted reports: a user may report another user only ONCE per
-    //   community, ever — checked against ALL statuses (OPEN/REVIEWED/
-    //   ACTIONED/DISMISSED/WITHDRAWN all count), not just OPEN. A duplicate is
-    //   a hard error, not an idempotent no-op, per business requirement.
-    // - Community-level (no target) reports: unchanged idempotent behavior —
-    //   an existing OPEN report from the same reporter is returned as-is.
-    if (targetUserId) {
+    // A5: dedup, split by report kind. The three kinds NEVER collide — reporting
+    // user B and reporting a message B sent are different targets and both must
+    // be filable.
+    // - MESSAGE reports: once per (reporter, message), any status.
+    // - MEMBER reports: a user may report another user only ONCE per community,
+    //   ever — checked against ALL statuses (OPEN/REVIEWED/ACTIONED/DISMISSED/
+    //   WITHDRAWN all count). A duplicate is a hard error, not a no-op.
+    // - Community-level (no target, no message) reports: unchanged idempotent
+    //   behavior — an existing OPEN report from the same reporter is returned.
+    if (input.reportedMessageId) {
+      const existingMessageReport =
+        await communityRepository.findReportByReporterAndMessage({
+          communityId,
+          reporterId: callerId,
+          reportedMessageId: input.reportedMessageId,
+        });
+      if (existingMessageReport) {
+        throw new ConflictError("COMMUNITY_REPORT_ALREADY_EXISTS");
+      }
+    } else if (targetUserId) {
       const existingAnyStatus =
         await communityRepository.findReportByReporterAndTarget({
           communityId,
@@ -7312,50 +7383,6 @@ export const communityService = {
         });
       if (existingOpen) {
         return toReportData(existingOpen);
-      }
-    }
-
-    // Message-level report: resolve the reported content from chat-service so the
-    // moderator card shows the actual message (text + media + posted-at). RAW
-    // object keys are stored and resolved to presigned URLs on read. Best-effort
-    // — a missing/deleted message or chat-service outage just stores the id with
-    // no content rather than failing the report. A FE-provided snapshot (legacy
-    // path) is used as a fallback when resolution yields nothing.
-    let reportedContentType = input.reportedContentType ?? null;
-    let reportedContentText = input.reportedContentText ?? null;
-    let reportedContentPostedAt = input.reportedContentPostedAt ?? null;
-    let reportedContentMedia:
-      | {
-          objectKey: string;
-          contentType?: string | null;
-          fileName?: string | null;
-          size?: number | null;
-        }[]
-      | null = input.reportedContentMedia ?? null;
-    // Message sender resolved from the chat snapshot when the reporter's own
-    // targetUserId is absent — the admin.report.ingest event needs one so the
-    // backoffice can hydrate `reportedUser` on the report row.
-    let resolvedMessageSenderId: string | null = null;
-    if (input.reportedMessageId) {
-      const snap = await getChatClient().getCommunityMessageById({
-        communityId,
-        messageId: input.reportedMessageId,
-      });
-      if (snap?.found) {
-        reportedContentText = snap.message || null;
-        reportedContentType = snap.contentType || null;
-        reportedContentPostedAt = snap.postedAt
-          ? new Date(snap.postedAt)
-          : null;
-        reportedContentMedia = snap.media.length
-          ? snap.media.map((m) => ({
-              objectKey: m.objectKey,
-              contentType: m.contentType || null,
-              fileName: m.fileName || null,
-              size: m.size || null,
-            }))
-          : null;
-        resolvedMessageSenderId = snap.senderId || null;
       }
     }
 
@@ -7406,12 +7433,12 @@ export const communityService = {
       moderatorRecipientIds: reportModeratorRecipientIds,
     });
 
-    // Message reports carry the messageId as targetId + the sender as
-    // reportedUserId; the backoffice's toReportKind maps `type: "message"` →
-    // MESSAGE, which unlocks the entity-specific `message` block in the
-    // Report Details response.
+    // Message reports carry the messageId as targetId + the SERVER-RESOLVED
+    // sender as reportedUserId; the backoffice's toReportKind maps
+    // `type: "message"` → MESSAGE, which unlocks the entity-specific `message`
+    // block in the Report Details response.
     const messageSenderId = input.reportedMessageId
-      ? (targetUserId ?? resolvedMessageSenderId)
+      ? (resolvedMessageSenderId ?? targetUserId)
       : null;
     const ingestType: "user" | "community" | "message" = input.reportedMessageId
       ? "message"
@@ -7428,6 +7455,8 @@ export const communityService = {
       details: otherReason,
       communityId,
       reportedUserId: messageSenderId,
+      roomId: communityId,
+      roomType: "COMMUNITY",
       eventAt: reportEventAt,
       sourceReportId: row.id,
     });
@@ -8355,6 +8384,18 @@ export const communityService = {
     // approval). Moderators can still opt into instant-join by passing
     // `autoApprove: true` explicitly at create time.
     const autoApprove = input.autoApprove ?? false;
+
+    // `autoApprove: true` is not an ordinary link option on a PRIVATE community
+    // — it BYPASSES the join-request queue, which is the only thing that makes
+    // the community private. Link creation itself is open to every ACTIVE member
+    // (MEMBER included), so without this a rank-and-file member could mint a
+    // link that lets anyone holding it walk straight in, with no moderator ever
+    // seeing a request. Deciding who gets in is a moderation power, so it takes
+    // a moderation role. PUBLIC communities are unaffected: anyone can join them
+    // anyway, so auto-approve grants nothing that isn't already available.
+    if (autoApprove && community.type === CommunityType.PRIVATE) {
+      assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    }
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<

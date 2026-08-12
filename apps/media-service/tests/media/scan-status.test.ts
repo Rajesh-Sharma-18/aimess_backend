@@ -61,19 +61,35 @@ describe("GET /api/v1/media/scan-status", () => {
     expect(res.body.data.scanStatus).toBe("PENDING");
   });
 
-  it("200: COMMUNITY_CHAT_ATTACHMENT with valid prefix", async () => {
+  // AUDIT-112 — scan-status shares the download authorization path, so it moved
+  // with it: a prefix match alone no longer proves anything. The uploader is
+  // allowed; a stranger polling someone else's key is not.
+  it("200: COMMUNITY_CHAT_ATTACHMENT polled by the UPLOADER", async () => {
     mockedGet.mockResolvedValueOnce("CLEAN");
 
     const res = await request(app)
       .get("/api/v1/media/scan-status")
       .query({
-        objectKey: "community-chat-uploads/alice/img.png",
+        objectKey: `community-chat-uploads/${TEST_USER_ID}/img.png`,
         category: "COMMUNITY_CHAT_ATTACHMENT",
       })
       .set(auth());
 
     expect(res.status).toBe(200);
     expect(res.body.data.scanStatus).toBe("CLEAN");
+  });
+
+  it("403: COMMUNITY_CHAT_ATTACHMENT polled by a NON-uploader with no registry row", async () => {
+    const res = await request(app)
+      .get("/api/v1/media/scan-status")
+      .query({
+        objectKey: "community-chat-uploads/someone-else/img.png",
+        category: "COMMUNITY_CHAT_ATTACHMENT",
+      })
+      .set(auth());
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
   });
 
   it("403: CHAT_ATTACHMENT key owned by a different user (IDOR)", async () => {

@@ -29,11 +29,15 @@ jest.mock("../../src/messaging/publish-auth-email-otp.js", () => ({
   publishLinkEmailOtpSafe: jest.fn(),
   publishChangeEmailOtpSafe: jest.fn(),
 }));
+jest.mock("../../src/lib/profile-socket.js", () => ({
+  emitProfileUpdatedSafe: jest.fn(),
+}));
 
 import request from "supertest";
 
 import app from "../../src/app.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
+import { emitProfileUpdatedSafe } from "../../src/lib/profile-socket.js";
 import { verifyAndConsumeOtp } from "../../src/lib/otp.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
@@ -185,6 +189,31 @@ describe("POST /api/auth/link-email/verify", () => {
 
     expect(res.status).toBe(400);
     expect(repo.linkVerifiedEmailAndSetPrimary).not.toHaveBeenCalled();
+  });
+
+  it("signals the user's other devices to re-fetch their profile", async () => {
+    (emitProfileUpdatedSafe as unknown as jest.Mock).mockClear();
+
+    await request(app)
+      .post("/api/auth/link-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ email: EMAIL, code: "123456" });
+
+    expect(emitProfileUpdatedSafe).toHaveBeenCalledWith(TEST_USER_ID);
+  });
+
+  it("maps a unique-index race on the email to 409, not 500", async () => {
+    // Both accounts passed findEmailTakenByOtherUser; the loser hits P2002.
+    repo.linkVerifiedEmailAndSetPrimary.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/link-email/verify")
+      .set(bearer(makeAccessToken()))
+      .send({ email: EMAIL, code: "123456" });
+
+    expect(res.status).toBe(409);
   });
 
   it("returns 400 on a malformed code", async () => {

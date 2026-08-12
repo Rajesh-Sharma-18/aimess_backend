@@ -242,7 +242,8 @@ async function buildLivestreamBlock(streamId: string): Promise<{
 }
 
 /**
- * `message` block for a MESSAGE (community message) report. Content/media are
+ * `message` block for a MESSAGE report (community, group or private message —
+ * `roomType` says which). Content/media are
  * best-effort null: there is no admin message-content-fetch RPC into
  * chat-service yet, so only the identifiers carried on the report row are
  * populated (`id` = the reported messageId; `senderId` = the resolved reported
@@ -258,6 +259,8 @@ function buildMessageBlock(core: ReportCore): MessageReportBlock {
     media: [],
     sentAt: null,
     senderId: core.reportedUser?.id ?? null,
+    roomId: core.roomId,
+    roomType: core.roomType,
   };
 }
 
@@ -310,6 +313,8 @@ export const moderationService = {
       updatedAt: core.updatedAt,
       reporter: toModerationUserRef(core.reporterUser),
       reportedUser: toModerationUserRef(core.reportedUser),
+      roomId: core.roomId,
+      roomType: core.roomType,
     };
 
     switch (reportType) {

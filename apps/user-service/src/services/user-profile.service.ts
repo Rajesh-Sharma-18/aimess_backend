@@ -120,6 +120,7 @@ type ProfileRecord = {
 type ProfileAuthSummary = {
   account: string | null;
   email: string | null;
+  emailVerified: boolean;
   isGoogleLogin: boolean | null;
   isAppleLogin: boolean | null;
   primaryAccount: SignInProvider | null;
@@ -151,6 +152,7 @@ async function toProfileData(
     account:
       authSummary.account ?? (profile as { account?: string }).account ?? null,
     email: authSummary.email,
+    emailVerified: authSummary.emailVerified,
     // Prefer live linked-account status from auth-service; fall back to the
     // synced-at-registration DB flag when auth-service is unavailable.
     isGoogleLogin: authSummary.isGoogleLogin ?? profile.isGoogleLogin,
@@ -207,6 +209,8 @@ async function resolveProfileAuthSummary(
   return {
     account: account?.account ?? null,
     email: account?.email ?? null,
+    // Auth-service down → treat as unverified rather than claiming verified.
+    emailVerified: account?.emailVerified ?? false,
     isGoogleLogin: isProviderConnected(account, "GOOGLE"),
     isAppleLogin: isProviderConnected(account, "APPLE"),
     primaryAccount: account?.primaryAccount ?? null,

@@ -337,7 +337,6 @@ export class ChatMessageOrchestrator {
       msg = await this.privateMessageService.sendMessage({
         roomId: params.roomId,
         senderId: params.senderId,
-        receiverId: params.receiverId ?? "",
         content: params.content,
         messageType: params.messageType || "TEXT",
         parentMessageId: params.parentMessageId ?? null,
@@ -349,6 +348,18 @@ export class ChatMessageOrchestrator {
     const serverTs =
       msg.createdAt instanceof Date ? msg.createdAt.getTime() : Date.now();
     const full = msg as Record<string, unknown>;
+
+    // WHO receives this DM is decided by the room, not by the caller. The
+    // service derives the peer from `PrivateRoom.participants` and persists it,
+    // so the row we just got back IS the answer — read it here instead of
+    // trusting `params.receiverId`, which drove all four fan-outs below.
+    // Omitting it delivered the message to `user:""` (the peer's list row and
+    // push never fired); forging it delivered `message:new`, the `conv:updated`
+    // bump and a push notification to someone who is not in the room.
+    const resolvedReceiverId =
+      conversationType === "GROUP"
+        ? undefined
+        : ((full.receiverId as string | null) ?? "");
 
     // Detect an idempotency replay via the authoritative marker the service set
     // when it returned a PRE-EXISTING row for a repeated clientMessageId (a
@@ -376,7 +387,7 @@ export class ChatMessageOrchestrator {
       senderName,
       senderAvatar: bcastAvatar,
       senderRole: msg.senderRole,
-      receiverId: params.receiverId,
+      receiverId: resolvedReceiverId,
       messageType: msg.messageType,
       content: bcastContent ?? null,
       parentMessageId: (full.parentMessageId as string) || "",
@@ -412,7 +423,7 @@ export class ChatMessageOrchestrator {
           senderAvatar: bcastAvatar,
           senderRole:
             (row as { senderRole?: string }).senderRole ?? msg.senderRole,
-          receiverId: params.receiverId,
+          receiverId: resolvedReceiverId,
           messageType: row.messageType,
           content: rowBcastContent ?? null,
           parentMessageId: (rowFull.parentMessageId as string) || "",
@@ -463,7 +474,7 @@ export class ChatMessageOrchestrator {
               );
             });
         } else {
-          fanOut([params.senderId, params.receiverId ?? ""]);
+          fanOut([params.senderId, resolvedReceiverId ?? ""]);
         }
       }
 
@@ -496,7 +507,7 @@ export class ChatMessageOrchestrator {
       } else {
         publishConvUpdatedSafe({
           ...bumpBase,
-          recipientIds: [params.senderId, params.receiverId ?? ""],
+          recipientIds: [params.senderId, resolvedReceiverId ?? ""],
           getIsOnline: this.getIsOnline(),
           resolveUnreadCounts: () =>
             this.privateMessageService.getUnreadCountsByUser(params.roomId),
@@ -538,7 +549,7 @@ export class ChatMessageOrchestrator {
       } else {
         publishMessageSentSafe({
           ...pushBase,
-          recipientIds: [params.receiverId ?? ""],
+          recipientIds: [resolvedReceiverId ?? ""],
         });
       }
     }
@@ -1197,6 +1208,11 @@ export class ChatMessageOrchestrator {
           pinnedAt,
           action: "pinned",
           pinnedCount: result.pinnedCount,
+          // Same snapshot text the REST pin path publishes — the socket and REST
+          // pin entry points must produce byte-identical broadcasts.
+          text:
+            (result.pin.contentPinned as unknown as { text?: string } | null)
+              ?.text ?? "",
         },
       })
     );
@@ -1287,6 +1303,17 @@ export class ChatMessageOrchestrator {
       otherUserIds = members.filter((id) => id !== params.readerId);
       lastMessageSeq = lastSeq;
     } else {
+      // The GROUP branch above is self-guarding — `markReadUpTo` resolves the
+      // member row and returns seq 0 for a non-member. The PRIVATE branch went
+      // straight to the room write, so a stranger could mark someone else's DM
+      // read: it advanced the real participants' unread state and published a
+      // `message:read` receipt (to `conv:<roomId>` AND to each participant's
+      // `user:<id>`) attributed to a reader who was never in the conversation.
+      // Reached from both `POST .../read` and `POST /chat/conversations/read/bulk`.
+      await this.privateMessageService.assertParticipant(
+        params.roomId,
+        params.readerId
+      );
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
         userId: params.readerId,

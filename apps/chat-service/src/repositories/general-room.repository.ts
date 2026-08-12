@@ -108,44 +108,93 @@ export class GeneralRoomRepository {
     });
   }
 
-  async findActiveRooms(): Promise<GeneralRoom[]> {
-    return this.prisma.generalRoom.findMany({
-      where: { status: "active" },
-      orderBy: [{ displayOrder: "asc" }, { lastMessageAt: "desc" }],
-    });
+  /**
+   * Visibility clause for the community room LIST and SEARCH: an active room is
+   * listable when it is PUBLIC, or when the viewer holds a membership row in it.
+   *
+   * `communityType` is the visibility mirrored from community-service. A null /
+   * not-yet-synced value is NOT public — it falls through to the membership
+   * branch, the same fail-closed reading `assertCommunityReadAccess` uses, so an
+   * unsynced room can never leak a PRIVATE community's name or `lastMessage`
+   * preview to a non-member.
+   */
+  private visibilityWhere(memberRoomIds: string[]): Record<string, unknown>[] {
+    return [
+      { communityType: "PUBLIC" },
+      ...(memberRoomIds.length ? [{ id: { in: memberRoomIds } }] : []),
+    ];
   }
 
-  async searchRooms(query: string): Promise<GeneralRoom[]> {
-    // Prisma MongoDB doesn't support $regex via the standard API.
-    // Use raw query for regex-based search.
+  /**
+   * One page of the rooms the viewer may see. `skip`/`take` are applied in the
+   * QUERY — this used to return every active room in the database and let the
+   * response builder pretend it was paginated.
+   */
+  async findVisibleRooms(params: {
+    memberRoomIds: string[];
+    skip: number;
+    take: number;
+  }): Promise<GeneralRoom[]> {
     return this.prisma.generalRoom.findMany({
       where: {
         status: "active",
-        OR: [
-          { name: { contains: query, mode: "insensitive" } },
-          { title: { contains: query, mode: "insensitive" } },
-          { tags: { has: query?.toLowerCase() } },
-        ],
+        OR: this.visibilityWhere(params.memberRoomIds),
       },
-      orderBy: { memberNumber: "desc" },
-      take: 20,
+      orderBy: [{ displayOrder: "asc" }, { lastMessageAt: "desc" }],
+      skip: params.skip,
+      take: params.take,
     });
   }
 
-  async countActiveRooms(): Promise<number> {
-    return this.prisma.generalRoom.count({ where: { status: "active" } });
-  }
-
-  async countSearchResults(query: string): Promise<number> {
+  async countVisibleRooms(memberRoomIds: string[]): Promise<number> {
     return this.prisma.generalRoom.count({
       where: {
         status: "active",
-        OR: [
-          { name: { contains: query, mode: "insensitive" } },
-          { title: { contains: query, mode: "insensitive" } },
-          { tags: { has: query.toLowerCase() } },
-        ],
+        OR: this.visibilityWhere(memberRoomIds),
       },
+    });
+  }
+
+  /** Text-search filter, shared by `searchRooms` and `countSearchResults`. */
+  private searchWhere(
+    query: string,
+    memberRoomIds: string[]
+  ): Record<string, unknown> {
+    return {
+      status: "active",
+      AND: [
+        { OR: this.visibilityWhere(memberRoomIds) },
+        {
+          OR: [
+            { name: { contains: query, mode: "insensitive" } },
+            { title: { contains: query, mode: "insensitive" } },
+            { tags: { has: query?.toLowerCase() } },
+          ],
+        },
+      ],
+    };
+  }
+
+  async searchRooms(params: {
+    query: string;
+    memberRoomIds: string[];
+    skip: number;
+    take: number;
+  }): Promise<GeneralRoom[]> {
+    return this.prisma.generalRoom.findMany({
+      where: this.searchWhere(params.query, params.memberRoomIds),
+      orderBy: { memberNumber: "desc" },
+      skip: params.skip,
+      take: params.take,
+    });
+  }
+
+  async countSearchResults(
+    query: string,
+    memberRoomIds: string[]
+  ): Promise<number> {
+    return this.prisma.generalRoom.count({
+      where: this.searchWhere(query, memberRoomIds),
     });
   }
 

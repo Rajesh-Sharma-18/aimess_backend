@@ -31,6 +31,30 @@ export function registerAuthNamespace(
 ): void {
   const auth: Namespace = io.of("/auth");
 
+  // Per-token subscriber ref-count. A browser can legitimately hold more than
+  // one socket on the same linkToken for a moment — a reconnect whose old
+  // socket has not been reaped yet, or the same login page in two tabs. Without
+  // this, the FIRST of those to disconnect unsubscribes `devlink:<token>` for
+  // ALL of them, and the surviving socket sits in room `qr:<token>` receiving
+  // nothing: the scan succeeds on the phone and the browser never hears.
+  const tokenSubCount = new Map<string, number>();
+
+  const retainToken = async (token: string): Promise<void> => {
+    const next = (tokenSubCount.get(token) ?? 0) + 1;
+    tokenSubCount.set(token, next);
+    if (next === 1) await redisSub.subscribe(`devlink:${token}`);
+  };
+
+  const releaseToken = (token: string): void => {
+    const remaining = (tokenSubCount.get(token) ?? 1) - 1;
+    if (remaining > 0) {
+      tokenSubCount.set(token, remaining);
+      return;
+    }
+    tokenSubCount.delete(token);
+    void redisSub.unsubscribe(`devlink:${token}`);
+  };
+
   redisSub.on("message", (channel: string, message: string) => {
     if (!channel.startsWith("devlink:")) return;
     try {
@@ -52,16 +76,30 @@ export function registerAuthNamespace(
       const parsed = QrSubscribeSchema.safeParse(payload);
       if (!parsed.success) return;
 
-      if (joinedToken) void socket.leave(`qr:${joinedToken}`);
       const token = parsed.data.token;
+      // Re-subscribing to the token this socket already holds (the client
+      // re-emits on every connect/reconnect) must not double-count it.
+      if (joinedToken === token) {
+        void (async () => {
+          const pending = await takeQrLinkResult(redis, token);
+          if (pending) socket.emit(pending.event, pending.data);
+        })().catch((err: unknown) => {
+          logger.warn(
+            `/auth re-subscribe take failed for qr:${token}: ${String(err)}`
+          );
+        });
+        return;
+      }
+
+      if (joinedToken) {
+        void socket.leave(`qr:${joinedToken}`);
+        releaseToken(joinedToken);
+      }
       joinedToken = token;
       void socket.join(`qr:${token}`);
 
       void (async () => {
-        // ponytail: no ref-counting (unlike /notify's per-user subscribe) — each
-        // linkToken is single-use and only the one browser that generated the QR
-        // knows it, so a plain subscribe/unsubscribe per socket is sufficient.
-        await redisSub.subscribe(`devlink:${token}`);
+        await retainToken(token);
         logger.debug(`/auth socket subscribed to qr:${token}`);
 
         // Catch-up: a scan that completed before this subscribe finished — or
@@ -83,7 +121,7 @@ export function registerAuthNamespace(
     });
 
     socket.on("disconnect", () => {
-      if (joinedToken) void redisSub.unsubscribe(`devlink:${joinedToken}`);
+      if (joinedToken) releaseToken(joinedToken);
     });
   });
 }

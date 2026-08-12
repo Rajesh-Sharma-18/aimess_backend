@@ -49,6 +49,7 @@ jest.mock("@aimess/storage", () => {
 
 import request from "supertest";
 import { app } from "../../src/app.js";
+import { getChatAccessClient } from "../../src/grpc/clients/chat-access.client.js";
 import {
   bearer,
   makeAccessToken,
@@ -104,6 +105,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType: "image/jpeg",
         contentLength: 2048,
       });
@@ -134,6 +136,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "GROUP_CHAT_ATTACHMENT",
+        resourceId: "grp_room_1",
         contentType: "video/mp4",
         contentLength: 1048576,
       });
@@ -149,6 +152,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType: "video/webm",
         contentLength: 2048,
       });
@@ -163,6 +167,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType: "audio/flac",
         contentLength: 2048,
       });
@@ -177,6 +182,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType:
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         contentLength: 2048,
@@ -192,6 +198,7 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType: "text/csv",
         contentLength: 2048,
       });
@@ -206,12 +213,64 @@ describe("POST /api/v1/media/upload-url", () => {
       .set(auth())
       .send({
         category: "CHAT_ATTACHMENT",
+        resourceId: "prv_room_1",
         contentType: "application/x-msdownload",
         contentLength: 2048,
       });
 
     expect(res.status).toBe(415);
     expect(res.body.success).toBe(false);
+  });
+
+  // AUDIT-147 — resourceId was written to the registry on trust, and the
+  // registry is exactly what the DOWNLOAD guard reads back. An unverified value
+  // both files the object into someone else's scope and poisons its own
+  // authorization, so the caller's membership is checked before the URL is minted.
+  it("403: cannot upload into a group/community the caller is not in", async () => {
+    (getChatAccessClient().checkMediaAccess as jest.Mock).mockResolvedValueOnce(
+      false
+    );
+
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "COMMUNITY_CHAT_ATTACHMENT",
+        contentType: "image/jpeg",
+        contentLength: 2048,
+        resourceId: "someone-elses-community",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+  });
+
+  // AUDIT-112/147 — resourceId used to be optional for chat categories, and a
+  // null one left the object with nothing to authorize a download against.
+  it.each([
+    "CHAT_ATTACHMENT",
+    "GROUP_CHAT_ATTACHMENT",
+    "COMMUNITY_CHAT_ATTACHMENT",
+  ])("400: %s upload without a resourceId", async (category) => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({ category, contentType: "image/jpeg", contentLength: 2048 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("avatars/covers still upload without a resourceId (nothing to be a member of)", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "COMMUNITY_AVATAR",
+        contentType: "image/png",
+        contentLength: 2048,
+      });
+
+    expect(res.status).toBe(200);
   });
 
   it("415: unsupported type for GROUP_AVATAR (application/pdf)", async () => {

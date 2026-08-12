@@ -201,6 +201,23 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * End every ACTIVE membership in a room in one write — the membership half of
+   * a disband. Rows become LEFT with `leftAt = at`, which is what every guard
+   * already reads: `assertGroupMember` (ACTIVE-only) then denies all writes,
+   * while `assertGroupReadAccess` keeps the group readable up to that instant,
+   * so a disbanded group behaves like one you left — visible, read-only, dead.
+   *
+   * Returns how many memberships were ended (0 on a re-run — idempotent).
+   */
+  async markAllLeft(roomId: string, at: Date): Promise<number> {
+    const result = await this.prisma.groupMember.updateMany({
+      where: { roomId, status: "ACTIVE" },
+      data: { status: "LEFT", leftAt: at },
+    });
+    return result.count;
+  }
+
   async updateRole(
     roomId: string,
     userId: string,
