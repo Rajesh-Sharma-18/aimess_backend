@@ -48,13 +48,13 @@ NGINX_SRC="$SCRIPT_DIR/../nginx"
 if [ "$ROLE" = "dev01" ]; then
   # minio-console is listed last because its DNS record may not exist yet — see
   # the note in dev01-minio-console.conf.
-  # notification.ai5dev.tech serves LiveKit signaling (the name is reused —
-  # notification-service itself is internal only). auth.ai5dev.tech serves the
-  # MinIO console for the same reason.
+  # media.ai5stream.tech serves LiveKit signalling. It is DNS-only, so call
+  # media reaches the host directly. auth.ai5dev.tech serves the MinIO console —
+  # both names are reused; the services they are named after are internal only.
   # An entry may list several names separated by commas — they go into ONE SAN
   # certificate whose directory is named after the first. The site serves the
   # apex, so www is a SAN on the same cert rather than a second certificate.
-  DOMAINS=("ai5dev.tech,www.ai5dev.tech" minio.ai5dev.tech rabbitmq.ai5dev.tech notification.ai5dev.tech auth.ai5dev.tech)
+  DOMAINS=("ai5dev.tech,www.ai5dev.tech" minio.ai5dev.tech rabbitmq.ai5dev.tech media.ai5stream.tech auth.ai5dev.tech)
   SITES=(dev01-website.conf dev01-minio.conf dev01-rabbitmq.conf dev01-livekit.conf dev01-minio-console.conf)
 else
   DOMAINS=(api.ai5dev.tech admin.ai5dev.tech backoffice.ai5dev.tech)
