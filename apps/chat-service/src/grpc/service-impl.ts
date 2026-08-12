@@ -2133,6 +2133,7 @@ export function createMessagingImpl(
         try {
           const req = call.request as {
             q?: string;
+            status?: string;
             fromDate?: string;
             toDate?: string;
             sortField?: string;
@@ -2151,6 +2152,7 @@ export function createMessagingImpl(
 
           const result = await deps.adminGroupService.listGroups({
             q: req.q || undefined,
+            status: req.status || undefined,
             fromDate,
             toDate,
             sortField,
@@ -2203,6 +2205,7 @@ export function createMessagingImpl(
             groupId?: string;
             q?: string;
             role?: string;
+            status?: string;
             page?: number;
             limit?: number;
           };
@@ -2214,6 +2217,7 @@ export function createMessagingImpl(
             groupId: req.groupId ?? "",
             q: req.q || undefined,
             role: req.role || undefined,
+            status: req.status || undefined,
             skip,
             take: limit,
           });
@@ -2225,6 +2229,56 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: disband a group as a platform admin.
+    adminDisbandGroup: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            actorAdminId?: string;
+          };
+          const result = await deps.adminGroupService.disbandGroup(
+            req.groupId ?? "",
+            req.actorAdminId ?? ""
+          );
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminDisbandGroup error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: remove one member as a platform admin.
+    adminRemoveGroupMember: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            userId?: string;
+            actorAdminId?: string;
+            reason?: string;
+          };
+          const result = await deps.adminGroupService.removeGroupMember({
+            groupId: req.groupId ?? "",
+            userId: req.userId ?? "",
+            actorAdminId: req.actorAdminId ?? "",
+            reason: req.reason || undefined,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminRemoveGroupMember error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

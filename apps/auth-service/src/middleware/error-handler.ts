@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 
 import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
-import { ConflictError, isAppError } from "@aimess/errors";
+import { ConflictError, deriveAppErrorCode, isAppError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { resolveLocaleFromRequest } from "@aimess/utils";
 
@@ -48,6 +48,8 @@ export function errorHandler(
   if (isAppError(error)) {
     res.status(error.statusCode).json({
       success: false,
+      // `message` is localized, so it can never be branched on — `code` is the stable token clients compare against (e.g. the 429 on repeated logins).
+      code: deriveAppErrorCode(error),
       message: localizedMessage(req, error.messageKey, error.message),
     });
     return;
@@ -73,6 +75,7 @@ export function errorHandler(
       );
       res.status(conflict.statusCode).json({
         success: false,
+        code: deriveAppErrorCode(conflict),
         message: localizedMessage(req, conflict.messageKey, conflict.message),
       });
       return;

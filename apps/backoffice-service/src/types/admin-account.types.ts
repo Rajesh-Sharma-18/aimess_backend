@@ -73,11 +73,16 @@ export type AdminPermissionsView = {
   adminId: string;
   role: AdminAccountRole;
   permissions: string[];
+  // Role baseline + the per-admin deltas, so the toggle grid can tell "on
+  // because the role grants it" from "on because someone granted it here".
+  rolePermissions?: string[];
+  overrides?: { key: string; allow: boolean }[];
 };
 
-/** Normalized "update admin permissions" input — role reassignment. */
+/** Normalized "update admin permissions" input — role reassignment and/or the desired permission set. */
 export type UpdateAdminPermissionsInput = {
-  roleKey: string;
+  roleKey?: string;
+  permissions?: string[];
 };
 
 export type PaginationMeta = {

@@ -1,12 +1,11 @@
 /**
- * The 18-key permission catalogue (resource.action) and the per-key group.
+ * The 17-key permission catalogue (resource.action) and the per-key group.
  * Source of truth: docs/ADMIN-SERVICE-DESIGN.md §5.
  */
 export const PERMISSION_CATALOGUE: { key: string; group: string }[] = [
   { key: "dashboard.read", group: "dashboard" },
   { key: "users.read", group: "users" },
   { key: "users.moderate", group: "users" },
-  { key: "users.delete", group: "users" },
   { key: "reports.read", group: "reports" },
   { key: "reports.action", group: "reports" },
   { key: "communities.read", group: "communities" },

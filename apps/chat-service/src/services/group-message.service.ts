@@ -36,6 +36,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import {
   assertGroupMember,
+  assertGroupNotDisbanded,
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
   isGroupMemberMuted,
@@ -144,6 +145,8 @@ export class GroupMessageService {
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
     assertGroupMemberNotMuted(member);
+    // Disband leaves every membership row ACTIVE so history stays readable, so the membership check above cannot catch a dead group — the room's own status must.
+    await assertGroupNotDisbanded(this.roomRepo, params.roomId);
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.

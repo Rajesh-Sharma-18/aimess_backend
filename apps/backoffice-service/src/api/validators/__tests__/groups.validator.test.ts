@@ -13,6 +13,9 @@ import { describe, it } from "node:test";
 import {
   listGroupsQuerySchema,
   listGroupMembersQuerySchema,
+  groupMemberParamSchema,
+  disbandGroupSchema,
+  removeGroupMemberSchema,
 } from "../groups.validator.js";
 
 describe("listGroupsQuerySchema — pagination defaults & bounds", () => {
@@ -171,4 +174,81 @@ describe("listGroupMembersQuerySchema", () => {
     assert.equal(r.success, true);
     assert.equal(r.data?.q, "bob");
   });
+});
+
+describe("groupMemberParamSchema", () => {
+  it("accepts both ids", () => {
+    const r = groupMemberParamSchema.safeParse({
+      groupId: "  room-1  ",
+      userId: "user-1",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.groupId, "room-1");
+    assert.equal(r.data?.userId, "user-1");
+  });
+
+  it("rejects a missing userId", () => {
+    const r = groupMemberParamSchema.safeParse({ groupId: "room-1" });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects a missing groupId", () => {
+    const r = groupMemberParamSchema.safeParse({ userId: "user-1" });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects a blank id (min length 1 after trim)", () => {
+    const r = groupMemberParamSchema.safeParse({
+      groupId: "   ",
+      userId: "user-1",
+    });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects an id longer than 64 chars", () => {
+    const r = groupMemberParamSchema.safeParse({
+      groupId: "a".repeat(65),
+      userId: "user-1",
+    });
+    assert.equal(r.success, false);
+  });
+});
+
+describe("disbandGroupSchema / removeGroupMemberSchema — reason", () => {
+  for (const [name, schema] of [
+    ["disbandGroupSchema", disbandGroupSchema],
+    ["removeGroupMemberSchema", removeGroupMemberSchema],
+  ] as const) {
+    it(`${name}: accepts an empty body (reason optional)`, () => {
+      const r = schema.safeParse({});
+      assert.equal(r.success, true);
+      assert.equal(r.data?.reason, undefined);
+    });
+
+    it(`${name}: trims reason`, () => {
+      const r = schema.safeParse({ reason: "  spam ring  " });
+      assert.equal(r.success, true);
+      assert.equal(r.data?.reason, "spam ring");
+    });
+
+    it(`${name}: rejects a whitespace-only reason`, () => {
+      const r = schema.safeParse({ reason: "   " });
+      assert.equal(r.success, false);
+    });
+
+    it(`${name}: accepts reason at the 2000-char upper bound`, () => {
+      const r = schema.safeParse({ reason: "x".repeat(2000) });
+      assert.equal(r.success, true);
+    });
+
+    it(`${name}: rejects reason > 2000 chars`, () => {
+      const r = schema.safeParse({ reason: "x".repeat(2001) });
+      assert.equal(r.success, false);
+    });
+
+    it(`${name}: rejects a non-string reason`, () => {
+      const r = schema.safeParse({ reason: 42 });
+      assert.equal(r.success, false);
+    });
+  }
 });

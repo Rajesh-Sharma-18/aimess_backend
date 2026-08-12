@@ -1,6 +1,8 @@
 import { Router, type IRouter } from "express";
 
-import { PERMISSIONS } from "../../constants/index.js";
+import { HTTP_STATUS } from "@aimess/constants";
+
+import { AUDIT_ACTIONS, PERMISSIONS } from "../../constants/index.js";
 import { getAuditLogDetails, listAuditLogs } from "../controllers/index.js";
 import {
   adminAuth,
@@ -22,6 +24,18 @@ import {
 export const auditLogRoutes: IRouter = Router();
 
 auditLogRoutes.use(adminAuth);
+
+// Action catalogue for the FE filter dropdown. MUST be declared before
+// `/:auditLogId` or the UUID param validator rejects "actions" with a 400.
+auditLogRoutes.get(
+  "/audit-logs/actions",
+  requirePermission(PERMISSIONS.AUDITLOGS_READ),
+  (_req, res) => {
+    res
+      .status(HTTP_STATUS.OK)
+      .json({ success: true, data: Object.values(AUDIT_ACTIONS) });
+  }
+);
 
 auditLogRoutes.get(
   "/audit-logs",

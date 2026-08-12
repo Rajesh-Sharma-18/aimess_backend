@@ -9,8 +9,10 @@ import type {
   ListGroupsQuery,
 } from "../../types/group.types.js";
 import type {
+  DisbandGroupInput,
   ListGroupMembersQueryInput,
   ListGroupsQueryInput,
+  RemoveGroupMemberInput,
 } from "../validators/index.js";
 
 /** GET /v1/groups — paginated, filtered list. */
@@ -81,6 +83,56 @@ export const listGroupMembers: RequestHandler = (req, res, next) => {
           items: result.items,
           pagination: result.pagination,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+// POST /v1/groups/:groupId/disband.
+export const disbandGroup: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by groupIdParamSchema on the route.
+      const groupId = req.params.groupId as string;
+      const body = req.body as DisbandGroupInput;
+      const result = await groupService.disbandGroup(
+        groupId,
+        body.reason,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        message: "Group disbanded successfully",
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+// POST /v1/groups/:groupId/members/:userId/remove.
+export const removeGroupMember: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by groupMemberParamSchema on the route.
+      const groupId = req.params.groupId as string;
+      const userId = req.params.userId as string;
+      const body = req.body as RemoveGroupMemberInput;
+      const result = await groupService.removeGroupMember(
+        groupId,
+        userId,
+        body.reason,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        message: "Group member removed successfully",
+        data: result,
       });
     } catch (error) {
       next(error);

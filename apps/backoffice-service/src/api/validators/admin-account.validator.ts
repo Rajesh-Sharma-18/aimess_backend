@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { SUPPORTED_LOCALES } from "@aimess/constants";
+
 import { ROLE_KEYS } from "../../constants/index.js";
 
 /**
@@ -126,11 +128,20 @@ export const updateAdminAccountSchema = z
 export type UpdateAdminAccountInput = z.infer<typeof updateAdminAccountSchema>;
 
 // ---------------------------------------------------------------------------
-// Update admin permissions (role reassignment — permissions are role-derived).
+// Update admin permissions — role reassignment and/or the full desired
+// permission set from the toggle grid. An empty `permissions` array is legal
+// (it revokes everything the role grants); an empty body is not.
 // ---------------------------------------------------------------------------
-export const updateAdminPermissionsSchema = z.object({
-  roleKey: roleKeyEnum,
-});
+export const updateAdminPermissionsSchema = z
+  .object({
+    roleKey: roleKeyEnum.optional(),
+    permissions: z
+      .array(z.string().trim().min(1, "Permission key must not be empty"))
+      .optional(),
+  })
+  .refine((v) => v.roleKey !== undefined || v.permissions !== undefined, {
+    message: "At least one of roleKey or permissions must be provided",
+  });
 export type UpdateAdminPermissionsInput = z.infer<
   typeof updateAdminPermissionsSchema
 >;
@@ -193,14 +204,28 @@ export const updateMeSchema = z
     // Nullable so the admin can clear their avatar. Object key produced by the
     // shared USER_AVATAR upload flow; response returns the resolved MediaObject.
     avatarObjectKey: avatarObjectKeySchema.nullable().optional(),
+    // Preferred admin-panel UI language; omitted = leave whatever is stored.
+    language: z.enum(SUPPORTED_LOCALES).optional(),
+    // Re-auth, required only alongside `email`: repointing the login email is a
+    // full account takeover (email -> public forgot-password -> reset), so it
+    // costs the same proof as changePassword.
+    currentPassword: z
+      .string()
+      .min(1, "Current password is required")
+      .optional(),
   })
   .refine(
     (v) =>
       v.username !== undefined ||
       v.email !== undefined ||
-      v.avatarObjectKey !== undefined,
+      v.avatarObjectKey !== undefined ||
+      v.language !== undefined,
     { message: "At least one field is required to update" }
-  );
+  )
+  .refine((v) => v.email === undefined || v.currentPassword !== undefined, {
+    path: ["currentPassword"],
+    message: "Current password is required to change the email",
+  });
 export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 
 export const changePasswordSchema = z

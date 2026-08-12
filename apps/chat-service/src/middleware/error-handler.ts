@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 
-import { isAppError } from "@aimess/errors";
+import { deriveAppErrorCode, isAppError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
 import { resolveLocaleFromRequest } from "@aimess/utils";
@@ -36,28 +36,6 @@ function isInvalidJsonBodyError(error: unknown): boolean {
 }
 
 type ErrorResponse = { status: number; code: string; key: MessageKey };
-
-const STATUS_CODE: Record<number, string> = {
-  [HTTP_STATUS.BAD_REQUEST]: "BAD_REQUEST",
-  [HTTP_STATUS.UNAUTHORIZED]: "UNAUTHORIZED",
-  [HTTP_STATUS.FORBIDDEN]: "FORBIDDEN",
-  [HTTP_STATUS.NOT_FOUND]: "NOT_FOUND",
-  [HTTP_STATUS.CONFLICT]: "CONFLICT",
-  [HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE]: "UNSUPPORTED_MEDIA_TYPE",
-  [HTTP_STATUS.TOO_MANY_REQUESTS]: "TOO_MANY_REQUESTS",
-};
-
-/**
- * Stable machine-readable error code. If the messageKey is already a code-like
- * token (UPPER_SNAKE_CASE, e.g. "FRIENDSHIP_REQUIRED") use it; otherwise the
- * messageKey is a human sentence (validation detail) so fall back to a generic
- * status-based code and keep the sentence as the `message`.
- */
-function deriveAppErrorCode(appErr: import("@aimess/errors").AppError): string {
-  const key = appErr.messageKey;
-  if (key && /^[A-Z][A-Z0-9_]*$/.test(key)) return key;
-  return STATUS_CODE[appErr.statusCode] ?? "ERROR";
-}
 
 /**
  * Map a Prisma error to a clean HTTP response. Detected by error name/code so

@@ -11,10 +11,10 @@ import {
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
-/** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
+/** Clone a date pinned to the end of its UTC calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
   const end = new Date(d);
-  end.setHours(23, 59, 59, 999);
+  end.setUTCHours(23, 59, 59, 999);
   return end;
 }
 
@@ -160,18 +160,25 @@ export class GroupRoomRepository {
     });
   }
 
-  /** Admin Group Management: resolve a single ACTIVE group by its roomId. */
+  /**
+   * Admin Group Management: resolve a single group by its roomId, whatever its
+   * lifecycle status — a disbanded group must still open in the admin panel.
+   * roomId is @unique, so this is the same single indexed lookup.
+   */
   async adminFindByRoomId(roomId: string): Promise<GroupRoom | null> {
-    return this.findActiveByRoomId(roomId);
+    return this.findByRoomId(roomId);
   }
 
   /**
-   * Admin Group Management: filterable/sortable/paginated list of ACTIVE groups.
-   * `idsFromUserSearch` are roomIds whose OWNER matched a free-text user search;
-   * they widen the `q` OR-clause so admins can find groups by owner identity.
+   * Admin Group Management: filterable/sortable/paginated group list.
+   * `status` is "" / "ACTIVE" (default, active only), "ALL" (no filter) or an
+   * exact lifecycle value. `idsFromUserSearch` are roomIds whose OWNER matched a
+   * free-text user search; they widen the `q` OR-clause so admins can find
+   * groups by owner identity.
    */
   async adminList(params: {
     q?: string;
+    status?: string;
     idsFromUserSearch?: string[] | null;
     fromDate?: Date;
     toDate?: Date;
@@ -182,6 +189,7 @@ export class GroupRoomRepository {
   }): Promise<{ rows: GroupRoom[]; total: number }> {
     const {
       q,
+      status,
       idsFromUserSearch,
       fromDate,
       toDate,
@@ -191,7 +199,9 @@ export class GroupRoomRepository {
       take,
     } = params;
 
-    const and: Array<Record<string, unknown>> = [{ status: "ACTIVE" }];
+    const and: Array<Record<string, unknown>> = [];
+    const statusFilter = (status || "ACTIVE").toUpperCase();
+    if (statusFilter !== "ALL") and.push({ status: statusFilter });
 
     if (fromDate || toDate) {
       const createdAt: Record<string, Date> = {};
@@ -201,9 +211,15 @@ export class GroupRoomRepository {
     }
 
     if (q) {
+      // Same normalizer the in-app group search uses (AND-of-token-ORs), so the
+      // admin box is never weaker than the product one. Wrapped in a single AND
+      // branch — spreading it into the OR would turn it into match-any-token.
+      // A punctuation-only q tokenizes to [] and `{AND: []}` matches everything,
+      // hence the length guard.
+      const nameFilter = buildGroupSearchFilter(q);
       and.push({
         OR: [
-          { name: { contains: q, mode: "insensitive" } },
+          ...(nameFilter.length ? [{ AND: nameFilter }] : []),
           { roomId: q },
           ...(idsFromUserSearch?.length
             ? [{ roomId: { in: idsFromUserSearch } }]

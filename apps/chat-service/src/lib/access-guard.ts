@@ -3,6 +3,7 @@ import { logger } from "@aimess/logger";
 
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type {
@@ -86,6 +87,26 @@ export async function assertGroupMember(
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/**
+ * Group WRITE lifecycle gate: a DISBANDED room is frozen — history stays fully
+ * readable up to the disband, but no new message can be added. Membership rows
+ * are deliberately left ACTIVE on disband (that is what keeps history visible),
+ * so {@link assertGroupMember} alone cannot tell a live group from a dead one.
+ *
+ * @throws ForbiddenError `CHAT_GROUP_DISBANDED` when the group is disbanded.
+ * @throws NotFoundError   `CHAT_GROUP_NOT_FOUND` when the room is gone.
+ */
+export async function assertGroupNotDisbanded(
+  roomRepo: Pick<GroupRoomRepository, "findByRoomId">,
+  roomId: string
+): Promise<void> {
+  const room = await roomRepo.findByRoomId(roomId);
+  if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+  if (room.status === "DISBANDED") {
+    throw new ForbiddenError("CHAT_GROUP_DISBANDED");
+  }
 }
 
 /**

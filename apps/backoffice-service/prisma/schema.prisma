@@ -55,6 +55,9 @@ model AdminUser {
   // Custom avatar URL set via the admin profile. null = use the system-generated
   // default avatar (resolved on read in lib/admin-avatar.ts), never stored.
   avatarUrl    String?
+  // Preferred admin-panel UI language ("en" | "th" | "vi"). null = never chosen,
+  // the client keeps using its own stored/browser locale.
+  language     String?
   roleId       String      @db.Uuid
   role         AdminRole   @relation(fields: [roleId], references: [id])
   status       AdminStatus @default(ACTIVE)
@@ -66,6 +69,7 @@ model AdminUser {
   auditLogs           AuditLog[]
   otpCodes            AdminOtpCode[]
   passwordResetTokens AdminPasswordResetToken[]
+  permissionOverrides AdminPermissionOverride[]
 
   @@index([roleId])
 }
@@ -120,7 +124,8 @@ model Permission {
   key   String @unique // e.g. "users.moderate"
   group String // "users" | "reports" | ...
 
-  roles RolePermission[]
+  roles          RolePermission[]
+  adminOverrides AdminPermissionOverride[]
 }
 
 model RolePermission {
@@ -132,6 +137,23 @@ model RolePermission {
   scope      Json? // optional resource scope (e.g. { communityIds: [...] })
 
   @@id([roleId, permissionId])
+}
+
+// Per-admin DELTA on top of the role baseline — never a snapshot of it.
+// Effective = role's keys UNION allow-rows MINUS deny-rows, so a later change to
+// the role matrix still propagates everywhere a human hasn't explicitly overridden.
+// The composite PK makes a contradictory allow+deny pair unrepresentable.
+model AdminPermissionOverride {
+  adminId      String     @db.Uuid
+  permissionId String     @db.Uuid
+  admin        AdminUser  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  allow        Boolean // true = grant on top of role, false = revoke from role
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@id([adminId, permissionId])
+  @@index([adminId])
 }
 
 model AdminSession {
@@ -279,6 +301,8 @@ model CommunityIndex {
   @@index([status])
 }
 
+// UNUSED read-model placeholder — never written, never read. Group Management is
+// live-over-gRPC (group.grpc.repository.ts). Do NOT assume this table is populated.
 model GroupIndex {
   id          String   @id
   name        String

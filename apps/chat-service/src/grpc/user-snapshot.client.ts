@@ -125,6 +125,13 @@ const bulkGetUserSnapshotsBreaker: Breaker<
   call<{ userIds: string[] }, BulkSnapshotsResult>("bulkGetUserSnapshots", args)
 );
 
+const adminSearchProfileIdsBreaker: Breaker<
+  { search: string },
+  { userIds: string[] }
+> = makeBreaker("user.adminSearchProfileIds", (args: { search: string }) =>
+  call<{ search: string }, { userIds: string[] }>("adminSearchProfileIds", args)
+);
+
 const getCallPrivacyBreaker: Breaker<{ userId: string }, CallPrivacy> =
   makeBreaker("user.getCallPrivacy", (args: { userId: string }) =>
     call<{ userId: string }, CallPrivacy>("getCallPrivacy", args)
@@ -187,6 +194,22 @@ export const userGrpcClient = {
   async bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[]> {
     const result = await bulkGetUserSnapshotsBreaker.fire({ userIds });
     return result.users ?? [];
+  },
+
+  /**
+   * Admin identity search over the PROFILE fields the panel actually renders
+   * (username/firstName/lastName) — auth-service only matches email/account, so
+   * an admin searching a username finds nothing without this. Degrades to []
+   * like every other cross-service admin identity call.
+   */
+  async adminSearchProfileIds(search: string): Promise<string[]> {
+    if (!search.trim()) return [];
+    try {
+      const r = await adminSearchProfileIdsBreaker.fire({ search });
+      return r.userIds ?? [];
+    } catch {
+      return [];
+    }
   },
 
   async getCallPrivacy(userId: string): Promise<CallPrivacy> {

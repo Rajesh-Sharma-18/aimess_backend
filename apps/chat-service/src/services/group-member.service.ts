@@ -471,19 +471,30 @@ export class GroupMemberService {
     return updated;
   }
 
+  /**
+   * `asPlatformAdmin` (backoffice removal) skips ONLY the in-group actor lookup
+   * and role-order check — `kickedBy` is then an AdminUser.id, not a member.
+   * The system message is posted actor-less for the same reason: that id would
+   * not resolve to a user snapshot in anyone's client.
+   */
   async kick(params: {
     roomId: string;
     targetUserId: string;
     kickedBy: string;
     reason?: string;
+    asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.kickedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    const actor = params.asPlatformAdmin
+      ? null
+      : await this.memberRepo.findActiveByRoomAndUser(
+          params.roomId,
+          params.kickedBy
+        );
+    if (!params.asPlatformAdmin) {
+      if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+      }
     }
 
     const target = await this.memberRepo.findActiveByRoomAndUser(
@@ -492,10 +503,12 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Cannot kick someone with equal or higher role
-    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
-    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+    // Cannot kick someone with equal or higher role (in-group actors only).
+    if (actor) {
+      const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
+      if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
+        throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+      }
     }
 
     const updated = await this.memberRepo.updateStatus(
@@ -516,7 +529,7 @@ export class GroupMemberService {
     this.emitGroupRemoved(params.roomId, params.targetUserId, "KICK");
     await this.sysMsg.post({
       roomId: params.roomId,
-      actorId: params.kickedBy,
+      actorId: params.asPlatformAdmin ? null : params.kickedBy,
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: { targetUserId: params.targetUserId },
       excludeUserId: params.targetUserId,

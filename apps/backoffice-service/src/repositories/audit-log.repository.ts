@@ -9,6 +9,13 @@ import type {
   PaginationMeta,
 } from "../types/audit-log.types.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
+import { AUDIT_ACTIONS } from "../constants/index.js";
+
+// Read-audit rows would bury the moderation trail on the unfiltered default
+// page. Derived from the constant KEYS (…_VIEWED) so "…_REVIEWED" is excluded.
+const VIEW_ACTIONS: string[] = Object.entries(AUDIT_ACTIONS)
+  .filter(([key]) => key.endsWith("_VIEWED"))
+  .map(([, value]) => value);
 
 export type AuditLogInput = {
   actorId: string;
@@ -127,6 +134,9 @@ export const auditLogRepository = {
 
     if (query.action && query.action.length > 0) {
       where.action = { in: query.action };
+    } else {
+      // View rows stay reachable, but only via an explicit ?action= filter.
+      where.action = { notIn: VIEW_ACTIONS };
     }
     if (query.search) {
       // Search performer (name/email) OR the target id.

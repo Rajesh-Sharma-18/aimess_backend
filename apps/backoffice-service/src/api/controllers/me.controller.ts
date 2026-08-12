@@ -28,11 +28,10 @@ export const updateMe: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const body = req.body as UpdateMeInput;
-      const profile = await adminAuthService.updateMe(
-        req.admin!.id,
-        body,
-        getRequestContext(req)
-      );
+      const profile = await adminAuthService.updateMe(req.admin!.id, body, {
+        ...getRequestContext(req),
+        sessionId: req.admin!.sid,
+      });
       res.status(HTTP_STATUS.OK).json({
         success: true,
         message: "Profile updated",

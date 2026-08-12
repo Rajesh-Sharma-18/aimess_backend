@@ -21,7 +21,6 @@ export const PERMISSIONS = {
   DASHBOARD_READ: "dashboard.read",
   USERS_READ: "users.read",
   USERS_MODERATE: "users.moderate",
-  USERS_DELETE: "users.delete",
   REPORTS_READ: "reports.read",
   REPORTS_ACTION: "reports.action",
   COMMUNITIES_READ: "communities.read",
@@ -43,6 +42,7 @@ export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 /** Audit-log action names emitted by services. */
 export const AUDIT_ACTIONS = {
   ADMIN_LOGIN: "admin.login",
+  ADMIN_LOGIN_FAILED: "admin.login_failed",
   ADMIN_LOGOUT: "admin.logout",
   ADMIN_TOKEN_REFRESHED: "admin.token_refreshed",
   ADMIN_PASSWORD_RESET_REQUESTED: "admin.password_reset_requested",
@@ -67,6 +67,8 @@ export const AUDIT_ACTIONS = {
   GROUP_LIST_VIEWED: "group.list_viewed",
   GROUP_VIEWED: "group.viewed",
   GROUP_MEMBERS_VIEWED: "group.members_viewed",
+  GROUP_DISBANDED: "group.disbanded",
+  GROUP_MEMBER_REMOVED: "group.member_removed",
   LIVESTREAM_ENDED: "livestream.ended",
   LIVESTREAM_BULK_ENDED: "livestream.bulk_ended",
   LIVESTREAM_REPORTS_BULK_REVIEWED: "livestream.reports_bulk_reviewed",

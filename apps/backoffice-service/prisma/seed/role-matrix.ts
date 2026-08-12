@@ -21,7 +21,6 @@ const READ_BASELINE = [
 const ALL_PERMISSIONS = [
   ...READ_BASELINE,
   "users.moderate",
-  "users.delete",
   "reports.action",
   "communities.moderate",
   "groups.moderate",
@@ -50,7 +49,6 @@ export const ROLE_MATRIX: RoleDefinition[] = [
     permissions: [
       ...READ_BASELINE,
       "users.moderate",
-      "users.delete",
       "reports.action",
       "communities.moderate",
       "groups.moderate",

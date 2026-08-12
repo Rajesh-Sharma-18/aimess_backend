@@ -1,5 +1,6 @@
 export { AppError } from "./AppError";
 export { isAppError } from "./is-app-error";
+export { deriveAppErrorCode } from "./error-code";
 
 export { BadRequestError } from "./BadRequestError";
 export { UnauthorizedError } from "./UnauthorizedError";
