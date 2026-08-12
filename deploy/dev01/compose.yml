@@ -257,7 +257,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
 
   # ===========================================================================
-  # Website (Next.js) — https://website.ai5dev.tech
+  # Website (Next.js) — https://ai5dev.tech
   #
   # Image is built from the aimess_website repo, NOT from this one:
   #   docker build -t aimess-website:latest /path/to/aimess_website

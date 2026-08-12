@@ -51,7 +51,10 @@ if [ "$ROLE" = "dev01" ]; then
   # notification.ai5dev.tech serves LiveKit signaling (the name is reused —
   # notification-service itself is internal only). auth.ai5dev.tech serves the
   # MinIO console for the same reason.
-  DOMAINS=(website.ai5dev.tech minio.ai5dev.tech rabbitmq.ai5dev.tech notification.ai5dev.tech auth.ai5dev.tech)
+  # An entry may list several names separated by commas — they go into ONE SAN
+  # certificate whose directory is named after the first. The site serves the
+  # apex, so www is a SAN on the same cert rather than a second certificate.
+  DOMAINS=("ai5dev.tech,www.ai5dev.tech" minio.ai5dev.tech rabbitmq.ai5dev.tech notification.ai5dev.tech auth.ai5dev.tech)
   SITES=(dev01-website.conf dev01-minio.conf dev01-rabbitmq.conf dev01-livekit.conf dev01-minio-console.conf)
 else
   DOMAINS=(api.ai5dev.tech admin.ai5dev.tech backoffice.ai5dev.tech)
@@ -61,13 +64,17 @@ fi
 echo "==> [1/5] DNS pre-flight"
 MYIP=$(curl -fsS https://api.ipify.org || echo "unknown")
 echo "    this host's public IP: $MYIP"
-for d in "${DOMAINS[@]}"; do
-  resolved=$(getent hosts "$d" | awk '{print $1}' | paste -sd, - || true)
-  if [ -z "$resolved" ]; then
-    echo "    ✗ $d — NO DNS RECORD (certbot will fail for this name)"
-  else
-    echo "    • $d -> $resolved"
-  fi
+for entry in "${DOMAINS[@]}"; do
+  # A comma-separated entry is one SAN cert; every name in it still needs DNS.
+  IFS=',' read -r -a _names <<< "$entry"
+  for d in "${_names[@]}"; do
+    resolved=$(getent hosts "$d" | awk '{print $1}' | paste -sd, - || true)
+    if [ -z "$resolved" ]; then
+      echo "    ✗ $d — NO DNS RECORD (certbot will fail for this name)"
+    else
+      echo "    • $d -> $resolved"
+    fi
+  done
 done
 echo
 echo "    Names resolving to 104.21.x / 172.67.x are Cloudflare-proxied — that is"
@@ -89,19 +96,27 @@ echo "    bootstrap vhost live."
 
 echo "==> [3/5] obtaining certificates"
 FAILED=()
-for d in "${DOMAINS[@]}"; do
-  echo "--- $d ---"
-  # One certificate per name (not one SAN cert for all) so a single failing
-  # domain does not block the others — important because minio-console may not
-  # have a DNS record yet.
+for entry in "${DOMAINS[@]}"; do
+  echo "--- $entry ---"
+  # One certificate per ENTRY, not per deployment: a single failing domain must
+  # not block the others (minio-console may have no DNS record yet). Names
+  # inside one entry share a SAN cert.
+  #
+  # --cert-name pins the directory to the first name. Without it a re-run with a
+  # changed name list creates `<name>-0001` and every config still points at the
+  # old directory — a failure that only shows up when the first cert expires.
+  IFS=',' read -r -a _names <<< "$entry"
+  primary="${_names[0]}"
+  _args=()
+  for n in "${_names[@]}"; do _args+=(-d "$n"); done
   if certbot certonly --webroot -w /var/www/certbot \
-      -d "$d" \
+      "${_args[@]}" --cert-name "$primary" \
       --non-interactive --agree-tos -m "$EMAIL" \
       --keep-until-expiring; then
-    echo "    ✓ $d"
+    echo "    ✓ $entry"
   else
-    echo "    ✗ $d — FAILED"
-    FAILED+=("$d")
+    echo "    ✗ $entry — FAILED"
+    FAILED+=("$primary")
   fi
 done
 
@@ -139,7 +154,9 @@ fi
 
 for i in "${!SITES[@]}"; do
   site="${SITES[$i]}"
-  domain="${DOMAINS[$i]}"
+  # The cert directory is named after the FIRST name in the entry, matching
+  # --cert-name above — so strip any SAN list before looking for it.
+  domain="${DOMAINS[$i]%%,*}"
   if [ ! -d "/etc/letsencrypt/live/$domain" ]; then
     echo "    skipping $site — no certificate for $domain"
     continue
