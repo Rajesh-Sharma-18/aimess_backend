@@ -1,7 +1,7 @@
 # AIMESS — Operations Guide
 
 Everything here runs as **`rajvasu`**. Nothing in day-to-day operation needs
-`sudo` — that was only required once, to install Docker and nginx.
+`sudo` — that was only required once, to install Docker, nginx and HAProxy.
 
 ```bash
 ssh -p 22223 -i ~/.ssh/id_ed25519 rajvasu@76.13.216.164   # Dev 01
@@ -24,7 +24,7 @@ ssh -p 22223 -i ~/.ssh/id_ed25519 rajvasu@187.77.130.157  # DB / Redis
 | `aimess_admin_panel`         | **Dev 02**                        | yes                                     |
 | A `NEXT_PUBLIC_*` value      | Dev 01 or 02                      | **yes — baked in at build time**        |
 | A backend env value          | Dev 02                            | no — just recreate the container        |
-| An nginx vhost               | that server                       | no — install + reload                   |
+| A HAProxy route              | that server                       | no — validate + reload                  |
 | A Prisma schema              | Dev 02 (build) + Dev 01 (migrate) | yes, and run the migration              |
 
 ---
@@ -127,11 +127,14 @@ for c in aimess-api-gateway aimess-auth-service aimess-user-service \
 done
 ```
 
-nginx:
+HAProxy — it logs to journald, not to per-vhost files as nginx did:
 
 ```bash
-sudo tail -f /var/log/nginx/api.ai5dev.tech.error.log
-sudo tail -f /var/log/nginx/api.ai5dev.tech.access.log
+sudo journalctl -u haproxy -f
+sudo journalctl -u haproxy --since -10m | grep -E " 5[0-9]{2} | 4[0-9]{2} "
+
+# Backend health at a glance — a DOWN server is why a domain 503s
+echo "show stat" | sudo socat stdio /run/haproxy/admin.sock | cut -d, -f1,2,18
 ```
 
 Logs are capped at 20 MB × 5 files per container, so they cannot fill the disk.
@@ -231,7 +234,7 @@ columns the code requires.
 curl -fsS https://api.ai5dev.tech/health
 curl -fsS https://backoffice.ai5dev.tech/health
 curl -fsS 'https://api.ai5dev.tech/socket.io/?EIO=4&transport=polling'   # expect a sid
-curl -fsSI https://website.ai5dev.tech | head -1
+curl -fsSI https://ai5dev.tech | head -1
 curl -fsSI https://admin.ai5dev.tech  | head -1
 
 # datastores — from Dev 02
@@ -255,26 +258,42 @@ docker exec aimess-mongodb mongosh --quiet -u "$MONGO_ROOT_USERNAME" \
 
 ## 9. TLS certificates
 
-Auto-renewed by certbot's systemd timer; a deploy hook reloads nginx.
+Auto-renewed by certbot's systemd timer. Two things differ from the nginx era
+and both are load-bearing:
+
+- **Challenges no longer use a webroot.** nginx used to serve
+  `/var/www/certbot`; nothing does now. Renewal runs `certbot --standalone` on
+  `127.0.0.1:8888`, and HAProxy forwards `/.well-known/acme-challenge/` to it.
+- **HAProxy needs a single-file certificate.** certbot writes `fullchain.pem`
+  and `privkey.pem` separately, so a deploy hook concatenates them into
+  `/etc/haproxy/certs/<name>.pem` and reloads. Without it HAProxy keeps serving
+  the old certificate until it expires.
 
 ```bash
 sudo certbot certificates          # expiry dates
-sudo certbot renew --dry-run       # verify renewal still works
+sudo certbot renew --dry-run       # MUST pass — proves the 8888 path works
 sudo systemctl list-timers 'certbot*'
 ```
 
-Adding a domain: edit/add a vhost in `deploy/nginx/sites/`, then
+Adding a domain: add it to `DOMAINS` in `05-issue-certs.sh` (comma-separate
+names that should share one SAN certificate), add an `acl` + `use_backend` to
+`deploy/haproxy/dev0N.cfg`, then
 
 ```bash
 sudo bash deploy/scripts/05-issue-certs.sh dev02 you@example.com
+sudo bash deploy/haproxy/bundle-certs.sh          # bundle + reload
 ```
 
-nginx changes:
+HAProxy config changes:
 
 ```bash
-sudo install -m 0644 deploy/nginx/sites/dev02-api.conf /etc/nginx/sites-available/dev02-api.conf
-sudo nginx -t && sudo systemctl reload nginx     # ALWAYS test before reloading
+sudo install -m 0644 deploy/haproxy/dev02.cfg /etc/haproxy/haproxy.cfg
+sudo haproxy -c -f /etc/haproxy/haproxy.cfg      # ALWAYS validate first
+sudo systemctl reload haproxy                    # reload keeps connections
 ```
+
+> Write the file from an editor that does **not** add a UTF-8 BOM. HAProxy
+> reads those three bytes as a keyword and refuses to start.
 
 ---
 
@@ -297,19 +316,19 @@ inbound from `eth0`, so new ports are closed by default; on Dev 01 only
 
 ## 11. Troubleshooting
 
-| Symptom                                    | Likely cause                              | Check                                                         |
-| ------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------- |
-| Container restart-loops                    | env validation or a missing dependency    | `docker logs <name> --tail 50`                                |
-| `502` from nginx                           | container down or not listening           | `docker ps` then `curl 127.0.0.1:<port>` on the host          |
-| `522` from Cloudflare                      | nginx itself down, or :443 not listening  | `sudo nginx -t; ss -tlnp \| grep 443`                         |
-| Frontend calls the wrong API               | `NEXT_PUBLIC_*` baked into an old image   | rebuild the frontend image                                    |
-| `NOAUTH` from Redis                        | `REDIS_PASSWORD` missing/wrong            | check `.env.dev02`                                            |
-| Prisma "Transactions are not supported"    | replica set lost its primary              | `rs.status().myState` must be 1                               |
-| Prisma "could not locate the Query Engine" | builder/runner libc or openssl mismatch   | both stages must be `bookworm-slim` with `openssl` installed  |
-| `ENOENT … .proto`                          | proto files missing from the image        | Dockerfile must copy them to `/packages/grpc-contracts/proto` |
-| Socket.IO 404                              | wrong path                                | it is `/socket.io/` on api-gateway, **not** `/z-socket/`      |
-| Upload 413 at ~100 MB                      | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record                                        |
-| Call connects, no audio/video              | `notification.ai5dev.tech` is proxied     | grey-cloud it — UDP cannot proxy                              |
+| Symptom                                    | Likely cause                              | Check                                                               |
+| ------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------- |
+| Container restart-loops                    | env validation or a missing dependency    | `docker logs <name> --tail 50`                                      |
+| `503` from HAProxy                         | backend health check failing              | `echo "show stat" \| sudo socat stdio /run/haproxy/admin.sock`      |
+| `522` from Cloudflare                      | HAProxy down, or :443 not listening       | `sudo haproxy -c -f /etc/haproxy/haproxy.cfg; ss -tlnp \| grep 443` |
+| Frontend calls the wrong API               | `NEXT_PUBLIC_*` baked into an old image   | rebuild the frontend image                                          |
+| `NOAUTH` from Redis                        | `REDIS_PASSWORD` missing/wrong            | check `.env.dev02`                                                  |
+| Prisma "Transactions are not supported"    | replica set lost its primary              | `rs.status().myState` must be 1                                     |
+| Prisma "could not locate the Query Engine" | builder/runner libc or openssl mismatch   | both stages must be `bookworm-slim` with `openssl` installed        |
+| `ENOENT … .proto`                          | proto files missing from the image        | Dockerfile must copy them to `/packages/grpc-contracts/proto`       |
+| Socket.IO 404                              | wrong path                                | it is `/socket.io/` on api-gateway, **not** `/z-socket/`            |
+| Upload 413 at ~100 MB                      | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record                                              |
+| Call connects, no audio/video              | `notification.ai5dev.tech` is proxied     | grey-cloud it — UDP cannot proxy                                    |
 
 Full reset of one service:
 

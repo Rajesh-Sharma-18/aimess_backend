@@ -1,7 +1,11 @@
 # AIMESS — Deployed Architecture
 
-Verified live on **2026-08-07**. Every port, container and connection below was
+Verified live on **2026-08-12**. Every port, container and connection below was
 read off the running servers, not copied from a plan.
+
+The edge is **HAProxy**, not nginx, since 2026-08-12, and the website is on the
+apex `ai5dev.tech`. TLS still terminates at the origin with the same
+certificates — Cloudflare is unchanged at Full (strict).
 
 ---
 
@@ -34,14 +38,14 @@ flowchart TB
     end
 
     subgraph dev02["Dev 02 · 76.13.216.171 · COMPUTE"]
-        nginx2["nginx :80 :443"]
+        nginx2["HAProxy :80 :443"]
         gw["api-gateway :3000<br/>REST + Socket.IO"]
         subgraph internal["compose network — no host ports"]
             auth["auth-service :3001"]
             usr["user-service :3002"]
             comm["community-service :3003"]
             chat["chat-service :3004"]
-            notif["notifications-service :3006<br/>DOWN — needs APNs"]
+            notif["notifications-service :3006"]
             strm["stream-service :3007"]
             media["media-service :3009"]
         end
@@ -50,7 +54,7 @@ flowchart TB
     end
 
     subgraph dev01["Dev 01 · 76.13.216.164 · STATE"]
-        nginx1["nginx :80 :443"]
+        nginx1["HAProxy :80 :443"]
         web["website :3000"]
         pg[("PostgreSQL :5432")]
         mongo[("MongoDB rs0 :27017")]
@@ -102,11 +106,11 @@ flowchart TB
 | `aimess-postgres`        | `76.13.216.164:5432`                             | Dev 02 only (DOCKER-USER rule) |
 | `aimess-mongodb`         | `76.13.216.164:27017`                            | Dev 02 only                    |
 | `aimess-rabbitmq`        | `76.13.216.164:5672`                             | Dev 02 only                    |
-| `aimess-rabbitmq` (UI)   | `127.0.0.1:15672`                                | nginx only                     |
-| `aimess-minio`           | `76.13.216.164:9000` + `127.0.0.1:9000`          | Dev 02 + nginx                 |
-| `aimess-minio` (console) | `127.0.0.1:9001`                                 | nginx only                     |
+| `aimess-rabbitmq` (UI)   | `127.0.0.1:15672`                                | HAProxy only                   |
+| `aimess-minio`           | `76.13.216.164:9000` + `127.0.0.1:9000`          | Dev 02 + HAProxy               |
+| `aimess-minio` (console) | `127.0.0.1:9001`                                 | HAProxy only                   |
 | `aimess-livekit`         | host network — `7880`, `7881`, `50000-50100/udp` | Internet (media needs it)      |
-| `aimess-website`         | `127.0.0.1:3000`                                 | nginx only                     |
+| `aimess-website`         | `127.0.0.1:3000`                                 | HAProxy only                   |
 
 ### Dev 02 — `76.13.216.171`
 
@@ -123,7 +127,7 @@ flowchart TB
 | `aimess-backoffice-service`    | 3010 | 4010 | `127.0.0.1:3010`    |
 | `aimess-admin-panel`           | 3000 | —    | `127.0.0.1:3011`    |
 
-**No container port on Dev 02 is exposed to the internet.** nginx is the only
+**No container port on Dev 02 is exposed to the internet.** HAProxy is the only
 way in. A DOCKER-USER rule drops all inbound container traffic on `eth0`, so a
 port published carelessly in future stays closed by default.
 
@@ -190,7 +194,7 @@ never consults the advertised topology. **If you ever remove
 sequenceDiagram
     participant B as Browser
     participant CF as Cloudflare
-    participant N as nginx (Dev 02)
+    participant N as HAProxy (Dev 02)
     participant G as api-gateway
     participant S as auth/user/chat/…
     participant R as Redis
@@ -273,7 +277,7 @@ See `deploy/scripts/07-srs-add-hook.md`.
 flowchart TB
     net["Internet"]
     net -->|"22223, 80, 443 only"| edge["ufw on every server"]
-    edge --> ngx["nginx — TLS termination"]
+    edge --> ngx["HAProxy — TLS termination"]
     ngx --> loop["127.0.0.1-bound containers"]
     edge --> du["DOCKER-USER iptables chain"]
     du -->|"Dev 02: drop ALL"| c2["containers"]

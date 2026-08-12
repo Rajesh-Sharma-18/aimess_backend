@@ -1,24 +1,27 @@
 # AIMESS — Domains, Routing and Live Status
 
-Every row below was probed on **2026-08-07**. Nothing here is assumed.
+Every row below was probed on **2026-08-12**. Nothing here is assumed.
+
+**The website moved to the apex `ai5dev.tech` and the edge moved from nginx to
+HAProxy.** `website.ai5dev.tech` was retired, not redirected — it now returns
+526 by design. See §7.
 
 ---
 
 ## 1. Straight answer: is everything running?
 
-**No — 15 of 16 containers. One service is down and three things need you.**
-
-Every public endpoint returns HTTP 200 and every service except one is healthy
-with zero errors. But "all endpoints green" is not the same as "everything
-works", so here is the honest split:
+**Yes — all 10 containers on Dev 02, all 6 on Dev 01, every public endpoint 200.** One thing is stale and two still need you; see "Not working" below.
 
 ### Working and verified
 
 | Area                                         | State                                                 |
 | -------------------------------------------- | ----------------------------------------------------- |
-| All 10 public endpoints                      | **200**                                               |
-| 15 of 16 containers                          | running                                               |
-| Error count, last 10 min, 8 backend services | **0**                                                 |
+| All public endpoints                         | **200** (`www` 301 → apex)                            |
+| All containers                               | running, incl. notifications-service                  |
+| Error count, last 10 min, 8 backend services | **0** (gateway logs stale-origin CORS — see below)    |
+| Edge proxy                                   | **HAProxy 2.8.16** on both hosts, nginx stopped       |
+| Certificate renewal                          | `certbot renew --dry-run` passes on both hosts        |
+| PostgreSQL migrations                        | auth 10 · users 13 · admin_db 17 applied              |
 | MongoDB replica set                          | `myState=1` (PRIMARY)                                 |
 | PostgreSQL                                   | 5 databases, 38 tables, 38 migrations applied         |
 | MinIO                                        | 4 buckets, all private                                |
@@ -30,15 +33,16 @@ works", so here is the honest split:
 
 ### Not working
 
-| Problem                                             | Impact                                                                                                                                                                       | Needs                                                |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| **notifications-service is down** — restart-looping | **No push notifications at all.** RabbitMQ queues buffer durably, so nothing is lost; it drains when the service starts                                                      | APNs credentials, or approval to make APNs lazy-init |
-| **`minio.ai5dev.tech` is Cloudflare-proxied**       | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                            | Grey-cloud the record                                |
-| **`notification.ai5dev.tech` is proxied**           | **TURN (TLS 5349) is unreachable** — Cloudflare does not listen on that port. Calls fail _intermittently_: whoever's network blocks direct UDP has no fallback and times out | Grey-cloud the record                                |
-| ~~SRS hooks point at the other environment~~        | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                          | done — `deploy/scripts/07-srs-add-hook.md`           |
-| `APPLE_CLIENT_IDS` is a placeholder                 | Apple Sign-In rejects tokens                                                                                                                                                 | Apple Service ID                                     |
-| Website social/Giphy/Maps keys blank                | Those buttons and features inert                                                                                                                                             | Keys + one website rebuild                           |
-| **No database backups**                             | Total loss if a disk fails                                                                                                                                                   | Scheduling — see OPERATIONS.md §13                   |
+| Problem                                       | Impact                                                                                                                                                                                                           | Needs                                                                                                                                       |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Website bundle is stale** — rebuild fails   | The site serves fine, but `NEXT_PUBLIC_*` is inlined at build time, so the running bundle still contains `website.ai5dev.tech`. Apple Sign-In redirects to a dead host and client-built deep links point nowhere | Build is blocked: `accountDeletion` exists only in `en.json`, so `Record<Locale, Dict>` fails to typecheck. Add it to `th.json` + `vi.json` |
+| ~~notifications-service is down~~             | **Fixed 2026-08-12.** Running with zero errors                                                                                                                                                                   | done                                                                                                                                        |
+| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                                                                | Grey-cloud the record                                                                                                                       |
+| **`notification.ai5dev.tech` is proxied**     | **TURN (TLS 5349) is unreachable** — Cloudflare does not listen on that port. Calls fail _intermittently_: whoever's network blocks direct UDP has no fallback and times out                                     | Grey-cloud the record                                                                                                                       |
+| ~~SRS hooks point at the other environment~~  | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                                                              | done — `deploy/scripts/07-srs-add-hook.md`                                                                                                  |
+| `APPLE_CLIENT_IDS` is a placeholder           | Apple Sign-In rejects tokens                                                                                                                                                                                     | Apple Service ID                                                                                                                            |
+| Website social/Giphy/Maps keys blank          | Those buttons and features inert                                                                                                                                                                                 | Keys + one website rebuild                                                                                                                  |
+| **No database backups**                       | Total loss if a disk fails                                                                                                                                                                                       | Scheduling — see OPERATIONS.md §13                                                                                                          |
 
 ---
 
@@ -49,7 +53,9 @@ works", so here is the honest split:
 | `api.ai5dev.tech`          | Dev 02 · `76.13.216.171` | api-gateway        | 3000      | proxied ✔                  | **200**   |
 | `admin.ai5dev.tech`        | Dev 02 · `76.13.216.171` | admin-panel        | 3011      | proxied ✔                  | **200**   |
 | `backoffice.ai5dev.tech`   | Dev 02 · `76.13.216.171` | backoffice-service | 3010      | proxied ✔                  | **200**   |
-| `website.ai5dev.tech`      | Dev 01 · `76.13.216.164` | website            | 3000      | proxied ✔                  | **200**   |
+| `ai5dev.tech`              | Dev 01 · `76.13.216.164` | website            | 3000      | proxied ✔                  | **200**   |
+| `www.ai5dev.tech`          | Dev 01 · `76.13.216.164` | 301 → apex         | —         | proxied ✔                  | **301**   |
+| ~~`website.ai5dev.tech`~~  | —                        | **retired**        | —         | DNS record still exists    | **526**   |
 | `minio.ai5dev.tech`        | Dev 01 · `76.13.216.164` | minio              | 9000      | **proxied ✘ must be grey** | **200**   |
 | `notification.ai5dev.tech` | Dev 01 · `76.13.216.164` | livekit            | 7880      | **proxied ✘ must be grey** | **200**   |
 | `auth.ai5dev.tech`         | Dev 01 · `76.13.216.164` | minio console      | 9001      | proxied ✔                  | **200**   |
@@ -237,7 +243,7 @@ manager and delete the local copies.
 for u in https://api.ai5dev.tech/health \
          https://backoffice.ai5dev.tech/health \
          "https://api.ai5dev.tech/socket.io/?EIO=4&transport=polling" \
-         https://website.ai5dev.tech/ \
+         https://ai5dev.tech/ \
          https://admin.ai5dev.tech/ \
          https://minio.ai5dev.tech/minio/health/live \
          https://notification.ai5dev.tech/ ; do
@@ -255,17 +261,56 @@ nc -vz -w3 187.77.130.157 52023                                        # must ti
 
 ---
 
+## 6b. The 2026-08-12 migration, in one place
+
+**Website moved to the apex.** `ai5dev.tech` serves the site, `www` 301s to it
+(both names on one SAN certificate), and `website.ai5dev.tech` was **retired,
+not redirected** — it is absent from HAProxy and its certificate is excluded
+from the bundle, so it returns 526. Its DNS record and certificate still exist
+and can be deleted.
+
+**Edge moved from nginx to HAProxy** on both hosts. TLS still terminates at the
+origin with the same Let's Encrypt certificates, so Cloudflare stays Full
+(strict) and nothing changed on the Cloudflare side. Two details are
+load-bearing:
+
+- `X-Forwarded-For` is rebuilt from `CF-Connecting-IP`. Without it the gateway's
+  per-IP rate limiting and the admin allow-list would see only Cloudflare.
+- `timeout tunnel 1h` carries Socket.IO and LiveKit WebSockets, which stop
+  using `timeout client`/`server` once upgraded.
+
+**ACME renewal changed.** nginx used to serve `/var/www/certbot`; nothing does
+now, so renewal runs `certbot --standalone` on `127.0.0.1:8888` with HAProxy
+forwarding `/.well-known/acme-challenge/` to it. A deploy hook re-bundles
+fullchain+privkey into `/etc/haproxy/certs/` — certbot does not produce the
+single-file format HAProxy needs. Verified: `certbot renew --dry-run` passes on
+both hosts.
+
+**Rollback** is `deploy/scripts/09-haproxy-cutover.sh`'s closing instructions —
+stop HAProxy, restore `/etc/letsencrypt/renewal.bak-*`, start nginx. The nginx
+vhosts are still in the tree and already point at the apex.
+
+Anything that authorises by exact hostname must be updated **outside these
+servers**: Apple Sign-In redirect URI, Google authorised origins, Firebase
+authorised domains. Those consoles are not reachable from here.
+
+---
+
 ## 7. What to do next, in order
 
-1. **Decide on APNs** — send the four `APNS_*` values, or approve lazy-init so
+1. **Unblock the website rebuild** — `accountDeletion` is in `en.json` only, so
+   the build fails typechecking and the running bundle still points at the dead
+   `website.ai5dev.tech` for Apple Sign-In and deep links.
+2. **Update Apple / Google / Firebase consoles** to authorise `ai5dev.tech`.
+3. **Decide on APNs** — send the four `APNS_*` values, or approve lazy-init so
    notifications-service starts and Android/web push work now.
-2. **Grey-cloud `minio.` and `notification.`** — two clicks; without them large
+4. **Grey-cloud `minio.` and `notification.`** — two clicks; without them large
    uploads and all call media are broken.
-3. ~~Add the SRS second hook~~ — **done 2026-08-07.** Both hook-bearing SRS
+5. ~~Add the SRS second hook~~ — **done 2026-08-07.** Both hook-bearing SRS
    instances repointed; RTMP (OBS) and WHIP (camera) both verified publishing
    end to end. Consequence: the old environment can no longer publish to
    `ai5stream.tech`. Roll back **both** instances or neither —
    `deploy/scripts/07-srs-add-hook.md` §7.
-4. **Send `APPLE_CLIENT_IDS`** and the website social/Giphy/Maps keys — one
+6. **Send `APPLE_CLIENT_IDS`** and the website social/Giphy/Maps keys — one
    rebuild covers them all.
-5. **Set up backups.** PostgreSQL, MongoDB and MinIO currently have none.
+7. **Set up backups.** PostgreSQL, MongoDB and MinIO currently have none.

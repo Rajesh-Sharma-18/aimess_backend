@@ -40,8 +40,8 @@ scripts in `scripts/` are not optional.
         ▼                                ▼
   Dev 01  76.13.216.164            Dev 02  76.13.216.171
   ─────────────────────            ─────────────────────
-  nginx :80/:443                   nginx :80/:443
-   website.ai5dev.tech              api.ai5dev.tech         → api-gateway  :3000
+  HAProxy :80/:443                 HAProxy :80/:443
+   ai5dev.tech              api.ai5dev.tech         → api-gateway  :3000
    minio.ai5dev.tech                  └ /z-socket/          → chat-service :3004
    minio-console.ai5dev.tech        admin.ai5dev.tech       → admin-panel  :3011
    rabbitmq.ai5dev.tech             backoffice.ai5dev.tech  → backoffice   :3010
@@ -78,7 +78,7 @@ public interfaces on every request.
 | `api.ai5dev.tech`                             | Dev 02    | proxied        | REST **and** Socket.IO (`/z-socket/`)       |
 | `admin.ai5dev.tech`                           | Dev 02    | proxied        | Admin panel                                 |
 | `backoffice.ai5dev.tech`                      | Dev 02    | proxied        | Admin API                                   |
-| `website.ai5dev.tech`                         | Dev 01    | proxied        | Consumer website                            |
+| `ai5dev.tech`                                 | Dev 01    | proxied        | Consumer website                            |
 | `minio.ai5dev.tech`                           | Dev 01    | **grey-cloud** | See the 100 MB warning below                |
 | `rabbitmq.ai5dev.tech`                        | Dev 01    | proxied        | Management UI — IP-restrict it              |
 | `notification.ai5dev.tech`                    | Dev 01    | **grey-cloud** | **Reused for LiveKit signaling**            |
@@ -92,7 +92,7 @@ would bypass the gateway's sensitive-auth rate limiting. Reusing the two names
 costs nothing.
 
 The names no longer describe what they serve. That is recorded in
-`deploy/nginx/sites/dev01-livekit.conf` and `dev01-minio-console.conf` so the
+`deploy/haproxy/dev01.cfg` (and the superseded `deploy/nginx/sites/*`) so the
 next person is not misled.
 
 **Only DNS change required:** point `notification.ai5dev.tech` at
@@ -304,7 +304,7 @@ docker compose --env-file .env.dev02 ps
 
 ```bash
 curl -fsS https://api.ai5dev.tech/health
-curl -fsSI https://website.ai5dev.tech | head -1
+curl -fsSI https://ai5dev.tech | head -1
 curl -fsSI https://admin.ai5dev.tech | head -1
 curl -fsSI https://backoffice.ai5dev.tech | head -1
 
@@ -378,7 +378,7 @@ redirect to HTTPS.
    step above needs working `sudo`.
 2. **`LINK_HOSTS` / `WEB_APP_URL` / `INVITE_LINK_BASE_URL`** currently reference
    `aimess.me` and `aimess.com`, which are not part of this deployment. Confirm
-   ownership, or point them at `website.ai5dev.tech` (the templates default to
+   ownership, or point them at `ai5dev.tech` (the templates default to
    the latter).
 3. **Two DNS records to create** — `livekit.ai5dev.tech` (grey-cloud, required)
    and `minio-console.ai5dev.tech` (optional). Repurpose two of the four spare
