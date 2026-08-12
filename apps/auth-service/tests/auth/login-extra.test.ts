@@ -4,9 +4,10 @@
  *   - password-not-set guard (social-only account)
  *   - rememberMe + fcmTokens pass-through and isProfileCompleted/role in the body
  *   - mass-assignment: privileged fields in the body are ignored
- *   - NOTE: /login is wired WITHOUT validateBody (loginSchema is commented out in
- *     auth.routes.ts), so a missing `account` reaches the service and throws,
- *     surfacing as a 500 rather than a 400 — asserted here as real behaviour.
+ *   - AUDIT F1: /login is wired WITH validateBody(loginSchema) again. It was
+ *     commented out, so a missing `account` reached the service and threw (500
+ *     instead of 400) and neither field was type-checked. Login uses a laxer
+ *     password rule than registration on purpose — see the schema.
  */
 jest.mock("../../src/repositories/auth.repository.js", () => ({
   authRepository: {
@@ -167,13 +168,42 @@ describe("POST /api/auth/login (extra branches)", () => {
     expect(repo.recordSuccessfulLogin).toHaveBeenCalledWith("user-1");
   });
 
-  it("does NOT 400 on a missing account because /login skips validateBody (service throws → 500)", async () => {
+  // AUDIT F1 — `validateBody(loginSchema)` was commented out of this route, so a
+  // missing `account` threw inside the service and surfaced as a 500 rather than
+  // a 400, and neither `account` nor `password` was ever type-checked: an
+  // object `account` reached the repository and a non-string `password` reached
+  // bcrypt. The validator is back on the route.
+  it("400s on a missing account instead of throwing a 500 out of the service", async () => {
     const res = await request(app)
       .post("/api/auth/login")
       .send({ password: PASSWORD });
 
-    // Documenting actual behaviour: no route-level Zod guard on /login.
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
+  });
+
+  it.each([
+    ["object account", { account: { $ne: null }, password: PASSWORD }],
+    ["non-string password", { account: "johndoe", password: 12345678 }],
+    ["array account", { account: ["johndoe"], password: PASSWORD }],
+  ])("400s on a %s — it never reaches the repo or bcrypt", async (_l, body) => {
+    const res = await request(app).post("/api/auth/login").send(body);
+
+    expect(res.status).toBe(400);
+    expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
+    expect(repo.findByEmailForLogin).not.toHaveBeenCalled();
+  });
+
+  // Login must NOT apply the password CREATION policy (min 8). An account made
+  // before that rule would otherwise be unable to log in at all — a validation
+  // error instead of a credential check.
+  it("does not reject a short password at the schema — bcrypt decides", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: "short" });
+
+    expect(res.status).not.toBe(400);
   });
 });

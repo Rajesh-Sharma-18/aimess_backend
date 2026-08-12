@@ -54,9 +54,18 @@ export const loginIdentifierSchema = z
     { message: "Please enter a valid account name or email address" }
   );
 
+/**
+ * Login deliberately does NOT reuse `passwordSchema`. That schema is the
+ * CREATION policy (min 8); applying it here would lock out any account created
+ * before the rule with a shorter password — they would get a validation error
+ * instead of a login. This only has to keep non-strings and absurd lengths away
+ * from the repository and bcrypt; whether the value is correct is bcrypt's job.
+ */
+const loginPasswordSchema = z.string().min(1).max(128);
+
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
-  password: passwordSchema,
+  password: loginPasswordSchema,
   fcmTokens: fcmTokensSchema.optional().default([]),
   rememberMe: z.boolean().optional().default(false),
 });

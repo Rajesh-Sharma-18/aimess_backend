@@ -28,6 +28,10 @@ process.env.RABBITMQ_URL = "amqp://localhost:5672";
 // before importing the app (see tests/account/account-deletion-rate-limit.test.ts).
 process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = "100";
 process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = "100";
+// sensitiveAuthRateLimiter is per-IP and now mounted on login/register/social/
+// forgot-password — every spec in this process shares one IP, so the production
+// ceiling of 20 would 429 partway through the auth suites.
+process.env.SENSITIVE_AUTH_RATE_LIMIT_MAX = "10000";
 
 // Keep OTP deterministic if any code path reaches it under test.
 process.env.OTP_DEV_FIXED_CODE = "123456";

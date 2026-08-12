@@ -146,18 +146,52 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
   });
 
-  it("200: GROUP_CHAT_ATTACHMENT download with valid prefix", async () => {
+  // AUDIT-112 — with no registry row there is no resourceId, and the object key
+  // (`{prefix}/{ownerId}/{fileId}.{ext}`) says nothing about the group, so
+  // membership cannot be checked. The only relationship the key can prove is
+  // "you uploaded this" — the uploader is allowed, nobody else is.
+  it("200: GROUP_CHAT_ATTACHMENT download by the UPLOADER (no registry row)", async () => {
     const res = await request(app)
       .post("/api/v1/media/download-url")
       .set(auth())
       .send({
-        objectKey: "group-chat-uploads/alice/video.mp4",
+        objectKey: `group-chat-uploads/${TEST_USER_ID}/video.mp4`,
         category: "GROUP_CHAT_ATTACHMENT",
       });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
+  });
+
+  // AUDIT-112 — this used to be a 200. The check asserted only that the key
+  // started with the category prefix, a condition EVERY key in the category
+  // satisfies, so any authenticated caller who learned or guessed a key got a
+  // presigned URL for a private group's or community's attachment.
+  it("403: GROUP_CHAT_ATTACHMENT download by a NON-uploader with no registry row", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/download-url")
+      .set(auth())
+      .send({
+        objectKey: "group-chat-uploads/someone-else/video.mp4",
+        category: "GROUP_CHAT_ATTACHMENT",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("403: COMMUNITY_CHAT_ATTACHMENT download by a NON-uploader with no registry row", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/download-url")
+      .set(auth())
+      .send({
+        objectKey: "community-chat-uploads/someone-else/img.png",
+        category: "COMMUNITY_CHAT_ATTACHMENT",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
   });
 
   it("403: GROUP_CHAT_ATTACHMENT declared but key is another user's chat-uploads key (IDOR)", async () => {
