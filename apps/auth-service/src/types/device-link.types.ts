@@ -51,6 +51,34 @@ export type InitiateDeviceLinkResult = {
   expiresAt: string;
 };
 
+/** Exactly the payload `auth:qr:success` carries — the browser's new session. */
+export type QrLinkSuccessPayload = {
+  linkToken: string;
+  accessToken: string;
+  refreshToken: string;
+  deviceId: string;
+  user: { userId: string; role: string };
+};
+
+/**
+ * Status of a QR session as reported by the pull endpoint. `SUCCESS` means the
+ * one-shot success envelope was collected by THIS call (and `session` carries
+ * the tokens); `CONSUMED` means the login happened but its envelope was already
+ * handed to an earlier collector (socket relay or a prior poll).
+ */
+export type DeviceLinkResultStatus =
+  | "SUCCESS"
+  | "PENDING"
+  | "EXPIRED"
+  | "CANCELLED"
+  | "CONSUMED"
+  | "NOT_FOUND";
+
+export type DeviceLinkResultResponse = {
+  status: DeviceLinkResultStatus;
+  session: QrLinkSuccessPayload | null;
+};
+
 /** Result of the merged scan+login call — the browser's new session, delivered once via `auth:qr:success`. */
 export type LoginDeviceLinkResult = {
   linkedAt: string;

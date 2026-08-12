@@ -8,6 +8,7 @@ const setMock = jest.fn(async () => "OK");
 const getMock = jest.fn(async () => null);
 const delMock = jest.fn(async () => 1);
 const evalMock = jest.fn(async () => "OK");
+const scanMock = jest.fn(async () => ["0", [] as string[]]);
 const multiMock = jest.fn(() => ({
   set: jest.fn().mockReturnThis(),
   exec: jest.fn(async () => ["OK", "OK"]),
@@ -21,11 +22,15 @@ jest.mock("../../src/config/redis.js", () => ({
     del: delMock,
     eval: evalMock,
     multi: multiMock,
+    scan: scanMock,
   },
   connectAuthRedis: jest.fn(async () => undefined),
 }));
 
-import { createLinkSession } from "../../src/lib/device-link-store.js";
+import {
+  createLinkSession,
+  scanLiveLinkTokens,
+} from "../../src/lib/device-link-store.js";
 
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -91,5 +96,27 @@ describe("createLinkSession", () => {
     );
 
     expect(multiMock).toHaveBeenCalled();
+  });
+});
+
+describe("scanLiveLinkTokens", () => {
+  beforeEach(() => scanMock.mockReset());
+
+  // Sidecar keys share the `aimess:devlink:` prefix but hold no session record.
+  // Feeding one to the sweeper's Lua makes it compare a nil expiresAt and throw,
+  // which aborts the whole tick — so nothing expires while a success mailbox is
+  // alive. Only bare `aimess:devlink:<uuid>` keys may come back from here.
+  it("returns only session records, skipping the fingerprint and result sidecars", async () => {
+    scanMock.mockResolvedValueOnce([
+      "0",
+      [
+        "aimess:devlink:token-a",
+        "aimess:devlink:fp:client:abc",
+        "aimess:devlink:result:token-a",
+        "aimess:devlink:token-b",
+      ],
+    ]);
+
+    await expect(scanLiveLinkTokens()).resolves.toEqual(["token-a", "token-b"]);
   });
 });
