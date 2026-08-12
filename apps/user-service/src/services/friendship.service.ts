@@ -673,6 +673,20 @@ export const friendshipService = {
     return updated;
   },
 
+  /**
+   * Withdraw a pending request so that it ceases to exist for BOTH parties,
+   * quietly — no "declined" outcome is recorded or announced, and the terminal
+   * `friend.cancelled` event removes each side's notification row instead of
+   * replacing it with a resolved card (see `DELETE_ON_ARRIVAL` in
+   * chat-service's `lib/notification-identity.ts`).
+   *
+   * EITHER party may call it. The requester withdrawing is "Cancel Request";
+   * the addressee withdrawing is "Delete", which must leave the requester
+   * looking at a plain "Add Friend" again rather than a stuck "Cancel Request".
+   * That is the whole difference from {@link rejectRequest}, which records
+   * REJECTED and tells the requester they were declined — still reachable, just
+   * no longer what the Delete button does.
+   */
   async cancelRequest(
     friendshipId: string,
     userId: string
@@ -680,7 +694,8 @@ export const friendshipService = {
     const friendship = await friendshipRepository.findById(friendshipId);
     if (
       !friendship ||
-      friendship.requesterId !== userId ||
+      (friendship.requesterId !== userId &&
+        friendship.addresseeId !== userId) ||
       friendship.status !== "PENDING"
     ) {
       throw new NotFoundError("FRIEND_REQUEST_NOT_FOUND");

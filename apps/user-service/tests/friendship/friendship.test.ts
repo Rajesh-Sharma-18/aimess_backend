@@ -57,6 +57,9 @@ jest.mock("../../src/messaging/publish-friendship.js", () => ({
 jest.mock("../../src/lib/friend-socket.js", () => ({
   emitFriendEventSafe: jest.fn(),
   emitFriendEventToPairSafe: jest.fn(),
+  // Used by blockUser; without it every block/unblock case 500s on
+  // "emitFriendSelfEventSafe is not a function" rather than on its own logic.
+  emitFriendSelfEventSafe: jest.fn(),
 }));
 
 import request from "supertest";
@@ -552,9 +555,48 @@ describe("DELETE /api/v1/users/friends/requests/:id (cancel)", () => {
     expect(fRepo.cancel).toHaveBeenCalledWith(FRIENDSHIP_ID);
   });
 
-  it("returns 404 when cancelling a request I did not send (IDOR guard)", async () => {
+  // The ADDRESSEE's "Delete" withdraws the request through this same endpoint —
+  // deliberately a cancel, not a reject, so the requester drops back to "Add
+  // Friend" instead of being stuck on "Cancel Request" (and neither side is
+  // left holding a "declined" card).
+  it("lets the addressee withdraw an incoming pending request → 200", async () => {
     fRepo.findById.mockResolvedValue(
       friendshipRow({ requesterId: OTHER, addresseeId: ME, status: "PENDING" })
+    );
+    fRepo.cancel.mockResolvedValue(
+      friendshipRow({ status: "CANCELLED", cancelledAt: new Date() })
+    );
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(fRepo.cancel).toHaveBeenCalledWith(FRIENDSHIP_ID);
+    // Withdrawal, never a decline — nothing may be recorded as REJECTED.
+    expect(fRepo.reject).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a user who is neither party (IDOR guard)", async () => {
+    fRepo.findById.mockResolvedValue(
+      friendshipRow({
+        requesterId: OTHER,
+        addresseeId: "55555555-5555-4555-8555-555555555555",
+        status: "PENDING",
+      })
+    );
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/requests/${FRIENDSHIP_ID}`)
+      .set(auth());
+
+    expect(res.status).toBe(404);
+    expect(fRepo.cancel).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the request is no longer PENDING", async () => {
+    fRepo.findById.mockResolvedValue(
+      friendshipRow({ requesterId: OTHER, addresseeId: ME, status: "ACCEPTED" })
     );
 
     const res = await request(app)
