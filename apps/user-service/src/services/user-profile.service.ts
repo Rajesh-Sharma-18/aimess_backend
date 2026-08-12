@@ -121,6 +121,7 @@ type ProfileAuthSummary = {
   account: string | null;
   email: string | null;
   emailVerified: boolean;
+  hasPassword: boolean;
   isGoogleLogin: boolean | null;
   isAppleLogin: boolean | null;
   primaryAccount: SignInProvider | null;
@@ -153,6 +154,9 @@ async function toProfileData(
       authSummary.account ?? (profile as { account?: string }).account ?? null,
     email: authSummary.email,
     emailVerified: authSummary.emailVerified,
+    // Whether the delete-account / change-password flows will demand a password.
+    // Clients MUST branch on this, never on `primaryAccount` — see the field doc.
+    hasPassword: authSummary.hasPassword,
     // Prefer live linked-account status from auth-service; fall back to the
     // synced-at-registration DB flag when auth-service is unavailable.
     isGoogleLogin: authSummary.isGoogleLogin ?? profile.isGoogleLogin,
@@ -211,6 +215,10 @@ async function resolveProfileAuthSummary(
     email: account?.email ?? null,
     // Auth-service down → treat as unverified rather than claiming verified.
     emailVerified: account?.emailVerified ?? false,
+    // Auth-service down → assume a password IS required. The delete/change
+    // flows will reject anyway, and prompting for one costs the user a
+    // keystroke; suppressing the prompt makes the flow unusable.
+    hasPassword: account?.hasPassword ?? true,
     isGoogleLogin: isProviderConnected(account, "GOOGLE"),
     isAppleLogin: isProviderConnected(account, "APPLE"),
     primaryAccount: account?.primaryAccount ?? null,

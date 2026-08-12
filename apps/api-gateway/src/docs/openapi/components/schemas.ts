@@ -4429,6 +4429,12 @@ export const openApiSchemas = {
         description:
           "True once `email` has been proven by OTP (link-email / change-email). False when unset, pending verification, or auth-service is unavailable.",
       },
+      hasPassword: {
+        type: "boolean",
+        description:
+          "True when the account has a password in auth-service — i.e. whether `DELETE /auth/account` and the change-password flow will require one. **This is the only correct field to gate a password prompt on.** Do NOT use `primaryAccount`: that is the first provider ever LINKED and is `null` for any account created with account + password that never linked an email or social login, so branching on it hides the password field from exactly the users who must supply one. Defaults to `true` when auth-service is unavailable.",
+        example: true,
+      },
       isGoogleLogin: {
         type: "boolean",
         description:
@@ -4444,7 +4450,7 @@ export const openApiSchemas = {
         enum: ["EMAIL", "GOOGLE", "APPLE"],
         nullable: true,
         description:
-          "The first sign-in method ever linked to the account (auth-service). Always present; null when unset, missing on older records, or auth-service is unavailable.",
+          "The first sign-in method ever linked to the account (auth-service). Always present; null when unset, missing on older records, or auth-service is unavailable. NOT a substitute for `hasPassword` — see that field.",
         example: "GOOGLE",
       },
       googleEmail: {

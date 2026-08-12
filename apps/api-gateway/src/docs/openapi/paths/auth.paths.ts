@@ -2094,11 +2094,15 @@ export const authPaths = {
         "**Business rules:**\n" +
         "- 30-day grace window: the account is not immediately destroyed; a future reactivation flow can restore it.\n" +
         "- All FCM device tokens are unregistered.\n" +
-        "- Every linked Google/Apple account row is removed in the same transaction, so the provider `sub` is free to link to another account. AIMess stores no provider access/refresh tokens (only `sub`/email/displayName), so there is nothing to revoke with the provider.\n" +
+        "- **Soft delete only — no row is ever removed.** The AuthUser is marked, its sessions and refresh tokens are revoked in place, linked Google/Apple rows are KEPT, and the profile is soft-deleted in user-service. The whole operation is reversible for the length of the grace period. Nothing in the codebase hard-purges the account: `scheduledDeletionAt` is recorded but no job currently reads it.\n" +
+        "- Linked Google/Apple rows are retained, so social sign-in still cannot get in (social-auth.service rejects on `deletedAt`/`status`), but that provider `sub` stays reserved by this account and cannot be linked to a different account while the deletion stands. AIMess stores no provider access/refresh tokens (only `sub`/email/displayName), so there is nothing to revoke with the provider.\n" +
         "- Every still-connected socket is force-disconnected immediately (same `session-revoke` signal as 'Logout Device'); other devices do not wait for token expiry.\n" +
-        "- Rate limited to 5 attempts/hour per user (`429`).\n" +
-        "- `400 AUTH_PASSWORD_REQUIRED` — if the account has a password hash but the request body omits `password`.\n" +
-        "- `401 AUTH_PASSWORD_INCORRECT` — wrong password supplied.",
+        "- Deletion is **silent**: no notification of any kind is created, pushed, or emitted — not for the deleting user and not for anyone else. Devices are dropped without an `auth:session_terminated` notice or a `session:list_updated` event. The 200 response is the ONLY feedback; show a local toast and redirect, do not wait on the notification stream.\n" +
+        "- **No per-user rate limit.** The 5-attempts/hour limiter was removed on 2026-08-12 because it locked users out of their own delete dialog; this endpoint no longer returns `429` and emits no `RateLimit` headers. In production the gateway's global per-IP limiter is the only throttle in front of it (and that one is skipped when `NODE_ENV=development`).\n" +
+        "- `400 AUTH_PASSWORD_REQUIRED` — the account has a password hash but `password` is absent OR an empty string. Both cases return the identical localized message, so the client can render one in-modal error.\n" +
+        "- `400 AUTH_PASSWORD_INCORRECT` — wrong password supplied. Deliberately **400, never 401**: the caller's session is valid, only the password they typed into the confirmation dialog was wrong. A 401 makes a standard refresh-on-401 interceptor treat the session as expired, silently replay this DELETE, and sign the user out on the second failure — a mistyped password must surface an error, not a logout. `401` on this endpoint means only what it always means: the access token itself is missing, expired, or revoked.\n" +
+        "- Status summary: **missing password** `400`, **incorrect password** `400`, **bad/absent access token** `401`. The response body carries only `{ success, message }` (already localized via `x-lang`) and no error `code`; distinguish the two 400s by `message` if you must, though both should render in the same place in the dialog.\n" +
+        "- The client should keep its confirmation modal OPEN on `400` and render `message` inside it; only `200` should dismiss the modal and redirect.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -2110,9 +2114,8 @@ export const authPaths = {
               properties: {
                 password: {
                   type: "string",
-                  minLength: 1,
                   description:
-                    "Current account password. Required (400 AUTH_PASSWORD_REQUIRED) when the account has a password; an incorrect value returns 401 AUTH_PASSWORD_INCORRECT. Omit for social-only accounts (no passwordHash).",
+                    "Current account password. Required (400 AUTH_PASSWORD_REQUIRED) when the account has a password; an incorrect value returns 400 AUTH_PASSWORD_INCORRECT (400, not 401 — see the endpoint description). Omit for social-only accounts (no passwordHash). No `minLength` on purpose — an empty string is accepted by the schema and answered by the same 400 as an absent field, rather than a differently-shaped validation error.",
                 },
               },
             },
@@ -2159,37 +2162,39 @@ export const authPaths = {
           },
         },
         "400": {
-          description: "Password required for an account that has one",
+          description:
+            "Password missing, or password incorrect. Both keep the session alive — render the message in the confirmation dialog and leave it open.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-              example: {
-                success: false,
-                message: "Password is required to delete this account",
-                code: "AUTH_PASSWORD_REQUIRED",
+              examples: {
+                passwordRequired: {
+                  summary:
+                    "Password omitted (or empty) on an account that has one",
+                  value: {
+                    success: false,
+                    message: "Password is required to confirm this action.",
+                  },
+                },
+                wrongPassword: {
+                  summary:
+                    "Wrong password — NOT a 401, so no token refresh/logout",
+                  value: {
+                    success: false,
+                    message: "The password you entered is incorrect.",
+                  },
+                },
               },
             },
           },
         },
         "401": {
-          description: "Missing/invalid access token, or incorrect password",
+          description:
+            "Missing, expired or revoked access token. NEVER returned for a wrong password — see the 400 above.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-              examples: {
-                noToken: {
-                  summary: "Missing token",
-                  value: { success: false, message: "Unauthorized" },
-                },
-                wrongPassword: {
-                  summary: "Wrong password",
-                  value: {
-                    success: false,
-                    message: "Incorrect password",
-                    code: "AUTH_PASSWORD_INCORRECT",
-                  },
-                },
-              },
+              example: { success: false, message: "Unauthorized" },
             },
           },
         },

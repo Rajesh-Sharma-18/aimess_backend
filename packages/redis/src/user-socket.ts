@@ -171,16 +171,19 @@ export async function takeQrLinkResult(
  * `socket.data.sessionId` (set by the shared auth middleware) — the gateway
  * disconnects only the socket(s) matching `sessionId`.
  *
- * `reason` separates a user's OWN sign-out on this device (`"logout"`) from a
- * revoke it did not ask for (`"terminated"` — another device, admin, expiry).
- * Both force-disconnect; only `"terminated"` warrants the client-facing
- * `auth:session_terminated` notice (see api-gateway `session-revoke.ts`).
+ * `reason` separates a user's OWN sign-out on this device (`"logout"`) and its
+ * own account deletion (`"account_deleted"`) from a revoke it did not ask for
+ * (`"terminated"` — another device, admin, expiry). All three force-disconnect;
+ * only `"terminated"` warrants the client-facing `auth:session_terminated`
+ * notice (see api-gateway `session-revoke.ts`). Account deletion is required to
+ * be completely silent — the user asked to leave, so no device of theirs may be
+ * told anything about it.
  */
 export function publishSessionRevokedEvent(
   redis: Redis | Cluster,
   userId: string,
   sessionId: string,
-  reason: "terminated" | "logout" = "terminated"
+  reason: "terminated" | "logout" | "account_deleted" = "terminated"
 ): Promise<number> {
   return redis.publish(
     `session-revoke:${userId}`,
