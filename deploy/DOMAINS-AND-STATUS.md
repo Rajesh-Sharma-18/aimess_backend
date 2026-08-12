@@ -33,40 +33,40 @@ HAProxy.** `website.ai5dev.tech` was retired, not redirected — it now returns
 
 ### Not working
 
-| Problem                                       | Impact                                                                                                                                                                                                           | Needs                                                                                                                                       |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Website bundle is stale** — rebuild fails   | The site serves fine, but `NEXT_PUBLIC_*` is inlined at build time, so the running bundle still contains `website.ai5dev.tech`. Apple Sign-In redirects to a dead host and client-built deep links point nowhere | Build is blocked: `accountDeletion` exists only in `en.json`, so `Record<Locale, Dict>` fails to typecheck. Add it to `th.json` + `vi.json` |
-| ~~notifications-service is down~~             | **Fixed 2026-08-12.** Running with zero errors                                                                                                                                                                   | done                                                                                                                                        |
-| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                                                                | Grey-cloud the record                                                                                                                       |
-| **`notification.ai5dev.tech` is proxied**     | **TURN (TLS 5349) is unreachable** — Cloudflare does not listen on that port. Calls fail _intermittently_: whoever's network blocks direct UDP has no fallback and times out                                     | Grey-cloud the record                                                                                                                       |
-| ~~SRS hooks point at the other environment~~  | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                                                              | done — `deploy/scripts/07-srs-add-hook.md`                                                                                                  |
-| `APPLE_CLIENT_IDS` is a placeholder           | Apple Sign-In rejects tokens                                                                                                                                                                                     | Apple Service ID                                                                                                                            |
-| Website social/Giphy/Maps keys blank          | Those buttons and features inert                                                                                                                                                                                 | Keys + one website rebuild                                                                                                                  |
-| **No database backups**                       | Total loss if a disk fails                                                                                                                                                                                       | Scheduling — see OPERATIONS.md §13                                                                                                          |
+| Problem                                       | Impact                                                                                                                                                                                                                                | Needs                                                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Website bundle is stale** — rebuild fails   | The site serves fine, but `NEXT_PUBLIC_*` is inlined at build time, so the running bundle still contains `website.ai5dev.tech`. Apple Sign-In redirects to a dead host and client-built deep links point nowhere                      | Build is blocked: `accountDeletion` exists only in `en.json`, so `Record<Locale, Dict>` fails to typecheck. Add it to `th.json` + `vi.json` |
+| ~~notifications-service is down~~             | **Fixed 2026-08-12.** Running with zero errors                                                                                                                                                                                        | done                                                                                                                                        |
+| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                                                                                     | Grey-cloud the record                                                                                                                       |
+| ~~`notification.ai5dev.tech` is proxied~~     | **Fixed 2026-08-12.** LiveKit moved to `media.ai5stream.tech`, which is DNS-only and resolves straight to Dev 01 — so call media and TURN/TLS 5349 now reach the host. The old name stays routed for clients holding the previous URL | done                                                                                                                                        |
+| ~~SRS hooks point at the other environment~~  | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                                                                                   | done — `deploy/scripts/07-srs-add-hook.md`                                                                                                  |
+| `APPLE_CLIENT_IDS` is a placeholder           | Apple Sign-In rejects tokens                                                                                                                                                                                                          | Apple Service ID                                                                                                                            |
+| Website social/Giphy/Maps keys blank          | Those buttons and features inert                                                                                                                                                                                                      | Keys + one website rebuild                                                                                                                  |
+| **No database backups**                       | Total loss if a disk fails                                                                                                                                                                                                            | Scheduling — see OPERATIONS.md §13                                                                                                          |
 
 ---
 
 ## 2. Domain map
 
-| Domain                     | Origin server            | Container          | Port      | Cloudflare                 | Live      |
-| -------------------------- | ------------------------ | ------------------ | --------- | -------------------------- | --------- |
-| `api.ai5dev.tech`          | Dev 02 · `76.13.216.171` | api-gateway        | 3000      | proxied ✔                  | **200**   |
-| `admin.ai5dev.tech`        | Dev 02 · `76.13.216.171` | admin-panel        | 3011      | proxied ✔                  | **200**   |
-| `backoffice.ai5dev.tech`   | Dev 02 · `76.13.216.171` | backoffice-service | 3010      | proxied ✔                  | **200**   |
-| `ai5dev.tech`              | Dev 01 · `76.13.216.164` | website            | 3000      | proxied ✔                  | **200**   |
-| `www.ai5dev.tech`          | Dev 01 · `76.13.216.164` | 301 → apex         | —         | proxied ✔                  | **301**   |
-| ~~`website.ai5dev.tech`~~  | —                        | **retired**        | —         | DNS record still exists    | **526**   |
-| `minio.ai5dev.tech`        | Dev 01 · `76.13.216.164` | minio              | 9000      | **proxied ✘ must be grey** | **200**   |
-| `notification.ai5dev.tech` | Dev 01 · `76.13.216.164` | livekit            | 7880      | **proxied ✘ must be grey** | **200**   |
-| `auth.ai5dev.tech`         | Dev 01 · `76.13.216.164` | minio console      | 9001      | proxied ✔                  | **200**   |
-| `rabbitmq.ai5dev.tech`     | Dev 01 · `76.13.216.164` | rabbitmq UI        | 15672     | proxied ✔                  | **200**   |
-| `ai5stream.tech`           | Stream · `72.62.69.126`  | SRS                | 1935/8080 | DNS-only                   | **200**   |
-| `community.ai5dev.tech`    | —                        | —                  | —         | —                          | **spare** |
-| `backend.ai5dev.tech`      | —                        | —                  | —         | —                          | **spare** |
+| Domain                    | Origin server            | Container          | Port      | Cloudflare                 | Live      |
+| ------------------------- | ------------------------ | ------------------ | --------- | -------------------------- | --------- |
+| `api.ai5dev.tech`         | Dev 02 · `76.13.216.171` | api-gateway        | 3000      | proxied ✔                  | **200**   |
+| `admin.ai5dev.tech`       | Dev 02 · `76.13.216.171` | admin-panel        | 3011      | proxied ✔                  | **200**   |
+| `backoffice.ai5dev.tech`  | Dev 02 · `76.13.216.171` | backoffice-service | 3010      | proxied ✔                  | **200**   |
+| `ai5dev.tech`             | Dev 01 · `76.13.216.164` | website            | 3000      | proxied ✔                  | **200**   |
+| `www.ai5dev.tech`         | Dev 01 · `76.13.216.164` | 301 → apex         | —         | proxied ✔                  | **301**   |
+| ~~`website.ai5dev.tech`~~ | —                        | **retired**        | —         | DNS record still exists    | **526**   |
+| `minio.ai5dev.tech`       | Dev 01 · `76.13.216.164` | minio              | 9000      | **proxied ✘ must be grey** | **200**   |
+| `media.ai5stream.tech`    | Dev 01 · `76.13.216.164` | livekit            | 7880      | **DNS-only ✔ (correct)**   | **200**   |
+| `auth.ai5dev.tech`        | Dev 01 · `76.13.216.164` | minio console      | 9001      | proxied ✔                  | **200**   |
+| `rabbitmq.ai5dev.tech`    | Dev 01 · `76.13.216.164` | rabbitmq UI        | 15672     | proxied ✔                  | **200**   |
+| `ai5stream.tech`          | Stream · `72.62.69.126`  | SRS                | 1935/8080 | DNS-only                   | **200**   |
+| `community.ai5dev.tech`   | —                        | —                  | —         | —                          | **spare** |
+| `backend.ai5dev.tech`     | —                        | —                  | —         | —                          | **spare** |
 
 ### Two subdomains do not do what their name says
 
-- **`notification.ai5dev.tech` serves LiveKit**, not notification-service.
+- **`auth.ai5dev.tech` serves the MinIO console**, not auth-service. LiveKit
 - **`auth.ai5dev.tech` serves the MinIO console**, not auth-service.
 
 Both were spare: auth-service and notifications-service are internal-only and
@@ -78,10 +78,10 @@ the vhost files so nobody is misled later.
 
 Both currently resolve to `104.21.93.157 / 172.67.211.185` — proxied.
 
-| Record                     | Set to                         | Because                                                                                                                                                                                                                                                                |
-| -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `minio.ai5dev.tech`        | **DNS-only → `76.13.216.164`** | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO                                                                                         |
-| `notification.ai5dev.tech` | **DNS-only → `76.13.216.164`** | LiveKit media is UDP 50000-50100 and TURN/TLS 5349, both direct to the host. Cloudflare carries neither, so the TURN relay is unreachable while proxied. Direct-UDP clients still connect — which is why calls fail only _sometimes_, and look exactly like an app bug |
+| Record                         | Set to                                        | Because                                                                                                                                                                                                                                                                |
+| ------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `minio.ai5dev.tech`            | **DNS-only → `76.13.216.164`**                | Cloudflare's free plan caps request bodies at 100 MB. `CHAT_VIDEO_MAX_BYTES` is exactly `104857600`. Proxied video uploads fail with a Cloudflare 413 that never reaches MinIO                                                                                         |
+| ~~`notification.ai5dev.tech`~~ | **done — replaced by `media.ai5stream.tech`** | LiveKit media is UDP 50000-50100 and TURN/TLS 5349, both direct to the host. Cloudflare carries neither, so the TURN relay is unreachable while proxied. Direct-UDP clients still connect — which is why calls fail only _sometimes_, and look exactly like an app bug |
 
 Everything else can stay proxied.
 
@@ -246,7 +246,7 @@ for u in https://api.ai5dev.tech/health \
          https://ai5dev.tech/ \
          https://admin.ai5dev.tech/ \
          https://minio.ai5dev.tech/minio/health/live \
-         https://notification.ai5dev.tech/ ; do
+         https://media.ai5stream.tech/ ; do
   printf '%-58s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$u")"
 done
 ```

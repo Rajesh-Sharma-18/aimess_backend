@@ -81,7 +81,7 @@ public interfaces on every request.
 | `ai5dev.tech`                                 | Dev 01    | proxied        | Consumer website                            |
 | `minio.ai5dev.tech`                           | Dev 01    | **grey-cloud** | See the 100 MB warning below                |
 | `rabbitmq.ai5dev.tech`                        | Dev 01    | proxied        | Management UI — IP-restrict it              |
-| `notification.ai5dev.tech`                    | Dev 01    | **grey-cloud** | **Reused for LiveKit signaling**            |
+| `media.ai5stream.tech`                        | Dev 01    | **grey-cloud** | **Reused for LiveKit signaling**            |
 | `auth.ai5dev.tech`                            | Dev 01    | proxied        | **Reused for the MinIO console** (optional) |
 | `community.ai5dev.tech` `backend.ai5dev.tech` | —         | —              | Still spare                                 |
 
@@ -95,7 +95,7 @@ The names no longer describe what they serve. That is recorded in
 `deploy/haproxy/dev01.cfg` (and the superseded `deploy/nginx/sites/*`) so the
 next person is not misled.
 
-**Only DNS change required:** point `notification.ai5dev.tech` at
+**Only DNS change required:** point `media.ai5stream.tech` at
 `76.13.216.164` as **grey-cloud (DNS-only)**.
 
 ### Two Cloudflare traps
@@ -393,7 +393,7 @@ redirect to HTTPS.
    `NEXT_PUBLIC_FIREBASE_*` build values must match it or background push breaks
    while foreground notifications keep working.
 6. **TURN is enabled** in `livekit/config.yaml.template`, reusing the existing
-   `notification.ai5dev.tech` certificate on port 5349. It is inert until that
+   `media.ai5stream.tech` certificate on port 5349. It is inert until that
    record is grey-clouded: TURN speaks TLS on 5349, and a Cloudflare edge is not
    listening there. Until then, clients behind UDP-blocking networks keep
    joining calls and timing out with no media.

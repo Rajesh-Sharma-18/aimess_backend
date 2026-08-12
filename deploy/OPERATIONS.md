@@ -328,7 +328,7 @@ inbound from `eth0`, so new ports are closed by default; on Dev 01 only
 | `ENOENT … .proto`                          | proto files missing from the image        | Dockerfile must copy them to `/packages/grpc-contracts/proto`       |
 | Socket.IO 404                              | wrong path                                | it is `/socket.io/` on api-gateway, **not** `/z-socket/`            |
 | Upload 413 at ~100 MB                      | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record                                              |
-| Call connects, no audio/video              | `notification.ai5dev.tech` is proxied     | grey-cloud it — UDP cannot proxy                                    |
+| Call connects, no audio/video              | `media.ai5stream.tech` is proxied         | grey-cloud it — UDP cannot proxy                                    |
 
 Full reset of one service:
 
