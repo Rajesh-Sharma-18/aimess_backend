@@ -34,7 +34,7 @@ case "$APP" in
     ENV_FILE=.env.dev01
     SERVICE=website
     CONTAINER=aimess-website
-    URL=https://website.ai5dev.tech
+    URL=https://ai5dev.tech
     EXPECT_HOST="76.13.216.164"
     ;;
   admin|admin-panel)
