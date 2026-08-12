@@ -211,20 +211,36 @@ export const authRepository = {
     });
   },
 
-  revokeSessionsAfterPasswordChange(userId: string) {
+  /**
+   * `exceptSessionId` keeps the device that performed the change signed in —
+   * a signed-in password change must not log the user out of the very screen
+   * they are on. Password RESET passes nothing (there is no trusted session to
+   * spare), so it still revokes everything.
+   */
+  revokeSessionsAfterPasswordChange(userId: string, exceptSessionId?: string) {
     const now = new Date();
 
     return prisma.$transaction(async (tx) => {
       await tx.session.updateMany({
-        where: { userId, revokedAt: null },
+        where: {
+          userId,
+          revokedAt: null,
+          ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}),
+        },
         data: {
           revokedAt: now,
           revokedReason: SessionRevokeReason.PASSWORD_CHANGED,
         },
       });
 
+      // The surviving session's refresh token has to survive with it, or the
+      // kept device dies at the next silent refresh instead of staying signed in.
       await tx.refreshToken.updateMany({
-        where: { userId, revokedAt: null },
+        where: {
+          userId,
+          revokedAt: null,
+          ...(exceptSessionId ? { sessionId: { not: exceptSessionId } } : {}),
+        },
         data: { revokedAt: now },
       });
     });
