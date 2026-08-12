@@ -16,14 +16,24 @@ import { getCommunityReconcileClient } from "../../src/grpc/community.client.js"
  *  here so the test actually exercises what it claims to, rather than
  *  relying on the global mock's ADMIN default (which happens to satisfy
  *  ["admin","moderator"] regardless of what this file's RoomMember mock says). */
-function mockLiveRole(role: "ADMIN" | "MODERATOR" | "MEMBER" | ""): void {
-  (getCommunityReconcileClient as jest.Mock).mockReturnValueOnce({
-    checkCommunityMembership: jest.fn(async () => ({
-      isMember: role !== "",
-      isBanned: false,
-      status: role !== "" ? "ACTIVE" : "",
-      role,
-    })),
+type LiveRole = "ADMIN" | "MODERATOR" | "MEMBER" | "";
+
+/** @param senderRole the MESSAGE AUTHOR's live role — `deleteForAll` looks it up too, so a
+ *  MODERATOR cannot delete an ADMIN's (or a peer moderator's) message. Defaults to MEMBER;
+ *  without it the global mock's ADMIN default would deny every moderator delete. */
+function mockLiveRole(role: LiveRole, senderRole: LiveRole = "MEMBER"): void {
+  (getCommunityReconcileClient as jest.Mock).mockReturnValue({
+    checkCommunityMembership: jest.fn(
+      async ({ userId }: { userId: string }) => {
+        const resolved = userId === USER_ID ? role : senderRole;
+        return {
+          isMember: resolved !== "",
+          isBanned: false,
+          status: resolved !== "" ? "ACTIVE" : "",
+          role: resolved,
+        };
+      }
+    ),
   });
 }
 
@@ -31,6 +41,7 @@ const ROOM_ID = "c".repeat(24);
 const MSG_ID = "m".repeat(24);
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
+const REVISION = 42;
 
 function buildService(opts: {
   isMuted: boolean;
@@ -63,6 +74,8 @@ function buildService(opts: {
     findRoomById: jest
       .fn()
       .mockResolvedValue({ id: ROOM_ID, status: "active" }),
+    // Delete-for-everyone stamps a room revision so `/changes` replays the tombstone.
+    allocateRevision: jest.fn().mockResolvedValue(REVISION),
   };
 
   const memberRepo = {
@@ -163,6 +176,51 @@ describe("CommunityMessageService.deleteForAll mute guard", () => {
     expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID, {
       deletedType: "ADMIN_DELETE",
       deletedBy: USER_ID,
+      revision: REVISION,
+    });
+  });
+
+  it("blocks a MODERATOR from deleting an ADMIN's message (role hierarchy)", async () => {
+    const { service, messageRepo } = buildService({
+      isMuted: false,
+      mutedUntil: null,
+      role: "moderator",
+      messageSentBy: OTHER_ID,
+    });
+    mockLiveRole("MODERATOR", "ADMIN");
+    await expect(service.deleteForAll(MSG_ID, USER_ID)).rejects.toBeInstanceOf(
+      BadRequestError
+    );
+    expect(messageRepo.deleteForAll).not.toHaveBeenCalled();
+  });
+
+  it("blocks a MODERATOR from deleting a peer MODERATOR's message", async () => {
+    const { service, messageRepo } = buildService({
+      isMuted: false,
+      mutedUntil: null,
+      role: "moderator",
+      messageSentBy: OTHER_ID,
+    });
+    mockLiveRole("MODERATOR", "MODERATOR");
+    await expect(service.deleteForAll(MSG_ID, USER_ID)).rejects.toBeInstanceOf(
+      BadRequestError
+    );
+    expect(messageRepo.deleteForAll).not.toHaveBeenCalled();
+  });
+
+  it("lets an ADMIN delete a MODERATOR's message", async () => {
+    const { service, messageRepo } = buildService({
+      isMuted: false,
+      mutedUntil: null,
+      role: "admin",
+      messageSentBy: OTHER_ID,
+    });
+    mockLiveRole("ADMIN", "MODERATOR");
+    await service.deleteForAll(MSG_ID, USER_ID).catch(() => undefined);
+    expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID, {
+      deletedType: "ADMIN_DELETE",
+      deletedBy: USER_ID,
+      revision: REVISION,
     });
   });
 
@@ -190,6 +248,7 @@ describe("CommunityMessageService.deleteForAll mute guard", () => {
     expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID, {
       deletedType: "SELF_DELETE",
       deletedBy: USER_ID,
+      revision: REVISION,
     });
   });
 });

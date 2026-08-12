@@ -419,3 +419,66 @@ matters more than the members whose switches were genuinely on.
   re-enable-after-full-mute case.
 
 49 tests pass across the four mute suites; `tsc --noEmit` clean in both repos.
+
+---
+
+## 9. Issues 52 + 53 — moderator deleting an admin's message · the join toast
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+### Issue 52 — role hierarchy on delete-for-everyone (groups + communities)
+
+Both delete paths authorized on the ACTOR's role alone and never read the
+message SENDER's, so a MODERATOR could delete an ADMIN's message:
+
+- `apps/chat-service/src/services/group-message.service.ts:1179` —
+  `if (!["ADMIN", "MODERATOR"].includes(member.role)) throw …`
+- `apps/chat-service/src/services/community-message.service.ts:2439` —
+  `if (!["admin", "moderator"].includes(liveRole)) throw …`
+
+Kick/mute/ban already enforce an outrank rule
+(`group-member.service.ts:496`), and stream-service's comment delete
+(`livestream-comment.service.ts:377-407`) implements exactly the intended
+hierarchy — chat's delete was the outlier.
+
+**Fix.** One shared predicate,
+`canDeleteOthersMessage(actorRole, senderRole)` in
+`apps/chat-service/src/lib/access-guard.ts` (case-insensitive, so groups'
+UPPERCASE `RoomMember.role` and communities' lowercase live role both use it):
+
+| Actor       | May delete another's message        |
+| ----------- | ----------------------------------- |
+| OWNER/ADMIN | anyone's                            |
+| MODERATOR   | a plain MEMBER's only               |
+| MEMBER      | none (own messages only, unchanged) |
+
+- Groups resolve the sender's role from `RoomMember` (a sender who has since
+  left has no row and ranks as MEMBER, so their leftover messages stay
+  moderatable).
+- Communities resolve it from the same authoritative live lookup
+  (`getCommunityLiveRole`), and only in the moderator branch — an admin delete
+  still costs one gRPC call, not two.
+- Denial keeps the existing `CHAT_INSUFFICIENT_PERMISSIONS` code/status, so no
+  client contract changes. Sender-deletes-own and the muted-moderator
+  moderation exemption are untouched.
+
+### Issue 53 — the "You joined the community!" toast
+
+No backend change. The server already writes the joiner's own PERSONAL system
+line ("You joined the community", `community.service.ts:273`) into the
+transcript; the web client was additionally raising a success toast for the same
+event. The toast was removed client-side (see
+`aimess_website/QA_FIXES_WEBSITE.md`); the system message, `community:added`
+payload and join events are unchanged.
+
+### Tests
+
+- `tests/groups/group-message-delete-hierarchy.test.ts` (new) — moderator vs.
+  admin / peer moderator / member / departed sender, admin over moderator, plus
+  the shared predicate's case-insensitivity and fail-closed behaviour.
+- `tests/community/community-delete-mute-guard.test.ts` — three new hierarchy
+  cases; its fake room repo also gained the `allocateRevision` the service has
+  required since the zero-loss revision work (two long-standing failures in that
+  file now pass).
+
+60 tests pass across the group + community delete suites; `tsc --noEmit` clean.
