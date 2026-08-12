@@ -201,6 +201,42 @@ export class NotificationService {
   }
 
   /**
+   * Owner-scoped soft-delete of a single notification — the REST twin of the
+   * `notifications:delete` socket command, sharing the same repo transition so
+   * both paths tombstone identically (`isDeleted`, picked up by `/sync`).
+   *
+   * Deleting a row only removes it from the owner's feed. It is deliberately
+   * NOT a state transition on whatever the row refers to: dismissing a
+   * `friend.requested` card leaves the friendship PENDING, so the request can
+   * still be accepted from the peer profile or the friend-requests list.
+   *
+   * `notification:deleted` (plus the count_update alias) fans out to the
+   * user's other devices so they drop the row without a refetch. Idempotent —
+   * a re-delete matches 0 rows and publishes nothing.
+   */
+  async deleteNotification(
+    notificationId: string,
+    userId: string
+  ): Promise<{ deleted: boolean; unreadCount: number }> {
+    const { count } = await this.notificationRepo.deleteById(
+      notificationId,
+      userId
+    );
+    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
+    if (count > 0) {
+      await this.publishCountEvent(
+        userId,
+        "notification:deleted",
+        unreadCount,
+        {
+          notificationId,
+        }
+      );
+    }
+    return { deleted: count > 0, unreadCount };
+  }
+
+  /**
    * Persists a user-initiated action (e.g. "TERMINATE" session, "CONFIRM" login)
    * on a notification: updates the stored body text + marks `actionTaken` in
    * `payload.data` so the UI renders the resolved state on every reload.

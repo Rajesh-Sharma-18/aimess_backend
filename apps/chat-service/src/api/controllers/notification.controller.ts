@@ -136,6 +136,21 @@ export class NotificationController {
       );
   });
 
+  // Soft-deletes ONE notification for the caller. Owner-scoped in the repo, so
+  // an id the caller doesn't own mutates nothing; the response still reports
+  // `deleted: false` with the caller's own unread count rather than 404, which
+  // keeps a double-tap / retry idempotent instead of surfacing a false error.
+  deleteNotification = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const { id } = req.params as { id: string };
+    const result = await this.service.deleteNotification(id, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("CHAT_NOTIFICATION_DELETED", req.locale))
+      );
+  });
+
   getUnreadCount = asyncHandler(async (req: Request, res: Response) => {
     const { userId, sessionId } = req.auth;
     const unreadCount = await this.service.getUnreadCount(userId, sessionId);

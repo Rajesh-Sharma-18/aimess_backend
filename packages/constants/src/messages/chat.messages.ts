@@ -73,6 +73,11 @@ export const CHAT_MESSAGES = {
     en: "Notifications marked as read",
     th: "ทำเครื่องหมายว่าอ่านการแจ้งเตือนแล้ว",
   },
+  CHAT_NOTIFICATION_DELETED: {
+    vi: "Đã xóa thông báo",
+    en: "Notification deleted",
+    th: "ลบการแจ้งเตือนแล้ว",
+  },
   CHAT_COMMUNITY_ROOMS_FETCHED: {
     vi: "Lấy danh sách phòng cộng đồng thành công",
     en: "Community rooms fetched successfully",
