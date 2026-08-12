@@ -482,3 +482,67 @@ payload and join events are unchanged.
   file now pass).
 
 60 tests pass across the group + community delete suites; `tsc --noEmit` clean.
+
+---
+
+## 10. Issues 54 + 55 — the pinned location banner · the dead friend-request tap
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Both defects are web-client only. The full write-up, with file:line for every
+change, is in `aimess_website/QA_FIXES_WEBSITE.md`; this section records what
+the backend was asked for and what it actually needed.
+
+### Issue 54 — pinned banner shows "Pinned message" for a location
+
+**No backend change.** `getActivePinSummary`
+(`apps/chat-service/src/services/community-pin.service.ts:430`) already returns
+`messageType: "LOCATION"` with `text: ""` — correct, since a location message
+has no body text — and `message-preview.service.ts` already renders
+`📍 <placeName>` for the inbox preview. The web client derived the banner text
+from three hand-rolled content-type ladders, none of which had a `LOCATION`
+rung, and fell through to its generic fallback string. Fixed client-side by
+collapsing all three onto the existing `replyLabelFromMessage` /
+`replyTypeLabel` helpers.
+
+### Issue 55 — tapping a friend-request push opened nothing
+
+**One documentation change; the payload was already right.**
+
+`friend.requested` is the only notification whose navigation names a peer rather
+than a room, because the DM does not exist until the request is accepted:
+
+- `apps/notifications-service/src/consumers/friend.consumer.ts:52-60` —
+  `{ screen: "PRIVATE_CHAT", userId: requesterId, conversationType:
+"PRIVATE_PENDING", requestId }`, with `deepLink: aimess://user/<requesterId>`.
+
+`NotificationNavigation.roomId` is optional and `userId` is documented as the
+subject user for friend events, so this is contract-valid. Every web consumer of
+`PRIVATE_CHAT` nonetheless read `roomId` and only `roomId`, resolved to `null`,
+and dropped the tap — the foreground toast focused the window and did nothing,
+the service worker landed on `/`.
+
+Rather than synthesise a room id at publish time (which would force a
+`GetOrCreatePrivateRooms` call for every pending request that may never be
+accepted), the contract now states the client obligation explicitly:
+
+- `packages/shared-types/src/events/community.ts` — `NotificationNavigation.roomId`
+  documents that `PRIVATE_CHAT` may arrive with `userId` alone and that clients
+  MUST fall back to it, since every platform's DM route get-or-creates the room
+  from a peer id.
+
+`group.consumer.ts` is unaffected — `GROUP_CHAT` navigation always carries
+`roomId`.
+
+**Mobile.** iOS and Android ship the same `NotificationRouter` shape and need
+the same fallback plus an `aimess://user/:id` deep-link case. No server payload
+changes, so nothing regresses while they catch up; the tap stays inert on those
+clients until then.
+
+### Tests
+
+Comment-only backend change, so no new backend suite. Client side:
+`aimess_website/scripts/check-firebase-sw.mjs` gained a case that drives the
+service worker's real `notificationclick` handler with `userId`-only navigation
+(6/6 pass, fails against the old worker); `tsc --noEmit` and `eslint` clean in
+both repositories.
