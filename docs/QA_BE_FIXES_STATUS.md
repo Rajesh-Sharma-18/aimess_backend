@@ -43,16 +43,18 @@ Attach the report to close the remainder.
 | AUDIT-113               | P1       | **Fixed**                  | [private-message.service.ts](../apps/chat-service/src/services/private-message.service.ts)                                                                                     |
 | AUDIT-147               | P2       | **Fixed**                  | [media.service.ts](../apps/media-service/src/services/media.service.ts)                                                                                                        |
 | AUDIT-002               | P1       | **Already correct**        | `app.disable("x-powered-by")` is at [app.ts:43](../apps/api-gateway/src/app.ts) — see §4                                                                                       |
-| AUDIT-114               | P1       | **Not fixed**              | could not reproduce from code — see §4                                                                                                                                         |
+| AUDIT-114               | P1       | **Not a code defect**      | un-run `backfill:revision`, not a dead endpoint — see §4                                                                                                                       |
 | AUDIT-116–146, 148, 149 | P2/P3    | **Not addressed**          | not quoted in the brief; needs the report                                                                                                                                      |
 
 Found and fixed while in the area (not in the brief):
 
-- `sensitiveAuthRateLimiter` passed a MINUTES env var into `windowMs`
-  (milliseconds), so its window was 15 ms — no throttle at all.
+- **F1/F2/F3** from [tests/AUDIT.md](../apps/auth-service/tests/AUDIT.md) —
+  `/login` ran with no validation, `sensitiveAuthRateLimiter` was mounted
+  nowhere, and its window was 15 **milliseconds**. See §4.
 - Community `join` incremented `memberNumber` on every call, double-counting
   against the `community.member.synced` consumer and inflating further on repeat.
-- Two test-harness breaks that were failing pre-existing suites (see §5).
+- Three test-harness breaks, one of which stopped media-service's suite from
+  running at all (see §5).
 
 ---
 
@@ -328,19 +330,23 @@ amount. Recompute from `RoomMember` where `status = "active"` per room.
 
 ## 7. Remaining risks
 
-1. **AUDIT-114 is unresolved** and the report is unavailable. If the revision
-   axis really is dead in production, offline clients are silently missing
-   mutations — the highest-value unknown here.
-2. **media-service's test suite cannot run** — `Cannot find module
-'jsonwebtoken'` from its own `tests/helpers/auth.ts`, on this branch and
-   before it. AUDIT-112 and 147 therefore have **no executable coverage**; both
-   were verified by reading the code only. Fix that harness and add the tests.
-3. **The AUDIT-112 backfill is a real availability risk.** Until it runs,
-   members cannot download old community/group attachments they did not upload.
-   Size it with the query above before deploying.
-4. **Login/register/forgot-password remain unthrottled** at the auth service —
-   see §4.
-5. **P2/P3 coverage is unknown.** ~18 findings named, 30+ unaccounted for.
-6. The community room list adds one indexed membership query per call. It replaces
-   an unbounded full-table scan, so it should be a net win, but it is a new query
-   on a hot path.
+1. **The AUDIT-112 backfill is an availability risk.** Until it runs, members
+   cannot download old community/group attachments they did not upload. Run the
+   §6 dry run to size it — if the count is zero there is nothing to do.
+2. **Rate limiting now returns 429 on real auth traffic** (F2). Default is 20
+   per 15 min per IP. It keys on IP, so behind a NAT or a proxy with
+   `TRUST_PROXY_HOPS=0` every client shares one bucket — verify that value, and
+   raise `SENSITIVE_AUTH_RATE_LIMIT_MAX` if the deployment warrants it.
+3. **P2/P3 coverage is unknown.** ~18 findings named in the brief, 30+
+   unaccounted for. Needs the report.
+4. **AUDIT-114's diagnosis is inferred, not reproduced.** §4 explains why the
+   symptom follows from un-run maintenance rather than a code defect, but it was
+   not checked against the original repro. If QA saw empty `items` on a room with
+   messages sent after this branch, that is a different bug.
+5. Login validation is back on (F1). The schema matches what clients send and
+   Zod strips unknown keys, and login deliberately does **not** apply the min-8
+   password policy — but any client sending a genuinely malformed body now gets
+   a 400 where it previously got a 500 or a silent pass.
+6. The community room list adds one indexed membership query per call. It
+   replaces an unbounded full-table scan, so it should be a net win, but it is a
+   new query on a hot path.
