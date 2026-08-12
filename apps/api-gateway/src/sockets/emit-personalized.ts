@@ -52,10 +52,27 @@ export async function emitPersonalizedSender(
 
   try {
     const sockets = await namespace.in(channel).fetchSockets();
+    // Resolve every viewer's opt-out UP FRONT, in parallel. Awaiting inside the
+    // loop made the checks strictly sequential, so nobody in a room of N saw a
+    // read receipt until N lookups had completed one after another — on a cold
+    // flag cache that is N gRPC round trips of head-of-line blocking on the
+    // single event most sensitive to latency. Same lookups, one wall-clock cost.
+    const skipByViewer = skipViewer
+      ? new Map(
+          await Promise.all(
+            [...new Set(sockets.map((s) => String(s.data.userId ?? "")))].map(
+              async (id): Promise<[string, boolean]> => [
+                id,
+                await skipViewer(id),
+              ]
+            )
+          )
+        )
+      : null;
     for (const socket of sockets) {
       const viewerUserId = String(socket.data.userId ?? "");
       if (excludeUserId && viewerUserId === excludeUserId) continue;
-      if (skipViewer && (await skipViewer(viewerUserId))) continue;
+      if (skipByViewer?.get(viewerUserId)) continue;
       const locale =
         (socket.data.locale as SupportedLocale | undefined) ?? DEFAULT_LOCALE;
       let payload = data;

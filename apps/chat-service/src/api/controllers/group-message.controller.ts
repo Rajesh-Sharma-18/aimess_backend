@@ -17,6 +17,7 @@ import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
+  autoDeleteWireFields,
   buildChatMessageEvent,
   buildDeletePayload,
   groupStoredReactions,
@@ -384,6 +385,9 @@ export class GroupMessageController {
           ? result.createdAt.getTime()
           : Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      // An edit re-emits the whole message; without the deadline the client
+      // would drop the countdown it was already rendering.
+      ...autoDeleteWireFields(result),
     });
     if (result.roomId) {
       await this.redis.publish(
@@ -778,6 +782,9 @@ export class GroupMessageController {
       isForwarded: true,
       serverTs: result.createdAt?.getTime() ?? Date.now(),
       sequenceNumber: (full.sequenceNumber as number) ?? 0,
+      // A forward is a brand-new message in the TARGET room and carries that
+      // room's timer — see the same spread on the private forward path.
+      ...autoDeleteWireFields(result),
     });
     await this.redis.publish(
       `conv:${targetRoomId}`,

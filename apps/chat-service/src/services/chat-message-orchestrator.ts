@@ -188,6 +188,13 @@ export interface DeleteDirectParams {
   messageId: string;
   userId: string;
   scope: "forMe" | "forEveryone";
+  /**
+   * Server-initiated delete (the auto-delete sweeper). Skips the actor
+   * permission checks — the expired timer is the authority, and the nominal
+   * `userId` (the original sender) may have left the group or be muted by then.
+   * Set only from inside the service; no request path can reach it.
+   */
+  bySystem?: boolean;
 }
 
 export interface DeleteDirectResult {
@@ -1002,7 +1009,8 @@ export class ChatMessageOrchestrator {
           : await this.groupMessageService.deleteMessage(
               params.messageId,
               params.userId,
-              params.roomId
+              params.roomId,
+              params.bySystem === true
             );
     } else {
       result =
@@ -1284,6 +1292,9 @@ export class ChatMessageOrchestrator {
     // Assigned in both branches below before read — no initializer needed.
     let lastMessageSeq: number;
     let otherUserIds: string[];
+    // Started BEFORE the mark-read write — see the identical comment in the
+    // gRPC `markMessagesRead` handler.
+    const mayBroadcastPromise = mayBroadcastReadReceipts(params.readerId);
     if (conversationType === "GROUP") {
       const groupRead = await this.groupMessageService.markReadUpTo({
         roomId: params.roomId,
@@ -1327,14 +1338,17 @@ export class ChatMessageOrchestrator {
       otherUserIds = (room?.participants ?? []).filter(
         (id) => id !== params.readerId
       );
-      readToSeq = await this.privateMessageService
-        .getMessageSequence(params.upToMessageId)
-        .catch(() => 0);
-      lastMessageSeq = room?.lastMessageId
-        ? await this.privateMessageService
-            .getMessageSequence(room.lastMessageId)
-            .catch(() => 0)
-        : 0;
+      // Independent lookups — run together, not one after the other.
+      [readToSeq, lastMessageSeq] = await Promise.all([
+        this.privateMessageService
+          .getMessageSequence(params.upToMessageId)
+          .catch(() => 0),
+        room?.lastMessageId
+          ? this.privateMessageService
+              .getMessageSequence(room.lastMessageId)
+              .catch(() => 0)
+          : Promise.resolve(0),
+      ]);
     }
 
     // Authoritative "this reader has now read the room's current newest
@@ -1358,7 +1372,7 @@ export class ChatMessageOrchestrator {
     // Settings → Chat → Read Receipt, off: the read still happens (the reader's
     // own unread badge and `read_sync` below are unaffected) — only the OUTBOUND
     // receipt is withheld, so nobody learns this user read them.
-    const mayBroadcast = await mayBroadcastReadReceipts(params.readerId);
+    const mayBroadcast = await mayBroadcastPromise;
 
     // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at or
     // below the boundary to READ (watermark), not just the boundary message.

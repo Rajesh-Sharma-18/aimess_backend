@@ -51,8 +51,12 @@ export function registerSessionRevokeListener(
 
       // A user signing out on this very device already knows — telling it its
       // session was "terminated" is the remote-revoke notice and must not fire
-      // here. It still gets force-disconnected below, same as any revoke.
-      const selfInitiated = reason === "logout";
+      // here. Account deletion is the same, but stronger: the flow is specified
+      // to be completely silent, so NONE of that user's devices may be told
+      // anything (no notice, and no linked-device list churn for an account
+      // that no longer exists). Both still get force-disconnected below.
+      const selfInitiated = reason === "logout" || reason === "account_deleted";
+      const silent = reason === "account_deleted";
 
       for (const nsName of LIVE_NAMESPACES) {
         const ns = io.of(nsName);
@@ -79,10 +83,12 @@ export function registerSessionRevokeListener(
           );
       }
 
-      io.of("/notify").to(`user:${userId}`).emit("session:list_updated", {
-        action: "terminated",
-        sessionId,
-      });
+      if (!silent) {
+        io.of("/notify").to(`user:${userId}`).emit("session:list_updated", {
+          action: "terminated",
+          sessionId,
+        });
+      }
     }
   );
 

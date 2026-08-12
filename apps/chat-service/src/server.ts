@@ -40,6 +40,7 @@ import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { PrivateSystemMessageService } from "./services/private-system-message.service.js";
 import { AutoDeleteService } from "./services/auto-delete.service.js";
+import { GroupAutoDeleteService } from "./services/group-auto-delete.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
 import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
@@ -577,17 +578,44 @@ const startServer = async () => {
     // publishConvUpdated/publishCommunityUpdated call site and the private/
     // group/community mark-read paths can push a fresh summary without each
     // needing UnreadSummaryService injected directly.
+    //
+    // COALESCED per user. `notifyUnreadChanged` fires once per RECIPIENT per
+    // conv:updated — so one message into a 50-member group asked for 50
+    // summaries, and each summary is three collection-wide unread aggregations
+    // (private + group + community). A burst of sends or a rapid read sequence
+    // turned that into hundreds of concurrent aggregations, which is what made
+    // every other real-time effect on the same service (read receipts, list
+    // bumps) queue behind it and arrive seconds late.
+    //
+    // A trailing window collapses a burst to one query set per user: the badge
+    // is a TOTAL, so only the last value in a window was ever going to be
+    // rendered anyway. The window is short enough to stay inside the sub-second
+    // budget for a single isolated change.
+    const UNREAD_SUMMARY_COALESCE_MS = 200;
+    const unreadSummaryTimers = new Map<string, NodeJS.Timeout>();
     registerUnreadSummaryPusher((userId) => {
-      void unreadSummaryService
-        .getUnreadSummary(userId)
-        .then((summary) =>
-          publishChatUserEvent(redis, userId, "chat:unread_summary", summary)
-        )
-        .catch((err) => {
-          logger.warn(
-            `chat:unread_summary push failed for ${userId}: ${String(err)}`
-          );
-        });
+      if (!userId || unreadSummaryTimers.has(userId)) return;
+      unreadSummaryTimers.set(
+        userId,
+        setTimeout(() => {
+          unreadSummaryTimers.delete(userId);
+          void unreadSummaryService
+            .getUnreadSummary(userId)
+            .then((summary) =>
+              publishChatUserEvent(
+                redis,
+                userId,
+                "chat:unread_summary",
+                summary
+              )
+            )
+            .catch((err) => {
+              logger.warn(
+                `chat:unread_summary push failed for ${userId}: ${String(err)}`
+              );
+            });
+        }, UNREAD_SUMMARY_COALESCE_MS).unref()
+      );
     });
 
     // V2 §3.3: per-conversation seq-based incremental sync (REST catch-up)
@@ -620,6 +648,19 @@ const startServer = async () => {
       privateMessageRepo,
       privateSystemMessageService,
       privatePinService,
+      chatMessageOrchestrator,
+      redis
+    );
+
+    // The same feature for GROUP rooms — one timer per group, admin-set. Same
+    // construction order and the same reason: its sweeper deletes through
+    // `deleteDirect` too.
+    const groupAutoDeleteService = new GroupAutoDeleteService(
+      groupRoomRepo,
+      groupMemberRepo,
+      groupMessageRepo,
+      groupSystemMessageService,
+      groupPinService,
       chatMessageOrchestrator,
       redis
     );
@@ -677,7 +718,10 @@ const startServer = async () => {
         redis,
         chatMessageOrchestrator
       ),
-      groupRoomCtrl: new GroupRoomController(groupRoomService),
+      groupRoomCtrl: new GroupRoomController(
+        groupRoomService,
+        groupAutoDeleteService
+      ),
       groupMessageCtrl: new GroupMessageController(
         groupMessageService,
         groupPinService,
@@ -821,21 +865,30 @@ const startServer = async () => {
     // message disappears on schedule even when neither client is running
     // (§5.2 offline sender, §8.4 offline device). Drains in pages.
     autoDeleteSweepHandle = setInterval(() => {
-      void (async () => {
-        try {
-          for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
-            const n = await autoDeleteService.sweepDue(
-              new Date(),
-              env.AUTO_DELETE_SWEEP_BATCH
-            );
-            if (n > 0)
-              logger.info(`Auto-delete sweep processed ${n} message(s)`);
-            if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+      // Private and group drain independently and are caught separately, so a
+      // failure on one conversation type can never stall the other.
+      for (const [label, sweep] of [
+        ["private", (n: number) => autoDeleteService.sweepDue(new Date(), n)],
+        [
+          "group",
+          (n: number) => groupAutoDeleteService.sweepDue(new Date(), n),
+        ],
+      ] as const) {
+        void (async () => {
+          try {
+            for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
+              const n = await sweep(env.AUTO_DELETE_SWEEP_BATCH);
+              if (n > 0)
+                logger.info(
+                  `Auto-delete sweep (${label}) processed ${n} message(s)`
+                );
+              if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+            }
+          } catch (err) {
+            logger.warn(`autoDeleteSweep(${label}) failed: ${String(err)}`);
           }
-        } catch (err) {
-          logger.warn(`autoDeleteSweep failed: ${String(err)}`);
-        }
-      })();
+        })();
+      }
     }, env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000);
     if (typeof autoDeleteSweepHandle.unref === "function") {
       autoDeleteSweepHandle.unref();

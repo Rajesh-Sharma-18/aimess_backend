@@ -16,7 +16,11 @@ import {
   currentLocale,
   personalizeGroupSystemMessageForViewer,
 } from "@aimess/constants";
-import { buildReactionTargetPreview } from "./message-preview.service.js";
+import {
+  buildMessagePreview,
+  buildReactionTargetPreview,
+} from "./message-preview.service.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -51,6 +55,13 @@ import {
   computeSeqPageCursors,
 } from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
+import {
+  AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
+  AUTO_DELETE_NONE,
+  computeAutoDeleteStamp,
+  readRoomAutoDelete,
+  type AutoDeleteStamp,
+} from "../lib/auto-delete.js";
 import {
   attachAlbumMessages,
   markAlbumIdempotentReplay,
@@ -248,10 +259,23 @@ export class GroupMessageService {
       }
     }
 
+    // One round trip for two answers: the first row's sequence number and the
+    // room's auto-delete timer. Which timer THIS send gets is decided once,
+    // here, off the row the `$inc` already read — so a change made a moment ago
+    // is in force for the very next message and there is no cached copy to go
+    // stale. Resolved before the insert loop so every album row of one send
+    // shares the same deadline.
+    const firstSlot = await this.roomRepo.allocateSequenceWithRoom(
+      params.roomId
+    );
+    const autoDelete = this.autoDeleteStampFromRoom(firstSlot.room);
+
     const created: GroupMessage[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       const entity: Record<string, unknown> = {
+        autoDeleteAt: autoDelete.autoDeleteAt,
+        autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.roomId,
         senderId: params.senderId,
         senderName: params.senderName,
@@ -269,8 +293,10 @@ export class GroupMessageService {
         ...(i === 0 && quoteData ? { quoteData } : {}),
       };
 
-      const seq = await this.roomRepo.allocateSequence(params.roomId);
-      entity.sequenceNumber = seq;
+      entity.sequenceNumber =
+        i === 0
+          ? firstSlot.sequenceNumber
+          : await this.roomRepo.allocateSequence(params.roomId);
 
       try {
         const row = await this.messageRepo.create(
@@ -1119,10 +1145,19 @@ export class GroupMessageService {
     };
   }
 
+  /**
+   * @param bySystem The caller is the auto-delete sweeper, not a person. The
+   *   authority is the expired timer, so the actor checks below are skipped:
+   *   a message must still disappear when its sender has since LEFT or been
+   *   kicked (no member row at all) or is under a moderation mute — otherwise
+   *   exactly the messages a departed member left behind would live forever.
+   *   Only ever set server-side; no request path can reach it.
+   */
   async deleteMessage(
     messageId: string,
     userId: string,
-    roomId: string
+    roomId: string,
+    bySystem = false
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
     // Bind message↔room BEFORE any role check or broadcast: an admin/owner of
@@ -1131,24 +1166,26 @@ export class GroupMessageService {
     if (!message || message.roomId !== roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
-
     let deletedType = "SELF_DELETE";
-    if (message.senderId !== userId) {
-      // Only admins can delete others' messages
-      if (!["ADMIN", "MODERATOR"].includes(member.role)) {
-        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    if (!bySystem) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
+        roomId,
+        userId
+      );
+      if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+
+      if (message.senderId !== userId) {
+        // Only admins can delete others' messages
+        if (!["ADMIN", "MODERATOR"].includes(member.role)) {
+          throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+        }
+        deletedType = "ADMIN_DELETE";
+      } else {
+        // Mirrors CommunityMessageService.deleteForAll: a muted member cannot
+        // delete their OWN message, but an admin/mod deleting someone else's is
+        // moderation and stays allowed even while that admin is muted.
+        assertGroupMemberNotMuted(member);
       }
-      deletedType = "ADMIN_DELETE";
-    } else {
-      // Mirrors CommunityMessageService.deleteForAll: a muted member cannot
-      // delete their OWN message, but an admin/mod deleting someone else's is
-      // moderation and stays allowed even while that admin is muted.
-      assertGroupMemberNotMuted(member);
     }
 
     const deleted = await this.messageRepo.deleteForEveryone(
@@ -1238,7 +1275,69 @@ export class GroupMessageService {
           `GroupMessageService|refreshReplyQuotes(edit) failed: ${String(err)}`
         );
       });
+    this.refreshListPreviewAfterEdit(updated);
     return updated;
+  }
+
+  /**
+   * GROUP half of the edit→list refresh. See
+   * `PrivateMessageService.refreshListPreviewAfterEdit` for the full rationale:
+   * `message:edited` only reaches `conv:<roomId>` (the open chat), and the
+   * denormalized `GroupRoom.lastMessagePreview` the inbox renders was never
+   * rewritten, so an edited last message stayed stale in the sidebar even
+   * across a reload.
+   *
+   * Fire-and-forget; `setLastMessage` keeps the ORIGINAL `createdAt` so the row
+   * refreshes in place instead of jumping to the top.
+   */
+  private refreshListPreviewAfterEdit(updated: GroupMessage): void {
+    if (!this.redis) return;
+    const redis = this.redis;
+    void (async () => {
+      const room = await this.roomRepo.findByRoomId(updated.roomId);
+      if (!room || room.lastMessageId !== updated.id) return;
+      const senderName =
+        (updated as unknown as { senderName?: string }).senderName ?? "";
+      await this.roomRepo.setLastMessage(updated.roomId, {
+        id: updated.id,
+        senderId: updated.senderId ?? "",
+        senderName,
+        content: {
+          text:
+            ((updated.content as Record<string, unknown> | null)
+              ?.text as string) ?? "",
+        },
+        messageType: updated.messageType,
+        createdAt: updated.createdAt,
+        clientMessageId: updated.clientMessageId,
+        sequenceNumber: updated.sequenceNumber,
+        revision: updated.revision,
+      });
+      publishConvUpdatedSafe({
+        redis,
+        type: "GROUP",
+        roomId: updated.roomId,
+        fetchRecipients: () => this.getActiveMemberIds(updated.roomId),
+        senderId: updated.senderId ?? "",
+        senderName,
+        lastMessageId: updated.id,
+        lastMessageAt: updated.createdAt.getTime(),
+        // An edit is not new activity: nobody's unread badge may move.
+        countInUnread: false,
+        preview: {
+          contentType: normalizeMessageType(updated.messageType),
+          text: buildMessagePreview(updated.messageType, updated.content),
+          clientMessageId: updated.clientMessageId,
+          seq: updated.sequenceNumber ?? 0,
+          revision: updated.revision ?? 0,
+          createdAt: updated.createdAt.getTime(),
+        },
+      });
+    })().catch((err: unknown) => {
+      logger.warn(
+        `GroupMessageService|refreshListPreviewAfterEdit failed for ${updated.id}: ${String(err)}`
+      );
+    });
   }
 
   /**
@@ -1660,7 +1759,12 @@ export class GroupMessageService {
       originalContentType: source.messageType,
     };
 
-    const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+    // A forward is a brand-new message in the TARGET room, so it follows THAT
+    // room's timer — never the source room's.
+    const targetSlot = await this.roomRepo.allocateSequenceWithRoom(
+      params.targetRoomId
+    );
+    const autoDelete = this.autoDeleteStampFromRoom(targetSlot.room);
 
     const message = await this.messageRepo.createForwardedMessage({
       roomId: params.targetRoomId,
@@ -1671,7 +1775,9 @@ export class GroupMessageService {
       messageType: source.messageType,
       forwardData,
       clientMessageId: params.clientMessageId ?? null,
-      sequenceNumber: seq,
+      sequenceNumber: targetSlot.sequenceNumber,
+      autoDeleteAt: autoDelete.autoDeleteAt,
+      autoDeleteAfterView: autoDelete.autoDeleteAfterView,
     });
     const unreadIncrement = shouldCountInUnread({
       messageType: message.messageType,
@@ -1957,6 +2063,41 @@ export class GroupMessageService {
    * `GroupMemberRepository#markRead` hard-zeroed unread and had no
    * forward-only check or optimistic-id guard).
    */
+  /**
+   * The auto-delete stamp a message sent into `room` right now must carry.
+   * Never throws — a malformed stored setting degrades to "no timer" rather
+   * than failing the send.
+   */
+  private autoDeleteStampFromRoom(room: {
+    roomId: string;
+    autoDelete?: unknown;
+  }): AutoDeleteStamp {
+    try {
+      return computeAutoDeleteStamp(readRoomAutoDelete(room), new Date());
+    } catch (err) {
+      logger.warn(
+        `GroupMessageService|autoDeleteStampFromRoom failed room=${room.roomId}: ${String(err)}`
+      );
+      return AUTO_DELETE_NONE;
+    }
+  }
+
+  /**
+   * Auto-delete "After Viewing": start the countdown on every such message this
+   * reader RECEIVED in the room. Idempotent, so every mark-read can call it
+   * unconditionally. Returns how many messages were armed.
+   */
+  async armAfterViewingMessages(
+    roomId: string,
+    readerId: string
+  ): Promise<number> {
+    return this.messageRepo.armAfterViewing(
+      roomId,
+      readerId,
+      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000)
+    );
+  }
+
   async markReadUpTo(params: {
     roomId: string;
     userId: string;
@@ -1970,6 +2111,20 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) return { readToSeq: 0, remainingUnread: 0 };
+
+    // Auto-delete "After Viewing" arms HERE — the single point every group read
+    // path (REST via the orchestrator, socket/gRPC via markMessagesRead, bulk
+    // mark-read) funnels through, so no caller can forget it. Placed after the
+    // membership check so a non-member can never arm someone else's timers.
+    // Fire-and-forget: the sweeper still owns the deletion, a failure here only
+    // delays it to the next read.
+    void this.armAfterViewingMessages(params.roomId, params.userId).catch(
+      (err: unknown) => {
+        logger.warn(
+          `GroupMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
+        );
+      }
+    );
 
     const message = await this.messageRepo.findById(params.upToMessageId);
     if (!message || message.roomId !== params.roomId)

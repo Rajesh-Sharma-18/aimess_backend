@@ -7,6 +7,9 @@ import {
   createGroupSchema,
   updateGroupSchema,
 } from "../validators/group-room.validator.js";
+// Same body shape as the private timer — one schema, one contract, so the two
+// surfaces can never drift into accepting different modes or bounds.
+import { autoDeleteSchema } from "../validators/private-message.validator.js";
 import type { GroupRoomController } from "../controllers/group-room.controller.js";
 
 const createLimit = createRateLimit({
@@ -40,6 +43,16 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
   router.delete("/rooms/:roomId", authenticate, ctrl.clearConversation);
   router.patch("/rooms/:roomId/archive", authenticate, ctrl.archiveRoom);
   router.patch("/rooms/:roomId/unarchive", authenticate, ctrl.unarchiveRoom);
+
+  // Automatically Delete Messages (disappearing messages) — one timer per group.
+  // Readable by any member; the PUT is admin/moderator-gated in the service.
+  router.get("/rooms/:roomId/auto-delete", authenticate, ctrl.getAutoDelete);
+  router.put(
+    "/rooms/:roomId/auto-delete",
+    authenticate,
+    validateBody(autoDeleteSchema),
+    ctrl.setAutoDelete
+  );
 
   return router;
 }

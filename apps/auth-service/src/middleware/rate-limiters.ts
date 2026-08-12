@@ -38,24 +38,11 @@ export const qrGenerationRateLimiter = rateLimit({
   },
 });
 
-/**
- * Account deletion: 5 attempts/hour/user. Password-confirmed and irreversible,
- * so the only traffic this can throttle is someone brute-forcing the password
- * of a session they already stole. Keyed by user (falls back to IP pre-auth).
- */
-export const deleteAccountRateLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: env.DELETE_ACCOUNT_RATE_LIMIT_MAX,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
-  keyGenerator: (req: Request) =>
-    req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
-  message: {
-    success: false,
-    message: "Too many attempts, please try again later.",
-  },
-});
+// NOTE: there is deliberately no `deleteAccountRateLimiter` here any more.
+// DELETE /auth/account was unthrottled on request on 2026-08-12 — see the
+// comment in `api/routes/account-deletion.routes.ts` for the rationale, the
+// security trade, and how to re-add one correctly. Every other limiter in this
+// file is unchanged.
 
 /**
  * Change password: 5 attempts/hour/user by default. The handler verifies
@@ -63,8 +50,7 @@ export const deleteAccountRateLimiter = rateLimit({
  * endpoint is an unthrottled password oracle — anyone holding a stolen access
  * token can guess the account password at request speed and then take the
  * account over outright (a successful change signs every other device out).
- * Keyed by user, mounted AFTER the auth middleware, exactly like
- * {@link deleteAccountRateLimiter}.
+ * Keyed by user, mounted AFTER the auth middleware.
  */
 export const changePasswordRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

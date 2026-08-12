@@ -164,6 +164,31 @@ describe("session-revoke listener", () => {
     ).toBeDefined();
   });
 
+  it('reason "account_deleted" disconnects silently — no notice, no list churn', async () => {
+    const ownSocket = new FakeSocket();
+    const { sub, namespaces } = setup({
+      "/chat": { "session:sess-gone": [ownSocket] },
+      "/community": {},
+      "/notify": {},
+      "/stream": {},
+    });
+
+    sub.emit(
+      "pmessage",
+      "session-revoke:*",
+      "session-revoke:user-1",
+      JSON.stringify({ sessionId: "sess-gone", reason: "account_deleted" })
+    );
+    await flush();
+
+    // The socket must still drop — the account is gone.
+    expect(ownSocket.disconnected).toBe(true);
+    // ...but nothing at all may be emitted to any of the user's devices.
+    for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
+      expect(namespaces[nsName].emitted).toEqual([]);
+    }
+  });
+
   it("emits session:list_updated to the user's room on /notify only", async () => {
     const { sub, namespaces } = setup({
       "/chat": {},

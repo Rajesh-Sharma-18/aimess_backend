@@ -13,6 +13,9 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 jest.mock("../../src/messaging/publish-user-deleted.js", () => ({
   publishUserDeletedSafe: jest.fn(),
 }));
+jest.mock("../../src/messaging/publish-session-revoked.js", () => ({
+  publishAllSessionsRevokedSafe: jest.fn(),
+}));
 jest.mock("@aimess/redis", () => ({
   ...jest.requireActual("@aimess/redis"),
   publishSessionRevokedEvent: jest.fn(async () => 0),
@@ -24,11 +27,13 @@ import bcrypt from "bcryptjs";
 import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import app from "../../src/app.js";
+import { publishAllSessionsRevokedSafe } from "../../src/messaging/publish-session-revoked.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
 const repo = authRepository as unknown as Record<string, jest.Mock>;
 const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
+const publishAllRevoked = publishAllSessionsRevokedSafe as unknown as jest.Mock;
 
 const PASSWORD = "Password123";
 let passwordHash: string;
@@ -80,13 +85,17 @@ describe("DELETE /api/auth/account", () => {
     expect(repo.softDeleteUser).not.toHaveBeenCalled();
   });
 
-  it("returns 401 for a wrong password", async () => {
+  it("returns 400 (NOT 401) for a wrong password", async () => {
     const res = await request(app)
       .delete("/api/auth/account")
       .set(bearer(makeAccessToken()))
       .send({ password: "WrongPassword99" });
 
-    expect(res.status).toBe(401);
+    // 401 here made every standard client treat the valid session as expired:
+    // refresh the token, replay the delete, get 401 again, sign the user out.
+    // A mistyped password must produce an error, never a logout.
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe("The password you entered is incorrect.");
     expect(repo.softDeleteUser).not.toHaveBeenCalled();
   });
 
@@ -140,6 +149,38 @@ describe("DELETE /api/auth/account", () => {
     ]);
   });
 
+  it('revokes with reason "account_deleted" so no device is notified', async () => {
+    await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: PASSWORD });
+
+    // "terminated" would make the gateway emit auth:session_terminated +
+    // session:list_updated to every device — deletion must be silent.
+    expect(publishRevoked.mock.calls.map((call) => call[3])).toEqual([
+      "account_deleted",
+      "account_deleted",
+    ]);
+  });
+
+  it("purges every push (FCM/APNs) device token for the deleted user", async () => {
+    await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: PASSWORD });
+
+    expect(publishAllRevoked).toHaveBeenCalledWith({ userId: TEST_USER_ID });
+  });
+
+  it("sends no push-token purge when the password is wrong", async () => {
+    await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: "WrongPassword99" });
+
+    expect(publishAllRevoked).not.toHaveBeenCalled();
+  });
+
   it("publishes nothing to the socket layer when the password is wrong", async () => {
     await request(app)
       .delete("/api/auth/account")
@@ -155,7 +196,44 @@ describe("DELETE /api/auth/account", () => {
       .set(bearer(makeAccessToken()))
       .send({ password: "" });
 
-    // Schema: password is .min(1) when present.
     expect(res.status).toBe(400);
+    expect(repo.softDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("answers empty and missing passwords with the SAME message", async () => {
+    // The client shows one in-modal error for "you didn't give me a password".
+    // A `.min(1)` in the zod schema used to make the empty-string case come
+    // back as a raw validation string while the missing case came back as the
+    // localized AUTH_PASSWORD_REQUIRED — two shapes for one mistake.
+    const empty = await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({ password: "" });
+    const missing = await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(empty.status).toBe(400);
+    expect(missing.status).toBe(400);
+    expect(empty.body.message).toBe(missing.body.message);
+    expect(empty.body.message).toBe(
+      "Password is required to confirm this action."
+    );
+  });
+
+  it("accepts a request with no body at all (social-only account)", async () => {
+    // Express 5 leaves req.body undefined when nothing is sent; a real client
+    // deleting a password-less account has nothing to put in the body.
+    repo.findByIdForAccountOps.mockResolvedValue(
+      activeUser({ passwordHash: null })
+    );
+
+    const res = await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(repo.softDeleteUser).toHaveBeenCalledTimes(1);
   });
 });

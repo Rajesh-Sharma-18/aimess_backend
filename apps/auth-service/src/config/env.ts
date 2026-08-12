@@ -55,8 +55,9 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(15),
-  /** Max DELETE /auth/account attempts per hour per user (irreversible action). */
-  DELETE_ACCOUNT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
+  // DELETE_ACCOUNT_RATE_LIMIT_MAX removed 2026-08-12 — DELETE /auth/account is
+  // no longer throttled. Leaving the variable set in a .env file is harmless;
+  // nothing reads it.
 
   /** Max POST /auth/change-password attempts per hour per user. The endpoint
    *  verifies `currentPassword`, so an unthrottled one is an offline-speed

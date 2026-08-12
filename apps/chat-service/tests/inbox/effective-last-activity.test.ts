@@ -265,6 +265,75 @@ describe("GROUP inbox rows — effective lastActivity", () => {
   });
 });
 
+/**
+ * The inbox DTO used to publish only `lastMessageAt` (the shared snapshot) as a
+ * top-level timestamp, even though `lastActivity.dateTime` right next to it was
+ * the per-viewer one. Clients rendered the top-level field, so a group row
+ * showed the shared time beside its per-viewer preview: "2:12 PM" next to a
+ * preview of yesterday's message. `lastActivityAt` is the epoch-ms mirror that
+ * closes that gap — it must always equal `lastActivity.dateTime`.
+ */
+describe("Inbox rows carry lastActivityAt (the per-viewer render/sort key)", () => {
+  it("GROUP: mirrors lastActivity.dateTime, NOT the shared lastMessageAt, after a delete-for-me", async () => {
+    mockGroupSide([groupRoom()], { unreadCount: 0, notificationSettings: {} });
+    mocks.groupMessageRepo.filterHiddenFromUser.mockResolvedValue(
+      new Set(["g3"])
+    );
+    mocks.groupMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "g2",
+      senderId: "member-b",
+      senderName: "B",
+      content: { text: "Message 2" },
+      messageType: "TEXT",
+      createdAt: T_10_05,
+      clientMessageId: null,
+      sequenceNumber: 2,
+      revision: 2,
+    });
+
+    const res = await inbox();
+
+    const row = res.body.data.data[0];
+    expect(row.lastActivityAt).toBe(T_10_05.getTime());
+    expect(row.lastActivityAt).toBe(row.lastActivity.dateTime);
+    // The shared snapshot is still the newer one — that is the whole point.
+    expect(row.lastMessageAt).toBe(T_10_10.getTime());
+  });
+
+  it("GROUP: 0 when the viewer cleared the chat (never falls back to lastMessageAt)", async () => {
+    mockGroupSide([groupRoom()], {
+      unreadCount: 0,
+      notificationSettings: {},
+      clearChatAt: new Date("2026-08-10T10:11:00.000Z"),
+    });
+    mocks.groupMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+
+    const res = await inbox();
+
+    expect(res.body.data.data[0].lastActivityAt).toBe(0);
+  });
+
+  it("PRIVATE: mirrors lastActivity.dateTime", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom(),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+    mocks.privateMessageRepo.findManyByIds.mockResolvedValue([]);
+    mockGroupMemberships(mocks, []);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue([]);
+    mocks.groupRoomRepo.getInboxGroups.mockResolvedValue([]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(0);
+
+    const res = await inbox();
+
+    const row = res.body.data.data[0];
+    expect(row.type).toBe("PRIVATE");
+    expect(row.lastActivityAt).toBe(row.lastActivity.dateTime);
+    expect(row.lastActivityAt).toBe(T_10_10.getTime());
+  });
+});
+
 describe("Unified inbox ordering", () => {
   it("orders by the EFFECTIVE timestamp: a room whose latest message the viewer deleted drops below a newer one", async () => {
     // Private room's shared last is 10:10 (newest) but the viewer hid it and
