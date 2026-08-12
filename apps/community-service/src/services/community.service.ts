@@ -56,7 +56,7 @@ import {
   slugifyCategoryName,
 } from "../lib/community-slug.util.js";
 import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
-import { isMuteRowActive } from "../lib/community-notification-pref.js";
+import { isCommunityMuted } from "../lib/community-notification-pref.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
@@ -921,7 +921,10 @@ function muteFields(muteRow: MuteRowFragment): {
   chatEnabled: boolean;
   announcementEnabled: boolean;
 } {
-  const muted = isMuteRowActive(muteRow);
+  // Derived, never stored: a running timed mute OR all three categories off.
+  // The list/sidebar mute badge and the three switches in the info panel read
+  // the same truth, so they cannot disagree.
+  const muted = isCommunityMuted(muteRow);
   return {
     isMuted: muted,
     muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
@@ -7916,7 +7919,7 @@ export const communityService = {
     // (`setMute`). The previous "skip anything that already has a
     // CommunityMuteSetting row" shortcut silently no-op'd for two very common
     // states, because a row is NOT the same thing as an active mute
-    // (`isMuteRowActive`): a LAPSED temp mute leaves its row behind (nothing
+    // (`isCommunityMuted`): a LAPSED temp mute leaves its row behind (nothing
     // garbage-collects it) and touching the per-kind notification toggles
     // creates one too. Both render as un-muted in the list, so bulk Mute
     // appeared to do nothing at all. Upserting is also what makes a re-mute
@@ -8014,8 +8017,7 @@ export const communityService = {
       streamEnabled: row.streamEnabled,
       chatEnabled: row.chatEnabled,
       announcementEnabled: row.announcementEnabled,
-      isMuted:
-        !row.streamEnabled && !row.chatEnabled && !row.announcementEnabled,
+      isMuted: isCommunityMuted(row),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -8049,14 +8051,19 @@ export const communityService = {
       prefs
     );
 
+    // Turning the last category off IS the mute, and turning any category back
+    // on IS the unmute — so the same self-event the dedicated mute action emits
+    // has to fire here too, or the other tabs/devices keep a stale badge.
+    const muted = isCommunityMuted(row);
+    publishNotificationMuteChanged(communityId, callerId, muted);
+
     return {
       communityId,
       mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
       streamEnabled: row.streamEnabled,
       chatEnabled: row.chatEnabled,
       announcementEnabled: row.announcementEnabled,
-      isMuted:
-        !row.streamEnabled && !row.chatEnabled && !row.announcementEnabled,
+      isMuted: muted,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

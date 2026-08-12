@@ -1068,14 +1068,17 @@ export const communityRepository = {
   },
 
   /**
-   * userIds in this community who have DISABLED livestream notifications
-   * (CommunityMuteSetting.streamEnabled === false). Used to exclude them from the
-   * livestream push fan-out. Default (no setting row) is enabled, so absence ⇒
-   * eligible.
+   * userIds in this community who must NOT get the livestream push: either they
+   * disabled livestream alerts (`streamEnabled === false`) or they have a
+   * running timed mute (`mutedUntil` in the future), which snoozes every kind.
+   * Default (no setting row) is enabled, so absence ⇒ eligible.
    */
   async findStreamMutedMemberIds(communityId: string): Promise<string[]> {
     const rows = await prisma.communityMuteSetting.findMany({
-      where: { communityId, streamEnabled: false },
+      where: {
+        communityId,
+        OR: [{ streamEnabled: false }, { mutedUntil: { gt: new Date() } }],
+      },
       select: { userId: true },
     });
     return rows.map((r) => r.userId);
@@ -3042,11 +3045,31 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Apply the user-facing "Mute notifications" action.
+   *
+   * `mutedUntil === null` is an INDEFINITE mute, and an indefinite mute is
+   * stored as all three category toggles off — never as a separate global flag.
+   * That is what keeps the mute badge and the three switches in sync, and what
+   * makes re-enabling a category actually resume delivery (a global flag used
+   * to survive every toggle and silence the community forever).
+   *
+   * A timed mute leaves the toggles untouched: it snoozes every kind until
+   * `mutedUntil` passes, then the user's own preferences take over again.
+   */
   upsertMute(userId: string, communityId: string, mutedUntil: Date | null) {
+    const allOff =
+      mutedUntil === null
+        ? {
+            streamEnabled: false,
+            chatEnabled: false,
+            announcementEnabled: false,
+          }
+        : {};
     return prisma.communityMuteSetting.upsert({
       where: { userId_communityId: { userId, communityId } },
-      create: { userId, communityId, mutedUntil },
-      update: { mutedUntil },
+      create: { userId, communityId, mutedUntil, ...allOff },
+      update: { mutedUntil, ...allOff },
     });
   },
 

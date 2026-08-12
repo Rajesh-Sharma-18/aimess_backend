@@ -350,3 +350,72 @@ amount. Recompute from `RoomMember` where `status = "active"` per room.
 6. The community room list adds one indexed membership query per call. It
    replaces an unbounded full-table scan, so it should be a net win, but it is a
    new query on a hot path.
+
+---
+
+## 8. Issues 50 + 51 — community notification preferences vs. the mute icon
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Filed as two symptoms; they are one defect in the storage model of
+`CommunityMuteSetting`, which carried two contradictory meanings on one row.
+
+### Root cause
+
+`CommunityMuteSetting` holds both the three category toggles
+(`chatEnabled` / `announcementEnabled` / `streamEnabled`) and `mutedUntil`. The
+old code read `mutedUntil === null` on an existing row as "muted indefinitely":
+
+- `apps/community-service/src/lib/community-notification-pref.ts:23-28,50` —
+  `isMuteRowActive()` returned true for any row with `mutedUntil === null`, and
+  the oracle short-circuited to `false` for **every** field before it ever read
+  the requested toggle.
+- `apps/community-service/src/repositories/community.repository.ts:3064-3078` —
+  `upsertNotificationPrefs()` creates the row with `mutedUntil` unset, i.e.
+  `null`.
+
+So the first time a member touched **any** switch, the row it created was
+indistinguishable from an indefinite mute. Every notification kind was
+suppressed from then on and switching a category back on changed nothing —
+**issue 51**. The same predicate fed the caller-facing mute flag
+(`community.service.ts:924`, `muteFields()`), so the list/sidebar rendered the
+mute icon while the panel showed all three switches green — **issue 50**.
+
+### Fix — one meaning per field
+
+`mutedUntil` is now a **timed** mute only (`null` = no timed mute). An
+indefinite mute is stored as all three toggles false. `isMuted` is always
+derived, never stored: a running timed mute, or all three off.
+
+| File                                      | Change                                                                                                                                                                                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/community-notification-pref.ts`      | `isMuteRowActive` → `isTimedMuteActive` (future timestamp only) + new `isCommunityMuted` derivation; oracle falls through to the per-field toggle                                                                                       |
+| `repositories/community.repository.ts`    | `upsertMute(…, null)` writes all three toggles false; `findStreamMutedMemberIds` also excludes members under a running timed mute                                                                                                       |
+| `services/community.service.ts`           | `muteFields`, `getNotificationPreferences`, `setNotificationPreferences` all derive `isMuted` via `isCommunityMuted`; `setNotificationPreferences` now publishes `community:notification-setting-updated` so other devices/tabs re-sync |
+| `apps/api-gateway/asyncapi/asyncapi.yaml` | Documented that `isMuted` is derived and `muteUntil: null` is not an indefinite mute                                                                                                                                                    |
+
+Delivery gating is unchanged in shape — `push.service.ts:327` still calls the
+same oracle, so chat, announcement and livestream pushes resume the moment a
+category is switched back on.
+
+### Migration
+
+`scripts/backfill-indefinite-community-mutes.ts` — **dry run by default**.
+
+The old schema cannot distinguish a genuine indefinite mute from a preferences
+row: both are `mutedUntil = null`, and a member who switched a category off and
+back on again also lands on all-three-true. Without `--apply` those rows read as
+un-muted after deploy, which is the fail-safe direction (notifications resume;
+re-muting is one tap). Run with `--apply` only if preserving the old mutes
+matters more than the members whose switches were genuinely on.
+
+### Tests
+
+- `tests/mute/community-mute-model.test.ts` (new) — the `isCommunityMuted` truth
+  table, how `upsertMute` stores indefinite vs. timed mutes, and the livestream
+  fan-out exclusion.
+- `tests/mute/community-notification-pref.test.ts` — the case that asserted
+  "`mutedUntil = null` ⇒ everything suppressed" now asserts the opposite, plus a
+  re-enable-after-full-mute case.
+
+49 tests pass across the four mute suites; `tsc --noEmit` clean in both repos.
