@@ -831,6 +831,23 @@ export class GroupRoomService {
     return { ...updated, avatar: resolvedAvatar };
   }
 
+  /**
+   * Disband: the group is over for everyone.
+   *
+   * Flipping `GroupRoom.status` to DISBANDED is NOT on its own enough to end the
+   * group. Every authorization path in this service resolves a `GroupMember`
+   * row and never looks at the room's status — `sendMessage`,
+   * `assertGroupMember` and `assertGroupReadAccess` all go through
+   * `findActiveByRoomAndUser`/`findByRoomAndUser`. So while the memberships
+   * stayed ACTIVE the "disbanded" group kept accepting messages, reactions,
+   * pins and reads exactly as before; the only visible effect was the room flag.
+   *
+   * Ending the memberships is what actually closes it, and it reuses the
+   * existing LEFT semantics rather than adding a status check to every guard:
+   * writes are denied (ACTIVE-only), and history stays readable up to
+   * `disbandedAt` via `assertGroupReadAccess`'s LEFT cutoff — the room stays in
+   * everyone's list, read-only, which is the intended behaviour.
+   */
   async disbandGroup(roomId: string, userId: string): Promise<GroupRoom> {
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
@@ -843,6 +860,13 @@ export class GroupRoomService {
 
     const disbanded = await this.roomRepo.disband(roomId, userId);
     if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+
+    // End every membership at the SAME instant the room recorded, so the
+    // read cutoff and the room's `disbandedAt` can never disagree.
+    await this.memberRepo.markAllLeft(
+      roomId,
+      disbanded.disbandedAt ?? new Date()
+    );
 
     // Revoke all active invite links
     await this.inviteLinkRepo.revokeAllForRoom(roomId, userId);

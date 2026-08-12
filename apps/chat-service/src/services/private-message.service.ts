@@ -31,7 +31,10 @@ import {
   buildGroupInvitationAction,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
-import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  assertPrivateParticipant,
+  privateRoomPeerId,
+} from "../lib/access-guard.js";
 import {
   computeAutoDeleteStamp,
   readRoomAutoDelete,
@@ -131,10 +134,28 @@ export class PrivateMessageService {
     private readonly groupInviteLinkRepo?: GroupInviteLinkRepository
   ) {}
 
+  /**
+   * Send into a private room.
+   *
+   * Two things are deliberately NOT taken from the caller:
+   *
+   *  - AUTHORIZATION. The friendship/block gate answers "may these two talk",
+   *    which is not the same question as "is the sender in THIS room". Without
+   *    the participation guard a caller who is friends with anyone could post
+   *    into any `roomId` they could name. `assertPrivateParticipant` runs FIRST,
+   *    before the friendship round-trip and before a sequence number is burned.
+   *
+   *  - The RECIPIENT. `params.receiverId` is accepted for wire compatibility and
+   *    then ignored; the peer is derived from the room's own `participants` (see
+   *    {@link privateRoomPeerId}). It drives the persisted row, the unread
+   *    increment, the delivery receipt and — via the returned row — the
+   *    orchestrator's socket/push fan-out.
+   */
   async sendMessage(params: {
     roomId: string;
     senderId: string;
-    receiverId: string;
+    /** @deprecated Ignored — the peer is resolved from the room roster. */
+    receiverId?: string;
     content: {
       text: string;
       urls?: string[];
@@ -152,15 +173,16 @@ export class PrivateMessageService {
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
 
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.senderId
+    );
+    const receiverId = privateRoomPeerId(room, params.senderId);
+
     const [friends, blocked] = await Promise.all([
-      this.userServiceClient.checkFriendship(
-        params.senderId,
-        params.receiverId
-      ),
-      this.userServiceClient.isFriendshipBlocked(
-        params.senderId,
-        params.receiverId
-      ),
+      this.userServiceClient.checkFriendship(params.senderId, receiverId),
+      this.userServiceClient.isFriendshipBlocked(params.senderId, receiverId),
     ]);
     if (blocked) {
       throw new ForbiddenError("CHAT_BLOCKED");
@@ -262,7 +284,7 @@ export class PrivateMessageService {
         autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.roomId,
         senderId: params.senderId,
-        receiverId: params.receiverId,
+        receiverId,
         content: part.content,
         messageType: normalizeMessageType(part.messageType),
         parentMessageId: resolvedParentId,
@@ -354,7 +376,7 @@ export class PrivateMessageService {
           sequenceNumber: message.sequenceNumber,
           revision: message.revision,
         },
-        receiverId: params.receiverId,
+        receiverId,
         unreadIncrement,
       });
       if (isFirstMessage && this.redis) {
@@ -365,13 +387,13 @@ export class PrivateMessageService {
           event: "conv:created",
           data: {
             roomId: params.roomId,
-            participants: [params.senderId, params.receiverId],
+            participants: [params.senderId, receiverId],
           },
         });
         this.redis.publish(`user:${params.senderId}`, payload).catch(() => {});
-        this.redis
-          .publish(`user:${params.receiverId}`, payload)
-          .catch(() => {});
+        if (receiverId) {
+          this.redis.publish(`user:${receiverId}`, payload).catch(() => {});
+        }
       }
     } catch (err: unknown) {
       logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
@@ -383,7 +405,7 @@ export class PrivateMessageService {
     // opened the chat"). Fire-and-forget so the send path returns promptly.
     void this.markDeliveredForOnlinePeer({
       roomId: params.roomId,
-      peerId: params.receiverId,
+      peerId: receiverId,
       senderId: params.senderId,
       messages: created,
     });
@@ -1694,13 +1716,27 @@ export class PrivateMessageService {
     sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
-    receiverId: string;
+    /** @deprecated Ignored — the peer is resolved from the TARGET room roster. */
+    receiverId?: string;
     clientMessageId?: string | null;
   }): Promise<PrivateMessage> {
+    // A forward is a WRITE into the TARGET room, so it needs the same
+    // participation guard `sendMessage` has. Only the SOURCE room was bound
+    // (below), which left the write side open: a caller who was friends with
+    // whatever `receiverId` they claimed could inject a message into any
+    // `targetRoomId` they could name — a DM they are not part of. The peer is
+    // derived from the target room for the same reason it is in `sendMessage`.
+    const targetRoom = await assertPrivateParticipant(
+      this.roomRepo,
+      params.targetRoomId,
+      params.senderId
+    );
+    const receiverId = privateRoomPeerId(targetRoom, params.senderId);
+
     // friendship gate
     const friends = await this.userServiceClient.checkFriendship(
       params.senderId,
-      params.receiverId
+      receiverId
     );
     if (!friends) throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
 
@@ -1750,7 +1786,7 @@ export class PrivateMessageService {
         autoDeleteAfterView: autoDelete.autoDeleteAfterView,
         roomId: params.targetRoomId,
         senderId: params.senderId,
-        receiverId: params.receiverId,
+        receiverId,
         content: source.content as object,
         messageType: source.messageType,
         forwardData,
@@ -1787,7 +1823,7 @@ export class PrivateMessageService {
           sequenceNumber: message.sequenceNumber,
           revision: message.revision,
         },
-        receiverId: params.receiverId,
+        receiverId,
         unreadIncrement: shouldCountInUnread({
           messageType: message.messageType,
           systemEvent: message.systemEvent,
@@ -1806,6 +1842,13 @@ export class PrivateMessageService {
     return message;
   }
 
+  /**
+   * The reactor list for one private message — an identity disclosure (userId +
+   * displayName + avatar of everyone who reacted), so it carries the same guard
+   * as any other read of the room: participant, then the message bound to the
+   * room. `params.roomId` used to be accepted and never read, which meant a bare
+   * `messageId` from ANY private conversation returned its reactors.
+   */
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
@@ -1820,6 +1863,13 @@ export class PrivateMessageService {
       }
     >;
   }> {
+    await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.requesterId
+    );
+    await this.assertMessageInRoom(params.roomId, params.messageId);
+
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 

@@ -166,9 +166,21 @@ export const reportMessageSchema = z.object({
   reportDescription: z.string().max(300).trim().default(""),
 });
 
+/**
+ * `GET /chat/community/rooms/search`. `page`/`limit` are declared here on
+ * purpose: `validateQuery` replaces `req.query` with the parsed object, so a key
+ * missing from the schema is STRIPPED and the handler silently falls back to its
+ * default (the bug that made community `before_seq` a no-op). `limit` is bounded
+ * so the search can't be asked for an unbounded page.
+ */
 export const searchRoomsSchema = z.object({
   query: z.string().min(1).max(100),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
 });
+
+/** `GET /chat/community/rooms` — same bounded pagination, no search term. */
+export const listRoomsSchema = searchRoomsSchema.omit({ query: true });
 
 export const pinCommunityMessageSchema = z.object({
   communityId: z.string().optional(),

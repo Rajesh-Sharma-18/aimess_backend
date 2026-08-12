@@ -199,6 +199,22 @@ export class RoomMemberRepository {
   }
 
   /**
+   * Room ids the user holds a VISIBLE membership row in (ACTIVE or BANNED) — the
+   * membership half of the community room list/search visibility rule. BANNED is
+   * included on purpose: a banned member keeps the community in their list (they
+   * just can't act in it), the same READ/WRITE split
+   * {@link assertCommunityReadAccess} applies. Ids only, so a user in thousands
+   * of communities still costs one projected query.
+   */
+  async findVisibleRoomIdsByUser(userId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: { userId, status: { in: ["active", "banned"] } },
+      select: { roomId: true },
+    });
+    return rows.map((r) => r.roomId);
+  }
+
+  /**
    * Bulk: a user's ACTIVE + BANNED member rows across many rooms — the basis for
    * member-only community-chat summaries. BANNED rows are included (with
    * `bannedAt`) so the caller can clamp a banned member's summary to a read

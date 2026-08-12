@@ -364,6 +364,10 @@ function toLeaveErrorCode(err: unknown): BulkLeaveErrorCode {
   const code = (err as { message?: string })?.message ?? "";
   if (code === "CHAT_OWNER_CANNOT_LEAVE") return "OWNER_CANNOT_LEAVE";
   if (code === "CHAT_NOT_A_MEMBER") return "NOT_MEMBER";
+  // The private-room guard's own "you aren't in this room" code — same meaning
+  // as CHAT_NOT_A_MEMBER, so it must report NOT_MEMBER rather than degrading to
+  // the catch-all NOT_FOUND ("this room doesn't exist").
+  if (code === "CHAT_NOT_PARTICIPANT") return "NOT_MEMBER";
   return "NOT_FOUND";
 }
 

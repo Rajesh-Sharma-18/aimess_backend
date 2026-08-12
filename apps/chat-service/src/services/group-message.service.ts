@@ -2082,6 +2082,17 @@ export class GroupMessageService {
     };
   }
 
+  /**
+   * The reactor list for one group message — userId + displayName + avatar of
+   * everyone who reacted, i.e. a roster disclosure, so it takes the same guard
+   * as every other group read: `assertGroupReadAccess` (ACTIVE members, plus
+   * LEFT/KICKED members capped at their cutoff), then the message bound to the
+   * room and clamped to that cutoff.
+   *
+   * It previously ran no check at all and ignored `params.roomId` entirely, so a
+   * bare `messageId` returned the reactors of any group message to any
+   * authenticated caller.
+   */
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
@@ -2096,6 +2107,18 @@ export class GroupMessageService {
       }
     >;
   }> {
+    const { readCutoffBefore } = await assertGroupReadAccess(
+      this.memberRepo,
+      params.roomId,
+      params.requesterId
+    );
+    const message = await this.messageRepo.findById(params.messageId);
+    // NotFound, never Forbidden — a foreign message's existence isn't leaked.
+    if (!message || message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (readCutoffBefore && message.createdAt > readCutoffBefore)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 

@@ -1,5 +1,6 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 
+import { assertCommunityMember } from "../lib/access-guard.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -46,8 +47,25 @@ export class CommunityRoomService {
     }
   }
 
-  async getRooms(userId: string | null): Promise<CommunityRoomView[]> {
-    const rooms = await this.roomRepo.findActiveRooms();
+  /**
+   * One page of the community rooms this viewer may SEE: every PUBLIC community
+   * plus the ones they hold a membership row in. PRIVATE communities the caller
+   * is not in are excluded at the query — they used to be returned to ANY
+   * caller (the route was unauthenticated too), which leaked the community's
+   * existence, name and its `lastMessage` preview text.
+   */
+  async getRooms(
+    userId: string,
+    page = 1,
+    limit = 20
+  ): Promise<CommunityRoomView[]> {
+    const memberRoomIds =
+      await this.memberRepo.findVisibleRoomIdsByUser(userId);
+    const rooms = await this.roomRepo.findVisibleRooms({
+      memberRoomIds,
+      skip: Math.max(0, (page - 1) * limit),
+      take: limit,
+    });
     const liveCounts = await this.fetchLiveCounts(rooms.map((r) => r.id));
 
     const withLivestream = (room: GeneralRoom): CommunityRoomView => {
@@ -62,9 +80,6 @@ export class CommunityRoomService {
         liveStreamCount: count,
       };
     };
-
-    // Anonymous callers get livestream state but no per-user unread (no token).
-    if (!userId) return rooms.map(withLivestream);
 
     // Attach read timestamps for unread indicators
     const readTimestamps =
@@ -86,24 +101,50 @@ export class CommunityRoomService {
     });
   }
 
-  async searchRooms(query: string): Promise<GeneralRoom[]> {
-    return this.roomRepo.searchRooms(query);
+  /** Same visibility rule as {@link getRooms}, applied to the text search. */
+  async searchRooms(
+    query: string,
+    userId: string,
+    page = 1,
+    limit = 20
+  ): Promise<GeneralRoom[]> {
+    const memberRoomIds =
+      await this.memberRepo.findVisibleRoomIdsByUser(userId);
+    return this.roomRepo.searchRooms({
+      query,
+      memberRoomIds,
+      skip: Math.max(0, (page - 1) * limit),
+      take: limit,
+    });
   }
 
+  /**
+   * Attach the caller's chat-side membership mirror for a community they ALREADY
+   * belong to. This is a mirror SYNC, never a grant.
+   *
+   * It used to upsert `RoomMember{status:"active"}` after only a ban check, so
+   * any authenticated user could POST this route for any roomId — including a
+   * PRIVATE community — and self-grant a membership row. Every community guard
+   * (`assertCommunityMember`, `assertCommunityReadAccess`) trusts that row, so
+   * the forged mirror bought full read AND write access to a private
+   * community's chat.
+   *
+   * Membership is owned by community-service. `assertCommunityMember` is the one
+   * place that asks it: it short-circuits on an already-active mirror, and
+   * otherwise does the authoritative `checkCommunityMembership` lookup and heals
+   * the mirror only when community-service confirms ACTIVE — the exact
+   * heal-don't-grant behaviour this route needs. Non-members get
+   * `CHAT_NOT_A_MEMBER`, banned callers `USER_BANNED`.
+   *
+   * `memberNumber` is deliberately NOT incremented any more: the count is
+   * maintained by the `community.member.synced` consumer, so bumping it here
+   * double-counted every join (and inflated it further on each repeat call).
+   */
   async join(roomId: string, userId: string): Promise<void> {
     const room = await this.roomRepo.findRoomById(roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
-    const isBanned = await this.memberRepo.isBanned(roomId, userId);
-    if (isBanned) throw new BadRequestError("CHAT_BANNED_FROM_ROOM");
-
-    await this.memberRepo.upsert(roomId, userId, {
-      status: "active",
-      role: "member",
-      joinedAt: new Date(),
-    } as Record<string, unknown>);
-
-    await this.roomRepo.incMemberNumber(roomId, 1);
+    await assertCommunityMember(this.memberRepo, roomId, userId);
   }
 
   async leave(roomId: string, userId: string): Promise<void> {
@@ -140,12 +181,16 @@ export class CommunityRoomService {
     });
   }
 
-  async countRooms(): Promise<number> {
-    return this.roomRepo.countActiveRooms();
+  async countRooms(userId: string): Promise<number> {
+    const memberRoomIds =
+      await this.memberRepo.findVisibleRoomIdsByUser(userId);
+    return this.roomRepo.countVisibleRooms(memberRoomIds);
   }
 
-  async countSearchResults(query: string): Promise<number> {
-    return this.roomRepo.countSearchResults(query);
+  async countSearchResults(query: string, userId: string): Promise<number> {
+    const memberRoomIds =
+      await this.memberRepo.findVisibleRoomIdsByUser(userId);
+    return this.roomRepo.countSearchResults(query, memberRoomIds);
   }
 
   async assertNotBanned(roomId: string, userId: string): Promise<void> {

@@ -21,6 +21,8 @@ import {
   sendCommunityMessageBodySchema,
   markCommunityReadBodySchema,
   forwardCommunityMessageBodySchema,
+  listRoomsSchema,
+  searchRoomsSchema,
 } from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
@@ -37,8 +39,22 @@ export function createCommunityRoutes(
 ): Router {
   const router = Router();
 
-  router.get("/rooms", roomCtrl.getRooms);
-  router.get("/rooms/search", roomCtrl.searchRooms);
+  // Both listings are viewer-scoped (PUBLIC communities + the caller's own
+  // memberships), so they REQUIRE a token — they used to be the only two
+  // unauthenticated routes on this router and returned every PRIVATE
+  // community's name and last-message preview to anonymous callers.
+  router.get(
+    "/rooms",
+    authenticate,
+    validateQuery(listRoomsSchema),
+    roomCtrl.getRooms
+  );
+  router.get(
+    "/rooms/search",
+    authenticate,
+    validateQuery(searchRoomsSchema),
+    roomCtrl.searchRooms
+  );
   router.post("/rooms/:roomId/join", authenticate, roomCtrl.join);
   router.post("/rooms/:roomId/leave", authenticate, roomCtrl.leave);
 

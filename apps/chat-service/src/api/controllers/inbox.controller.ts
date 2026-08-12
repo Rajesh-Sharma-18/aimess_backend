@@ -23,6 +23,16 @@ export class InboxController {
    *     before_ts → lastMessageAt <= before_ts (newest-first)
    *     after_ts  → lastMessageAt >= after_ts  (oldest-first)
    *     Pages share the boundary row on a tie; clients de-dupe by roomId.
+   *     They also accept the compound token, since that is what `nextCursor`
+   *     now always returns.
+   *
+   * `nextCursor` is ALWAYS the compound token, in both modes. It used to be a
+   * bare epoch-ms in legacy mode, and the doc above tells clients to echo
+   * `nextCursor` into `before_cursor` — a bare value there parses to a boundary
+   * with NO tiebreaker, which turns the exclusive keyset into a plain
+   * `lastMessageAt < ts` and silently drops EVERY conversation sharing that
+   * millisecond, permanently. Emitting the tiebreaker on every page is what
+   * makes "echo it back verbatim" safe whichever param the client uses.
    *
    * Both modes share the same service call, items and response envelope — only
    * the DB boundary differs.
@@ -34,43 +44,27 @@ export class InboxController {
     // Compound-cursor mode wins when present: it is the strictly better boundary.
     // The token is "<ms>_<roomId>" — `parseTsCursor` splits on the FIRST "_" so
     // the roomId's own "prv_"/"grp_" prefix survives intact.
+    const after = req.query.after_cursor ?? req.query.after_ts;
+    const before = req.query.before_cursor ?? req.query.before_ts;
     const rawCursor =
-      req.query.after_cursor != null
-        ? String(req.query.after_cursor)
-        : req.query.before_cursor != null
-          ? String(req.query.before_cursor)
+      after != null
+        ? String(after)
+        : before != null
+          ? String(before)
           : undefined;
+    const cursor = rawCursor != null ? parseTsCursor(rawCursor) : null;
 
-    if (rawCursor != null) {
-      const cursor = parseTsCursor(rawCursor);
-      const result = await this.service.getInbox({
-        userId,
-        direction: req.query.after_cursor != null ? "after" : "before",
-        ts: new Date(cursor ? cursor.ms : Date.now()),
-        boundaryId: cursor?.id ?? null,
-        // A cursor page is exclusive so it never re-returns its own boundary row.
-        inclusive: cursor == null,
-        compoundCursor: true,
-        limit,
-      });
-
-      this.send(req, res, result, limit);
-      return;
-    }
-
-    const beforeTs =
-      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
-    const afterTs =
-      req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
-
-    const direction = afterTs != null ? "after" : "before";
-    const tsMs =
-      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
-
+    // A continuation token (one carrying the roomId tiebreaker) is EXCLUSIVE so
+    // a page never re-returns its own boundary row. A bare epoch-ms keeps the
+    // legacy INCLUSIVE meaning — it is a coarse "give me everything at or before
+    // this instant" jump, not a continuation.
     const result = await this.service.getInbox({
       userId,
-      direction,
-      ts: new Date(tsMs),
+      direction: after != null ? "after" : "before",
+      ts: new Date(cursor ? cursor.ms : Date.now()),
+      boundaryId: cursor?.id ?? null,
+      inclusive: cursor?.id == null,
+      compoundCursor: true,
       limit,
     });
 
