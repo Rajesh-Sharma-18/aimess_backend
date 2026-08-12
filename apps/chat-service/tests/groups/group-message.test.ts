@@ -697,6 +697,17 @@ describe("pins + forward + reactions", () => {
   });
 
   it("POSITIVE: get reactions returns grouped result", async () => {
+    // AUDIT-110 — the read is now gated on membership and the message must
+    // belong to the room in the path.
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: ROOM,
+      createdAt: new Date(1),
+    });
     // The repo returns the stored map PLUS the owning roomId (the revision
     // allocator needs it), not the bare map.
     mocks.groupMessageRepo.getReactions.mockResolvedValue({
@@ -713,6 +724,11 @@ describe("pins + forward + reactions", () => {
   });
 
   it("NEGATIVE: 404 reactions for a missing message", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.findById.mockResolvedValue(null);
     mocks.groupMessageRepo.getReactions.mockResolvedValue(null);
 
     const res = await request(app)
@@ -720,6 +736,40 @@ describe("pins + forward + reactions", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+  });
+
+  // AUDIT-110 — this read returned the reactor identity list (userId +
+  // displayName + avatar) for ANY messageId with no membership check at all,
+  // and ignored the roomId in the path entirely.
+  it("SECURITY: 403 reactions for a non-member of the group", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`${BASE}/${ROOM}/messages/g1/reactions`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMessageRepo.getReactions).not.toHaveBeenCalled();
+  });
+
+  // AUDIT-110 — a member of group A could pass a messageId from group B.
+  it("SECURITY: 404 when the message belongs to a DIFFERENT room", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "g1",
+      roomId: "grp_other",
+      createdAt: new Date(1),
+    });
+
+    const res = await request(app)
+      .get(`${BASE}/${ROOM}/messages/g1/reactions`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupMessageRepo.getReactions).not.toHaveBeenCalled();
   });
 });
 

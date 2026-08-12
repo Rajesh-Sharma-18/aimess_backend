@@ -128,14 +128,15 @@ function makeInboxController() {
 }
 
 describe("InboxController.getInbox", () => {
-  it("no params → legacy newest page, no keyset args", async () => {
+  it("no params → newest page, no boundary, inclusive", async () => {
     const { controller, service } = makeInboxController();
     await invoke(controller.getInbox, { limit: "20" });
     const arg = service.getInbox.mock.calls[0]![0];
     expect(arg.direction).toBe("before");
-    expect(arg.boundaryId).toBeUndefined();
-    expect(arg.inclusive).toBeUndefined();
-    expect(arg.compoundCursor).toBeUndefined();
+    expect(arg.boundaryId).toBeNull();
+    expect(arg.inclusive).toBe(true);
+    // Every page emits the compound nextCursor now — see the AUDIT-111 case below.
+    expect(arg.compoundCursor).toBe(true);
     expect(arg.limit).toBe(20);
   });
 
@@ -161,23 +162,41 @@ describe("InboxController.getInbox", () => {
     expect(service.getInbox.mock.calls[0]![0].direction).toBe("after");
   });
 
-  it("bare epoch-ms in before_cursor decodes (coarse jump, exclusive)", async () => {
+  // AUDIT-111 — a bare epoch-ms carries NO tiebreaker, so an exclusive bound
+  // degrades to `lastMessageAt < ts` and every conversation sharing that exact
+  // millisecond is skipped, permanently. Bare values are therefore a coarse
+  // INCLUSIVE jump (pages may share the boundary row; clients de-dupe by
+  // roomId); only a real continuation token — one carrying the roomId — is
+  // exclusive, and that one can't drop anything.
+  it("bare epoch-ms in before_cursor is an inclusive coarse jump, never exclusive", async () => {
     const { controller, service } = makeInboxController();
     await invoke(controller.getInbox, { before_cursor: "1784106000000" });
     const arg = service.getInbox.mock.calls[0]![0];
     expect(arg.ts.getTime()).toBe(1784106000000);
     expect(arg.boundaryId).toBeNull();
-    expect(arg.inclusive).toBe(false);
+    expect(arg.inclusive).toBe(true);
   });
 
-  it("legacy before_ts is unchanged: bare bound, inclusive, no keyset args", async () => {
+  it("legacy before_ts keeps its bare inclusive bound", async () => {
     const { controller, service } = makeInboxController();
     await invoke(controller.getInbox, { before_ts: "1784106000000" });
     const arg = service.getInbox.mock.calls[0]![0];
     expect(arg.ts.getTime()).toBe(1784106000000);
-    expect(arg.boundaryId).toBeUndefined();
-    expect(arg.inclusive).toBeUndefined();
-    expect(arg.compoundCursor).toBeUndefined();
+    expect(arg.boundaryId).toBeNull();
+    expect(arg.inclusive).toBe(true);
+  });
+
+  // AUDIT-111 — nextCursor is documented as "echo it back verbatim", so a
+  // legacy-mode page that handed back a bare ms produced a tiebreaker-less
+  // before_cursor on the very next request. before_ts must therefore ALSO
+  // accept the compound token (it used to 400 on `z.coerce.number()` → NaN).
+  it("before_ts accepts the compound token and decodes its tiebreaker", async () => {
+    const { controller, service } = makeInboxController();
+    await invoke(controller.getInbox, { before_ts: "1784106000000_prv_abc" });
+    const arg = service.getInbox.mock.calls[0]![0];
+    expect(arg.ts.getTime()).toBe(1784106000000);
+    expect(arg.boundaryId).toBe("prv_abc");
+    expect(arg.inclusive).toBe(false);
   });
 
   it("*_cursor wins over *_ts when a client sends both", async () => {

@@ -81,9 +81,10 @@ export class CommunityRoomService {
       };
     };
 
-    // Attach read timestamps for unread indicators
+    // Attach read timestamps for unread indicators. A Redis miss/outage yields
+    // nothing — degrade to "everything unread" rather than failing the list.
     const readTimestamps =
-      await this.cacheRepo.getGeneralRoomReadTimestamps(userId);
+      (await this.cacheRepo.getGeneralRoomReadTimestamps(userId)) ?? {};
 
     return rooms.map((room) => {
       const roomId = room.id;

@@ -357,9 +357,15 @@ describe("Unified inbox ordering", () => {
     const res = await inbox("?limit=1");
 
     expect(res.body.data.pagination.hasMore).toBe(true);
+    // AUDIT-111 — the cursor is the compound "<ms>_<roomId>" token on every
+    // page now, so a client echoing it back always carries the tiebreaker.
+    const [ms, boundaryRoomId] = String(
+      res.body.data.pagination.nextCursor
+    ).split(/_(.*)/s);
     // NOT 10:00 (the effective value) — that would jump the next page's bound
     // past the 10:05 row that was never returned.
-    expect(Number(res.body.data.pagination.nextCursor)).toBe(T_10_10.getTime());
+    expect(Number(ms)).toBe(T_10_10.getTime());
+    expect(boundaryRoomId).toBe("prv_1");
   });
 });
 

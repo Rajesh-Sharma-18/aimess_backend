@@ -396,6 +396,50 @@ describe("POST /api/chat/groups/rooms/:roomId/disband", () => {
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });
+
+  // AUDIT-109 — disband only flipped GroupRoom.status, and NOTHING on the
+  // authorization path reads that field: every guard resolves a GroupMember row
+  // instead. So a "disbanded" group kept accepting messages, reactions and pins
+  // exactly as before. Ending the memberships is what actually closes it —
+  // ACTIVE-only guards then deny writes, while assertGroupReadAccess keeps
+  // history readable up to the cutoff (read-only, not vanished).
+  it("BUG: ends every membership at disbandedAt, so the ACTIVE-only guards deny writes", async () => {
+    const disbandedAt = new Date(1_700_000_000_000);
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupRoomRepo.disband.mockResolvedValue({
+      roomId: "grp_1",
+      status: "DISBANDED",
+      disbandedAt,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/groups/rooms/grp_1/disband")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    // Same instant the room recorded — the read cutoff and disbandedAt must
+    // never disagree.
+    expect(mocks.groupMemberRepo.markAllLeft).toHaveBeenCalledWith(
+      "grp_1",
+      disbandedAt
+    );
+  });
+
+  it("BUG: a disbanded group's members can no longer send", async () => {
+    // Post-disband every row is LEFT, so the ACTIVE lookup the send path uses
+    // misses and the write is rejected.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/chat/groups/rooms/grp_1/messages")
+      .set(bearer(makeAccessToken()))
+      .send({ content: { text: "still here?" }, messageType: "TEXT" });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mocks.groupMessageRepo.createMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /api/chat/groups/rooms/:roomId/archive + /unarchive", () => {

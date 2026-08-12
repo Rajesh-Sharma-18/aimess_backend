@@ -239,11 +239,14 @@ describe("B1 cross-room IDOR — private forward (source-room bind)", () => {
     });
     // …but the caller is NOT a participant of PRV (the source room they named in
     // the path) — so forwarding it would exfiltrate a message from a DM they're
-    // not in. Source-room bind → NotFound.
-    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
-      roomId: PRV,
-      participants: ["someone_else", "peer"],
-    });
+    // not in. Source-room bind → NotFound. The caller IS in the target room, so
+    // only the source bind can reject this.
+    mocks.privateRoomRepo.findByRoomId.mockImplementation(
+      async (roomId: string) =>
+        roomId === PRV
+          ? { roomId: PRV, participants: ["someone_else", "peer"] }
+          : { roomId, participants: [TEST_USER_ID, "peer-2"] }
+    );
 
     const res = await request(app)
       .post(`/api/chat/private/rooms/${PRV}/messages/src/forward`)
@@ -257,6 +260,41 @@ describe("B1 cross-room IDOR — private forward (source-room bind)", () => {
     // Nothing fanned out onto the target room.
     expect(
       broadcastsFor(mocks.redis, "prv_target_room", "message:new")
+    ).toHaveLength(0);
+  });
+
+  // AUDIT-104 — the SOURCE room was bound but the TARGET was not, so a caller
+  // who was friends with whatever `receiverId` they claimed could inject a
+  // message into any targetRoomId they could name: a DM they are not part of.
+  it("NEGATIVE: 403 when the caller is not a participant of the TARGET room; nothing written or broadcast", async () => {
+    mocks.userServiceClient.checkFriendship.mockResolvedValue(true);
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "src",
+      roomId: PRV,
+      isDeleted: false,
+      messageType: "TEXT",
+      content: { text: "secret" },
+      createdAt: new Date(10),
+    });
+    // The caller owns the SOURCE room but is a stranger to the TARGET.
+    mocks.privateRoomRepo.findByRoomId.mockImplementation(
+      async (roomId: string) =>
+        roomId === PRV
+          ? { roomId: PRV, participants: [TEST_USER_ID, "peer"] }
+          : { roomId, participants: ["victim_a", "victim_b"] }
+    );
+
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${PRV}/messages/src/forward`)
+      .set(bearer(makeAccessToken()))
+      .send({ targetRoomId: "prv_someone_elses_dm", receiverId: "victim_a" });
+
+    expect(res.status).toBe(403);
+    expect(
+      mocks.privateMessageRepo.createForwardedMessage
+    ).not.toHaveBeenCalled();
+    expect(
+      broadcastsFor(mocks.redis, "prv_someone_elses_dm", "message:new")
     ).toHaveLength(0);
   });
 

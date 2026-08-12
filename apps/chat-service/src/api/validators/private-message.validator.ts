@@ -35,7 +35,8 @@ const messageFileSchema = z.object({
 export const sendPrivateMessageSchema = z
   .object({
     roomId: z.string().min(5).max(300),
-    receiverId: z.string().min(5).max(100),
+    /** @deprecated Accepted but IGNORED — the peer is resolved from the room. */
+    receiverId: z.string().min(5).max(100).optional(),
     content: z.object({
       text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
       urls: z.array(z.string().url()).default([]),
@@ -62,7 +63,8 @@ export const sendPrivateMessageSchema = z
  */
 export const sendPrivateMessageBodySchema = z
   .object({
-    receiverId: z.string().min(5).max(100),
+    /** @deprecated Accepted but IGNORED — the peer is resolved from the room. */
+    receiverId: z.string().min(5).max(100).optional(),
     content: z.object({
       text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
       urls: z.array(z.string().url()).default([]),
@@ -147,7 +149,8 @@ export const getMessagesSchema = z.object({
 
 export const forwardMessageSchema = z.object({
   targetRoomId: z.string().min(4).max(150),
-  receiverId: z.string().min(4).max(100),
+  /** @deprecated Accepted but IGNORED — the peer is resolved from the TARGET room. */
+  receiverId: z.string().min(4).max(100).optional(),
   clientMessageId: z.string().min(1).max(100).nullish(),
 });
 
