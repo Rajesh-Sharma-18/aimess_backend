@@ -27,6 +27,7 @@ process.env.RABBITMQ_URL = "amqp://localhost:5672";
 // the production ceiling. Specs that assert throttling set their own value
 // before importing the app (see tests/account/account-deletion-rate-limit.test.ts).
 process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = "100";
+process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = "100";
 
 // Keep OTP deterministic if any code path reaches it under test.
 process.env.OTP_DEV_FIXED_CODE = "123456";

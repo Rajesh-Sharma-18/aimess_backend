@@ -33,6 +33,50 @@ const POLICY_SCOPE: Partial<Record<MediaAccessPolicy, MediaAccessScope>> = {
   COMMUNITY_MEMBER: "COMMUNITY_CHAT",
 };
 
+/**
+ * Upload category → the chat-service membership scope that owns it. Only the
+ * three chat-attachment categories are membership-scoped; avatars and covers are
+ * PUBLIC and have no resource to belong to.
+ */
+const CATEGORY_SCOPE: Partial<Record<MediaCategoryKey, MediaAccessScope>> = {
+  CHAT_ATTACHMENT: "PRIVATE_CHAT",
+  GROUP_CHAT_ATTACHMENT: "GROUP_CHAT",
+  COMMUNITY_CHAT_ATTACHMENT: "COMMUNITY_CHAT",
+};
+
+/**
+ * UPLOAD-side authorization: the caller must belong to the resource they claim
+ * to be uploading into.
+ *
+ * `resourceId` was previously taken on trust and written straight to the
+ * registry, so a user could mint an upload URL against any community or group id
+ * they could name and file the object under it. That is both a write into
+ * someone else's storage scope and a download-authz problem later — the registry
+ * row is exactly what the download guard reads back.
+ *
+ * No-op for the non-chat categories (nothing to be a member of).
+ *
+ * @throws ForbiddenError `CHAT_MEDIA_FORBIDDEN` when the caller isn't in it.
+ */
+export async function assertUploadResourceAccess(params: {
+  category: MediaCategoryKey;
+  resourceId?: string | null;
+  requesterId: string;
+}): Promise<void> {
+  const scope = CATEGORY_SCOPE[params.category];
+  if (!scope) return;
+  // The validator requires resourceId for these categories; belt-and-braces for
+  // any internal caller that bypasses it.
+  if (!params.resourceId) throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
+
+  const allowed = await getChatAccessClient().checkMediaAccess({
+    userId: params.requesterId,
+    scope,
+    resourceId: params.resourceId,
+  });
+  if (!allowed) throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
+}
+
 export interface AuthorizeMediaAccessParams {
   objectKey: string;
   category: MediaCategoryKey;
@@ -77,9 +121,10 @@ export async function authorizeMediaAccess(
     // The uploader can always fetch their own object without a membership round-trip.
     if (record.ownerId === requesterId) return;
     if (!record.resourceId) {
-      // resourceId was not supplied at upload time (e.g. upload called without
-      // communityId/groupId/roomId). Fall back to legacy prefix/owner checks so
-      // these files stay accessible — the same behaviour as pre-registry objects.
+      // resourceId was never recorded, so there is nothing to check membership
+      // against. Falls through to the uploader-only check — see legacyAuthz.
+      // `resourceId` is now required at upload time for these categories, so
+      // this branch only covers rows written before that.
       legacyAuthz(objectKey, category, requesterId);
       return;
     }
@@ -96,7 +141,28 @@ export async function authorizeMediaAccess(
   throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
 }
 
-/** Legacy (pre-registry) checks: preserve prior behavior for un-backfilled keys. */
+/**
+ * Fallback for objects membership can't be proven for: no registry row at all
+ * (uploaded before the registry existed), or a row whose `resourceId` was never
+ * recorded. Reached only after the registry paths above have been exhausted.
+ *
+ * The object key is `{prefix}/{ownerId}/{fileId}.{ext}` — it carries the
+ * UPLOADER's id and nothing about the room, group or community, so there is no
+ * way to recover the resource and ask chat-service about membership. The only
+ * relationship provable from the key alone is "you uploaded this", so that is
+ * the only one accepted.
+ *
+ * COMMUNITY_CHAT_ATTACHMENT and GROUP_CHAT_ATTACHMENT used to check only that
+ * the key started with the category prefix — a condition every key in the
+ * category satisfies — so any authenticated caller who learned or guessed a key
+ * got a presigned URL for a private community's or group's attachment.
+ *
+ * MIGRATION: this makes un-backfilled community/group attachments downloadable
+ * by their uploader only. Backfill `MediaFile.resourceId` from the chat message
+ * that carries each `objectKey` to restore access for the other members —
+ * `resourceId` is now required at upload time, so only pre-existing objects are
+ * affected and the set does not grow.
+ */
 function legacyAuthz(
   objectKey: string,
   category: MediaCategoryKey,
@@ -104,16 +170,20 @@ function legacyAuthz(
 ): void {
   const def = UPLOAD_CATEGORIES[category];
   if (!def) return;
-  if (category === "CHAT_ATTACHMENT") {
-    if (!assertObjectKeyOwnedBy(objectKey, def.keyPrefix, requesterId)) {
-      throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
-    }
-  } else if (
+  if (
+    category === "CHAT_ATTACHMENT" ||
     category === "COMMUNITY_CHAT_ATTACHMENT" ||
     category === "GROUP_CHAT_ATTACHMENT"
   ) {
     if (!objectKey.startsWith(def.keyPrefix + "/")) {
       throw new BadRequestError("MEDIA_INVALID_OBJECT_KEY");
+    }
+    if (!assertObjectKeyOwnedBy(objectKey, def.keyPrefix, requesterId)) {
+      logger.warn(
+        "download authz: denied unprovable chat attachment (no resourceId to check membership against)",
+        { objectKey, category, requesterId }
+      );
+      throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
     }
   }
   // Avatars / covers: public — no check.

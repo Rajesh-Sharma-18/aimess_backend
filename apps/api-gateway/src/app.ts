@@ -2,6 +2,7 @@
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { localeMiddleware } from "@aimess/utils";
+import { NotFoundError } from "@aimess/errors";
 
 import { env, isCorsOriginAllowed } from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
@@ -89,6 +90,14 @@ export function createApp(
 
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+  // Terminal 404. Without it an unmatched path falls through to Express's own
+  // finalhandler, which answers with an HTML body ("Cannot GET /api/v1/nope") —
+  // so a client that mistypes a route, or hits one that was removed, gets HTML
+  // where the documented `{ success, message }` envelope was promised and its
+  // JSON parse blows up instead of surfacing the real problem. `errorHandler`
+  // never saw these: nothing called `next(err)`.
+  app.use((_req, _res, next) => next(new NotFoundError("ROUTE_NOT_FOUND")));
 
   app.use(errorHandler);
 

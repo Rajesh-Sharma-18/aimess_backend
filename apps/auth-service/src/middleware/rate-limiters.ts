@@ -8,8 +8,9 @@ import { resolveClientIp } from "../lib/session-context.js";
  * Limits to SENSITIVE_AUTH_RATE_LIMIT_MAX attempts per 15-minute window.
  */
 export const sensitiveAuthRateLimiter = rateLimit({
-  // windowMs: 15 * 60 * 1000, // 15 minutes
-  windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES, // 15 minutes
+  // The env var is in MINUTES; `windowMs` is milliseconds. Passing the raw
+  // value made the window 15 MILLIseconds — effectively no limiter at all.
+  windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   max: env.SENSITIVE_AUTH_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
@@ -45,6 +46,29 @@ export const qrGenerationRateLimiter = rateLimit({
 export const deleteAccountRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: env.DELETE_ACCOUNT_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
+  keyGenerator: (req: Request) =>
+    req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
+  message: {
+    success: false,
+    message: "Too many attempts, please try again later.",
+  },
+});
+
+/**
+ * Change password: 5 attempts/hour/user by default. The handler verifies
+ * `currentPassword` before accepting the new one, so without a limiter the
+ * endpoint is an unthrottled password oracle — anyone holding a stolen access
+ * token can guess the account password at request speed and then take the
+ * account over outright (a successful change signs every other device out).
+ * Keyed by user, mounted AFTER the auth middleware, exactly like
+ * {@link deleteAccountRateLimiter}.
+ */
+export const changePasswordRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: env.CHANGE_PASSWORD_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },

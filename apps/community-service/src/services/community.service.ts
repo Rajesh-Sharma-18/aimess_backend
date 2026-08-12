@@ -8385,6 +8385,18 @@ export const communityService = {
     // `autoApprove: true` explicitly at create time.
     const autoApprove = input.autoApprove ?? false;
 
+    // `autoApprove: true` is not an ordinary link option on a PRIVATE community
+    // — it BYPASSES the join-request queue, which is the only thing that makes
+    // the community private. Link creation itself is open to every ACTIVE member
+    // (MEMBER included), so without this a rank-and-file member could mint a
+    // link that lets anyone holding it walk straight in, with no moderator ever
+    // seeing a request. Deciding who gets in is a moderation power, so it takes
+    // a moderation role. PUBLIC communities are unaffected: anyone can join them
+    // anyway, so auto-approve grants nothing that isn't already available.
+    if (autoApprove && community.type === CommunityType.PRIVATE) {
+      assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    }
+
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
       ReturnType<typeof communityRepository.createInviteLink>

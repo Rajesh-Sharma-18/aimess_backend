@@ -40,7 +40,10 @@ import { logger } from "@aimess/logger";
 import { RESOURCE_OWNER_TYPE } from "@aimess/constants";
 import { mediaFileRepository } from "../repositories/media-file.repository.js";
 import { resolveResourceType } from "../lib/resource-type.js";
-import { authorizeMediaAccess } from "../lib/download-authz.js";
+import {
+  authorizeMediaAccess,
+  assertUploadResourceAccess,
+} from "../lib/download-authz.js";
 
 export type GenerateUploadUrlParams = {
   category: MediaCategoryKey;
@@ -114,6 +117,16 @@ export const mediaService = {
     if (!def) {
       throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");
     }
+
+    // The caller must actually belong to the resource they're filing this under.
+    // `resourceId` was written to the registry on trust, and the registry is
+    // what the DOWNLOAD guard reads back — so an unverified one both files an
+    // object into someone else's scope and poisons its own authorization.
+    await assertUploadResourceAccess({
+      category: params.category,
+      resourceId: params.resourceId,
+      requesterId: params.ownerId,
+    });
 
     try {
       const result = await createUploadUrl({
