@@ -25,8 +25,8 @@ process.env.RABBITMQ_URL = "amqp://localhost:5672";
 
 // Rate limiters are per-process, so a spec file firing many requests would trip
 // the production ceiling. Specs that assert throttling set their own value
-// before importing the app (see tests/account/account-deletion-rate-limit.test.ts).
-process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = "100";
+// before importing the app (see tests/account/change-password-rate-limit.test.ts).
+// DELETE_ACCOUNT_RATE_LIMIT_MAX is gone — that endpoint is no longer throttled.
 process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = "100";
 // sensitiveAuthRateLimiter is per-IP and now mounted on login/register/social/
 // forgot-password — every spec in this process shares one IP, so the production

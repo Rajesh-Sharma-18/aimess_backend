@@ -180,6 +180,35 @@ function groupedTargetLabels(
   return entries.map((entry) => entry.label);
 }
 
+/**
+ * "You set messages to delete after 7 days" — the AUTO_DELETE_UPDATED line.
+ *
+ * Shared verbatim by the private and group renderers: the wording never names a
+ * peer or a group, so one spelling covers both surfaces and the two can't drift
+ * into describing the same setting differently.
+ */
+function autoDeleteSystemText(
+  data: Record<string, unknown>,
+  who: string,
+  locale: SupportedLocale
+): string {
+  const mode = String(data.mode ?? "OFF").toUpperCase();
+  if (mode === "OFF") return t("SYS_PRIVATE_AUTO_DELETE_OFF", locale, { who });
+  if (mode === "AFTER_VIEWING")
+    return t("SYS_PRIVATE_AUTO_DELETE_AFTER_VIEWING", locale, { who });
+  // Recompute from the stored `ttlSeconds` so the duration is in the READER's
+  // language; `durationLabel` is the English label baked in at write time and is
+  // only a fallback for rows written before ttlSeconds was persisted.
+  const ttl = Number(data.ttlSeconds);
+  const label =
+    Number.isFinite(ttl) && ttl > 0
+      ? formatTtlDuration(ttl, locale)
+      : String(data.durationLabel ?? "").trim();
+  return label
+    ? t("SYS_PRIVATE_AUTO_DELETE_DURATION", locale, { who, duration: label })
+    : t("SYS_PRIVATE_AUTO_DELETE_ON", locale, { who });
+}
+
 function groupRoleArticleForm(role: string, locale: SupportedLocale): string {
   const r = role.toUpperCase();
   if (r === "ADMIN") return t("SYS_ROLE_ADMIN_ARTICLE", locale);
@@ -324,6 +353,15 @@ export function buildGroupSystemFallbackText(
 
     case "MESSAGES_ENCRYPTED":
       return t("SYS_MESSAGES_ENCRYPTED", locale);
+
+    // Disappearing messages — same wording as the DM line (it names neither a
+    // peer nor a group), so both surfaces read identically in every language.
+    case "AUTO_DELETE_UPDATED":
+      return autoDeleteSystemText(
+        data,
+        isActor ? t("SYS_SENDER_YOU", locale) : actor,
+        locale
+      );
 
     // Group call rows are sender-less lifecycle rows, so the actor-based
     // wording above does not apply — they read exactly like their DM twin.
@@ -489,28 +527,12 @@ export function buildPrivateSystemFallbackText(
         return t("SYS_PRIVATE_FRIENDSHIP_BANNED_TARGET", locale, { actor });
       return t("SYS_PRIVATE_FRIENDSHIP_BANNED", locale, { actor, target });
 
-    case "AUTO_DELETE_UPDATED": {
-      const mode = String(data.mode ?? "OFF").toUpperCase();
-      const who = isActor ? t("SYS_SENDER_YOU", locale) : actor;
-      if (mode === "OFF")
-        return t("SYS_PRIVATE_AUTO_DELETE_OFF", locale, { who });
-      if (mode === "AFTER_VIEWING")
-        return t("SYS_PRIVATE_AUTO_DELETE_AFTER_VIEWING", locale, { who });
-      // Recompute from the stored `ttlSeconds` so the duration is in the READER's
-      // language; `durationLabel` is the English label baked in at write time and
-      // is only a fallback for rows written before ttlSeconds was persisted.
-      const ttl = Number(data.ttlSeconds);
-      const label =
-        Number.isFinite(ttl) && ttl > 0
-          ? formatTtlDuration(ttl, locale)
-          : String(data.durationLabel ?? "").trim();
-      return label
-        ? t("SYS_PRIVATE_AUTO_DELETE_DURATION", locale, {
-            who,
-            duration: label,
-          })
-        : t("SYS_PRIVATE_AUTO_DELETE_ON", locale, { who });
-    }
+    case "AUTO_DELETE_UPDATED":
+      return autoDeleteSystemText(
+        data,
+        isActor ? t("SYS_SENDER_YOU", locale) : actor,
+        locale
+      );
 
     default:
       if (isActor) return t("SYS_PRIVATE_UPDATED_SELF", locale);

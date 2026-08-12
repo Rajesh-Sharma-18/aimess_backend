@@ -13,7 +13,11 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
-import { buildReactionTargetPreview } from "./message-preview.service.js";
+import {
+  buildMessagePreview,
+  buildReactionTargetPreview,
+} from "./message-preview.service.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -1243,7 +1247,73 @@ export class PrivateMessageService {
           `PrivateMessageService|refreshReplyQuotes(edit) failed: ${String(err)}`
         );
       });
+    this.refreshListPreviewAfterEdit(updated);
     return updated;
+  }
+
+  /**
+   * An edit of the room's CURRENT last message has to reach the conversation
+   * LIST, not just the open chat.
+   *
+   * `message:edited` is published on `conv:<roomId>`, a room only the sockets
+   * that ran `conv:join` are in — i.e. the one chat each tab has open. The
+   * sidebar row kept rendering the pre-edit text, and a refetch did not fix it
+   * either: the denormalized `PrivateRoom.lastMessage` snapshot the inbox reads
+   * from was never rewritten, so the stale preview survived a reload until some
+   * later message replaced it.
+   *
+   * Both halves are fixed here, at the ONE place every edit caller (gRPC
+   * `editMessage`, `PATCH /chat/private/messages/:id`) routes through:
+   * rewrite the snapshot, then bump the list.
+   *
+   * `setLastMessage` writes `lastMessageAt: createdAt` — the message's ORIGINAL
+   * time — so an edit refreshes the preview WITHOUT re-sorting the row to the
+   * top, which is what Telegram/WhatsApp do.
+   *
+   * Fire-and-forget: an edit must never fail because the list bump did.
+   */
+  private refreshListPreviewAfterEdit(updated: PrivateMessage): void {
+    if (!this.redis) return;
+    const redis = this.redis;
+    void (async () => {
+      const room = await this.roomRepo.findByRoomId(updated.roomId);
+      // Not the row's last message — the list preview shows something else and
+      // must not be touched.
+      if (!room || room.lastMessageId !== updated.id) return;
+      await this.roomRepo.setLastMessage(updated.roomId, {
+        id: updated.id,
+        senderId: updated.senderId ?? "",
+        content: updated.content,
+        messageType: updated.messageType,
+        createdAt: updated.createdAt,
+        clientMessageId: updated.clientMessageId,
+        sequenceNumber: updated.sequenceNumber,
+        revision: updated.revision,
+      });
+      publishConvUpdatedSafe({
+        redis,
+        type: "PRIVATE",
+        roomId: updated.roomId,
+        recipientIds: (room.participants ?? []).filter(Boolean),
+        senderId: updated.senderId ?? "",
+        lastMessageId: updated.id,
+        lastMessageAt: updated.createdAt.getTime(),
+        // An edit is not new activity: nobody's unread badge may move.
+        countInUnread: false,
+        preview: {
+          contentType: normalizeMessageType(updated.messageType),
+          text: buildMessagePreview(updated.messageType, updated.content),
+          clientMessageId: updated.clientMessageId,
+          seq: updated.sequenceNumber ?? 0,
+          revision: updated.revision ?? 0,
+          createdAt: updated.createdAt.getTime(),
+        },
+      });
+    })().catch((err: unknown) => {
+      logger.warn(
+        `PrivateMessageService|refreshListPreviewAfterEdit failed for ${updated.id}: ${String(err)}`
+      );
+    });
   }
 
   async markDelivered(params: {

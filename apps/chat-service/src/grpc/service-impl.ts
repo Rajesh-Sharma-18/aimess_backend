@@ -652,6 +652,9 @@ export function createMessagingImpl(
                     ? updated.createdAt.getTime()
                     : Date.now(),
                 sequenceNumber: updated.sequenceNumber,
+                // An edit re-emits the whole message; without the deadline the
+                // client drops the countdown it was already rendering.
+                ...autoDeleteWireFields(updated),
               }),
             })
           );
@@ -818,6 +821,11 @@ export function createMessagingImpl(
           // needs to flip to READ. Resolved alongside the mark-read write itself
           // (no extra query for PRIVATE — the room doc is already in hand).
           let otherUserIds: string[] = [];
+          // Kicked off BEFORE the mark-read write: it depends on nothing below
+          // it, and on a cold TTL cache it is a gRPC round trip that used to sit
+          // in front of the receipt publish. Read receipts are the one event
+          // where a serial hop is directly visible to the user.
+          const mayBroadcastPromise = mayBroadcastReadReceipts(req.readerId);
           if (conversationType === "GROUP") {
             // Capture remainingUnread so read_sync / chat:unread_summary stay
             // accurate after a group open — discarding it left the nav badge
@@ -853,14 +861,18 @@ export function createMessagingImpl(
             otherUserIds = (room?.participants ?? []).filter(
               (id) => id !== req.readerId
             );
-            readToSeq = await deps.privateMessageService
-              .getMessageSequence(req.upToMessageId)
-              .catch(() => 0);
-            lastMessageSeq = room?.lastMessageId
-              ? await deps.privateMessageService
-                  .getMessageSequence(room.lastMessageId)
-                  .catch(() => 0)
-              : 0;
+            // Both sequence lookups are independent — run them together rather
+            // than one after the other on the receipt's critical path.
+            [readToSeq, lastMessageSeq] = await Promise.all([
+              deps.privateMessageService
+                .getMessageSequence(req.upToMessageId)
+                .catch(() => 0),
+              room?.lastMessageId
+                ? deps.privateMessageService
+                    .getMessageSequence(room.lastMessageId)
+                    .catch(() => 0)
+                : Promise.resolve(0),
+            ]);
           }
 
           // Authoritative "this reader has now read the room's current newest
@@ -886,7 +898,7 @@ export function createMessagingImpl(
           // only the OUTBOUND receipt is withheld. Mirrors
           // ChatMessageOrchestrator.markReadDirect — this handler is a second
           // copy of that flow, so the gate has to exist in both.
-          const mayBroadcast = await mayBroadcastReadReceipts(req.readerId);
+          const mayBroadcast = await mayBroadcastPromise;
 
           // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
           // or below the boundary to READ (watermark), not just the boundary message.
@@ -1367,6 +1379,9 @@ export function createMessagingImpl(
                   countInUnread: (
                     message as unknown as { countInUnread?: boolean | null }
                   ).countInUnread,
+                  // A forward is a brand-new message in the TARGET room and
+                  // carries THAT room's timer.
+                  ...autoDeleteWireFields(message),
                 }),
               })
             );

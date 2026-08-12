@@ -76,6 +76,55 @@ export class GroupRoomRepository {
   }
 
   /**
+   * {@link allocateSequence} that also hands back the room row the `$inc`
+   * already read. The send path needs the room's auto-delete timer to stamp the
+   * message it is about to insert; taking it off this write costs nothing,
+   * whereas a separate `findByRoomId` would add a round trip to every send —
+   * and a timer read AFTER the allocation could race a concurrent change.
+   */
+  async allocateSequenceWithRoom(
+    roomId: string
+  ): Promise<{ sequenceNumber: number; room: GroupRoom }> {
+    const room = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.update({
+        where: { roomId },
+        data: { lastSequence: { increment: 1 } },
+      })
+    );
+    return { sequenceNumber: room.lastSequence, room };
+  }
+
+  /**
+   * Set/change/clear THE group's auto-delete timer. One record for the whole
+   * room (not a per-member map): every member's messages follow it, so there is
+   * nothing to merge. `userId` is recorded only as who last changed it — the
+   * permission check lives in the service.
+   */
+  async setAutoDelete(
+    roomId: string,
+    userId: string,
+    setting: { mode: string; ttlSeconds: number | null }
+  ): Promise<GroupRoom | null> {
+    const existing = await this.prisma.groupRoom.findUnique({
+      where: { roomId },
+      select: { roomId: true },
+    });
+    if (!existing) return null;
+
+    return this.prisma.groupRoom.update({
+      where: { roomId },
+      data: {
+        autoDelete: {
+          mode: setting.mode,
+          ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
+          setAt: new Date().toISOString(),
+          setBy: userId,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  /**
    * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
    * Same atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`, but on
    * `lastRevision` and bumped on EVERY content change (insert, edit, delete-for-everyone,

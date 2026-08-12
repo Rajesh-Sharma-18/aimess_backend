@@ -10,6 +10,8 @@ import {
 } from "../lib/privacy-scope.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { splitBlocks } from "../lib/block-visibility.js";
+import { messagingGrpcClient } from "../grpc/messaging.client.js";
+import { communityGrpcClient } from "../grpc/community.client.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
@@ -64,21 +66,65 @@ async function resolveAvatarMedia(
 
 const SPLIT_LIMIT = 5;
 
+/** Which conversation an "Add Members" picker is filling, if any. */
+export interface AddTargetRef {
+  groupRoomId?: string;
+  communityId?: string;
+}
+
 export const userDiscoveryService = {
+  /**
+   * The people an "Add Members" picker must NOT offer: everyone already an
+   * ACTIVE member of the target group / community.
+   *
+   * Both lookups are owned by other services (chat-service holds group
+   * membership, community-service holds community membership) and both already
+   * expose the roster over gRPC, so this is a read, not a mirror. Both clients
+   * fail OPEN — an outage degrades the picker to "shows everyone", and the add
+   * endpoints still reject duplicates (`ALREADY_MEMBER`), so the worst case is
+   * a wasted tap rather than an empty list.
+   */
+  async resolveExistingMemberIds(target: AddTargetRef): Promise<string[]> {
+    const { groupRoomId, communityId } = target;
+    if (!groupRoomId && !communityId) return [];
+    const [groupMembers, communityMembers] = await Promise.all([
+      groupRoomId
+        ? messagingGrpcClient.getGroupMemberIds(groupRoomId)
+        : Promise.resolve([] as string[]),
+      communityId
+        ? communityGrpcClient.getActiveMemberIds(communityId)
+        : Promise.resolve([] as string[]),
+    ]);
+    return [...new Set([...groupMembers, ...communityMembers])];
+  },
+
   /**
    * Split mode: runs friends and non-friends queries in parallel, returns
    * up to SPLIT_LIMIT results in each bucket. No pagination metadata.
    */
   async searchUsersSplit(
     viewerId: string,
-    q: string | undefined
+    q: string | undefined,
+    excludeUserIds: string[] = []
   ): Promise<{
     friends: UserDiscoveryResult[];
     otherPeople: UserDiscoveryResult[];
   }> {
     const [friendsResult, othersResult] = await Promise.all([
-      userDiscoveryService._queryFriends(viewerId, q, 0, SPLIT_LIMIT),
-      userDiscoveryService._queryOthers(viewerId, q, 0, SPLIT_LIMIT),
+      userDiscoveryService._queryFriends(
+        viewerId,
+        q,
+        0,
+        SPLIT_LIMIT,
+        excludeUserIds
+      ),
+      userDiscoveryService._queryOthers(
+        viewerId,
+        q,
+        0,
+        SPLIT_LIMIT,
+        excludeUserIds
+      ),
     ]);
     return { friends: friendsResult.users, otherPeople: othersResult.users };
   },
@@ -207,7 +253,8 @@ export const userDiscoveryService = {
     viewerId: string,
     q: string | undefined,
     skip: number,
-    limit: number
+    limit: number,
+    excludeUserIds: string[] = []
   ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
     const friendships =
       await friendshipRepository.findAcceptedFriends(viewerId);
@@ -215,9 +262,15 @@ export const userDiscoveryService = {
       return { users: [], total: 0 };
     }
 
-    const friendIds = friendships.map((f) =>
-      f.requesterId === viewerId ? f.addresseeId : f.requesterId
-    );
+    // Subtracted from the CANDIDATE set, not from the page: `total` and every
+    // page boundary below are then computed over addable friends only.
+    const excluded = new Set(excludeUserIds);
+    const friendIds = friendships
+      .map((f) => (f.requesterId === viewerId ? f.addresseeId : f.requesterId))
+      .filter((id) => !excluded.has(id));
+    if (friendIds.length === 0) {
+      return { users: [], total: 0 };
+    }
 
     const friendshipIdByPeer = new Map(
       friendships.map((f) => {
@@ -272,7 +325,8 @@ export const userDiscoveryService = {
     viewerId: string,
     q: string | undefined,
     skip: number,
-    limit: number
+    limit: number,
+    excludeUserIds: string[] = []
   ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
     const [allRelationships, allBlocks] = await Promise.all([
       friendshipRepository.findAllForUser(viewerId),
@@ -305,7 +359,15 @@ export const userDiscoveryService = {
       viewerFriendIds
     );
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
-    const excludeIds = [viewerId, ...viewerFriendIds, ...hiddenIds];
+    // `excludeUserIds` (existing members of an "Add Members" target) joins the
+    // same id-set the query already subtracts, so exclusion costs nothing extra
+    // and `total`/`hasNext` stay honest.
+    const excludeIds = [
+      viewerId,
+      ...viewerFriendIds,
+      ...hiddenIds,
+      ...excludeUserIds,
+    ];
 
     const [profiles, total] = await Promise.all([
       userProfileRepository.findUsersNotInList(

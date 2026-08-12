@@ -4429,6 +4429,12 @@ export const openApiSchemas = {
         description:
           "True once `email` has been proven by OTP (link-email / change-email). False when unset, pending verification, or auth-service is unavailable.",
       },
+      hasPassword: {
+        type: "boolean",
+        description:
+          "True when the account has a password in auth-service — i.e. whether `DELETE /auth/account` and the change-password flow will require one. **This is the only correct field to gate a password prompt on.** Do NOT use `primaryAccount`: that is the first provider ever LINKED and is `null` for any account created with account + password that never linked an email or social login, so branching on it hides the password field from exactly the users who must supply one. Defaults to `true` when auth-service is unavailable.",
+        example: true,
+      },
       isGoogleLogin: {
         type: "boolean",
         description:
@@ -4444,7 +4450,7 @@ export const openApiSchemas = {
         enum: ["EMAIL", "GOOGLE", "APPLE"],
         nullable: true,
         description:
-          "The first sign-in method ever linked to the account (auth-service). Always present; null when unset, missing on older records, or auth-service is unavailable.",
+          "The first sign-in method ever linked to the account (auth-service). Always present; null when unset, missing on older records, or auth-service is unavailable. NOT a substitute for `hasPassword` — see that field.",
         example: "GOOGLE",
       },
       googleEmail: {
@@ -8400,7 +8406,20 @@ export const openApiSchemas = {
         type: "integer",
         format: "int64",
         nullable: true,
-        description: "Epoch ms.",
+        description:
+          "Epoch ms. The SHARED room snapshot — the column pagination bounds on. NOT per-viewer: after a delete-for-me / clear it still points at a message this viewer can no longer see. Use it for cursors only; render and sort on `lastActivityAt`.",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms mirror of `lastActivity.dateTime` — the PER-VIEWER effective timestamp, and the value a list row must render and sort on. `0` = this viewer has nothing visible left (render no timestamp; do not fall back to lastMessageAt).",
+      },
+      lastActivity: {
+        type: "object",
+        nullable: true,
+        description:
+          "Normalized {type,userId,username,preview,dateTime,messageId,clientMessageId,seq,revision,contentType} activity DTO, per viewer. Present on GROUP rows too.",
       },
       lastMessageId: { type: "string", nullable: true },
       lastMessage: {
@@ -8441,7 +8460,14 @@ export const openApiSchemas = {
           "GROUP only — true when the caller is an active member of this group (always true for inbox rows); null for PRIVATE rows.",
       },
     },
-    required: ["type", "roomId", "unreadCount", "isMuted", "pinnedCount"],
+    required: [
+      "type",
+      "roomId",
+      "lastActivityAt",
+      "unreadCount",
+      "isMuted",
+      "pinnedCount",
+    ],
   },
   ChatPeer: {
     type: "object",

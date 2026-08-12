@@ -30,11 +30,17 @@ jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),
 }));
 // Rate limiting is tested separately in device-link-rate-limit.test.ts; pass-through here.
+// EVERY limiter the app mounts must be stubbed, not just the device-link ones:
+// this factory replaces the whole module, so any export left out arrives at its
+// route as `undefined` and Express rejects the router with "argument handler
+// must be a function" before a single test in this file runs.
 jest.mock("../../src/middleware/rate-limiters.js", () => ({
   qrGenerationRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
   qrScanRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
   sensitiveAuthRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
+    next(),
+  changePasswordRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
 }));
 
@@ -260,9 +266,11 @@ describe("POST /api/auth/devices/link/scan (instant login)", () => {
         appVersion: "phone-app-version-9.9.9",
       });
 
-    expect(issue).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
+    // Assert the one argument this test is about. `toHaveBeenCalledWith` is
+    // exact-arity, so it broke silently when issueAuthTokens grew its 4th and
+    // 5th parameters — and the whole file was crashing at import, so nobody
+    // saw it fail.
+    expect(issue.mock.calls[0][2]).toEqual(
       expect.objectContaining({ appVersion: "1.0.0" })
     );
   });

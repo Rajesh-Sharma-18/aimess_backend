@@ -1,13 +1,11 @@
 /**
- * DELETE /api/auth/account is irreversible and password-gated, so a stolen
- * session must not be able to brute-force the password through it. The limiter
- * is keyed by userId and sits AFTER authentication.
+ * DELETE /api/auth/account is deliberately NOT rate limited (the per-user
+ * 5/hour limiter was removed on 2026-08-12 — see the comment in
+ * api/routes/account-deletion.routes.ts).
  *
- * The limiter's ceiling is read from env at import time, so this spec lowers it
- * and requires the app lazily (a top-level `import` would hoist above the
- * assignment and capture the shared 100 from tests/setup/env.ts). The override
- * is undone afterwards: Jest reuses one process for several spec files, and a
- * leaked ceiling of 2 would 429 the sibling account-deletion spec.
+ * This spec is the guard on that decision: it fails loudly if a limiter is ever
+ * re-introduced silently, and documents the security trade being accepted. If
+ * you are re-adding one on purpose, rewrite this file rather than deleting it.
  */
 jest.mock("../../src/repositories/auth.repository.js", () => ({
   authRepository: {
@@ -22,31 +20,22 @@ jest.mock("../../src/messaging/publish-user-deleted.js", () => ({
 import request from "supertest";
 import bcrypt from "bcryptjs";
 
+import app from "../../src/app.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 
 const repo = authRepository as unknown as Record<string, jest.Mock>;
-const LIMIT = 2;
 
-let app: import("express").Express;
+/** Comfortably more than any limiter this endpoint has ever had (the old one was 5). */
+const ATTEMPTS = 12;
+
 let passwordHash: string;
-const sharedLimit = process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX;
 
 beforeAll(async () => {
-  process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = String(LIMIT);
-  // No resetModules: this spec never imports the app at top level, so its
-  // module registry is still empty and the first load already picks up the
-  // ceiling above. Resetting would re-evaluate every transitive module
-  // (Redis/AMQP clients included) and blow the hook timeout.
-  app = (await import("../../src/app.js")).default;
   passwordHash = await bcrypt.hash("Password123", 4);
 });
 
-afterAll(() => {
-  process.env.DELETE_ACCOUNT_RATE_LIMIT_MAX = sharedLimit;
-});
-
-describe("DELETE /api/auth/account rate limit", () => {
+describe("DELETE /api/auth/account is not throttled", () => {
   beforeEach(() => {
     repo.findByIdForAccountOps.mockResolvedValue({
       id: TEST_USER_ID,
@@ -58,23 +47,53 @@ describe("DELETE /api/auth/account rate limit", () => {
     });
   });
 
-  it("429s once the per-user hourly ceiling is exhausted", async () => {
+  it("never 429s, however many wrong passwords are submitted", async () => {
     const token = makeAccessToken();
 
-    for (let attempt = 0; attempt < LIMIT; attempt++) {
+    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       const res = await request(app)
         .delete("/api/auth/account")
         .set(bearer(token))
         .send({ password: "WrongPassword99" });
-      expect(res.status).toBe(401);
+
+      expect(res.status).toBe(400);
+      expect(res.body.message).toBe("The password you entered is incorrect.");
     }
 
-    const blocked = await request(app)
+    expect(repo.softDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("emits no RateLimit headers at all", async () => {
+    const res = await request(app)
       .delete("/api/auth/account")
-      .set(bearer(token))
+      .set(bearer(makeAccessToken()))
       .send({ password: "WrongPassword99" });
 
-    expect(blocked.status).toBe(429);
-    expect(repo.softDeleteUser).not.toHaveBeenCalled();
+    expect(res.headers["ratelimit"]).toBeUndefined();
+    expect(res.headers["ratelimit-policy"]).toBeUndefined();
+    expect(res.headers["retry-after"]).toBeUndefined();
+  });
+
+  it("still deletes on the correct password after many failures", async () => {
+    const token = makeAccessToken();
+    repo.softDeleteUser.mockResolvedValue({
+      deletedAt: new Date("2026-08-12T00:00:00.000Z"),
+      revokedSessionIds: [],
+    });
+
+    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+      await request(app)
+        .delete("/api/auth/account")
+        .set(bearer(token))
+        .send({ password: "WrongPassword99" });
+    }
+
+    const res = await request(app)
+      .delete("/api/auth/account")
+      .set(bearer(token))
+      .send({ password: "Password123" });
+
+    expect(res.status).toBe(200);
+    expect(repo.softDeleteUser).toHaveBeenCalledTimes(1);
   });
 });

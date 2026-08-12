@@ -101,6 +101,23 @@ export const userPaths = {
           schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
           description: "Used only when `type` is provided.",
         },
+        {
+          name: "excludeGroupRoomId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            '"Add Members" picker for a GROUP. Every ACTIVE member of this room is removed from the result set BEFORE pagination, so an existing member can never be offered and `total`/`hasNext` count only addable users. Combinable with `excludeCommunityId`. Unknown/inaccessible ids simply exclude nobody.',
+          example: "grp_8f2c1a...",
+        },
+        {
+          name: "excludeCommunityId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            '"Add Members" picker for a COMMUNITY. Same semantics as `excludeGroupRoomId`, against the community\'s ACTIVE roster.',
+        },
       ],
       responses: {
         "200": {

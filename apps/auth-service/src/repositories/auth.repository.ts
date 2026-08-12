@@ -263,10 +263,18 @@ export const authRepository = {
   },
 
   /**
-   * Soft-delete: retain the row but mark it for deletion and revoke every
-   * active session + refresh token so the account (and any linked Google/Apple
-   * provider) can no longer authenticate. A grace-period job hard-purges rows
-   * whose scheduledDeletionAt has elapsed.
+   * SOFT DELETE ONLY — nothing here removes a row, by requirement. The account
+   * is marked for deletion and every active session + refresh token is revoked
+   * so neither password login nor any linked Google/Apple provider can
+   * authenticate, but all data is retained and the whole operation is
+   * reversible by clearing `deletedAt`/`deletionRequestedAt`/
+   * `scheduledDeletionAt` and setting `status` back to ACTIVE.
+   *
+   * `scheduledDeletionAt` is recorded for the 30-day grace period, but NO job
+   * currently reads it — auth-service's only scheduled job is the QR link
+   * expiry sweeper. Nothing in this codebase hard-purges an AuthUser. If a
+   * purge job is ever added, it becomes the one place that deletes rows; do not
+   * reintroduce deletes here.
    */
   softDeleteUser(userId: string) {
     return prisma.$transaction(async (tx) => {
@@ -293,12 +301,22 @@ export const authRepository = {
         data: { revokedAt: now },
       });
 
-      // Drop every Google/Apple link in the same transaction: the provider `sub`
-      // must stop resolving to this account (social-auth.service looks the user
-      // up by LinkedAccount) and must be free to link elsewhere. We store no
-      // provider access/refresh tokens (only `sub`/email/displayName), so there
-      // is nothing to revoke remotely — removing the row IS the revocation.
-      await tx.linkedAccount.deleteMany({ where: { userId } });
+      // Google/Apple links are KEPT. This used to `deleteMany` them, which was
+      // the one hard delete in an otherwise soft flow and made the 30-day grace
+      // period a lie: restoring the account could not restore its social links,
+      // because the rows were gone for good.
+      //
+      // Keeping them is safe. Social sign-in does not become possible again:
+      // social-auth.service loads the user behind the LinkedAccount and rejects
+      // on `deletedAt` and on `status !== ACTIVE` before issuing anything, so a
+      // soft-deleted account fails there exactly like password login fails in
+      // auth.service.
+      //
+      // The cost is that `@@unique([provider, providerUserId])` keeps that
+      // provider `sub` reserved by this account, so the same Google/Apple
+      // identity cannot be linked to a DIFFERENT account while this one is
+      // soft-deleted. That is the price of a reversible delete; releasing the
+      // `sub` belongs in a future purge job, not here.
 
       await tx.authUser.update({
         where: { id: userId },

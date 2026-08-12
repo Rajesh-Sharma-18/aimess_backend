@@ -21,6 +21,18 @@ export type UserProfileData = {
    * verified yet" and offer the link-email flow.
    */
   emailVerified: boolean;
+  /**
+   * True when the account has a password hash in auth-service — i.e. whether a
+   * password confirmation is required by DELETE /auth/account and
+   * PATCH /auth/password. This is the ONLY correct predicate for "show the
+   * password field": `primaryAccount` is the first provider ever LINKED and is
+   * null for anyone who registered with account + password and never linked an
+   * email or social provider, so gating a password prompt on it hides the field
+   * from exactly the users who need it. Defaults to true when auth-service is
+   * unavailable — prompting for a password the server may not want is
+   * recoverable; hiding one it does want is not.
+   */
+  hasPassword: boolean;
   /** True when a GOOGLE provider is linked in auth-service. */
   isGoogleLogin: boolean;
   /** True when an APPLE provider is linked in auth-service. */

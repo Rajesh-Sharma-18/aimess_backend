@@ -92,6 +92,19 @@ const searchUserGroupsBreaker = makeBreaker(
 );
 searchUserGroupsBreaker.fallback(() => []);
 
+const roomParticipantIdsBreaker = makeBreaker(
+  "messaging.getRoomParticipantIds",
+  (args: { conversationId: string; conversationType: "PRIVATE" | "GROUP" }) =>
+    call<typeof args, { userIds?: string[] }>(
+      "getRoomParticipantIds",
+      args
+    ).then((r) => r.userIds ?? [])
+);
+// Fail OPEN (empty roster = exclude nobody). The list only narrows an "Add
+// Members" picker; a chat-service outage must degrade to "shows everyone, the
+// add call still rejects duplicates", never to "shows nobody".
+roomParticipantIdsBreaker.fallback(() => [] as string[]);
+
 export const messagingGrpcClient = {
   /**
    * Batch-resolves existing PrivateRoom ids for `viewerId` against many
@@ -190,6 +203,24 @@ export const messagingGrpcClient = {
       });
     } catch (err) {
       logger.warn(`messaging.searchUserGroups(BY_IDS) failed: ${String(err)}`);
+      return [];
+    }
+  },
+
+  /**
+   * Every ACTIVE member of a GROUP room. Used to subtract the existing roster
+   * from the friend picker so an already-added member can't be selected again.
+   * Never throws.
+   */
+  async getGroupMemberIds(roomId: string): Promise<string[]> {
+    if (!roomId) return [];
+    try {
+      return await roomParticipantIdsBreaker.fire({
+        conversationId: roomId,
+        conversationType: "GROUP",
+      });
+    } catch (err) {
+      logger.warn(`messaging.getRoomParticipantIds failed: ${String(err)}`);
       return [];
     }
   },

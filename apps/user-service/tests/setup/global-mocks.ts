@@ -59,6 +59,18 @@ jest.mock("../../src/grpc/messaging.client.js", () => ({
     listOtherGroups: jest.fn(async () => []),
     getGroupsByIds: jest.fn(async () => []),
     getOrCreatePrivateRooms: jest.fn(async () => []),
+    getGroupMemberIds: jest.fn(async () => []),
+  },
+}));
+
+// --- community-service gRPC client: same story as messaging.client above
+//     (`import.meta.url` at module scope + native @grpc/grpc-js). Reached from
+//     user discovery, which subtracts a community's roster from the "Add
+//     Members" picker. Empty roster = exclude nobody, the module's own
+//     fail-open value. ---------------------------------------------------------
+jest.mock("../../src/grpc/community.client.js", () => ({
+  communityGrpcClient: {
+    getActiveMemberIds: jest.fn(async () => []),
   },
 }));
 

@@ -8,7 +8,15 @@ import { userDiscoveryService } from "../../services/user-discovery.service.js";
 
 export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
   const query = req.query as unknown as SearchUsersQuery;
-  const { q, type, page, limit } = query;
+  const { q, type, page, limit, excludeGroupRoomId, excludeCommunityId } =
+    query;
+
+  // "Add Members" pickers pass the target conversation; everyone already in it
+  // is subtracted server-side so the picker can never offer them (issue #48).
+  const excludeUserIds = await userDiscoveryService.resolveExistingMemberIds({
+    groupRoomId: excludeGroupRoomId,
+    communityId: excludeCommunityId,
+  });
 
   // Paginated mode: type=friends or type=others
   if (type === "friends" || type === "others") {
@@ -19,13 +27,15 @@ export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
             req.auth.userId,
             q,
             skip,
-            limit
+            limit,
+            excludeUserIds
           )
         : await userDiscoveryService._queryOthers(
             req.auth.userId,
             q,
             skip,
-            limit
+            limit,
+            excludeUserIds
           );
     const totalPages = Math.ceil(result.total / limit);
     return res.status(HTTP_STATUS.OK).json(
@@ -49,7 +59,8 @@ export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
   // Split mode (no type): max 5 per group, no pagination
   const result = await userDiscoveryService.searchUsersSplit(
     req.auth.userId,
-    q
+    q,
+    excludeUserIds
   );
   return res
     .status(HTTP_STATUS.OK)
