@@ -678,6 +678,37 @@ export function registerChatNamespace(
           skipViewer
         );
 
+        // Pin state is published to `conv:<roomId>` only, but that Socket.IO
+        // room holds just the sockets that called `conv:join` — i.e. the ONE
+        // conversation each tab currently has open. Every other device, tab and
+        // sidebar of the same members therefore never learned about a pin until
+        // a refetch. Mirror it onto each participant's `user:<id>` channel, the
+        // same room the roster events (`group:member:updated`) already use, so
+        // the pinned banner and the row's `pinnedCount` update everywhere.
+        // Members already in `conv:<roomId>` get it twice; the client's pin
+        // handler is idempotent (it assigns the single active pin id), so the
+        // duplicate is cheaper than a per-socket room-membership scan.
+        if (pattern === "conv:*" && parsed.event === "pin:updated") {
+          const pinRoomId = channel.slice("conv:".length);
+          void (async () => {
+            try {
+              const { userIds } = await messagingClient.getRoomParticipantIds({
+                conversationId: pinRoomId,
+                conversationType: pinRoomId.startsWith("grp_")
+                  ? "group"
+                  : "private",
+              });
+              for (const uid of userIds) {
+                chat.to(`user:${uid}`).emit(parsed.event, parsed.data);
+              }
+            } catch (pinErr) {
+              logger.warn(
+                `/chat pin:updated user-channel mirror failed roomId=${pinRoomId}: ${String(pinErr)}`
+              );
+            }
+          })();
+        }
+
         // Auto-join the conversation room when the user is added to a new
         // group while their socket is connected, so they immediately receive
         // message:new/typing for that group without a reconnect or conv:join.

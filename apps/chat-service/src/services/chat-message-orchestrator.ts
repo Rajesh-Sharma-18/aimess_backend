@@ -1208,6 +1208,11 @@ export class ChatMessageOrchestrator {
           pinnedAt,
           action: "pinned",
           pinnedCount: result.pinnedCount,
+          // Same snapshot text the REST pin path publishes — the socket and REST
+          // pin entry points must produce byte-identical broadcasts.
+          text:
+            (result.pin.contentPinned as unknown as { text?: string } | null)
+              ?.text ?? "",
         },
       })
     );

@@ -386,6 +386,16 @@ export function registerCommunityNamespace(
           "community:member:removed",
           "community:member:muted",
           "community:member:unmuted",
+          // Roster SIZE and the pinned message are sidebar-visible state, not
+          // open-chat state: `community:<id>` only holds sockets that called
+          // community:join (i.e. the ONE community currently open), so without
+          // this mirror the member count on every other list row — and the pin
+          // banner on a second tab — stayed at whatever the last REST read said.
+          // The roster DELTA events above were already mirrored here; the count
+          // and the pin were the two that were not.
+          "community:stats:updated",
+          "community:message:pinned",
+          "community:message:unpinned",
           "community:stream:started",
           "community:stream:ended",
           "community:stream:updated",

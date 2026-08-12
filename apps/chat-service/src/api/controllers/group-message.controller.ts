@@ -652,6 +652,15 @@ export class GroupMessageController {
             pinnedAt,
             action: "pinned",
             pinnedCount: result.pinnedCount,
+            // The pinned snapshot's text, so a client can render the pinned
+            // banner for a message that is NOT in its loaded window (pin an old
+            // message, or a device that just reconnected). Community's
+            // `community:message:pinned` has carried `pin.contentPinned` from
+            // the start; the group/private event carried only the id, which is
+            // why the banner came up blank on those clients.
+            text:
+              (result.pin.contentPinned as unknown as { text?: string } | null)
+                ?.text ?? "",
           },
         })
       );

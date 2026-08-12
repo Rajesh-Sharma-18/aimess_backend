@@ -559,6 +559,11 @@ export class PrivateMessageController {
             pinnedAt,
             action: "pinned",
             pinnedCount: result.pinnedCount,
+            // See the group controller: the pinned snapshot's text lets a client
+            // render the banner for a message outside its loaded window.
+            text:
+              (result.pin.contentPinned as unknown as { text?: string } | null)
+                ?.text ?? "",
           },
         })
       );
