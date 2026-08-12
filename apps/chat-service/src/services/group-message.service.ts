@@ -16,7 +16,11 @@ import {
   currentLocale,
   personalizeGroupSystemMessageForViewer,
 } from "@aimess/constants";
-import { buildReactionTargetPreview } from "./message-preview.service.js";
+import {
+  buildMessagePreview,
+  buildReactionTargetPreview,
+} from "./message-preview.service.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -1238,7 +1242,69 @@ export class GroupMessageService {
           `GroupMessageService|refreshReplyQuotes(edit) failed: ${String(err)}`
         );
       });
+    this.refreshListPreviewAfterEdit(updated);
     return updated;
+  }
+
+  /**
+   * GROUP half of the edit→list refresh. See
+   * `PrivateMessageService.refreshListPreviewAfterEdit` for the full rationale:
+   * `message:edited` only reaches `conv:<roomId>` (the open chat), and the
+   * denormalized `GroupRoom.lastMessagePreview` the inbox renders was never
+   * rewritten, so an edited last message stayed stale in the sidebar even
+   * across a reload.
+   *
+   * Fire-and-forget; `setLastMessage` keeps the ORIGINAL `createdAt` so the row
+   * refreshes in place instead of jumping to the top.
+   */
+  private refreshListPreviewAfterEdit(updated: GroupMessage): void {
+    if (!this.redis) return;
+    const redis = this.redis;
+    void (async () => {
+      const room = await this.roomRepo.findByRoomId(updated.roomId);
+      if (!room || room.lastMessageId !== updated.id) return;
+      const senderName =
+        (updated as unknown as { senderName?: string }).senderName ?? "";
+      await this.roomRepo.setLastMessage(updated.roomId, {
+        id: updated.id,
+        senderId: updated.senderId ?? "",
+        senderName,
+        content: {
+          text:
+            ((updated.content as Record<string, unknown> | null)
+              ?.text as string) ?? "",
+        },
+        messageType: updated.messageType,
+        createdAt: updated.createdAt,
+        clientMessageId: updated.clientMessageId,
+        sequenceNumber: updated.sequenceNumber,
+        revision: updated.revision,
+      });
+      publishConvUpdatedSafe({
+        redis,
+        type: "GROUP",
+        roomId: updated.roomId,
+        fetchRecipients: () => this.getActiveMemberIds(updated.roomId),
+        senderId: updated.senderId ?? "",
+        senderName,
+        lastMessageId: updated.id,
+        lastMessageAt: updated.createdAt.getTime(),
+        // An edit is not new activity: nobody's unread badge may move.
+        countInUnread: false,
+        preview: {
+          contentType: normalizeMessageType(updated.messageType),
+          text: buildMessagePreview(updated.messageType, updated.content),
+          clientMessageId: updated.clientMessageId,
+          seq: updated.sequenceNumber ?? 0,
+          revision: updated.revision ?? 0,
+          createdAt: updated.createdAt.getTime(),
+        },
+      });
+    })().catch((err: unknown) => {
+      logger.warn(
+        `GroupMessageService|refreshListPreviewAfterEdit failed for ${updated.id}: ${String(err)}`
+      );
+    });
   }
 
   /**

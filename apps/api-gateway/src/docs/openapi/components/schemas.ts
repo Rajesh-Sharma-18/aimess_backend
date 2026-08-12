@@ -8400,7 +8400,20 @@ export const openApiSchemas = {
         type: "integer",
         format: "int64",
         nullable: true,
-        description: "Epoch ms.",
+        description:
+          "Epoch ms. The SHARED room snapshot — the column pagination bounds on. NOT per-viewer: after a delete-for-me / clear it still points at a message this viewer can no longer see. Use it for cursors only; render and sort on `lastActivityAt`.",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms mirror of `lastActivity.dateTime` — the PER-VIEWER effective timestamp, and the value a list row must render and sort on. `0` = this viewer has nothing visible left (render no timestamp; do not fall back to lastMessageAt).",
+      },
+      lastActivity: {
+        type: "object",
+        nullable: true,
+        description:
+          "Normalized {type,userId,username,preview,dateTime,messageId,clientMessageId,seq,revision,contentType} activity DTO, per viewer. Present on GROUP rows too.",
       },
       lastMessageId: { type: "string", nullable: true },
       lastMessage: {
@@ -8441,7 +8454,14 @@ export const openApiSchemas = {
           "GROUP only — true when the caller is an active member of this group (always true for inbox rows); null for PRIVATE rows.",
       },
     },
-    required: ["type", "roomId", "unreadCount", "isMuted", "pinnedCount"],
+    required: [
+      "type",
+      "roomId",
+      "lastActivityAt",
+      "unreadCount",
+      "isMuted",
+      "pinnedCount",
+    ],
   },
   ChatPeer: {
     type: "object",

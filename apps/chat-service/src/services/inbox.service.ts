@@ -59,6 +59,22 @@ export interface InboxItem {
     | GroupConversationLastActivity
     | null;
   /**
+   * Epoch-ms mirror of `lastActivity.dateTime` — the PER-VIEWER effective
+   * timestamp, and the one a list row must RENDER and SORT on.
+   *
+   * It used to be missing from this DTO even though both enriched rooms already
+   * carried it, which left every client with only `lastMessageAt` (the shared
+   * snapshot) to render. A group row therefore showed the shared timestamp next
+   * to its per-viewer preview, so the list read "2:12 PM" while the newest
+   * message the viewer can actually see in that chat was from yesterday. Same
+   * divergence on a private row carrying a reaction overlay, whose
+   * `lastActivity.dateTime` is deliberately newer than `lastActivityAt` was.
+   *
+   * `0` = this viewer has nothing visible left (cleared / deleted-for-me the
+   * whole tail) — render no timestamp, do NOT fall back to `lastMessageAt`.
+   */
+  lastActivityAt: number;
+  /**
    * PRIVATE-only: user-search-shaped relationship metadata for the peer —
    * identical fields as `GET /api/v1/users/search` (isFriend, relationshipStatus,
    * friendshipId, requesterId, relationship{status,direction,can*}). All null
@@ -129,8 +145,25 @@ export interface InboxResult {
  * DTO at all.
  */
 function effectiveAt(item: InboxItem): number {
-  if (item.lastActivity) return item.lastActivity.dateTime;
-  return item.lastMessageAt ? item.lastMessageAt.getTime() : 0;
+  return item.lastActivityAt;
+}
+
+/**
+ * The same resolution applied while BUILDING a row: the activity DTO's own
+ * timestamp, falling back to the shared snapshot only for a row that carries no
+ * activity DTO at all. Keeps `lastActivityAt` (what the client renders) and the
+ * display sort below reading one value.
+ */
+function effectiveAtOf(
+  lastActivity:
+    | PrivateConversationLastActivity
+    | GroupConversationLastActivity
+    | null
+    | undefined,
+  lastMessageAt: Date | null
+): number {
+  if (lastActivity) return lastActivity.dateTime;
+  return lastMessageAt ? lastMessageAt.getTime() : 0;
 }
 
 export class InboxService {
@@ -256,6 +289,7 @@ export class InboxService {
       pinnedCount: room.pinnedCount,
       peer: room.peer,
       lastActivity: room.lastActivity,
+      lastActivityAt: effectiveAtOf(room.lastActivity, room.lastMessageAt),
       isFriend: rel.isFriend,
       relationshipStatus: rel.relationshipStatus,
       friendshipId: rel.friendshipId,
@@ -296,6 +330,7 @@ export class InboxService {
       pinnedCount: room.pinnedCount,
       peer: null,
       lastActivity: room.lastActivity,
+      lastActivityAt: effectiveAtOf(room.lastActivity, room.lastMessageAt),
       isFriend: null,
       relationshipStatus: null,
       friendshipId: null,

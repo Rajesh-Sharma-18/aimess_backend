@@ -577,17 +577,44 @@ const startServer = async () => {
     // publishConvUpdated/publishCommunityUpdated call site and the private/
     // group/community mark-read paths can push a fresh summary without each
     // needing UnreadSummaryService injected directly.
+    //
+    // COALESCED per user. `notifyUnreadChanged` fires once per RECIPIENT per
+    // conv:updated — so one message into a 50-member group asked for 50
+    // summaries, and each summary is three collection-wide unread aggregations
+    // (private + group + community). A burst of sends or a rapid read sequence
+    // turned that into hundreds of concurrent aggregations, which is what made
+    // every other real-time effect on the same service (read receipts, list
+    // bumps) queue behind it and arrive seconds late.
+    //
+    // A trailing window collapses a burst to one query set per user: the badge
+    // is a TOTAL, so only the last value in a window was ever going to be
+    // rendered anyway. The window is short enough to stay inside the sub-second
+    // budget for a single isolated change.
+    const UNREAD_SUMMARY_COALESCE_MS = 200;
+    const unreadSummaryTimers = new Map<string, NodeJS.Timeout>();
     registerUnreadSummaryPusher((userId) => {
-      void unreadSummaryService
-        .getUnreadSummary(userId)
-        .then((summary) =>
-          publishChatUserEvent(redis, userId, "chat:unread_summary", summary)
-        )
-        .catch((err) => {
-          logger.warn(
-            `chat:unread_summary push failed for ${userId}: ${String(err)}`
-          );
-        });
+      if (!userId || unreadSummaryTimers.has(userId)) return;
+      unreadSummaryTimers.set(
+        userId,
+        setTimeout(() => {
+          unreadSummaryTimers.delete(userId);
+          void unreadSummaryService
+            .getUnreadSummary(userId)
+            .then((summary) =>
+              publishChatUserEvent(
+                redis,
+                userId,
+                "chat:unread_summary",
+                summary
+              )
+            )
+            .catch((err) => {
+              logger.warn(
+                `chat:unread_summary push failed for ${userId}: ${String(err)}`
+              );
+            });
+        }, UNREAD_SUMMARY_COALESCE_MS).unref()
+      );
     });
 
     // V2 §3.3: per-conversation seq-based incremental sync (REST catch-up)
