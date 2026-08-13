@@ -37,9 +37,21 @@ export interface AllSessionsRevokedPayload {
 
 let channelPromise: Promise<amqp.Channel> | null = null;
 
+/**
+ * Drop the memoized channel so the next publish dials a fresh connection.
+ *
+ * Without this the cached promise keeps resolving to a channel whose socket is
+ * already dead, so ONE broker blip silently breaks every subsequent
+ * device-token cleanup for the lifetime of the process — every logout from
+ * then on leaves its push token registered.
+ */
+function resetChannel(current: Promise<amqp.Channel>): void {
+  if (channelPromise === current) channelPromise = null;
+}
+
 async function getChannel(): Promise<amqp.Channel> {
   if (!channelPromise) {
-    channelPromise = (async () => {
+    const pending = (async () => {
       const connection = await amqp.connect(env.RABBITMQ_URL);
       const channel = await connection.createChannel();
       await channel.assertExchange(SESSION_DLX, "direct", { durable: true });
@@ -48,43 +60,44 @@ async function getChannel(): Promise<amqp.Channel> {
         deadLetterExchange: SESSION_DLX,
         deadLetterRoutingKey: SESSION_DLQ_ROUTING_KEY,
       });
+      channel.on("close", () => resetChannel(pending));
+      channel.on("error", () => resetChannel(pending));
+      connection.on("close", () => resetChannel(pending));
+      connection.on("error", () => resetChannel(pending));
       return channel;
     })();
+    // A failed dial must not be cached either.
+    pending.catch(() => resetChannel(pending));
+    channelPromise = pending;
   }
   return channelPromise;
 }
 
-async function publishSessionDeviceRevoked(
-  payload: SessionRevokedPayload
-): Promise<void> {
-  const channel = await getChannel();
-  const message = JSON.stringify({
-    type: "session.device_revoked",
-    data: payload,
-  });
-  channel.sendToQueue(SESSION_QUEUE, Buffer.from(message), {
-    persistent: true,
-  });
-}
+async function publish(type: string, data: unknown): Promise<void> {
+  const message = Buffer.from(JSON.stringify({ type, data }));
 
-async function publishAllSessionsRevoked(
-  payload: AllSessionsRevokedPayload
-): Promise<void> {
-  const channel = await getChannel();
-  const message = JSON.stringify({
-    type: "session.all_revoked",
-    data: payload,
-  });
-  channel.sendToQueue(SESSION_QUEUE, Buffer.from(message), {
-    persistent: true,
-  });
+  // One retry on a fresh channel: the first send after an idle broker restart
+  // fails on the stale socket, and losing it means the device keeps its push
+  // token forever. The queue is durable, so a message that lands is never lost.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pending = channelPromise;
+    try {
+      const channel = await getChannel();
+      channel.sendToQueue(SESSION_QUEUE, message, { persistent: true });
+      return;
+    } catch (error) {
+      if (pending) resetChannel(pending);
+      channelPromise = null;
+      if (attempt === 1) throw error;
+    }
+  }
 }
 
 /** Fire-and-forget; logout must not fail if the broker is down. */
 export function publishSessionDeviceRevokedSafe(
   payload: SessionRevokedPayload
 ): void {
-  void publishSessionDeviceRevoked(payload).catch((error) => {
+  void publish("session.device_revoked", payload).catch((error) => {
     logger.error("Failed to publish session.device_revoked event");
     logger.error(error);
   });
@@ -94,7 +107,7 @@ export function publishSessionDeviceRevokedSafe(
 export function publishAllSessionsRevokedSafe(
   payload: AllSessionsRevokedPayload
 ): void {
-  void publishAllSessionsRevoked(payload).catch((error) => {
+  void publish("session.all_revoked", payload).catch((error) => {
     logger.error("Failed to publish session.all_revoked event");
     logger.error(error);
   });

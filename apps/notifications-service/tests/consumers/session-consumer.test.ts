@@ -20,6 +20,7 @@
 const channelMock = {
   assertExchange: jest.fn(async () => undefined),
   assertQueue: jest.fn(async () => undefined),
+  bindQueue: jest.fn(async () => undefined),
   prefetch: jest.fn(async () => undefined),
   consume: jest.fn(),
   ack: jest.fn(),
@@ -47,7 +48,8 @@ import { deviceTokenRepository } from "../../src/repositories/device-token.repos
 
 const repo = deviceTokenRepository as unknown as Record<string, jest.Mock>;
 
-type ConsumeCallback = (msg: { content: Buffer } | null) => void;
+type Message = { content: Buffer; fields: { redelivered: boolean } };
+type ConsumeCallback = (msg: Message | null) => void;
 
 const USER = "user-1";
 
@@ -61,13 +63,18 @@ async function setup(): Promise<ConsumeCallback> {
   return call[1];
 }
 
+function message(body: string, redelivered = false): Message {
+  return { content: Buffer.from(body), fields: { redelivered } };
+}
+
 /** Feed one event and wait for the consumer's async handler to settle. */
 async function emit(
   consume: ConsumeCallback,
   type: string,
-  data: object
+  data: object,
+  redelivered = false
 ): Promise<void> {
-  consume({ content: Buffer.from(JSON.stringify({ type, data })) });
+  consume(message(JSON.stringify({ type, data }), redelivered));
   await new Promise((resolve) => setImmediate(resolve));
 }
 
@@ -124,10 +131,70 @@ describe("session consumer → device token teardown", () => {
 
   it("dead-letters a malformed message instead of acking it", async () => {
     const consume = await setup();
-    consume({ content: Buffer.from("not json") });
+    consume(message("not json"));
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(channelMock.nack).toHaveBeenCalledTimes(1);
+    // requeue=false: retrying unparseable bytes can never succeed.
+    expect(channelMock.nack).toHaveBeenCalledWith(
+      expect.anything(),
+      false,
+      false
+    );
     expect(channelMock.ack).not.toHaveBeenCalled();
+  });
+
+  // A dead-lettered delete used to vanish: the DLX was asserted but no queue
+  // was ever bound to it, so RabbitMQ dropped the message and the device kept
+  // its push token with nothing left to replay.
+  it("binds a durable dead-letter queue to the DLX", async () => {
+    await setup();
+
+    expect(channelMock.assertQueue).toHaveBeenCalledWith("session.queue.dlq", {
+      durable: true,
+    });
+    expect(channelMock.bindQueue).toHaveBeenCalledWith(
+      "session.queue.dlq",
+      "session.queue.dlx",
+      "session.queue.dead"
+    );
+  });
+
+  it("requeues a transient failure once instead of dead-lettering it", async () => {
+    const consume = await setup();
+    repo.deleteByUserIdAndSessionId.mockRejectedValueOnce(
+      new Error("mongo down")
+    );
+
+    await emit(consume, "session.device_revoked", {
+      userId: USER,
+      sessionId: "sess-1",
+    });
+
+    expect(channelMock.nack).toHaveBeenCalledWith(
+      expect.anything(),
+      false,
+      true
+    );
+    expect(channelMock.ack).not.toHaveBeenCalled();
+  });
+
+  it("dead-letters a redelivered message that fails again", async () => {
+    const consume = await setup();
+    repo.deleteByUserIdAndSessionId.mockRejectedValueOnce(
+      new Error("mongo still down")
+    );
+
+    await emit(
+      consume,
+      "session.device_revoked",
+      { userId: USER, sessionId: "sess-1" },
+      true
+    );
+
+    expect(channelMock.nack).toHaveBeenCalledWith(
+      expect.anything(),
+      false,
+      false
+    );
   });
 });

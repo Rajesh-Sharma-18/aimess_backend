@@ -18,7 +18,23 @@ export interface DeviceTokenRow {
   tokenType: string;
   platform: string;
   deviceId: string | null;
+  /** auth-service session that registered this row; null for legacy rows. */
+  sessionId: string | null;
 }
+
+/**
+ * How long a token may go unseen before the sweeper drops it. Covers the
+ * devices no revocation event will ever name: a refresh token that simply
+ * expired, an uninstalled app, a browser that cleared site data.
+ */
+const STALE_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
+
+/**
+ * Minimum gap between `lastSeenAt` writes on the send path. A push proves the
+ * device is still reachable, but bumping the row on every single push would
+ * add a write per notification per device for no extra signal.
+ */
+const TOUCH_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 export const deviceTokenRepository = {
   /**
@@ -71,8 +87,42 @@ export const deviceTokenRepository = {
   async findTokensByUserId(userId: string): Promise<DeviceTokenRow[]> {
     return prisma.deviceToken.findMany({
       where: { userId },
-      select: { token: true, tokenType: true, platform: true, deviceId: true },
+      select: {
+        token: true,
+        tokenType: true,
+        platform: true,
+        deviceId: true,
+        sessionId: true,
+      },
     });
+  },
+
+  /**
+   * Mark a token as still alive (a push was accepted for it), at most once per
+   * `TOUCH_THROTTLE_MS`. This is what keeps a long-lived, genuinely active
+   * device off the stale sweeper's list without a write per notification.
+   */
+  async touchLastSeen(token: string): Promise<void> {
+    await prisma.deviceToken.updateMany({
+      where: {
+        token,
+        lastSeenAt: { lt: new Date(Date.now() - TOUCH_THROTTLE_MS) },
+      },
+      data: { lastSeenAt: new Date() },
+    });
+  },
+
+  /**
+   * Delete tokens unseen for longer than the TTL. The backstop for every path
+   * that produces no revocation event at all — a naturally expired refresh
+   * token, an uninstalled app, a browser that cleared site data — and the
+   * bound on any event lost while RabbitMQ was unreachable.
+   */
+  async deleteStale(olderThanMs: number = STALE_AFTER_MS): Promise<number> {
+    const res = await prisma.deviceToken.deleteMany({
+      where: { lastSeenAt: { lt: new Date(Date.now() - olderThanMs) } },
+    });
+    return res.count;
   },
 
   /** Remove a single token (explicit unregister, or pruning a dead FCM token). */

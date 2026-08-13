@@ -200,6 +200,14 @@ export const devicesPaths = {
                     "Optional stable device identifier used to deduplicate tokens across re-logins on the same device.",
                   example: "a1b2c3d4e5f6",
                 },
+                tokenType: {
+                  type: "string" as const,
+                  enum: ["FCM", "VOIP"],
+                  default: "FCM",
+                  description:
+                    "`VOIP` registers an iOS PushKit token used only for call ringing over APNs. Forwarded verbatim — omitting it stores the row as `FCM`.",
+                  example: "FCM",
+                },
               },
             },
             example: {
@@ -217,6 +225,51 @@ export const devicesPaths = {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
               example: { success: true },
+            },
+          },
+        },
+        "400": badRequest,
+        "401": unauthorized,
+        "429": tooManyRequests,
+      },
+    },
+  },
+
+  "/notifications/fcm-token/{token}": {
+    delete: {
+      tags: ["Devices"],
+      operationId: "unregisterFcmToken",
+      summary: "Unregister FCM token (alias of DELETE /devices/{token})",
+      description: [
+        "Stable alias of `DELETE /devices/{token}` for clients that target the",
+        "legacy `/notifications/fcm-token` path (the native iOS / Android logout",
+        "step). Forwarded verbatim to the same notifications-service endpoint —",
+        "identical auth, scoping and response envelope. Prefer",
+        "`DELETE /devices/{token}` for new clients.",
+        "",
+        "The delete is scoped to the caller: a user can only ever remove their own",
+        "token. Idempotent — a token that is already gone returns 200 with",
+        "`removed: false`.",
+      ].join("\n"),
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "token",
+          in: "path" as const,
+          required: true,
+          schema: { type: "string" as const },
+          description:
+            "The exact FCM / APNs token string previously registered. URL-encode it.",
+          example: "fCG3k7p2Rn2:APA91bH8qE3...",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Token removed (or already absent — idempotent)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, removed: true },
             },
           },
         },

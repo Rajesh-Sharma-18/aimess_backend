@@ -21,14 +21,13 @@ import {
   createPasswordResetToken,
   hashPasswordResetToken,
 } from "../lib/password-reset-token.js";
-import { markSessionsRevoked } from "../lib/session-active-cache.js";
+import { revokeSessionsForPasswordChange } from "../lib/revoke-password-sessions.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
 import { publishPasswordResetOtpSafe } from "../messaging/publish-password-reset-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 import { passwordResetRepository } from "../repositories/password-reset.repository.js";
-import { sessionRepository } from "../repositories/session.repository.js";
 import type { VerifyPasswordResetOtpResult } from "../types/password-reset.types.js";
 
 function canResetPassword(user: {
@@ -183,8 +182,10 @@ export const passwordResetService = {
     await authRepository.updatePasswordHash(record.userId, passwordHash);
     await passwordResetRepository.markConsumed(record.id);
 
-    const active = await sessionRepository.listActiveSessionIds(record.userId);
-    await authRepository.revokeSessionsAfterPasswordChange(record.userId);
-    await markSessionsRevoked(active.map((row) => row.id));
+    // Every session dies — no session is trusted after a reset, so no
+    // exceptSessionId. This also drops every device's push token and kicks
+    // their live sockets; before, a reset revoked the sessions but left the
+    // tokens registered, so the attacker's device kept receiving push.
+    await revokeSessionsForPasswordChange(record.userId);
   },
 };

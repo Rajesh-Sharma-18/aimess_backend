@@ -50,16 +50,31 @@ jest.mock("../../src/lib/password-reset-token.js", () => ({
 jest.mock("../../src/messaging/publish-password-reset-otp.js", () => ({
   publishPasswordResetOtpSafe: jest.fn(),
 }));
+jest.mock("../../src/messaging/publish-session-revoked.js", () => ({
+  publishSessionDeviceRevokedSafe: jest.fn(),
+  publishAllSessionsRevokedSafe: jest.fn(),
+}));
+jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
+  publishSessionRevokedEvent: jest.fn(async () => 0),
+}));
 
 import request from "supertest";
 
+import { publishSessionRevokedEvent } from "@aimess/redis";
+
 import app from "../../src/app.js";
+import { publishAllSessionsRevokedSafe } from "../../src/messaging/publish-session-revoked.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { otpRepository } from "../../src/repositories/otp.repository.js";
 import { passwordResetRepository } from "../../src/repositories/password-reset.repository.js";
+import { sessionRepository } from "../../src/repositories/session.repository.js";
 import { verifyOtpCode } from "../../src/lib/otp.js";
 
 const authRepo = authRepository as unknown as Record<string, jest.Mock>;
+const sessionRepo = sessionRepository as unknown as Record<string, jest.Mock>;
+const publishAllRevoked = publishAllSessionsRevokedSafe as unknown as jest.Mock;
+const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 const otpRepo = otpRepository as unknown as Record<string, jest.Mock>;
 const resetRepo = passwordResetRepository as unknown as Record<
   string,
@@ -233,6 +248,9 @@ describe("POST /api/auth/forgot-password/reset", () => {
       deletedAt: null,
       linkedAccounts: [{ id: "link-1" }],
     });
+    // clearMocks only clears call history, not queued resolutions — reset the
+    // session list explicitly so one test's device fixture can't leak forward.
+    sessionRepo.listActiveSessionIds.mockResolvedValue([]);
   });
 
   it("resets the password with a valid token → 200", async () => {
@@ -244,6 +262,40 @@ describe("POST /api/auth/forgot-password/reset", () => {
     expect(res.body.success).toBe(true);
     expect(authRepo.updatePasswordHash).toHaveBeenCalledTimes(1);
     expect(resetRepo.markConsumed).toHaveBeenCalledWith("prt-1");
+  });
+
+  // A reset trusts no session, so EVERY device is signed out — and every
+  // device's push token has to go with it. Before this, the reset revoked the
+  // sessions and published nothing, so the attacker's device stayed both
+  // socket-connected and push-enabled.
+  it("drops every push token and kicks every socket on a successful reset", async () => {
+    sessionRepo.listActiveSessionIds.mockResolvedValue([
+      { id: "sess-a" },
+      { id: "sess-b" },
+    ]);
+
+    const res = await request(app)
+      .post("/api/auth/forgot-password/reset")
+      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+
+    expect(res.status).toBe(200);
+    // No exceptSessionId — nothing is trusted after a reset.
+    expect(publishAllRevoked).toHaveBeenCalledWith({ userId: "user-1" });
+    expect(publishRevoked.mock.calls.map((call) => call[2])).toEqual([
+      "sess-a",
+      "sess-b",
+    ]);
+  });
+
+  it("publishes nothing when the reset token is rejected", async () => {
+    resetRepo.findValidByTokenHash.mockResolvedValue(null);
+
+    await request(app)
+      .post("/api/auth/forgot-password/reset")
+      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+
+    expect(publishAllRevoked).not.toHaveBeenCalled();
+    expect(publishRevoked).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an unknown / invalid reset token", async () => {

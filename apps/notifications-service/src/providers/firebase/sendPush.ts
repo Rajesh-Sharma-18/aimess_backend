@@ -39,10 +39,25 @@ interface SendPushParams {
   apnsCategory?: string;
 }
 
-/** FCM error codes that mean the token is permanently dead → prune it. */
+/**
+ * FCM error codes that mean the token is permanently dead → prune it.
+ *
+ * Deliberately EXCLUDED even though they also fail the send:
+ * `messaging/mismatched-credential`, `messaging/third-party-auth-error` and
+ * `messaging/authentication-error` are SERVER misconfigurations (wrong service
+ * account, bad APNs cert). Treating them as dead tokens would wipe every
+ * registration in the database the moment a credential is rotated wrong.
+ */
 const INVALID_TOKEN_CODES = new Set([
   "messaging/registration-token-not-registered",
   "messaging/invalid-registration-token",
+  "messaging/invalid-recipient",
+  // Token was minted for a different FCM sender — unusable by this project no
+  // matter how many times we retry.
+  "messaging/sender-id-mismatch",
+  // Ambiguous: also raised for a malformed payload. Kept because a malformed
+  // token is by far its most common cause here (payloads are built identically
+  // for every recipient, so a payload bug fails every send, not one token).
   "messaging/invalid-argument",
 ]);
 

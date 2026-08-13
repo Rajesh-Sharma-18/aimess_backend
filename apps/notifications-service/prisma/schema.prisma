@@ -40,5 +40,8 @@ model DeviceToken {
 
   @@index([userId])
   @@index([userId, sessionId])
+  // Stale-token sweeper (jobs/device-token-sweeper.ts) deletes by lastSeenAt;
+  // without this the periodic tick is a full collection scan.
+  @@index([lastSeenAt])
   @@map("device_tokens")
 }

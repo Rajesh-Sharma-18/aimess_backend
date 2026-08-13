@@ -1,15 +1,12 @@
 import bcrypt from "bcryptjs";
 
 import { BadRequestError } from "@aimess/errors";
-import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
-import { redis } from "../config/redis.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
-import { markSessionsRevoked } from "../lib/session-active-cache.js";
+import { revokeSessionsForPasswordChange } from "../lib/revoke-password-sessions.js";
 import { publishPasswordChangedSafe } from "../messaging/publish-auth-security.js";
 import { authRepository } from "../repositories/auth.repository.js";
-import { sessionRepository } from "../repositories/session.repository.js";
 
 export const changePasswordService = {
   /**
@@ -49,24 +46,8 @@ export const changePasswordService = {
 
     await authRepository.updatePasswordHash(userId, passwordHash);
 
-    const active = await sessionRepository.listActiveSessionIds(userId);
-    await authRepository.revokeSessionsAfterPasswordChange(
-      userId,
-      currentSessionId
-    );
-
-    const revokedIds = active
-      .map((row) => row.id)
-      .filter((id) => id !== currentSessionId);
-    await markSessionsRevoked(revokedIds);
-
-    // Kick the revoked devices off the socket layer now rather than at token
-    // expiry — same signal "Logout Device" and account deletion use.
-    for (const sessionId of revokedIds) {
-      void publishSessionRevokedEvent(redis, userId, sessionId).catch(
-        () => undefined
-      );
-    }
+    // DB revoke + Redis cache bust + push-token teardown + socket kick.
+    await revokeSessionsForPasswordChange(userId, currentSessionId);
 
     publishPasswordChangedSafe({ userId, at: new Date().toISOString() });
   },
