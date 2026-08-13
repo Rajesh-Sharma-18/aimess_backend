@@ -74,6 +74,7 @@ import {
   assertCommunityRoomWritable,
   assertRoomMemberActive,
   getCommunityLiveRole,
+  canDeleteOthersMessage,
 } from "../lib/access-guard.js";
 import {
   EMPTY_AROUND_CURSORS,
@@ -2436,7 +2437,14 @@ export class CommunityMessageService {
     let deletedType: "SELF_DELETE" | "ADMIN_DELETE";
     if (message.sentBy !== userId) {
       const liveRole = await getCommunityLiveRole(message.roomId, userId);
-      if (!["admin", "moderator"].includes(liveRole)) {
+      // A MODERATOR may not delete an ADMIN's (or a peer MODERATOR's) message —
+      // the sender's role is resolved from the SAME live source, and only in the
+      // moderator branch so an admin delete still costs one lookup.
+      const senderRole =
+        liveRole === "moderator" && message.sentBy
+          ? await getCommunityLiveRole(message.roomId, message.sentBy)
+          : "";
+      if (!canDeleteOthersMessage(liveRole, senderRole)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       // Admin/mod deleting someone else's message is moderation — not gated by mute.

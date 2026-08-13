@@ -1914,6 +1914,36 @@ const notificationAction = {
   },
 };
 
+const notificationById = {
+  delete: {
+    tags: ["Chat — Notifications"],
+    operationId: "deleteNotification",
+    summary: "Delete one notification",
+    description:
+      "Soft-deletes a single notification for the caller. The row is tombstoned, so it never returns from " +
+      "GET /chat/notifications and is emitted as a tombstone by GET /chat/notifications/sync; the caller's other " +
+      "devices receive `notification:deleted` (plus `notification:count_update`) on the /notify socket.\n\n" +
+      "This removes the CARD only — it is not a state transition on whatever the notification refers to. " +
+      "Deleting a `friend.requested` row leaves the friendship PENDING and still acceptable via " +
+      "`POST /users/friends/requests/{id}/accept`; use that endpoint's `…/reject` sibling to actually decline.\n\n" +
+      "Owner-scoped and idempotent: an id the caller doesn't own — or a re-delete — returns 200 with `deleted: false`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "id",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "Notification id from GET /chat/notifications.",
+      },
+    ],
+    responses: {
+      ...successResponse("Notification deleted"),
+      "401": unauthorized,
+    },
+  },
+};
+
 const unreadSummary = {
   get: {
     tags: ["Chat — Inbox"],
@@ -3970,6 +4000,7 @@ export const chatPaths = {
   "/chat/notifications/read-all": notificationReadAll,
   "/chat/notifications/unread-count": notificationUnreadCount,
   "/chat/notifications/{id}/action": notificationAction,
+  "/chat/notifications/{id}": notificationById,
 
   // Community rooms
   "/chat/community/rooms": communityRooms,

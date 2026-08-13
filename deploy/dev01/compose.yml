@@ -230,7 +230,7 @@ services:
   #
   # ⚠  The UDP media range and TURN/TLS on 5349 CANNOT pass through a Cloudflare
   # proxy — both go straight to the host, and Cloudflare listens on neither. The
-  # DNS record for notification.ai5dev.tech must be GREY-CLOUD (DNS-only),
+  # DNS record for media.ai5stream.tech must be GREY-CLOUD (DNS-only),
   # pointing at 76.13.216.164.
   # ===========================================================================
   livekit:
@@ -257,7 +257,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
 
   # ===========================================================================
-  # Website (Next.js) — https://website.ai5dev.tech
+  # Website (Next.js) — https://ai5dev.tech
   #
   # Image is built from the aimess_website repo, NOT from this one:
   #   docker build -t aimess-website:latest /path/to/aimess_website

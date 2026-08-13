@@ -52,7 +52,7 @@ redis:
 # ⚠ `domain` MUST resolve straight to this host. TURN speaks TLS on 5349, not
 # HTTP on 443, so a Cloudflare-proxied record sends clients to an edge that is
 # not listening on that port and TURN is silently dead — the exact failure it
-# exists to prevent. Grey-cloud notification.ai5dev.tech before enabling this.
+# exists to prevent. media.ai5stream.tech is already DNS-only, so this is safe.
 #
 # ⚠ The certificate renews every 90 days and LiveKit reads it ONCE at startup.
 # deploy/scripts/05-issue-certs.sh installs a renewal hook that restarts this

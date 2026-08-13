@@ -33,6 +33,7 @@ export function createNotificationRoutes(ctrl: NotificationController): Router {
     validateBody(recordActionSchema),
     ctrl.recordAction
   );
+  router.delete("/:id", authenticate, ctrl.deleteNotification);
 
   return router;
 }

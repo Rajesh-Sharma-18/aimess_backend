@@ -230,6 +230,34 @@ export async function getCommunityLiveRole(
 }
 
 /**
+ * Moderation hierarchy for deleting SOMEONE ELSE's message, shared by groups
+ * (`GroupMessageService.deleteMessage`, UPPERCASE roles) and communities
+ * (`CommunityMessageService.deleteForAll`, lowercase live roles) — hence the
+ * case-insensitive compare.
+ *
+ * Both call sites previously asked only "is the actor ADMIN or MODERATOR?" and
+ * never looked at the SENDER's role, so a MODERATOR could delete an ADMIN's
+ * message. Mirrors the outrank rule kick/mute/ban already enforce in
+ * `group-member.service.ts` (`roleOrder.indexOf(actor) >= roleOrder.indexOf(target)`):
+ * a MODERATOR may only act on a plain MEMBER.
+ *
+ * OWNER is treated as ADMIN (`RoomMemberRole.OWNER` exists on community general
+ * rooms). An absent sender role (sender has since LEFT/been kicked, or the
+ * lookup failed) resolves to MEMBER: their leftover messages stay moderatable.
+ */
+export function canDeleteOthersMessage(
+  actorRole: string | null | undefined,
+  senderRole: string | null | undefined
+): boolean {
+  const actor = (actorRole ?? "").toUpperCase();
+  const sender = (senderRole ?? "").toUpperCase();
+  if (actor === "OWNER" || actor === "ADMIN") return true;
+  if (actor !== "MODERATOR") return false;
+  // A moderator outranks plain members only — never an admin/owner or a peer moderator.
+  return !["OWNER", "ADMIN", "MODERATOR"].includes(sender);
+}
+
+/**
  * Convenience wrapper over {@link getCommunityLiveRole} for call sites that
  * want the standard `CHAT_INSUFFICIENT_PERMISSIONS` 403. Some existing call
  * sites throw a DIFFERENT error class for this same condition (e.g.

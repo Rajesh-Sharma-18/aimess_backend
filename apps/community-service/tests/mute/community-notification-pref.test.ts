@@ -7,7 +7,9 @@
  *   - Non-ACTIVE membership (LEFT / BANNED / PENDING / null) → enabled=false
  *     even when a mute-setting row still has the field toggled on.
  *   - ACTIVE + no mute-setting row → enabled=true (implicit defaults).
- *   - ACTIVE + mute-setting row → the requested field's boolean.
+ *   - ACTIVE + unlapsed TIMED mute (`mutedUntil` in the future) → enabled=false.
+ *   - Otherwise → the requested field's boolean. `mutedUntil = null` is NOT a
+ *     mute; row existence alone must never suppress anything.
  *
  * The global prisma stub (`tests/setup/global-mocks.ts`) is `{}`; we re-mock
  * the repository seam so membership + mute-setting lookups are controllable
@@ -113,7 +115,10 @@ describe("resolveCommunityNotificationPrefEnabled — ACTIVE membership gate", (
     ).resolves.toBe(false);
   });
 
-  it("ACTIVE + indefinite full mute (mutedUntil=null) → enabled=false regardless of per-field toggles", async () => {
+  it("ACTIVE + row with no timed mute → the per-field toggle decides, not row existence", async () => {
+    // Regression (issue 51): `mutedUntil = null` used to be read as "muted
+    // indefinitely", so the row created by touching ANY toggle silenced every
+    // kind forever and switching a category back on changed nothing.
     findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
     findMuteByUserAndCommunity.mockResolvedValue({
       mutedUntil: null,
@@ -124,10 +129,29 @@ describe("resolveCommunityNotificationPrefEnabled — ACTIVE membership gate", (
 
     await expect(
       resolveCommunityNotificationPrefEnabled(CID, UID, "chatEnabled")
+    ).resolves.toBe(true);
+  });
+
+  it("ACTIVE + re-enabled category after a full mute → enabled=true again", async () => {
+    // A full mute is stored as all three off; flipping one back on must deliver
+    // that kind immediately while the other two stay silent.
+    findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
+    findMuteByUserAndCommunity.mockResolvedValue({
+      mutedUntil: null,
+      chatEnabled: true,
+      streamEnabled: false,
+      announcementEnabled: false,
+    });
+
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "chatEnabled")
+    ).resolves.toBe(true);
+    await expect(
+      resolveCommunityNotificationPrefEnabled(CID, UID, "streamEnabled")
     ).resolves.toBe(false);
   });
 
-  it("ACTIVE + full mute still in the future → enabled=false regardless of per-field toggles", async () => {
+  it("ACTIVE + timed mute still in the future → enabled=false regardless of per-field toggles", async () => {
     findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
     findMuteByUserAndCommunity.mockResolvedValue({
       mutedUntil: new Date(Date.now() + 60_000),
@@ -141,7 +165,7 @@ describe("resolveCommunityNotificationPrefEnabled — ACTIVE membership gate", (
     ).resolves.toBe(false);
   });
 
-  it("ACTIVE + full mute already expired → lazily falls back to the per-field toggle", async () => {
+  it("ACTIVE + timed mute already expired → lazily falls back to the per-field toggle", async () => {
     findMembership.mockResolvedValue({ status: CommunityMemberStatus.ACTIVE });
     findMuteByUserAndCommunity.mockResolvedValue({
       mutedUntil: new Date(Date.now() - 60_000),

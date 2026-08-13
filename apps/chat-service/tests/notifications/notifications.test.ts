@@ -5,6 +5,7 @@
  *   POST /api/chat/notifications/read         (mark one read)
  *   POST /api/chat/notifications/read-all     (mark all read)
  *   GET  /api/chat/notifications/unread-count (unread count)
+ *   DELETE /api/chat/notifications/:id        (soft-delete one)
  * All require the shared access-token middleware.
  */
 import request from "supertest";
@@ -205,6 +206,78 @@ describe("POST /api/chat/notifications/read-all", () => {
   it("NEGATIVE: 401 without a token", async () => {
     const res = await request(app).post(`${BASE}/read-all`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("DELETE /api/chat/notifications/:id", () => {
+  it("POSITIVE: soft-deletes the row and returns the recomputed unread count", async () => {
+    mocks.notificationRepo.deleteById.mockResolvedValue({ count: 1 });
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(4);
+
+    const res = await request(app)
+      .delete(`${BASE}/notif-1`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ deleted: true, unreadCount: 4 });
+    // Owner-scoped: (id, callerUserId), never id alone.
+    expect(mocks.notificationRepo.deleteById).toHaveBeenCalledWith(
+      "notif-1",
+      TEST_USER_ID
+    );
+  });
+
+  // The Delete button on an incoming friend-request card dismisses the CARD.
+  // It must never reach the friendship: no accept, no reject, no state change.
+  it("POSITIVE: dismissing a friend-request card touches no friendship state", async () => {
+    mocks.notificationRepo.deleteById.mockResolvedValue({ count: 1 });
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(0);
+
+    await request(app)
+      .delete(`${BASE}/friend-req-notif`)
+      .set(bearer(makeAccessToken()));
+
+    // The friendship itself lives in user-service and this route has no path to
+    // it. What it COULD still do wrong is rewrite the row into a resolved
+    // "declined" card — the three writes that would do that stay untouched, so
+    // the request is left PENDING and re-renders with Accept if it comes back.
+    expect(mocks.notificationRepo.recordAction).not.toHaveBeenCalled();
+    expect(mocks.notificationRepo.applyStateTransition).not.toHaveBeenCalled();
+    expect(mocks.notificationRepo.updatePayloadAndType).not.toHaveBeenCalled();
+  });
+
+  it("EDGE: re-deleting is idempotent — 200 with deleted:false", async () => {
+    mocks.notificationRepo.deleteById.mockResolvedValue({ count: 0 });
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(4);
+
+    const res = await request(app)
+      .delete(`${BASE}/notif-1`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.deleted).toBe(false);
+  });
+
+  it("SECURITY: IDOR — a foreign id is scoped out, mutating nothing", async () => {
+    mocks.notificationRepo.deleteById.mockResolvedValue({ count: 0 });
+    mocks.notificationRepo.getUnreadCount.mockResolvedValue(4);
+
+    const res = await request(app)
+      .delete(`${BASE}/someone-elses-id`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.deleted).toBe(false);
+    expect(mocks.notificationRepo.deleteById).toHaveBeenCalledWith(
+      "someone-elses-id",
+      TEST_USER_ID
+    );
+  });
+
+  it("NEGATIVE: 401 without a token", async () => {
+    const res = await request(app).delete(`${BASE}/notif-1`);
+    expect(res.status).toBe(401);
+    expect(mocks.notificationRepo.deleteById).not.toHaveBeenCalled();
   });
 });
 

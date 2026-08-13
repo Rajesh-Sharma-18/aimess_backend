@@ -40,6 +40,7 @@ import {
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
   isGroupMemberMuted,
+  canDeleteOthersMessage,
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
@@ -1178,8 +1179,18 @@ export class GroupMessageService {
       if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
       if (message.senderId !== userId) {
-        // Only admins can delete others' messages
-        if (!["ADMIN", "MODERATOR"].includes(member.role)) {
+        // Only admins/moderators can delete others' messages, and a MODERATOR
+        // may not delete an ADMIN's (or a peer MODERATOR's) message — same
+        // outrank rule kick/mute/ban enforce. A sender who has since left the
+        // group has no row: they rank as a plain MEMBER, so their leftover
+        // messages stay moderatable.
+        const senderMember = message.senderId
+          ? await this.memberRepo.findActiveByRoomAndUser(
+              roomId,
+              message.senderId
+            )
+          : null;
+        if (!canDeleteOthersMessage(member.role, senderMember?.role)) {
           throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
         }
         deletedType = "ADMIN_DELETE";

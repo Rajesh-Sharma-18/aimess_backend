@@ -350,3 +350,199 @@ amount. Recompute from `RoomMember` where `status = "active"` per room.
 6. The community room list adds one indexed membership query per call. It
    replaces an unbounded full-table scan, so it should be a net win, but it is a
    new query on a hot path.
+
+---
+
+## 8. Issues 50 + 51 — community notification preferences vs. the mute icon
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Filed as two symptoms; they are one defect in the storage model of
+`CommunityMuteSetting`, which carried two contradictory meanings on one row.
+
+### Root cause
+
+`CommunityMuteSetting` holds both the three category toggles
+(`chatEnabled` / `announcementEnabled` / `streamEnabled`) and `mutedUntil`. The
+old code read `mutedUntil === null` on an existing row as "muted indefinitely":
+
+- `apps/community-service/src/lib/community-notification-pref.ts:23-28,50` —
+  `isMuteRowActive()` returned true for any row with `mutedUntil === null`, and
+  the oracle short-circuited to `false` for **every** field before it ever read
+  the requested toggle.
+- `apps/community-service/src/repositories/community.repository.ts:3064-3078` —
+  `upsertNotificationPrefs()` creates the row with `mutedUntil` unset, i.e.
+  `null`.
+
+So the first time a member touched **any** switch, the row it created was
+indistinguishable from an indefinite mute. Every notification kind was
+suppressed from then on and switching a category back on changed nothing —
+**issue 51**. The same predicate fed the caller-facing mute flag
+(`community.service.ts:924`, `muteFields()`), so the list/sidebar rendered the
+mute icon while the panel showed all three switches green — **issue 50**.
+
+### Fix — one meaning per field
+
+`mutedUntil` is now a **timed** mute only (`null` = no timed mute). An
+indefinite mute is stored as all three toggles false. `isMuted` is always
+derived, never stored: a running timed mute, or all three off.
+
+| File                                      | Change                                                                                                                                                                                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/community-notification-pref.ts`      | `isMuteRowActive` → `isTimedMuteActive` (future timestamp only) + new `isCommunityMuted` derivation; oracle falls through to the per-field toggle                                                                                       |
+| `repositories/community.repository.ts`    | `upsertMute(…, null)` writes all three toggles false; `findStreamMutedMemberIds` also excludes members under a running timed mute                                                                                                       |
+| `services/community.service.ts`           | `muteFields`, `getNotificationPreferences`, `setNotificationPreferences` all derive `isMuted` via `isCommunityMuted`; `setNotificationPreferences` now publishes `community:notification-setting-updated` so other devices/tabs re-sync |
+| `apps/api-gateway/asyncapi/asyncapi.yaml` | Documented that `isMuted` is derived and `muteUntil: null` is not an indefinite mute                                                                                                                                                    |
+
+Delivery gating is unchanged in shape — `push.service.ts:327` still calls the
+same oracle, so chat, announcement and livestream pushes resume the moment a
+category is switched back on.
+
+### Migration
+
+`scripts/backfill-indefinite-community-mutes.ts` — **dry run by default**.
+
+The old schema cannot distinguish a genuine indefinite mute from a preferences
+row: both are `mutedUntil = null`, and a member who switched a category off and
+back on again also lands on all-three-true. Without `--apply` those rows read as
+un-muted after deploy, which is the fail-safe direction (notifications resume;
+re-muting is one tap). Run with `--apply` only if preserving the old mutes
+matters more than the members whose switches were genuinely on.
+
+### Tests
+
+- `tests/mute/community-mute-model.test.ts` (new) — the `isCommunityMuted` truth
+  table, how `upsertMute` stores indefinite vs. timed mutes, and the livestream
+  fan-out exclusion.
+- `tests/mute/community-notification-pref.test.ts` — the case that asserted
+  "`mutedUntil = null` ⇒ everything suppressed" now asserts the opposite, plus a
+  re-enable-after-full-mute case.
+
+49 tests pass across the four mute suites; `tsc --noEmit` clean in both repos.
+
+---
+
+## 9. Issues 52 + 53 — moderator deleting an admin's message · the join toast
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+### Issue 52 — role hierarchy on delete-for-everyone (groups + communities)
+
+Both delete paths authorized on the ACTOR's role alone and never read the
+message SENDER's, so a MODERATOR could delete an ADMIN's message:
+
+- `apps/chat-service/src/services/group-message.service.ts:1179` —
+  `if (!["ADMIN", "MODERATOR"].includes(member.role)) throw …`
+- `apps/chat-service/src/services/community-message.service.ts:2439` —
+  `if (!["admin", "moderator"].includes(liveRole)) throw …`
+
+Kick/mute/ban already enforce an outrank rule
+(`group-member.service.ts:496`), and stream-service's comment delete
+(`livestream-comment.service.ts:377-407`) implements exactly the intended
+hierarchy — chat's delete was the outlier.
+
+**Fix.** One shared predicate,
+`canDeleteOthersMessage(actorRole, senderRole)` in
+`apps/chat-service/src/lib/access-guard.ts` (case-insensitive, so groups'
+UPPERCASE `RoomMember.role` and communities' lowercase live role both use it):
+
+| Actor       | May delete another's message        |
+| ----------- | ----------------------------------- |
+| OWNER/ADMIN | anyone's                            |
+| MODERATOR   | a plain MEMBER's only               |
+| MEMBER      | none (own messages only, unchanged) |
+
+- Groups resolve the sender's role from `RoomMember` (a sender who has since
+  left has no row and ranks as MEMBER, so their leftover messages stay
+  moderatable).
+- Communities resolve it from the same authoritative live lookup
+  (`getCommunityLiveRole`), and only in the moderator branch — an admin delete
+  still costs one gRPC call, not two.
+- Denial keeps the existing `CHAT_INSUFFICIENT_PERMISSIONS` code/status, so no
+  client contract changes. Sender-deletes-own and the muted-moderator
+  moderation exemption are untouched.
+
+### Issue 53 — the "You joined the community!" toast
+
+No backend change. The server already writes the joiner's own PERSONAL system
+line ("You joined the community", `community.service.ts:273`) into the
+transcript; the web client was additionally raising a success toast for the same
+event. The toast was removed client-side (see
+`aimess_website/QA_FIXES_WEBSITE.md`); the system message, `community:added`
+payload and join events are unchanged.
+
+### Tests
+
+- `tests/groups/group-message-delete-hierarchy.test.ts` (new) — moderator vs.
+  admin / peer moderator / member / departed sender, admin over moderator, plus
+  the shared predicate's case-insensitivity and fail-closed behaviour.
+- `tests/community/community-delete-mute-guard.test.ts` — three new hierarchy
+  cases; its fake room repo also gained the `allocateRevision` the service has
+  required since the zero-loss revision work (two long-standing failures in that
+  file now pass).
+
+60 tests pass across the group + community delete suites; `tsc --noEmit` clean.
+
+---
+
+## 10. Issues 54 + 55 — the pinned location banner · the dead friend-request tap
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Both defects are web-client only. The full write-up, with file:line for every
+change, is in `aimess_website/QA_FIXES_WEBSITE.md`; this section records what
+the backend was asked for and what it actually needed.
+
+### Issue 54 — pinned banner shows "Pinned message" for a location
+
+**No backend change.** `getActivePinSummary`
+(`apps/chat-service/src/services/community-pin.service.ts:430`) already returns
+`messageType: "LOCATION"` with `text: ""` — correct, since a location message
+has no body text — and `message-preview.service.ts` already renders
+`📍 <placeName>` for the inbox preview. The web client derived the banner text
+from three hand-rolled content-type ladders, none of which had a `LOCATION`
+rung, and fell through to its generic fallback string. Fixed client-side by
+collapsing all three onto the existing `replyLabelFromMessage` /
+`replyTypeLabel` helpers.
+
+### Issue 55 — tapping a friend-request push opened nothing
+
+**One documentation change; the payload was already right.**
+
+`friend.requested` is the only notification whose navigation names a peer rather
+than a room, because the DM does not exist until the request is accepted:
+
+- `apps/notifications-service/src/consumers/friend.consumer.ts:52-60` —
+  `{ screen: "PRIVATE_CHAT", userId: requesterId, conversationType:
+"PRIVATE_PENDING", requestId }`, with `deepLink: aimess://user/<requesterId>`.
+
+`NotificationNavigation.roomId` is optional and `userId` is documented as the
+subject user for friend events, so this is contract-valid. Every web consumer of
+`PRIVATE_CHAT` nonetheless read `roomId` and only `roomId`, resolved to `null`,
+and dropped the tap — the foreground toast focused the window and did nothing,
+the service worker landed on `/`.
+
+Rather than synthesise a room id at publish time (which would force a
+`GetOrCreatePrivateRooms` call for every pending request that may never be
+accepted), the contract now states the client obligation explicitly:
+
+- `packages/shared-types/src/events/community.ts` — `NotificationNavigation.roomId`
+  documents that `PRIVATE_CHAT` may arrive with `userId` alone and that clients
+  MUST fall back to it, since every platform's DM route get-or-creates the room
+  from a peer id.
+
+`group.consumer.ts` is unaffected — `GROUP_CHAT` navigation always carries
+`roomId`.
+
+**Mobile.** iOS and Android ship the same `NotificationRouter` shape and need
+the same fallback plus an `aimess://user/:id` deep-link case. No server payload
+changes, so nothing regresses while they catch up; the tap stays inert on those
+clients until then.
+
+### Tests
+
+Comment-only backend change, so no new backend suite. Client side:
+`aimess_website/scripts/check-firebase-sw.mjs` gained a case that drives the
+service worker's real `notificationclick` handler with `userId`-only navigation
+(6/6 pass, fails against the old worker); `tsc --noEmit` and `eslint` clean in
+both repositories.
