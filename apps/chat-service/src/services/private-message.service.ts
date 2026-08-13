@@ -99,6 +99,7 @@ import type { GroupInviteLinkRepository } from "../repositories/group-invite-lin
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import {
   currentLocale,
+  isCallContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
 import { allocateRoomSlot } from "../lib/room-lock.js";
@@ -1205,7 +1206,17 @@ export class PrivateMessageService {
     await this.assertCallerInMessageRoom(message, userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
-    if (message.senderId !== userId) {
+    // Call timeline rows are stored SENDER-LESS (`senderId: ""` — see
+    // CallChatMessageService: the call, not a user, produced the row), so the
+    // ownership check below could never match and delete-for-everyone on a call
+    // card 400'd for BOTH participants — including the person who placed it.
+    // A DM has exactly two participants and both were on that call, so the card
+    // is a shared artifact: either side may clear it for both. The room-bind
+    // guard above already proved the caller is one of them.
+    if (
+      message.senderId !== userId &&
+      !isCallContentType(message.messageType)
+    ) {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
     const deleted = await this.messageRepo.deleteForEveryone(

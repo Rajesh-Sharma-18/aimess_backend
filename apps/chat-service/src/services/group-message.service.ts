@@ -16,6 +16,7 @@ import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import {
   buildGroupSystemFallbackText,
   currentLocale,
+  isCallContentType,
   personalizeGroupSystemMessageForViewer,
 } from "@aimess/constants";
 import {
@@ -1222,7 +1223,18 @@ export class GroupMessageService {
       );
       if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
-      if (message.senderId !== userId) {
+      // Same sender-less problem the private path has: a group call row carries
+      // `senderId: ""`, so its owner is `content.call.callerId`. Without this a
+      // plain member could not remove the call card they themselves started —
+      // only an admin/moderator could, and it logged as an ADMIN_DELETE.
+      const callCallerId = isCallContentType(message.messageType)
+        ? (message.content as { call?: { callerId?: string } } | null)?.call
+            ?.callerId
+        : undefined;
+      const isOwnMessage =
+        message.senderId === userId || callCallerId === userId;
+
+      if (!isOwnMessage) {
         // Only admins/moderators can delete others' messages, and a MODERATOR
         // may not delete an ADMIN's (or a peer MODERATOR's) message — same
         // outrank rule kick/mute/ban enforce. A sender who has since left the

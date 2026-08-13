@@ -584,6 +584,43 @@ describe("DELETE /messages/:messageId", () => {
     expect(mocks.privateMessageRepo.deleteForEveryone).not.toHaveBeenCalled();
   });
 
+  it("POSITIVE: forEveryone on a sender-less CALL row → 200 for either participant", async () => {
+    // Call timeline rows carry `senderId: ""` (CallChatMessageService), so the
+    // own-only guard above used to reject delete-for-everyone for BOTH sides.
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_call",
+      roomId: ROOM,
+      isDeleted: false,
+      senderId: "",
+      receiverId: TEST_USER_ID,
+      messageType: "VIDEO_CALL",
+      content: { call: { callId: "c1", callerId: "peer" } },
+      createdAt: new Date(1000),
+      deletedFor: {},
+    });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
+    mocks.privateMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: "msg_call",
+      roomId: ROOM,
+      sequenceNumber: 7,
+      createdAt: new Date(1000),
+    });
+
+    const res = await request(app)
+      .delete(`/api/chat/private/messages/msg_call?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateMessageRepo.deleteForEveryone).toHaveBeenCalledWith(
+      "msg_call",
+      ROOM,
+      TEST_USER_ID
+    );
+  });
+
   it("NEGATIVE: 404 when the message does not exist", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue(null);
 
