@@ -37,4 +37,11 @@ process.env.STREAM_SERVICE_URL = "http://localhost:3008";
 process.env.AUTH_GRPC_URL = "localhost:4001";
 process.env.USER_GRPC_URL = "localhost:4002";
 
+// --- Rate limiting ---------------------------------------------------------
+// Pinned ON so the limiter is actually exercised by the suite. It was already
+// active under NODE_ENV=test (only "development" was skipped), so this changes
+// nothing — it just makes the dependency explicit. A spec that needs a
+// deterministic threshold sets its own value and re-imports the module.
+process.env.RATE_LIMIT_ENABLED = "true";
+
 export {};

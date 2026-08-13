@@ -3,6 +3,7 @@ import { Router, type IRouter } from "express";
 import { createServiceProxy } from "../../proxy/create-service-proxy.js";
 import {
   sensitiveAuthRateLimiter,
+  otpRateLimiter,
   inviteLinkPreviewRateLimiter,
   deviceTokenRateLimiter,
 } from "../../middleware/rate-limit.js";
@@ -58,8 +59,20 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     "/auth/forgot-password",
     "/auth/google",
     "/auth/apple",
+    // Previously unthrottled at the edge: password reset accepts an OTP and
+    // sets a new password, and register is the account-creation flood surface.
+    // Both were covered only by the global backstop.
+    "/auth/reset-password",
+    "/auth/register",
   ]) {
     v1Router.use(sensitivePath, sensitiveAuthRateLimiter);
+  }
+
+  // OTP verify/resend get their own, looser bucket. Sharing `auth.sensitive`
+  // with login meant a user legitimately re-requesting a code burned the login
+  // budget for their whole IP.
+  for (const otpPath of ["/auth/verify-otp", "/auth/resend-otp"]) {
+    v1Router.use(otpPath, otpRateLimiter);
   }
 
   for (const service of getServicesForVersion("v1")) {

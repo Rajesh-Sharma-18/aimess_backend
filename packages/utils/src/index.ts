@@ -1,5 +1,7 @@
 export * from "./async-handler";
 export * from "./api-response";
+export * from "./api-error";
+export * from "./send-api-error";
 export * from "./datetime.js";
 export * from "./format-zod-error";
 export * from "./locale-middleware";

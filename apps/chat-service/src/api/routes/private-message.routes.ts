@@ -29,10 +29,50 @@ import type { PrivateRoomController } from "../controllers/private-room.controll
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
 import type { PresenceController } from "../controllers/presence.controller.js";
 
+/**
+ * One bucket named `pm:send` used to cover all fourteen throttled routes on
+ * this router — sends, reads, reactions, pins, edits, reports and
+ * get-or-create — at 60/min combined. Opening a handful of conversations and
+ * scrolling them exhausted the SEND budget through `POST /read` alone, which is
+ * the single most likely source of the "Too many requests" users actually see.
+ *
+ * Split by operation class. Send capacity is unchanged at 60/min (that is the
+ * abuse-relevant number); the rest get budgets that match how often a normal
+ * client legitimately calls them.
+ */
 const sendLimit = createRateLimit({
   windowMs: 60_000,
   maxRequests: 60,
   keyPrefix: "pm:send",
+});
+
+/**
+ * Read-position writes. Called on every conversation open, every scroll to
+ * bottom and every socket reconnect catch-up, so the ceiling has to clear a
+ * reconnect burst across many open rooms without tripping.
+ */
+const readLimit = createRateLimit({
+  windowMs: 60_000,
+  maxRequests: 240,
+  keyPrefix: "pm:read",
+});
+
+/** Reactions, pins and edits — interactive, bursty, individually cheap. */
+const interactLimit = createRateLimit({
+  windowMs: 60_000,
+  maxRequests: 120,
+  keyPrefix: "pm:interact",
+});
+
+/**
+ * Low-frequency, abuse-sensitive operations: reporting, changing the
+ * auto-delete policy, and get-or-create-room (which mints rows). Tighter than
+ * the old shared 60/min, because none of these is a normal repeated action.
+ */
+const sensitiveLimit = createRateLimit({
+  windowMs: 60_000,
+  maxRequests: 30,
+  keyPrefix: "pm:sensitive",
 });
 
 export function createPrivateMessageRoutes(
@@ -57,7 +97,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:peerId",
     authenticate,
-    sendLimit,
+    sensitiveLimit,
     roomCtrl.getOrCreateRoom
   );
 
@@ -84,7 +124,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:roomId/report",
     authenticate,
-    sendLimit,
+    sensitiveLimit,
     validateBody(reportPrivateUserSchema),
     roomCtrl.reportUser
   );
@@ -98,7 +138,7 @@ export function createPrivateMessageRoutes(
   router.put(
     "/rooms/:roomId/auto-delete",
     authenticate,
-    sendLimit,
+    sensitiveLimit,
     validateBody(autoDeleteSchema),
     roomCtrl.setAutoDelete
   );
@@ -132,7 +172,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:roomId/read",
     authenticate,
-    sendLimit,
+    readLimit,
     validateBody(markReadBodySchema),
     messageCtrl.markRead
   );
@@ -167,7 +207,7 @@ export function createPrivateMessageRoutes(
   router.patch(
     "/messages/:messageId",
     authenticate,
-    sendLimit,
+    interactLimit,
     validateBody(editMessageSchema),
     messageCtrl.editMessage
   );
@@ -176,7 +216,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/messages/:messageId/report",
     authenticate,
-    sendLimit,
+    sensitiveLimit,
     validateBody(reportMessageSchema),
     messageCtrl.reportMessage
   );
@@ -185,7 +225,7 @@ export function createPrivateMessageRoutes(
   router.delete(
     "/messages/:messageId",
     authenticate,
-    sendLimit,
+    interactLimit,
     validateQuery(deleteMessageQuerySchema),
     messageCtrl.deleteMessage
   );
@@ -197,7 +237,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/messages/:messageId/react",
     authenticate,
-    sendLimit,
+    interactLimit,
     validateBody(reactionBodySchema),
     messageCtrl.setReaction
   );
@@ -209,13 +249,13 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    sendLimit,
+    interactLimit,
     messageCtrl.pin
   );
   router.delete(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    sendLimit,
+    interactLimit,
     messageCtrl.unpin
   );
 
@@ -239,7 +279,7 @@ export function createPrivateMessageRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/reactions",
     authenticate,
-    sendLimit,
+    interactLimit,
     validateBody(reactionBodySchema),
     messageCtrl.addReaction
   );
@@ -248,7 +288,7 @@ export function createPrivateMessageRoutes(
   router.delete(
     "/rooms/:roomId/messages/:messageId/reactions/:emoji",
     authenticate,
-    sendLimit,
+    interactLimit,
     validateParams(reactionParamSchema),
     messageCtrl.removeReaction
   );
