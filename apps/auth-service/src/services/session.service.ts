@@ -72,6 +72,9 @@ export const sessionService = {
         SessionRevokeReason.TOKEN_REUSE_DETECTED
       );
       await markSessionsRevoked(active.map((row) => row.id));
+      // Every session is gone; leaving the push tokens behind would keep
+      // delivering notifications to devices that can no longer sign in.
+      publishAllSessionsRevokedSafe({ userId: stored.userId });
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
@@ -148,6 +151,8 @@ export const sessionService = {
         SessionRevokeReason.TOKEN_REUSE_DETECTED
       );
       await markSessionsRevoked(active.map((row) => row.id));
+      // Same as refresh(): all sessions revoked → all push tokens go with them.
+      publishAllSessionsRevokedSafe({ userId: stored.userId });
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
@@ -197,9 +202,9 @@ export const sessionService = {
 
     if (result.revoked) {
       await markSessionRevoked(sessionId);
-      if (deviceId) {
-        publishSessionDeviceRevokedSafe({ userId, deviceId });
-      }
+      // Always published, deviceId or not: notifications-service matches on
+      // sessionId (deviceId is only a legacy-row fallback).
+      publishSessionDeviceRevokedSafe({ userId, sessionId, deviceId });
 
       // Same realtime signal as revokeSession/revokeAllSessions: force-
       // disconnect this session's LIVE socket(s) and tell the user's other
@@ -283,9 +288,11 @@ export const sessionService = {
       metadata: { reason },
     });
 
-    if (deviceId) {
-      publishSessionDeviceRevokedSafe({ userId, deviceId });
-    }
+    publishSessionDeviceRevokedSafe({
+      userId,
+      sessionId: targetSessionId,
+      deviceId,
+    });
 
     // Force-disconnect this device's LIVE socket(s), if any, right now —
     // otherwise it would stay connected until its access token naturally
@@ -348,7 +355,13 @@ export const sessionService = {
     await markSessionsRevoked(otherSessionIds);
 
     if (result.revokedCount > 0) {
-      publishAllSessionsRevokedSafe({ userId });
+      // The caller's own session survives this call, so its push token must
+      // too — without the exception the user stays signed in here but silently
+      // stops receiving notifications.
+      publishAllSessionsRevokedSafe({
+        userId,
+        exceptSessionId: currentSessionId,
+      });
 
       // Reuse the same per-session force-disconnect + list-sync signal as
       // revokeSession, so every revoked device is kicked immediately and the

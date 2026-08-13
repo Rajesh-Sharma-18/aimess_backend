@@ -16,11 +16,23 @@ const SESSION_DLQ_ROUTING_KEY = "session.queue.dead";
 
 export interface SessionRevokedPayload {
   userId: string;
-  deviceId: string; // the specific device whose token should be cleared
+  /**
+   * The revoked session. This is what notifications-service matches on: it
+   * stamps the registering JWT's sessionId onto every device-token row.
+   */
+  sessionId: string;
+  /**
+   * Session.deviceId — a sha256(userAgent|ip) fingerprint. Kept only so rows
+   * registered before device tokens carried a sessionId can still be matched;
+   * it does NOT equal the client-generated deviceId sent at registration.
+   */
+  deviceId?: string | null;
 }
 
 export interface AllSessionsRevokedPayload {
   userId: string; // clear ALL tokens for this user
+  /** Session to spare — set by "sign out from all OTHER devices". */
+  exceptSessionId?: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

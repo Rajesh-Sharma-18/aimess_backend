@@ -9,6 +9,8 @@ export interface UpsertDeviceTokenInput {
   platform: DeviceTokenPlatform;
   tokenType: DeviceTokenType;
   deviceId?: string | null;
+  /** auth-service session the registering JWT belongs to (see schema.prisma). */
+  sessionId?: string | null;
 }
 
 export interface DeviceTokenRow {
@@ -31,6 +33,7 @@ export const deviceTokenRepository = {
         platform: input.platform,
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
+        sessionId: input.sessionId ?? null,
         lastSeenAt: new Date(),
       },
       create: {
@@ -39,6 +42,7 @@ export const deviceTokenRepository = {
         platform: input.platform,
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
+        sessionId: input.sessionId ?? null,
       },
     });
 
@@ -84,9 +88,35 @@ export const deviceTokenRepository = {
     return res.count;
   },
 
-  /** Remove ALL tokens for a user (logout-all-devices). */
-  async deleteAllByUserId(userId: string): Promise<void> {
-    await prisma.deviceToken.deleteMany({ where: { userId } });
+  /**
+   * Remove ALL tokens for a user (logout-all-devices, account deletion).
+   *
+   * `exceptSessionId` keeps the tokens of one still-live session — "sign out
+   * from all OTHER devices" revokes every session but the caller's, so wiping
+   * the caller's token too would silently kill push on a device that is still
+   * signed in. Rows predating the sessionId field can't be attributed to a
+   * session and are removed; they are stale by definition.
+   */
+  async deleteAllByUserId(
+    userId: string,
+    exceptSessionId?: string | null
+  ): Promise<void> {
+    await prisma.deviceToken.deleteMany({
+      where: exceptSessionId
+        ? { userId, NOT: { sessionId: exceptSessionId } }
+        : { userId },
+    });
+  },
+
+  /** Remove tokens registered by one session (single-session logout/revoke). */
+  async deleteByUserIdAndSessionId(
+    userId: string,
+    sessionId: string
+  ): Promise<number> {
+    const res = await prisma.deviceToken.deleteMany({
+      where: { userId, sessionId },
+    });
+    return res.count;
   },
 
   /** Remove tokens for a specific device (single-device logout). */

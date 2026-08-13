@@ -10,21 +10,43 @@ const SESSION_QUEUE = "session.queue";
 const SESSION_DLX = "session.queue.dlx";
 const SESSION_DLQ_ROUTING_KEY = "session.queue.dead";
 
-async function handleSessionEvent(type: string, data: unknown): Promise<void> {
+export async function handleSessionEvent(
+  type: string,
+  data: unknown
+): Promise<void> {
   switch (type) {
     case "session.device_revoked": {
-      const { userId, deviceId } = data as {
+      const { userId, deviceId, sessionId } = data as {
         userId: string;
-        deviceId: string;
+        deviceId?: string | null;
+        sessionId?: string | null;
       };
-      await deviceTokenRepository.deleteByUserIdAndDeviceId(userId, deviceId);
+      // sessionId is the accurate match — it is stamped on the row at
+      // registration time from the same JWT. deviceId is only a fallback for
+      // rows registered before sessionId existed; auth-service's Session
+      // .deviceId is a sha256(userAgent|ip) fingerprint that will not match a
+      // client-generated deviceId, so on its own it silently deletes nothing.
+      if (sessionId) {
+        await deviceTokenRepository.deleteByUserIdAndSessionId(
+          userId,
+          sessionId
+        );
+      }
+      if (deviceId) {
+        await deviceTokenRepository.deleteByUserIdAndDeviceId(userId, deviceId);
+      }
       logger.info("Device token cleared on logout");
       break;
     }
 
     case "session.all_revoked": {
-      const { userId } = data as { userId: string };
-      await deviceTokenRepository.deleteAllByUserId(userId);
+      // exceptSessionId is set by "sign out from all OTHER devices": that
+      // session is still signed in and must keep receiving push.
+      const { userId, exceptSessionId } = data as {
+        userId: string;
+        exceptSessionId?: string | null;
+      };
+      await deviceTokenRepository.deleteAllByUserId(userId, exceptSessionId);
       logger.info("Device token cleared on logout");
       break;
     }

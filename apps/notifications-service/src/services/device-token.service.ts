@@ -12,6 +12,7 @@ export const deviceTokenService = {
     platform: DeviceTokenPlatform;
     tokenType: DeviceTokenType;
     deviceId?: string | null;
+    sessionId?: string | null;
   }): Promise<void> {
     return deviceTokenRepository.upsert(input);
   },

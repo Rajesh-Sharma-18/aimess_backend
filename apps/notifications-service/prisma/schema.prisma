@@ -28,9 +28,17 @@ model DeviceToken {
   // only for call-ringing pushes over APNs (never FCM).
   tokenType  String   @default("FCM")
   deviceId   String?
+  // auth-service session that registered this token, taken from the caller's
+  // JWT. It is the ONLY reliable link back to a session: `deviceId` is a
+  // client-generated opaque id while Session.deviceId is a server-side
+  // sha256(userAgent|ip) fingerprint, so the two never match. Session
+  // revocation (logout, "Logout Device", sign-out-all) deletes by this field.
+  // Nullable for rows registered before this field existed.
+  sessionId  String?
   lastSeenAt DateTime @default(now())
   createdAt  DateTime @default(now())
 
   @@index([userId])
+  @@index([userId, sessionId])
   @@map("device_tokens")
 }
