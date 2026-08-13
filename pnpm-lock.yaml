@@ -1026,6 +1026,9 @@ importers:
 
   packages/storage:
     dependencies:
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../constants
       "@aimess/shared-types":
         specifier: workspace:*
         version: link:../shared-types
@@ -1051,6 +1054,9 @@ importers:
       "@aimess/constants":
         specifier: workspace:*
         version: link:../constants
+      "@aimess/errors":
+        specifier: workspace:*
+        version: link:../errors
     devDependencies:
       "@types/express":
         specifier: ^5.0.6
