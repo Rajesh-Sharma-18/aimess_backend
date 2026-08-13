@@ -4042,24 +4042,34 @@ export function createNotificationImpl(
             };
 
             if (plan.action === "DELETE") {
-              const { count } = await deps.notificationRepo.deleteById(
-                existing.id,
-                req.userId
-              );
-              if (count > 0) {
+              // The WHOLE group goes, not just the row `findActiveByGroupKey`
+              // happened to return: a friendship id is recycled across cycles,
+              // so older cards for the same pair share this groupKey and would
+              // otherwise outlive the request they describe. `groupKey` is
+              // non-null here — `existing` only exists when it is.
+              const { ids } =
+                await deps.notificationRepo.deleteActiveByGroupKey(
+                  req.userId,
+                  groupKey as string
+                );
+              if (ids.length > 0) {
                 const remainingUnread =
                   await deps.notificationRepo.getUnreadCount(req.userId);
                 try {
-                  await publishUserSocketEvent(
-                    redis,
-                    req.userId,
-                    "notification:deleted",
-                    {
-                      notificationId: existing.id,
-                      groupKey,
-                      unreadCount: remainingUnread,
-                    }
-                  );
+                  // One event per row: clients key their local removal on
+                  // notificationId, so a single event would strand the rest.
+                  for (const deletedId of ids) {
+                    await publishUserSocketEvent(
+                      redis,
+                      req.userId,
+                      "notification:deleted",
+                      {
+                        notificationId: deletedId,
+                        groupKey,
+                        unreadCount: remainingUnread,
+                      }
+                    );
+                  }
                   await publishUserSocketEvent(
                     redis,
                     req.userId,

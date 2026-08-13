@@ -900,6 +900,59 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
     );
   });
 
+  // A withdrawn friend request must clear the WHOLE group. The friendship id is
+  // recycled across request cycles, so an older cycle's resolved card shares the
+  // groupKey — deleting only the row `findActiveByGroupKey` returned left that
+  // stale card in the receiver's list with no button on it to remove it.
+  it("friend.cancelled soft-deletes every active row in the group, not just the newest", async () => {
+    const notifRepo = makeNotifRepo({
+      findActiveByGroupKey: jest.fn(async () => ({
+        id: "notif-new",
+        type: "friend.requested",
+        payload: { title: "Friend Request", body: "X sent you a request" },
+      })),
+      deleteActiveByGroupKey: jest.fn(async () => ({
+        ids: ["notif-new", "notif-stale"],
+      })),
+      // Present only so the single-row path is observable — it must stay unused.
+      deleteById: jest.fn(async () => ({ count: 1 })),
+    });
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-b",
+      actorId: "user-a",
+      type: "friend.cancelled",
+      title: "Friend Request",
+      body: "X cancelled their friend request",
+      data: { friendshipId: "fid-1", requesterId: "user-a" },
+    });
+
+    expect(notifRepo.deleteActiveByGroupKey).toHaveBeenCalledWith(
+      "user-b",
+      "friend:fid-1"
+    );
+    expect(notifRepo.deleteById).not.toHaveBeenCalled();
+    // Clients remove by notificationId, so every deleted row needs its own event.
+    const deletedIds = (publishMock.mock.calls as Array<[string, string]>)
+      .map(([, json]) => {
+        try {
+          return JSON.parse(json) as {
+            event?: string;
+            data?: { notificationId?: string };
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((p) => p?.event === "notification:deleted")
+      .map((p) => p?.data?.notificationId);
+    expect(deletedIds).toEqual(["notif-new", "notif-stale"]);
+    // Withdrawal removes cards; it must never mint a "cancelled" one.
+    expect(notifRepo.create).not.toHaveBeenCalled();
+  });
+
   // Test 5b: communityId in data falls through to referenceId so the client can
   // drop the community from the sidebar (member_kicked / member_banned carry
   // only data.communityId — no explicit entityId/referenceId).

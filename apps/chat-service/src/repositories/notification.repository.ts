@@ -288,6 +288,39 @@ export class NotificationRepository {
     return { count: result.count };
   }
 
+  /**
+   * Owner-scoped soft-delete of EVERY still-active row in one notification
+   * group, returning the ids that actually changed so each can be relayed.
+   *
+   * A terminal event has to clear the whole group, not just its newest card.
+   * `findActiveByGroupKey` returns a single row, so deleting only that one left
+   * every OLDER card of the same friendship behind — after a couple of
+   * request/resolve cycles on the same recycled friendship id, withdrawing a
+   * request removed the fresh "X sent you a friend request" card and left the
+   * previous cycle's "You declined this friend request" sitting in the list
+   * forever, with no button on it to remove it.
+   */
+  async deleteActiveByGroupKey(
+    userId: string,
+    groupKey: string
+  ): Promise<{ ids: string[] }> {
+    const where = { userId, groupKey, isDeleted: false };
+    const rows = await this.prisma.notification.findMany({
+      where,
+      select: { id: true },
+    });
+    if (rows.length === 0) return { ids: [] };
+    await this.prisma.notification.updateMany({
+      where,
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    return { ids: rows.map((r) => r.id) };
+  }
+
   async findByEntityId(
     userId: string,
     type: string,
