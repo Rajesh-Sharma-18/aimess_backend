@@ -7,6 +7,7 @@ import { withWriteConflictRetry } from "../lib/db-errors.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
+import { UNREAD_COUNTABLE_RAW_MATCH } from "../lib/unread-count.js";
 
 // ponytail: post-fetch delete-for-me filter. Reappears when a newer message
 // arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
@@ -436,19 +437,16 @@ export class PrivateRoomRepository {
     // than the boundary (reading to a non-latest message must leave unread > 0,
     // not hard-zero). Exclude SYSTEM / countInUnread:false so call-ended and
     // other non-badge rows cannot leave a phantom unread after a full catch-up.
+    // aggregateRaw rather than a typed `count` for ONE reason: `deletedFor` is a
+    // JSON map keyed by userId, and "this user hasn't hidden it" is only
+    // expressible as a dotted `$exists` path. Group (`deletedForUserIds`) and
+    // community (`deletedBy`) already exclude their delete-for-me equivalents in
+    // the same way — private was the only surface still counting messages the
+    // viewer had personally hidden, which would silently re-inflate the badge
+    // right after a delete-for-me decremented it.
     const remainingUnread =
       upToSeq != null
-        ? await this.prisma.privateMessage.count({
-            where: {
-              roomId,
-              senderId: { not: userId },
-              isDeleted: false,
-              sequenceNumber: { gt: upToSeq },
-              NOT: { countInUnread: false },
-              messageType: { not: "SYSTEM" },
-              systemEvent: null,
-            },
-          })
+        ? await this.countRemainingUnread(roomId, userId, upToSeq)
         : 0;
 
     const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
@@ -503,6 +501,41 @@ export class PrivateRoomRepository {
         updatedAt: now,
       },
     });
+  }
+
+  /**
+   * Inbound countable messages strictly newer than `upToSeq` that this user can
+   * still see. Mirrors GroupMessageRepository.countUnreadAfter /
+   * GeneralRoomMessageRepository.countUnreadAfter, including their
+   * delete-for-me exclusion.
+   */
+  private async countRemainingUnread(
+    roomId: string,
+    userId: string,
+    upToSeq: number
+  ): Promise<number> {
+    const result = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId,
+            isDeleted: false,
+            sequenceNumber: { $gt: upToSeq },
+            senderId: { $ne: userId },
+            // Personally hidden by this viewer ⇒ invisible to them ⇒ not unread.
+            [`deletedFor.${userId}`]: { $exists: false },
+            // Hard-exclude SYSTEM rows even if a legacy doc predates
+            // countInUnread (UNREAD_COUNTABLE_RAW_MATCH treats missing as
+            // countable).
+            messageType: { $ne: "SYSTEM" },
+            systemEvent: null,
+            ...UNREAD_COUNTABLE_RAW_MATCH,
+          },
+        },
+        { $count: "total" },
+      ],
+    })) as unknown as Array<{ total: number }>;
+    return result[0]?.total ?? 0;
   }
 
   async decrementUnreadForMessage(params: {

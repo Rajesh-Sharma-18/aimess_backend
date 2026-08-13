@@ -3640,6 +3640,20 @@ export function createCommunityImpl(
                     memberIds
                   )
                   .then((raw) => renderCommunityOverrides(raw)),
+              // Authoritative per-member badge correction (the derived count
+              // already excludes the tombstone; nothing told the cached rows).
+              ...(result
+                ? {
+                    resolveUnreadDeltas: (memberIds: string[]) =>
+                      deps.communityMessageService.resolveUnreadDeltasAfterDelete(
+                        { roomId: fRoomId, memberIds, deletedMessage: result }
+                      ),
+                  }
+                : {}),
+              // Without this the bump is discarded by the client's monotonic
+              // list guard — it points BACKWARD at the previous visible message.
+              deleteRecalc: true,
+              deleteRecalcId: req.messageId,
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
@@ -3656,17 +3670,29 @@ export function createCommunityImpl(
             result?.roomId
           ) {
             const recalc = forMeRecalc;
+            const mRoomId = result.roomId;
+            const hidden = result;
             publishCommunityUpdatedSafe({
               redis,
               communityId: req.communityId,
-              roomId: result.roomId,
+              roomId: mRoomId,
               fetchMembers: () => Promise.resolve([req.userId]),
+              // Only the hiding user's own badge can move on a delete-for-me.
+              resolveUnreadDeltas: (memberIds) =>
+                deps.communityMessageService.resolveUnreadDeltasAfterDelete({
+                  roomId: mRoomId,
+                  memberIds,
+                  deletedMessage: hidden,
+                  onlyUserId: req.userId,
+                }),
+              deleteRecalc: true,
+              deleteRecalcId: req.messageId,
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.hasLastMessage
-                ? recalc.createdAt.getTime()
-                : Date.now(),
+              // NEVER Date.now(): an emptied row must sort to the BOTTOM, not
+              // jump to the top. See bumpTimestampAfterDelete's contract.
+              lastMessageAt: bumpTimestampAfterDelete(recalc),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,

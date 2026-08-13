@@ -409,13 +409,25 @@ export class GroupMemberRepository {
     roomId: string;
     senderId: string | null;
     messageCreatedAt: Date;
+    /**
+     * Delete-for-ME: restrict the decrement to this one member. Omitted by
+     * delete-for-everyone, which correctly adjusts every member who still had
+     * the message in their unread window.
+     */
+    onlyUserId?: string;
   }): Promise<void> {
     await this.prisma.groupMember.updateMany({
       where: {
         roomId: params.roomId,
         status: "ACTIVE",
+        // Never lets a badge go negative, and makes a double-delivered decrement
+        // harmless.
         unreadCount: { gt: 0 },
-        ...(params.senderId ? { userId: { not: params.senderId } } : {}),
+        ...(params.onlyUserId
+          ? { userId: params.onlyUserId }
+          : params.senderId
+            ? { userId: { not: params.senderId } }
+            : {}),
         OR: [
           { lastReadAt: null },
           { lastReadAt: { lt: params.messageCreatedAt } },

@@ -549,6 +549,13 @@ export class GroupMessageController {
                   recipientIds
                 )
                 .then((raw) => renderConvOverrides(raw)),
+            // Absolute post-delete badge per member. The counters were already
+            // decremented by the delete; this is what tells the cached rows.
+            resolveUnreadCounts: () =>
+              this.messageService.getUnreadCountsByUser(rId),
+            // Without this the bump is discarded by the client's monotonic list
+            // guard — it points BACKWARD at the previous visible message.
+            deleteRecalc: true,
             senderId: recalc.senderId ?? "",
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
@@ -580,9 +587,17 @@ export class GroupMessageController {
             type: "GROUP",
             roomId: rId,
             recipientIds: [userId],
+            // Only the hiding member's own badge can move on a delete-for-me.
+            resolveUnreadCounts: () =>
+              this.messageService.getUnreadCountsByUser(rId),
+            deleteRecalc: true,
             senderId: recalc.senderId ?? "",
             lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.createdAt.getTime(),
+            // 0 = "this viewer has nothing visible left" (sorts to the bottom);
+            // reusing the hidden row's time would pin it to the top.
+            lastMessageAt: recalc.hasLastMessage
+              ? recalc.createdAt.getTime()
+              : 0,
             preview: { contentType: recalc.messageType, text: preview },
           });
         })

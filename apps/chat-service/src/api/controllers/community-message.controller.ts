@@ -761,7 +761,8 @@ export class CommunityMessageController {
       await this.recalcAndBroadcastLastMessageAfterDelete(
         result.roomId,
         messageId,
-        result.createdAt
+        result.createdAt,
+        result
       );
     }
 
@@ -791,12 +792,22 @@ export class CommunityMessageController {
             communityId: result.roomId,
             roomId: result.roomId,
             fetchMembers: () => Promise.resolve([userId]),
+            // Only the hiding user's own badge can move on a delete-for-me.
+            resolveUnreadDeltas: (memberIds) =>
+              this.service.resolveUnreadDeltasAfterDelete({
+                roomId: result.roomId,
+                memberIds,
+                deletedMessage: result,
+                onlyUserId: userId,
+              }),
+            deleteRecalc: true,
+            deleteRecalcId: messageId,
             senderId: recalc.sentBy,
             senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.hasLastMessage
-              ? recalc.createdAt.getTime()
-              : Date.now(),
+            // NEVER Date.now(): an emptied row must sort to the BOTTOM, not jump
+            // to the top of the list. See bumpTimestampAfterDelete's contract.
+            lastMessageAt: bumpTimestampAfterDelete(recalc),
             preview: {
               contentType: normalizeMessageType(recalc.messageType),
               text: recalc.preview,
@@ -854,7 +865,15 @@ export class CommunityMessageController {
   private async recalcAndBroadcastLastMessageAfterDelete(
     roomId: string,
     deletedMessageId: string,
-    removedAt?: Date | null
+    removedAt?: Date | null,
+    /** The removed row, when the caller has it — enables the authoritative
+     *  per-member unread adjustment. The pin-retraction caller omits it (a
+     *  SYSTEM line never counted toward unread anyway). */
+    deletedMessage?:
+      | Parameters<
+          CommunityMessageService["resolveUnreadDeltasAfterDelete"]
+        >[0]["deletedMessage"]
+      | null
   ): Promise<void> {
     try {
       const recalc = await this.service.recalculateLastMessageAfterDelete(
@@ -887,6 +906,22 @@ export class CommunityMessageController {
               memberIds
             )
             .then((raw) => renderCommunityOverrides(raw)),
+        // Authoritative badge correction: the DB count is already right (it
+        // excludes the tombstone), but nothing told the cached list rows.
+        ...(deletedMessage
+          ? {
+              resolveUnreadDeltas: (memberIds: string[]) =>
+                this.service.resolveUnreadDeltasAfterDelete({
+                  roomId,
+                  memberIds,
+                  deletedMessage,
+                }),
+            }
+          : {}),
+        // Without this the bump is discarded by the client's monotonic list
+        // guard — it points BACKWARD at the previous visible message.
+        deleteRecalc: true,
+        deleteRecalcId: deletedMessageId,
         senderId: recalc.sentBy,
         senderName: recalc.senderName,
         lastMessageId: recalc.prevMessageId ?? "",

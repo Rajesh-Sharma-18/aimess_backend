@@ -926,6 +926,10 @@ export class PrivateRoomService {
 
       const avatarMedia = avatarMediaByPeer.get(peerId) ?? ({} as MediaObject);
 
+      // One peer object feeds BOTH the conversation list and the room-details
+      // header, so the deleted-account rules only have to be applied here.
+      const isDeletedPeer = snapshot.isDeletedUser === true;
+
       return {
         ...room,
         lastMessage,
@@ -939,14 +943,33 @@ export class PrivateRoomService {
           avatarUrl:
             urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
-          isDeletedUser: snapshot.isDeletedUser === true,
-          isOnline: presenceByPeer.get(peerId)?.isOnline ?? false,
-          lastSeen: presenceByPeer.get(peerId)?.lastSeen ?? null,
+          isDeletedUser: isDeletedPeer,
+          // A deleted account has no presence to report. Its sockets were
+          // force-dropped at deletion so `isOnline` is already false in
+          // practice, but `lastSeen` outlives that in Redis and would keep
+          // rendering "Last seen 3 minutes ago" under a Deleted Account header.
+          isOnline: isDeletedPeer
+            ? false
+            : (presenceByPeer.get(peerId)?.isOnline ?? false),
+          lastSeen: isDeletedPeer
+            ? null
+            : (presenceByPeer.get(peerId)?.lastSeen ?? null),
         },
         lastActivityAt,
         lastActivity,
         unreadMessageCount: unreadCountByUser[userId] ?? 0,
-        friendship: friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP,
+        // The status itself stays factual (they ARE still your friend on
+        // record, and unfriend cleanup depends on that), but nothing about the
+        // relationship is actionable any more — every one of these buttons
+        // posts to an endpoint that can only fail against a deleted account.
+        friendship: isDeletedPeer
+          ? {
+              ...(friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
+              canAccept: false,
+              canReject: false,
+              canCancel: false,
+            }
+          : (friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });
@@ -1096,6 +1119,13 @@ export class PrivateRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
+      // `setClearFor` above already zeroed this user's stored counter; state it
+      // explicitly so the client SETs 0 instead of keeping a badge for messages
+      // it can no longer show.
+      resolveUnreadCounts: async () => ({ [userId]: 0 }),
+      // 0 is BELOW whatever the client currently shows, so without this marker
+      // the monotonic list guard drops the clear and the row stays at the top.
+      deleteRecalc: true,
     });
   }
 

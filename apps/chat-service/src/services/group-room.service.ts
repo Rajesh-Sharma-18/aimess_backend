@@ -939,6 +939,14 @@ export class GroupRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
+      // `setClearChatAt` above already zeroed this member's stored counter;
+      // state it explicitly so the client SETs 0 rather than keeping its cached
+      // badge for messages it can no longer show.
+      resolveUnreadCounts: async () => ({ [userId]: 0 }),
+      // 0 is BELOW whatever the client currently shows, so without this marker
+      // the monotonic list guard drops the clear entirely and the row stays
+      // pinned at the top with its old preview.
+      deleteRecalc: true,
     });
   }
 
