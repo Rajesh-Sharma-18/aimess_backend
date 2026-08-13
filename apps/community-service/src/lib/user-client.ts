@@ -7,6 +7,8 @@ export type UserSnapshot = {
   username: string;
   displayName: string;
   avatarObjectKey: string | null;
+  /** Account deleted — render "Deleted Account", expose no member actions. */
+  isDeleted: boolean;
 };
 
 const FALLBACK_SNAPSHOT = (userId: string): UserSnapshot => ({
@@ -14,6 +16,7 @@ const FALLBACK_SNAPSHOT = (userId: string): UserSnapshot => ({
   username: userId,
   displayName: "Unknown",
   avatarObjectKey: null,
+  isDeleted: false,
 });
 
 /**
@@ -43,6 +46,7 @@ export async function fetchUserSnapshotHits(
           username: u.username,
           displayName: u.displayName,
           avatarObjectKey: u.avatarObjectKey === "" ? null : u.avatarObjectKey,
+          isDeleted: u.isDeleted === true,
         },
       ])
     );
@@ -90,7 +94,11 @@ export async function fetchExistingUserIds(
 
   try {
     const users = await userGrpcClient.bulkGetUserSnapshots(userIds);
-    return new Set(users.map((u) => u.userId));
+    // `isDeleted` rows are returned by the RPC (so history can render them) but
+    // they are NOT existing users for this question. Every caller here is
+    // gating an action that requires a live account — invite, add member,
+    // notify — and a deleted account must fail all three.
+    return new Set(users.filter((u) => !u.isDeleted).map((u) => u.userId));
   } catch (error) {
     logger.error(
       "fetchExistingUserIds (gRPC) failed — user existence could not be verified"

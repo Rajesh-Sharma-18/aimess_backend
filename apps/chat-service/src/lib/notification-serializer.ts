@@ -1,4 +1,4 @@
-import { t } from "@aimess/constants";
+import { DELETED_ACCOUNT_DISPLAY_NAME, t } from "@aimess/constants";
 
 import type { Notification } from "../generated/prisma/index.js";
 
@@ -123,7 +123,10 @@ function repairLoginBody(data: Record<string, string>): string {
  * expired by the time the row is read.
  */
 export interface AvatarRefreshMaps {
-  actorById: Map<string, { displayName: string; avatarUrl: string }>;
+  actorById: Map<
+    string,
+    { displayName: string; avatarUrl: string; isDeleted?: boolean }
+  >;
   communityById: Map<string, { name: string; avatarUrl: string }>;
 }
 
@@ -131,6 +134,80 @@ const EMPTY_REFRESH: AvatarRefreshMaps = {
   actorById: new Map(),
   communityById: new Map(),
 };
+
+/**
+ * Scrub a deleted actor's old identity out of a notification row.
+ *
+ * A Notification is an immutable event log: the actor's name was interpolated
+ * into `title`/`body` and copied into `payload.data.actorSnapshot` at publish
+ * time, so simply resolving a fresh actor snapshot fixes the structured
+ * `actor` field and leaves the old name sitting in the prose and in the raw
+ * payload blob (which is still on the wire for backward compatibility).
+ *
+ * The substitution is exact, not heuristic: the old display name is read back
+ * out of the row's own stored snapshot, so this replaces the literal string
+ * that was interpolated — never a guess, and a no-op when the row never
+ * carried a name.
+ */
+function scrubDeletedActor(
+  payloadObj: { title?: string; body?: string; data?: Record<string, string> },
+  data: Record<string, string>,
+  staleNames: string[]
+): {
+  payload: Record<string, unknown>;
+  title: string | undefined;
+  body: string | undefined;
+} {
+  const names = [...new Set(staleNames.map((n) => n.trim()).filter(Boolean))]
+    // Longest first: replacing "Alice" before "Alice Smith" would leave
+    // "Deleted Account Smith".
+    .sort((a, b) => b.length - a.length);
+
+  const replaceNames = (text: string | undefined): string | undefined => {
+    if (!text) return text;
+    let out = text;
+    for (const name of names)
+      out = out.split(name).join(DELETED_ACCOUNT_DISPLAY_NAME);
+    return out;
+  };
+
+  const scrubbedData: Record<string, string> = { ...data };
+  // Identity-bearing keys the producers write. Blanked rather than deleted so
+  // clients reading them defensively still see a string, not `undefined`.
+  for (const key of [
+    "actorDisplayName",
+    "requesterDisplayName",
+    "actorAvatarUrl",
+    "requesterAvatarUrl",
+    "actorUsername",
+    "requesterUsername",
+  ]) {
+    if (key in scrubbedData) scrubbedData[key] = "";
+  }
+  if (scrubbedData.actorSnapshot) {
+    scrubbedData.actorSnapshot = JSON.stringify({
+      userId: (parseJson(data.actorSnapshot) as { userId?: string } | undefined)
+        ?.userId,
+      displayName: DELETED_ACCOUNT_DISPLAY_NAME,
+      avatarUrl: "",
+    });
+  }
+  for (const key of ["inboxTitle", "preview", "messagePreview"]) {
+    const value = scrubbedData[key];
+    if (value) scrubbedData[key] = replaceNames(value) ?? value;
+  }
+
+  return {
+    payload: {
+      ...payloadObj,
+      title: replaceNames(payloadObj.title),
+      body: replaceNames(payloadObj.body),
+      data: scrubbedData,
+    },
+    title: replaceNames(payloadObj.title),
+    body: replaceNames(payloadObj.body),
+  };
+}
 
 /**
  * One-shot Notification row → response DTO. Reuses the existing
@@ -202,12 +279,28 @@ export async function serializeNotification(
     data.friendshipId
   );
 
-  const storedBody = payloadObj.body ?? "";
+  // Actor's account is gone: strip their old name out of the prose and the raw
+  // payload blob before either reaches the client. The structured `actor` above
+  // is already anonymized (its values come from the fresh snapshot); this
+  // catches the copies frozen into the row at publish time.
+  const scrubbed = freshActor?.isDeleted
+    ? scrubDeletedActor(payloadObj, data, [
+        actorSnapshot?.displayName ?? "",
+        data.actorDisplayName ?? "",
+        data.requesterDisplayName ?? "",
+      ])
+    : null;
+  const effectivePayload = scrubbed?.payload ?? payloadObj;
+
+  const storedBody = scrubbed?.body ?? payloadObj.body ?? "";
   const body =
     row.type === LOGIN_DETECTED_TYPE && CLOBBERED_LOGIN_BODIES.has(storedBody)
       ? repairLoginBody(data)
       : storedBody;
-  const rawTitle = nonEmpty(data.inboxTitle) ?? nonEmpty(payloadObj.title);
+  const rawTitle =
+    nonEmpty(
+      (effectivePayload as { data?: Record<string, string> }).data?.inboxTitle
+    ) ?? nonEmpty(scrubbed?.title ?? payloadObj.title);
   const title =
     data.suppressTitle === "true" ||
     !rawTitle ||
@@ -233,7 +326,7 @@ export async function serializeNotification(
       : {}),
     ...(nonEmpty(data.actionTaken) ? { actionTaken: data.actionTaken } : {}),
     ...(row.loginExpiresAt ? { expiresAt: row.loginExpiresAt } : {}),
-    payload: payloadObj as Record<string, unknown>,
+    payload: effectivePayload as Record<string, unknown>,
     ...(actor ? { actor } : {}),
     ...(community ? { community } : {}),
     ...(navigation !== undefined ? { navigation } : {}),

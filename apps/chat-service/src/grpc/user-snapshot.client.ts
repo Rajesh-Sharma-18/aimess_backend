@@ -19,6 +19,13 @@ interface UserSnapshotRecord {
   avatarObjectKey: string;
   /** Presigned GET URL, resolved server-side by user-service. "" when none. */
   avatarUrl: string;
+  /**
+   * True when the account is deleted. user-service has already blanked
+   * username/avatar* and set displayName to the shared "Deleted Account"
+   * literal, so this flag is only needed to decide what NOT to do — skip the
+   * auth-service name fallback, drop presence, hide profile navigation.
+   */
+  isDeleted: boolean;
 }
 
 interface BulkSnapshotsResult {

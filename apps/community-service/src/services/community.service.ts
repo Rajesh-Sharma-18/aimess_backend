@@ -1063,6 +1063,7 @@ async function toMemberData(member: {
   snapshotDisplayName: string;
   snapshotAvatarKey: string | null;
   profileUnavailable?: boolean;
+  isDeleted?: boolean;
   bannedAt?: Date | null;
   bannedBy?: string | null;
   banReason?: string | null;
@@ -1086,6 +1087,7 @@ async function toMemberData(member: {
     snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     snapshotAvatar,
     profileUnavailable: member.profileUnavailable ?? false,
+    isDeleted: member.isDeleted ?? false,
     bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
@@ -2871,15 +2873,22 @@ export const communityService = {
       const live = liveSnapshots.get(r.userId);
       const mute = muteMap.get(r.userId);
       // Profile is unavailable only when BOTH the live lookup misses AND the
-      // stored snapshot has no usable name (a genuinely deleted/unknown user).
+      // stored snapshot has no usable name (a genuinely unknown user).
       const profileUnavailable =
         !live && !r.snapshotDisplayName.trim() && !r.snapshotUsername.trim();
+      // A deleted account resolves as a HIT carrying already-anonymized values,
+      // so the normal "prefer live over stored" rule below is exactly what is
+      // needed — it overwrites the stored snapshot (which still holds the old
+      // name and avatar until the user.profile_updated consumer catches up)
+      // rather than falling back to it.
+      const isDeleted = live?.isDeleted === true;
       return {
         ...r,
         snapshotUsername: live ? live.username : r.snapshotUsername,
         snapshotDisplayName: live ? live.displayName : r.snapshotDisplayName,
         snapshotAvatarKey: live ? live.avatarObjectKey : r.snapshotAvatarKey,
         profileUnavailable,
+        isDeleted,
         mutedAt: mute?.createdAt ?? null,
         mutedBy: mute?.mutedBy ?? null,
         mutedUntil: mute?.mutedUntil ?? null,

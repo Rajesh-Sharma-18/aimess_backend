@@ -270,15 +270,30 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * Backs the `BulkGetUserSnapshots` RPC — the identity source every other
+   * service reads. Deliberately does NOT filter `deletedAt: null`, unlike the
+   * discovery/search selects above.
+   *
+   * Excluding deleted rows here did not hide the deleted user; it only made
+   * this RPC return a GAP, and every caller filled that gap from somewhere
+   * worse — chat-service fell through to auth-service's login `account`
+   * (leaking the old handle), community-service kept serving the denormalized
+   * member snapshot (leaking the old name and avatar), and the rest rendered
+   * an empty name. Returning the row with `deletedAt` set lets the RPC hand
+   * back one anonymized representation that every caller renders identically.
+   */
   findManyByUserIds(userIds: string[]) {
     return prisma.userProfile.findMany({
-      where: { userId: { in: userIds }, deletedAt: null },
+      where: { userId: { in: userIds } },
       select: {
         userId: true,
         username: true,
         firstName: true,
         lastName: true,
         avatarUrl: true,
+        deletedAt: true,
+        status: true,
       },
     });
   },

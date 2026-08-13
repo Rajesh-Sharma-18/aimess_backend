@@ -5,7 +5,9 @@ import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 import { withServiceAuth } from "@aimess/grpc-utils";
 import { isAppError } from "@aimess/errors";
+import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 import { env } from "../config/env.js";
+import { ProfileStatus } from "../generated/prisma/client.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
@@ -345,19 +347,35 @@ export function startUserGrpcServer(): grpc.Server {
           // Resolve a fresh presigned URL per profile — same resolver
           // /users/search uses — so callers (chat-service notification
           // enrichment, etc.) never persist a URL that later expires.
+          // Deleted profiles are skipped: their avatar is not going on the wire.
           const avatarViews = await Promise.all(
             profiles.map((p) =>
-              avatarService.resolveViewUrlForClient(p.avatarUrl)
+              p.deletedAt
+                ? Promise.resolve(null)
+                : avatarService.resolveViewUrlForClient(p.avatarUrl)
             )
           );
           callback(null, {
-            users: profiles.map((p, i) => ({
-              userId: p.userId,
-              username: p.username,
-              displayName: buildDisplayName(p.firstName, p.lastName),
-              avatarObjectKey: p.avatarUrl ?? "",
-              avatarUrl: avatarViews[i]?.url ?? "",
-            })),
+            users: profiles.map((p, i) => {
+              // Anonymize HERE, at the identity source, rather than in each of
+              // the ~6 services that read this RPC. A deleted account keeps its
+              // userId (history rows reference it) and loses everything else:
+              // username, real name, avatar object key and presigned URL all go
+              // empty and the display name becomes the shared literal, so no
+              // downstream serializer can accidentally emit the old identity.
+              const isDeleted =
+                Boolean(p.deletedAt) || p.status === ProfileStatus.DELETED;
+              return {
+                userId: p.userId,
+                username: isDeleted ? "" : p.username,
+                displayName: isDeleted
+                  ? DELETED_ACCOUNT_DISPLAY_NAME
+                  : buildDisplayName(p.firstName, p.lastName),
+                avatarObjectKey: isDeleted ? "" : (p.avatarUrl ?? ""),
+                avatarUrl: isDeleted ? "" : (avatarViews[i]?.url ?? ""),
+                isDeleted,
+              };
+            }),
           });
         } catch (err) {
           logger.error(`gRPC bulkGetUserSnapshots error: ${String(err)}`);

@@ -125,6 +125,18 @@ message UserSnapshotRecord {
   // and profile responses). "" when the user has no avatar or MinIO is
   // unreachable — never persist this, it expires.
   string avatar_url      = 5;
+  // TRUE when this account has been deleted. Deleted profiles ARE returned by
+  // this RPC (they used to be filtered out) precisely so callers stop falling
+  // back to some other source for the name — auth-service's login `account`,
+  // a stale Redis snapshot, or a denormalized member row — every one of which
+  // resurrects the old identity. When true, username/display_name/avatar_*
+  // are already anonymized server-side: display_name is the literal
+  // "Deleted Account" and the other three are "".
+  //
+  // Callers that ask "does this user exist / may I add them?" (community
+  // invites, group adds, notification recipients) MUST exclude these rows;
+  // callers that render history MUST render them.
+  bool   is_deleted      = 6;
 }
 
 message BulkGetUserSnapshotsResponse {

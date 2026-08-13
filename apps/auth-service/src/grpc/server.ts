@@ -250,8 +250,14 @@ const authImpl: grpc.UntypedServiceImplementation = {
           callback(null, { accounts: [] });
           return;
         }
+        // `deletedAt: null` is load-bearing, not hygiene. This RPC exists only
+        // as chat-service's LAST-RESORT display-name fallback for a user whose
+        // user-service profile row does not exist yet, and `account` is the
+        // login handle — the single most identifying string on the account. A
+        // deleted user must never resolve through it, so the gap is left open
+        // and the caller falls through to its neutral placeholder instead.
         const users = await prisma.authUser.findMany({
-          where: { id: { in: userIds.slice(0, 500) } },
+          where: { id: { in: userIds.slice(0, 500) }, deletedAt: null },
           select: { id: true, account: true },
         });
         callback(null, {

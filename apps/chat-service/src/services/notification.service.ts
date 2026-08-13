@@ -52,11 +52,22 @@ async function resolveAvatarRefresh(
 
   return {
     actorById: new Map(
+      // `|| a.isDeleted` is not an optimization — it is the whole point for a
+      // deleted actor. Their snapshot comes back with avatarUrl "", so the
+      // avatar-only filter dropped them from this map, and the serializer then
+      // fell back to `payload.data.actorSnapshot` — the identity frozen into
+      // the row at publish time, i.e. exactly the old name and avatar this is
+      // meant to hide. Keeping the entry lets the anonymized snapshot win, and
+      // its empty avatarUrl collapses to `avatar: null` downstream.
       actors
-        .filter((a) => a.avatarUrl)
+        .filter((a) => a.avatarUrl || a.isDeleted)
         .map((a) => [
           a.userId,
-          { displayName: a.displayName, avatarUrl: a.avatarUrl },
+          {
+            displayName: a.displayName,
+            avatarUrl: a.avatarUrl,
+            isDeleted: a.isDeleted === true,
+          },
         ])
     ),
     communityById: new Map(

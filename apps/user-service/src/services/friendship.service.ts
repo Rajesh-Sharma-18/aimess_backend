@@ -139,7 +139,14 @@ async function loadFriendshipParties(
     requesterId,
     addresseeId,
   ]);
-  const byId = new Map(profiles.map((p) => [p.userId, p]));
+  // `findManyByUserIds` returns soft-deleted profiles too (it is the identity
+  // source behind BulkGetUserSnapshots, which must be able to describe them).
+  // Drop them here: these names/avatars are stamped onto `friend:*` socket
+  // payloads and notification rows, and a deleted account must never re-surface
+  // its old identity there.
+  const byId = new Map(
+    profiles.filter((p) => !p.deletedAt).map((p) => [p.userId, p])
+  );
   const nameFor = (userId: string): string => {
     const p = byId.get(userId);
     return p ? displayName(toPeerBrief(p)) : "Someone";
@@ -394,8 +401,12 @@ export const friendshipService = {
       rows.map(async (r): Promise<FriendRequestItem | null> => {
         const peerId = r.requesterId === me ? r.addresseeId : r.requesterId;
         const profile = profileById.get(peerId);
-        // Peer profile soft-deleted/missing — drop from the list (rare).
-        if (!profile) return null;
+        // Peer profile soft-deleted/missing — drop from the list (rare). The
+        // `deletedAt` half is explicit because `findManyByUserIds` now RETURNS
+        // deleted rows (it feeds BulkGetUserSnapshots); a pending friend request
+        // is a discovery/action surface, so a deleted account belongs nowhere in
+        // it — not even as "Deleted Account".
+        if (!profile || profile.deletedAt) return null;
 
         const avatarView = await avatarService.resolveViewUrlForClient(
           profile.avatarUrl

@@ -1,3 +1,4 @@
+import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import type {
@@ -480,6 +481,37 @@ export const userProfileService = {
 
     await userCache.invalidateProfile(data.userId);
     await userCache.onUsernameReleased(profile.username);
+
+    // Deletion IS an identity change, so it rides the identity-change fanout
+    // rather than inventing a parallel one. Every consumer of
+    // `user.profile_updated` already does exactly what deletion needs, and
+    // does it for the whole platform in one hop:
+    //   - chat-service   → drops `user:snapshot:<userId>` from Redis, so the
+    //                      next private-list / group-roster / message read
+    //                      re-pulls the (now anonymized) gRPC snapshot;
+    //   - community-service → overwrites every stored member snapshot with
+    //                      these values AND broadcasts `community:member:updated`
+    //                      into each of the user's communities, which is the
+    //                      live member-list refresh with no page reload;
+    //   - auth-service   → mirrors isProfileCompleted only (unaffected).
+    // Targeted by userId — nothing is flushed wholesale.
+    //
+    // The values published here are the SAME anonymized triple the
+    // BulkGetUserSnapshots RPC now returns, so a consumer that persists them
+    // and a consumer that re-fetches them cannot disagree.
+    publishProfileUpdatedSafe({
+      userId: data.userId,
+      username: "",
+      displayName: DELETED_ACCOUNT_DISPLAY_NAME,
+      avatarObjectKey: null,
+      // Carried through unchanged: this flag describes whether the profile's
+      // required fields were filled in, which deletion does not answer. Auth
+      // mirrors it for post-login routing, and flipping it here would misroute
+      // the user if the account is restored inside the 30-day grace period.
+      isProfileCompleted: isProfileComplete(profile),
+      updatedAt: data.deletedAt,
+      isDeleted: true,
+    });
 
     logger.info(`User profile soft-deleted for userId=${data.userId}`);
   },

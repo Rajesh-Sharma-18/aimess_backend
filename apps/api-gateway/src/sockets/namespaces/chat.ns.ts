@@ -547,8 +547,22 @@ export function registerChatNamespace(
 
         // Presence is the ONE thing watchers are entitled to. It is published
         // on `user:<subjectId>` (chat-service PresenceService), so mirror it to
-        // the watcher room. Nothing else is ever mirrored.
-        if (pattern === "user:*" && parsed.event === "presence:status") {
+        // the watcher room.
+        //
+        // `user:account_deleted` is the second and only other mirrored event,
+        // and it is mirrored for the same reason presence is: the watcher room
+        // holds exactly the peers who have this user's conversation row or chat
+        // header on screen, and "this account no longer exists" is a fact about
+        // that row. It discloses strictly LESS than presence does — a boolean
+        // and a timestamp, no name, no avatar, no online state — and it is the
+        // signal that stops those peers rendering the old identity until their
+        // next fetch. Nothing else is ever mirrored; adding to this list means
+        // handing peer watchers data they did not subscribe to.
+        if (
+          pattern === "user:*" &&
+          (parsed.event === "presence:status" ||
+            parsed.event === "user:account_deleted")
+        ) {
           chat
             .to(`presence:${channel.slice("user:".length)}`)
             .emit(parsed.event, parsed.data);

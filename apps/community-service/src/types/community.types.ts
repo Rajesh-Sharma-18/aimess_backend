@@ -516,6 +516,16 @@ export type CommunityMemberData = {
    * synthetic "Unknown" placeholder for a valid user.
    */
   profileUnavailable?: boolean;
+  /**
+   * True when this member's ACCOUNT has been deleted. Distinct from
+   * `profileUnavailable` (a lookup miss, usually transient) and from
+   * `status: BANNED` (an account that still exists): a deleted account is
+   * permanent and its identity is already anonymized — snapshotUsername is "",
+   * snapshotDisplayName is the shared "Deleted Account" literal and the avatar
+   * is null. Clients gate on THIS flag to hide profile navigation and every
+   * member action (promote, mute, ban, report, message) for the row.
+   */
+  isDeleted?: boolean;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */

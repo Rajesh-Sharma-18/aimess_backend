@@ -1,12 +1,15 @@
 import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
+import { publishChatUserEvent } from "@aimess/redis";
 import {
   UserEvents,
   type UserProfileUpdatedPayload,
 } from "@aimess/shared-types";
 
+import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { CacheRepository } from "../repositories/cache.repository.js";
+import { GroupMemberRepository } from "../repositories/group-member.repository.js";
 
 /**
  * Invalidates chat-service's cached user snapshot whenever user-service
@@ -30,6 +33,70 @@ const QUEUE = "chat-service.user.profile_updated";
 export class UserProfileEventConsumer {
   private channel: Channel | null = null;
   private cacheRepo = new CacheRepository(redis);
+  private groupMemberRepo = new GroupMemberRepository(prisma);
+
+  /**
+   * Realtime half of account deletion, for viewers who are looking at the
+   * deleted user RIGHT NOW and would otherwise keep their old name and avatar
+   * on screen until the next fetch.
+   *
+   * Two fan-outs, because a deleted user is visible in two kinds of place and
+   * neither existing channel covers both:
+   *
+   *  - `user:<userId>` on /chat. The api-gateway mirrors this one event to
+   *    room `presence:<userId>` — the room every peer with this user's DM row
+   *    or chat header open already joined via `presence:subscribe`. That is
+   *    precisely the audience for "the person in your conversation list is
+   *    gone", and it needs no new subscription on the client.
+   *  - `conv:<roomId>` for each of the user's ACTIVE group rooms, reusing the
+   *    existing `group:member:updated` roster event rather than minting a
+   *    group-specific deletion event. Its consumers already refetch the roster,
+   *    which is exactly the required behavior.
+   *
+   * Communities are deliberately absent: community-service consumes this same
+   * `user.profile_updated` message and already broadcasts
+   * `community:member:updated` into every community the user belongs to.
+   *
+   * Entirely best-effort — the cache invalidation above is what makes the state
+   * correct; this only makes it correct SOONER. A failure here must not nack
+   * the message and replay the invalidation.
+   */
+  private async broadcastAccountDeleted(
+    userId: string,
+    updatedAt: string
+  ): Promise<void> {
+    const payload = { userId, isDeletedUser: true, updatedAt };
+    await publishChatUserEvent(
+      redis,
+      userId,
+      "user:account_deleted",
+      payload
+    ).catch(() => undefined);
+
+    const roomIds = await this.groupMemberRepo
+      .getActiveRoomIds(userId)
+      .catch(() => [] as string[]);
+    await Promise.all(
+      roomIds.map((roomId) =>
+        redis
+          .publish(
+            `conv:${roomId}`,
+            JSON.stringify({
+              event: "group:member:updated",
+              data: {
+                roomId,
+                conversationType: "GROUP" as const,
+                memberId: userId,
+                actorId: userId,
+                isDeletedUser: true,
+                updatedAt: Date.now(),
+              },
+            })
+          )
+          .catch(() => undefined)
+      )
+    );
+  }
 
   async start(connection: ChannelModel): Promise<void> {
     try {
@@ -70,6 +137,17 @@ export class UserProfileEventConsumer {
         logger.debug(
           `Invalidated user snapshot cache for ${event.data.userId}`
         );
+
+        // Only deletion gets a client-facing signal. A plain rename must NOT
+        // produce one here: it would tell every peer watching this user's
+        // presence that something happened, on a channel whose only sanctioned
+        // peer-visible payload is presence.
+        if (event.data.isDeleted === true) {
+          await this.broadcastAccountDeleted(
+            event.data.userId,
+            event.data.updatedAt
+          );
+        }
       } else {
         logger.warn(
           `Unexpected message on ${QUEUE}: type=${String(event.type)}`

@@ -16,9 +16,19 @@
  */
 
 const del = jest.fn(async () => 1);
+const publish = jest.fn(async () => 1);
+const getActiveRoomIds = jest.fn(async () => [] as string[]);
 
 jest.mock("../../src/config/redis.js", () => ({
-  redis: { del, on: jest.fn() },
+  redis: { del, publish, on: jest.fn() },
+}));
+
+jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
+
+jest.mock("../../src/repositories/group-member.repository.js", () => ({
+  GroupMemberRepository: class {
+    getActiveRoomIds = getActiveRoomIds;
+  },
 }));
 
 import { UserEvents } from "@aimess/shared-types";
@@ -59,7 +69,12 @@ const msg = (type: string, data: Record<string, unknown>) =>
   JSON.stringify({ type, data });
 
 describe("UserProfileEventConsumer", () => {
-  beforeEach(() => del.mockClear());
+  beforeEach(() => {
+    del.mockClear();
+    publish.mockClear();
+    getActiveRoomIds.mockClear();
+    getActiveRoomIds.mockResolvedValue([]);
+  });
 
   it("invalidates the user snapshot cache on USER_PROFILE_UPDATED and acks", async () => {
     const fake = makeFakeConnection();
@@ -80,6 +95,76 @@ describe("UserProfileEventConsumer", () => {
     expect(del).toHaveBeenCalledWith(`user:snapshot:${USER}`);
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
     expect(fake.channel.nack).not.toHaveBeenCalled();
+  });
+
+  it("emits NO client-facing signal for an ordinary rename", async () => {
+    // `user:<id>` on /chat is mirrored to that user's presence WATCHERS by the
+    // gateway. A rename must not reach them on this channel — only deletion is
+    // sanctioned there.
+    const fake = makeFakeConnection();
+    const consumer = new UserProfileEventConsumer();
+    await consumer.start(fake.connection as never);
+
+    await fake.deliver(
+      msg(UserEvents.USER_PROFILE_UPDATED, {
+        userId: USER,
+        username: "himanshu",
+        displayName: "Himanshu Vasu",
+        avatarObjectKey: null,
+        isProfileCompleted: true,
+        updatedAt: "2026-06-19T00:00:00.000Z",
+      })
+    );
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(getActiveRoomIds).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts user:account_deleted and a roster bump for every group when isDeleted", async () => {
+    getActiveRoomIds.mockResolvedValue(["grp_a", "grp_b"]);
+    const fake = makeFakeConnection();
+    const consumer = new UserProfileEventConsumer();
+    await consumer.start(fake.connection as never);
+
+    await fake.deliver(
+      msg(UserEvents.USER_PROFILE_UPDATED, {
+        userId: USER,
+        username: "",
+        displayName: "Deleted Account",
+        avatarObjectKey: null,
+        isProfileCompleted: true,
+        updatedAt: "2026-08-13T00:00:00.000Z",
+        isDeleted: true,
+      })
+    );
+
+    // The cache invalidation still has to happen — the socket signal only makes
+    // the (already correct) state arrive sooner.
+    expect(del).toHaveBeenCalledWith(`user:snapshot:${USER}`);
+
+    const channels = publish.mock.calls.map((c) => c[0] as string);
+    expect(channels).toEqual(
+      expect.arrayContaining([`user:${USER}`, "conv:grp_a", "conv:grp_b"])
+    );
+
+    const selfCall = publish.mock.calls.find((c) => c[0] === `user:${USER}`);
+    const selfPayload = JSON.parse(selfCall![1] as string) as {
+      event: string;
+      data: Record<string, unknown>;
+    };
+    expect(selfPayload.event).toBe("user:account_deleted");
+    expect(selfPayload.data.isDeletedUser).toBe(true);
+    // Signal only: the event must carry no identity for a peer to render.
+    expect(selfPayload.data).not.toHaveProperty("displayName");
+    expect(selfPayload.data).not.toHaveProperty("username");
+    expect(selfPayload.data).not.toHaveProperty("avatarUrl");
+
+    const roomCall = publish.mock.calls.find((c) => c[0] === "conv:grp_a");
+    const roomPayload = JSON.parse(roomCall![1] as string) as { event: string };
+    // Reuses the existing roster event rather than minting a group-specific one.
+    expect(roomPayload.event).toBe("group:member:updated");
+
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
   });
 
   it("acks-without-deleting an unexpected event type (no cache churn)", async () => {
