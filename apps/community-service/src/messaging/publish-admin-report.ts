@@ -1,4 +1,8 @@
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import amqp from "amqplib";
 
 import {
@@ -69,6 +73,15 @@ async function publish(data: AdminReportIngestPayload): Promise<void> {
 export function publishAdminReportIngestSafe(
   data: AdminReportIngestPayload
 ): void {
+  // Same call site feeds the admin panel's audit log: filing a report is website activity.
+  publishAdminActivitySafe({
+    actorId: data.reporterId,
+    action: USER_AUDIT_ACTIONS.REPORT_SUBMITTED,
+    targetType: data.type,
+    targetId: data.targetId,
+    after: { reason: data.reason, reportedUserId: data.reportedUserId ?? null },
+    eventAt: data.eventAt,
+  });
   void publish(data).catch((error) => {
     logger.error("Failed to publish admin.report.ingest event");
     logger.error(error);

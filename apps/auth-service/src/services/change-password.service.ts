@@ -1,6 +1,10 @@
 import bcrypt from "bcryptjs";
 
 import { BadRequestError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
@@ -69,5 +73,13 @@ export const changePasswordService = {
     }
 
     publishPasswordChangedSafe({ userId, at: new Date().toISOString() });
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_PASSWORD_CHANGED,
+      targetType: "user",
+      targetId: userId,
+      after: { revokedSessions: revokedIds.length },
+    });
   },
 };

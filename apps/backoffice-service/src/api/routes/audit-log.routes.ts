@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 
 import { HTTP_STATUS } from "@aimess/constants";
+import { USER_AUDIT_ACTIONS } from "@aimess/messaging";
 
 import { AUDIT_ACTIONS, PERMISSIONS } from "../../constants/index.js";
 import { getAuditLogDetails, listAuditLogs } from "../controllers/index.js";
@@ -31,9 +32,14 @@ auditLogRoutes.get(
   "/audit-logs/actions",
   requirePermission(PERMISSIONS.AUDITLOGS_READ),
   (_req, res) => {
-    res
-      .status(HTTP_STATUS.OK)
-      .json({ success: true, data: Object.values(AUDIT_ACTIONS) });
+    res.status(HTTP_STATUS.OK).json({
+      success: true,
+      // Admin-panel actions plus every website action the ingest consumer accepts.
+      data: [
+        ...Object.values(AUDIT_ACTIONS),
+        ...Object.values(USER_AUDIT_ACTIONS),
+      ],
+    });
   }
 );
 

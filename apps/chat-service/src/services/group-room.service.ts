@@ -1,5 +1,9 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import type { Redis, Cluster } from "ioredis";
 
 import { publishChatUserEvent } from "@aimess/redis";
@@ -864,6 +868,16 @@ export class GroupRoomService {
 
     // Revoke all active invite links
     await this.inviteLinkRepo.revokeAllForRoom(roomId, userId);
+
+    // Disband posts no SYSTEM message, so the admin-panel mirror is emitted here
+    // rather than in GroupSystemMessageService like the other lifecycle events.
+    publishAdminActivitySafe({
+      actorId: opts?.asPlatformAdmin ? null : userId,
+      action: USER_AUDIT_ACTIONS.GROUP_DISBANDED,
+      targetType: "group",
+      targetId: roomId,
+      after: { asPlatformAdmin: Boolean(opts?.asPlatformAdmin) },
+    });
 
     // Fan out on every member's own `user:<id>` channel — the gateway re-emits
     // it on /chat, so open clients flip to read-only without a reload. Members

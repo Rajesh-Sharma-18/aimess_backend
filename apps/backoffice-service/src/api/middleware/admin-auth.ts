@@ -5,6 +5,7 @@ import type { RequestHandler } from "express";
 import { assertAdminAccountAccessible } from "../../lib/admin-status-guard.js";
 import { verifyAdminAccessToken } from "../../lib/admin-jwt.js";
 import { getCachedAdminPermissions } from "../../lib/admin-perms-cache.js";
+import { withImpliedReads } from "../../lib/implied-reads.js";
 import { isAdminSessionActiveForRequest } from "../../lib/admin-session-cache.js";
 import { adminUserRepository } from "../../repositories/index.js";
 
@@ -38,7 +39,9 @@ export const adminAuth: RequestHandler = (req, _res, next) => {
         id: adminId,
         sid: sessionId,
         role: admin.role.key,
-        permissions,
+        // Applied here as well as in the RBAC repo: a cached set written before
+        // the read/action split still has to satisfy the `<module>.read` guards.
+        permissions: withImpliedReads(permissions),
       };
       next();
     } catch (error) {

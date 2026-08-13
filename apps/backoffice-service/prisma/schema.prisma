@@ -66,7 +66,6 @@ model AdminUser {
   updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
 
   sessions            AdminSession[]
-  auditLogs           AuditLog[]
   otpCodes            AdminOtpCode[]
   passwordResetTokens AdminPasswordResetToken[]
   permissionOverrides AdminPermissionOverride[]
@@ -175,21 +174,33 @@ model AdminSession {
 // Audit
 // -----------------------------------------------------------------------------
 model AuditLog {
-  id         String    @id @default(uuid()) @db.Uuid
-  actorId    String    @db.Uuid
-  actor      AdminUser @relation(fields: [actorId], references: [id])
-  action     String // "user.ban", "role.change", ...
+  id String @id @default(uuid()) @db.Uuid
+  // AdminUser.id when actorType=ADMIN, AuthUser.id when actorType=USER, null for SYSTEM.
+  // Intentionally NOT a relation: end-user ids live in another service's database, so a
+  // foreign key to AdminUser would reject every website-side row.
+  actorId    String? @db.Uuid
+  actorType  AuditActorType @default(ADMIN)
+  action     String // "user.ban", "community.member_joined", ...
   targetType String // "user" | "community" | "group" | "stream" | "settings" | "admin"
   targetId   String?
   before     Json?
   after      Json?
   ip         String?
   userAgent  String?
-  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  // Publisher-side idempotency key for ingested website activity; null for admin-written rows.
+  eventId    String?  @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([actorId, createdAt])
   @@index([targetType, targetId])
   @@index([action, createdAt])
+  @@index([actorType, createdAt])
+}
+
+enum AuditActorType {
+  ADMIN
+  USER
+  SYSTEM
 }
 
 // -----------------------------------------------------------------------------

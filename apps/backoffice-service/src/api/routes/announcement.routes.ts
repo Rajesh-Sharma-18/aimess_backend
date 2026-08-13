@@ -26,7 +26,7 @@ announcementRoutes.use(adminAuth);
 
 announcementRoutes.get(
   "/announcements",
-  requirePermission(PERMISSIONS.ANNOUNCEMENTS_MANAGE),
+  requirePermission(PERMISSIONS.ANNOUNCEMENTS_READ),
   validateQuery(listAnnouncementsQuerySchema),
   listAnnouncements
 );
@@ -38,7 +38,7 @@ announcementRoutes.post(
 );
 announcementRoutes.get(
   "/announcements/:announcementId",
-  requirePermission(PERMISSIONS.ANNOUNCEMENTS_MANAGE),
+  requirePermission(PERMISSIONS.ANNOUNCEMENTS_READ),
   validateParams(announcementIdParamSchema),
   getAnnouncementDetails
 );

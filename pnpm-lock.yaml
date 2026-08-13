@@ -207,6 +207,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/prisma-pg":
         specifier: workspace:*
         version: link:../../packages/prisma-pg
@@ -310,6 +313,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/prisma-pg":
         specifier: workspace:*
         version: link:../../packages/prisma-pg
@@ -419,6 +425,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/redis":
         specifier: workspace:*
         version: link:../../packages/redis
@@ -513,6 +522,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/redis":
         specifier: workspace:*
         version: link:../../packages/redis
@@ -780,6 +792,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/redis":
         specifier: workspace:*
         version: link:../../packages/redis
@@ -862,6 +877,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/prisma-pg":
         specifier: workspace:*
         version: link:../../packages/prisma-pg
@@ -995,6 +1013,25 @@ importers:
       winston:
         specifier: ^3.19.0
         version: 3.19.0
+
+  packages/messaging:
+    dependencies:
+      "@aimess/logger":
+        specifier: workspace:*
+        version: link:../logger
+      "@aimess/shared-types":
+        specifier: workspace:*
+        version: link:../shared-types
+      amqplib:
+        specifier: ^0.10.5
+        version: 0.10.9
+    devDependencies:
+      "@types/amqplib":
+        specifier: ^0.10.4
+        version: 0.10.8
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/prisma-pg:
     dependencies:

@@ -2,6 +2,10 @@ import { randomBytes } from "node:crypto";
 
 import { logger } from "@aimess/logger";
 import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
+import {
   ForbiddenError,
   NotFoundError,
   ConflictError,
@@ -534,6 +538,13 @@ export class LivestreamService {
         updated.communityId
       );
       void this.publishCommunityStreamStarted(updated, liveStreamCount);
+      publishAdminActivitySafe({
+        actorId: updated.creatorId,
+        action: USER_AUDIT_ACTIONS.STREAM_STARTED,
+        targetType: "stream",
+        targetId: updated.id,
+        after: { communityId: updated.communityId, title: updated.title },
+      });
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
@@ -692,6 +703,24 @@ export class LivestreamService {
       updated.id,
       updated.endedAt ?? new Date()
     );
+    // Only HOST_ENDED is the broadcaster's own doing. An admin force-end, a heartbeat
+    // timeout or a reconnect timeout is the platform ending someone else's stream, and
+    // attributing those to the broadcaster misreads the trail.
+    const hostEnded = reason === "HOST_ENDED";
+    publishAdminActivitySafe({
+      actorId: hostEnded ? updated.creatorId : null,
+      actorType: hostEnded ? "USER" : "SYSTEM",
+      action: USER_AUDIT_ACTIONS.STREAM_ENDED,
+      targetType: "stream",
+      targetId: updated.id,
+      after: {
+        communityId: updated.communityId,
+        creatorId: updated.creatorId,
+        durationSeconds: computeDurationSeconds(updated),
+        peakViewers: updated.peakViewers,
+        reason,
+      },
+    });
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -819,6 +848,13 @@ export class LivestreamService {
         updated.communityId
       );
       void this.publishCommunityStreamStarted(updated, liveStreamCount);
+      publishAdminActivitySafe({
+        actorId: updated.creatorId,
+        action: USER_AUDIT_ACTIONS.STREAM_STARTED,
+        targetType: "stream",
+        targetId: updated.id,
+        after: { communityId: updated.communityId, title: updated.title },
+      });
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
@@ -848,7 +884,7 @@ export class LivestreamService {
    */
   async adminForceEnd(
     streamId: string,
-    _reason: string
+    reason: string
   ): Promise<{ success: boolean; status: string }> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
@@ -856,7 +892,9 @@ export class LivestreamService {
       return { success: false, status: stream.status };
     }
 
-    await this.finalizeAsEnded(stream);
+    // The reason was accepted and then dropped, so a force-end was indistinguishable
+    // from the host ending their own broadcast in every downstream event.
+    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED");
 
     return { success: true, status: "ENDED" };
   }
@@ -1410,6 +1448,21 @@ export class LivestreamService {
         );
         await this.publishStatus(updated.id, "ENDED", updated.communityId);
         void this.publishCommunityStreamEnded(updated, liveStreamCount);
+        // The sweeper is the one end path that bypasses finalizeAsEnded, so it also
+        // bypassed the audit row. It never went live — record it as SYSTEM.
+        publishAdminActivitySafe({
+          actorId: null,
+          actorType: "SYSTEM",
+          action: USER_AUDIT_ACTIONS.STREAM_ENDED,
+          targetType: "stream",
+          targetId: updated.id,
+          after: {
+            communityId: updated.communityId,
+            creatorId: updated.creatorId,
+            reason: "PENDING_TIMEOUT",
+            neverWentLive: true,
+          },
+        });
         this.eventPublisher("stream.ended", {
           streamId: updated.id,
           communityId: updated.communityId,

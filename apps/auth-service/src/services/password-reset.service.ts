@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
 import { BadRequestError, NotFoundError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import bcrypt from "bcryptjs";
 
 import type {
@@ -186,5 +190,13 @@ export const passwordResetService = {
     const active = await sessionRepository.listActiveSessionIds(record.userId);
     await authRepository.revokeSessionsAfterPasswordChange(record.userId);
     await markSessionsRevoked(active.map((row) => row.id));
+
+    publishAdminActivitySafe({
+      actorId: record.userId,
+      action: USER_AUDIT_ACTIONS.USER_PASSWORD_RESET_COMPLETED,
+      targetType: "user",
+      targetId: record.userId,
+      after: { revokedSessions: active.length },
+    });
   },
 };

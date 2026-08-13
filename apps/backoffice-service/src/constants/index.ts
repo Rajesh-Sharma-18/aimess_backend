@@ -29,10 +29,13 @@ export const PERMISSIONS = {
   GROUPS_MODERATE: "groups.moderate",
   LIVESTREAMS_READ: "livestreams.read",
   LIVESTREAMS_MODERATE: "livestreams.moderate",
+  CATEGORIES_READ: "categories.read",
   CATEGORIES_MANAGE: "categories.manage",
+  ANNOUNCEMENTS_READ: "announcements.read",
   ANNOUNCEMENTS_MANAGE: "announcements.manage",
   AUDITLOGS_READ: "auditlogs.read",
   SYSTEMHEALTH_READ: "systemhealth.read",
+  ADMINS_READ: "admins.read",
   ADMINS_MANAGE: "admins.manage",
   SETTINGS_MANAGE: "settings.manage",
 } as const;

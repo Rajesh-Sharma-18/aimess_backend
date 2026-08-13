@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import type { RoleKey } from "../generated/prisma/client.js";
+import { withImpliedReads } from "../lib/implied-reads.js";
 
 export const rbacRepository = {
   /** Resolve the permission keys granted to a role (by role key). */
@@ -11,7 +12,7 @@ export const rbacRepository = {
       },
     });
     if (!role) return [];
-    return role.permissions.map((rp) => rp.permission.key);
+    return withImpliedReads(role.permissions.map((rp) => rp.permission.key));
   },
 
   /**
@@ -32,10 +33,13 @@ export const rbacRepository = {
       }),
     ]);
 
-    const effective = new Set(roleKeys);
+    // Implied reads resolve before the denies so an explicit deny still wins.
+    const allowed = overrides
+      .filter((o) => o.allow)
+      .map((o) => o.permission.key);
+    const effective = new Set(withImpliedReads([...roleKeys, ...allowed]));
     for (const o of overrides) {
-      if (o.allow) effective.add(o.permission.key);
-      else effective.delete(o.permission.key);
+      if (!o.allow) effective.delete(o.permission.key);
     }
     return [...effective];
   },

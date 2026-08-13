@@ -62,6 +62,52 @@ describe("rbacRepository.getPermissionKeysForAdmin", () => {
     expect(keys).not.toContain("users.read");
   });
 
+  it("implies <module>.read from an action key, on the role and on an allow-override", async () => {
+    db.adminRole.findUnique.mockResolvedValue(
+      roleGranting("categories.manage")
+    );
+    db.adminPermissionOverride.findMany.mockResolvedValue([
+      { allow: true, permission: { key: "admins.manage" } },
+    ]);
+
+    const keys = await rbacRepository.getPermissionKeysForAdmin(
+      ADMIN_ID,
+      "MODERATOR"
+    );
+
+    expect(keys.sort()).toEqual([
+      "admins.manage",
+      "admins.read",
+      "categories.manage",
+      "categories.read",
+    ]);
+  });
+
+  it("never implies a read key the catalogue does not have (settings)", async () => {
+    db.adminRole.findUnique.mockResolvedValue(roleGranting("settings.manage"));
+
+    const keys = await rbacRepository.getPermissionKeysForAdmin(
+      ADMIN_ID,
+      "SUPER_ADMIN"
+    );
+
+    expect(keys).toEqual(["settings.manage"]);
+  });
+
+  it("lets an explicit deny of the read key beat the implication", async () => {
+    db.adminRole.findUnique.mockResolvedValue(roleGranting("users.moderate"));
+    db.adminPermissionOverride.findMany.mockResolvedValue([
+      { allow: false, permission: { key: "users.read" } },
+    ]);
+
+    const keys = await rbacRepository.getPermissionKeysForAdmin(
+      ADMIN_ID,
+      "MODERATOR"
+    );
+
+    expect(keys).toEqual(["users.moderate"]);
+  });
+
   it("returns an empty set for an unknown role", async () => {
     db.adminRole.findUnique.mockResolvedValue(null);
     await expect(

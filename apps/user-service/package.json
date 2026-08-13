@@ -27,6 +27,7 @@
     "@aimess/constants": "workspace:*",
     "@aimess/errors": "workspace:*",
     "@aimess/logger": "workspace:*",
+    "@aimess/messaging": "workspace:*",
     "@aimess/prisma-pg": "workspace:*",
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",

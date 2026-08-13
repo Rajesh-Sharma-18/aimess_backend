@@ -8,12 +8,18 @@
 
 import type { MediaObject } from "@aimess/shared-types";
 
-/** Who performed the action (resolved from the AuditLog.actor relation). */
+// Which side of the platform the actor belongs to.
+export type AuditActorKind = "ADMIN" | "USER" | "SYSTEM";
+
+/** Who performed the action (admin table, user-service profile, or nobody for SYSTEM). */
 export type AuditPerformer = {
-  id: string;
-  /** Admin display name; null when the actor row was removed. */
+  // AdminUser.id / AuthUser.id; null for SYSTEM rows.
+  id: string | null;
+  // Tells the UI whether this row came from the admin panel or the website.
+  type: AuditActorKind;
+  /** Display name; null when the actor row was removed or unresolvable. */
   name: string | null;
-  /** Admin email; null when the actor row was removed. */
+  /** Admin email, or the end user's username; null when unresolvable. */
   email: string | null;
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
@@ -52,6 +58,8 @@ export type AuditLogDetail = {
 export type ListAuditLogsQuery = {
   search?: string;
   action?: string[];
+  // ADMIN = admin-panel action, USER = website action, SYSTEM = platform job.
+  actorType?: AuditActorKind[];
   dateFrom?: string;
   dateTo?: string;
   sort: string;

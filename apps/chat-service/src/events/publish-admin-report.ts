@@ -1,4 +1,8 @@
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import * as amqp from "amqplib";
 
 import {
@@ -52,6 +56,15 @@ async function getChannel(url: string): Promise<amqp.Channel> {
 export function publishAdminReportIngestSafe(
   data: AdminReportIngestPayload
 ): void {
+  // Same call site feeds the admin panel's audit log: filing a report is website activity.
+  publishAdminActivitySafe({
+    actorId: data.reporterId,
+    action: USER_AUDIT_ACTIONS.REPORT_SUBMITTED,
+    targetType: data.type,
+    targetId: data.targetId,
+    after: { reason: data.reason, reportedUserId: data.reportedUserId ?? null },
+    eventAt: data.eventAt,
+  });
   const url = env.RABBITMQ_URL;
   if (!url) return; // RabbitMQ not configured — skip (matches event consumer guard)
   void (async () => {

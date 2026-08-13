@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
 import { ConflictError, UnauthorizedError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import bcrypt from "bcryptjs";
 
 import type {
@@ -53,6 +57,16 @@ export const authService = {
       isGoogleLogin: false,
     });
 
+    publishAdminActivitySafe({
+      actorId: user.id,
+      action: USER_AUDIT_ACTIONS.USER_REGISTERED,
+      targetType: "user",
+      targetId: user.id,
+      after: { account: user.account },
+      ip: session.ipAddress,
+      userAgent: session.userAgent,
+    });
+
     return {
       user: {
         userId: user.id,
@@ -70,23 +84,45 @@ export const authService = {
       ? await authRepository.findByEmailForLogin(identifier)
       : await authRepository.findByAccountForLogin(identifier);
 
+    // Every rejected login is audited, not just a wrong password: an attack against
+    // unknown or locked accounts is exactly the pattern this action exists to expose.
+    // An unknown identifier has no actor, so it is recorded as SYSTEM.
+    const auditFailure = (reason: string, userId?: string) => {
+      const failed = buildSessionContext(req);
+      publishAdminActivitySafe({
+        actorId: userId ?? null,
+        actorType: userId ? "USER" : "SYSTEM",
+        action: USER_AUDIT_ACTIONS.USER_LOGIN_FAILED,
+        targetType: "user",
+        targetId: userId ?? identifier,
+        after: { reason, identifier },
+        ip: failed.ipAddress,
+        userAgent: failed.userAgent,
+      });
+    };
+
     if (!user || user.deletedAt) {
+      auditFailure(user ? "ACCOUNT_DELETED" : "ACCOUNT_NOT_FOUND", user?.id);
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 
     if (isEmailLoginIdentifier(identifier) && !user.emailVerified) {
+      auditFailure("EMAIL_NOT_VERIFIED", user.id);
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
+      auditFailure("ACCOUNT_LOCKED", user.id);
       throw new UnauthorizedError("AUTH_ACCOUNT_LOCKED");
     }
 
     if (user.status !== AccountStatus.ACTIVE) {
+      auditFailure(`ACCOUNT_${user.status}`, user.id);
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 
     if (!user.passwordHash) {
+      auditFailure("PASSWORD_NOT_SET", user.id);
       throw new UnauthorizedError("AUTH_PASSWORD_NOT_SET");
     }
 
@@ -100,6 +136,7 @@ export const authService = {
         env.AUTH_MAX_FAILED_LOGINS,
         env.AUTH_LOCKOUT_MINUTES
       );
+      auditFailure("INVALID_PASSWORD", user.id);
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 

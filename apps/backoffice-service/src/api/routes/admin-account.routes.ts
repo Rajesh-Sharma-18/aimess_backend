@@ -34,7 +34,7 @@ import {
  * `/v1/admin-accounts/*`, matching the documented gateway path
  * `/admin/v1/admin-accounts` (the gateway strips `/admin` and forwards `/v1/*`
  * verbatim). Self-prefixed, NOT nested under a base path — same as category/
- * audit-logs. Every route requires `admins.manage`.
+ * audit-logs. Reads require `admins.read`; every mutation requires `admins.manage`.
  */
 export const adminAccountRoutes: IRouter = Router();
 
@@ -44,14 +44,14 @@ adminAccountRoutes.use(adminAuth);
 // not capture "permissions" as an adminId path param.
 adminAccountRoutes.get(
   "/admin-accounts/permissions",
-  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  requirePermission(PERMISSIONS.ADMINS_READ),
   listPermissions
 );
 
 // Read.
 adminAccountRoutes.get(
   "/admin-accounts",
-  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  requirePermission(PERMISSIONS.ADMINS_READ),
   validateQuery(listAdminAccountsQuerySchema),
   listAdminAccounts
 );
@@ -65,7 +65,7 @@ adminAccountRoutes.post(
 // Single-admin detail + actions.
 adminAccountRoutes.get(
   "/admin-accounts/:adminId",
-  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  requirePermission(PERMISSIONS.ADMINS_READ),
   validateParams(adminAccountIdParamSchema),
   getAdminAccountDetails
 );
@@ -101,7 +101,7 @@ adminAccountRoutes.patch(
 // Permission management for one admin.
 adminAccountRoutes.get(
   "/admin-accounts/:adminId/permissions",
-  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  requirePermission(PERMISSIONS.ADMINS_READ),
   validateParams(adminAccountIdParamSchema),
   getAdminPermissions
 );

@@ -8,6 +8,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import { isHiddenSystemMessage } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
@@ -194,6 +198,38 @@ function uniqueViolationToConflict(
 
 const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
 const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
+
+// admin_db.AuditLog.actorId is a uuid column — anything else has to travel as SYSTEM.
+const ACTOR_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Which community moderation actions are mirrored into the admin panel's audit log.
+// Unmapped entries (report review, invite chatter, backoffice-initiated actions) stay
+// local: backoffice already records its own side, and the rest is not moderation signal.
+export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
+  Record<CommunityAuditAction, string>
+> = {
+  MEMBER_PROMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
+  MEMBER_DEMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
+  MEMBER_KICKED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED,
+  MEMBER_BANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_BANNED,
+  MEMBER_UNBANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_UNBANNED,
+  MEMBER_MUTED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_MUTED,
+  MEMBER_UNMUTED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_UNMUTED,
+  MEMBER_WARNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_WARNED,
+  MEMBER_LEFT: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_LEFT,
+  ADMIN_TRANSFERRED: USER_AUDIT_ACTIONS.COMMUNITY_OWNERSHIP_TRANSFERRED,
+  COMMUNITY_JOINED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
+  INVITE_ACCEPTED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
+  INVITE_LINK_REDEEMED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_JOINED,
+  COMMUNITY_DELETED: USER_AUDIT_ACTIONS.COMMUNITY_DELETED,
+  COMMUNITY_CLOSED: USER_AUDIT_ACTIONS.COMMUNITY_UPDATED,
+  COMMUNITY_REOPENED: USER_AUDIT_ACTIONS.COMMUNITY_UPDATED,
+  JOIN_REQUEST_APPROVED: USER_AUDIT_ACTIONS.COMMUNITY_JOIN_REQUEST_APPROVED,
+  JOIN_REQUEST_REJECTED: USER_AUDIT_ACTIONS.COMMUNITY_JOIN_REQUEST_REJECTED,
+  INVITE_LINK_CREATED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_CREATED,
+  INVITE_LINK_REVOKED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_REVOKED,
+};
 
 /**
  * Build the additive nested {@link MediaObject} for a community image (avatar or
@@ -2222,6 +2258,17 @@ export const communityService = {
       communityType: community.type,
       ownerId: creatorId,
     });
+    publishAdminActivitySafe({
+      actorId: creatorId,
+      action: USER_AUDIT_ACTIONS.COMMUNITY_CREATED,
+      targetType: "community",
+      targetId: community.id,
+      after: {
+        name: community.name,
+        handle: community.handle,
+        type: community.type,
+      },
+    });
     publishCommunitySystemMessageForChatSafe({
       communityId: community.id,
       systemMessageType: "COMMUNITY_CREATED",
@@ -2367,6 +2414,28 @@ export const communityService = {
     reason?: string;
     metadata?: Prisma.InputJsonValue;
   }): Promise<void> {
+    // Single funnel for every community moderation action, so mirroring the mapped
+    // ones to the admin panel's audit log happens here instead of at ~29 call sites.
+    const mirrored = ADMIN_ACTIVITY_BY_COMMUNITY_ACTION[entry.action];
+    if (mirrored) {
+      // Not every actor here is a user: the auto-unmute sweeper and backoffice-initiated
+      // close/reopen pass a non-uuid actorId ("system"). admin_db.AuditLog.actorId is a
+      // uuid column, so those MUST go over as SYSTEM with no actor — otherwise the
+      // consumer rejects the message and the row is lost to the dead-letter queue.
+      const isUserActor = ACTOR_UUID.test(entry.actorId);
+      publishAdminActivitySafe({
+        actorId: isUserActor ? entry.actorId : null,
+        actorType: isUserActor ? "USER" : "SYSTEM",
+        action: mirrored,
+        targetType: "community",
+        targetId: entry.communityId,
+        after: {
+          communityAction: entry.action,
+          targetUserId: entry.targetUserId ?? null,
+          ...(entry.reason ? { reason: entry.reason } : {}),
+        },
+      });
+    }
     try {
       await communityRepository.createAuditLog(entry);
     } catch (auditError) {
@@ -2581,6 +2650,17 @@ export const communityService = {
         ? ((await communityRepository.findById(communityId)) ?? updated)
         : updated;
     void broadcastCommunityMetaUpdated(snapshotForBroadcast, changedFields);
+
+    if (changedFields.length > 0) {
+      publishAdminActivitySafe({
+        actorId: callerId,
+        action: USER_AUDIT_ACTIONS.COMMUNITY_UPDATED,
+        targetType: "community",
+        targetId: communityId,
+        before: { name: previousName, handle: previousHandle },
+        after: { changedFields, name: updated.name, handle: updated.handle },
+      });
+    }
 
     // Admin who just patched the community isn't asking about mute — skip read.
     return toCommunityData(updated, membership.role, null);
@@ -3898,6 +3978,19 @@ export const communityService = {
           moderatorRecipientIds,
         });
       }
+    }
+
+    // A moderator adding members is a membership change like any other, but it never
+    // went through recordAudit — so it was the one common way to grow a community that
+    // left no audit row at all. One row per member actually added (skipped[] excluded).
+    for (const member of added) {
+      await this.recordAudit({
+        communityId,
+        actorId: callerId,
+        action: "COMMUNITY_JOINED",
+        targetUserId: member.userId,
+        metadata: { via: "add_members" },
+      });
     }
 
     return { added, skipped };
@@ -8547,6 +8640,16 @@ export const communityService = {
       }
     }
     if (!created) throw new Error("Failed to allocate invite-link code");
+
+    // Minting a link is the audited event; reusing the existing one above is not. Every
+    // "Generate Invitation Link" path (default-body create, GET /invitation-link, bulk
+    // send) funnels through here, so auditing here covers all three at once.
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "INVITE_LINK_CREATED",
+      metadata: { linkId: created.id, via: "shareable_link" },
+    });
     return created;
   },
 
