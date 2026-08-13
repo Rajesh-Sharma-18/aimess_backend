@@ -12,6 +12,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import {
   buildMessagePreview,
@@ -176,6 +177,18 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(params.messageType, params.content?.files);
+    // Every uploaded object referenced by the message must be verified, owned by
+    // the sender, and scoped to this room. `assertAttachmentsValid` above only
+    // checks CLIENT-DECLARED size/duration; this checks the object itself.
+    await assertAttachmentsVerified({
+      resourceId: params.roomId,
+      senderId: params.senderId,
+      files: params.content?.files,
+      extra: [
+        (params.content as { sticker?: Record<string, unknown> } | undefined)
+          ?.sticker,
+      ],
+    });
 
     const room = await assertPrivateParticipant(
       this.roomRepo,
@@ -989,7 +1002,36 @@ export class PrivateMessageService {
     const deletedFor = (message.deletedFor ?? {}) as Record<string, unknown>;
     if (userId in deletedFor)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
-    return this.messageRepo.deleteForMe(messageId, userId);
+    const hidden = await this.messageRepo.deleteForMe(messageId, userId);
+    // Hiding a message the viewer had NOT read yet removes it from their unread
+    // window — the stored counter is the source of truth for the badge, and
+    // nothing else adjusts it on this path (delete-for-EVERYONE does, which is
+    // why the badge only ever went stale for delete-for-me).
+    // `decrementUnreadForMessage` re-checks the read watermark, so a message
+    // the user had already read is a no-op there and the badge holds.
+    if (
+      message.senderId !== userId &&
+      shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ) {
+      this.roomRepo
+        .decrementUnreadForMessage({
+          roomId: message.roomId,
+          recipientId: userId,
+          messageId: message.id,
+          messageCreatedAt: message.createdAt,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `PrivateMessageService|deleteForMe decrementUnreadForMessage failed: ${String(err)}`
+          );
+        });
+    }
+    return hidden;
   }
 
   /**

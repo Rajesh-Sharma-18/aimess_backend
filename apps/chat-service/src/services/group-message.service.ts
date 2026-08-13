@@ -12,10 +12,18 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import {
+  buildGroupSystemFallbackText,
   currentLocale,
   personalizeGroupSystemMessageForViewer,
 } from "@aimess/constants";
+import {
+  anonymizeSystemData,
+  anonymizeWireSender,
+  collectDeletedUserIds,
+  collectRowUserIds,
+} from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
   buildReactionTargetPreview,
@@ -137,6 +145,19 @@ export class GroupMessageService {
       params.messageType,
       params.content?.files as Array<Record<string, unknown>> | undefined
     );
+    // See private-message.service.ts — this verifies the OBJECT (scan verdict,
+    // uploader, room scope), not just the client-declared size/duration.
+    await assertAttachmentsVerified({
+      resourceId: params.roomId,
+      senderId: params.senderId,
+      files: params.content?.files as
+        | Array<Record<string, unknown>>
+        | undefined,
+      extra: [
+        (params.content as { sticker?: Record<string, unknown> } | undefined)
+          ?.sticker,
+      ],
+    });
 
     // Verify membership
     const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -1065,7 +1086,33 @@ export class GroupMessageService {
     // mutate their own view of room content either.
     assertGroupMemberNotMuted(member);
 
-    return this.messageRepo.deleteForMe(messageId, userId);
+    const hidden = await this.messageRepo.deleteForMe(messageId, userId);
+    // Mirror of PrivateMessageService.deleteForMe: hiding a still-unread message
+    // must shrink THIS member's badge (and only theirs). The repo re-checks the
+    // read watermark, so hiding an already-read message is a no-op.
+    if (
+      message.senderId !== userId &&
+      shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ) {
+      this.memberRepo
+        .decrementUnreadForMessage({
+          roomId,
+          senderId: message.senderId,
+          messageCreatedAt: message.createdAt,
+          onlyUserId: userId,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|deleteForMe decrementUnreadForMessage failed: ${String(err)}`
+          );
+        });
+    }
+    return hidden;
   }
 
   /**
@@ -2378,6 +2425,19 @@ export class GroupMessageService {
         mediaKeys.push(quote.thumbnail);
       }
     }
+    // Group rows freeze `senderName`/`senderAvatar` at send time, so a sender
+    // who later deleted their account would keep their old name on every
+    // historical message. Resolve which of the page's participants are deleted
+    // (one batched, Redis-cached snapshot lookup) and scrub them below —
+    // stored rows are never rewritten.
+    const deletedUserIds = await collectDeletedUserIds(
+      messages.flatMap((m) =>
+        collectRowUserIds(m as unknown as Record<string, unknown>)
+      ),
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
     return messages.map((message) => {
@@ -2463,26 +2523,47 @@ export class GroupMessageService {
       wire.serverTs =
         message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
 
-      if (
-        viewerUserId &&
-        String(wire.contentType).toUpperCase() === "SYSTEM" &&
-        message.systemEvent
-      ) {
-        const systemData = (message.systemData ?? {}) as Record<
+      // Replaces the frozen senderName/senderAvatar (and the quoted-message
+      // preview's) for deleted accounts, and stamps `isDeletedUser` on every
+      // row so the client gates profile navigation off a flag, not a string.
+      anonymizeWireSender(wire, deletedUserIds);
+
+      if (String(wire.contentType).toUpperCase() === "SYSTEM") {
+        const rawSystemData = (message.systemData ?? {}) as Record<
           string,
           unknown
         >;
+        // "Alice added Bob" must become "Alice added Deleted Account" once Bob
+        // is gone. The names are baked into systemData at write time, but the
+        // TEXT is rebuilt from them on every read — so scrubbing the data here
+        // is enough, with no stored-row rewrite.
+        const systemData = anonymizeSystemData(rawSystemData, deletedUserIds);
         const content = wire.content as Record<string, unknown> | null;
         const thirdPersonText = String(content?.text ?? "");
-        const personalized = personalizeGroupSystemMessageForViewer(
-          message.systemEvent,
-          systemData,
-          thirdPersonText,
-          viewerUserId,
-          currentLocale()
-        );
-        if (personalized !== thirdPersonText && content) {
-          wire.content = { ...content, text: personalized };
+        if (message.systemEvent && content) {
+          // Two entry points on purpose. `personalize…` short-circuits to the
+          // STORED text whenever there is no viewer and the locale is English —
+          // correct normally, wrong here, because the stored text is precisely
+          // what still contains the deleted user's name. So a scrubbed
+          // systemData goes straight to the builder, which always re-renders.
+          const rebuilt =
+            systemData === rawSystemData
+              ? personalizeGroupSystemMessageForViewer(
+                  message.systemEvent,
+                  systemData,
+                  thirdPersonText,
+                  viewerUserId ?? "",
+                  currentLocale()
+                )
+              : buildGroupSystemFallbackText(
+                  message.systemEvent,
+                  systemData,
+                  viewerUserId ?? "",
+                  currentLocale()
+                );
+          if (rebuilt && rebuilt !== thirdPersonText) {
+            wire.content = { ...content, text: rebuilt };
+          }
         }
       }
 

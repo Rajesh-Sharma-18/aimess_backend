@@ -86,11 +86,12 @@ describe("POST /api/v1/media/upload-url", () => {
       uploadUrlExpiresIn: expect.any(Number),
       uploadHeaders: expect.objectContaining({ "Content-Type": "image/png" }),
     });
-    // Resolve-on-read: a ready download URL is returned alongside the upload URL.
-    expect(res.body.data.media.downloadUrl).toBe(
-      "https://minio.test/presigned-get"
-    );
-    expect(typeof res.body.data.media.downloadUrl).toBe("string");
+    // NO download URL is issued here, deliberately. A presigned GET returned at
+    // upload time is redeemed directly against MinIO, so it bypasses the entire
+    // security pipeline — the scan gate lives in /media/download-url, not in
+    // storage, and the bytes were served the moment the PUT landed. Callers
+    // fetch a download URL after /media/confirm returns a downloadable verdict.
+    expect(res.body.data.media.downloadUrl).toBeNull();
     expect(res.body.data.media.uploadUrl).toBe(
       "https://minio.test/presigned-put"
     );

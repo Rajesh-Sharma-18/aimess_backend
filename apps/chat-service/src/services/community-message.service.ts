@@ -21,13 +21,21 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import {
+  DELETED_ACCOUNT_DISPLAY_NAME,
   buildCommunitySystemFallbackText,
   currentLocale,
   isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
 } from "@aimess/constants";
+import {
+  anonymizeSystemData,
+  anonymizeWireSender,
+  collectDeletedUserIds,
+  collectRowUserIds,
+} from "../lib/deleted-identity.js";
 import { env } from "../config/env.js";
 
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
@@ -316,6 +324,13 @@ export class CommunityMessageService {
       throw new BadRequestError("CHAT_UNSUPPORTED_CONTENT_TYPE");
     }
     assertAttachmentsValid(params.messageType, params.attachments);
+    // See private-message.service.ts — this verifies the OBJECT (scan verdict,
+    // uploader, room scope), not just the client-declared size/duration.
+    await assertAttachmentsVerified({
+      resourceId: params.roomId,
+      senderId: params.sentBy,
+      files: params.attachments,
+    });
 
     // Guard: block sends to suspended or deactivated rooms. "suspended" means
     // the community was closed (owner status=CLOSED or platform SUSPENDED);
@@ -775,6 +790,91 @@ export class CommunityMessageService {
   }
 
   /**
+   * Authoritative per-member unread adjustment for a message that was just
+   * removed — the answer to "did this message actually contribute to THIS
+   * member's badge", decided server-side so the client never has to guess.
+   *
+   * Community unread is DERIVED from `RoomMember.lastReadAt` rather than stored
+   * as a counter, so the post-delete DB state is already correct (the count
+   * query excludes `deletedForAll` and `deletedBy`) — what was missing is any
+   * event telling a client that its cached row badge is now one too high. An
+   * absolute per-member count would cost one aggregation PER MEMBER per delete;
+   * the delta needs a single member fetch and is exact.
+   *
+   * Returns only the members whose badge actually moves; everyone else is
+   * absent from the map (treated as 0 by the publisher).
+   *
+   * ponytail: delta rather than an absolute count — if concurrent-delete
+   * ordering ever proves to matter more than the per-member aggregation cost,
+   * swap the body for `countUnreadAfter` per affected member; the wire field is
+   * already per-member so only this function and the client's apply-step change.
+   */
+  async resolveUnreadDeltasAfterDelete(params: {
+    roomId: string;
+    memberIds: string[];
+    deletedMessage: {
+      sentBy: string;
+      createdAt: Date;
+      messageType?: string | null;
+      systemMessageType?: string | null;
+      countInUnread?: boolean | null;
+      visibleToUserId?: string | null;
+      deletedBy?: unknown;
+    };
+    /** delete-for-me: only this member's own view changed. */
+    onlyUserId?: string;
+  }): Promise<Record<string, number>> {
+    const msg = params.deletedMessage;
+
+    // Never counted toward anyone's badge in the first place → nothing to undo.
+    // Same policy object the write path and the count queries use.
+    if (
+      !shouldCountInUnread({
+        messageType: msg.messageType,
+        systemMessageType: msg.systemMessageType,
+        explicit: msg.countInUnread,
+      })
+    ) {
+      return {};
+    }
+    // Personal system rows ("You joined the community") are excluded from
+    // countUnreadBulk/countUnreadAfter, so they can't have inflated a badge.
+    if (msg.visibleToUserId != null) return {};
+
+    // Members who had ALREADY hidden this message for themselves never had it
+    // in their derived count — decrementing them would push the badge BELOW the
+    // real number of unread messages.
+    const alreadyHidden = new Set(
+      Array.isArray(msg.deletedBy) ? (msg.deletedBy as string[]) : []
+    );
+
+    const eligible = params.onlyUserId
+      ? params.memberIds.filter((id) => id === params.onlyUserId)
+      : params.memberIds;
+    if (eligible.length === 0) return {};
+
+    const members = await this.memberRepo.findActiveByRoom(params.roomId);
+    const lastReadByUser = new Map(
+      members.map((m) => [m.userId, m.lastReadAt ?? null])
+    );
+
+    const deltas: Record<string, number> = {};
+    for (const memberId of eligible) {
+      // Own messages never counted toward own unread (parity with the count
+      // queries' `sentBy: { $ne: userId }`).
+      if (memberId === msg.sentBy) continue;
+      if (alreadyHidden.has(memberId)) continue;
+      if (!lastReadByUser.has(memberId)) continue; // not an active member
+      const lastReadAt = lastReadByUser.get(memberId) ?? null;
+      // Read strictly before the message was sent ⇒ it was still unread.
+      // A never-read member (null) has everything unread.
+      const wasUnread = lastReadAt === null || lastReadAt < msg.createdAt;
+      if (wasUnread) deltas[memberId] = -1;
+    }
+    return deltas;
+  }
+
+  /**
    * Adapter exposing the community-message deletion shape (deletedForAll +
    * deletedBy ARRAY) to the shared LastVisibleResolver. The repo's
    * findPreviousVisibleForUser already excludes globally-deleted, the viewer's
@@ -1160,6 +1260,34 @@ export class CommunityMessageService {
     return resolveMediaUrlMap(keys);
   }
 
+  /**
+   * The two per-page lookups every community read path needs before it can
+   * serialize a row: the resolved media URLs, and which of the page's
+   * participants have deleted their account.
+   *
+   * The second one exists because community rows denormalize
+   * `senderName`/`senderAvatar` (and the system line's actor/target names) at
+   * write time and never re-read a profile, so without it a deleted account's
+   * old name stays frozen into community history forever. It is one batched,
+   * Redis-cached snapshot lookup, run in parallel with the media resolution.
+   */
+  private async resolveRowsWireContext(rows: GeneralRoomMessage[]): Promise<{
+    urlMap: Map<string, string>;
+    deletedUserIds: Set<string>;
+  }> {
+    const [urlMap, deletedUserIds] = await Promise.all([
+      this.resolveRowsMedia(rows),
+      collectDeletedUserIds(
+        rows.flatMap((row) =>
+          collectRowUserIds(row as unknown as Record<string, unknown>)
+        ),
+        this.userSnapshotService,
+        this.cacheRepo
+      ),
+    ]);
+    return { urlMap, deletedUserIds };
+  }
+
   /** Extract every unique reactor userId from a batch of message rows. */
   private collectReactionUserIds(rows: GeneralRoomMessage[]): string[] {
     const ids = new Set<string>();
@@ -1191,10 +1319,18 @@ export class CommunityMessageService {
     systemMessageType: string | null | undefined,
     systemMetadata: unknown,
     storedText: string,
-    viewerUserId: string | undefined
+    viewerUserId: string | undefined,
+    deletedUserIds: Set<string> = new Set()
   ): string {
     if (!systemMessageType) return storedText;
-    const metadata = (systemMetadata ?? {}) as Record<string, unknown>;
+    // Names are baked into the metadata at write time; the text is rebuilt from
+    // them below on every read, so swapping the names of deleted participants
+    // here is enough to keep "X removed Y" from naming a deleted account —
+    // no stored row is touched.
+    const metadata = anonymizeSystemData(
+      (systemMetadata ?? {}) as Record<string, unknown>,
+      deletedUserIds
+    );
 
     // Always rebuild from the canonical builder. This achieves three things:
     //
@@ -1229,7 +1365,8 @@ export class CommunityMessageService {
     resolveReactionUser?: (
       userId: string
     ) => { displayName: string; avatarUrl: string } | undefined,
-    viewerUserId?: string
+    viewerUserId?: string,
+    deletedUserIds: Set<string> = new Set()
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
     // Normalize to the same CanonicalQuote shape the community socket
@@ -1334,7 +1471,8 @@ export class CommunityMessageService {
         m.systemMessageType,
         m.systemMetadata,
         thirdPersonText,
-        viewerUserId
+        viewerUserId,
+        deletedUserIds
       );
       if (personalized !== thirdPersonText) {
         wire.message = personalized;
@@ -1348,11 +1486,23 @@ export class CommunityMessageService {
       // (which localizes from systemMetadata). Strip actor/target keys so a
       // legacy row that stored creatorName/actorName can never render
       // "{name} created the community". No-op for actor-bearing types.
-      wire.systemMetadata = sanitizeCommunitySystemMetadata(
+      const sanitized = sanitizeCommunitySystemMetadata(
         m.systemMessageType,
         wire.systemMetadata as Record<string, unknown> | null | undefined
       );
+      // The client re-localizes system lines from this metadata, so the names
+      // it carries are a second copy of the identity scrubbed out of the text
+      // above and must get the same treatment — otherwise a localized client
+      // renders the deleted user's old name while an English one does not.
+      wire.systemMetadata = sanitized
+        ? anonymizeSystemData(sanitized, deletedUserIds)
+        : sanitized;
     }
+
+    // Community rows freeze senderName/senderAvatar at write time; swap in the
+    // deleted-account identity for senders (and quoted senders) whose account
+    // is gone, and stamp `isDeletedUser` on every row.
+    anonymizeWireSender(wire, deletedUserIds);
 
     return wire as CommunityMessageWire;
   }
@@ -1384,8 +1534,10 @@ export class CommunityMessageService {
       viewerIsActiveMember,
       bannedAtCutoff
     );
-    const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
+    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
+    return rows.map((m) =>
+      this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+    );
   }
 
   /**
@@ -1572,10 +1724,11 @@ export class CommunityMessageService {
       .map((s) => (s.avatar as string) || "")
       .filter(Boolean);
 
-    const [msgUrlMap, snapAvatarUrlMap] = await Promise.all([
-      this.resolveRowsMedia(orderedItems),
-      resolveMediaUrlMap(snapAvatarKeys),
-    ]);
+    const [{ urlMap: msgUrlMap, deletedUserIds }, snapAvatarUrlMap] =
+      await Promise.all([
+        this.resolveRowsWireContext(orderedItems),
+        resolveMediaUrlMap(snapAvatarKeys),
+      ]);
     // Merge so toWire can resolve any avatar object-key (snap or legacy stored)
     // with a single urlMap lookup, with no separate map needed in the caller.
     const urlMap = new Map([...msgUrlMap, ...snapAvatarUrlMap]);
@@ -1592,7 +1745,7 @@ export class CommunityMessageService {
     };
 
     return orderedItems.map((m) =>
-      this.toWire(m, urlMap, resolveReactionUser, userId)
+      this.toWire(m, urlMap, resolveReactionUser, userId, deletedUserIds)
     );
   }
 
@@ -1694,9 +1847,19 @@ export class CommunityMessageService {
       .map((s) => (s.avatar as string) || "")
       .filter(Boolean);
 
-    const [urlMap, syncAvatarUrlMap] = await Promise.all([
+    const [urlMap, syncAvatarUrlMap, deletedUserIds] = await Promise.all([
       resolveMediaUrlMap(mediaKeys),
       resolveMediaUrlMap(syncSnapAvatarKeys),
+      // Incremental sync replays rows the client will merge into its cache, so
+      // it needs the same deleted-account scrubbing the history reads get —
+      // otherwise a resync re-seeds the old name the history read just removed.
+      collectDeletedUserIds(
+        messages.flatMap((msg) =>
+          collectRowUserIds(msg as unknown as Record<string, unknown>)
+        ),
+        this.userSnapshotService,
+        this.cacheRepo
+      ),
     ]);
 
     const items = messages.map((msg) => {
@@ -1747,7 +1910,8 @@ export class CommunityMessageService {
           msg.systemMessageType,
           msg.systemMetadata,
           messageText ?? "",
-          params.userId
+          params.userId,
+          deletedUserIds
         );
       }
 
@@ -1755,11 +1919,18 @@ export class CommunityMessageService {
         id: msg.id,
         roomId: msg.roomId,
         sentBy: contentType === "SYSTEM" ? "" : msg.sentBy,
-        senderName: contentType === "SYSTEM" ? null : (msg.senderName ?? null),
-        senderAvatar:
+        senderName:
           contentType === "SYSTEM"
             ? null
+            : deletedUserIds.has(msg.sentBy)
+              ? DELETED_ACCOUNT_DISPLAY_NAME
+              : (msg.senderName ?? null),
+        senderAvatar:
+          contentType === "SYSTEM" || deletedUserIds.has(msg.sentBy)
+            ? null
             : urlFromMap(urlMap, msg.senderAvatar) || null,
+        isDeletedUser:
+          contentType !== "SYSTEM" && deletedUserIds.has(msg.sentBy),
         message: messageText,
         contentType,
         attachments: Array.isArray(msg.attachments)
@@ -1785,14 +1956,18 @@ export class CommunityMessageService {
         syncEventType,
         systemMessageType:
           (msg as Record<string, unknown>).systemMessageType ?? null,
-        systemMetadata:
-          sanitizeCommunitySystemMetadata(
+        systemMetadata: (() => {
+          const sanitized = sanitizeCommunitySystemMetadata(
             msg.systemMessageType,
             (msg as Record<string, unknown>).systemMetadata as
               | Record<string, unknown>
               | null
               | undefined
-          ) ?? null,
+          );
+          return sanitized
+            ? anonymizeSystemData(sanitized, deletedUserIds)
+            : null;
+        })(),
       };
     });
 
@@ -1872,9 +2047,11 @@ export class CommunityMessageService {
         readCutoff: bannedAtCutoff,
       }),
     ]);
-    const urlMap = await this.resolveRowsMedia(rows);
+    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
     return {
-      items: rows.map((m) => this.toWire(m, urlMap, undefined, params.userId)),
+      items: rows.map((m) =>
+        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+      ),
       total,
       ...cursors,
     };
@@ -1955,10 +2132,11 @@ export class CommunityMessageService {
         });
     }
 
-    const urlMap = await this.resolveRowsMedia(messages);
+    const { urlMap, deletedUserIds } =
+      await this.resolveRowsWireContext(messages);
     return {
       messages: messages.map((m) =>
-        this.toWire(m, urlMap, undefined, params.userId)
+        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
       ),
       total,
     };
@@ -1992,10 +2170,12 @@ export class CommunityMessageService {
       cursor: params.cursor,
       readCutoff: bannedAtCutoff,
     });
-    const urlMap = await this.resolveRowsMedia(result.messages);
+    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(
+      result.messages
+    );
     return {
       messages: result.messages.map((m) =>
-        this.toWire(m, urlMap, undefined, params.userId)
+        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
       ),
       scores: result.scores,
       hasMore: result.hasMore,
@@ -2051,8 +2231,10 @@ export class CommunityMessageService {
       limit: params.limit,
       readCutoff: bannedAtCutoff,
     });
-    const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, urlMap, undefined, params.userId));
+    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
+    return rows.map((m) =>
+      this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+    );
   }
 
   /** Bind a loaded message to its OWN room (never a body-supplied communityId)

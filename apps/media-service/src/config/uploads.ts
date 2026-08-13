@@ -9,7 +9,8 @@ export type MediaCategoryKey =
   | "CHAT_ATTACHMENT"
   | "COMMUNITY_CHAT_ATTACHMENT"
   | "GROUP_AVATAR"
-  | "GROUP_CHAT_ATTACHMENT";
+  | "GROUP_CHAT_ATTACHMENT"
+  | "LIVESTREAM_THUMBNAIL";
 
 const MB = 1024 * 1024;
 
@@ -27,6 +28,16 @@ const CHAT_MIME = {
   "image/png": "png",
   "image/webp": "webp",
   "image/gif": "gif",
+  // HEIC/HEIF — what an iPhone produces by default. Previously excluded with
+  // the note "needs a server transcode to render in browsers"; that is a
+  // RENDERING concern, and excluding the MIME did not keep the bytes out — a
+  // HEIC declared as video/mp4 passed the old `????ftyp` signature rule, because
+  // HEIC and MP4 share the ISO base media container. Accepting it explicitly and
+  // validating it by BRAND (see magic-bytes.ts `isobmffMime`) is what actually
+  // separates the two. Clients that cannot render HEIC should request a
+  // client-side conversion; the pipeline no longer pretends the format is absent.
+  "image/heic": "heic",
+  "image/heif": "heif",
   // Video
   "video/mp4": "mp4",
   "video/quicktime": "mov",
@@ -82,6 +93,8 @@ const CHAT_MAX_BYTES_BY_MIME: Record<string, number> = {
   "image/jpeg": env.CHAT_IMAGE_MAX_BYTES,
   "image/png": env.CHAT_IMAGE_MAX_BYTES,
   "image/webp": env.CHAT_IMAGE_MAX_BYTES,
+  "image/heic": env.CHAT_IMAGE_MAX_BYTES,
+  "image/heif": env.CHAT_IMAGE_MAX_BYTES,
   "image/gif": 30 * MB,
   // Audio + voice notes
   "audio/mpeg": env.CHAT_AUDIO_MAX_BYTES,
@@ -118,6 +131,8 @@ const AVATAR_MIME = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
+  "image/heic": "heic",
+  "image/heif": "heif",
 } as const;
 
 export const UPLOAD_CATEGORIES: Record<MediaCategoryKey, UploadTypeDef> = {
@@ -165,6 +180,24 @@ export const UPLOAD_CATEGORIES: Record<MediaCategoryKey, UploadTypeDef> = {
     maxBytes: env.GROUP_CHAT_MAX_BYTES,
     allowedMime: CHAT_MIME,
     maxBytesByMime: CHAT_MAX_BYTES_BY_MIME,
+  },
+  /**
+   * Livestream thumbnails, uploaded by moderators through backoffice-service.
+   *
+   * backoffice mints its own presigned PUT (same `createUploadUrl` helper, same
+   * `STREAM_THUMBNAIL_UPLOAD_DEF` shape) but its "confirm" step was a bare
+   * string check — `startsWith("stream/thumbnail/") && !includes("..")` — with no
+   * HEAD, no magic bytes, no structural inspection and no AV scan, and the
+   * prefix was absent from this table, so media-service could not address the
+   * object at all: not to confirm it, not to scan it, not to delete it.
+   * Registering the prefix here is what lets that path converge on this pipeline
+   * instead of remaining a second, weaker one.
+   */
+  LIVESTREAM_THUMBNAIL: {
+    bucket: env.MINIO_BUCKET_STREAM,
+    keyPrefix: "stream/thumbnail",
+    maxBytes: env.STREAM_THUMBNAIL_MAX_BYTES,
+    allowedMime: AVATAR_MIME,
   },
 };
 

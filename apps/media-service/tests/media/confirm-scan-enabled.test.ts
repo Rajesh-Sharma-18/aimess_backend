@@ -16,10 +16,11 @@ jest.mock("../../src/config/env.js", () => {
   return { env: { ...actual.env, CLAMAV_ENABLED: true } };
 });
 
-const PNG_MAGIC = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
-]);
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+import { validJpeg, validPng } from "../helpers/fixtures.js";
+
+// Structurally valid files — a bare signature is no longer accepted as one.
+const PNG_MAGIC = validPng({ width: 16, height: 16 });
+const JPEG_MAGIC = validJpeg({ width: 16, height: 16 });
 
 jest.mock("@aimess/storage", () => {
   const actual = jest.requireActual("@aimess/storage");
@@ -31,6 +32,7 @@ jest.mock("@aimess/storage", () => {
       contentType: "image/png",
     })),
     getObjectBytes: jest.fn(async () => PNG_MAGIC),
+    getObjectTailBytes: jest.fn(async () => null),
     deleteObject: jest.fn(async () => undefined),
   };
 });
@@ -95,14 +97,16 @@ describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=true)", () => {
     expect(mockedRunScan).toHaveBeenCalledTimes(1);
   });
 
-  it("200: enqueue fails + inline scan QUARANTINED → returns QUARANTINED", async () => {
+  it("200: enqueue fails + inline scan INFECTED → returns INFECTED", async () => {
     mockedEnqueue.mockResolvedValue(false);
-    mockedRunScan.mockResolvedValue("QUARANTINED");
+    // An AV detection is INFECTED. It used to be reported as QUARANTINED while
+    // a structural rejection was reported as INFECTED — the labels were swapped.
+    mockedRunScan.mockResolvedValue("INFECTED");
 
     const res = await confirm();
 
     expect(res.status).toBe(200);
-    expect(res.body.data.scanStatus).toBe("QUARANTINED");
+    expect(res.body.data.scanStatus).toBe("INFECTED");
     expect(mockedRunScan).toHaveBeenCalledTimes(1);
   });
 
@@ -117,14 +121,14 @@ describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=true)", () => {
     expect(mockedRunScan).toHaveBeenCalledTimes(1);
   });
 
-  it("200: structural REJECTED still deletes + returns INFECTED even when enabled", async () => {
+  it("200: structural REJECTED still deletes + returns REJECTED even when enabled", async () => {
     mockedBytes.mockResolvedValue(JPEG_MAGIC); // mismatch declared image/png
 
     const res = await confirm();
 
     expect(res.status).toBe(200);
-    expect(res.body.data.scanStatus).toBe("INFECTED");
-    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "INFECTED");
+    expect(res.body.data.scanStatus).toBe("REJECTED");
+    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "REJECTED");
     expect(mockedDelete).toHaveBeenCalledTimes(1);
     // Terminal rejection never enqueues / falls back to inline scan.
     expect(mockedEnqueue).not.toHaveBeenCalled();

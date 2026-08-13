@@ -44,11 +44,12 @@ export class MediaController {
     const parsed = confirmUploadSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError("MEDIA_REQUEST_INVALID");
 
-    const { objectKey, category, contentType } = parsed.data;
+    // `contentType` is deliberately NOT forwarded — the service resolves the
+    // trusted MIME server-side. See confirmUploadSchema.
+    const { objectKey, category } = parsed.data;
     const result = await mediaService.confirmUpload({
       objectKey,
       category,
-      contentType,
       requesterId: req.auth.userId,
     });
 

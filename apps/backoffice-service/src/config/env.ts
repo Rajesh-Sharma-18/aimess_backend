@@ -34,6 +34,8 @@ const envSchema = z.object({
   COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
   CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
   STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
+  /** media-service gRPC — runs the shared security pipeline over thumbnails. */
+  MEDIA_GRPC_URL: z.string().default("0.0.0.0:4009"),
 
   // HTTP `/health` endpoints of services with no lightweight gRPC ping wired
   // in backoffice. The System Health probe hits each of these to derive

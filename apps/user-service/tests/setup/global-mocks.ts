@@ -48,6 +48,23 @@ jest.mock("../../src/grpc/auth.client.js", () => ({
   getAccountSummaryBreaker: { fire: jest.fn(), on: jest.fn() },
 }));
 
+// --- media-service gRPC client: same `import.meta.url` + proto-loader problem
+//     as the clients below. Backs the avatar verification gate in
+//     `services/avatar.service.ts`. Default: CLEAN + downloadable, so existing
+//     profile tests keep passing; the avatar tests override it. --------------
+jest.mock("../../src/grpc/media.client.js", () => {
+  const checkOne = jest.fn(async () => ({
+    scanStatus: "CLEAN",
+    downloadable: true,
+    ownerId: "",
+  }));
+  return {
+    getMediaVerifyClient: jest.fn(() => ({ checkOne })),
+    createMediaVerifyClient: jest.fn(() => ({ checkOne })),
+    setMediaVerifyClient: jest.fn(),
+  };
+});
+
 // --- chat-service gRPC client: the real module runs `protoLoader.loadSync`
 //     against a path derived from `import.meta.url` at import time (breaks
 //     under CJS-mode Jest) and pulls in native @grpc/grpc-js. Stub it. --------

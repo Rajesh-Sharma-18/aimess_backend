@@ -94,6 +94,47 @@ export async function getObjectBytes(
   }
 }
 
+/**
+ * Download the LAST `maxBytes` of an object.
+ *
+ * Needed because several containers keep their index at the end of the file: a
+ * non-faststart MP4 (the default for phone-recorded video) carries its `moov`
+ * atom — and with it duration and track dimensions — after all the media data,
+ * and an Ogg stream's total sample count is the granule position of its final
+ * page. Without a tail read those files simply report "duration unknown", which
+ * silently skips the duration limit. A suffix Range keeps the transfer bounded
+ * regardless of how large the object is.
+ *
+ * Returns `null` when the object does not exist or the range cannot be served.
+ */
+export async function getObjectTailBytes(
+  client: StorageClient,
+  bucket: string,
+  key: string,
+  maxBytes: number
+): Promise<Buffer | null> {
+  if (!(maxBytes > 0)) return null;
+  try {
+    const result = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Range: `bytes=-${Math.floor(maxBytes)}`,
+      })
+    );
+    if (!result.Body) return null;
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.Body as Readable) {
+      chunks.push(
+        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+      );
+    }
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
+  }
+}
+
 /** Delete an object (no-op safety left to caller). */
 export async function deleteObject(
   client: StorageClient,

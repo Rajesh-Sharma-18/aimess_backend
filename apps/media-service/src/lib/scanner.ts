@@ -19,21 +19,19 @@
  */
 
 import * as net from "node:net";
+import { createHash } from "node:crypto";
 import Queue from "bull";
 import type { Queue as BullQueue, Job } from "bull";
 import { publishUserSocketEvent, type Redis } from "@aimess/redis";
 
 import { logger } from "@aimess/logger";
 import type { MediaScanStatus } from "@aimess/constants";
-import {
-  getObjectBytes,
-  deleteObject,
-  extractOwnerIdFromObjectKey,
-} from "@aimess/storage";
+import { getObjectBytes, extractOwnerIdFromObjectKey } from "@aimess/storage";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
 import { storageClient } from "../config/storage.js";
+import { quarantineObject, recordVerdict } from "./media-cleanup.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -255,8 +253,7 @@ export const scanStatusStore = {
  */
 export function publishScanResult(
   objectKey: string,
-  status: MediaScanStatus,
-  reason?: string
+  status: MediaScanStatus
 ): void {
   const uploaderId = extractOwnerIdFromObjectKey(objectKey);
   if (!uploaderId) {
@@ -265,10 +262,19 @@ export function publishScanResult(
     });
     return;
   }
+  // The payload carries the STATUS ONLY.
+  //
+  // It used to carry a free-text `reason`, and the three callers fed it: the
+  // ClamAV signature name for a detection, the raw structural-validator string
+  // (which embeds thresholds and byte offsets — "ZIP compression ratio 140.0:1
+  // exceeds limit of 100:1"), and, on a terminal Bull failure, whatever error
+  // escaped — including MinIO SDK messages carrying the endpoint and bucket.
+  // None of that helps the uploader and all of it helps an attacker calibrate
+  // against the detectors. The detail is written to the audit log and
+  // `MediaFile.scanDetail` instead.
   void publishUserSocketEvent(redis, uploaderId, "media:scan_result", {
     objectKey,
     status,
-    reason: reason ?? "",
     at: Date.now(),
   }).catch((err: unknown) =>
     logger.warn("media-scan: scan_result notify publish failed", {
@@ -364,15 +370,32 @@ export async function runScanAndPersist(
     data: fullBuf,
   });
 
+  const sha256 = createHash("sha256").update(fullBuf).digest("hex");
+
   if (result.status === "INFECTED") {
     logger.error("media-scan: INFECTED — quarantining", {
+      severity: "critical",
+      event: "media.malware_detected",
       objectKey,
       signature: result.details,
+      sha256,
+      size: fullBuf.length,
+      contentType,
     });
-    await scanStatusStore.set(objectKey, "QUARANTINED");
-    await deleteObject(storageClient, bucket, objectKey);
-    publishScanResult(objectKey, "QUARANTINED", result.details);
-    return "QUARANTINED";
+    await scanStatusStore.set(objectKey, "INFECTED");
+    // Durable verdict + logged-on-failure delete. Previously this was a bare
+    // `deleteObject`, so a delete failure escaped into Bull AFTER Redis had
+    // already been marked terminal — leaving known-malicious bytes in the bucket
+    // with nothing recording that fact.
+    await quarantineObject({
+      bucket,
+      objectKey,
+      status: "INFECTED",
+      detail: result.details ?? "malware signature detected",
+      sha256,
+    });
+    publishScanResult(objectKey, "INFECTED");
+    return "INFECTED";
   }
 
   if (result.status === "ERROR") {
@@ -383,8 +406,24 @@ export async function runScanAndPersist(
     return "PENDING";
   }
 
-  // CLEAN or SKIPPED → downloadable
+  // CLEAN → downloadable. Written to BOTH Redis (hot) and the registry (durable)
+  // so the verdict survives a cache flush or TTL expiry.
   await scanStatusStore.set(objectKey, "CLEAN");
+  await recordVerdict({
+    objectKey,
+    status: "CLEAN",
+    detail: result.status === "SKIPPED" ? "AV scanning disabled" : undefined,
+    sha256,
+  });
+  logger.info("media-security", {
+    event: "media.scan_clean",
+    objectKey,
+    contentType,
+    size: fullBuf.length,
+    sha256,
+    scanner: env.CLAMAV_ENABLED ? "clamav" : "noop",
+    at: new Date().toISOString(),
+  });
   return "CLEAN";
 }
 
@@ -413,11 +452,18 @@ export function startScanWorker(): void {
       // polling. The object stays in storage but the download gate keeps
       // blocking until a re-confirm succeeds.
       logger.error("media-scan: job failed after all retries", {
+        severity: "critical",
+        event: "media.scan_exhausted",
         objectKey: job.data.objectKey,
         error: err?.message,
       });
       void scanStatusStore.set(job.data.objectKey, "ERROR");
-      publishScanResult(job.data.objectKey, "ERROR", err?.message);
+      void recordVerdict({
+        objectKey: job.data.objectKey,
+        status: "ERROR",
+        detail: `scan retries exhausted: ${err?.message ?? "unknown"}`,
+      });
+      publishScanResult(job.data.objectKey, "ERROR");
     }
   });
 

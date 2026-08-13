@@ -2358,6 +2358,20 @@ export function createMessagingImpl(
                 userId
               );
               if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+              // A BAN revokes media access outright. Kick and ban both KEEP the
+              // membership row and only mutate `status`, and this check was a
+              // bare row-existence test — so a banned member kept downloading
+              // every attachment in the group indefinitely. Mirrors the
+              // COMMUNITY_CHAT rule below, where a ban already outranks
+              // historical access.
+              //
+              // LEFT and KICKED are deliberately still allowed: group history is
+              // historical-read by design (a kicked member reads up to
+              // `kickedAt`), and revoking their media would break the history
+              // they can legitimately still see.
+              if (String(member.status).toUpperCase() === "BANNED") {
+                throw new ForbiddenError("USER_BANNED");
+              }
               break;
             }
             case "COMMUNITY_CHAT": {

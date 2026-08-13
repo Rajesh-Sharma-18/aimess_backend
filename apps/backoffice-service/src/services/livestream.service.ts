@@ -1,5 +1,16 @@
-import { NotFoundError } from "@aimess/errors";
-import { createUploadUrl, type UploadUrlResult } from "@aimess/storage";
+import {
+  BadRequestError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "@aimess/errors";
+import { logger } from "@aimess/logger";
+import {
+  assertObjectKeyOwnedBy,
+  createUploadUrl,
+  type UploadUrlResult,
+} from "@aimess/storage";
+
+import { getMediaConfirmClient } from "../grpc/media.client.js";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { livestreamRepository } from "../repositories/index.js";
@@ -256,6 +267,54 @@ export const thumbnailService = {
   ): Promise<void> {
     const exists = await livestreamRepository.getById(livestreamId);
     if (!exists) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+
+    // The key must belong to THIS livestream. The route validator only checked
+    // the `stream/thumbnail/` prefix — a condition every key in the category
+    // satisfies — so a moderator could commit a key minted for a different
+    // livestream. `ownerId` is the livestreamId for this category
+    // (`presignUpload` passes it as such), which is exactly what makes the
+    // standard ownership helper applicable here.
+    if (!assertObjectKeyOwnedBy(objectKey, "stream/thumbnail", livestreamId)) {
+      throw new BadRequestError("LIVESTREAM_THUMBNAIL_INVALID_KEY");
+    }
+
+    // Run the SHARED security pipeline over the uploaded bytes before the key is
+    // persisted. Previously nothing inspected this object at all: no HeadObject,
+    // no magic bytes, no structural checks, no AV scan — and the presigned PUT
+    // signs only Content-Type, so the declared 5 MB was never enforced either.
+    // media-service rejects and DELETES the object on failure.
+    let verdict;
+    try {
+      verdict = await getMediaConfirmClient().confirmUpload(
+        objectKey,
+        livestreamId
+      );
+    } catch (err) {
+      logger.warn("thumbnail: media-service unreachable — refusing to commit", {
+        livestreamId,
+        objectKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new ServiceUnavailableError("MEDIA_REGISTRY_UNAVAILABLE");
+    }
+
+    if (!verdict.downloadable) {
+      logger.warn("media-security", {
+        event: "media.thumbnail_rejected",
+        livestreamId,
+        objectKey,
+        scanStatus: verdict.scanStatus,
+        adminId: actor.id,
+      });
+      throw new BadRequestError(
+        verdict.scanStatus === "INFECTED" ||
+          verdict.scanStatus === "QUARANTINED"
+          ? "MEDIA_MALWARE_DETECTED"
+          : verdict.scanStatus === "REJECTED"
+            ? "MEDIA_SECURITY_VALIDATION_FAILED"
+            : "MEDIA_NOT_VERIFIED"
+      );
+    }
 
     await streamClient.adminUpdateThumbnail(livestreamId, objectKey);
 
