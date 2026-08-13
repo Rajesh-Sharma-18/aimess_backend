@@ -1,6 +1,7 @@
 # QA Audit — Backend Fix Status
 
-**Date:** 2026-08-12 · **Branch:** `rajesh-dev` · **Commits:** `dc55e7a4`, `15ec5482`, `4b70e494`
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev` · **Commits:** `dc55e7a4`,
+`15ec5482`, `4b70e494`, `a1c38346`, `0028b518`
 
 ## Scope note — read this first
 
@@ -198,25 +199,38 @@ All additive or widening. No client change is required.
 
 ## 4. Not fixed
 
-### AUDIT-114 — `/changes` returns `items: []`
+### AUDIT-114 — `/changes` returns `items: []` — **not a code defect**
 
-Could not reproduce from the code. The stated root cause ("ensure
-`allocateSequenceBlock` actually increments `lastRevision`") is **already
-satisfied**: [private-room.repository.ts:79](../apps/chat-service/src/repositories/private-room.repository.ts)
+The stated root cause ("ensure `allocateSequenceBlock` actually increments
+`lastRevision`") is **already satisfied**:
+[private-room.repository.ts:79](../apps/chat-service/src/repositories/private-room.repository.ts)
 increments both counters in one `$inc`; `allocateRoomSlot` hands out
 `firstRev + i` correctly; `createMessage` and `createForwardedMessage` both stamp
 `revision`; `findByRoomIdRevisionSince` filters `revision > since`.
 
-Two candidates that need the repro to choose between:
+The answer is in the existing backfill script, which says so in its own header —
+[scripts/backfill-revisions.ts](../apps/chat-service/scripts/backfill-revisions.ts):
 
-1. Pre-backfill rows default to `revision = 0`, so `since_revision=0` excludes
-   them — `/changes` would look permanently empty for any room whose messages
-   predate the field. A backfill would fix it.
-2. `enrichMessages`' per-viewer filter emptying the page after the slice (which
-   is legal per the endpoint's own contract: `items.length < limit` with
-   `hasMore: true`).
+> OPTIONAL. The zero-loss cold-start flow baselines from V2 history + the
+> response's `roomRevision`, so it works WITHOUT this backfill (old rows keep
+> revision 0 and simply don't appear in `/changes` until they're next mutated).
 
-**Needs §4's repro steps.**
+`revision` defaults to `0` and `since_revision=0` filters `revision > 0`, so a
+room whose messages all predate the revision field returns `items: []` — the
+reported symptom exactly. It is un-run maintenance, not a dead endpoint, and
+clients are not actually broken (cold start baselines from history +
+`roomRevision`).
+
+**Resolution: run the existing backfill.** It covers all three room kinds and is
+idempotent and resumable.
+
+```bash
+pnpm --filter @aimess/chat-service backfill:revision
+```
+
+Worth confirming against the original repro if the report turns up — if QA saw
+empty `items` on a room with messages sent _after_ the fix, that would be a
+different bug.
 
 ### AUDIT-002 — `poweredByHeader: false`
 
@@ -229,12 +243,28 @@ web frontend, it belongs in the `aimess_website` repo.
 
 Not quoted in the brief beyond a handful of one-line summaries. Needs the report.
 
-### Still open, found in passing
+### Also fixed — `tests/AUDIT.md` F1/F2/F3 (auth-service)
 
-`sensitiveAuthRateLimiter` is imported by **nothing**. Its window bug is fixed,
-but `/auth/login`, `/register` and `/forgot-password` remain unthrottled at the
-service layer. That is a separate change with its own blast radius (it will start
-429-ing real traffic), so it was not folded in here.
+Not in the brief, but still open in the same files and the same class of defect:
+
+- **F1** — `/login` ran with **no validation**: `validateBody(loginSchema)` was
+  commented out, so a missing `account` threw inside the service (500, not 400),
+  an object `account` reached the repository and a non-string `password` reached
+  bcrypt. Re-enabled. Login deliberately uses a **laxer** password rule than
+  registration — applying the min-8 creation policy here would lock out any
+  account created before that rule, turning a credential check into a validation
+  error.
+- **F2** — `sensitiveAuthRateLimiter` was imported by nothing. Now mounted on
+  login, register, social login and all three forgot-password routes. It is
+  per-IP (the only key available pre-auth); `AUTH_MAX_FAILED_LOGINS` remains the
+  per-account defence against a distributed attempt.
+- **F3** — its `windowMs` was fed the raw MINUTES env var, making the window 15
+  **milliseconds**. Fixed, and pinned by the draft-7 policy header (`w=900`).
+
+> Deployment note: F2 starts returning 429 on real traffic. Default ceiling is
+> `SENSITIVE_AUTH_RATE_LIMIT_MAX=20` per 15 min per IP. Behind a NAT or a proxy
+> with `TRUST_PROXY_HOPS=0`, every client shares one apparent IP — check that
+> value before rolling out.
 
 ---
 
@@ -248,17 +278,26 @@ service layer. That is a separate change with its own blast radius (it will star
 | [api-gateway/tests/utils/not-found-envelope.test.ts](../apps/api-gateway/tests/utils/not-found-envelope.test.ts)                                       | 001                     |
 | [auth-service/tests/account/change-password-rate-limit.test.ts](../apps/auth-service/tests/account/change-password-rate-limit.test.ts)                 | 107                     |
 | [community-service/tests/invite-links/invite-auto-approve-gate.test.ts](../apps/community-service/tests/invite-links/invite-auto-approve-gate.test.ts) | 108                     |
+| [auth-service/tests/auth/sensitive-auth-limiter-mounted.test.ts](../apps/auth-service/tests/auth/sensitive-auth-limiter-mounted.test.ts)               | F2, F3                  |
 
 **Extended:** `cross-room-idor-writes` (104), `group-message` (110),
 `group-room` (109), `community-room` (101/102, rewritten — it previously asserted
 the holes as intended behaviour), `chat-cursor` + `effective-last-activity` (111,
-one case pinned the dropping semantics).
+one case pinned the dropping semantics), `media/upload` + `media/download` +
+`media/scan-status` (112/147 — two cases asserted the prefix-only check as
+intended behaviour), `auth/login-extra` (F1 — one case asserted the missing
+validator as intended behaviour).
 
 Every negative asserts both the rejection **and** that the side effect never
 fired — a 403 that still wrote the row or still published the event is not a fix.
 
-**Harness fixes** (both were causing pre-existing failures):
+**Harness fixes:**
 
+- **media-service's suite could not run at all.** Its own `tests/helpers/auth.ts`
+  imports `jsonwebtoken` to mint admin tokens (copied from backoffice-service,
+  which declares it) but the dependency was never added — every spec died on
+  "Cannot find module". Adding the devDependency brought 9 suites / 86 tests back
+  online, which is how AUDIT-112/147 got real coverage.
 - `userServiceClient` had no `isFriendshipBlocked`, so every private send 500'd
   on "not a function".
 - `privateRoomRepo.findByRoomId` had no default; the guards now run on the write
@@ -269,7 +308,7 @@ fired — a 403 that still wrote the row or still published the event is not a f
 |                       | Suites failed | Tests failed | Total |
 | --------------------- | ------------- | ------------ | ----- |
 | Baseline (`bf5f9645`) | 40            | 103          | 3904  |
-| After                 | 35            | 83           | 3937  |
+| After                 | 32            | 83           | 4006  |
 
 **Zero new failures.** Compared by test NAME, not count, against the same
 baseline commit. Two pre-existing failures fixed as a side effect of the harness
@@ -281,50 +320,62 @@ community-service, but on `prisma generate`'s Windows EPERM rename, not on types
 
 ---
 
-## 6. Migration / data cleanup required
+## 6. Migrations
 
-### AUDIT-112 — backfill `MediaFile.resourceId`
+Every script below **defaults to a dry run** — it prints exactly what it would
+change and writes nothing. Add `-- --apply` to commit. All are idempotent.
+
+### AUDIT-112 — backfill `MediaFile.resourceId` (run BEFORE/WITH deploy)
 
 Community and group attachments whose registry row has no `resourceId` are now
-downloadable **by their uploader only**, because nothing recoverable from the
-object key identifies the room to check membership against.
+downloadable **by their uploader only** — nothing recoverable from the object key
+identifies the room to check membership against. This recovers the value from the
+message carrying each key.
 
-Backfill `resourceId` from the chat message carrying each `objectKey` to restore
-access for the other members. The affected set cannot grow — `resourceId` is now
-required at upload time (AUDIT-147).
+Two steps, because the messages and the registry live in separate databases:
 
-Scoping query (registry side):
-
-```
-db.MediaFile.countDocuments({
-  uploadCategory: { $in: ["COMMUNITY_CHAT_ATTACHMENT", "GROUP_CHAT_ATTACHMENT"] },
-  $or: [{ resourceId: null }, { resourceId: { $exists: false } }]
-})
+```bash
+pnpm --filter @aimess/chat-service export:attachment-resource-map
 ```
 
-Run it before deploying to size the impact. If the count is zero, no migration is
-needed.
+```bash
+pnpm --filter @aimess/media-service migrate:attachment-resource-map ./attachment-resource-map.json -- --apply
+```
+
+The dry run reports how many registry rows lack a `resourceId` and how many the
+map can fill. **If that first number is zero, no migration is needed.** Rows that
+stay unmatched are objects no message references (abandoned uploads, or messages
+hard-deleted) — they correctly remain uploader-only. The affected set cannot
+grow: `resourceId` is required at upload time now (AUDIT-147).
 
 ### AUDIT-109 — existing disbanded groups
 
-Groups disbanded before this change still hold ACTIVE `GroupMember` rows and are
-still writable. One-off:
+Groups disbanded before the fix still hold ACTIVE `GroupMember` rows and still
+accept writes. Ends them per-room at each room's own `disbandedAt`, so the read
+cutoff and the room timestamp agree.
 
+```bash
+pnpm --filter @aimess/chat-service migrate:disbanded-group-members -- --apply
 ```
-db.GroupMember.updateMany(
-  { roomId: { $in: <ids of GroupRoom where status="DISBANDED"> }, status: "ACTIVE" },
-  { $set: { status: "LEFT", leftAt: <that room's disbandedAt> } }
-)
-```
-
-Per-room, so `leftAt` matches each room's own `disbandedAt` and the read cutoff
-stays consistent.
 
 ### AUDIT-101 — `memberNumber` drift
 
-Every previous `join` call incremented `memberNumber` on top of the sync
-consumer's own increment, so community member counts are inflated by an unknown
-amount. Recompute from `RoomMember` where `status = "active"` per room.
+Every previous `join` incremented `memberNumber` on top of the sync consumer's
+own increment, so community counts are inflated by an unknown amount. Recomputes
+from active `RoomMember` rows.
+
+```bash
+pnpm --filter @aimess/chat-service migrate:community-member-number -- --apply
+```
+
+### AUDIT-114 — revision backfill (optional)
+
+See §4. Only needed if `GET .../changes?since_revision=0` should also serve the
+historical baseline; the cold-start flow works without it.
+
+```bash
+pnpm --filter @aimess/chat-service backfill:revision
+```
 
 ---
 
