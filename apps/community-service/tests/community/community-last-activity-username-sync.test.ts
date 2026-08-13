@@ -175,8 +175,22 @@ describe("communityRepository.updateLastActivity (self-preview column)", () => {
     expect(arg.data.lastActivityPreview).toBe("Jim is now a moderator");
     expect(arg.data.lastActivitySelfPreview).toBe("You are now a moderator");
     expect(arg.data.lastActivityUserId).toBe(USER);
-    // forward-only guard preserved.
-    expect(arg.where).toEqual({ id: "comm-1", lastActivityAt: { lt: at } });
+    // forward-only guard preserved (now with the same-millisecond seq
+    // tie-break — see community-last-activity-ordering.test.ts).
+    expect(arg.where).toEqual({
+      id: "comm-1",
+      OR: [
+        { lastActivityAt: { lt: at } },
+        {
+          AND: [
+            { lastActivityAt: at },
+            {
+              OR: [{ lastActivitySeq: { lte: 0 } }, { lastActivitySeq: null }],
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("CLEARS lastActivitySelfPreview on a non-self bump (default null) so a stale 'You …' can't linger", async () => {

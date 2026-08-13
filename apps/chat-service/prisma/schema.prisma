@@ -29,6 +29,14 @@ model PrivateRoom {
   participantsKey           String   @unique
   lastMessageId             String?  @db.ObjectId
   lastMessageAt             DateTime?
+  // Tie-breaker for `lastMessageAt`: the `sequenceNumber` of the message the
+  // snapshot above points at. `lastMessageAt` has millisecond resolution, so a
+  // rapid burst can produce two sends sharing one timestamp — the forward-only
+  // guard on every new-message bump orders those by (lastMessageAt, seq) so a
+  // late-landing OLDER write can never overwrite a newer one. See
+  // `lib/last-activity-guard.ts`. Nullable so pre-existing rooms (field absent)
+  // still match the guard's `null` branch.
+  lastMessageSeq            Int?
   lastMessage               Json?
   unreadCountByUser         Json     @default("{}")
   lastReadAtByUser          Json     @default("{}")
@@ -190,6 +198,8 @@ model GroupRoom {
   settings           Json      @default("{\"allowMemberInviteLink\": true, \"allowMemberSendInviteLink\": true, \"allowReply\": true, \"allowPin\": true}")
   lastMessageId      String?   @db.ObjectId
   lastMessageAt      DateTime?
+  /// Tie-breaker for `lastMessageAt` — see PrivateRoom.lastMessageSeq.
+  lastMessageSeq     Int?
   lastMessagePreview Json?
   pinnedCount        Int       @default(0)
   lastPinnedAt       DateTime?
@@ -413,6 +423,8 @@ model GeneralRoom {
   status           String    @default("active")
   lastMessageId    String?   @db.ObjectId
   lastMessageAt    DateTime?
+  /// Tie-breaker for `lastMessageAt` — see PrivateRoom.lastMessageSeq.
+  lastMessageSeq   Int?
   lastMessage      Json?
   listPinedMessage Json      @default("[]")
   pinnedCount      Int       @default(0)

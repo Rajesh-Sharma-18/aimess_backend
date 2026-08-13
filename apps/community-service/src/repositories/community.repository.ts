@@ -1407,8 +1407,40 @@ export const communityRepository = {
       contentType?: string | null;
     } = {}
   ): Promise<number> {
+    const seq = identity.seq ?? 0;
     const result = await prisma.community.updateMany({
-      where: { id: communityId, lastActivityAt: { lt: activityAt } },
+      where: {
+        id: communityId,
+        // Forward-only, ordered by (lastActivityAt, lastActivitySeq).
+        //
+        // `lastActivityAt` alone has millisecond resolution, and this bump
+        // arrives over a RabbitMQ queue consumed with `prefetch: 10` — a burst
+        // of rapid sends is processed CONCURRENTLY and out of order. Two
+        // messages sharing one millisecond therefore raced, and whichever
+        // handler happened to run last won: the community row could end up
+        // previewing message #4 of a five-message burst. `lastActivitySeq` is
+        // the per-room `sequenceNumber` and breaks that tie deterministically.
+        //
+        // `lte` (not `lt`) on the tie branch so an in-place refresh of the very
+        // message already stored still lands; two different messages can never
+        // share a seq. The `null` alternative covers rows written before
+        // `lastActivitySeq` existed — a MongoDB range filter never matches a
+        // missing field, so without it a legacy row could never break a tie.
+        OR: [
+          { lastActivityAt: { lt: activityAt } },
+          {
+            AND: [
+              { lastActivityAt: activityAt },
+              {
+                OR: [
+                  { lastActivitySeq: { lte: seq } },
+                  { lastActivitySeq: null },
+                ],
+              },
+            ],
+          },
+        ],
+      },
       data: {
         lastActivityAt: activityAt,
         lastActivityType: type,
@@ -1424,7 +1456,7 @@ export const communityRepository = {
         lastActivityTargetPreview: targetPreview,
         lastActivityMessageId: identity.messageId || null,
         lastActivityClientMessageId: identity.clientMessageId || null,
-        lastActivitySeq: identity.seq ?? 0,
+        lastActivitySeq: seq,
         lastActivityContentType: identity.contentType || null,
       },
     });

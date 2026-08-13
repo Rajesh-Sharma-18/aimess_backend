@@ -36,7 +36,9 @@ describe("PrivateRoomRepository.updateRoomOnNewMessage", () => {
     });
 
     expect(command?.findAndModify).toBe("private_rooms");
-    expect(command?.query).toEqual({ roomId: "room-1" });
+    // The room selector still keys on roomId; the `$or` alongside it is the
+    // forward-only ordering guard (see last-activity-ordering.test.ts).
+    expect((command?.query as { roomId: string }).roomId).toBe("room-1");
     const update = command?.update as {
       $set: Record<string, unknown>;
       $inc: Record<string, number>;

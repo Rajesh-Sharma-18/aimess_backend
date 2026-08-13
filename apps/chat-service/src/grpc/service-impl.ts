@@ -475,6 +475,12 @@ export function createMessagingImpl(
               preview: {
                 contentType: normalizeMessageType(msg.messageType),
                 text: convertMessageToPreview(msg.messageType, msg.content),
+                // `seq` is the client's tie-breaker when a rapid burst puts two
+                // bumps in the same millisecond (see lib/list-row-identity.ts).
+                // Omitting it here left the primary socket send path publishing
+                // seq 0, so the client had nothing to order those bumps by.
+                seq: msg.sequenceNumber ?? 0,
+                createdAt: bumpSentAt,
               },
             };
             if (conversationType === "GROUP") {
@@ -1406,6 +1412,9 @@ export function createMessagingImpl(
                   message.messageType,
                   (message as unknown as Record<string, unknown>).content
                 ),
+                // See the send bump above — same same-millisecond tie-breaker.
+                seq: message.sequenceNumber ?? 0,
+                createdAt: message.createdAt.getTime(),
               },
             };
             if (conversationType === "GROUP") {
@@ -2892,6 +2901,12 @@ export function createCommunityImpl(
                   ...(lastLocation ? { location: lastLocation } : {}),
                   ...(lastContact ? { contact: lastContact } : {}),
                 }),
+                // See the private/group bump above — `seq` is what lets the
+                // client order two bumps that share a millisecond.
+                clientMessageId: req.clientMessageId ?? null,
+                seq: saved.sequenceNumber ?? 0,
+                revision: saved.revision ?? 0,
+                createdAt: sentAt,
               },
             });
 

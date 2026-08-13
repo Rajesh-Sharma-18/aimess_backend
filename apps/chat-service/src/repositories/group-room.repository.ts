@@ -8,6 +8,7 @@ import {
   buildGroupSearchFilter,
   normalizeForSearch,
 } from "../lib/group-search.util.js";
+import { newerSnapshotWhere } from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
@@ -258,17 +259,29 @@ export class GroupRoomRepository {
       sequenceNumber?: number | null;
       revision?: number | null;
     }
-  ): Promise<GroupRoom | null> {
+  ): Promise<number> {
     // Bursty concurrent sends/system-messages all write this same document;
     // retry the transient Mongo write-conflict (Prisma P2034) instead of
     // silently dropping the lastActivity bump — same reasoning as
     // allocateSequence/allocateRevision above.
-    return withWriteConflictRetry(() =>
-      this.prisma.groupRoom.update({
-        where: { roomId },
+    //
+    // `updateMany` (not `update`) because the write is CONDITIONAL: it lands
+    // only while this message is newer than the stored snapshot, ordered by
+    // (lastMessageAt, seq). Five messages sent in a burst are five concurrent
+    // handlers, so nothing made these writes arrive in send order and an older
+    // one used to rewind the room's preview. Returns the matched count — 0
+    // means a newer message already owns the snapshot, which is a success.
+    // See lib/last-activity-guard.ts.
+    const res = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.updateMany({
+        where: {
+          roomId,
+          ...newerSnapshotWhere(message.createdAt, message.sequenceNumber),
+        },
         data: {
           lastMessageId: String(message._id),
           lastMessageAt: message.createdAt,
+          lastMessageSeq: message.sequenceNumber ?? 0,
           lastMessagePreview: {
             text: message.content?.text || "",
             senderId: message.senderId,
@@ -280,6 +293,7 @@ export class GroupRoomRepository {
         },
       })
     );
+    return res.count;
   }
 
   /**
@@ -308,6 +322,9 @@ export class GroupRoomRepository {
         ? {
             lastMessageId: message.id,
             lastMessageAt: message.createdAt,
+            // See PrivateRoomRepository.setLastMessage — keeps the tie-breaker
+            // aligned with the message the room now previews.
+            lastMessageSeq: message.sequenceNumber ?? 0,
             lastMessagePreview: {
               text: message.content?.text || "",
               senderId: message.senderId,
@@ -320,6 +337,7 @@ export class GroupRoomRepository {
         : {
             lastMessageId: null,
             lastMessageAt: null,
+            lastMessageSeq: null,
             lastMessagePreview: null as unknown as Prisma.InputJsonValue,
           },
     });

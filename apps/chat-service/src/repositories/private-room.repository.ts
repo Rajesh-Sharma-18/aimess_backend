@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { newerSnapshotMongoQuery } from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
@@ -351,6 +352,7 @@ export class PrivateRoomRepository {
     const set: Record<string, unknown> = {
       lastMessageId: { $oid: message._id },
       lastMessageAt: { $date: now.toISOString() },
+      lastMessageSeq: message.sequenceNumber ?? 0,
       lastMessage,
       updatedAt: { $date: now.toISOString() },
     };
@@ -369,19 +371,65 @@ export class PrivateRoomRepository {
     const update = (Object.keys(inc).length
       ? { $set: set, $inc: inc }
       : { $set: set }) as unknown as Prisma.InputJsonObject;
-    const res = (await this.prisma.$runCommandRaw({
-      // Raw commands address the MONGO COLLECTION, not the Prisma model —
-      // PrivateRoom is @@map'd to `private_rooms`. A wrong name here does not
-      // error: findAndModify on a missing collection returns {value: null}, so
-      // every room snapshot write (lastMessageAt/lastMessage/unread) silently
-      // no-ops and the conversation never enters the inbox.
-      findAndModify: "private_rooms",
-      query: { roomId },
-      update,
-      new: true,
-    } as unknown as Prisma.InputJsonObject)) as { value?: unknown } | null;
+    // Raw commands address the MONGO COLLECTION, not the Prisma model —
+    // PrivateRoom is @@map'd to `private_rooms`. A wrong name here does not
+    // error: findAndModify on a missing collection returns {value: null}, so
+    // every room snapshot write (lastMessageAt/lastMessage/unread) silently
+    // no-ops and the conversation never enters the inbox.
+    const runFindAndModify = async (
+      query: Record<string, unknown>,
+      body: Prisma.InputJsonObject
+    ): Promise<PrivateRoom | null> => {
+      const res = (await this.prisma.$runCommandRaw({
+        findAndModify: "private_rooms",
+        query,
+        update: body,
+        new: true,
+      } as unknown as Prisma.InputJsonObject)) as { value?: unknown } | null;
+      return (res?.value as PrivateRoom | undefined) ?? null;
+    };
 
-    return (res?.value as PrivateRoom | undefined) ?? null;
+    // Fast path: one atomic step does BOTH the unread `$inc` and the snapshot
+    // `$set`, gated on this message actually being newer than what is stored
+    // (see lib/last-activity-guard.ts). Under a rapid burst two sends can land
+    // out of order, and without the gate the older one silently rewound the
+    // conversation's preview/timestamp to an intermediate message.
+    const row = await runFindAndModify(
+      {
+        roomId,
+        ...newerSnapshotMongoQuery(now, message.sequenceNumber),
+      },
+      update
+    );
+    if (row) return row;
+
+    // The gate rejected this write: a NEWER message already owns the snapshot
+    // (or the room does not exist). The unread increment is still owed — this
+    // message is real and unread regardless of which one the list previews —
+    // so re-issue the counter half alone. Returns null for a missing room.
+    if (!Object.keys(inc).length) return null;
+    const unreadOnly: Record<string, unknown> = { $inc: inc };
+    const unreadSet: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(set)) {
+      // Everything except the snapshot columns, i.e. the per-recipient unread
+      // pointers — those describe THIS message and stay valid out of order.
+      if (
+        key === "lastMessageId" ||
+        key === "lastMessageAt" ||
+        key === "lastMessageSeq" ||
+        key === "lastMessage" ||
+        key.startsWith("lastUnreadMessageIdByUser.") ||
+        key.startsWith("lastUnreadPreviewByUser.")
+      ) {
+        continue;
+      }
+      unreadSet[key] = value;
+    }
+    if (Object.keys(unreadSet).length) unreadOnly.$set = unreadSet;
+    return runFindAndModify(
+      { roomId },
+      unreadOnly as unknown as Prisma.InputJsonObject
+    );
   }
 
   async markReadUpTo(params: {
@@ -647,6 +695,9 @@ export class PrivateRoomRepository {
         ? {
             lastMessageId: message.id,
             lastMessageAt: message.createdAt,
+            // Kept in step with lastMessageAt so the forward-only guard on the
+            // NEXT send tie-breaks against the message actually being previewed.
+            lastMessageSeq: message.sequenceNumber ?? 0,
             lastMessage: {
               content: message.content as Prisma.InputJsonValue,
               senderId: message.senderId,
@@ -658,6 +709,7 @@ export class PrivateRoomRepository {
         : {
             lastMessageId: null,
             lastMessageAt: null,
+            lastMessageSeq: null,
             lastMessage: null as unknown as Prisma.InputJsonValue,
           },
     });

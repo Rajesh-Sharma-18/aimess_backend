@@ -117,7 +117,25 @@ describe("communityRepository.updateLastActivity — unaffected by the self-hide
     );
 
     expect(updateManyMock).toHaveBeenCalledWith({
-      where: { id: COMMUNITY_ID, lastActivityAt: { lt: at } },
+      where: {
+        id: COMMUNITY_ID,
+        // Forward-only, now ordered by (lastActivityAt, lastActivitySeq) —
+        // see community-last-activity-ordering.test.ts.
+        OR: [
+          { lastActivityAt: { lt: at } },
+          {
+            AND: [
+              { lastActivityAt: at },
+              {
+                OR: [
+                  { lastActivitySeq: { lte: 0 } },
+                  { lastActivitySeq: null },
+                ],
+              },
+            ],
+          },
+        ],
+      },
       data: expect.objectContaining({
         lastActivityAt: at,
         lastActivityType: "message",
