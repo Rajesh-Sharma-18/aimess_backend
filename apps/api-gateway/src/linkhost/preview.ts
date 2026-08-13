@@ -25,6 +25,18 @@ function scriptJson(value: unknown): string {
     .replace(/&/g, "\\u0026");
 }
 
+/**
+ * Path to hand to the web app for this target. Same canonical shape the link
+ * host itself serves (`/+<code>` for a private code, `/<handle>` for a public
+ * one) — the web app maps both onto its own routes. `""` for an invalid target,
+ * which never reaches the "Continue on web" button anyway.
+ */
+function webTargetPath(target: LinkTarget): string {
+  if (target.kind === "private") return `/+${encodeURIComponent(target.code)}`;
+  if (target.kind === "public") return `/${encodeURIComponent(target.handle)}`;
+  return "";
+}
+
 interface PreviewOptions {
   target: LinkTarget;
   /** Non-null only for resolvable PUBLIC handles. */
@@ -66,6 +78,13 @@ export function renderPreviewPage(opts: PreviewOptions): string {
     androidStoreAppId: env.ANDROID_STORE_APP_ID ?? "",
     appleStoreAppId: env.APPLE_STORE_APP_ID ?? "",
     webAppUrl: env.WEB_APP_URL,
+    // "Continue on web" must land on the TARGET, not on a bare login page: the
+    // web app serves the same canonical `/+<code>` / `/<handle>` shapes and
+    // routes them to the invite preview itself. A logged-out visitor is bounced
+    // through login by the web app's own guard, which carries the path in
+    // `?redirect=` and returns here after auth — so the code is never lost, and
+    // an already-signed-in visitor is not made to sign in again.
+    webTarget: webTargetPath(target),
   };
 
   const ogImageTag = image
@@ -115,17 +134,15 @@ ${ogImageTag}
 (function(){
   var CFG = ${scriptJson(clientConfig)};
   function continueOnWeb(){
-    // Logged-out web users are sent to the app with a returnTo so the SPA can
-    // resume the target after auth (spec §7.3).
-    var ret = encodeURIComponent(location.href);
-    location.href = CFG.webAppUrl + "/login?returnTo=" + ret;
+    // Straight to the target on the web app — it owns the auth round-trip.
+    location.href = CFG.webAppUrl + (CFG.webTarget || "");
   }
   function openInApp(){
     var ua = navigator.userAgent || "";
     if (/Android/i.test(ua)) {
       var fallback = CFG.androidStoreAppId
         ? "https://play.google.com/store/apps/details?id=" + CFG.androidPackage + "&referrer=" + encodeURIComponent(CFG.token)
-        : CFG.webAppUrl;
+        : CFG.webAppUrl + (CFG.webTarget || "");
       var extra = CFG.kind === "private" ? "S.code=" + CFG.code
                 : CFG.kind === "public"  ? "S.handle=" + CFG.handle : "";
       location.href = "intent://open#Intent;scheme=" + CFG.scheme + ";package=" + CFG.androidPackage + ";" +
@@ -137,7 +154,7 @@ ${ogImageTag}
       var appUrl = CFG.kind === "private"
         ? CFG.scheme + "://join?code=" + encodeURIComponent(CFG.code)
         : CFG.scheme + "://resolve?handle=" + encodeURIComponent(CFG.handle);
-      var store = CFG.appleStoreAppId ? "https://apps.apple.com/app/id" + CFG.appleStoreAppId : CFG.webAppUrl;
+      var store = CFG.appleStoreAppId ? "https://apps.apple.com/app/id" + CFG.appleStoreAppId : CFG.webAppUrl + (CFG.webTarget || "");
       var t = setTimeout(function(){ location.href = store; }, 1200);
       window.addEventListener("pagehide", function(){ clearTimeout(t); });
       location.href = appUrl;
