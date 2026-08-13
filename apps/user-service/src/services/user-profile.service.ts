@@ -1,6 +1,10 @@
 import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import type {
   UserCreatedPayload,
   UserDeletedPayload,
@@ -644,6 +648,14 @@ export const userProfileService = {
       await userCache.onUsernameReleased(previousUsername);
       await userCache.onUsernameClaimed(updateData.username);
     }
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_PROFILE_UPDATED,
+      targetType: "user",
+      targetId: userId,
+      after: { changedFields: Object.keys(updateData) },
+    });
 
     const authSummary = await resolveProfileAuthSummary(userId);
     return toProfileData(updated, authSummary);

@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
 import { BadRequestError, NotFoundError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import bcrypt from "bcryptjs";
 
 import type {
@@ -186,6 +190,16 @@ export const passwordResetService = {
     // exceptSessionId. This also drops every device's push token and kicks
     // their live sockets; before, a reset revoked the sessions but left the
     // tokens registered, so the attacker's device kept receiving push.
-    await revokeSessionsForPasswordChange(record.userId);
+    const revokedSessions = await revokeSessionsForPasswordChange(
+      record.userId
+    );
+
+    publishAdminActivitySafe({
+      actorId: record.userId,
+      action: USER_AUDIT_ACTIONS.USER_PASSWORD_RESET_COMPLETED,
+      targetType: "user",
+      targetId: record.userId,
+      after: { revokedSessions },
+    });
   },
 };

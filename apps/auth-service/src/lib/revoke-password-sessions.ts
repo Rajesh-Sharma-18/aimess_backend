@@ -29,7 +29,7 @@ import { sessionRepository } from "../repositories/session.repository.js";
 export async function revokeSessionsForPasswordChange(
   userId: string,
   exceptSessionId?: string
-): Promise<void> {
+): Promise<number> {
   const active = await sessionRepository.listActiveSessionIds(userId);
   await authRepository.revokeSessionsAfterPasswordChange(
     userId,
@@ -56,4 +56,6 @@ export async function revokeSessionsForPasswordChange(
       () => undefined
     );
   }
+
+  return revokedIds.length;
 }

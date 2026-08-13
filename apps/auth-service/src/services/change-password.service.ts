@@ -1,6 +1,10 @@
 import bcrypt from "bcryptjs";
 
 import { BadRequestError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
@@ -47,8 +51,19 @@ export const changePasswordService = {
     await authRepository.updatePasswordHash(userId, passwordHash);
 
     // DB revoke + Redis cache bust + push-token teardown + socket kick.
-    await revokeSessionsForPasswordChange(userId, currentSessionId);
+    const revokedSessions = await revokeSessionsForPasswordChange(
+      userId,
+      currentSessionId
+    );
 
     publishPasswordChangedSafe({ userId, at: new Date().toISOString() });
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_PASSWORD_CHANGED,
+      targetType: "user",
+      targetId: userId,
+      after: { revokedSessions },
+    });
   },
 };

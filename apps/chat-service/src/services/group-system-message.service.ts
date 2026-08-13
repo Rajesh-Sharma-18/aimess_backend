@@ -1,4 +1,8 @@
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import type { Redis, Cluster } from "ioredis";
 
 import {
@@ -22,6 +26,30 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
 import { systemMessageBumpsActivity } from "../lib/system-message-policy.js";
+
+// Group lifecycle events mirrored into the admin panel's audit log. Everything absent
+// here (calls, pins, invites, friendship, auto-delete) is chatter, not moderation signal.
+export const ADMIN_ACTIVITY_BY_SYSTEM_EVENT: Partial<
+  Record<SystemEvent, string>
+> = {
+  GROUP_CREATED: USER_AUDIT_ACTIONS.GROUP_CREATED,
+  MEMBER_ADDED: USER_AUDIT_ACTIONS.GROUP_MEMBER_ADDED,
+  MEMBER_JOINED: USER_AUDIT_ACTIONS.GROUP_MEMBER_ADDED,
+  MEMBER_LEFT: USER_AUDIT_ACTIONS.GROUP_MEMBER_LEFT,
+  MEMBER_REMOVED: USER_AUDIT_ACTIONS.GROUP_MEMBER_REMOVED,
+  MEMBER_BANNED: USER_AUDIT_ACTIONS.GROUP_MEMBER_BANNED,
+  MEMBER_UNBANNED: USER_AUDIT_ACTIONS.GROUP_MEMBER_UNBANNED,
+  ROOM_RENAMED: USER_AUDIT_ACTIONS.GROUP_UPDATED,
+  AVATAR_CHANGED: USER_AUDIT_ACTIONS.GROUP_UPDATED,
+  DESCRIPTION_CHANGED: USER_AUDIT_ACTIONS.GROUP_UPDATED,
+  // Disappearing-messages timer: a setting change that hides message history from
+  // moderation, so it belongs in the trail even though the rest of chat chatter does not.
+  AUTO_DELETE_UPDATED: USER_AUDIT_ACTIONS.GROUP_UPDATED,
+  ROLE_CHANGED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+  ADMIN_ASSIGNED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+  ADMIN_REMOVED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+  OWNERSHIP_TRANSFERRED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
+};
 
 export interface PostSystemMessageParams {
   roomId: string;
@@ -108,6 +136,22 @@ export class GroupSystemMessageService {
     const targetUserIds = Array.isArray(inData.targetUserIds)
       ? inData.targetUserIds.map((id) => String(id)).filter(Boolean)
       : [];
+
+    // Every group lifecycle event funnels through here, so the admin-panel mirror
+    // lives here too rather than at each service call site.
+    const mirrored = ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
+    if (mirrored) {
+      publishAdminActivitySafe({
+        actorId,
+        action: mirrored,
+        targetType: "group",
+        targetId: roomId,
+        after: {
+          systemEvent,
+          targetUserIds: targetUserId ? [targetUserId] : targetUserIds,
+        },
+      });
+    }
 
     try {
       const ids = [actorId, targetUserId, ...targetUserIds].filter(

@@ -26,10 +26,12 @@ const AVATAR_PREFIXES = MEDIA_PREFIXES.avatars;
  * Stored avatar key/url → the standard {@link MediaObject} (see
  * @aimess/shared-types) used across User APIs / Community Details / Livestream
  * List — the project's single reusable avatar shape. Null/absent input yields
- * an all-null MediaObject (toMediaObject's own contract). `toMediaObject`
- * passes an already-signed http(s) URL through unchanged, so resolving a value
- * that's already a presigned URL (e.g. from an upstream gRPC snapshot) is an
- * idempotent safety net, not a re-sign.
+ * an all-null MediaObject (toMediaObject's own contract). Note: an already-
+ * signed http(s) URL is passed through unchanged ONLY when its path matches no
+ * avatars prefix — a real MinIO avatar URL (e.g. an upstream gRPC snapshot) has
+ * its object key re-derived and is RE-SIGNED here, against this service's own
+ * public endpoint and expiry. That is deliberate (backoffice is the output
+ * boundary), but it is a re-sign, not a no-op.
  */
 export async function resolveAvatarMediaObject(
   stored: string | null | undefined

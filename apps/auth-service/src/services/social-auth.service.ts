@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
 import { ConflictError, UnauthorizedError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import {
   AccountStatus,
@@ -188,6 +192,19 @@ async function signInWithProvider(
   });
 
   const session = buildSessionContext(req);
+
+  // Same audit row password registration emits — without this the audit log shows a
+  // login for a user it never saw being created.
+  publishAdminActivitySafe({
+    actorId: user.id,
+    action: USER_AUDIT_ACTIONS.USER_REGISTERED,
+    targetType: "user",
+    targetId: user.id,
+    after: { account: user.account, provider },
+    ip: session.ipAddress,
+    userAgent: session.userAgent,
+  });
+
   // Brand-new account — always the default non-privileged role.
   const { tokens } = await issueAuthTokens(user.id, "USER", session);
 

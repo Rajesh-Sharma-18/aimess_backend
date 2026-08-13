@@ -30,7 +30,7 @@ categoryRoutes.use(adminAuth);
 
 categoryRoutes.get(
   "/categories",
-  requirePermission(PERMISSIONS.CATEGORIES_MANAGE),
+  requirePermission(PERMISSIONS.CATEGORIES_READ),
   validateQuery(listCategoriesQuerySchema),
   listCategories
 );

@@ -57,6 +57,11 @@ service MessagingService {
   rpc AdminListGroups         (AdminListGroupsRequest)         returns (AdminListGroupsResponse);
   rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGroupDetail);
   rpc AdminListGroupMembers   (AdminListGroupMembersRequest)   returns (AdminListGroupMembersResponse);
+  // Admin Group Moderation: platform-admin disband / remove-member. Both reuse
+  // chat-service's own write paths (invite-link revoke, group:removed eviction,
+  // roster fan-out) — never a bare repository write.
+  rpc AdminDisbandGroup       (AdminDisbandGroupRequest)       returns (AdminGroupMutationResult);
+  rpc AdminRemoveGroupMember  (AdminRemoveGroupMemberRequest)  returns (AdminGroupMutationResult);
 
   // Admin Calling: analytics, the global kill-switch, and a lightweight health
   // ping. Calls are owned by chat-service, so the Call collection is only ever
@@ -177,6 +182,10 @@ message AdminGroupRow {
   int32           member_count = 5;
   int64           created_at    = 6;
   AdminGroupAdmin admin        = 7;
+  // Raw lifecycle status: "ACTIVE" | "DISBANDED".
+  string          status       = 8;
+  // Epoch ms; 0 when the group was never disbanded.
+  int64           disbanded_at = 9;
 }
 message AdminListGroupsRequest {
   string q          = 1;
@@ -186,6 +195,8 @@ message AdminListGroupsRequest {
   string sort_dir   = 5;
   int32  page       = 6;
   int32  limit      = 7;
+  // "" / "ACTIVE" = active only (default), "ALL" = no filter, else exact match.
+  string status     = 10;
 }
 message AdminListGroupsResponse {
   repeated AdminGroupRow groups = 1;
@@ -205,6 +216,14 @@ message AdminGroupMemberRow {
   string avatar_url = 4;
   string role       = 5;
   int64  joined_at   = 6;
+  // Membership status: "ACTIVE" | "LEFT" | "KICKED" | "BANNED".
+  string status           = 7;
+  // EFFECTIVE moderation mute — a timed mute lazily expires, so this is not the
+  // raw column (see chat-service lib/access-guard.isGroupMemberMuted).
+  bool   moderation_muted = 8;
+  // Epoch ms; 0 when unset.
+  int64  kicked_at        = 9;
+  int64  banned_at        = 10;
 }
 message AdminListGroupMembersRequest {
   string group_id = 1;
@@ -212,11 +231,32 @@ message AdminListGroupMembersRequest {
   string role     = 3;
   int32  page     = 4;
   int32  limit    = 5;
+  // "" / "ACTIVE" = active only (default), "ALL" = no filter, else exact match.
+  string status   = 6;
 }
 message AdminListGroupMembersResponse {
   bool                         found   = 1;
   repeated AdminGroupMemberRow members = 2;
   int32                        total   = 3;
+}
+
+message AdminDisbandGroupRequest {
+  string group_id       = 1;
+  // backoffice AdminUser.id — stored as GroupRoom.disbandedBy (DB-only).
+  string actor_admin_id = 2;
+}
+message AdminRemoveGroupMemberRequest {
+  string group_id       = 1;
+  string user_id        = 2;
+  string actor_admin_id = 3;
+  // Persisted as GroupMember.kickReason.
+  string reason         = 4;
+}
+message AdminGroupMutationResult {
+  bool   ok         = 1;
+  bool   found      = 2;
+  // "" on success, else CHAT_GROUP_NOT_FOUND | CHAT_GROUP_ALREADY_DISBANDED | CHAT_NOT_A_MEMBER
+  string error_code = 3;
 }
 
 // ---------------------------------------------------------------------------

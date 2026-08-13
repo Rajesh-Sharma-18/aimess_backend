@@ -34,7 +34,7 @@ export interface RawAdminGroupAdmin {
   avatarUrl: string;
 }
 
-/** AdminGroupRow — int64 created_at arrives as a string. */
+/** AdminGroupRow — int64 created_at/disbanded_at/last_message_at arrive as strings. */
 export interface RawAdminGroupRow {
   id: string;
   name: string;
@@ -43,6 +43,9 @@ export interface RawAdminGroupRow {
   memberCount: number;
   createdAt: string;
   admin: RawAdminGroupAdmin;
+  status: string;
+  disbandedAt: string;
+  lastMessageAt: string;
 }
 
 export interface AdminListGroupsReq {
@@ -53,6 +56,8 @@ export interface AdminListGroupsReq {
   sortDir: string;
   page: number;
   limit: number;
+  // "" → chat-service keeps its ACTIVE default; "ALL" → no status filter.
+  status: string;
 }
 
 export interface AdminListGroupsRes {
@@ -65,7 +70,7 @@ export interface AdminGroupDetailRes {
   group?: RawAdminGroupRow;
 }
 
-/** AdminGroupMemberRow — int64 joined_at arrives as a string. */
+/** AdminGroupMemberRow — int64 joined_at/kicked_at/banned_at arrive as strings. */
 export interface RawAdminGroupMemberRow {
   userId: string;
   username: string;
@@ -73,6 +78,9 @@ export interface RawAdminGroupMemberRow {
   avatarUrl: string;
   role: string;
   joinedAt: string;
+  status: string;
+  kickedAt: string;
+  bannedAt: string;
 }
 
 export interface AdminListGroupMembersReq {
@@ -81,12 +89,38 @@ export interface AdminListGroupMembersReq {
   role: string;
   page: number;
   limit: number;
+  // "" → chat-service keeps its ACTIVE default; "ALL" → no status filter.
+  status: string;
 }
 
 export interface AdminListGroupMembersRes {
   found: boolean;
   members: RawAdminGroupMemberRow[];
   total: number;
+}
+
+// ---- Admin Group Moderation raw shapes -----------------------------------
+// AdminGroupMutationResult carries no int64 — no coercion needed. Business
+// failures come back as `errorCode`, never as a gRPC error.
+
+export interface AdminDisbandGroupReq {
+  groupId: string;
+  actorAdminId: string;
+}
+
+export interface AdminRemoveGroupMemberReq {
+  groupId: string;
+  userId: string;
+  actorAdminId: string;
+  // "" is treated as absent by chat-service (`req.reason || undefined`).
+  reason: string;
+}
+
+// errorCode: "" | CHAT_GROUP_NOT_FOUND | CHAT_GROUP_ALREADY_DISBANDED | CHAT_NOT_A_MEMBER.
+export interface AdminGroupMutationRes {
+  ok: boolean;
+  found: boolean;
+  errorCode: string;
 }
 
 // ---- Admin Calling raw shapes --------------------------------------------
@@ -206,6 +240,25 @@ export const adminListGroupMembersBreaker: Breaker<
   )
 );
 
+export const adminDisbandGroupBreaker: Breaker<
+  AdminDisbandGroupReq,
+  AdminGroupMutationRes
+> = makeBreaker("chat.adminDisbandGroup", (req: AdminDisbandGroupReq) =>
+  call<AdminDisbandGroupReq, AdminGroupMutationRes>("adminDisbandGroup", req)
+);
+
+export const adminRemoveGroupMemberBreaker: Breaker<
+  AdminRemoveGroupMemberReq,
+  AdminGroupMutationRes
+> = makeBreaker(
+  "chat.adminRemoveGroupMember",
+  (req: AdminRemoveGroupMemberReq) =>
+    call<AdminRemoveGroupMemberReq, AdminGroupMutationRes>(
+      "adminRemoveGroupMember",
+      req
+    )
+);
+
 export const adminGetCallAnalyticsBreaker: Breaker<
   AdminCallAnalyticsReq,
   RawAdminCallAnalytics
@@ -266,6 +319,14 @@ export const chatClient = {
     req: AdminListGroupMembersReq
   ): Promise<AdminListGroupMembersRes> {
     return adminListGroupMembersBreaker.fire(req);
+  },
+  adminDisbandGroup(req: AdminDisbandGroupReq): Promise<AdminGroupMutationRes> {
+    return adminDisbandGroupBreaker.fire(req);
+  },
+  adminRemoveGroupMember(
+    req: AdminRemoveGroupMemberReq
+  ): Promise<AdminGroupMutationRes> {
+    return adminRemoveGroupMemberBreaker.fire(req);
   },
 
   async adminGetCallAnalytics(

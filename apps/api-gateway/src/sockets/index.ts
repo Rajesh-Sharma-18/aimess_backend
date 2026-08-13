@@ -2,7 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { logger } from "@aimess/logger";
-import { isCorsOriginAllowed } from "../config/env.js";
+import { env, isCorsOriginAllowed } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
 import { registerAuthNamespace } from "./namespaces/auth.ns.js";
 import { registerSessionRevokeListener } from "./session-revoke.js";
@@ -11,6 +11,7 @@ import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
 import { registerStreamNamespace } from "./namespaces/stream.ns.js";
+import { registerAdminNamespace } from "./namespaces/admin.ns.js";
 import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 import { createCommunityClient } from "../grpc/clients/community.client.js";
 import { createNotificationClient } from "../grpc/clients/notification.client.js";
@@ -94,6 +95,13 @@ export async function setupSockets(
   registerNotifyNamespace(io, notificationClient, notifySub, pub);
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
   registerAuthNamespace(io, authSub, pub);
+  // Backoffice tokens use their own secret — without it the namespace could only
+  // reject every handshake, so it stays unregistered instead.
+  if (env.JWT_ADMIN_SECRET) {
+    const { sub: adminSub } = createGatewayRedisClients();
+    await adminSub.connect();
+    registerAdminNamespace(io, adminSub, pub);
+  }
   registerSessionRevokeListener(io, sessionRevokeSub);
   // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
   registerSessionCreatedListener(io, sessionRevokeSub);
@@ -108,6 +116,8 @@ export async function setupSockets(
   );
 
   logger.info(
-    "Socket.IO namespaces registered: /chat, /community, /notify, /stream, /auth"
+    `Socket.IO namespaces registered: /chat, /community, /notify, /stream, /auth${
+      env.JWT_ADMIN_SECRET ? ", /admin" : ""
+    }`
   );
 }

@@ -134,12 +134,18 @@ export {
   listGroupsQuerySchema,
   groupIdParamSchema,
   listGroupMembersQuerySchema,
+  groupMemberParamSchema,
+  disbandGroupSchema,
+  removeGroupMemberSchema,
   groupSortByEnum,
   groupSortOrderEnum,
   groupRoleEnum,
   type ListGroupsQueryInput,
   type GroupIdParam,
   type ListGroupMembersQueryInput,
+  type GroupMemberParam,
+  type DisbandGroupInput,
+  type RemoveGroupMemberInput,
 } from "./groups.validator.js";
 
 export {

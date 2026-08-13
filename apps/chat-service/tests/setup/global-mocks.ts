@@ -190,6 +190,7 @@ jest.mock("../../src/grpc/user-snapshot.client.js", () => ({
     getFriendshipInfoBulk: jest.fn(async () => []),
     getUserSnapshotsBulk: jest.fn(async () => []),
     getCallPrivacy: jest.fn(async () => null),
+    adminSearchProfileIds: jest.fn(async () => []),
     getChatSettings: jest.fn(async () => ({
       autoDeleteTimer: "OFF",
       typingIndicators: true,

@@ -108,3 +108,34 @@ export type AdminReportIngestPayload = {
   eventAt: string;
   sourceReportId: string;
 };
+
+// Cross-service end-user activity ingestion (auth/user/community/chat/stream → backoffice-service).
+export const AdminActivityEvents = {
+  ACTIVITY_INGEST: "admin.activity.ingest",
+} as const;
+
+export type AdminActivityEventType =
+  (typeof AdminActivityEvents)[keyof typeof AdminActivityEvents];
+
+// Who performed a website-side action: an end user, or the platform itself (jobs/sweepers).
+export type AdminActivityActorType = "USER" | "SYSTEM";
+
+// One end-user action, normalized into the same shape backoffice's AuditLog stores.
+export type AdminActivityIngestPayload = {
+  // AuthUser.id (UUID). Null for SYSTEM actors — no user performed the action.
+  actorId: string | null;
+  actorType: AdminActivityActorType;
+  // Domain action name, e.g. "user.login" — MUST exist in backoffice USER_AUDIT_ACTIONS.
+  action: string;
+  targetType: string;
+  targetId?: string | null;
+  // Free-form context stored verbatim on the audit row (the `reason` key is surfaced in the UI).
+  before?: unknown;
+  after?: unknown;
+  ip?: string | null;
+  userAgent?: string | null;
+  /** ISO-8601 timestamp captured at publish time. */
+  eventAt: string;
+  // Publisher-generated idempotency key — a redelivered message re-inserts and is swallowed as a no-op.
+  eventId: string;
+};

@@ -65,6 +65,9 @@ function rawGroupRow(overrides: Record<string, unknown> = {}) {
       email: "boss@acme.io",
       avatarUrl: "https://cdn/admin.png",
     },
+    status: "ACTIVE",
+    disbandedAt: "0", // 0 → null (never disbanded)
+    lastMessageAt: "1700000000000",
     ...overrides,
   };
 }
@@ -144,9 +147,11 @@ describe("GrpcGroupRepository.list — pagination math", () => {
       fromDate: "2025-01-01",
       sortBy: "memberCount",
       sortOrder: "asc",
+      status: "DISBANDED",
       page: 2,
       limit: 10,
     });
+    assert.equal(lastListGroupsReq?.status, "DISBANDED");
     assert.equal(lastListGroupsReq?.q, "acme");
     assert.equal(lastListGroupsReq?.fromDate, "2025-01-01");
     assert.equal(lastListGroupsReq?.toDate, ""); // omitted → ""
@@ -172,11 +177,29 @@ describe("GrpcGroupRepository.list — row → DTO mapping", () => {
     assert.equal(item.avatar?.downloadUrl, "https://cdn/a.png");
     assert.equal(item.description, "An acme group");
     assert.equal(item.memberCount, 42);
-    assert.equal(item.createdAt, "2023-11-14T22:13:20.000Z"); // ISO of 1700000000000
+    assert.equal(item.createdAt, 1700000000000);
     assert.equal(item.admin.userId, "u_admin");
     assert.equal(item.admin.username, "boss");
     assert.equal(item.admin.email, "boss@acme.io");
     assert.equal(item.admin.avatar?.downloadUrl, "https://cdn/admin.png");
+    assert.equal(item.status, "ACTIVE");
+    assert.equal(item.disbandedAt, null); // "0" → null
+    assert.equal(item.lastMessageAt, 1700000000000);
+  });
+
+  it("maps a disbanded group + absent lastMessageAt to null", async () => {
+    const row = rawGroupRow({ status: "DISBANDED", disbandedAt: "1700000001" });
+    delete (row as Record<string, unknown>).lastMessageAt;
+    nextListGroupsRes = { groups: [row], total: 1 };
+    const { items } = await repo.list({
+      sortBy: "createdAt",
+      sortOrder: "desc",
+      page: 1,
+      limit: 20,
+    });
+    assert.equal(items[0]!.status, "DISBANDED");
+    assert.equal(items[0]!.disbandedAt, 1700000001);
+    assert.equal(items[0]!.lastMessageAt, null); // undefined → NaN → null
   });
 
   it('normalises "" avatarUrl/email and admin "" fields to null', async () => {
@@ -238,7 +261,7 @@ describe("GrpcGroupRepository.getById", () => {
     nextGroupDetailRes = { found: true, group: rawGroupRow() };
     const res = await repo.getById("grp_1");
     assert.equal(res?.id, "grp_1");
-    assert.equal(res?.createdAt, "2023-11-14T22:13:20.000Z");
+    assert.equal(res?.createdAt, 1700000000000);
   });
 });
 
@@ -251,6 +274,9 @@ describe("GrpcGroupRepository.listMembers", () => {
       avatarUrl: "https://cdn/al.png",
       role: "MEMBER",
       joinedAt: "1700000000000",
+      status: "ACTIVE",
+      kickedAt: "0", // 0 → null (never kicked)
+      bannedAt: "0",
       ...overrides,
     };
   }
@@ -277,7 +303,10 @@ describe("GrpcGroupRepository.listMembers", () => {
     assert.equal(m.email, null);
     assert.equal(m.avatar, null);
     assert.equal(m.role, "MEMBER");
-    assert.equal(m.joinedAt, "2023-11-14T22:13:20.000Z");
+    assert.equal(m.joinedAt, 1700000000000);
+    assert.equal(m.status, "ACTIVE");
+    assert.equal(m.kickedAt, null); // "0" → null
+    assert.equal(m.bannedAt, null);
     assert.equal(res.pagination.totalPages, 2); // ceil(30/20)
     assert.equal(res.pagination.hasNext, true);
     assert.equal(res.pagination.hasPrevious, false);
@@ -289,5 +318,6 @@ describe("GrpcGroupRepository.listMembers", () => {
     assert.equal(lastListMembersReq?.groupId, "grp_1");
     assert.equal(lastListMembersReq?.role, "ADMIN");
     assert.equal(lastListMembersReq?.q, ""); // omitted → ""
+    assert.equal(lastListMembersReq?.status, ""); // omitted → ""
   });
 });

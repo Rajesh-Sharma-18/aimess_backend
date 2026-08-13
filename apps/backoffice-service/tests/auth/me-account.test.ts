@@ -57,6 +57,7 @@ const profile = {
   email: "admin@aimess.local",
   name: "Admin One",
   avatar: null,
+  language: null,
   role: "ADMIN",
   status: "ACTIVE",
   lastLoginAt: null,
@@ -75,7 +76,11 @@ describe("PATCH /v1/me", () => {
     const res = await request(app)
       .patch("/v1/me")
       .set(bearer(makeAdminAccessToken()))
-      .send({ username: "New Name", email: "new@aimess.local" });
+      .send({
+        username: "New Name",
+        email: "new@aimess.local",
+        currentPassword: "OldP@ss1",
+      });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -108,6 +113,27 @@ describe("PATCH /v1/me", () => {
     });
   });
 
+  it("accepts language on its own and returns it in the profile", async () => {
+    svc.updateMe.mockResolvedValueOnce({ ...profile, language: "th" });
+    const res = await request(app)
+      .patch("/v1/me")
+      .set(bearer(makeAdminAccessToken()))
+      .send({ language: "th" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.language).toBe("th");
+    expect(svc.updateMe.mock.calls[0][1]).toMatchObject({ language: "th" });
+  });
+
+  it("returns 400 for an unsupported language", async () => {
+    const res = await request(app)
+      .patch("/v1/me")
+      .set(bearer(makeAdminAccessToken()))
+      .send({ language: "fr" });
+    expect(res.status).toBe(400);
+    expect(svc.updateMe).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when no field is provided", async () => {
     const res = await request(app)
       .patch("/v1/me")
@@ -131,7 +157,7 @@ describe("PATCH /v1/me", () => {
     const res = await request(app)
       .patch("/v1/me")
       .set(bearer(makeAdminAccessToken()))
-      .send({ email: "taken@aimess.local" });
+      .send({ email: "taken@aimess.local", currentPassword: "OldP@ss1" });
     expect(res.status).toBe(409);
   });
 

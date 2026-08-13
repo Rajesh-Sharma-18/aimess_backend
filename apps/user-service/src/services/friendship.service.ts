@@ -1,4 +1,8 @@
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import {
   FriendSocketEvents,
@@ -938,6 +942,13 @@ export const friendshipService = {
       friendship.addresseeId
     );
     emitToPair(updated as FriendshipRow, FriendSocketEvents.REMOVED);
+
+    publishAdminActivitySafe({
+      actorId: viewerId,
+      action: USER_AUDIT_ACTIONS.USER_FRIEND_REMOVED,
+      targetType: "user",
+      targetId: otherUserId,
+    });
   },
 
   /**
@@ -1198,6 +1209,13 @@ export const friendshipService = {
     emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
       peerId: blockerId,
     });
+
+    publishAdminActivitySafe({
+      actorId: blockerId,
+      action: USER_AUDIT_ACTIONS.USER_BLOCKED_USER,
+      targetType: "user",
+      targetId: blockedId,
+    });
   },
 
   async unblockUser(blockerId: string, blockedId: string): Promise<void> {
@@ -1251,6 +1269,13 @@ export const friendshipService = {
     // stuck on "profile unavailable" until they restart the app.
     emitFriendSelfEventSafe(blockedId, FriendSocketEvents.RELATIONSHIP_SYNC, {
       peerId: blockerId,
+    });
+
+    publishAdminActivitySafe({
+      actorId: blockerId,
+      action: USER_AUDIT_ACTIONS.USER_UNBLOCKED_USER,
+      targetType: "user",
+      targetId: blockedId,
     });
   },
 

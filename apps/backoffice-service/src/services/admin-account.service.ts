@@ -1,8 +1,15 @@
-import { ConflictError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@aimess/errors";
 
-import { AUDIT_ACTIONS, ROLE_KEYS } from "../constants/index.js";
+import { AUDIT_ACTIONS, PERMISSIONS, ROLE_KEYS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
 import { hashPassword } from "../lib/password.js";
+import { invalidateAdminPermissions } from "../lib/admin-perms-cache.js";
+import { publishAdminSocketEvent } from "../lib/admin-socket-events.js";
 import { markAdminSessionsRevoked } from "../lib/admin-session-cache.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import {
@@ -78,6 +85,36 @@ function assertNotDeleted(status: string): void {
   if (status === "DELETED") {
     throw new NotFoundError("ADMIN_NOT_FOUND");
   }
+}
+
+/** `AdminPermissionsView` with the grid fields guaranteed present (the service always fills them). */
+type AdminPermissionsSnapshot = AdminPermissionsView & {
+  rolePermissions: string[];
+  overrides: { key: string; allow: boolean }[];
+};
+
+/**
+ * The effective set plus the two things the toggle grid needs to render without
+ * a second call: the role baseline, and the per-admin deltas layered on it.
+ */
+async function buildPermissionsView(
+  admin: AdminRow
+): Promise<AdminPermissionsSnapshot> {
+  const [permissions, rolePermissions, overrides] = await Promise.all([
+    rbacService.getPermissionKeysForAdmin(admin.id, admin.role.key),
+    rbacService.getPermissionKeysForRole(admin.role.key),
+    rbacService.listOverridesForAdmin(admin.id),
+  ]);
+  return {
+    adminId: admin.id,
+    role: { key: admin.role.key, name: admin.role.name },
+    permissions,
+    rolePermissions,
+    overrides: overrides.map((o) => ({
+      key: o.permission.key,
+      allow: o.allow,
+    })),
+  };
 }
 
 export const adminAccountService = {
@@ -269,13 +306,15 @@ export const adminAccountService = {
       throw new ConflictError("ADMIN_ALREADY_INACTIVE");
     }
 
-    if (existing.role.key === ROLE_KEYS.SUPER_ADMIN) {
-      const activeSuperAdmins = await adminUserRepository.countActiveByRoleKey(
-        ROLE_KEYS.SUPER_ADMIN as RoleKey
-      );
-      if (activeSuperAdmins <= 1) {
-        throw new ConflictError("ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN");
-      }
+    // Same invariant as the demote guard, by another door: disabling the last
+    // effective `admins.manage` holder locks everyone out of admin management.
+    // Excluding the target makes the count the state AFTER this deactivation.
+    const otherHolders = await adminUserRepository.countActiveWithPermission(
+      PERMISSIONS.ADMINS_MANAGE,
+      id
+    );
+    if (otherHolders === 0) {
+      throw new ConflictError("ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN");
     }
 
     await adminUserRepository.setStatus(id, "DISABLED");
@@ -285,6 +324,13 @@ export const adminAccountService = {
     const activeSessions = await adminSessionRepository.listActiveByAdmin(id);
     await adminSessionRepository.revokeAllForAdmin(id);
     await markAdminSessionsRevoked(activeSessions.map((s) => s.id));
+
+    // Revoked tokens only bite on the target's next request, which for an idle
+    // panel may be never — this pushes them out of the UI at the same moment.
+    await publishAdminSocketEvent(id, "admin:session:revoked", {
+      adminId: id,
+      reason: "deactivated",
+    });
 
     await auditService.record({
       actorId: actor.id,
@@ -322,25 +368,18 @@ export const adminAccountService = {
     return rows.map((r) => ({ key: r.key, group: r.group }));
   },
 
-  /** The resolved (role-derived) permission set for one admin. */
+  /** The effective permission set for one admin (role baseline + overrides). */
   async getAdminPermissions(id: string): Promise<AdminPermissionsView> {
     const admin = await adminUserRepository.findById(id);
     if (!admin) throw new NotFoundError("ADMIN_NOT_FOUND");
-
-    const permissions = await rbacService.getPermissionKeysForRole(
-      admin.role.key
-    );
-    return {
-      adminId: admin.id,
-      role: { key: admin.role.key, name: admin.role.name },
-      permissions,
-    };
+    return buildPermissionsView(admin);
   },
 
   /**
-   * Reassign an admin's role — the only mutable "permission" surface in this
-   * RBAC model (permissions are derived from the role, not per-admin). Cannot
-   * grant/hold SUPER_ADMIN unless the actor is themselves a SUPER_ADMIN.
+   * Apply a permission change: a role reassignment, the full desired permission
+   * set from the toggle grid, or both. Cannot grant/hold SUPER_ADMIN unless the
+   * actor is themselves a SUPER_ADMIN, and refuses to strip the platform of its
+   * last admins.manage holder or to let an actor edit their own permissions.
    */
   async updateAdminPermissions(
     id: string,
@@ -348,35 +387,113 @@ export const adminAccountService = {
     actor: RequestAdmin,
     ctx: AdminAccountRequestContext
   ): Promise<AdminPermissionsView> {
+    if (id === actor.id) {
+      throw new ForbiddenError("ADMIN_CANNOT_EDIT_OWN_PERMISSIONS");
+    }
+
     const existing = await adminUserRepository.findById(id);
     if (!existing) throw new NotFoundError("ADMIN_NOT_FOUND");
     assertCanManageRole(actor.role, existing.role.key);
-    assertCanManageRole(actor.role, input.roleKey);
+    if (input.roleKey !== undefined) {
+      assertCanManageRole(actor.role, input.roleKey);
+    }
 
-    const role = await adminUserRepository.findRoleByKey(
-      input.roleKey as RoleKey
-    );
-    if (!role) throw new NotFoundError("ADMIN_ROLE_NOT_FOUND");
+    const before = await buildPermissionsView(existing);
 
-    const updated = await adminUserRepository.updateRole(id, role.id);
-    const permissions = await rbacService.getPermissionKeysForRole(role.key);
+    const role =
+      input.roleKey !== undefined
+        ? await adminUserRepository.findRoleByKey(input.roleKey as RoleKey)
+        : null;
+    if (input.roleKey !== undefined && !role) {
+      throw new NotFoundError("ADMIN_ROLE_NOT_FOUND");
+    }
+
+    // Deltas are always measured against the role the admin ends up on.
+    const baseline = role
+      ? await rbacService.getPermissionKeysForRole(role.key)
+      : before.rolePermissions;
+
+    let overrideRows: { permissionId: string; allow: boolean }[] | null = null;
+    let desired: Set<string>;
+
+    if (input.permissions !== undefined) {
+      const submitted = [...new Set(input.permissions)];
+      const catalogue = await rbacService.findPermissionsByKeys([
+        ...new Set([...submitted, ...baseline]),
+      ]);
+      const idByKey = new Map(catalogue.map((p) => [p.key, p.id]));
+      const unknown = submitted.filter((key) => !idByKey.has(key));
+      if (unknown.length > 0) {
+        throw new BadRequestError(
+          `Unknown permission key(s): ${unknown.join(", ")}`
+        );
+      }
+
+      desired = new Set(submitted);
+      const roleSet = new Set(baseline);
+      // Only genuine deltas are stored: a toggle left at its role default writes
+      // no row, so it keeps tracking the role matrix instead of freezing today's
+      // answer. This is the invariant the whole override model rests on.
+      overrideRows = [];
+      for (const [key, permissionId] of idByKey) {
+        const allow = desired.has(key);
+        if (allow !== roleSet.has(key)) {
+          overrideRows.push({ permissionId, allow });
+        }
+      }
+    } else {
+      // Role-only change: the existing overrides ride onto the new baseline.
+      desired = new Set(baseline);
+      for (const override of before.overrides) {
+        if (override.allow) desired.add(override.key);
+        else desired.delete(override.key);
+      }
+    }
+
+    // The invariant is about the effective permission, never the role: at least
+    // one ACTIVE admin must still hold `admins.manage` afterwards. Counting the
+    // holders OTHER than the target makes this the post-change state, so it
+    // catches both "two SUPER_ADMINs stripped one after the other" and a holder
+    // who only has the key via an allow-override on a lesser role.
+    if (!desired.has(PERMISSIONS.ADMINS_MANAGE)) {
+      const otherHolders = await adminUserRepository.countActiveWithPermission(
+        PERMISSIONS.ADMINS_MANAGE,
+        id
+      );
+      if (otherHolders === 0) {
+        throw new ConflictError("ADMIN_CANNOT_DEMOTE_LAST_SUPER_ADMIN");
+      }
+    }
+
+    const updated = role
+      ? await adminUserRepository.updateRole(id, role.id)
+      : existing;
+    if (overrideRows) {
+      await rbacService.replaceOverridesForAdmin(id, overrideRows);
+    }
+    // The cache key carries neither the role nor the overrides, so every write drops it.
+    await invalidateAdminPermissions(id);
+
+    const after = await buildPermissionsView(updated);
+
+    // The target's panel re-reads GET /me on this, so its sidebar and page gates
+    // follow the new set without a re-login.
+    await publishAdminSocketEvent(id, "admin:permissions:updated", {
+      adminId: id,
+    });
 
     await auditService.record({
       actorId: actor.id,
       action: AUDIT_ACTIONS.ADMIN_PERMISSIONS_UPDATED,
       targetType: "admin",
       targetId: id,
-      before: { role: existing.role.key },
-      after: { role: role.key },
+      before: { role: existing.role.key, permissions: before.permissions },
+      after: { role: updated.role.key, permissions: after.permissions },
       ip: ctx.ip,
       userAgent: ctx.userAgent ?? null,
     });
 
-    return {
-      adminId: updated.id,
-      role: { key: updated.role.key, name: updated.role.name },
-      permissions,
-    };
+    return after;
   },
 };
 
