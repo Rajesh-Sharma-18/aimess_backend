@@ -1083,6 +1083,13 @@ export class ChatMessageOrchestrator {
                     recipientIds
                   )
                   .then((raw) => renderConvOverrides(raw)),
+              // Absolute post-delete badges (counters already decremented by the
+              // delete). Also covers the auto-delete sweeper, which routes here.
+              resolveUnreadCounts: () =>
+                this.groupMessageService.getUnreadCountsByUser(rId),
+              // Without this the bump is discarded by the client's monotonic
+              // list guard — it points BACKWARD at the previous visible message.
+              deleteRecalc: true,
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
@@ -1113,6 +1120,9 @@ export class ChatMessageOrchestrator {
                     recipientIds
                   )
                   .then((raw) => renderConvOverrides(raw)),
+              resolveUnreadCounts: () =>
+                this.privateMessageService.getUnreadCountsByUser(rId),
+              deleteRecalc: true,
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
@@ -1159,9 +1169,19 @@ export class ChatMessageOrchestrator {
             type: conversationType,
             roomId: rId,
             recipientIds: [params.userId],
+            // Only the hiding user's own badge can move on a delete-for-me.
+            resolveUnreadCounts: () =>
+              conversationType === "GROUP"
+                ? this.groupMessageService.getUnreadCountsByUser(rId)
+                : this.privateMessageService.getUnreadCountsByUser(rId),
+            deleteRecalc: true,
             senderId: recalc.senderId ?? "",
             lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.createdAt.getTime(),
+            // 0 = "this viewer has nothing visible left" (sorts to the bottom);
+            // reusing the hidden row's time would pin it to the top.
+            lastMessageAt: recalc.hasLastMessage
+              ? recalc.createdAt.getTime()
+              : 0,
             preview: {
               contentType: recalc.messageType,
               text: preview,

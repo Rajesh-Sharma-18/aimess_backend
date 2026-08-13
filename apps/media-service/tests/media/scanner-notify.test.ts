@@ -64,7 +64,7 @@ afterEach(() => {
 
 describe("publishScanResult", () => {
   it("publishes media:scan_result to notify:<uploaderId> derived from the key", () => {
-    publishScanResult(JOB.objectKey, "QUARANTINED", "Eicar-Test");
+    publishScanResult(JOB.objectKey, "INFECTED");
 
     expect(mockedPublish).toHaveBeenCalledTimes(1);
     const [channel, raw] = mockedPublish.mock.calls[0];
@@ -72,40 +72,50 @@ describe("publishScanResult", () => {
     const parsed = JSON.parse(raw as string);
     expect(parsed.event).toBe("media:scan_result");
     expect(parsed.data.objectKey).toBe(JOB.objectKey);
-    expect(parsed.data.status).toBe("QUARANTINED");
-    expect(parsed.data.reason).toBe("Eicar-Test");
+    expect(parsed.data.status).toBe("INFECTED");
     expect(typeof parsed.data.at).toBe("number");
   });
 
-  it("defaults reason to empty string when omitted", () => {
+  it("carries NO reason field — detector detail must never reach the client", () => {
+    // This payload used to carry a free-text `reason`, fed variously with the
+    // ClamAV signature name, the structural validator's thresholds/offsets, and
+    // — on a terminal Bull failure — raw MinIO SDK errors naming the endpoint
+    // and bucket. It is status-only now; the detail goes to the audit log.
     publishScanResult(JOB.objectKey, "ERROR");
 
     const parsed = JSON.parse(mockedPublish.mock.calls[0][1] as string);
-    expect(parsed.data.reason).toBe("");
+    expect(parsed.data.reason).toBeUndefined();
+    expect(Object.keys(parsed.data).sort()).toEqual([
+      "at",
+      "objectKey",
+      "status",
+    ]);
   });
 
   it("skips publishing when the uploader id cannot be derived", () => {
-    publishScanResult("malformed-key-no-owner", "QUARANTINED");
+    publishScanResult("malformed-key-no-owner", "INFECTED");
     expect(mockedPublish).not.toHaveBeenCalled();
   });
 
   it("never throws when redis.publish rejects", () => {
     mockedPublish.mockRejectedValueOnce(new Error("redis down"));
-    expect(() => publishScanResult(JOB.objectKey, "QUARANTINED")).not.toThrow();
+    expect(() => publishScanResult(JOB.objectKey, "INFECTED")).not.toThrow();
   });
 });
 
 describe("runScanAndPersist → notify wiring", () => {
-  it("INFECTED scan publishes exactly one QUARANTINED scan_result", async () => {
+  it("INFECTED scan publishes exactly one INFECTED scan_result", async () => {
     scanSpy.mockResolvedValue({ status: "INFECTED", details: "Eicar-Test" });
 
     const result = await runScanAndPersist(JOB);
 
-    expect(result).toBe("QUARANTINED");
+    expect(result).toBe("INFECTED");
     expect(mockedPublish).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(mockedPublish.mock.calls[0][1] as string);
     expect(parsed.event).toBe("media:scan_result");
-    expect(parsed.data.status).toBe("QUARANTINED");
+    expect(parsed.data.status).toBe("INFECTED");
+    // The signature name stays internal.
+    expect(JSON.stringify(parsed)).not.toContain("Eicar-Test");
   });
 
   it("CLEAN scan publishes nothing", async () => {
@@ -121,6 +131,6 @@ describe("runScanAndPersist → notify wiring", () => {
     scanSpy.mockResolvedValue({ status: "INFECTED", details: "x" });
     mockedPublish.mockRejectedValueOnce(new Error("redis down"));
 
-    await expect(runScanAndPersist(JOB)).resolves.toBe("QUARANTINED");
+    await expect(runScanAndPersist(JOB)).resolves.toBe("INFECTED");
   });
 });

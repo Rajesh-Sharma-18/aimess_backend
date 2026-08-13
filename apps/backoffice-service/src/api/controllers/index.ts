@@ -62,6 +62,8 @@ export {
   listGroups,
   getGroupDetails,
   listGroupMembers,
+  disbandGroup,
+  removeGroupMember,
 } from "./groups.controller.js";
 export {
   createAnnouncement,

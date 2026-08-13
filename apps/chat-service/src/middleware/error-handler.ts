@@ -44,8 +44,48 @@ const STATUS_CODE: Record<number, string> = {
   [HTTP_STATUS.NOT_FOUND]: "NOT_FOUND",
   [HTTP_STATUS.CONFLICT]: "CONFLICT",
   [HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE]: "UNSUPPORTED_MEDIA_TYPE",
-  [HTTP_STATUS.TOO_MANY_REQUESTS]: "TOO_MANY_REQUESTS",
+  // "RATE_LIMITED", not "TOO_MANY_REQUESTS": this is the code the Socket.IO ack
+  // envelope has always used (`AckErrorCode`) and the one the shared HTTP
+  // taxonomy uses, so a client can share one branch across both transports.
+  [HTTP_STATUS.TOO_MANY_REQUESTS]: "RATE_LIMITED",
 };
+
+/**
+ * Write the error envelope.
+ *
+ * chat-service has always nested under `error` (unlike the other eight
+ * services, which emit a flat `{ success, message }`). Three fields are added
+ * here rather than restructuring: a TOP-LEVEL `message` mirror so this service
+ * matches the platform envelope and pre-existing clients reading `data.message`
+ * work against it, plus `retryable` and — where known — `retryAfter`, so a
+ * client can tell a transient failure from a permanent one without pattern
+ * matching on prose. Nothing existing moves.
+ */
+function respond(
+  res: Response,
+  status: number,
+  code: string,
+  message: string,
+  retryAfterSec?: number
+): void {
+  const retryable = status === 408 || status === 429 || status >= 500;
+
+  if (retryAfterSec !== undefined) {
+    res.setHeader("Retry-After", String(retryAfterSec));
+  }
+
+  res.status(status).json({
+    success: false,
+    message,
+    error: {
+      statusCode: status,
+      code,
+      message,
+      ...(retryAfterSec !== undefined ? { retryAfter: retryAfterSec } : {}),
+      retryable,
+    },
+  });
+}
 
 /**
  * Stable machine-readable error code. If the messageKey is already a code-like
@@ -123,51 +163,50 @@ export function errorHandler(
 ): void {
   if (isAppError(error)) {
     const appErr = error as import("@aimess/errors").AppError;
-    res.status(appErr.statusCode).json({
-      success: false,
-      error: {
-        statusCode: appErr.statusCode,
-        code: deriveAppErrorCode(appErr),
-        message: localize(req, appErr.messageKey, appErr.message),
-      },
-    });
+    respond(
+      res,
+      appErr.statusCode,
+      deriveAppErrorCode(appErr),
+      localize(req, appErr.messageKey, appErr.message),
+      appErr.retryAfterSec
+    );
     return;
   }
 
   if (isInvalidJsonBodyError(error)) {
-    res.status(HTTP_STATUS.BAD_REQUEST).json({
-      success: false,
-      error: {
-        statusCode: HTTP_STATUS.BAD_REQUEST,
-        code: "INVALID_JSON_BODY",
-        message: localize(req, "CHAT_INVALID_JSON_BODY", "Invalid JSON body"),
-      },
-    });
+    respond(
+      res,
+      HTTP_STATUS.BAD_REQUEST,
+      "INVALID_JSON_BODY",
+      localize(req, "CHAT_INVALID_JSON_BODY", "Invalid JSON body")
+    );
     return;
   }
 
   // Prisma errors (e.g. malformed ObjectId, not found, unique conflict)
   const prismaMapped = mapPrismaError(error);
   if (prismaMapped) {
-    res.status(prismaMapped.status).json({
-      success: false,
-      error: {
-        statusCode: prismaMapped.status,
-        code: prismaMapped.code,
-        message: localize(req, prismaMapped.key, prismaMapped.key),
-      },
-    });
+    respond(
+      res,
+      prismaMapped.status,
+      prismaMapped.code,
+      localize(req, prismaMapped.key, prismaMapped.key)
+    );
     return;
   }
 
-  logger.error(error);
-
-  res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
-    success: false,
-    error: {
-      statusCode: HTTP_STATUS.INTERNAL_SERVER_ERROR,
-      code: "INTERNAL_ERROR",
-      message: localize(req, "CHAT_INTERNAL_ERROR", "Internal server error"),
-    },
+  logger.error("Unhandled chat-service error", {
+    service: "chat-service",
+    requestId: req.headers["x-request-id"],
+    method: req.method,
+    path: req.path,
+    error,
   });
+
+  respond(
+    res,
+    HTTP_STATUS.INTERNAL_SERVER_ERROR,
+    "INTERNAL_ERROR",
+    localize(req, "CHAT_INTERNAL_ERROR", "Internal server error")
+  );
 }

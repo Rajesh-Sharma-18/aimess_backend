@@ -26,6 +26,8 @@ export const listAuditLogsQuerySchema = z.object({
   // Action names are free-form domain strings (e.g. "user.banned"); filter by
   // one or many. Bound the length so a rogue query can't blow up the IN clause.
   action: repeatableString(z.string().trim().min(1).max(100)),
+  // Which side performed it: ADMIN (admin panel), USER (website), SYSTEM (platform job).
+  actorType: repeatableString(z.enum(["ADMIN", "USER", "SYSTEM"])),
   sort: z
     .string()
     .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")

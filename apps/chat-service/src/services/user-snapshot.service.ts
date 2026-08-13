@@ -1,3 +1,4 @@
+import { DELETED_ACCOUNT_DISPLAY_NAME } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -27,11 +28,20 @@ const INCOMPLETE_SNAPSHOT_TTL_SECONDS = 30;
  * getUserSnapshotsMap resolves a name the same way instead of each serializer
  * inventing its own fallback (or none at all, which is how empty strings leak
  * into API responses).
+ *
+ * A deleted account short-circuits the whole chain. This is chat-service's
+ * ONE name chokepoint — the private conversation list, private room details,
+ * group member list, group roster, group pins, message reactions, read
+ * receipts and invite links all route through it — so overriding here is what
+ * makes "Deleted Account" appear on every one of those surfaces at once,
+ * rather than each of them hardcoding the string. Checked BEFORE the candidate
+ * chain because a stale snapshot may still carry the old memberId.
  */
 export function resolveDisplayName(
   snapshot: Record<string, unknown> | null | undefined
 ): string {
   if (!snapshot) return "Unknown User";
+  if (snapshot.isDeletedUser === true) return DELETED_ACCOUNT_DISPLAY_NAME;
   const candidates = [
     snapshot.fullName,
     snapshot.displayName,
@@ -73,11 +83,16 @@ export class UserSnapshotService {
         for (const user of fetched) {
           const snapshot: Record<string, unknown> = {
             userId: user.userId,
+            // Already anonymized upstream for deleted accounts (displayName is
+            // the shared literal, username/avatar are ""); nothing to blank here.
             displayName: user.displayName,
             avatar: user.avatar,
             memberId: user.username,
-            isDeletedUser: false,
-            isOnline: user.isOnline,
+            isDeletedUser: user.isDeleted,
+            // A deleted account is never online. Presence is separately masked
+            // on read, but pinning it false here stops a cached snapshot from
+            // ever describing the account as active.
+            isOnline: user.isDeleted ? false : user.isOnline,
           };
           cached.set(user.userId, snapshot);
           cacheRepo.setUserSnapshot(user.userId, snapshot).catch(() => {});
@@ -86,6 +101,12 @@ export class UserSnapshotService {
 
       // Still missing after user-service? Fall back to auth-service account name.
       // This happens when user-service has no profile yet (user.registered event not consumed).
+      //
+      // A DELETED user never reaches here: user-service returns deleted
+      // profiles (anonymized) rather than omitting them, so the id is already
+      // in `cached` above. And if the profile row genuinely never existed,
+      // auth-service's bulkGetAccounts filters deleted rows out — so this path
+      // can never resurrect a deleted account's login handle either way.
       const stillMissingIds = uniqueIds.filter((id) => !cached.has(id));
       if (stillMissingIds.length > 0) {
         const accounts = await fetchAccountsBatch(stillMissingIds);

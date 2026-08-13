@@ -49,10 +49,35 @@ export const adminUserRepository = {
     });
   },
 
-  /** Count of ACTIVE admins holding a given role — used by the "last Super Admin" guard. */
-  countActiveByRoleKey(roleKey: RoleKey) {
+  /**
+   * Count of ACTIVE admins whose EFFECTIVE set contains `permissionKey` — the
+   * same rule as `rbacRepository.getPermissionKeysForAdmin`, expressed as one
+   * query: the role grants it and no deny-override takes it away, OR an
+   * allow-override grants it regardless of role. `excludeAdminId` drops the
+   * admin being changed so the count reflects the state AFTER the change.
+   * Backs the "last admins.manage holder" lockout guards.
+   */
+  countActiveWithPermission(permissionKey: string, excludeAdminId?: string) {
     return prisma.adminUser.count({
-      where: { role: { key: roleKey }, status: "ACTIVE" },
+      where: {
+        status: "ACTIVE",
+        ...(excludeAdminId ? { id: { not: excludeAdminId } } : {}),
+        OR: [
+          {
+            role: {
+              permissions: { some: { permission: { key: permissionKey } } },
+            },
+            permissionOverrides: {
+              none: { permission: { key: permissionKey }, allow: false },
+            },
+          },
+          {
+            permissionOverrides: {
+              some: { permission: { key: permissionKey }, allow: true },
+            },
+          },
+        ],
+      },
     });
   },
 
@@ -111,6 +136,8 @@ export const adminUserRepository = {
       email?: string;
       // `null` clears the avatar (self-service PATCH /me flow).
       avatarUrl?: string | null;
+      // Preferred UI language; undefined leaves the stored value untouched.
+      language?: string;
     }
   ) {
     return prisma.adminUser.update({
@@ -121,6 +148,7 @@ export const adminUserRepository = {
         ...(input.avatarUrl !== undefined
           ? { avatarUrl: input.avatarUrl }
           : {}),
+        ...(input.language !== undefined ? { language: input.language } : {}),
       },
       include: { role: true },
     });

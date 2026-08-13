@@ -29,6 +29,10 @@ export async function registerDevice(
       platform: parsed.data.platform,
       tokenType: parsed.data.tokenType,
       deviceId: parsed.data.deviceId ?? null,
+      // Server-derived, never client-supplied: it is what lets session
+      // revocation (logout / "Logout Device" / sign-out-all) delete exactly
+      // this row instead of guessing from the client's opaque deviceId.
+      sessionId: req.auth.sessionId,
     });
     return res.status(200).json({ success: true });
   } catch (error) {

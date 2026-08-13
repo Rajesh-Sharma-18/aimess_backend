@@ -16,12 +16,13 @@
  * confirm-scan-enabled.test.ts.
  */
 
-// PNG 8-byte signature; valid for declaredMime "image/png".
-const PNG_MAGIC = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
-]);
-// JPEG signature — mismatches a declared "image/png" → structural REJECTED.
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+import { validJpeg, validPng } from "../helpers/fixtures.js";
+
+// A STRUCTURALLY VALID PNG. The old fixture was a bare 8-byte signature, which
+// the deep inspector now (correctly) rejects — a header is not a file.
+const PNG_MAGIC = validPng({ width: 16, height: 16 });
+// A structurally valid JPEG — mismatches a declared "image/png" → REJECTED.
+const JPEG_MAGIC = validJpeg({ width: 16, height: 16 });
 
 jest.mock("@aimess/storage", () => {
   const actual = jest.requireActual("@aimess/storage");
@@ -33,6 +34,7 @@ jest.mock("@aimess/storage", () => {
       contentType: "image/png",
     })),
     getObjectBytes: jest.fn(async () => PNG_MAGIC),
+    getObjectTailBytes: jest.fn(async () => null),
     deleteObject: jest.fn(async () => undefined),
   };
 });
@@ -68,7 +70,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=false)", () => {
-  it("200: structure CLEAN in dev → scanStatus CLEAN, sets CLEAN, does NOT enqueue", async () => {
+  it("200: structure CLEAN in dev → scanStatus SKIPPED (no AV engine ran), does NOT enqueue", async () => {
     const res = await request(app)
       .post("/api/v1/media/confirm")
       .set(auth())
@@ -80,17 +82,19 @@ describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=false)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.scanStatus).toBe("CLEAN");
+    // SKIPPED, not CLEAN: structural checks passed but no AV engine ran, and
+    // conflating the two made the distinction invisible in the data.
+    expect(res.body.data.scanStatus).toBe("SKIPPED");
     expect(res.body.data.objectKey).toBe(ownKey());
 
-    // PENDING set first, then CLEAN. Assert CLEAN was persisted.
-    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "CLEAN");
+    // PENDING set first, then SKIPPED. Assert the terminal value was persisted.
+    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "SKIPPED");
     // Dev path must NOT enqueue an AV scan.
     expect(mockedEnqueue).not.toHaveBeenCalled();
     expect(mockedRunScan).not.toHaveBeenCalled();
   });
 
-  it("200: structural REJECTED (magic-byte mismatch) → scanStatus INFECTED, object deleted", async () => {
+  it("200: structural REJECTED (magic-byte mismatch) → scanStatus REJECTED, object deleted", async () => {
     // Declared image/png but bytes are JPEG → assertMagicBytesMatch throws → REJECTED.
     mockedBytes.mockResolvedValue(JPEG_MAGIC);
 
@@ -104,8 +108,10 @@ describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=false)", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.scanStatus).toBe("INFECTED");
-    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "INFECTED");
+    // REJECTED, not INFECTED: a malformed file is not a virus. The two labels
+    // were previously swapped relative to their names.
+    expect(res.body.data.scanStatus).toBe("REJECTED");
+    expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "REJECTED");
     expect(mockedDelete).toHaveBeenCalledTimes(1);
     // Terminal rejection never reaches the AV enqueue/inline path.
     expect(mockedEnqueue).not.toHaveBeenCalled();

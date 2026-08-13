@@ -19,6 +19,10 @@ jest.mock("@aimess/redis", () => ({
   ...jest.requireActual("@aimess/redis"),
   publishSessionRevokedEvent: jest.fn(async () => 0),
 }));
+jest.mock("../../src/messaging/publish-session-revoked.js", () => ({
+  publishSessionDeviceRevokedSafe: jest.fn(),
+  publishAllSessionsRevokedSafe: jest.fn(),
+}));
 
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -26,6 +30,7 @@ import bcrypt from "bcryptjs";
 import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import app from "../../src/app.js";
+import { publishAllSessionsRevokedSafe } from "../../src/messaging/publish-session-revoked.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { sessionRepository } from "../../src/repositories/session.repository.js";
 import {
@@ -38,6 +43,7 @@ import {
 const repo = authRepository as unknown as Record<string, jest.Mock>;
 const sessions = sessionRepository as unknown as Record<string, jest.Mock>;
 const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
+const publishAllRevoked = publishAllSessionsRevokedSafe as unknown as jest.Mock;
 
 const CURRENT = "CurrentPass123";
 let currentHash: string;
@@ -101,6 +107,28 @@ describe("POST /api/auth/change-password", () => {
     ]);
   });
 
+  // A password change revokes the other devices' sessions but used to leave
+  // their FCM/APNs rows in notifications-service, so every signed-out device
+  // kept receiving push forever.
+  it("drops the push tokens of every device it signs out, sparing the caller's", async () => {
+    sessions.listActiveSessionIds.mockResolvedValue([
+      { id: TEST_SESSION_ID },
+      { id: "other-session-1" },
+    ]);
+
+    const res = await request(app)
+      .post("/api/auth/change-password")
+      .set(bearer(makeAccessToken()))
+      .send({ currentPassword: CURRENT, newPassword: "BrandNewPass456" });
+
+    expect(res.status).toBe(200);
+    expect(publishAllRevoked).toHaveBeenCalledTimes(1);
+    expect(publishAllRevoked).toHaveBeenCalledWith({
+      userId: TEST_USER_ID,
+      exceptSessionId: TEST_SESSION_ID,
+    });
+  });
+
   it("does not revoke anything when the current password is wrong", async () => {
     sessions.listActiveSessionIds.mockResolvedValue([
       { id: TEST_SESSION_ID },
@@ -117,6 +145,7 @@ describe("POST /api/auth/change-password", () => {
 
     expect(repo.revokeSessionsAfterPasswordChange).not.toHaveBeenCalled();
     expect(publishRevoked).not.toHaveBeenCalled();
+    expect(publishAllRevoked).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an incorrect current password", async () => {

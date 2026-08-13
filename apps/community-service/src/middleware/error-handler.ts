@@ -7,6 +7,19 @@ import { resolveLocaleFromRequest } from "@aimess/utils";
 
 import { Prisma } from "../generated/prisma/index.js";
 
+/**
+ * Stable machine-readable code for the client. The `messageKey` is already an
+ * UPPER_SNAKE token for every domain error (`COMMUNITY_INVITE_LINK_EXPIRED`,
+ * …); validation errors carry a human sentence instead, which is not a code.
+ * Mirrors chat-service's `deriveAppErrorCode`. Emitted ALONGSIDE the localized
+ * `message` — the response shape stays backward compatible.
+ */
+function errorCode(messageKey: string | undefined): string | undefined {
+  return messageKey && /^[A-Z][A-Z0-9_]*$/.test(messageKey)
+    ? messageKey
+    : undefined;
+}
+
 function localizedMessage(
   req: Request,
   messageKey: string | undefined,
@@ -27,6 +40,7 @@ export function errorHandler(
   if (error instanceof AppError) {
     res.status(error.statusCode).json({
       success: false,
+      code: errorCode(error.messageKey),
       message: localizedMessage(req, error.messageKey, error.message),
     });
     return;
@@ -39,6 +53,7 @@ export function errorHandler(
       const conflict = new ConflictError("COMMUNITY_NAME_TAKEN");
       res.status(conflict.statusCode).json({
         success: false,
+        code: errorCode(conflict.messageKey),
         message: localizedMessage(req, conflict.messageKey, conflict.message),
       });
       return;
@@ -58,6 +73,7 @@ export function errorHandler(
 
   res.status(500).json({
     success: false,
+    code: "INTERNAL_SERVER_ERROR",
     message: t("INTERNAL_SERVER_ERROR", locale),
   });
 }

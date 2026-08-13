@@ -8,6 +8,7 @@ export const VALID_CATEGORIES = [
   "COMMUNITY_CHAT_ATTACHMENT",
   "GROUP_AVATAR",
   "GROUP_CHAT_ATTACHMENT",
+  "LIVESTREAM_THUMBNAIL",
 ] as const;
 
 /**
@@ -70,8 +71,22 @@ export const cancelUploadSchema = z.object({
 export const confirmUploadSchema = z.object({
   objectKey: z.string().min(1).max(500),
   category: z.enum(VALID_CATEGORIES),
-  /** MIME type declared at upload-url time — must match what the client PUT. */
-  contentType: z.string().min(1).max(128),
+  /**
+   * ACCEPTED FOR BACKWARD COMPATIBILITY AND IGNORED.
+   *
+   * This field used to select which magic-byte accept-set applied, whether ZIP
+   * inspection ran, and which per-MIME size cap was enforced — from a value the
+   * client chose at confirm time, with nothing comparing it to the MIME the
+   * upload URL was actually issued for. Requesting `image/png`, PUTting an
+   * arbitrary payload, then confirming as `text/plain` reached an empty
+   * accept-set and skipped every structural check.
+   *
+   * The server now resolves the MIME itself from the MediaFile registry row, or
+   * from the Content-Type MinIO stored (which the presigned PUT signature
+   * binds). Existing clients keep sending this and keep working; it simply has
+   * no effect. See `resolveTrustedContentType` in media.service.ts.
+   */
+  contentType: z.string().min(1).max(128).optional(),
 });
 
 /** GET /media/scan-status?objectKey=...&category=... — poll async scan status. */

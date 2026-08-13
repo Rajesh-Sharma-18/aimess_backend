@@ -516,6 +516,16 @@ export type CommunityMemberData = {
    * synthetic "Unknown" placeholder for a valid user.
    */
   profileUnavailable?: boolean;
+  /**
+   * True when this member's ACCOUNT has been deleted. Distinct from
+   * `profileUnavailable` (a lookup miss, usually transient) and from
+   * `status: BANNED` (an account that still exists): a deleted account is
+   * permanent and its identity is already anonymized — snapshotUsername is "",
+   * snapshotDisplayName is the shared "Deleted Account" literal and the avatar
+   * is null. Clients gate on THIS flag to hide profile navigation and every
+   * member action (promote, mute, ban, report, message) for the row.
+   */
+  isDeleted?: boolean;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */
@@ -598,15 +608,18 @@ export type CommunityMemberWarningData = {
 /** Per-community notification preference toggles for the calling member. */
 export type CommunityNotificationPreferenceData = {
   communityId: string;
-  /** null = not muted or muted indefinitely. */
+  /**
+   * End of a TIMED mute ("mute for 8 hours"); null = no timed mute running.
+   * An indefinite mute is NOT stored here — it is all three toggles off.
+   */
   mutedUntil: string | null;
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
   /**
-   * Derived convenience flag for the FE mute badge: true when EVERY category
-   * toggle is off (stream + chat + announcement all disabled). Not stored —
-   * computed from the three toggles above.
+   * Derived convenience flag for the FE mute badge: true when a timed mute is
+   * still running, or EVERY category toggle is off. Not stored — computed, so
+   * the badge can never contradict the three switches.
    */
   isMuted: boolean;
   createdAt: string | null;

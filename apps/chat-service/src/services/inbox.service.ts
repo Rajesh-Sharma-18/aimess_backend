@@ -116,6 +116,14 @@ export interface InboxItem {
   /** GROUP-only: epoch-ms mirror of `memberMutedUntil` (§6 — every timestamp a
    *  client consumes is an integer epoch-ms UTC). null = indefinite / not muted. */
   memberMutedUntilMs: number | null;
+  /**
+   * GROUP-only: the group was disbanded by an admin. Membership stays ACTIVE
+   * (history remains readable) so `membershipStatus` cannot express this — but
+   * every write is rejected with CHAT_GROUP_DISBANDED. Carried on the row so a
+   * cold open renders the read-only composer without waiting for the
+   * `group:disbanded` socket event. Null for PRIVATE rows.
+   */
+  isDisbanded: boolean | null;
 }
 
 export interface InboxResult {
@@ -307,6 +315,7 @@ export class InboxService {
       isMemberMuted: null,
       memberMutedUntil: null,
       memberMutedUntilMs: null,
+      isDisbanded: null,
     };
   }
 
@@ -348,6 +357,7 @@ export class InboxService {
       isMemberMuted: room.isMemberMuted ?? false,
       memberMutedUntil: room.memberMutedUntil ?? null,
       memberMutedUntilMs: room.memberMutedUntilMs ?? null,
+      isDisbanded: room.status === "DISBANDED",
     };
   }
 }

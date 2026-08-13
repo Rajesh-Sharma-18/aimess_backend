@@ -19,5 +19,8 @@ module.exports = {
     "<rootDir>/apps/api-gateway/jest.config.cjs",
     "<rootDir>/apps/media-service/jest.config.cjs",
     "<rootDir>/apps/stream-service/jest.config.cjs",
+    // Shared packages had no project at all, so the error hierarchy and the
+    // response envelope every service depends on were never executed.
+    "<rootDir>/packages/jest.config.cjs",
   ],
 };

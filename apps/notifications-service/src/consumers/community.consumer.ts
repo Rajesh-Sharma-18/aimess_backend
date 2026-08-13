@@ -164,7 +164,10 @@ async function handleCommunityEvent(
             communityAvatarUrl: p.communityAvatarUrl ?? "",
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
-          buildDeepLink("stream", p.livestreamId),
+          // The community, not the stream: `aimess://stream/<id>` carries no community
+          // context, so any client falling back to the deep link (web did) had nothing to
+          // open the stream *in*. `livestreamId` still rides in navigation + data.
+          buildDeepLink("community", p.communityId),
           "liveStreamEnabled",
           {
             screen: "COMMUNITY_LIVESTREAM",

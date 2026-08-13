@@ -56,6 +56,56 @@ export const MEDIA_MESSAGES = {
     en: "This file was blocked by a security scan",
     th: "ไฟล์นี้ถูกบล็อกจากการตรวจสอบความปลอดภัย",
   },
+
+  // ── Security-verdict codes ────────────────────────────────────────────────
+  // These give the frontend a machine-readable reason WITHOUT disclosing which
+  // detector fired or why. A client can tell "wrong format" from "too big" from
+  // "malware" from "try again later" and word its own message accordingly; it
+  // cannot learn the ClamAV signature name, the compression-ratio threshold, the
+  // bucket, or any internal path. The detail lives in the audit log only.
+
+  /** Structural validation failed: malformed, polyglot, bomb, active content. */
+  MEDIA_SECURITY_VALIDATION_FAILED: {
+    vi: "Không thể tải tệp này lên vì không vượt qua kiểm tra bảo mật.",
+    en: "This file could not be uploaded because it failed security validation.",
+    th: "ไม่สามารถอัปโหลดไฟล์นี้ได้เนื่องจากไม่ผ่านการตรวจสอบความปลอดภัย",
+  },
+  /** An antivirus engine identified malware. Distinct from the above on purpose. */
+  MEDIA_MALWARE_DETECTED: {
+    vi: "Tệp này chứa mã độc và đã bị chặn.",
+    en: "This file contains malware and has been blocked.",
+    th: "ไฟล์นี้มีมัลแวร์และถูกบล็อกแล้ว",
+  },
+  /** The bytes are not a valid instance of the declared format. */
+  MEDIA_INVALID_CONTENT: {
+    vi: "Nội dung tệp không khớp với định dạng đã khai báo.",
+    en: "The file content does not match its declared format.",
+    th: "เนื้อหาไฟล์ไม่ตรงกับรูปแบบที่ระบุไว้",
+  },
+  /** The scan could not complete — transient, the client may retry. */
+  MEDIA_SCAN_FAILED: {
+    vi: "Không thể kiểm tra tệp này. Vui lòng thử tải lên lại.",
+    en: "This file could not be scanned. Please try uploading it again.",
+    th: "ไม่สามารถตรวจสอบไฟล์นี้ได้ กรุณาลองอัปโหลดใหม่อีกครั้ง",
+  },
+  /** Storage/registry is down; the request is well-formed and worth retrying. */
+  MEDIA_REGISTRY_UNAVAILABLE: {
+    vi: "Dịch vụ phương tiện tạm thời không khả dụng. Vui lòng thử lại.",
+    en: "The media service is temporarily unavailable. Please try again.",
+    th: "บริการสื่อไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่อีกครั้ง",
+  },
+  /** A thumbnail key was committed against a different livestream than it was minted for. */
+  LIVESTREAM_THUMBNAIL_INVALID_KEY: {
+    vi: "Khóa ảnh thu nhỏ không thuộc về buổi phát trực tiếp này",
+    en: "This thumbnail key does not belong to this livestream",
+    th: "คีย์ภาพขนาดย่อนี้ไม่ได้เป็นของไลฟ์สตรีมนี้",
+  },
+  /** An attachment was referenced before it passed the security pipeline. */
+  MEDIA_NOT_VERIFIED: {
+    vi: "Tệp đính kèm chưa được kiểm tra bảo mật xong.",
+    en: "This attachment has not finished security verification.",
+    th: "ไฟล์แนบนี้ยังตรวจสอบความปลอดภัยไม่เสร็จ",
+  },
 } as const satisfies MessageCatalog;
 
 export type MediaMessageKey = keyof typeof MEDIA_MESSAGES;

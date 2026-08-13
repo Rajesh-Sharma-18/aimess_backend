@@ -409,13 +409,25 @@ export class GroupMemberRepository {
     roomId: string;
     senderId: string | null;
     messageCreatedAt: Date;
+    /**
+     * Delete-for-ME: restrict the decrement to this one member. Omitted by
+     * delete-for-everyone, which correctly adjusts every member who still had
+     * the message in their unread window.
+     */
+    onlyUserId?: string;
   }): Promise<void> {
     await this.prisma.groupMember.updateMany({
       where: {
         roomId: params.roomId,
         status: "ACTIVE",
+        // Never lets a badge go negative, and makes a double-delivered decrement
+        // harmless.
         unreadCount: { gt: 0 },
-        ...(params.senderId ? { userId: { not: params.senderId } } : {}),
+        ...(params.onlyUserId
+          ? { userId: params.onlyUserId }
+          : params.senderId
+            ? { userId: { not: params.senderId } }
+            : {}),
         OR: [
           { lastReadAt: null },
           { lastReadAt: { lt: params.messageCreatedAt } },
@@ -465,25 +477,35 @@ export class GroupMemberRepository {
   }
 
   /**
-   * Admin Group Management: filterable/paginated ACTIVE members of one room.
-   * `userIdsFromSearch` (free-text identity matches) and `qExactUserId` (a UUID
-   * pasted verbatim) both constrain to a userId set when present.
+   * Admin Group Management: filterable/paginated members of one room.
+   * `status` is "" / "ACTIVE" (default, active only), "ALL" (no filter) or an
+   * exact membership status — moderation state (LEFT/KICKED/BANNED) is
+   * otherwise invisible to the admin panel. `userIdsFromSearch` (free-text
+   * identity matches) and `qExactUserId` (a UUID pasted verbatim) both constrain
+   * to a userId set when present.
    */
   async adminListMembers(params: {
     roomId: string;
     role?: string;
+    status?: string;
     userIdsFromSearch?: string[] | null;
     qExactUserId?: string | null;
     skip: number;
     take: number;
   }): Promise<{ rows: GroupMember[]; total: number }> {
-    const { roomId, role, userIdsFromSearch, qExactUserId, skip, take } =
-      params;
+    const {
+      roomId,
+      role,
+      status,
+      userIdsFromSearch,
+      qExactUserId,
+      skip,
+      take,
+    } = params;
 
-    const and: Array<Record<string, unknown>> = [
-      { roomId },
-      { status: "ACTIVE" },
-    ];
+    const and: Array<Record<string, unknown>> = [{ roomId }];
+    const statusFilter = (status || "ACTIVE").toUpperCase();
+    if (statusFilter !== "ALL") and.push({ status: statusFilter });
     if (role) and.push({ role });
     if (userIdsFromSearch || qExactUserId) {
       const dedup = [

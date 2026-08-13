@@ -37,6 +37,10 @@ const envSchema = z.object({
   MINIO_BUCKET_AVATARS: z.string().min(1),
   MINIO_BUCKET_COMMUNITY: z.string().min(1),
   MINIO_BUCKET: z.string().min(1),
+  // Livestream thumbnails. backoffice-service uploads into this bucket and no
+  // service was provisioning it (`ensureBuckets` was never called with it), so
+  // it also never received the CORS rules a browser presigned PUT needs.
+  MINIO_BUCKET_STREAM: z.string().min(1).default("aimess-stream"),
   MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
   MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(604800),
 
@@ -45,6 +49,11 @@ const envSchema = z.object({
     .positive()
     .default(5 * 1024 * 1024),
   COMMUNITY_IMAGE_MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .positive()
+    .default(5 * 1024 * 1024),
+  // Matches backoffice-service's STREAM_THUMBNAIL_UPLOAD_DEF ceiling.
+  STREAM_THUMBNAIL_MAX_BYTES: z.coerce
     .number()
     .positive()
     .default(5 * 1024 * 1024),

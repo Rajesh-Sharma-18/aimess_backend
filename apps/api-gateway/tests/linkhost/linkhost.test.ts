@@ -97,6 +97,14 @@ describe("link host (Host: aimess.me)", () => {
     expect(res.text).toContain("Private community");
   });
 
+  it("carries the invite target into the web fallback (no bare /login bounce)", async () => {
+    const res = await request(app).get("/+SECRETCODE").set("Host", LINK_HOST);
+    // "Continue on web" must deep-link the web app at the same canonical shape;
+    // sending it to /login instead loses the code for already-signed-in users.
+    expect(res.text).toContain('"webTarget":"/+SECRETCODE"');
+    expect(res.text).not.toContain("/login?returnTo=");
+  });
+
   it("redirects root to the web app", async () => {
     const res = await request(app).get("/").set("Host", LINK_HOST);
     expect(res.status).toBe(302);

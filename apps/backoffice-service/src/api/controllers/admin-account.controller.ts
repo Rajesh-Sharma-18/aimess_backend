@@ -158,7 +158,7 @@ export const getAdminPermissions: RequestHandler = (req, res, next) => {
   })();
 };
 
-/** PATCH /v1/admin-accounts/:adminId/permissions — reassign role (permissions are role-derived). */
+/** PATCH /v1/admin-accounts/:adminId/permissions — reassign role and/or set the permission grid. */
 export const updateAdminPermissions: RequestHandler = (req, res, next) => {
   void (async () => {
     try {

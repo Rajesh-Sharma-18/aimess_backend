@@ -1,20 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
 
-import { t, type MessageKey } from "@aimess/constants";
 import { AppError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
-import { resolveLocaleFromRequest } from "@aimess/utils";
-
-function localizedMessage(
-  req: Request,
-  messageKey: string | undefined,
-  fallback: string
-): string {
-  if (!messageKey) return fallback;
-
-  const locale = req.locale ?? resolveLocaleFromRequest(req);
-  return t(messageKey as MessageKey, locale);
-}
+import { getRequestId, sendApiError } from "@aimess/utils";
 
 export function errorHandler(
   error: unknown,
@@ -23,19 +11,27 @@ export function errorHandler(
   _next: NextFunction
 ): void {
   if (error instanceof AppError) {
-    res.status(error.statusCode).json({
-      success: false,
-      message: localizedMessage(req, error.messageKey, error.message),
+    sendApiError(req, res, {
+      statusCode: error.statusCode,
+      messageKey: error.messageKey,
+      fallbackMessage: error.message,
+      retryAfterSec: error.retryAfterSec,
     });
     return;
   }
 
-  logger.error(error);
+  // Correlate the stack trace with the id the client was handed, so a user
+  // quoting the request id from a 500 can be matched to this line. Previously
+  // this was a bare `logger.error(error)` with nothing tying it to a request.
+  logger.error("Unhandled gateway error", {
+    requestId: getRequestId(req),
+    method: req.method,
+    path: req.path,
+    error,
+  });
 
-  const locale = req.locale ?? resolveLocaleFromRequest(req);
-
-  res.status(500).json({
-    success: false,
-    message: t("INTERNAL_SERVER_ERROR", locale),
+  sendApiError(req, res, {
+    statusCode: 500,
+    messageKey: "INTERNAL_SERVER_ERROR",
   });
 }

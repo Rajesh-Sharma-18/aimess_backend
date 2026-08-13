@@ -347,15 +347,6 @@ const startServer = async () => {
     const userServiceClient = createUserServiceClient();
     const authAdminClient = createAuthAdminClient();
 
-    // Admin Group Management read-side (backed by 3 admin gRPC RPCs).
-    const adminGroupService = new AdminGroupService(
-      groupRoomRepo,
-      groupMemberRepo,
-      userSnapshotService,
-      cacheRepo,
-      authAdminClient
-    );
-
     // Constructed early so it can be injected into PrivateRoomService (REST
     // isOnline/isOffline/lastSeen) and ChatMessageOrchestrator below — single
     // source of truth for real-time presence.
@@ -442,6 +433,18 @@ const startServer = async () => {
       groupMessageRepo,
       userSnapshotService,
       cacheRepo
+    );
+    // Admin Group Management (backoffice gRPC): reads plus the two moderation
+    // writes, which delegate to the group services above so disband/remove keep
+    // their invite-link revoke, eviction and roster fan-out.
+    const adminGroupService = new AdminGroupService(
+      groupRoomRepo,
+      groupMemberRepo,
+      userSnapshotService,
+      cacheRepo,
+      authAdminClient,
+      groupRoomService,
+      groupMemberService
     );
     const groupMessageService = new GroupMessageService(
       groupMessageRepo,

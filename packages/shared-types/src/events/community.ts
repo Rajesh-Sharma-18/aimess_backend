@@ -193,7 +193,14 @@ export interface NotificationNavigation {
   communityName?: string | null;
   communityAvatarUrl?: string | null;
   communityHandle?: string | null;
-  /** Chat room to open. Community rooms carry both this and communityId. */
+  /**
+   * Chat room to open. Community rooms carry both this and communityId.
+   *
+   * Absent on `PRIVATE_CHAT` when the DM does not exist yet (a pending friend
+   * request): the row is identified by `userId` alone. Clients MUST fall back
+   * to `userId` for PRIVATE_CHAT — every platform's DM route get-or-creates the
+   * room from a peer id — or the tap resolves to nothing.
+   */
   roomId?: string;
   conversationType?: "PRIVATE" | "PRIVATE_PENDING" | "GROUP" | "COMMUNITY";
   /** Open the chat scrolled to this message (mentions, replies, reports). */

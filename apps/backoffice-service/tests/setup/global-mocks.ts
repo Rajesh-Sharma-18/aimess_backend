@@ -84,6 +84,24 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
   chatClient: {},
 }));
 
+// --- media-service gRPC client: same `import.meta.url` + proto-loader problem
+//     as the clients above. Backs the livestream-thumbnail commit, which now
+//     runs media-service's shared security pipeline over the uploaded bytes
+//     before the key is persisted. Default: a downloadable verdict, so existing
+//     thumbnail tests keep passing; the security test overrides it. ----------
+jest.mock("../../src/grpc/media.client.js", () => {
+  const confirmUpload = jest.fn(async () => ({
+    scanStatus: "CLEAN",
+    downloadable: true,
+    fileSize: 1024,
+  }));
+  return {
+    getMediaConfirmClient: jest.fn(() => ({ confirmUpload })),
+    createMediaConfirmClient: jest.fn(() => ({ confirmUpload })),
+    setMediaConfirmClient: jest.fn(),
+  };
+});
+
 // --- RabbitMQ publishers: fire-and-forget no-ops --------------------------
 jest.mock("../../src/messaging/publish-admin-user-event.js", () => ({
   publishUserBannedSafe: jest.fn(),

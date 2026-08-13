@@ -20,7 +20,10 @@ import {
   type VisibilitySource,
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
-import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import {
+  getPrivateDeletionCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
 import { buildAutoDeleteWire, readRoomAutoDelete } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
@@ -723,12 +726,8 @@ export class PrivateRoomService {
       // shows. Same cutoff the preview below applies.
       const statusCutoff = getPrivateDeletionCutoff(room, userId);
       const lmCreatedAt = (rawLmForStatus as Record<string, unknown> | null)
-        ?.createdAt;
-      const hiddenForStatus = Boolean(
-        statusCutoff &&
-        lmCreatedAt &&
-        new Date(lmCreatedAt as string | Date) <= statusCutoff
-      );
+        ?.createdAt as string | Date | undefined;
+      const hiddenForStatus = isHiddenByCutoff(lmCreatedAt, statusCutoff);
       if (
         lmSenderId !== userId ||
         !room.lastMessageId ||
@@ -819,10 +818,11 @@ export class PrivateRoomService {
         ? (perUserFallback.get(room.roomId) ?? null)
         : room.lastMessage;
       const cutoff = getPrivateDeletionCutoff(room, userId);
-      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
-      const hiddenByCutoff = Boolean(
-        cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
-      );
+      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt as
+        | string
+        | Date
+        | undefined;
+      const hiddenByCutoff = isHiddenByCutoff(rawLmDate, cutoff);
       const visibleRawLm = hiddenByCutoff ? null : rawLm;
       // "This viewer has NOTHING visible left in this room" — either their
       // clear/delete-conversation cutoff swallowed the last message, or the
@@ -894,9 +894,21 @@ export class PrivateRoomService {
       // stale reaction with no explicit clear needed. Every other viewer (never
       // more than one "other" here, since PRIVATE has exactly 2 participants)
       // keeps the real last message untouched.
+      //
+      // The cutoff gate is the SAME one the preview above applies: a reaction
+      // that landed at/before the viewer's clear is part of the history they
+      // emptied. Without it the overlay walked straight past `nothingVisible`
+      // (which forces `lastActivityAt` to 0, so *any* stored reaction compared
+      // as "newer") and re-rendered "You reacted 🔥 to …" — with the old
+      // timestamp — on a chat the viewer had just cleared.
+      // ponytail: gates on the reaction's OWN time only. A reaction made AFTER
+      // the clear still previews, even though its target message is below the
+      // cutoff; hiding that too needs the target's createdAt, i.e. a per-row
+      // message lookup.
       if (
         room.reactionActivityAt &&
-        room.reactionActivityAt.getTime() > lastActivityAt
+        room.reactionActivityAt.getTime() > lastActivityAt &&
+        !isHiddenByCutoff(room.reactionActivityAt, cutoff)
       ) {
         const isActor = room.reactionActivityActorId === userId;
         const isTarget = room.reactionActivityTargetId === userId;
@@ -926,6 +938,10 @@ export class PrivateRoomService {
 
       const avatarMedia = avatarMediaByPeer.get(peerId) ?? ({} as MediaObject);
 
+      // One peer object feeds BOTH the conversation list and the room-details
+      // header, so the deleted-account rules only have to be applied here.
+      const isDeletedPeer = snapshot.isDeletedUser === true;
+
       return {
         ...room,
         lastMessage,
@@ -939,14 +955,33 @@ export class PrivateRoomService {
           avatarUrl:
             urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
-          isDeletedUser: snapshot.isDeletedUser === true,
-          isOnline: presenceByPeer.get(peerId)?.isOnline ?? false,
-          lastSeen: presenceByPeer.get(peerId)?.lastSeen ?? null,
+          isDeletedUser: isDeletedPeer,
+          // A deleted account has no presence to report. Its sockets were
+          // force-dropped at deletion so `isOnline` is already false in
+          // practice, but `lastSeen` outlives that in Redis and would keep
+          // rendering "Last seen 3 minutes ago" under a Deleted Account header.
+          isOnline: isDeletedPeer
+            ? false
+            : (presenceByPeer.get(peerId)?.isOnline ?? false),
+          lastSeen: isDeletedPeer
+            ? null
+            : (presenceByPeer.get(peerId)?.lastSeen ?? null),
         },
         lastActivityAt,
         lastActivity,
         unreadMessageCount: unreadCountByUser[userId] ?? 0,
-        friendship: friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP,
+        // The status itself stays factual (they ARE still your friend on
+        // record, and unfriend cleanup depends on that), but nothing about the
+        // relationship is actionable any more — every one of these buttons
+        // posts to an endpoint that can only fail against a deleted account.
+        friendship: isDeletedPeer
+          ? {
+              ...(friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
+              canAccept: false,
+              canReject: false,
+              canCancel: false,
+            }
+          : (friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,
       };
     });
@@ -1096,6 +1131,13 @@ export class PrivateRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
+      // `setClearFor` above already zeroed this user's stored counter; state it
+      // explicitly so the client SETs 0 instead of keeping a badge for messages
+      // it can no longer show.
+      resolveUnreadCounts: async () => ({ [userId]: 0 }),
+      // 0 is BELOW whatever the client currently shows, so without this marker
+      // the monotonic list guard drops the clear and the row stays at the top.
+      deleteRecalc: true,
     });
   }
 

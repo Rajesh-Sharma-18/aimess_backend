@@ -1,4 +1,8 @@
 import { BadRequestError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import { publishSessionRevokedEvent } from "@aimess/redis";
 import bcrypt from "bcryptjs";
 
@@ -114,6 +118,16 @@ export const accountDeletionService = {
     publishUserDeletedSafe({
       userId,
       deletedAt: deletedAt.toISOString(),
+    });
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_ACCOUNT_DELETED,
+      targetType: "user",
+      targetId: userId,
+      after: { revokedSessionCount: revokedSessionIds.length },
+      ip: context.ip ?? null,
+      userAgent: context.userAgent ?? null,
     });
 
     return { deletedAt: deletedAt.toISOString() };

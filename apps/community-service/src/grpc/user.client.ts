@@ -17,6 +17,13 @@ interface UserSnapshotRecord {
   username: string;
   displayName: string;
   avatarObjectKey: string;
+  /**
+   * Account deleted. user-service already blanked username/avatarObjectKey and
+   * set displayName to the shared "Deleted Account" literal, so this flag only
+   * decides what NOT to do: never treat the id as an addable/inviteable user,
+   * never let a stored member snapshot win over these anonymized values.
+   */
+  isDeleted: boolean;
 }
 
 interface BulkSnapshotsResult {

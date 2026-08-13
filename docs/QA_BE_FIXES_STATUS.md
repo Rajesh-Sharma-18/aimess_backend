@@ -1,6 +1,7 @@
 # QA Audit — Backend Fix Status
 
-**Date:** 2026-08-12 · **Branch:** `rajesh-dev` · **Commits:** `dc55e7a4`, `15ec5482`, `4b70e494`
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev` · **Commits:** `dc55e7a4`,
+`15ec5482`, `4b70e494`, `a1c38346`, `0028b518`
 
 ## Scope note — read this first
 
@@ -198,25 +199,38 @@ All additive or widening. No client change is required.
 
 ## 4. Not fixed
 
-### AUDIT-114 — `/changes` returns `items: []`
+### AUDIT-114 — `/changes` returns `items: []` — **not a code defect**
 
-Could not reproduce from the code. The stated root cause ("ensure
-`allocateSequenceBlock` actually increments `lastRevision`") is **already
-satisfied**: [private-room.repository.ts:79](../apps/chat-service/src/repositories/private-room.repository.ts)
+The stated root cause ("ensure `allocateSequenceBlock` actually increments
+`lastRevision`") is **already satisfied**:
+[private-room.repository.ts:79](../apps/chat-service/src/repositories/private-room.repository.ts)
 increments both counters in one `$inc`; `allocateRoomSlot` hands out
 `firstRev + i` correctly; `createMessage` and `createForwardedMessage` both stamp
 `revision`; `findByRoomIdRevisionSince` filters `revision > since`.
 
-Two candidates that need the repro to choose between:
+The answer is in the existing backfill script, which says so in its own header —
+[scripts/backfill-revisions.ts](../apps/chat-service/scripts/backfill-revisions.ts):
 
-1. Pre-backfill rows default to `revision = 0`, so `since_revision=0` excludes
-   them — `/changes` would look permanently empty for any room whose messages
-   predate the field. A backfill would fix it.
-2. `enrichMessages`' per-viewer filter emptying the page after the slice (which
-   is legal per the endpoint's own contract: `items.length < limit` with
-   `hasMore: true`).
+> OPTIONAL. The zero-loss cold-start flow baselines from V2 history + the
+> response's `roomRevision`, so it works WITHOUT this backfill (old rows keep
+> revision 0 and simply don't appear in `/changes` until they're next mutated).
 
-**Needs §4's repro steps.**
+`revision` defaults to `0` and `since_revision=0` filters `revision > 0`, so a
+room whose messages all predate the revision field returns `items: []` — the
+reported symptom exactly. It is un-run maintenance, not a dead endpoint, and
+clients are not actually broken (cold start baselines from history +
+`roomRevision`).
+
+**Resolution: run the existing backfill.** It covers all three room kinds and is
+idempotent and resumable.
+
+```bash
+pnpm --filter @aimess/chat-service backfill:revision
+```
+
+Worth confirming against the original repro if the report turns up — if QA saw
+empty `items` on a room with messages sent _after_ the fix, that would be a
+different bug.
 
 ### AUDIT-002 — `poweredByHeader: false`
 
@@ -229,12 +243,28 @@ web frontend, it belongs in the `aimess_website` repo.
 
 Not quoted in the brief beyond a handful of one-line summaries. Needs the report.
 
-### Still open, found in passing
+### Also fixed — `tests/AUDIT.md` F1/F2/F3 (auth-service)
 
-`sensitiveAuthRateLimiter` is imported by **nothing**. Its window bug is fixed,
-but `/auth/login`, `/register` and `/forgot-password` remain unthrottled at the
-service layer. That is a separate change with its own blast radius (it will start
-429-ing real traffic), so it was not folded in here.
+Not in the brief, but still open in the same files and the same class of defect:
+
+- **F1** — `/login` ran with **no validation**: `validateBody(loginSchema)` was
+  commented out, so a missing `account` threw inside the service (500, not 400),
+  an object `account` reached the repository and a non-string `password` reached
+  bcrypt. Re-enabled. Login deliberately uses a **laxer** password rule than
+  registration — applying the min-8 creation policy here would lock out any
+  account created before that rule, turning a credential check into a validation
+  error.
+- **F2** — `sensitiveAuthRateLimiter` was imported by nothing. Now mounted on
+  login, register, social login and all three forgot-password routes. It is
+  per-IP (the only key available pre-auth); `AUTH_MAX_FAILED_LOGINS` remains the
+  per-account defence against a distributed attempt.
+- **F3** — its `windowMs` was fed the raw MINUTES env var, making the window 15
+  **milliseconds**. Fixed, and pinned by the draft-7 policy header (`w=900`).
+
+> Deployment note: F2 starts returning 429 on real traffic. Default ceiling is
+> `SENSITIVE_AUTH_RATE_LIMIT_MAX=20` per 15 min per IP. Behind a NAT or a proxy
+> with `TRUST_PROXY_HOPS=0`, every client shares one apparent IP — check that
+> value before rolling out.
 
 ---
 
@@ -248,17 +278,26 @@ service layer. That is a separate change with its own blast radius (it will star
 | [api-gateway/tests/utils/not-found-envelope.test.ts](../apps/api-gateway/tests/utils/not-found-envelope.test.ts)                                       | 001                     |
 | [auth-service/tests/account/change-password-rate-limit.test.ts](../apps/auth-service/tests/account/change-password-rate-limit.test.ts)                 | 107                     |
 | [community-service/tests/invite-links/invite-auto-approve-gate.test.ts](../apps/community-service/tests/invite-links/invite-auto-approve-gate.test.ts) | 108                     |
+| [auth-service/tests/auth/sensitive-auth-limiter-mounted.test.ts](../apps/auth-service/tests/auth/sensitive-auth-limiter-mounted.test.ts)               | F2, F3                  |
 
 **Extended:** `cross-room-idor-writes` (104), `group-message` (110),
 `group-room` (109), `community-room` (101/102, rewritten — it previously asserted
 the holes as intended behaviour), `chat-cursor` + `effective-last-activity` (111,
-one case pinned the dropping semantics).
+one case pinned the dropping semantics), `media/upload` + `media/download` +
+`media/scan-status` (112/147 — two cases asserted the prefix-only check as
+intended behaviour), `auth/login-extra` (F1 — one case asserted the missing
+validator as intended behaviour).
 
 Every negative asserts both the rejection **and** that the side effect never
 fired — a 403 that still wrote the row or still published the event is not a fix.
 
-**Harness fixes** (both were causing pre-existing failures):
+**Harness fixes:**
 
+- **media-service's suite could not run at all.** Its own `tests/helpers/auth.ts`
+  imports `jsonwebtoken` to mint admin tokens (copied from backoffice-service,
+  which declares it) but the dependency was never added — every spec died on
+  "Cannot find module". Adding the devDependency brought 9 suites / 86 tests back
+  online, which is how AUDIT-112/147 got real coverage.
 - `userServiceClient` had no `isFriendshipBlocked`, so every private send 500'd
   on "not a function".
 - `privateRoomRepo.findByRoomId` had no default; the guards now run on the write
@@ -269,7 +308,7 @@ fired — a 403 that still wrote the row or still published the event is not a f
 |                       | Suites failed | Tests failed | Total |
 | --------------------- | ------------- | ------------ | ----- |
 | Baseline (`bf5f9645`) | 40            | 103          | 3904  |
-| After                 | 35            | 83           | 3937  |
+| After                 | 32            | 83           | 4006  |
 
 **Zero new failures.** Compared by test NAME, not count, against the same
 baseline commit. Two pre-existing failures fixed as a side effect of the harness
@@ -281,50 +320,62 @@ community-service, but on `prisma generate`'s Windows EPERM rename, not on types
 
 ---
 
-## 6. Migration / data cleanup required
+## 6. Migrations
 
-### AUDIT-112 — backfill `MediaFile.resourceId`
+Every script below **defaults to a dry run** — it prints exactly what it would
+change and writes nothing. Add `-- --apply` to commit. All are idempotent.
+
+### AUDIT-112 — backfill `MediaFile.resourceId` (run BEFORE/WITH deploy)
 
 Community and group attachments whose registry row has no `resourceId` are now
-downloadable **by their uploader only**, because nothing recoverable from the
-object key identifies the room to check membership against.
+downloadable **by their uploader only** — nothing recoverable from the object key
+identifies the room to check membership against. This recovers the value from the
+message carrying each key.
 
-Backfill `resourceId` from the chat message carrying each `objectKey` to restore
-access for the other members. The affected set cannot grow — `resourceId` is now
-required at upload time (AUDIT-147).
+Two steps, because the messages and the registry live in separate databases:
 
-Scoping query (registry side):
-
-```
-db.MediaFile.countDocuments({
-  uploadCategory: { $in: ["COMMUNITY_CHAT_ATTACHMENT", "GROUP_CHAT_ATTACHMENT"] },
-  $or: [{ resourceId: null }, { resourceId: { $exists: false } }]
-})
+```bash
+pnpm --filter @aimess/chat-service export:attachment-resource-map
 ```
 
-Run it before deploying to size the impact. If the count is zero, no migration is
-needed.
+```bash
+pnpm --filter @aimess/media-service migrate:attachment-resource-map ./attachment-resource-map.json -- --apply
+```
+
+The dry run reports how many registry rows lack a `resourceId` and how many the
+map can fill. **If that first number is zero, no migration is needed.** Rows that
+stay unmatched are objects no message references (abandoned uploads, or messages
+hard-deleted) — they correctly remain uploader-only. The affected set cannot
+grow: `resourceId` is required at upload time now (AUDIT-147).
 
 ### AUDIT-109 — existing disbanded groups
 
-Groups disbanded before this change still hold ACTIVE `GroupMember` rows and are
-still writable. One-off:
+Groups disbanded before the fix still hold ACTIVE `GroupMember` rows and still
+accept writes. Ends them per-room at each room's own `disbandedAt`, so the read
+cutoff and the room timestamp agree.
 
+```bash
+pnpm --filter @aimess/chat-service migrate:disbanded-group-members -- --apply
 ```
-db.GroupMember.updateMany(
-  { roomId: { $in: <ids of GroupRoom where status="DISBANDED"> }, status: "ACTIVE" },
-  { $set: { status: "LEFT", leftAt: <that room's disbandedAt> } }
-)
-```
-
-Per-room, so `leftAt` matches each room's own `disbandedAt` and the read cutoff
-stays consistent.
 
 ### AUDIT-101 — `memberNumber` drift
 
-Every previous `join` call incremented `memberNumber` on top of the sync
-consumer's own increment, so community member counts are inflated by an unknown
-amount. Recompute from `RoomMember` where `status = "active"` per room.
+Every previous `join` incremented `memberNumber` on top of the sync consumer's
+own increment, so community counts are inflated by an unknown amount. Recomputes
+from active `RoomMember` rows.
+
+```bash
+pnpm --filter @aimess/chat-service migrate:community-member-number -- --apply
+```
+
+### AUDIT-114 — revision backfill (optional)
+
+See §4. Only needed if `GET .../changes?since_revision=0` should also serve the
+historical baseline; the cold-start flow works without it.
+
+```bash
+pnpm --filter @aimess/chat-service backfill:revision
+```
 
 ---
 
@@ -350,3 +401,199 @@ amount. Recompute from `RoomMember` where `status = "active"` per room.
 6. The community room list adds one indexed membership query per call. It
    replaces an unbounded full-table scan, so it should be a net win, but it is a
    new query on a hot path.
+
+---
+
+## 8. Issues 50 + 51 — community notification preferences vs. the mute icon
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Filed as two symptoms; they are one defect in the storage model of
+`CommunityMuteSetting`, which carried two contradictory meanings on one row.
+
+### Root cause
+
+`CommunityMuteSetting` holds both the three category toggles
+(`chatEnabled` / `announcementEnabled` / `streamEnabled`) and `mutedUntil`. The
+old code read `mutedUntil === null` on an existing row as "muted indefinitely":
+
+- `apps/community-service/src/lib/community-notification-pref.ts:23-28,50` —
+  `isMuteRowActive()` returned true for any row with `mutedUntil === null`, and
+  the oracle short-circuited to `false` for **every** field before it ever read
+  the requested toggle.
+- `apps/community-service/src/repositories/community.repository.ts:3064-3078` —
+  `upsertNotificationPrefs()` creates the row with `mutedUntil` unset, i.e.
+  `null`.
+
+So the first time a member touched **any** switch, the row it created was
+indistinguishable from an indefinite mute. Every notification kind was
+suppressed from then on and switching a category back on changed nothing —
+**issue 51**. The same predicate fed the caller-facing mute flag
+(`community.service.ts:924`, `muteFields()`), so the list/sidebar rendered the
+mute icon while the panel showed all three switches green — **issue 50**.
+
+### Fix — one meaning per field
+
+`mutedUntil` is now a **timed** mute only (`null` = no timed mute). An
+indefinite mute is stored as all three toggles false. `isMuted` is always
+derived, never stored: a running timed mute, or all three off.
+
+| File                                      | Change                                                                                                                                                                                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/community-notification-pref.ts`      | `isMuteRowActive` → `isTimedMuteActive` (future timestamp only) + new `isCommunityMuted` derivation; oracle falls through to the per-field toggle                                                                                       |
+| `repositories/community.repository.ts`    | `upsertMute(…, null)` writes all three toggles false; `findStreamMutedMemberIds` also excludes members under a running timed mute                                                                                                       |
+| `services/community.service.ts`           | `muteFields`, `getNotificationPreferences`, `setNotificationPreferences` all derive `isMuted` via `isCommunityMuted`; `setNotificationPreferences` now publishes `community:notification-setting-updated` so other devices/tabs re-sync |
+| `apps/api-gateway/asyncapi/asyncapi.yaml` | Documented that `isMuted` is derived and `muteUntil: null` is not an indefinite mute                                                                                                                                                    |
+
+Delivery gating is unchanged in shape — `push.service.ts:327` still calls the
+same oracle, so chat, announcement and livestream pushes resume the moment a
+category is switched back on.
+
+### Migration
+
+`scripts/backfill-indefinite-community-mutes.ts` — **dry run by default**.
+
+The old schema cannot distinguish a genuine indefinite mute from a preferences
+row: both are `mutedUntil = null`, and a member who switched a category off and
+back on again also lands on all-three-true. Without `--apply` those rows read as
+un-muted after deploy, which is the fail-safe direction (notifications resume;
+re-muting is one tap). Run with `--apply` only if preserving the old mutes
+matters more than the members whose switches were genuinely on.
+
+### Tests
+
+- `tests/mute/community-mute-model.test.ts` (new) — the `isCommunityMuted` truth
+  table, how `upsertMute` stores indefinite vs. timed mutes, and the livestream
+  fan-out exclusion.
+- `tests/mute/community-notification-pref.test.ts` — the case that asserted
+  "`mutedUntil = null` ⇒ everything suppressed" now asserts the opposite, plus a
+  re-enable-after-full-mute case.
+
+49 tests pass across the four mute suites; `tsc --noEmit` clean in both repos.
+
+---
+
+## 9. Issues 52 + 53 — moderator deleting an admin's message · the join toast
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+### Issue 52 — role hierarchy on delete-for-everyone (groups + communities)
+
+Both delete paths authorized on the ACTOR's role alone and never read the
+message SENDER's, so a MODERATOR could delete an ADMIN's message:
+
+- `apps/chat-service/src/services/group-message.service.ts:1179` —
+  `if (!["ADMIN", "MODERATOR"].includes(member.role)) throw …`
+- `apps/chat-service/src/services/community-message.service.ts:2439` —
+  `if (!["admin", "moderator"].includes(liveRole)) throw …`
+
+Kick/mute/ban already enforce an outrank rule
+(`group-member.service.ts:496`), and stream-service's comment delete
+(`livestream-comment.service.ts:377-407`) implements exactly the intended
+hierarchy — chat's delete was the outlier.
+
+**Fix.** One shared predicate,
+`canDeleteOthersMessage(actorRole, senderRole)` in
+`apps/chat-service/src/lib/access-guard.ts` (case-insensitive, so groups'
+UPPERCASE `RoomMember.role` and communities' lowercase live role both use it):
+
+| Actor       | May delete another's message        |
+| ----------- | ----------------------------------- |
+| OWNER/ADMIN | anyone's                            |
+| MODERATOR   | a plain MEMBER's only               |
+| MEMBER      | none (own messages only, unchanged) |
+
+- Groups resolve the sender's role from `RoomMember` (a sender who has since
+  left has no row and ranks as MEMBER, so their leftover messages stay
+  moderatable).
+- Communities resolve it from the same authoritative live lookup
+  (`getCommunityLiveRole`), and only in the moderator branch — an admin delete
+  still costs one gRPC call, not two.
+- Denial keeps the existing `CHAT_INSUFFICIENT_PERMISSIONS` code/status, so no
+  client contract changes. Sender-deletes-own and the muted-moderator
+  moderation exemption are untouched.
+
+### Issue 53 — the "You joined the community!" toast
+
+No backend change. The server already writes the joiner's own PERSONAL system
+line ("You joined the community", `community.service.ts:273`) into the
+transcript; the web client was additionally raising a success toast for the same
+event. The toast was removed client-side (see
+`aimess_website/QA_FIXES_WEBSITE.md`); the system message, `community:added`
+payload and join events are unchanged.
+
+### Tests
+
+- `tests/groups/group-message-delete-hierarchy.test.ts` (new) — moderator vs.
+  admin / peer moderator / member / departed sender, admin over moderator, plus
+  the shared predicate's case-insensitivity and fail-closed behaviour.
+- `tests/community/community-delete-mute-guard.test.ts` — three new hierarchy
+  cases; its fake room repo also gained the `allocateRevision` the service has
+  required since the zero-loss revision work (two long-standing failures in that
+  file now pass).
+
+60 tests pass across the group + community delete suites; `tsc --noEmit` clean.
+
+---
+
+## 10. Issues 54 + 55 — the pinned location banner · the dead friend-request tap
+
+**Date:** 2026-08-12 · **Branch:** `rajesh-dev`
+
+Both defects are web-client only. The full write-up, with file:line for every
+change, is in `aimess_website/QA_FIXES_WEBSITE.md`; this section records what
+the backend was asked for and what it actually needed.
+
+### Issue 54 — pinned banner shows "Pinned message" for a location
+
+**No backend change.** `getActivePinSummary`
+(`apps/chat-service/src/services/community-pin.service.ts:430`) already returns
+`messageType: "LOCATION"` with `text: ""` — correct, since a location message
+has no body text — and `message-preview.service.ts` already renders
+`📍 <placeName>` for the inbox preview. The web client derived the banner text
+from three hand-rolled content-type ladders, none of which had a `LOCATION`
+rung, and fell through to its generic fallback string. Fixed client-side by
+collapsing all three onto the existing `replyLabelFromMessage` /
+`replyTypeLabel` helpers.
+
+### Issue 55 — tapping a friend-request push opened nothing
+
+**One documentation change; the payload was already right.**
+
+`friend.requested` is the only notification whose navigation names a peer rather
+than a room, because the DM does not exist until the request is accepted:
+
+- `apps/notifications-service/src/consumers/friend.consumer.ts:52-60` —
+  `{ screen: "PRIVATE_CHAT", userId: requesterId, conversationType:
+"PRIVATE_PENDING", requestId }`, with `deepLink: aimess://user/<requesterId>`.
+
+`NotificationNavigation.roomId` is optional and `userId` is documented as the
+subject user for friend events, so this is contract-valid. Every web consumer of
+`PRIVATE_CHAT` nonetheless read `roomId` and only `roomId`, resolved to `null`,
+and dropped the tap — the foreground toast focused the window and did nothing,
+the service worker landed on `/`.
+
+Rather than synthesise a room id at publish time (which would force a
+`GetOrCreatePrivateRooms` call for every pending request that may never be
+accepted), the contract now states the client obligation explicitly:
+
+- `packages/shared-types/src/events/community.ts` — `NotificationNavigation.roomId`
+  documents that `PRIVATE_CHAT` may arrive with `userId` alone and that clients
+  MUST fall back to it, since every platform's DM route get-or-creates the room
+  from a peer id.
+
+`group.consumer.ts` is unaffected — `GROUP_CHAT` navigation always carries
+`roomId`.
+
+**Mobile.** iOS and Android ship the same `NotificationRouter` shape and need
+the same fallback plus an `aimess://user/:id` deep-link case. No server payload
+changes, so nothing regresses while they catch up; the tap stays inert on those
+clients until then.
+
+### Tests
+
+Comment-only backend change, so no new backend suite. Client side:
+`aimess_website/scripts/check-firebase-sw.mjs` gained a case that drives the
+service worker's real `notificationclick` handler with `userId`-only navigation
+(6/6 pass, fails against the old worker); `tsc --noEmit` and `eslint` clean in
+both repositories.

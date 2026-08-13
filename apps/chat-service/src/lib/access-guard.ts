@@ -3,6 +3,7 @@ import { logger } from "@aimess/logger";
 
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type {
@@ -86,6 +87,26 @@ export async function assertGroupMember(
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/**
+ * Group WRITE lifecycle gate: a DISBANDED room is frozen — history stays fully
+ * readable up to the disband, but no new message can be added. Membership rows
+ * are deliberately left ACTIVE on disband (that is what keeps history visible),
+ * so {@link assertGroupMember} alone cannot tell a live group from a dead one.
+ *
+ * @throws ForbiddenError `CHAT_GROUP_DISBANDED` when the group is disbanded.
+ * @throws NotFoundError   `CHAT_GROUP_NOT_FOUND` when the room is gone.
+ */
+export async function assertGroupNotDisbanded(
+  roomRepo: Pick<GroupRoomRepository, "findByRoomId">,
+  roomId: string
+): Promise<void> {
+  const room = await roomRepo.findByRoomId(roomId);
+  if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+  if (room.status === "DISBANDED") {
+    throw new ForbiddenError("CHAT_GROUP_DISBANDED");
+  }
 }
 
 /**
@@ -206,6 +227,34 @@ export async function getCommunityLiveRole(
     { communityId, userId }
   );
   return role.toLowerCase();
+}
+
+/**
+ * Moderation hierarchy for deleting SOMEONE ELSE's message, shared by groups
+ * (`GroupMessageService.deleteMessage`, UPPERCASE roles) and communities
+ * (`CommunityMessageService.deleteForAll`, lowercase live roles) — hence the
+ * case-insensitive compare.
+ *
+ * Both call sites previously asked only "is the actor ADMIN or MODERATOR?" and
+ * never looked at the SENDER's role, so a MODERATOR could delete an ADMIN's
+ * message. Mirrors the outrank rule kick/mute/ban already enforce in
+ * `group-member.service.ts` (`roleOrder.indexOf(actor) >= roleOrder.indexOf(target)`):
+ * a MODERATOR may only act on a plain MEMBER.
+ *
+ * OWNER is treated as ADMIN (`RoomMemberRole.OWNER` exists on community general
+ * rooms). An absent sender role (sender has since LEFT/been kicked, or the
+ * lookup failed) resolves to MEMBER: their leftover messages stay moderatable.
+ */
+export function canDeleteOthersMessage(
+  actorRole: string | null | undefined,
+  senderRole: string | null | undefined
+): boolean {
+  const actor = (actorRole ?? "").toUpperCase();
+  const sender = (senderRole ?? "").toUpperCase();
+  if (actor === "OWNER" || actor === "ADMIN") return true;
+  if (actor !== "MODERATOR") return false;
+  // A moderator outranks plain members only — never an admin/owner or a peer moderator.
+  return !["OWNER", "ADMIN", "MODERATOR"].includes(sender);
 }
 
 /**

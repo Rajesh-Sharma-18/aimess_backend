@@ -1068,14 +1068,17 @@ export const communityRepository = {
   },
 
   /**
-   * userIds in this community who have DISABLED livestream notifications
-   * (CommunityMuteSetting.streamEnabled === false). Used to exclude them from the
-   * livestream push fan-out. Default (no setting row) is enabled, so absence ⇒
-   * eligible.
+   * userIds in this community who must NOT get the livestream push: either they
+   * disabled livestream alerts (`streamEnabled === false`) or they have a
+   * running timed mute (`mutedUntil` in the future), which snoozes every kind.
+   * Default (no setting row) is enabled, so absence ⇒ eligible.
    */
   async findStreamMutedMemberIds(communityId: string): Promise<string[]> {
     const rows = await prisma.communityMuteSetting.findMany({
-      where: { communityId, streamEnabled: false },
+      where: {
+        communityId,
+        OR: [{ streamEnabled: false }, { mutedUntil: { gt: new Date() } }],
+      },
       select: { userId: true },
     });
     return rows.map((r) => r.userId);
@@ -1404,8 +1407,40 @@ export const communityRepository = {
       contentType?: string | null;
     } = {}
   ): Promise<number> {
+    const seq = identity.seq ?? 0;
     const result = await prisma.community.updateMany({
-      where: { id: communityId, lastActivityAt: { lt: activityAt } },
+      where: {
+        id: communityId,
+        // Forward-only, ordered by (lastActivityAt, lastActivitySeq).
+        //
+        // `lastActivityAt` alone has millisecond resolution, and this bump
+        // arrives over a RabbitMQ queue consumed with `prefetch: 10` — a burst
+        // of rapid sends is processed CONCURRENTLY and out of order. Two
+        // messages sharing one millisecond therefore raced, and whichever
+        // handler happened to run last won: the community row could end up
+        // previewing message #4 of a five-message burst. `lastActivitySeq` is
+        // the per-room `sequenceNumber` and breaks that tie deterministically.
+        //
+        // `lte` (not `lt`) on the tie branch so an in-place refresh of the very
+        // message already stored still lands; two different messages can never
+        // share a seq. The `null` alternative covers rows written before
+        // `lastActivitySeq` existed — a MongoDB range filter never matches a
+        // missing field, so without it a legacy row could never break a tie.
+        OR: [
+          { lastActivityAt: { lt: activityAt } },
+          {
+            AND: [
+              { lastActivityAt: activityAt },
+              {
+                OR: [
+                  { lastActivitySeq: { lte: seq } },
+                  { lastActivitySeq: null },
+                ],
+              },
+            ],
+          },
+        ],
+      },
       data: {
         lastActivityAt: activityAt,
         lastActivityType: type,
@@ -1421,7 +1456,7 @@ export const communityRepository = {
         lastActivityTargetPreview: targetPreview,
         lastActivityMessageId: identity.messageId || null,
         lastActivityClientMessageId: identity.clientMessageId || null,
-        lastActivitySeq: identity.seq ?? 0,
+        lastActivitySeq: seq,
         lastActivityContentType: identity.contentType || null,
       },
     });
@@ -3042,11 +3077,31 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Apply the user-facing "Mute notifications" action.
+   *
+   * `mutedUntil === null` is an INDEFINITE mute, and an indefinite mute is
+   * stored as all three category toggles off — never as a separate global flag.
+   * That is what keeps the mute badge and the three switches in sync, and what
+   * makes re-enabling a category actually resume delivery (a global flag used
+   * to survive every toggle and silence the community forever).
+   *
+   * A timed mute leaves the toggles untouched: it snoozes every kind until
+   * `mutedUntil` passes, then the user's own preferences take over again.
+   */
   upsertMute(userId: string, communityId: string, mutedUntil: Date | null) {
+    const allOff =
+      mutedUntil === null
+        ? {
+            streamEnabled: false,
+            chatEnabled: false,
+            announcementEnabled: false,
+          }
+        : {};
     return prisma.communityMuteSetting.upsert({
       where: { userId_communityId: { userId, communityId } },
-      create: { userId, communityId, mutedUntil },
-      update: { mutedUntil },
+      create: { userId, communityId, mutedUntil, ...allOff },
+      update: { mutedUntil, ...allOff },
     });
   },
 

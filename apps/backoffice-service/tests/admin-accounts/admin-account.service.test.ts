@@ -14,7 +14,7 @@ jest.mock("../../src/repositories/index.js", () => ({
     updateProfile: jest.fn(),
     setStatus: jest.fn(),
     updateRole: jest.fn(),
-    countActiveByRoleKey: jest.fn(async () => 5),
+    countActiveWithPermission: jest.fn(async () => 5),
     list: jest.fn(),
   },
   adminSessionRepository: {
@@ -31,14 +31,26 @@ jest.mock("../../src/lib/password.js", () => ({
 jest.mock("../../src/services/audit.service.js", () => ({
   auditService: { record: jest.fn(async () => undefined) },
 }));
+jest.mock("../../src/lib/admin-perms-cache.js", () => ({
+  invalidateAdminPermissions: jest.fn(async () => undefined),
+}));
 jest.mock("../../src/services/rbac.service.js", () => ({
   rbacService: {
     getPermissionKeysForRole: jest.fn(async () => ["dashboard.read"]),
+    getPermissionKeysForAdmin: jest.fn(async () => ["dashboard.read"]),
+    listOverridesForAdmin: jest.fn(async () => []),
+    replaceOverridesForAdmin: jest.fn(async () => undefined),
+    findPermissionsByKeys: jest.fn(async () => []),
     listPermissions: jest.fn(async () => []),
   },
 }));
 
-import { ConflictError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@aimess/errors";
 
 import { adminAccountService } from "../../src/services/admin-account.service.js";
 import {
@@ -47,9 +59,11 @@ import {
 } from "../../src/repositories/index.js";
 import { markAdminSessionsRevoked } from "../../src/lib/admin-session-cache.js";
 import { auditService } from "../../src/services/audit.service.js";
+import { rbacService } from "../../src/services/rbac.service.js";
 import type { RequestAdmin } from "../../src/types/index.js";
 
 const repo = adminUserRepository as unknown as Record<string, jest.Mock>;
+const rbac = rbacService as unknown as Record<string, jest.Mock>;
 const sessionRepo = adminSessionRepository as unknown as Record<
   string,
   jest.Mock
@@ -184,17 +198,29 @@ describe("deactivateAdminAccount", () => {
     ).rejects.toBeInstanceOf(ConflictError);
   });
 
-  it("rejects deactivating the last active SUPER_ADMIN", async () => {
+  it("rejects deactivating the last effective admins.manage holder", async () => {
     repo.findById.mockResolvedValue(
       adminRow({ role: { key: "SUPER_ADMIN", name: "Super Admin" } })
     );
-    repo.countActiveByRoleKey.mockResolvedValue(1);
+    repo.countActiveWithPermission.mockResolvedValue(0);
     await expect(
       adminAccountService.deactivateAdminAccount(
         TARGET_ID,
         actor("SUPER_ADMIN"),
         CTX
       )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.setStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects deactivating the last holder even when the role is not SUPER_ADMIN", async () => {
+    // Holds admins.manage via an allow-override on MODERATOR — invisible to a
+    // role-based guard, but the same lockout.
+    repo.findById.mockResolvedValue(adminRow());
+    repo.countActiveWithPermission.mockResolvedValue(0);
+
+    await expect(
+      adminAccountService.deactivateAdminAccount(TARGET_ID, actor("ADMIN"), CTX)
     ).rejects.toBeInstanceOf(ConflictError);
     expect(repo.setStatus).not.toHaveBeenCalled();
   });
@@ -210,7 +236,7 @@ describe("deactivateAdminAccount", () => {
           role: { key: "SUPER_ADMIN", name: "Super Admin" },
         })
       );
-    repo.countActiveByRoleKey.mockResolvedValue(2);
+    repo.countActiveWithPermission.mockResolvedValue(1);
     repo.setStatus.mockResolvedValue(undefined);
 
     await expect(
@@ -412,5 +438,190 @@ describe("updateAdminPermissions", () => {
     expect(result.role.key).toBe("ADMIN");
     expect(result.permissions).toEqual(["dashboard.read"]);
     expect(auditService.record).toHaveBeenCalled();
+  });
+
+  it("rejects an admin editing their own permissions", async () => {
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        ACTOR_ID,
+        { permissions: [] },
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(repo.findById).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown permission key instead of silently dropping it", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    rbac.findPermissionsByKeys.mockResolvedValueOnce([
+      { id: "perm-1", key: "dashboard.read" },
+    ]);
+
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        TARGET_ID,
+        { permissions: ["dashboard.read", "nope.invent"] },
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(BadRequestError);
+    expect(rbac.replaceOverridesForAdmin).not.toHaveBeenCalled();
+  });
+
+  it("persists only the deltas — a toggle matching the role stores no row", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    rbac.findPermissionsByKeys.mockResolvedValueOnce([
+      { id: "perm-1", key: "dashboard.read" },
+      { id: "perm-2", key: "users.read" },
+    ]);
+    // Role baseline is ["dashboard.read"]: users.read is an allow delta, while
+    // dashboard.read agrees with the role and must stay unrecorded.
+    await adminAccountService.updateAdminPermissions(
+      TARGET_ID,
+      { permissions: ["dashboard.read", "users.read"] },
+      actor("SUPER_ADMIN"),
+      CTX
+    );
+
+    expect(rbac.replaceOverridesForAdmin).toHaveBeenCalledWith(TARGET_ID, [
+      { permissionId: "perm-2", allow: true },
+    ]);
+  });
+
+  it("stores a deny row when the grid drops a permission the role grants", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    rbac.findPermissionsByKeys.mockResolvedValueOnce([
+      { id: "perm-1", key: "dashboard.read" },
+    ]);
+
+    await adminAccountService.updateAdminPermissions(
+      TARGET_ID,
+      { permissions: [] },
+      actor("SUPER_ADMIN"),
+      CTX
+    );
+
+    expect(rbac.replaceOverridesForAdmin).toHaveBeenCalledWith(TARGET_ID, [
+      { permissionId: "perm-1", allow: false },
+    ]);
+  });
+
+  it("refuses to take admins.manage off the last effective holder", async () => {
+    repo.findById.mockResolvedValue(
+      adminRow({ role: { key: "SUPER_ADMIN", name: "Super Admin" } })
+    );
+    repo.countActiveWithPermission.mockResolvedValue(0);
+    rbac.getPermissionKeysForRole.mockResolvedValueOnce(["admins.manage"]);
+    rbac.findPermissionsByKeys.mockResolvedValueOnce([
+      { id: "perm-9", key: "admins.manage" },
+    ]);
+
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        TARGET_ID,
+        { permissions: [] },
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(rbac.replaceOverridesForAdmin).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The lockout invariant: after any change at least one ACTIVE admin must still
+ * hold `admins.manage` EFFECTIVELY (role baseline ∪ allow-overrides ∖ denies).
+ * `holders` stands in for the rows the repository counts, so the guard is
+ * exercised against a state that actually moves between calls.
+ */
+describe("last admins.manage holder invariant", () => {
+  const SECOND_ID = "33333333-3333-4333-8333-333333333333";
+  let holders: string[];
+
+  beforeEach(() => {
+    holders = [TARGET_ID, SECOND_ID];
+    repo.countActiveWithPermission.mockImplementation(
+      async (_key: string, excludeAdminId?: string) =>
+        holders.filter((h) => h !== excludeAdminId).length
+    );
+    rbac.getPermissionKeysForRole.mockResolvedValue(["admins.manage"]);
+    rbac.findPermissionsByKeys.mockResolvedValue([
+      { id: "perm-9", key: "admins.manage" },
+    ]);
+    repo.findById.mockImplementation(async (id: string) =>
+      adminRow({ id, role: { key: "SUPER_ADMIN", name: "Super Admin" } })
+    );
+  });
+
+  it("strips admins.manage off the first of two SUPER_ADMINs but rejects the second", async () => {
+    await adminAccountService.updateAdminPermissions(
+      TARGET_ID,
+      { permissions: [] },
+      actor("SUPER_ADMIN"),
+      CTX
+    );
+    expect(rbac.replaceOverridesForAdmin).toHaveBeenCalledWith(TARGET_ID, [
+      { permissionId: "perm-9", allow: false },
+    ]);
+    // The write the service just made: TARGET_ID no longer holds the key.
+    holders = holders.filter((h) => h !== TARGET_ID);
+
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        SECOND_ID,
+        { permissions: [] },
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(rbac.replaceOverridesForAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a holder who has the key only via an allow-override on a lesser role", async () => {
+    // Sole other holder is a MODERATOR with an allow-override — a role-based
+    // count would see zero SUPER_ADMINs left and refuse.
+    holders = [TARGET_ID, "44444444-4444-4444-8444-444444444444"];
+
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        TARGET_ID,
+        { permissions: [] },
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).resolves.toBeDefined();
+    expect(repo.countActiveWithPermission).toHaveBeenCalledWith(
+      "admins.manage",
+      TARGET_ID
+    );
+  });
+
+  it("rejects stripping the sole holder even when their role is not SUPER_ADMIN", async () => {
+    holders = [TARGET_ID];
+    repo.findById.mockImplementation(async (id: string) => adminRow({ id }));
+
+    await expect(
+      adminAccountService.updateAdminPermissions(
+        TARGET_ID,
+        { permissions: [] },
+        actor("ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(rbac.replaceOverridesForAdmin).not.toHaveBeenCalled();
+  });
+
+  it("rejects deactivating the last effective holder", async () => {
+    holders = [TARGET_ID];
+
+    await expect(
+      adminAccountService.deactivateAdminAccount(
+        TARGET_ID,
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.setStatus).not.toHaveBeenCalled();
   });
 });

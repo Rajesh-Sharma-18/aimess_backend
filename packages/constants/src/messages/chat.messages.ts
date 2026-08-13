@@ -73,6 +73,11 @@ export const CHAT_MESSAGES = {
     en: "Notifications marked as read",
     th: "ทำเครื่องหมายว่าอ่านการแจ้งเตือนแล้ว",
   },
+  CHAT_NOTIFICATION_DELETED: {
+    vi: "Đã xóa thông báo",
+    en: "Notification deleted",
+    th: "ลบการแจ้งเตือนแล้ว",
+  },
   CHAT_COMMUNITY_ROOMS_FETCHED: {
     vi: "Lấy danh sách phòng cộng đồng thành công",
     en: "Community rooms fetched successfully",
@@ -470,6 +475,16 @@ export const CHAT_MESSAGES = {
     vi: "Liên kết mời đã đạt giới hạn sử dụng",
     en: "Invite link usage limit reached",
     th: "ลิงก์เชิญถูกใช้ครบจำนวนแล้ว",
+  },
+  /**
+   * Thrown by `group-invite-link.service.ts` as a `TooManyRequestsError`. The
+   * key had no catalog entry, so `t()` echoed it back and the user was shown
+   * the literal string "CHAT_GROUP_INVITE_RATE_LIMITED".
+   */
+  CHAT_GROUP_INVITE_RATE_LIMITED: {
+    vi: "Bạn đang tạo liên kết mời nhóm quá nhanh. Vui lòng thử lại sau.",
+    en: "You are creating group invite links too quickly. Please try again later.",
+    th: "คุณสร้างลิงก์เชิญกลุ่มเร็วเกินไป กรุณาลองใหม่ภายหลัง",
   },
   CHAT_MEMBERS_CANNOT_CREATE_LINKS: {
     vi: "Thành viên không được phép tạo liên kết mời",

@@ -475,6 +475,12 @@ export function createMessagingImpl(
               preview: {
                 contentType: normalizeMessageType(msg.messageType),
                 text: convertMessageToPreview(msg.messageType, msg.content),
+                // `seq` is the client's tie-breaker when a rapid burst puts two
+                // bumps in the same millisecond (see lib/list-row-identity.ts).
+                // Omitting it here left the primary socket send path publishing
+                // seq 0, so the client had nothing to order those bumps by.
+                seq: msg.sequenceNumber ?? 0,
+                createdAt: bumpSentAt,
               },
             };
             if (conversationType === "GROUP") {
@@ -1406,6 +1412,9 @@ export function createMessagingImpl(
                   message.messageType,
                   (message as unknown as Record<string, unknown>).content
                 ),
+                // See the send bump above — same same-millisecond tie-breaker.
+                seq: message.sequenceNumber ?? 0,
+                createdAt: message.createdAt.getTime(),
               },
             };
             if (conversationType === "GROUP") {
@@ -2133,6 +2142,7 @@ export function createMessagingImpl(
         try {
           const req = call.request as {
             q?: string;
+            status?: string;
             fromDate?: string;
             toDate?: string;
             sortField?: string;
@@ -2151,6 +2161,7 @@ export function createMessagingImpl(
 
           const result = await deps.adminGroupService.listGroups({
             q: req.q || undefined,
+            status: req.status || undefined,
             fromDate,
             toDate,
             sortField,
@@ -2203,6 +2214,7 @@ export function createMessagingImpl(
             groupId?: string;
             q?: string;
             role?: string;
+            status?: string;
             page?: number;
             limit?: number;
           };
@@ -2214,6 +2226,7 @@ export function createMessagingImpl(
             groupId: req.groupId ?? "",
             q: req.q || undefined,
             role: req.role || undefined,
+            status: req.status || undefined,
             skip,
             take: limit,
           });
@@ -2225,6 +2238,56 @@ export function createMessagingImpl(
           });
         } catch (err) {
           logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: disband a group as a platform admin.
+    adminDisbandGroup: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            actorAdminId?: string;
+          };
+          const result = await deps.adminGroupService.disbandGroup(
+            req.groupId ?? "",
+            req.actorAdminId ?? ""
+          );
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminDisbandGroup error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: remove one member as a platform admin.
+    adminRemoveGroupMember: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            userId?: string;
+            actorAdminId?: string;
+            reason?: string;
+          };
+          const result = await deps.adminGroupService.removeGroupMember({
+            groupId: req.groupId ?? "",
+            userId: req.userId ?? "",
+            actorAdminId: req.actorAdminId ?? "",
+            reason: req.reason || undefined,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminRemoveGroupMember error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -2358,6 +2421,20 @@ export function createMessagingImpl(
                 userId
               );
               if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+              // A BAN revokes media access outright. Kick and ban both KEEP the
+              // membership row and only mutate `status`, and this check was a
+              // bare row-existence test — so a banned member kept downloading
+              // every attachment in the group indefinitely. Mirrors the
+              // COMMUNITY_CHAT rule below, where a ban already outranks
+              // historical access.
+              //
+              // LEFT and KICKED are deliberately still allowed: group history is
+              // historical-read by design (a kicked member reads up to
+              // `kickedAt`), and revoking their media would break the history
+              // they can legitimately still see.
+              if (String(member.status).toUpperCase() === "BANNED") {
+                throw new ForbiddenError("USER_BANNED");
+              }
               break;
             }
             case "COMMUNITY_CHAT": {
@@ -2878,6 +2955,12 @@ export function createCommunityImpl(
                   ...(lastLocation ? { location: lastLocation } : {}),
                   ...(lastContact ? { contact: lastContact } : {}),
                 }),
+                // See the private/group bump above — `seq` is what lets the
+                // client order two bumps that share a millisecond.
+                clientMessageId: req.clientMessageId ?? null,
+                seq: saved.sequenceNumber ?? 0,
+                revision: saved.revision ?? 0,
+                createdAt: sentAt,
               },
             });
 
@@ -3626,6 +3709,20 @@ export function createCommunityImpl(
                     memberIds
                   )
                   .then((raw) => renderCommunityOverrides(raw)),
+              // Authoritative per-member badge correction (the derived count
+              // already excludes the tombstone; nothing told the cached rows).
+              ...(result
+                ? {
+                    resolveUnreadDeltas: (memberIds: string[]) =>
+                      deps.communityMessageService.resolveUnreadDeltasAfterDelete(
+                        { roomId: fRoomId, memberIds, deletedMessage: result }
+                      ),
+                  }
+                : {}),
+              // Without this the bump is discarded by the client's monotonic
+              // list guard — it points BACKWARD at the previous visible message.
+              deleteRecalc: true,
+              deleteRecalcId: req.messageId,
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
@@ -3642,17 +3739,29 @@ export function createCommunityImpl(
             result?.roomId
           ) {
             const recalc = forMeRecalc;
+            const mRoomId = result.roomId;
+            const hidden = result;
             publishCommunityUpdatedSafe({
               redis,
               communityId: req.communityId,
-              roomId: result.roomId,
+              roomId: mRoomId,
               fetchMembers: () => Promise.resolve([req.userId]),
+              // Only the hiding user's own badge can move on a delete-for-me.
+              resolveUnreadDeltas: (memberIds) =>
+                deps.communityMessageService.resolveUnreadDeltasAfterDelete({
+                  roomId: mRoomId,
+                  memberIds,
+                  deletedMessage: hidden,
+                  onlyUserId: req.userId,
+                }),
+              deleteRecalc: true,
+              deleteRecalcId: req.messageId,
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.hasLastMessage
-                ? recalc.createdAt.getTime()
-                : Date.now(),
+              // NEVER Date.now(): an emptied row must sort to the BOTTOM, not
+              // jump to the top. See bumpTimestampAfterDelete's contract.
+              lastMessageAt: bumpTimestampAfterDelete(recalc),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
@@ -4042,24 +4151,34 @@ export function createNotificationImpl(
             };
 
             if (plan.action === "DELETE") {
-              const { count } = await deps.notificationRepo.deleteById(
-                existing.id,
-                req.userId
-              );
-              if (count > 0) {
+              // The WHOLE group goes, not just the row `findActiveByGroupKey`
+              // happened to return: a friendship id is recycled across cycles,
+              // so older cards for the same pair share this groupKey and would
+              // otherwise outlive the request they describe. `groupKey` is
+              // non-null here — `existing` only exists when it is.
+              const { ids } =
+                await deps.notificationRepo.deleteActiveByGroupKey(
+                  req.userId,
+                  groupKey as string
+                );
+              if (ids.length > 0) {
                 const remainingUnread =
                   await deps.notificationRepo.getUnreadCount(req.userId);
                 try {
-                  await publishUserSocketEvent(
-                    redis,
-                    req.userId,
-                    "notification:deleted",
-                    {
-                      notificationId: existing.id,
-                      groupKey,
-                      unreadCount: remainingUnread,
-                    }
-                  );
+                  // One event per row: clients key their local removal on
+                  // notificationId, so a single event would strand the rest.
+                  for (const deletedId of ids) {
+                    await publishUserSocketEvent(
+                      redis,
+                      req.userId,
+                      "notification:deleted",
+                      {
+                        notificationId: deletedId,
+                        groupKey,
+                        unreadCount: remainingUnread,
+                      }
+                    );
+                  }
                   await publishUserSocketEvent(
                     redis,
                     req.userId,
@@ -4393,7 +4512,10 @@ export function createNotificationImpl(
           );
 
           if (updated) {
-            const payloadObj = (updated.payload ?? {}) as { title?: string };
+            const payloadObj = (updated.payload ?? {}) as {
+              title?: string;
+              body?: string;
+            };
             try {
               await publishUserSocketEvent(
                 redis,
@@ -4404,7 +4526,9 @@ export function createNotificationImpl(
                   userId: req.userId,
                   type: updated.type,
                   title: payloadObj.title ?? "",
-                  body: req.body ?? "",
+                  // Login rows keep their "New login detected on …" body; the
+                  // outcome the caller asked for rides in data.actionTaken.
+                  body: payloadObj.body ?? "",
                   isRead: true,
                   createdAt: updated.createdAt.getTime(),
                   data: {

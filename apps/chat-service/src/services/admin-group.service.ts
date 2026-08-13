@@ -1,3 +1,5 @@
+import { userGrpcClient } from "../grpc/user-snapshot.client.js";
+import { isGroupMemberMuted } from "../lib/access-guard.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
@@ -5,6 +7,8 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { GroupRoomService } from "./group-room.service.js";
+import type { GroupMemberService } from "./group-member.service.js";
 import type { AuthAdminClient } from "../grpc/auth.client.js";
 
 // ---------------------------------------------------------------------------
@@ -25,6 +29,10 @@ export interface AdminGroupRowResult {
   memberCount: number;
   createdAt: number;
   admin: AdminGroupAdminResult;
+  /** Raw lifecycle status: "ACTIVE" | "DISBANDED". */
+  status: string;
+  /** Epoch ms; 0 when never disbanded. */
+  disbandedAt: number;
 }
 export interface AdminGroupMemberRowResult {
   userId: string;
@@ -33,10 +41,18 @@ export interface AdminGroupMemberRowResult {
   avatarUrl: string;
   role: string;
   joinedAt: number;
+  /** "ACTIVE" | "LEFT" | "KICKED" | "BANNED". */
+  status: string;
+  /** EFFECTIVE mute — timed mutes lazily expire, so never the raw column. */
+  moderationMuted: boolean;
+  kickedAt: number;
+  bannedAt: number;
 }
 
 export interface AdminListGroupsRequest {
   q?: string;
+  /** "" / "ACTIVE" = active only (default), "ALL" = no filter, else exact. */
+  status?: string;
   fromDate?: Date;
   toDate?: Date;
   sortField: "createdAt" | "memberCount";
@@ -48,6 +64,8 @@ export interface AdminListGroupMembersRequest {
   groupId: string;
   q?: string;
   role?: string;
+  /** "" / "ACTIVE" = active only (default), "ALL" = no filter, else exact. */
+  status?: string;
   skip: number;
   take: number;
 }
@@ -76,7 +94,9 @@ export class AdminGroupService {
     private readonly groupMemberRepo: GroupMemberRepository,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly cacheRepo: CacheRepository,
-    private readonly authAdminClient: AuthAdminClient
+    private readonly authAdminClient: AuthAdminClient,
+    private readonly groupRoomService: GroupRoomService,
+    private readonly groupMemberService: GroupMemberService
   ) {}
 
   async listGroups(
@@ -86,11 +106,14 @@ export class AdminGroupService {
     const q = req.q?.trim();
     if (q) {
       // Widen search to owner identity: find users matching the term, then the
-      // rooms they OWN. Both calls degrade to [] on failure.
-      const candidates = await this.authAdminClient.searchUserIds(
-        q,
-        IDENTITY_SEARCH_CAP
-      );
+      // rooms they OWN. auth-service matches email/account, user-service matches
+      // the username/name the panel actually renders — union both. Each call
+      // degrades to [] on failure.
+      const [authIds, profileIds] = await Promise.all([
+        this.authAdminClient.searchUserIds(q, IDENTITY_SEARCH_CAP),
+        userGrpcClient.adminSearchProfileIds(q),
+      ]);
+      const candidates = [...new Set([...authIds, ...profileIds])];
       idsFromUserSearch =
         candidates.length > 0
           ? await this.groupMemberRepo.findRoomIdsByOwnerUserIds(candidates)
@@ -99,6 +122,7 @@ export class AdminGroupService {
 
     const { rows, total } = await this.groupRoomRepo.adminList({
       q,
+      status: req.status,
       idsFromUserSearch,
       fromDate: req.fromDate,
       toDate: req.toDate,
@@ -154,16 +178,19 @@ export class AdminGroupService {
     let qExactUserId: string | null = null;
     const q = req.q?.trim();
     if (q) {
-      userIdsFromSearch = await this.authAdminClient.searchUserIds(
-        q,
-        IDENTITY_SEARCH_CAP
-      );
+      // Same email/account + username/name union as listGroups above.
+      const [authIds, profileIds] = await Promise.all([
+        this.authAdminClient.searchUserIds(q, IDENTITY_SEARCH_CAP),
+        userGrpcClient.adminSearchProfileIds(q),
+      ]);
+      userIdsFromSearch = [...new Set([...authIds, ...profileIds])];
       if (UUID_RE.test(q)) qExactUserId = q;
     }
 
     const { rows, total } = await this.groupMemberRepo.adminListMembers({
       roomId: req.groupId,
       role: req.role,
+      status: req.status,
       userIdsFromSearch,
       qExactUserId,
       skip: req.skip,
@@ -179,6 +206,64 @@ export class AdminGroupService {
       this.toMemberRow(m, snapshots, authMap, urlMap)
     );
     return { found: true, members, total };
+  }
+
+  /**
+   * Platform-admin disband. Delegates to the normal GroupRoomService write path
+   * (which also revokes live invite links) with the member/role check bypassed;
+   * `actorAdminId` is a backoffice AdminUser.id, stored as disbandedBy only.
+   * Failure states are RETURNED as codes, never thrown — the panel localizes them.
+   */
+  async disbandGroup(
+    groupId: string,
+    actorAdminId: string
+  ): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
+    const row = await this.groupRoomRepo.adminFindByRoomId(groupId);
+    if (!row)
+      return { ok: false, found: false, errorCode: "CHAT_GROUP_NOT_FOUND" };
+    if (row.status !== "ACTIVE")
+      return {
+        ok: false,
+        found: true,
+        errorCode: "CHAT_GROUP_ALREADY_DISBANDED",
+      };
+
+    await this.groupRoomService.disbandGroup(groupId, actorAdminId, {
+      asPlatformAdmin: true,
+    });
+    return { ok: true, found: true, errorCode: "" };
+  }
+
+  /**
+   * Platform-admin member removal. Delegates to GroupMemberService.kick so the
+   * removed user is actually evicted (`group:removed`) and every other member's
+   * roster updates — a bare repository write would leave both stale.
+   */
+  async removeGroupMember(params: {
+    groupId: string;
+    userId: string;
+    actorAdminId: string;
+    reason?: string;
+  }): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
+    const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
+    if (!row)
+      return { ok: false, found: false, errorCode: "CHAT_GROUP_NOT_FOUND" };
+
+    const member = await this.groupMemberRepo.findActiveByRoomAndUser(
+      params.groupId,
+      params.userId
+    );
+    if (!member)
+      return { ok: false, found: true, errorCode: "CHAT_NOT_A_MEMBER" };
+
+    await this.groupMemberService.kick({
+      roomId: params.groupId,
+      targetUserId: params.userId,
+      kickedBy: params.actorAdminId,
+      reason: params.reason,
+      asPlatformAdmin: true,
+    });
+    return { ok: true, found: true, errorCode: "" };
   }
 
   // -------------------------------------------------------------------------
@@ -239,6 +324,9 @@ export class AdminGroupService {
         email: authMap.get(ownerId)?.email ?? "",
         avatarUrl: urlFromMap(urlMap, (snap?.avatar as string) ?? ""),
       },
+      status: row.status,
+      disbandedAt:
+        row.disbandedAt instanceof Date ? row.disbandedAt.getTime() : 0,
     };
   }
 
@@ -256,6 +344,12 @@ export class AdminGroupService {
       avatarUrl: urlFromMap(urlMap, (snap?.avatar as string) ?? ""),
       role: m.role,
       joinedAt: m.joinedAt instanceof Date ? m.joinedAt.getTime() : 0,
+      status: m.status,
+      // Effective, not raw: a timed mute lifts the instant it passes while the
+      // column stays true until the sweeper runs (up to a minute later).
+      moderationMuted: isGroupMemberMuted(m),
+      kickedAt: m.kickedAt instanceof Date ? m.kickedAt.getTime() : 0,
+      bannedAt: m.bannedAt instanceof Date ? m.bannedAt.getTime() : 0,
     };
   }
 }

@@ -33,6 +33,20 @@ export type UserProfileUpdatedPayload = {
   /** True when all required profile fields are filled in (derived). */
   isProfileCompleted: boolean;
   updatedAt: string;
+  /**
+   * This "update" is an account DELETION, and the identity fields above are
+   * already the anonymized representation (empty username, empty avatar,
+   * displayName = the shared "Deleted Account" literal).
+   *
+   * Deletion rides this event rather than a parallel one because every existing
+   * consumer already does exactly what deletion needs — chat-service drops the
+   * cached user snapshot, community-service overwrites its denormalized member
+   * snapshots and re-broadcasts the roster row. The flag is additive: a consumer
+   * that ignores it still applies the anonymized values correctly, and one that
+   * reads it can additionally emit the realtime "this account is gone" signal
+   * that a rename must NOT produce.
+   */
+  isDeleted?: boolean;
 };
 
 export type UserSettingsUpdatedPayload = {

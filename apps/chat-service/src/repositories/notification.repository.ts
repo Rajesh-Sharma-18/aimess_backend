@@ -1,9 +1,11 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
-import { categoryWhere } from "../lib/notification-category.js";
+import {
+  categoryWhere,
+  LOGIN_DETECTED_TYPE,
+} from "../lib/notification-category.js";
 import { env } from "../config/env.js";
 
-/** The one notification type that carries the Terminate / It's Me actions. */
-export const LOGIN_DETECTED_TYPE = "auth.security_new_login";
+export { LOGIN_DETECTED_TYPE };
 
 /**
  * "Not yet resolved". Written as an explicit OR rather than the shorter
@@ -286,6 +288,39 @@ export class NotificationRepository {
     return { count: result.count };
   }
 
+  /**
+   * Owner-scoped soft-delete of EVERY still-active row in one notification
+   * group, returning the ids that actually changed so each can be relayed.
+   *
+   * A terminal event has to clear the whole group, not just its newest card.
+   * `findActiveByGroupKey` returns a single row, so deleting only that one left
+   * every OLDER card of the same friendship behind — after a couple of
+   * request/resolve cycles on the same recycled friendship id, withdrawing a
+   * request removed the fresh "X sent you a friend request" card and left the
+   * previous cycle's "You declined this friend request" sitting in the list
+   * forever, with no button on it to remove it.
+   */
+  async deleteActiveByGroupKey(
+    userId: string,
+    groupKey: string
+  ): Promise<{ ids: string[] }> {
+    const where = { userId, groupKey, isDeleted: false };
+    const rows = await this.prisma.notification.findMany({
+      where,
+      select: { id: true },
+    });
+    if (rows.length === 0) return { ids: [] };
+    await this.prisma.notification.updateMany({
+      where,
+      data: {
+        isDeleted: true,
+        deletedAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    return { ids: rows.map((r) => r.id) };
+  }
+
   async findByEntityId(
     userId: string,
     type: string,
@@ -390,6 +425,14 @@ export class NotificationRepository {
    * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
    * and marks the row read in one write. Owner-scoped (IDOR-safe).
    *
+   * EXCEPT for login-detected rows, whose `payload.body` is left ALONE: their
+   * status has exactly one home, `data.actionTaken`, which every client renders
+   * in the viewer's own language ("This was you." / "Session terminated.").
+   * Writing that same status over the body as well cost the row its original
+   * "New login detected on …" description AND made the UI print the status
+   * twice — once as the body, once as the resolved line. `body` is still
+   * accepted (and honoured) for every other type, so no caller breaks.
+   *
    * For login-detected rows this is also the single state transition:
    * PENDING → APPROVED/TERMINATED, and nothing else. The `loginResolvedAt: null`
    * filter on the claim makes it exactly-once across every writer — the user on
@@ -408,7 +451,8 @@ export class NotificationRepository {
       where: { id, userId, isDeleted: false },
     });
     if (!existing) return null;
-    if (existing.type === LOGIN_DETECTED_TYPE) {
+    const isLogin = existing.type === LOGIN_DETECTED_TYPE;
+    if (isLogin) {
       const claim = await this.prisma.notification.updateMany({
         where: { id, userId, isDeleted: false, ...PENDING_LOGIN },
         data: { loginResolvedAt: new Date() },
@@ -422,7 +466,7 @@ export class NotificationRepository {
     };
     const updatedPayload = {
       ...existingPayload,
-      body,
+      ...(isLogin ? {} : { body }),
       data: { ...(existingPayload.data ?? {}), actionTaken: action },
     };
     return this.prisma.notification.update({

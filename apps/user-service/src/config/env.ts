@@ -50,6 +50,17 @@ const envSchema = z
      * the "Add Members" picker can exclude people who are already in it.
      */
     COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
+    /** media-service gRPC — avatar scan-verdict verification before persist. */
+    MEDIA_GRPC_URL: z.string().default("0.0.0.0:4009"),
+    /**
+     * Master switch for the avatar verification gate. Default ON. Set false only
+     * for a controlled rollout window against clients that do not yet call
+     * `/media/confirm`; watch `media.attachment_unverified` to size the gap.
+     */
+    AVATAR_MEDIA_VERIFY_ENABLED: z
+      .string()
+      .default("true")
+      .transform((v) => v !== "false"),
 
     MINIO_ENDPOINT: z.string().url(),
     /**

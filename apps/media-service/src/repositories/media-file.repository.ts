@@ -60,11 +60,32 @@ export const mediaFileRepository = {
     return prisma.mediaFile.findUnique({ where: { objectKey } });
   },
 
-  /** Persist a terminal/interim scan verdict (durable, survives Redis TTL). */
+  /**
+   * Batch lookup, for callers that must check many keys at once — the
+   * message-send gate in chat-service verifies every attachment on a message in
+   * a single round trip rather than one call per file.
+   */
+  async findByObjectKeys(objectKeys: string[]): Promise<MediaFile[]> {
+    if (objectKeys.length === 0) return [];
+    return prisma.mediaFile.findMany({
+      where: { objectKey: { in: objectKeys } },
+    });
+  },
+
+  /**
+   * Persist a terminal/interim scan verdict (durable, survives Redis TTL).
+   *
+   * This is the durable half of the verdict; Redis holds the hot copy under
+   * `SCAN_STATUS_TTL_SECONDS`. The download gate reads Redis first and falls
+   * back here, so an expired or flushed cache no longer loses the fact that an
+   * object was rejected (and no longer stampedes the scanner re-validating the
+   * entire corpus).
+   */
   async setScanStatus(
     objectKey: string,
     scanStatus: MediaScanStatus,
-    scanDetail?: string | null
+    scanDetail?: string | null,
+    fileHash?: string | null
   ): Promise<void> {
     await prisma.mediaFile.updateMany({
       where: { objectKey },
@@ -72,7 +93,16 @@ export const mediaFileRepository = {
         scanStatus,
         scanDetail: scanDetail ?? null,
         scannedAt: new Date(),
+        ...(fileHash ? { fileHash } : {}),
       },
+    });
+  },
+
+  /** Record the real, MinIO-reported size once it is known (at confirm time). */
+  async setVerifiedSize(objectKey: string, size: number): Promise<void> {
+    await prisma.mediaFile.updateMany({
+      where: { objectKey },
+      data: { size },
     });
   },
 

@@ -10,3 +10,4 @@ export * from "./object-key-parse.js";
 export * from "./media-url-strategy.js";
 export * from "./media-object.js";
 export * from "./magic-bytes.js";
+export * from "./deep-inspect.js";

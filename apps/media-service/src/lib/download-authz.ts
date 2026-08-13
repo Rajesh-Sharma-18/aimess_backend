@@ -170,21 +170,34 @@ function legacyAuthz(
 ): void {
   const def = UPLOAD_CATEGORIES[category];
   if (!def) return;
-  if (
-    category === "CHAT_ATTACHMENT" ||
-    category === "COMMUNITY_CHAT_ATTACHMENT" ||
-    category === "GROUP_CHAT_ATTACHMENT"
-  ) {
+
+  // Every category whose policy is NOT PUBLIC must fall back to the strictest
+  // relationship the key alone can prove: "you uploaded this".
+  //
+  // GROUP_AVATAR used to fall off the end of this function into the
+  // "avatars/covers are public" tail, even though its policy is GROUP_MEMBER
+  // (packages/constants media/classification.ts). Any authenticated user could
+  // fetch a private group's avatar whenever the registry row was missing — which
+  // is not only "legacy objects", since registration was best-effort and a Mongo
+  // blip produced the same state permanently.
+  const NON_PUBLIC_FALLBACK: ReadonlySet<MediaCategoryKey> = new Set([
+    "CHAT_ATTACHMENT",
+    "COMMUNITY_CHAT_ATTACHMENT",
+    "GROUP_CHAT_ATTACHMENT",
+    "GROUP_AVATAR",
+  ]);
+
+  if (NON_PUBLIC_FALLBACK.has(category)) {
     if (!objectKey.startsWith(def.keyPrefix + "/")) {
       throw new BadRequestError("MEDIA_INVALID_OBJECT_KEY");
     }
     if (!assertObjectKeyOwnedBy(objectKey, def.keyPrefix, requesterId)) {
       logger.warn(
-        "download authz: denied unprovable chat attachment (no resourceId to check membership against)",
+        "download authz: denied unprovable non-public object (no resourceId to check membership against)",
         { objectKey, category, requesterId }
       );
       throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
     }
   }
-  // Avatars / covers: public — no check.
+  // USER_AVATAR / COMMUNITY_AVATAR / COMMUNITY_COVER: policy is PUBLIC — no check.
 }

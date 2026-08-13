@@ -7,6 +7,7 @@ import { prisma } from "../../src/config/prisma.js";
 import { hashPassword } from "../../src/lib/password.js";
 import type { RoleKey } from "../../src/generated/prisma/client.js";
 import { PERMISSION_CATALOGUE } from "./permissions.catalogue.js";
+import { prunePermissions } from "./prune.js";
 import { ROLE_MATRIX } from "./role-matrix.js";
 import { seedUserIndex } from "./user-index.seed.js";
 
@@ -105,6 +106,7 @@ async function bootstrapSuperAdmin(): Promise<void> {
 async function main(): Promise<void> {
   const permKeyToId = await seedPermissions();
   await seedRoles(permKeyToId);
+  await prunePermissions(prisma);
   await seedPlatformStats();
   await bootstrapSuperAdmin();
 

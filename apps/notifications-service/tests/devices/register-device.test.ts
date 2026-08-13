@@ -35,6 +35,7 @@ import {
   makeForgedAccessToken,
   bearer,
   TEST_USER_ID,
+  TEST_SESSION_ID,
 } from "../helpers/auth.js";
 
 const repo = deviceTokenRepository as unknown as Record<string, jest.Mock>;
@@ -66,7 +67,20 @@ describe("POST /v1/devices", () => {
       platform: "ANDROID",
       tokenType: "FCM",
       deviceId: "device-001",
+      sessionId: TEST_SESSION_ID,
     });
+  });
+
+  it("stamps the JWT's sessionId, ignoring any sessionId in the body", async () => {
+    const res = await request(app)
+      .post("/v1/devices")
+      .set(bearer(makeAccessToken({ sessionId: "session-from-jwt" })))
+      .send({ ...validBody, sessionId: "attacker-session" });
+
+    expect(res.status).toBe(200);
+    expect(repo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-from-jwt" })
+    );
   });
 
   it("defaults deviceId to null when omitted", async () => {

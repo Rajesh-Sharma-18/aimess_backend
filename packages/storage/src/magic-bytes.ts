@@ -22,6 +22,47 @@
 /** Minimum number of bytes that must be fetched from storage for detection. */
 export const MAGIC_BYTES_SAMPLE_SIZE = 512;
 
+/**
+ * Placeholder MIME for the shared ISO-base-media `ftyp` signature. Never
+ * returned by {@link matchMagicBytes} — it is resolved to a concrete type from
+ * the file's brand list before the result leaves the function.
+ */
+const ISOBMFF_SENTINEL = "application/x-isobmff";
+
+/** HEIF-family brands (HEIC still images and their sequences). */
+const HEIF_BRANDS = new Set([
+  "heic",
+  "heix",
+  "heim",
+  "heis",
+  "hevc",
+  "hevx",
+  "mif1",
+  "msf1",
+]);
+
+/** AVIF brands — AV1 stills, same container family. */
+const AVIF_BRANDS = new Set(["avif", "avis"]);
+
+/**
+ * Resolve an ISO-base-media file to a concrete MIME from its `ftyp` brands.
+ * The major brand sits at offset 8 and the compatible-brand list follows at 16,
+ * running to the end of the (usually tiny) ftyp box.
+ */
+function isobmffMime(buf: Buffer): string {
+  const brands: string[] = [];
+  const read = (o: number): string => buf.subarray(o, o + 4).toString("latin1");
+  if (buf.length >= 12) brands.push(read(8));
+  const boxSize = buf.length >= 4 ? buf.readUInt32BE(0) : 0;
+  const end = Math.min(boxSize, buf.length);
+  for (let o = 16; o + 4 <= end; o += 4) brands.push(read(o));
+
+  if (brands.some((b) => AVIF_BRANDS.has(b))) return "image/avif";
+  if (brands.some((b) => HEIF_BRANDS.has(b))) return "image/heic";
+  if (brands.some((b) => b === "qt  ")) return "video/quicktime";
+  return "video/mp4";
+}
+
 /** A single file-signature rule. */
 interface Signature {
   /** Raw bytes to match. `null` entries are wildcard (skip that byte position). */
@@ -85,11 +126,14 @@ const SIGNATURES: Signature[] = [
     mime: "image/webp",
   },
 
-  // MP4 / M4A / M4V (ftyp box at offset 4)
+  // ISO base media (ftyp box at offset 4). The concrete type is decided by the
+  // brand, NOT by the box name — HEIC, HEIF, AVIF, MOV and MP4 all start with
+  // the same 8 bytes, so a bare `????ftyp` rule let a HEIC through as
+  // `video/mp4` (and vice versa). `matchMagicBytes` special-cases this below.
   {
     bytes: [null, null, null, null, 0x66, 0x74, 0x79, 0x70],
     offset: 0,
-    mime: "video/mp4",
+    mime: ISOBMFF_SENTINEL,
   },
 
   // MKV / WebM (EBML header)
@@ -145,7 +189,8 @@ function matchesSignature(buf: Buffer, sig: Signature): boolean {
  */
 export function matchMagicBytes(buf: Buffer): string | null {
   for (const sig of SIGNATURES) {
-    if (matchesSignature(buf, sig)) return sig.mime;
+    if (!matchesSignature(buf, sig)) continue;
+    return sig.mime === ISOBMFF_SENTINEL ? isobmffMime(buf) : sig.mime;
   }
   return null;
 }
@@ -176,12 +221,19 @@ export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
   "image/png": new Set(["image/png"]),
   "image/webp": new Set(["image/webp"]),
   "image/gif": new Set(["image/gif"]),
+  // HEIC/HEIF — ISO base media stills. The brand list distinguishes these from
+  // an MP4 (see `isobmffMime`), so the two can no longer impersonate each other.
+  "image/heic": new Set(["image/heic"]),
+  "image/heif": new Set(["image/heic"]),
+  "image/avif": new Set(["image/avif"]),
   // Video
   "video/mp4": new Set(["video/mp4"]),
-  "video/quicktime": new Set(["video/mp4"]),
+  "video/quicktime": new Set(["video/mp4", "video/quicktime"]),
   "video/x-matroska": new Set(["video/x-matroska"]),
   "video/webm": new Set(["video/x-matroska"]),
-  "video/x-msvideo": new Set([]), // AVI has no reliable universal signature; skip
+  // AVI: `RIFF....AVI ` IS a reliable signature — the previous empty set meant
+  // an AVI declaration skipped content validation entirely.
+  "video/x-msvideo": new Set(["video/x-msvideo"]),
   "video/x-m4v": new Set(["video/mp4"]),
   // Audio
   "audio/mpeg": new Set(["audio/mpeg"]),
@@ -189,7 +241,10 @@ export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
   "audio/wav": new Set(["audio/wav"]),
   "audio/mp4": new Set(["video/mp4"]),
   "audio/x-m4a": new Set(["video/mp4"]),
-  "audio/aac": new Set([]), // AAC ADTS has variable sync word; skip
+  // Raw AAC genuinely has no file-level signature — validation is deferred to
+  // the ADTS frame-chaining check in `deep-inspect.ts#inspectAac`, which is a
+  // signature in practice. Empty here means "deferred", never "skipped".
+  "audio/aac": new Set([]),
   "audio/flac": new Set(["audio/flac"]),
   // Documents
   "application/pdf": new Set(["application/pdf"]),
@@ -204,7 +259,12 @@ export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
   ]),
   "application/vnd.openxmlformats-officedocument.presentationml.presentation":
     new Set(["application/zip"]),
-  // Text/data (no reliable magic bytes — validated by MIME only)
+  // Text/data have no positive signature by definition. Validation is deferred
+  // to `deep-inspect.ts#inspectTextual`, which applies the NEGATIVE signature
+  // (no NUL bytes, valid UTF-8, does not begin with another format's magic
+  // number, no active-content markers). Empty here means "deferred to the
+  // structural inspector", never "skipped" — declaring text/plain used to be
+  // the widest bypass in the pipeline.
   "text/plain": new Set([]),
   "text/csv": new Set([]),
   "application/json": new Set([]),
@@ -217,17 +277,29 @@ export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
 
 /**
  * Validate that `buf` (first bytes of an uploaded file) is consistent with
- * `declaredMime`. Returns `true` when valid, `false` when the magic bytes
- * definitively contradict the declared type.
+ * `declaredMime`. Throws {@link MagicByteValidationError} when the bytes
+ * contradict the declaration.
  *
- * Empty accept-sets (text/plain, audio/aac, etc.) are skipped — no detectable
- * signature for those types — and the check passes by default. The caller
- * should rely on AV scanning to catch malicious payloads in undetectable types.
+ * Two deliberate behaviours:
+ *
+ *  - A MIME **absent** from {@link MAGIC_BYTE_ACCEPT_MAP} FAILS CLOSED. It used
+ *    to return silently, which meant any MIME outside the map (`application/
+ *    octet-stream`, `application/x-msdownload`, a typo) disabled the check. The
+ *    map is the allow-list; not being on it is a rejection.
+ *  - An **empty** accept-set means "this format has no file-level signature and
+ *    is validated structurally instead" (text/*, raw AAC). Those types must be
+ *    passed to `inspectMedia` from `deep-inspect.ts`; the caller is responsible
+ *    for running it, and the media-service confirm pipeline always does.
  */
 export function assertMagicBytesMatch(buf: Buffer, declaredMime: string): void {
   const acceptSet = MAGIC_BYTE_ACCEPT_MAP[declaredMime];
-  // Unknown declared MIME or no signature defined → skip check
-  if (!acceptSet || acceptSet.size === 0) return;
+  if (!acceptSet) {
+    throw new MagicByteValidationError(
+      `Declared MIME ${declaredMime} has no signature policy`
+    );
+  }
+  // Deferred to the structural inspector (see docblock).
+  if (acceptSet.size === 0) return;
 
   const detected = matchMagicBytes(buf);
   if (detected === null) {

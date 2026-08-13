@@ -57,11 +57,16 @@ async function start() {
           env.MINIO_BUCKET_AVATARS,
           env.MINIO_BUCKET_COMMUNITY,
           env.MINIO_BUCKET,
+          // No service provisioned the stream bucket: backoffice uploads into it
+          // but never calls ensureBuckets, so outside the dev-only
+          // `deploy/minio/init-buckets.sh` sidecar it did not exist and had no
+          // CORS rules for the browser presigned PUT.
+          env.MINIO_BUCKET_STREAM,
         ],
         corsOrigins
       );
       logger.info(
-        `MinIO buckets ready: ${env.MINIO_BUCKET_AVATARS}, ${env.MINIO_BUCKET_COMMUNITY}, ${env.MINIO_BUCKET}`
+        `MinIO buckets ready: ${env.MINIO_BUCKET_AVATARS}, ${env.MINIO_BUCKET_COMMUNITY}, ${env.MINIO_BUCKET}, ${env.MINIO_BUCKET_STREAM}`
       );
     } catch (error) {
       logger.warn(

@@ -8,6 +8,7 @@ import {
 } from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
+import { isSessionActiveForRequest } from "../lib/session-active-cache.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
@@ -395,9 +396,30 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
   const deduped = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
-  const tokens = excludeDeviceId
+  const visible = excludeDeviceId
     ? deduped.filter((t) => t.deviceId !== excludeDeviceId)
     : deduped;
+
+  // Last line of defence against the reported symptom: a device whose session
+  // was revoked (logout, remote sign-out, password change, ban, deletion) must
+  // never receive a push, even if the RabbitMQ cleanup event was lost. The
+  // Redis active-session cache is authoritative and FAILS OPEN — only an
+  // explicit "revoked" marker drops a token, so a Redis outage or a legacy row
+  // with no sessionId can never silence a live device.
+  const tokens = (
+    await Promise.all(
+      visible.map(async (row) => {
+        if (!row.sessionId) return row;
+        if (await isSessionActiveForRequest(row.sessionId)) return row;
+        // The event never arrived; delete the row now so this is a one-time cost.
+        await deviceTokenService.pruneToken(row.token).catch(() => undefined);
+        logger.info(
+          `[push:deliver] dropped token of revoked session=${row.sessionId} user=${userId}`
+        );
+        return null;
+      })
+    )
+  ).filter((row): row is DeviceTokenRow => row !== null);
 
   // HOP 4 (final) of the push pipeline. tokens=0 means this user has NO
   // registered device, so nothing can ever be delivered no matter what the rest
@@ -463,6 +485,14 @@ export async function pushToUser(input: PushInput): Promise<void> {
           logger.warn(`Failed to prune dead token for user=${userId}`);
           logger.warn(error);
         }
+        return;
+      }
+
+      // Accepted by FCM/APNs → the device is reachable. Refresh the liveness
+      // stamp (throttled to once a day) so the stale-token sweeper never
+      // reaps a device that is simply long-lived.
+      if (result.messageId !== null || tokenType === "VOIP") {
+        await deviceTokenService.touchToken(token).catch(() => undefined);
       }
     })
   );

@@ -71,6 +71,21 @@ const envSchema = z.object({
   COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
   NOTIFICATION_GRPC_URL: z.string().default("0.0.0.0:4006"),
   STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
+  /** media-service gRPC — attachment scan-verdict verification at send time. */
+  MEDIA_GRPC_URL: z.string().default("0.0.0.0:4009"),
+  /**
+   * Master switch for the send-time attachment verification gate.
+   *
+   * Default ON: an unverified attachment must not become a persisted, fanned-out
+   * message reference. Set false ONLY for a controlled rollout window in an
+   * environment whose existing clients do not yet call `/media/confirm`, and
+   * watch the `media.attachment_unverified` log to size the gap before flipping
+   * it back. See docs/MEDIA_SECURITY_AUDIT.md §Backward Compatibility.
+   */
+  CHAT_MEDIA_VERIFY_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => v !== "false"),
   /** user-service REST URL — snapshot fetching fallback. */
   USER_SERVICE_URL: z.string().url().optional(),
   /** auth-service REST URL — fallback account-name resolution. */

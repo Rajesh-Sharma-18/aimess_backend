@@ -109,4 +109,59 @@ export const groupService = {
 
     return result;
   },
+
+  // Disband a group platform-side. The repository throws NotFound/Conflict on
+  // every chat-service business failure, so reaching the audit means it landed.
+  // `reason` is backoffice-only bookkeeping — the proto carries no reason field
+  // for disband, so it is recorded in the audit trail and nowhere else.
+  async disbandGroup(
+    groupId: string,
+    reason: string | undefined,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{ groupId: string; status: string; auditLogId: string }> {
+    // Light pre-read for the audit `before` snapshot; groups are gRPC-backed so
+    // there is no local row to diff against.
+    const before = await groupRepository.getById(groupId);
+    await groupRepository.disband(groupId, actor.id);
+
+    // Blocking, unlike the reads above — an unaudited moderation action is not OK.
+    const auditLog = await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.GROUP_DISBANDED,
+      targetType: "group",
+      targetId: groupId,
+      before: { status: before?.status ?? null },
+      after: { status: "DISBANDED", reason: reason ?? null },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return { groupId, status: "DISBANDED", auditLogId: auditLog.id };
+  },
+
+  // Remove one member from a group platform-side. `reason` IS forwarded here —
+  // chat-service persists it as GroupMember.kickReason.
+  async removeGroupMember(
+    groupId: string,
+    userId: string,
+    reason: string | undefined,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{ groupId: string; userId: string; auditLogId: string }> {
+    await groupRepository.removeMember(groupId, userId, actor.id, reason);
+
+    // Blocking, unlike the reads above — an unaudited moderation action is not OK.
+    const auditLog = await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.GROUP_MEMBER_REMOVED,
+      targetType: "group",
+      targetId: groupId,
+      after: { userId, reason: reason ?? null },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return { groupId, userId, auditLogId: auditLog.id };
+  },
 };

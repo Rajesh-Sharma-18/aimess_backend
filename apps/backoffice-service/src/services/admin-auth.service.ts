@@ -1,3 +1,4 @@
+import { logger } from "@aimess/logger";
 import {
   BadRequestError,
   ConflictError,
@@ -5,6 +6,8 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from "@aimess/errors";
+
+import { isSupportedLocale, type SupportedLocale } from "@aimess/constants";
 
 import { env } from "../config/env.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -50,6 +53,8 @@ export type AdminProfile = {
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
+  // Preferred admin-panel UI language; null = never chosen, client decides.
+  language: SupportedLocale | null;
   role: RoleKey;
   status: string;
   lastLoginAt: number | null;
@@ -68,6 +73,7 @@ type AdminProfileSource = {
   email: string;
   name: string;
   avatarUrl: string | null;
+  language: string | null;
   role: { key: RoleKey };
   status: string;
   lastLoginAt: Date | null;
@@ -82,6 +88,8 @@ async function buildAdminProfile(
     email: admin.email,
     name: admin.name,
     avatar: await resolveAvatarOrNull(admin.avatarUrl),
+    // Unknown/legacy values read as "never chosen" rather than leaking through.
+    language: isSupportedLocale(admin.language) ? admin.language : null,
     role: admin.role.key,
     status: admin.status,
     lastLoginAt: admin.lastLoginAt?.getTime() ?? null,
@@ -93,7 +101,8 @@ async function issueAdminSession(
   admin: AdminProfileSource,
   ctx: AdminRequestContext
 ): Promise<AdminAuthResult> {
-  const permissions = await rbacService.getPermissionKeysForRole(
+  const permissions = await rbacService.getPermissionKeysForAdmin(
+    admin.id,
     admin.role.key
   );
 
@@ -129,6 +138,25 @@ async function issueAdminSession(
   };
 }
 
+/**
+ * Revoke every active session for the admin EXCEPT `keepSessionId`, so stolen
+ * tokens stop working without logging the caller out of the tab they are in.
+ */
+async function revokeOtherSessions(
+  adminId: string,
+  keepSessionId?: string
+): Promise<void> {
+  const active = await adminSessionRepository.listActiveByAdmin(adminId);
+  const toRevoke = active
+    .map((s) => s.id)
+    .filter((sid) => sid !== keepSessionId);
+  if (toRevoke.length === 0) return;
+  for (const sid of toRevoke) {
+    await adminSessionRepository.revoke(sid);
+  }
+  await markAdminSessionsRevoked(toRevoke);
+}
+
 export const adminAuthService = {
   /**
    * Single-step login: email + password. Verifies the credentials, issues the
@@ -151,6 +179,20 @@ export const adminAuthService = {
 
     const ok = await verifyPassword(password, admin.passwordHash);
     if (!ok) {
+      // Guarded: an unguarded throwing insert here would turn the 401 into a
+      // 500 and re-create the account-enumeration oracle avoided above.
+      try {
+        await auditService.record({
+          actorId: admin.id,
+          action: AUDIT_ACTIONS.ADMIN_LOGIN_FAILED,
+          targetType: "admin",
+          targetId: admin.id,
+          ip: ctx.ip,
+          userAgent: ctx.userAgent ?? null,
+        });
+      } catch (err: unknown) {
+        logger.warn("Failed to record ADMIN_LOGIN_FAILED audit", { err });
+      }
       throw new UnauthorizedError("ADMIN_INVALID_CREDENTIALS");
     }
 
@@ -210,7 +252,8 @@ export const adminAuthService = {
       throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
     }
 
-    const permissions = await rbacService.getPermissionKeysForRole(
+    const permissions = await rbacService.getPermissionKeysForAdmin(
+      admin.id,
       admin.role.key
     );
 
@@ -287,7 +330,8 @@ export const adminAuthService = {
     if (!admin) {
       throw new UnauthorizedError("AUTH_UNAUTHORIZED");
     }
-    const permissions = await rbacService.getPermissionKeysForRole(
+    const permissions = await rbacService.getPermissionKeysForAdmin(
+      adminId,
       admin.role.key
     );
     return await buildAdminProfile(admin, permissions);
@@ -297,6 +341,10 @@ export const adminAuthService = {
    * Self-service profile update for the "My Account" page (username, email,
    * avatar). Reuses `adminUserRepository.updateProfile`, `buildAdminProfile`
    * and the shared audit trail. Password changes go through `changePassword`.
+   *
+   * Changing the login email re-authenticates with `currentPassword` and then
+   * revokes the other sessions, exactly like `changePassword` — without it a
+   * stolen access token becomes permanent ownership via forgot-password.
    */
   async updateMe(
     adminId: string,
@@ -304,17 +352,33 @@ export const adminAuthService = {
       username?: string;
       email?: string;
       avatarObjectKey?: string | null;
+      language?: SupportedLocale;
+      currentPassword?: string;
     },
-    ctx: AdminRequestContext
+    ctx: AdminRequestContext & { sessionId?: string }
   ): Promise<AdminProfile> {
     const existing = await adminUserRepository.findById(adminId);
     if (!existing) {
       throw new UnauthorizedError("AUTH_UNAUTHORIZED");
     }
 
-    // Case-insensitive email uniqueness — validator lowercases before we get here.
-    if (input.email !== undefined && input.email !== existing.email) {
-      const clash = await adminUserRepository.findByEmail(input.email);
+    // Submitting the email you already have is a no-op, not a repoint.
+    const newEmail =
+      input.email !== undefined && input.email !== existing.email
+        ? input.email
+        : null;
+
+    if (newEmail) {
+      const ok = await verifyPassword(
+        input.currentPassword ?? "",
+        existing.passwordHash
+      );
+      if (!ok) {
+        throw new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID");
+      }
+
+      // Case-insensitive email uniqueness — validator lowercases before we get here.
+      const clash = await adminUserRepository.findByEmail(newEmail);
       if (clash && clash.id !== adminId) {
         throw new ConflictError("ADMIN_EMAIL_TAKEN");
       }
@@ -326,12 +390,17 @@ export const adminAuthService = {
         name: input.username,
         email: input.email,
         avatarUrl: input.avatarObjectKey,
+        language: input.language,
       });
     } catch (error) {
       if (isUniqueEmailViolation(error)) {
         throw new ConflictError("ADMIN_EMAIL_TAKEN");
       }
       throw error;
+    }
+
+    if (newEmail) {
+      await revokeOtherSessions(adminId, ctx.sessionId);
     }
 
     await auditService.record({
@@ -343,17 +412,20 @@ export const adminAuthService = {
         name: existing.name,
         email: existing.email,
         avatarUrl: existing.avatarUrl,
+        language: existing.language,
       },
       after: {
         name: updated.name,
         email: updated.email,
         avatarUrl: updated.avatarUrl,
+        language: updated.language,
       },
       ip: ctx.ip,
       userAgent: ctx.userAgent ?? null,
     });
 
-    const permissions = await rbacService.getPermissionKeysForRole(
+    const permissions = await rbacService.getPermissionKeysForAdmin(
+      updated.id,
       updated.role.key
     );
     return buildAdminProfile(updated, permissions);
@@ -393,18 +465,7 @@ export const adminAuthService = {
       await hashPassword(input.newPassword)
     );
 
-    // Revoke every OTHER active session so stolen tokens stop working, but
-    // keep the caller's current session alive so they don't get logged out.
-    const active = await adminSessionRepository.listActiveByAdmin(adminId);
-    const toRevoke = active
-      .map((s) => s.id)
-      .filter((sid) => sid !== ctx.sessionId);
-    if (toRevoke.length > 0) {
-      for (const sid of toRevoke) {
-        await adminSessionRepository.revoke(sid);
-      }
-      await markAdminSessionsRevoked(toRevoke);
-    }
+    await revokeOtherSessions(adminId, ctx.sessionId);
 
     await auditService.record({
       actorId: adminId,

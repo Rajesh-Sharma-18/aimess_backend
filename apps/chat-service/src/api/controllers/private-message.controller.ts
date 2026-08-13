@@ -430,6 +430,14 @@ export class PrivateMessageController {
                   recipientIds
                 )
                 .then((raw) => renderConvOverrides(raw)),
+            // Absolute post-delete badge for both participants. The unread
+            // counter was already decremented by the delete itself; without
+            // this the client keeps counting a message that no longer exists.
+            resolveUnreadCounts: () =>
+              this.messageService.getUnreadCountsByUser(result.roomId),
+            // Without this the bump is discarded by the client's monotonic list
+            // guard — it points BACKWARD at the previous visible message.
+            deleteRecalc: true,
             senderId: recalc.senderId,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
@@ -464,18 +472,26 @@ export class PrivateMessageController {
           // Skip unless the deleted message was the viewer's effective last
           // visible message — hiding an older message changes nothing in their list.
           if (recalc === null || !recalc.wasEffectiveLast) return;
-          const preview = buildMessagePreview(
-            recalc.messageType,
-            recalc.content
-          );
+          const preview = recalc.hasLastMessage
+            ? buildMessagePreview(recalc.messageType, recalc.content)
+            : "";
           publishConvUpdatedSafe({
             redis: this.redis,
             type: "PRIVATE",
             roomId: result.roomId,
             recipientIds: [userId],
+            // Only the hiding user's own badge can move on a delete-for-me.
+            resolveUnreadCounts: () =>
+              this.messageService.getUnreadCountsByUser(result.roomId),
+            deleteRecalc: true,
             senderId: recalc.senderId,
             lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.createdAt.getTime(),
+            // NEVER a stale createdAt when nothing visible remains: 0 is the
+            // documented "viewer has nothing left" signal and sorts to the
+            // bottom. Reusing the removed row's time pins it to the top.
+            lastMessageAt: recalc.hasLastMessage
+              ? recalc.createdAt.getTime()
+              : 0,
             preview: {
               contentType: recalc.messageType,
               text: preview,

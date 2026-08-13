@@ -1,7 +1,11 @@
 import type { Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import jwt from "jsonwebtoken";
-import { verifyAccessToken, extractBearerToken } from "@aimess/auth-jwt";
+import {
+  verifyAccessToken,
+  verifyAdminAccessToken,
+  extractBearerToken,
+} from "@aimess/auth-jwt";
 import { getActiveSessionFromCache } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
@@ -28,6 +32,8 @@ declare module "socket.io" {
      * `call:handled` to every device EXCEPT the one that answered.
      */
     callLegId?: string;
+    /** Backoffice admin id — set only on /admin sockets, where `userId` is unused. */
+    adminId?: string;
   }
 }
 
@@ -87,6 +93,66 @@ export function createGatewaySocketAuthMiddleware(
       } catch (err) {
         logger.warn(
           `Gateway socket auth failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        next(new Error("Authentication failed"));
+      }
+    })();
+  };
+}
+
+/**
+ * Handshake auth for the /admin namespace. Backoffice admin tokens carry a
+ * separate secret and `type` claim, so the user middleware above rejects them.
+ * Session liveness reads the same `admin:<sid>` active-session key
+ * backoffice-service writes (see its lib/admin-session-cache.ts).
+ */
+export function createGatewayAdminSocketAuthMiddleware(
+  redis: Redis
+): (socket: Socket, next: (err?: Error) => void) => void {
+  return function gatewayAdminSocketAuthMiddleware(
+    socket: Socket,
+    next: (err?: Error) => void
+  ): void {
+    void (async () => {
+      try {
+        const { auth, headers } = socket.handshake;
+        const token =
+          ((auth as Record<string, unknown>)?.token as string | undefined) ??
+          extractBearerTokenSafe(headers.authorization);
+
+        if (!token || !env.JWT_ADMIN_SECRET) {
+          next(new Error("Authentication required"));
+          return;
+        }
+
+        const xLang = headers["x-lang"];
+        socket.data.locale = resolveLocale(
+          headers["accept-language"],
+          Array.isArray(xLang) ? xLang[0] : xLang
+        );
+
+        const verified = verifyAdminAccessToken(token, env.JWT_ADMIN_SECRET);
+
+        const active = await getActiveSessionFromCache(
+          redis,
+          `admin:${verified.sessionId}`
+        ).catch(() => true); // Redis hiccup: fail open, same as the user middleware.
+        if (active === false) {
+          next(new Error("Authentication failed"));
+          return;
+        }
+
+        socket.data.adminId = verified.adminId;
+        socket.data.sessionId = verified.sessionId;
+        socket.data.accessToken = token;
+
+        const decoded = jwt.decode(token) as { exp?: number } | null;
+        socket.data.tokenExpiresAt = decoded?.exp ? decoded.exp * 1000 : 0;
+
+        next();
+      } catch (err) {
+        logger.warn(
+          `Gateway admin socket auth failed: ${err instanceof Error ? err.message : String(err)}`
         );
         next(new Error("Authentication failed"));
       }

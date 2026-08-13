@@ -30,6 +30,11 @@ export interface GroupItem {
   memberCount: number;
   createdAt: number;
   admin: GroupAdmin;
+  // Group lifecycle: ACTIVE | DISBANDED (chat-service GroupRoom.status).
+  status: string;
+  // Epoch ms; null when the group was never disbanded / has no messages yet.
+  disbandedAt: number | null;
+  lastMessageAt: number | null;
 }
 
 /** A row in the group members list. */
@@ -42,6 +47,11 @@ export interface GroupMemberItem {
   avatar: MediaObject | null;
   role: string;
   joinedAt: number;
+  // Membership state: ACTIVE | KICKED | BANNED | LEFT (chat-service GroupMember.status).
+  status: string;
+  // Epoch ms; null unless the member was actually kicked / banned.
+  kickedAt: number | null;
+  bannedAt: number | null;
 }
 
 /** Offset-pagination meta for group list responses. */
@@ -59,8 +69,9 @@ export interface ListGroupsQuery {
   q?: string;
   fromDate?: string;
   toDate?: string;
-  sortBy: "createdAt" | "memberCount";
+  sortBy: "createdAt" | "memberCount" | "lastMessageAt";
   sortOrder: "asc" | "desc";
+  status?: "ACTIVE" | "DISBANDED" | "ALL";
   page: number;
   limit: number;
 }
@@ -69,6 +80,7 @@ export interface ListGroupsQuery {
 export interface ListGroupMembersQuery {
   q?: string;
   role?: GroupRole;
+  status?: "ACTIVE" | "ALL";
   page: number;
   limit: number;
 }

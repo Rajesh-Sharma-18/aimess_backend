@@ -10,6 +10,7 @@ jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
     findTokensByUserId: jest.fn(async () => ["token-1"]),
     deleteByToken: jest.fn(async () => undefined),
+    touchLastSeen: jest.fn(async () => undefined),
   },
 }));
 jest.mock("../../src/providers/firebase/sendPush.js", () => ({

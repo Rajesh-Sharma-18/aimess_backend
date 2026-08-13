@@ -16,6 +16,7 @@ import { startFriendConsumer } from "./consumers/friend.consumer.js";
 import { startSettingsConsumer } from "./consumers/settings.consumer.js";
 import { startSessionConsumer } from "./consumers/session.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
+import { startDeviceTokenSweeper } from "./jobs/device-token-sweeper.js";
 
 /** Start a consumer without letting RabbitMQ outages crash the service. */
 async function startConsumerSafe(
@@ -64,6 +65,10 @@ async function start() {
     await startConsumerSafe("announcement consumer", startAnnouncementConsumer);
     await startConsumerSafe("settings consumer", startSettingsConsumer);
     await startConsumerSafe("session consumer", startSessionConsumer);
+
+    // Backstop for tokens no revocation event will ever name (naturally
+    // expired sessions, uninstalled apps, cleared site data).
+    startDeviceTokenSweeper();
 
     // Start gRPC server (stub implementations — real logic wired in later)
     startGrpcServer(env.NOTIFICATIONS_GRPC_PORT);

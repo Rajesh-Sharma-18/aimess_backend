@@ -1,0 +1,26 @@
+{
+  "name": "@aimess/messaging",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "@aimess/logger": "workspace:*",
+    "@aimess/shared-types": "workspace:*",
+    "amqplib": "^0.10.5"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.4",
+    "typescript": "^6.0.3"
+  }
+}

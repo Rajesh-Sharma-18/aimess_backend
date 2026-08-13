@@ -2,6 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { signAccessToken, type PlatformRole } from "@aimess/auth-jwt";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import { publishSessionCreatedEvent } from "@aimess/redis";
 
 import { env } from "../config/env.js";
@@ -103,6 +107,22 @@ export async function issueAuthTokens(
     targetId: createdSession.id,
     userId,
     metadata: { deviceId: session.deviceId, deviceType: session.deviceType },
+    ip: session.ipAddress,
+    userAgent: session.userAgent,
+  });
+
+  // Same funnel feeds the admin panel's audit log: every new ACTIVE session is a login,
+  // whether it came from password, social or QR device-link.
+  publishAdminActivitySafe({
+    actorId: userId,
+    action: USER_AUDIT_ACTIONS.USER_LOGIN,
+    targetType: "session",
+    targetId: createdSession.id,
+    after: {
+      deviceType: session.deviceType,
+      deviceName: session.deviceName,
+      countryCode: session.countryCode,
+    },
     ip: session.ipAddress,
     userAgent: session.userAgent,
   });

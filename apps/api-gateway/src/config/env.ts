@@ -64,6 +64,17 @@ const envSchema = z.object({
   /** Comma-separated Swagger server URLs (e.g. localhost + LAN IP). */
   SWAGGER_SERVER_URLS: z.string().optional(),
 
+  /**
+   * Master switch for HTTP rate limiting. Previously this was implied by
+   * `NODE_ENV === "development"`, which also gates CORS origin checking and the
+   * gRPC service-token check — three unrelated controls on one variable. Set it
+   * to `false` in local dev and in the E2E harness; leave it true everywhere
+   * else. Health and docs paths are skipped regardless.
+   */
+  RATE_LIMIT_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
   GLOBAL_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()
@@ -76,6 +87,13 @@ const envSchema = z.object({
     .positive()
     .default(15),
   SENSITIVE_AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  /** OTP verify/resend. Separate from login: legitimate retries are more frequent. */
+  OTP_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
+  OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(15),
+  /** Per-session ceiling for read/poll endpoints. Generous by design. */
+  READ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /** Per-session ceiling for free-text search (each call fans out downstream). */
+  SEARCH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   /**
    * Number of reverse-proxy hops in front of the gateway (0 = direct clients).
    * Use 1 behind nginx/ALB. Do not use `true` — express-rate-limit rejects it.

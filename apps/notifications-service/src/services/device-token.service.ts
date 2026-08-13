@@ -12,6 +12,7 @@ export const deviceTokenService = {
     platform: DeviceTokenPlatform;
     tokenType: DeviceTokenType;
     deviceId?: string | null;
+    sessionId?: string | null;
   }): Promise<void> {
     return deviceTokenRepository.upsert(input);
   },
@@ -32,5 +33,15 @@ export const deviceTokenService = {
   /** Prune a dead token surfaced by FCM (invalid/unregistered). */
   pruneToken(token: string): Promise<void> {
     return deviceTokenRepository.deleteByToken(token);
+  },
+
+  /** Refresh the liveness stamp the stale-token sweeper reads (throttled). */
+  touchToken(token: string): Promise<void> {
+    return deviceTokenRepository.touchLastSeen(token);
+  },
+
+  /** Delete every token unseen for longer than the TTL. Returns the count. */
+  sweepStaleTokens(olderThanMs?: number): Promise<number> {
+    return deviceTokenRepository.deleteStale(olderThanMs);
   },
 };

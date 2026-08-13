@@ -43,6 +43,8 @@ export function resolveResourceType(
       return "COMMUNITY_BANNER";
     case "GROUP_AVATAR":
       return "GROUP_AVATAR";
+    case "LIVESTREAM_THUMBNAIL":
+      return "LIVESTREAM_THUMBNAIL";
     case "CHAT_ATTACHMENT":
     case "GROUP_CHAT_ATTACHMENT":
     case "COMMUNITY_CHAT_ATTACHMENT":

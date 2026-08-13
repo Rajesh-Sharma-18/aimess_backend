@@ -10,7 +10,7 @@
  *
  * Branch matrix (per scanner.ts):
  *   CLEAN/SKIPPED scan → set CLEAN, return "CLEAN"
- *   INFECTED scan      → set QUARANTINED + deleteObject, return "QUARANTINED"
+ *   INFECTED scan      → set INFECTED + deleteObject, return "INFECTED"
  *   missing bytes      → return "PENDING", NO Redis write
  *   scanner ERROR      → return "PENDING", NO Redis write
  */
@@ -78,13 +78,16 @@ describe("runScanAndPersist (real)", () => {
     expect(setSpy).toHaveBeenCalledWith(JOB.objectKey, "CLEAN");
   });
 
-  it("INFECTED scan → persists QUARANTINED + deletes object, returns 'QUARANTINED'", async () => {
+  it("INFECTED scan → persists INFECTED + deletes object, returns 'INFECTED'", async () => {
+    // An AV detection reports INFECTED. It previously reported QUARANTINED while
+    // a structural rejection reported INFECTED — the labels were swapped, so a
+    // client could not tell malware from a malformed file.
     scanSpy.mockResolvedValue({ status: "INFECTED", details: "Eicar-Test" });
 
     const result = await runScanAndPersist(JOB);
 
-    expect(result).toBe("QUARANTINED");
-    expect(setSpy).toHaveBeenCalledWith(JOB.objectKey, "QUARANTINED");
+    expect(result).toBe("INFECTED");
+    expect(setSpy).toHaveBeenCalledWith(JOB.objectKey, "INFECTED");
     expect(mockedDelete).toHaveBeenCalledTimes(1);
     expect(mockedDelete).toHaveBeenCalledWith(
       expect.anything(),

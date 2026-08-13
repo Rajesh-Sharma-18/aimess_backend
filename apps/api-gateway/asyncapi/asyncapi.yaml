@@ -5964,8 +5964,23 @@ components:
         isJoined: { type: boolean, description: "Always true." }
         joinRequestId: { type: string, nullable: true }
         joinRequestStatus: { type: string, nullable: true }
-        isMuted: { type: boolean }
-        muteUntil: { type: string, nullable: true }
+        isMuted:
+          {
+            type: boolean,
+            description:
+              "Derived, never stored: true when a timed mute is still running
+              (muteUntil in the future) OR all three of chatEnabled /
+              streamEnabled / announcementEnabled are false. Clients must render
+              the mute badge from this and never from muteUntil being null.",
+          }
+        muteUntil:
+          {
+            type: string,
+            nullable: true,
+            description:
+              "End of a TIMED mute; null means no timed mute — NOT an indefinite
+              mute. An indefinite mute is all three category toggles false.",
+          }
         moderationStatus: { type: string }
         isLive: { type: boolean }
         chatEnabled: { type: boolean }

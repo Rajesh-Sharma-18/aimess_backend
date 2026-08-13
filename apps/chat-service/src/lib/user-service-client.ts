@@ -9,6 +9,8 @@ export interface UserBatchEntry {
   username: string;
   avatar: string;
   isOnline: boolean;
+  /** Account deleted — identity already anonymized by user-service. */
+  isDeleted: boolean;
 }
 
 export async function fetchUsersBatch(
@@ -24,6 +26,7 @@ export async function fetchUsersBatch(
       username: u.username ?? "",
       avatar: u.avatarObjectKey ?? "",
       isOnline: false,
+      isDeleted: u.isDeleted === true,
     }));
   } catch (err) {
     logger.warn(

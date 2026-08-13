@@ -11,6 +11,7 @@ import { SessionRevokeReason } from "../generated/prisma/client.js";
 import { markSessionsRevoked } from "../lib/session-active-cache.js";
 import { sessionRepository } from "../repositories/session.repository.js";
 import { publishAdminUserNotifySafe } from "./publish-admin-user-notify.js";
+import { publishAllSessionsRevokedSafe } from "./publish-session-revoked.js";
 
 /**
  * admin.user.queue carries backoffice ban/suspend/unban events. auth-service is
@@ -84,6 +85,10 @@ async function forceLogout(userId: string): Promise<void> {
     SessionRevokeReason.ADMIN_REVOKED
   );
   await markSessionsRevoked(active.map((row) => row.id));
+  // Drop every push token too — a banned/suspended user cannot sign back in,
+  // so any token left behind keeps delivering notifications to a dead account.
+  // Same signal "sign out from all devices" and account deletion use.
+  publishAllSessionsRevokedSafe({ userId });
 }
 
 /** Re-publish a notify-ready message for notifications-service (best-effort). */

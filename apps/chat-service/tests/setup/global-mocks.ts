@@ -96,6 +96,35 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
   })),
 }));
 
+// --- media-service gRPC client (same import.meta.url + proto-loader problem
+//     as stream.client.js). Backs the send-time attachment verification gate
+//     (`lib/attachment-guard.ts`). Default: every key reports CLEAN and
+//     downloadable, with no ownerId/resourceId recorded, so existing tests that
+//     attach arbitrary object keys keep passing. A test that wants to exercise
+//     the gate overrides `checkMediaStatus` with its own verdicts. ----------
+jest.mock("../../src/grpc/media.client.js", () => {
+  const checkMediaStatus = jest.fn(async (objectKeys: string[]) => {
+    const out = new Map<string, unknown>();
+    for (const objectKey of objectKeys) {
+      out.set(objectKey, {
+        objectKey,
+        scanStatus: "CLEAN",
+        downloadable: true,
+        ownerId: "",
+        resourceId: "",
+        contentType: "",
+        size: 0,
+      });
+    }
+    return out;
+  });
+  return {
+    getMediaVerifyClient: jest.fn(() => ({ checkMediaStatus })),
+    createMediaVerifyClient: jest.fn(() => ({ checkMediaStatus })),
+    setMediaVerifyClient: jest.fn(),
+  };
+});
+
 // --- community-service gRPC client (same import.meta.url + proto loader +
 //     __dirname-redeclare issue as stream.client.js above). The community
 //     reaction handlers (REST + gRPC) call getCommunityReconcileClient() to
@@ -161,6 +190,7 @@ jest.mock("../../src/grpc/user-snapshot.client.js", () => ({
     getFriendshipInfoBulk: jest.fn(async () => []),
     getUserSnapshotsBulk: jest.fn(async () => []),
     getCallPrivacy: jest.fn(async () => null),
+    adminSearchProfileIds: jest.fn(async () => []),
     getChatSettings: jest.fn(async () => ({
       autoDeleteTimer: "OFF",
       typingIndicators: true,

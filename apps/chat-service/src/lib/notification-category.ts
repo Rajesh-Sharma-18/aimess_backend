@@ -19,6 +19,13 @@
  * MENTIONS currently has no inbox producer; `chat.mention` / `community.mention`
  * are reserved for the mention pipeline that runs push-only with skipInbox.
  */
+/**
+ * The one notification type that carries the Terminate / It's Me actions.
+ * Lives here (env-free lib) so both the repository and the serializer can read
+ * it without either importing the other.
+ */
+export const LOGIN_DETECTED_TYPE = "auth.security_new_login";
+
 export type NotificationCategory =
   | "ALL"
   | "FRIENDS"

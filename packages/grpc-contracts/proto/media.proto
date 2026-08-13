@@ -5,6 +5,19 @@ package media;
 service MediaService {
   rpc GenerateUploadUrl  (UploadUrlRequest)   returns (UploadUrlResponse);
   rpc GenerateDownloadUrl(DownloadUrlRequest) returns (DownloadUrlResponse);
+
+  // Batch scan-verdict lookup. Any service that is about to PERSIST a reference
+  // to an uploaded object (a chat attachment, a profile avatar) must call this
+  // first: media-service owns the security pipeline, and without this the only
+  // enforcement point was `/media/download-url`, which those services bypass by
+  // presigning MinIO directly. Read-only; never mutates.
+  rpc CheckMediaStatus   (MediaStatusRequest) returns (MediaStatusResponse);
+
+  // Run the full structural-validation pipeline over an already-PUT object and
+  // return the resulting verdict. For upload paths that mint their own presigned
+  // PUT (backoffice livestream thumbnails) so they converge on the same policy
+  // instead of shipping a second, weaker one.
+  rpc ConfirmUpload      (ConfirmRequest)     returns (ConfirmResponse);
 }
 
 enum MediaCategory {
@@ -16,6 +29,50 @@ enum MediaCategory {
   COMMUNITY_CHAT_ATTACHMENT = 5;
   GROUP_AVATAR              = 6;
   GROUP_CHAT_ATTACHMENT     = 7;
+  LIVESTREAM_THUMBNAIL      = 8;
+}
+
+// ── Scan-verdict verification ───────────────────────────────────────────────
+
+message MediaStatusRequest {
+  repeated string object_keys = 1;
+}
+
+message MediaStatusEntry {
+  string object_key  = 1;
+  // MediaScanStatus (@aimess/constants): PENDING | SCANNING | CLEAN | REJECTED
+  // | INFECTED | QUARANTINED | SKIPPED | ERROR. Empty when the key is unknown
+  // to the registry (never uploaded through media-service).
+  string scan_status = 2;
+  // True only for CLEAN / SKIPPED — the caller should gate on THIS, not on the
+  // string, so a status added later defaults to "not safe" without every caller
+  // having to be updated.
+  bool   downloadable = 3;
+  // The uploader recorded at mint time. Callers verify the sender actually owns
+  // the object they are attaching.
+  string owner_id    = 4;
+  // The resource (room/group/community) the object was filed under.
+  string resource_id = 5;
+  string content_type = 6;
+  int64  size        = 7;
+}
+
+message MediaStatusResponse {
+  repeated MediaStatusEntry entries = 1;
+}
+
+message ConfirmRequest {
+  string        object_key = 1;
+  MediaCategory category   = 2;
+  // The owner segment of the object key ({prefix}/{owner_id}/…). For livestream
+  // thumbnails this is the livestream id.
+  string        owner_id   = 3;
+}
+
+message ConfirmResponse {
+  string scan_status  = 1;
+  bool   downloadable = 2;
+  int64  file_size    = 3;
 }
 
 message MediaObjectProto {

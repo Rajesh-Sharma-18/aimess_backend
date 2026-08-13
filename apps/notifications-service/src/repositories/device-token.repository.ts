@@ -9,6 +9,8 @@ export interface UpsertDeviceTokenInput {
   platform: DeviceTokenPlatform;
   tokenType: DeviceTokenType;
   deviceId?: string | null;
+  /** auth-service session the registering JWT belongs to (see schema.prisma). */
+  sessionId?: string | null;
 }
 
 export interface DeviceTokenRow {
@@ -16,7 +18,23 @@ export interface DeviceTokenRow {
   tokenType: string;
   platform: string;
   deviceId: string | null;
+  /** auth-service session that registered this row; null for legacy rows. */
+  sessionId: string | null;
 }
+
+/**
+ * How long a token may go unseen before the sweeper drops it. Covers the
+ * devices no revocation event will ever name: a refresh token that simply
+ * expired, an uninstalled app, a browser that cleared site data.
+ */
+const STALE_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
+
+/**
+ * Minimum gap between `lastSeenAt` writes on the send path. A push proves the
+ * device is still reachable, but bumping the row on every single push would
+ * add a write per notification per device for no extra signal.
+ */
+const TOUCH_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 export const deviceTokenRepository = {
   /**
@@ -31,6 +49,7 @@ export const deviceTokenRepository = {
         platform: input.platform,
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
+        sessionId: input.sessionId ?? null,
         lastSeenAt: new Date(),
       },
       create: {
@@ -39,6 +58,7 @@ export const deviceTokenRepository = {
         platform: input.platform,
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
+        sessionId: input.sessionId ?? null,
       },
     });
 
@@ -67,8 +87,42 @@ export const deviceTokenRepository = {
   async findTokensByUserId(userId: string): Promise<DeviceTokenRow[]> {
     return prisma.deviceToken.findMany({
       where: { userId },
-      select: { token: true, tokenType: true, platform: true, deviceId: true },
+      select: {
+        token: true,
+        tokenType: true,
+        platform: true,
+        deviceId: true,
+        sessionId: true,
+      },
     });
+  },
+
+  /**
+   * Mark a token as still alive (a push was accepted for it), at most once per
+   * `TOUCH_THROTTLE_MS`. This is what keeps a long-lived, genuinely active
+   * device off the stale sweeper's list without a write per notification.
+   */
+  async touchLastSeen(token: string): Promise<void> {
+    await prisma.deviceToken.updateMany({
+      where: {
+        token,
+        lastSeenAt: { lt: new Date(Date.now() - TOUCH_THROTTLE_MS) },
+      },
+      data: { lastSeenAt: new Date() },
+    });
+  },
+
+  /**
+   * Delete tokens unseen for longer than the TTL. The backstop for every path
+   * that produces no revocation event at all — a naturally expired refresh
+   * token, an uninstalled app, a browser that cleared site data — and the
+   * bound on any event lost while RabbitMQ was unreachable.
+   */
+  async deleteStale(olderThanMs: number = STALE_AFTER_MS): Promise<number> {
+    const res = await prisma.deviceToken.deleteMany({
+      where: { lastSeenAt: { lt: new Date(Date.now() - olderThanMs) } },
+    });
+    return res.count;
   },
 
   /** Remove a single token (explicit unregister, or pruning a dead FCM token). */
@@ -84,9 +138,35 @@ export const deviceTokenRepository = {
     return res.count;
   },
 
-  /** Remove ALL tokens for a user (logout-all-devices). */
-  async deleteAllByUserId(userId: string): Promise<void> {
-    await prisma.deviceToken.deleteMany({ where: { userId } });
+  /**
+   * Remove ALL tokens for a user (logout-all-devices, account deletion).
+   *
+   * `exceptSessionId` keeps the tokens of one still-live session — "sign out
+   * from all OTHER devices" revokes every session but the caller's, so wiping
+   * the caller's token too would silently kill push on a device that is still
+   * signed in. Rows predating the sessionId field can't be attributed to a
+   * session and are removed; they are stale by definition.
+   */
+  async deleteAllByUserId(
+    userId: string,
+    exceptSessionId?: string | null
+  ): Promise<void> {
+    await prisma.deviceToken.deleteMany({
+      where: exceptSessionId
+        ? { userId, NOT: { sessionId: exceptSessionId } }
+        : { userId },
+    });
+  },
+
+  /** Remove tokens registered by one session (single-session logout/revoke). */
+  async deleteByUserIdAndSessionId(
+    userId: string,
+    sessionId: string
+  ): Promise<number> {
+    const res = await prisma.deviceToken.deleteMany({
+      where: { userId, sessionId },
+    });
+    return res.count;
   },
 
   /** Remove tokens for a specific device (single-device logout). */

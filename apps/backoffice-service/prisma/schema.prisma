@@ -55,6 +55,9 @@ model AdminUser {
   // Custom avatar URL set via the admin profile. null = use the system-generated
   // default avatar (resolved on read in lib/admin-avatar.ts), never stored.
   avatarUrl    String?
+  // Preferred admin-panel UI language ("en" | "th" | "vi"). null = never chosen,
+  // the client keeps using its own stored/browser locale.
+  language     String?
   roleId       String      @db.Uuid
   role         AdminRole   @relation(fields: [roleId], references: [id])
   status       AdminStatus @default(ACTIVE)
@@ -63,9 +66,9 @@ model AdminUser {
   updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
 
   sessions            AdminSession[]
-  auditLogs           AuditLog[]
   otpCodes            AdminOtpCode[]
   passwordResetTokens AdminPasswordResetToken[]
+  permissionOverrides AdminPermissionOverride[]
 
   @@index([roleId])
 }
@@ -120,7 +123,8 @@ model Permission {
   key   String @unique // e.g. "users.moderate"
   group String // "users" | "reports" | ...
 
-  roles RolePermission[]
+  roles          RolePermission[]
+  adminOverrides AdminPermissionOverride[]
 }
 
 model RolePermission {
@@ -132,6 +136,23 @@ model RolePermission {
   scope      Json? // optional resource scope (e.g. { communityIds: [...] })
 
   @@id([roleId, permissionId])
+}
+
+// Per-admin DELTA on top of the role baseline — never a snapshot of it.
+// Effective = role's keys UNION allow-rows MINUS deny-rows, so a later change to
+// the role matrix still propagates everywhere a human hasn't explicitly overridden.
+// The composite PK makes a contradictory allow+deny pair unrepresentable.
+model AdminPermissionOverride {
+  adminId      String     @db.Uuid
+  permissionId String     @db.Uuid
+  admin        AdminUser  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  allow        Boolean // true = grant on top of role, false = revoke from role
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@id([adminId, permissionId])
+  @@index([adminId])
 }
 
 model AdminSession {
@@ -153,21 +174,33 @@ model AdminSession {
 // Audit
 // -----------------------------------------------------------------------------
 model AuditLog {
-  id         String    @id @default(uuid()) @db.Uuid
-  actorId    String    @db.Uuid
-  actor      AdminUser @relation(fields: [actorId], references: [id])
-  action     String // "user.ban", "role.change", ...
+  id String @id @default(uuid()) @db.Uuid
+  // AdminUser.id when actorType=ADMIN, AuthUser.id when actorType=USER, null for SYSTEM.
+  // Intentionally NOT a relation: end-user ids live in another service's database, so a
+  // foreign key to AdminUser would reject every website-side row.
+  actorId    String? @db.Uuid
+  actorType  AuditActorType @default(ADMIN)
+  action     String // "user.ban", "community.member_joined", ...
   targetType String // "user" | "community" | "group" | "stream" | "settings" | "admin"
   targetId   String?
   before     Json?
   after      Json?
   ip         String?
   userAgent  String?
-  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  // Publisher-side idempotency key for ingested website activity; null for admin-written rows.
+  eventId    String?  @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([actorId, createdAt])
   @@index([targetType, targetId])
   @@index([action, createdAt])
+  @@index([actorType, createdAt])
+}
+
+enum AuditActorType {
+  ADMIN
+  USER
+  SYSTEM
 }
 
 // -----------------------------------------------------------------------------
@@ -279,6 +312,8 @@ model CommunityIndex {
   @@index([status])
 }
 
+// UNUSED read-model placeholder — never written, never read. Group Management is
+// live-over-gRPC (group.grpc.repository.ts). Do NOT assume this table is populated.
 model GroupIndex {
   id          String   @id
   name        String

@@ -132,7 +132,12 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.body.success).toBe(false);
   });
 
-  it("200: GROUP_AVATAR download (no ownership check)", async () => {
+  it("403: GROUP_AVATAR with no registry row is uploader-only, not public", async () => {
+    // GROUP_AVATAR's policy is GROUP_MEMBER, but with no registry row it used to
+    // fall through the legacy guard into the "avatars/covers are public" tail —
+    // so any authenticated user could fetch a private group's avatar. With
+    // registration best-effort at the time, that state was not limited to
+    // pre-registry objects: one Mongo blip produced it permanently.
     const res = await request(app)
       .post("/api/v1/media/download-url")
       .set(auth())
@@ -141,8 +146,20 @@ describe("POST /api/v1/media/download-url", () => {
         category: "GROUP_AVATAR",
       });
 
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("200: GROUP_AVATAR download by its uploader still works", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/download-url")
+      .set(auth())
+      .send({
+        objectKey: `group-avatars/${TEST_USER_ID}/pic.png`,
+        category: "GROUP_AVATAR",
+      });
+
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
     expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
   });
 

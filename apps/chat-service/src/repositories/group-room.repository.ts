@@ -8,13 +8,14 @@ import {
   buildGroupSearchFilter,
   normalizeForSearch,
 } from "../lib/group-search.util.js";
+import { newerSnapshotWhere } from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 
-/** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
+/** Clone a date pinned to the end of its UTC calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
   const end = new Date(d);
-  end.setHours(23, 59, 59, 999);
+  end.setUTCHours(23, 59, 59, 999);
   return end;
 }
 
@@ -160,18 +161,25 @@ export class GroupRoomRepository {
     });
   }
 
-  /** Admin Group Management: resolve a single ACTIVE group by its roomId. */
+  /**
+   * Admin Group Management: resolve a single group by its roomId, whatever its
+   * lifecycle status — a disbanded group must still open in the admin panel.
+   * roomId is @unique, so this is the same single indexed lookup.
+   */
   async adminFindByRoomId(roomId: string): Promise<GroupRoom | null> {
-    return this.findActiveByRoomId(roomId);
+    return this.findByRoomId(roomId);
   }
 
   /**
-   * Admin Group Management: filterable/sortable/paginated list of ACTIVE groups.
-   * `idsFromUserSearch` are roomIds whose OWNER matched a free-text user search;
-   * they widen the `q` OR-clause so admins can find groups by owner identity.
+   * Admin Group Management: filterable/sortable/paginated group list.
+   * `status` is "" / "ACTIVE" (default, active only), "ALL" (no filter) or an
+   * exact lifecycle value. `idsFromUserSearch` are roomIds whose OWNER matched a
+   * free-text user search; they widen the `q` OR-clause so admins can find
+   * groups by owner identity.
    */
   async adminList(params: {
     q?: string;
+    status?: string;
     idsFromUserSearch?: string[] | null;
     fromDate?: Date;
     toDate?: Date;
@@ -182,6 +190,7 @@ export class GroupRoomRepository {
   }): Promise<{ rows: GroupRoom[]; total: number }> {
     const {
       q,
+      status,
       idsFromUserSearch,
       fromDate,
       toDate,
@@ -191,7 +200,9 @@ export class GroupRoomRepository {
       take,
     } = params;
 
-    const and: Array<Record<string, unknown>> = [{ status: "ACTIVE" }];
+    const and: Array<Record<string, unknown>> = [];
+    const statusFilter = (status || "ACTIVE").toUpperCase();
+    if (statusFilter !== "ALL") and.push({ status: statusFilter });
 
     if (fromDate || toDate) {
       const createdAt: Record<string, Date> = {};
@@ -201,9 +212,15 @@ export class GroupRoomRepository {
     }
 
     if (q) {
+      // Same normalizer the in-app group search uses (AND-of-token-ORs), so the
+      // admin box is never weaker than the product one. Wrapped in a single AND
+      // branch — spreading it into the OR would turn it into match-any-token.
+      // A punctuation-only q tokenizes to [] and `{AND: []}` matches everything,
+      // hence the length guard.
+      const nameFilter = buildGroupSearchFilter(q);
       and.push({
         OR: [
-          { name: { contains: q, mode: "insensitive" } },
+          ...(nameFilter.length ? [{ AND: nameFilter }] : []),
           { roomId: q },
           ...(idsFromUserSearch?.length
             ? [{ roomId: { in: idsFromUserSearch } }]
@@ -258,17 +275,29 @@ export class GroupRoomRepository {
       sequenceNumber?: number | null;
       revision?: number | null;
     }
-  ): Promise<GroupRoom | null> {
+  ): Promise<number> {
     // Bursty concurrent sends/system-messages all write this same document;
     // retry the transient Mongo write-conflict (Prisma P2034) instead of
     // silently dropping the lastActivity bump — same reasoning as
     // allocateSequence/allocateRevision above.
-    return withWriteConflictRetry(() =>
-      this.prisma.groupRoom.update({
-        where: { roomId },
+    //
+    // `updateMany` (not `update`) because the write is CONDITIONAL: it lands
+    // only while this message is newer than the stored snapshot, ordered by
+    // (lastMessageAt, seq). Five messages sent in a burst are five concurrent
+    // handlers, so nothing made these writes arrive in send order and an older
+    // one used to rewind the room's preview. Returns the matched count — 0
+    // means a newer message already owns the snapshot, which is a success.
+    // See lib/last-activity-guard.ts.
+    const res = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.updateMany({
+        where: {
+          roomId,
+          ...newerSnapshotWhere(message.createdAt, message.sequenceNumber),
+        },
         data: {
           lastMessageId: String(message._id),
           lastMessageAt: message.createdAt,
+          lastMessageSeq: message.sequenceNumber ?? 0,
           lastMessagePreview: {
             text: message.content?.text || "",
             senderId: message.senderId,
@@ -280,6 +309,7 @@ export class GroupRoomRepository {
         },
       })
     );
+    return res.count;
   }
 
   /**
@@ -308,6 +338,9 @@ export class GroupRoomRepository {
         ? {
             lastMessageId: message.id,
             lastMessageAt: message.createdAt,
+            // See PrivateRoomRepository.setLastMessage — keeps the tie-breaker
+            // aligned with the message the room now previews.
+            lastMessageSeq: message.sequenceNumber ?? 0,
             lastMessagePreview: {
               text: message.content?.text || "",
               senderId: message.senderId,
@@ -320,6 +353,7 @@ export class GroupRoomRepository {
         : {
             lastMessageId: null,
             lastMessageAt: null,
+            lastMessageSeq: null,
             lastMessagePreview: null as unknown as Prisma.InputJsonValue,
           },
     });

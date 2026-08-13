@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch --include ./src --include ../../packages/constants/dist --clear-screen=false src/server.ts",
     "start": "node dist/server.js",
+    "db:backfill:audit-activity": "tsx scripts/backfill-audit-activity.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "backfill:seq": "tsx scripts/backfill-sequence-numbers.ts",
@@ -28,6 +29,7 @@
     "@aimess/errors": "workspace:*",
     "@aimess/grpc-utils": "workspace:*",
     "@aimess/logger": "workspace:*",
+    "@aimess/messaging": "workspace:*",
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",
     "@aimess/storage": "workspace:*",

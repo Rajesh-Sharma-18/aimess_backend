@@ -7,6 +7,8 @@ export type ServiceProxyOptions = {
   /** Path prefix on the downstream service (e.g. `/api/auth`). */
   downstreamPrefix: string;
   serviceName: string;
+  /** Upstream response deadline. Defaults to 30s — raise only for streaming routes. */
+  proxyTimeoutMs?: number;
 };
 
 /**
@@ -21,6 +23,14 @@ export function createServiceProxy(
   return createProxyMiddleware({
     target: options.target,
     changeOrigin: true,
+    // Without these, a hung upstream never fires `on.error`: the socket stays
+    // pinned until the client gives up, so the 502 handler below never runs and
+    // the caller sees a browser-level timeout with no envelope. `proxyTimeout`
+    // bounds the wait for the upstream response; `timeout` bounds the incoming
+    // request. Uploads do NOT flow through here (they go direct to MinIO via
+    // presigned URLs), so 30s is well clear of any legitimate JSON round trip.
+    proxyTimeout: options.proxyTimeoutMs ?? 30_000,
+    timeout: options.proxyTimeoutMs ?? 30_000,
     pathRewrite: (path) => {
       const suffix = path.startsWith("/") ? path : `/${path}`;
       const normalizedSuffix =
@@ -44,17 +54,44 @@ export function createServiceProxy(
           }
         }
       },
-      error: (error, _req, res) => {
-        logger.error(`${options.serviceName} proxy error`);
-        logger.error(error);
+      error: (error, req, res) => {
+        const requestId = req?.headers?.["x-request-id"];
+        const isTimeout =
+          (error as NodeJS.ErrnoException).code === "ECONNRESET" ||
+          (error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+
+        logger.error(`${options.serviceName} proxy error`, {
+          service: "api-gateway",
+          upstream: options.serviceName,
+          requestId,
+          code: (error as NodeJS.ErrnoException).code,
+          error,
+        });
 
         if (res && "writeHead" in res && !res.headersSent) {
-          res.writeHead(502, { "Content-Type": "application/json" });
+          // 504 for a deadline, 503 for an unreachable upstream. Both are
+          // retryable and the client is told so explicitly; the previous 502
+          // carried no code, so a client could not distinguish "try again in a
+          // moment" from "this request will never work".
+          const statusCode = isTimeout ? 504 : 503;
+          const retryAfter = 5;
+          res.writeHead(statusCode, {
+            "Content-Type": "application/json",
+            "Retry-After": String(retryAfter),
+          });
           res.end(
             JSON.stringify({
               success: false,
               message:
                 "Service temporarily unavailable. Please try again later.",
+              error: {
+                code: isTimeout ? "TIMEOUT" : "SERVICE_UNAVAILABLE",
+                message:
+                  "Service temporarily unavailable. Please try again later.",
+                retryAfter,
+                retryable: true,
+                ...(typeof requestId === "string" ? { requestId } : {}),
+              },
             })
           );
         }

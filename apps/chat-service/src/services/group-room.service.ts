@@ -1,5 +1,9 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 import type { Redis, Cluster } from "ioredis";
 
 import { publishChatUserEvent } from "@aimess/redis";
@@ -832,30 +836,24 @@ export class GroupRoomService {
   }
 
   /**
-   * Disband: the group is over for everyone.
-   *
-   * Flipping `GroupRoom.status` to DISBANDED is NOT on its own enough to end the
-   * group. Every authorization path in this service resolves a `GroupMember`
-   * row and never looks at the room's status — `sendMessage`,
-   * `assertGroupMember` and `assertGroupReadAccess` all go through
-   * `findActiveByRoomAndUser`/`findByRoomAndUser`. So while the memberships
-   * stayed ACTIVE the "disbanded" group kept accepting messages, reactions,
-   * pins and reads exactly as before; the only visible effect was the room flag.
-   *
-   * Ending the memberships is what actually closes it, and it reuses the
-   * existing LEFT semantics rather than adding a status check to every guard:
-   * writes are denied (ACTIVE-only), and history stays readable up to
-   * `disbandedAt` via `assertGroupReadAccess`'s LEFT cutoff — the room stays in
-   * everyone's list, read-only, which is the intended behaviour.
+   * `opts.asPlatformAdmin` skips ONLY the group-membership/owner check — the
+   * backoffice admin is not a member. Everything after it (invite-link revoke)
+   * is identical, which is why the admin RPC routes through here.
    */
-  async disbandGroup(roomId: string, userId: string): Promise<GroupRoom> {
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      roomId,
-      userId
-    );
-    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (member.role !== "ADMIN") {
-      throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
+  async disbandGroup(
+    roomId: string,
+    userId: string,
+    opts?: { asPlatformAdmin?: boolean }
+  ): Promise<GroupRoom> {
+    if (!opts?.asPlatformAdmin) {
+      const member = await this.memberRepo.findActiveByRoomAndUser(
+        roomId,
+        userId
+      );
+      if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      if (member.role !== "ADMIN") {
+        throw new BadRequestError("CHAT_ONLY_OWNER_DISBAND");
+      }
     }
 
     const disbanded = await this.roomRepo.disband(roomId, userId);
@@ -870,6 +868,48 @@ export class GroupRoomService {
 
     // Revoke all active invite links
     await this.inviteLinkRepo.revokeAllForRoom(roomId, userId);
+
+    // Disband posts no SYSTEM message, so the admin-panel mirror is emitted here
+    // rather than in GroupSystemMessageService like the other lifecycle events.
+    publishAdminActivitySafe({
+      actorId: opts?.asPlatformAdmin ? null : userId,
+      action: USER_AUDIT_ACTIONS.GROUP_DISBANDED,
+      targetType: "group",
+      targetId: roomId,
+      after: { asPlatformAdmin: Boolean(opts?.asPlatformAdmin) },
+    });
+
+    // Fan out on every member's own `user:<id>` channel — the gateway re-emits
+    // it on /chat, so open clients flip to read-only without a reload. Members
+    // are NOT evicted from `conv:<roomId>` (unlike group:removed): history
+    // stays readable, only writes are refused (CHAT_GROUP_DISBANDED). Disband
+    // leaves every membership row ACTIVE, so the roster is read after the
+    // write. Best-effort, like every other publish here — the room is already
+    // disbanded and a socket outage must not fail the request.
+    void (async () => {
+      try {
+        const members = await this.memberRepo.findActiveMembers(roomId);
+        if (!members?.length) return;
+        const payload = {
+          roomId,
+          type: "GROUP" as const,
+          disbandedBy: userId,
+          disbandedAt: Date.now(),
+        };
+        const pipeline = this.redis.pipeline();
+        for (const m of members) {
+          pipeline.publish(
+            `user:${m.userId}`,
+            JSON.stringify({ event: "group:disbanded", data: payload })
+          );
+        }
+        await pipeline.exec();
+      } catch (err) {
+        logger.warn(
+          `GroupRoomService|disbandGroup|group:disbanded publish failed room=${roomId}: ${String(err)}`
+        );
+      }
+    })();
 
     return disbanded;
   }
@@ -939,6 +979,14 @@ export class GroupRoomService {
       preview: { contentType: "", text: "", createdAt: 0 },
       // An emptied row is not a new message — must never raise an unread badge.
       countInUnread: false,
+      // `setClearChatAt` above already zeroed this member's stored counter;
+      // state it explicitly so the client SETs 0 rather than keeping its cached
+      // badge for messages it can no longer show.
+      resolveUnreadCounts: async () => ({ [userId]: 0 }),
+      // 0 is BELOW whatever the client currently shows, so without this marker
+      // the monotonic list guard drops the clear entirely and the row stays
+      // pinned at the top with its old preview.
+      deleteRecalc: true,
     });
   }
 

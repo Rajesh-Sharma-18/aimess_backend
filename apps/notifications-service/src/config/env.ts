@@ -35,6 +35,16 @@ const envSchema = z.object({
   // Cached notification-settings TTL (seconds).
   NOTIF_SETTINGS_CACHE_TTL_SEC: z.coerce.number().positive().default(300),
 
+  // Stale device-token sweeper (jobs/device-token-sweeper.ts). 60 days is well
+  // past the 7-day refresh-token lifetime, so a device that stopped signing in
+  // is long dead by then, while an app that launches (or receives a push) even
+  // once every two months keeps its registration.
+  DEVICE_TOKEN_TTL_DAYS: z.coerce.number().positive().default(60),
+  DEVICE_TOKEN_SWEEPER_INTERVAL_MS: z.coerce
+    .number()
+    .positive()
+    .default(6 * 60 * 60 * 1000),
+
   // FCM TTL for an incoming-call push. Mirrors chat-service's
   // CALL_RINGING_TIMEOUT_SEC — a ring delivered after the call stopped ringing
   // is noise, so the push expires with the ringing window. Keep the two in sync.

@@ -5,6 +5,10 @@ import type { Request } from "express";
 import { ConflictError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
+import {
   publishQrLinkEvent,
   publishQrLinkSuccess,
   takeQrLinkResult,
@@ -293,6 +297,16 @@ export const deviceLinkService = {
       targetType: "qr_login_session",
       targetId: input.linkToken,
       userId,
+    });
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_DEVICE_LINKED,
+      targetType: "session",
+      targetId: sessionId,
+      after: { deviceName: record.device.deviceName },
+      ip: record.device.ipAddress,
+      userAgent: record.device.userAgent,
     });
 
     // The browser only ever receives tokens/userId over this one event, on

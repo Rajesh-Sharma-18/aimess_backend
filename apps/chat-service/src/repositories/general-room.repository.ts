@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
+import { newerSnapshotWhere } from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 
 /** A `PrismaClient` or the interactive-transaction client Prisma hands the callback in `$transaction(async (tx) => ...)`. */
@@ -212,16 +213,26 @@ export class GeneralRoomRepository {
       sequenceNumber?: number | null;
       revision?: number | null;
     }
-  ): Promise<GeneralRoom | null> {
+  ): Promise<number> {
     // Same hot document as allocateSequence — bursty concurrent sends to one
     // room contend on this last-message bump too, so retry the transient
     // write-conflict rather than dropping the preview update under load.
-    return withWriteConflictRetry(() =>
-      this.prisma.generalRoom.update({
-        where: { id: roomId },
+    //
+    // Conditional `updateMany` for the same reason as the group path: those
+    // concurrent sends are not ordered, so the write only lands while this
+    // message is newer than the stored snapshot by (lastMessageAt, seq).
+    // A returned count of 0 means a newer message already won. See
+    // lib/last-activity-guard.ts.
+    const res = await withWriteConflictRetry(() =>
+      this.prisma.generalRoom.updateMany({
+        where: {
+          id: roomId,
+          ...newerSnapshotWhere(message.createdAt, message.sequenceNumber),
+        },
         data: {
           lastMessageId: String(message._id),
           lastMessageAt: message.createdAt,
+          lastMessageSeq: message.sequenceNumber ?? 0,
           lastMessage: {
             content: message.message,
             senderId: message.sentBy,
@@ -233,6 +244,7 @@ export class GeneralRoomRepository {
         },
       })
     );
+    return res.count;
   }
 
   async incMemberNumber(roomId: string, inc: number): Promise<void> {
@@ -343,6 +355,8 @@ export class GeneralRoomRepository {
         ? {
             lastMessageId: message.id,
             lastMessageAt: message.createdAt,
+            // See PrivateRoomRepository.setLastMessage.
+            lastMessageSeq: message.sequenceNumber ?? 0,
             lastMessage: {
               content: message.content,
               senderId: message.sentBy,
@@ -355,6 +369,7 @@ export class GeneralRoomRepository {
         : {
             lastMessageId: null,
             lastMessageAt: null,
+            lastMessageSeq: null,
             lastMessage: null as unknown as Prisma.InputJsonValue,
           },
     });

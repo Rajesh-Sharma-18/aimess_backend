@@ -12,10 +12,19 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { assertAttachmentsVerified } from "../lib/attachment-guard.js";
 import {
+  buildGroupSystemFallbackText,
   currentLocale,
+  isCallContentType,
   personalizeGroupSystemMessageForViewer,
 } from "@aimess/constants";
+import {
+  anonymizeSystemData,
+  anonymizeWireSender,
+  collectDeletedUserIds,
+  collectRowUserIds,
+} from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
   buildReactionTargetPreview,
@@ -36,9 +45,11 @@ import {
 } from "../lib/chat-message.serializer.js";
 import {
   assertGroupMember,
+  assertGroupNotDisbanded,
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
   isGroupMemberMuted,
+  canDeleteOthersMessage,
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
@@ -136,6 +147,19 @@ export class GroupMessageService {
       params.messageType,
       params.content?.files as Array<Record<string, unknown>> | undefined
     );
+    // See private-message.service.ts — this verifies the OBJECT (scan verdict,
+    // uploader, room scope), not just the client-declared size/duration.
+    await assertAttachmentsVerified({
+      resourceId: params.roomId,
+      senderId: params.senderId,
+      files: params.content?.files as
+        | Array<Record<string, unknown>>
+        | undefined,
+      extra: [
+        (params.content as { sticker?: Record<string, unknown> } | undefined)
+          ?.sticker,
+      ],
+    });
 
     // Verify membership
     const member = await this.memberRepo.findActiveByRoomAndUser(
@@ -144,6 +168,8 @@ export class GroupMessageService {
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
     assertGroupMemberNotMuted(member);
+    // Disband leaves every membership row ACTIVE so history stays readable, so the membership check above cannot catch a dead group — the room's own status must.
+    await assertGroupNotDisbanded(this.roomRepo, params.roomId);
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.
@@ -1064,7 +1090,33 @@ export class GroupMessageService {
     // mutate their own view of room content either.
     assertGroupMemberNotMuted(member);
 
-    return this.messageRepo.deleteForMe(messageId, userId);
+    const hidden = await this.messageRepo.deleteForMe(messageId, userId);
+    // Mirror of PrivateMessageService.deleteForMe: hiding a still-unread message
+    // must shrink THIS member's badge (and only theirs). The repo re-checks the
+    // read watermark, so hiding an already-read message is a no-op.
+    if (
+      message.senderId !== userId &&
+      shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ) {
+      this.memberRepo
+        .decrementUnreadForMessage({
+          roomId,
+          senderId: message.senderId,
+          messageCreatedAt: message.createdAt,
+          onlyUserId: userId,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|deleteForMe decrementUnreadForMessage failed: ${String(err)}`
+          );
+        });
+    }
+    return hidden;
   }
 
   /**
@@ -1174,9 +1226,30 @@ export class GroupMessageService {
       );
       if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
-      if (message.senderId !== userId) {
-        // Only admins can delete others' messages
-        if (!["ADMIN", "MODERATOR"].includes(member.role)) {
+      // Same sender-less problem the private path has: a group call row carries
+      // `senderId: ""`, so its owner is `content.call.callerId`. Without this a
+      // plain member could not remove the call card they themselves started —
+      // only an admin/moderator could, and it logged as an ADMIN_DELETE.
+      const callCallerId = isCallContentType(message.messageType)
+        ? (message.content as { call?: { callerId?: string } } | null)?.call
+            ?.callerId
+        : undefined;
+      const isOwnMessage =
+        message.senderId === userId || callCallerId === userId;
+
+      if (!isOwnMessage) {
+        // Only admins/moderators can delete others' messages, and a MODERATOR
+        // may not delete an ADMIN's (or a peer MODERATOR's) message — same
+        // outrank rule kick/mute/ban enforce. A sender who has since left the
+        // group has no row: they rank as a plain MEMBER, so their leftover
+        // messages stay moderatable.
+        const senderMember = message.senderId
+          ? await this.memberRepo.findActiveByRoomAndUser(
+              roomId,
+              message.senderId
+            )
+          : null;
+        if (!canDeleteOthersMessage(member.role, senderMember?.role)) {
           throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
         }
         deletedType = "ADMIN_DELETE";
@@ -2367,6 +2440,19 @@ export class GroupMessageService {
         mediaKeys.push(quote.thumbnail);
       }
     }
+    // Group rows freeze `senderName`/`senderAvatar` at send time, so a sender
+    // who later deleted their account would keep their old name on every
+    // historical message. Resolve which of the page's participants are deleted
+    // (one batched, Redis-cached snapshot lookup) and scrub them below —
+    // stored rows are never rewritten.
+    const deletedUserIds = await collectDeletedUserIds(
+      messages.flatMap((m) =>
+        collectRowUserIds(m as unknown as Record<string, unknown>)
+      ),
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
     return messages.map((message) => {
@@ -2452,26 +2538,47 @@ export class GroupMessageService {
       wire.serverTs =
         message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
 
-      if (
-        viewerUserId &&
-        String(wire.contentType).toUpperCase() === "SYSTEM" &&
-        message.systemEvent
-      ) {
-        const systemData = (message.systemData ?? {}) as Record<
+      // Replaces the frozen senderName/senderAvatar (and the quoted-message
+      // preview's) for deleted accounts, and stamps `isDeletedUser` on every
+      // row so the client gates profile navigation off a flag, not a string.
+      anonymizeWireSender(wire, deletedUserIds);
+
+      if (String(wire.contentType).toUpperCase() === "SYSTEM") {
+        const rawSystemData = (message.systemData ?? {}) as Record<
           string,
           unknown
         >;
+        // "Alice added Bob" must become "Alice added Deleted Account" once Bob
+        // is gone. The names are baked into systemData at write time, but the
+        // TEXT is rebuilt from them on every read — so scrubbing the data here
+        // is enough, with no stored-row rewrite.
+        const systemData = anonymizeSystemData(rawSystemData, deletedUserIds);
         const content = wire.content as Record<string, unknown> | null;
         const thirdPersonText = String(content?.text ?? "");
-        const personalized = personalizeGroupSystemMessageForViewer(
-          message.systemEvent,
-          systemData,
-          thirdPersonText,
-          viewerUserId,
-          currentLocale()
-        );
-        if (personalized !== thirdPersonText && content) {
-          wire.content = { ...content, text: personalized };
+        if (message.systemEvent && content) {
+          // Two entry points on purpose. `personalize…` short-circuits to the
+          // STORED text whenever there is no viewer and the locale is English —
+          // correct normally, wrong here, because the stored text is precisely
+          // what still contains the deleted user's name. So a scrubbed
+          // systemData goes straight to the builder, which always re-renders.
+          const rebuilt =
+            systemData === rawSystemData
+              ? personalizeGroupSystemMessageForViewer(
+                  message.systemEvent,
+                  systemData,
+                  thirdPersonText,
+                  viewerUserId ?? "",
+                  currentLocale()
+                )
+              : buildGroupSystemFallbackText(
+                  message.systemEvent,
+                  systemData,
+                  viewerUserId ?? "",
+                  currentLocale()
+                );
+          if (rebuilt && rebuilt !== thirdPersonText) {
+            wire.content = { ...content, text: rebuilt };
+          }
         }
       }
 

@@ -15,7 +15,8 @@
     "test": "node -e \"process.exit(0)\""
   },
   "dependencies": {
-    "@aimess/constants": "workspace:*"
+    "@aimess/constants": "workspace:*",
+    "@aimess/errors": "workspace:*"
   },
   "peerDependencies": {
     "express": "^4.17.0 || ^5.0.0"

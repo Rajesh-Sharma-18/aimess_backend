@@ -106,6 +106,19 @@ interface PublishConvUpdatedParams {
    * would otherwise desync list badges from chat:unread_summary).
    */
   unreadCountByRecipient?: Record<string, number>;
+  /**
+   * This bump is a post-DELETE recalculation, not new activity.
+   *
+   * Clients keep a monotonic staleness guard on the list row ("ignore a bump
+   * older than what I already show") so an out-of-order send can never drag a
+   * conversation backwards. A delete recalc is the one legitimate BACKWARD
+   * move — `lastMessageAt` points at the PREVIOUS visible message (or 0 when
+   * nothing visible remains) — so without this marker every delete bump was
+   * silently discarded by that guard and the row kept the deleted message's
+   * timestamp/preview until the next refetch. Also forces `unread: false`, since
+   * a recalc must never raise a badge.
+   */
+  deleteRecalc?: boolean;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -202,6 +215,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       subjectUserId: p.subjectUserId,
       selfPreview: p.selfPreview,
       unreadCountByRecipient,
+      deleteRecalc: p.deleteRecalc,
     });
   })().catch((error) => {
     logger.warn(
@@ -291,7 +305,7 @@ export async function publishConvUpdated(
       // never gets `unread: true`. It can only ever turn the flag off, so rows
       // without absolute counts keep their existing behavior exactly.
       const unread =
-        override === undefined
+        override === undefined && !p.deleteRecalc
           ? (p.countInUnread ?? !isSystem) &&
             recipientId !== effectiveSenderId &&
             absoluteUnread !== 0
@@ -301,8 +315,11 @@ export async function publishConvUpdated(
         : undefined;
       // Nav-badge total changed for this recipient — single choke point for
       // every conv:updated caller (REST controllers, gRPC handlers, system
-      // messages), see unread-summary-bridge.ts.
-      if (unread) notifyUnreadChanged(recipientId);
+      // messages), see unread-summary-bridge.ts. A delete recalc changes the
+      // total in the DOWNWARD direction (an unread message just vanished), which
+      // the `unread` flag can never signal — so it has to push too, or the nav
+      // badge keeps counting a message nobody can read any more.
+      if (unread || p.deleteRecalc) notifyUnreadChanged(recipientId);
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -323,6 +340,7 @@ export async function publishConvUpdated(
             ...(typeof absoluteUnread === "number"
               ? { unreadCount: Math.max(0, absoluteUnread) }
               : {}),
+            ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
             ...(isOffline !== undefined ? { isOffline } : {}),
           },
         })
@@ -361,6 +379,32 @@ interface PublishCommunityUpdatedParams {
    *  value null => empty preview for that member. Takes precedence over the
    *  shared preview but NOT over the self-referential selfPreview branch. */
   recipientOverrides?: Map<string, RecipientBump | null>;
+  /** See `PublishConvUpdatedParams.deleteRecalc` — same contract, same reason. */
+  deleteRecalc?: boolean;
+  /**
+   * The REMOVED message's id — the client's idempotency key for `unreadDelta`.
+   *
+   * Unlike the absolute `unreadCount` on `conv:updated`, a delta is not
+   * idempotent: on a multi-instance gateway the same `user:*` pmessage can be
+   * fanned out more than once, and a double-applied `-1` produces exactly the
+   * wrong badge this whole change exists to fix. `lastMessageId` cannot serve as
+   * the key — on a recalc it names the PREVIOUS surviving message (or is empty),
+   * which collides with that message's own bumps.
+   */
+  deleteRecalcId?: string;
+  /**
+   * Per-member change to the unread badge caused by this bump (delete recalc
+   * only; always <= 0 today).
+   *
+   * Community unread is DERIVED from `RoomMember.lastReadAt`, not stored as a
+   * counter, so there is no absolute per-member number to send without one
+   * aggregation per member — a 5k-member community would pay 5k aggregations per
+   * delete. The decision that actually needs authority is "did this message
+   * count toward THIS member's unread", and that is computed server-side from
+   * the read watermark (see `resolveUnreadDeltasAfterDelete`); the client only
+   * applies `max(0, prev + delta)`. Members absent from the map are unaffected.
+   */
+  unreadDeltaByMember?: Record<string, number>;
 }
 
 export async function publishCommunityUpdated(
@@ -400,6 +444,23 @@ export async function publishCommunityUpdated(
       const override = hasOverride
         ? (p.recipientOverrides?.get(memberId) ?? null)
         : undefined;
+      // Authoritative badge adjustment for this member (delete recalc only).
+      // Emitted on BOTH branches below: whether a member happens to have a
+      // personal preview override is unrelated to whether the deleted message
+      // was in their unread window.
+      const unreadDelta = p.unreadDeltaByMember?.[memberId] ?? 0;
+      // The nav-badge total dropped for this member too — the `unread` flag only
+      // ever signals upward, so a delete has to push the summary explicitly.
+      if (unreadDelta !== 0) notifyUnreadChanged(memberId);
+      const deleteFields = {
+        ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
+        ...(unreadDelta !== 0
+          ? {
+              unreadDelta,
+              ...(p.deleteRecalcId ? { deleteRecalcId: p.deleteRecalcId } : {}),
+            }
+          : {}),
+      };
       if (override !== undefined) {
         pipeline.publish(
           `user:${memberId}`,
@@ -421,6 +482,7 @@ export async function publishCommunityUpdated(
               senderId: override?.senderId ?? "",
               senderName: override?.senderName ?? "",
               unread: false,
+              ...deleteFields,
             },
           })
         );
@@ -432,7 +494,10 @@ export async function publishCommunityUpdated(
         p.selfPreview && p.subjectUserId && memberId === p.subjectUserId
           ? { ...p.preview, text: p.selfPreview }
           : p.preview;
-      const unread = isSystem ? false : memberId !== p.senderId;
+      // A delete recalc is never new activity — it must not raise a badge even
+      // for members who have no personal preview override.
+      const unread =
+        isSystem || p.deleteRecalc ? false : memberId !== p.senderId;
       // Nav-badge total changed for this member — see unread-summary-bridge.ts.
       if (unread) notifyUnreadChanged(memberId);
       pipeline.publish(
@@ -452,6 +517,7 @@ export async function publishCommunityUpdated(
             senderId,
             senderName,
             unread,
+            ...deleteFields,
           },
         })
       );
@@ -472,7 +538,7 @@ export async function publishCommunityUpdated(
  */
 type PublishCommunityUpdatedSafeParams = Omit<
   PublishCommunityUpdatedParams,
-  "memberIds" | "recipientOverrides"
+  "memberIds" | "recipientOverrides" | "unreadDeltaByMember"
 > & {
   fetchMembers: () => Promise<string[]>;
   /** Lazily compute per-member overrides once the member list is known
@@ -480,6 +546,11 @@ type PublishCommunityUpdatedSafeParams = Omit<
   resolveOverrides?: (
     memberIds: string[]
   ) => Promise<Map<string, RecipientBump | null>>;
+  /** Lazily compute authoritative per-member unread deltas once the member list
+   *  is known (delete-for-everyone fan-out). */
+  resolveUnreadDeltas?: (
+    memberIds: string[]
+  ) => Promise<Record<string, number>>;
 };
 
 export function publishCommunityUpdatedSafe(
@@ -499,6 +570,20 @@ export function publishCommunityUpdatedSafe(
         );
       }
     }
+    // Isolated for the same reason as the overrides above: a failed unread
+    // recount must still let the preview/timestamp bump through (a stale badge
+    // is a smaller defect than a stale row, and the badge self-corrects on the
+    // next list fetch).
+    let unreadDeltaByMember: Record<string, number> | undefined;
+    if (p.resolveUnreadDeltas) {
+      try {
+        unreadDeltaByMember = await p.resolveUnreadDeltas(memberIds);
+      } catch (err) {
+        logger.warn(
+          `community:updated unread delta resolution failed for ${p.communityId}: ${String(err)}`
+        );
+      }
+    }
     await publishCommunityUpdated({
       redis: p.redis,
       communityId: p.communityId,
@@ -512,6 +597,9 @@ export function publishCommunityUpdatedSafe(
       subjectUserId: p.subjectUserId,
       selfPreview: p.selfPreview,
       recipientOverrides,
+      deleteRecalc: p.deleteRecalc,
+      deleteRecalcId: p.deleteRecalcId,
+      unreadDeltaByMember,
     });
   })().catch((error) => {
     logger.warn(

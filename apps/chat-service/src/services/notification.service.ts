@@ -52,11 +52,22 @@ async function resolveAvatarRefresh(
 
   return {
     actorById: new Map(
+      // `|| a.isDeleted` is not an optimization — it is the whole point for a
+      // deleted actor. Their snapshot comes back with avatarUrl "", so the
+      // avatar-only filter dropped them from this map, and the serializer then
+      // fell back to `payload.data.actorSnapshot` — the identity frozen into
+      // the row at publish time, i.e. exactly the old name and avatar this is
+      // meant to hide. Keeping the entry lets the anonymized snapshot win, and
+      // its empty avatarUrl collapses to `avatar: null` downstream.
       actors
-        .filter((a) => a.avatarUrl)
+        .filter((a) => a.avatarUrl || a.isDeleted)
         .map((a) => [
           a.userId,
-          { displayName: a.displayName, avatarUrl: a.avatarUrl },
+          {
+            displayName: a.displayName,
+            avatarUrl: a.avatarUrl,
+            isDeleted: a.isDeleted === true,
+          },
         ])
     ),
     communityById: new Map(
@@ -201,6 +212,42 @@ export class NotificationService {
   }
 
   /**
+   * Owner-scoped soft-delete of a single notification — the REST twin of the
+   * `notifications:delete` socket command, sharing the same repo transition so
+   * both paths tombstone identically (`isDeleted`, picked up by `/sync`).
+   *
+   * Deleting a row only removes it from the owner's feed. It is deliberately
+   * NOT a state transition on whatever the row refers to: dismissing a
+   * `friend.requested` card leaves the friendship PENDING, so the request can
+   * still be accepted from the peer profile or the friend-requests list.
+   *
+   * `notification:deleted` (plus the count_update alias) fans out to the
+   * user's other devices so they drop the row without a refetch. Idempotent —
+   * a re-delete matches 0 rows and publishes nothing.
+   */
+  async deleteNotification(
+    notificationId: string,
+    userId: string
+  ): Promise<{ deleted: boolean; unreadCount: number }> {
+    const { count } = await this.notificationRepo.deleteById(
+      notificationId,
+      userId
+    );
+    const unreadCount = await this.notificationRepo.getUnreadCount(userId);
+    if (count > 0) {
+      await this.publishCountEvent(
+        userId,
+        "notification:deleted",
+        unreadCount,
+        {
+          notificationId,
+        }
+      );
+    }
+    return { deleted: count > 0, unreadCount };
+  }
+
+  /**
    * Persists a user-initiated action (e.g. "TERMINATE" session, "CONFIRM" login)
    * on a notification: updates the stored body text + marks `actionTaken` in
    * `payload.data` so the UI renders the resolved state on every reload.
@@ -242,8 +289,9 @@ export class NotificationService {
     );
     let resolved = 0;
     for (const row of due) {
-      // Mirrors auth-service's trustSession copy so a timed-out alert reads
-      // identically to one the user confirmed by hand.
+      // Same copy auth-service's trustSession sends. Login rows ignore it —
+      // their status is `data.actionTaken` — but keeping all three writers
+      // identical means the arg never has to be reasoned about per caller.
       const updated = await this.notificationRepo.recordAction(
         row.id,
         row.userId,
@@ -276,6 +324,7 @@ export class NotificationService {
   ): Promise<void> {
     const payloadObj = (updated.payload ?? {}) as {
       title?: string;
+      body?: string;
       data?: Record<string, string>;
     };
     try {
@@ -284,7 +333,9 @@ export class NotificationService {
         userId,
         type: updated.type,
         title: payloadObj.title ?? "",
-        body,
+        // The row's OWN body — for a login alert that is still the original
+        // description, never the status. Status travels in data.actionTaken.
+        body: payloadObj.body ?? body,
         isRead: true,
         version: updated.version ?? 1,
         createdAt: updated.createdAt.getTime(),
