@@ -156,6 +156,49 @@ describe("recordAction() — one winner at the deadline", () => {
     expect(prisma.notification.update).not.toHaveBeenCalled();
   });
 
+  it("keeps a login alert's description — the status goes to actionTaken ONLY", async () => {
+    const description =
+      "New login detected on a chrome from San Francisco. If this wasn't you, Terminate Session";
+    const prisma = fakePrisma({
+      findFirst: jest.fn(async () =>
+        loginRow({
+          payload: {
+            title: "Login Detected",
+            body: description,
+            data: { sessionId: "s1" },
+          },
+        })
+      ),
+    });
+    const repo = new NotificationRepository(prisma as never);
+
+    await repo.recordAction("n1", "u1", "This was you.", "TRUSTED");
+
+    const patch = prisma.notification.update.mock.calls[0][0].data as {
+      payload: { body: string; data: Record<string, string> };
+    };
+    // Overwriting the body with the status was the duplicate-line bug: the UI
+    // rendered it once as the body and once as the resolved action line.
+    expect(patch.payload.body).toBe(description);
+    expect(patch.payload.data.actionTaken).toBe("TRUSTED");
+  });
+
+  it("still writes the body for non-login types", async () => {
+    const prisma = fakePrisma({
+      findFirst: jest.fn(async () =>
+        loginRow({ type: "friend.requested", payload: { body: "old" } })
+      ),
+    });
+    const repo = new NotificationRepository(prisma as never);
+
+    await repo.recordAction("n1", "u1", "You are now friends!", "ACCEPTED");
+
+    const patch = prisma.notification.update.mock.calls[0][0].data as {
+      payload: { body: string };
+    };
+    expect(patch.payload.body).toBe("You are now friends!");
+  });
+
   it("does NOT gate non-login notifications on the login claim", async () => {
     const prisma = fakePrisma({
       findFirst: jest.fn(async () => loginRow({ type: "friend.requested" })),

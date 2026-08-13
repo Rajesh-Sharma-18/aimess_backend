@@ -81,6 +81,44 @@ async function run() {
   assert.equal(communityDto.community?.avatar?.url, "https://fresh/c1.jpg");
   assert.equal(communityDto.community?.name, "New Name");
 
+  // Legacy login alert: an older build wrote the status OVER the description.
+  // The description is rebuilt from data so the status is not rendered twice
+  // (once as the body, once as the resolved line from actionTaken).
+  const clobberedLogin = {
+    ...baseRow,
+    type: "auth.security_new_login",
+    payload: {
+      title: "Login Detected",
+      body: "This was you.",
+      data: {
+        sessionId: "s1",
+        browser: "Chrome",
+        location: "San Francisco",
+        actionTaken: "TRUSTED",
+      },
+    },
+  } as unknown as Parameters<typeof serializeNotification>[0];
+  const repaired = await serializeNotification(clobberedLogin, "viewer1");
+  assert.equal(
+    repaired.body,
+    "New login detected on a chrome from San Francisco. If this wasn't you, Terminate Session"
+  );
+  assert.equal(repaired.actionTaken, "TRUSTED");
+
+  // An untouched login body is returned verbatim — no rewriting of good rows.
+  const healthyLogin = {
+    ...clobberedLogin,
+    payload: {
+      title: "Login Detected",
+      body: "New login detected on a firefox. If this wasn't you, Terminate Session",
+      data: { sessionId: "s1", browser: "Firefox" },
+    },
+  } as unknown as Parameters<typeof serializeNotification>[0];
+  assert.equal(
+    (await serializeNotification(healthyLogin, "viewer1")).body,
+    "New login detected on a firefox. If this wasn't you, Terminate Session"
+  );
+
   // eslint-disable-next-line no-console
   console.log("notification-serializer.check ok");
 }

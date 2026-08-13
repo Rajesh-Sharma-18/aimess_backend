@@ -1,6 +1,8 @@
+import { t } from "@aimess/constants";
+
 import type { Notification } from "../generated/prisma/index.js";
 
-import { categorize } from "./notification-category.js";
+import { categorize, LOGIN_DETECTED_TYPE } from "./notification-category.js";
 import {
   resolveNotificationFriendship,
   type NotificationFriendshipDTO,
@@ -76,6 +78,41 @@ function parseJson(raw: unknown): unknown {
 
 function nonEmpty(s: unknown): string | undefined {
   return typeof s === "string" && s.length > 0 ? s : undefined;
+}
+
+/**
+ * The two status lines older builds wrote OVER a login alert's description.
+ * Every writer persisted them in English — auth-service hard-codes them and the
+ * web client deliberately sends the English string — so an exact match is a
+ * detector, not a locale guess.
+ */
+const CLOBBERED_LOGIN_BODIES = new Set([
+  "This was you.",
+  "Session terminated.",
+]);
+
+/**
+ * A login alert's status lives in `data.actionTaken` alone; its body is the
+ * "New login detected on …" description. Rows resolved before that split have
+ * the status sitting in the body too, so the client printed it twice (once as
+ * the body, once as the resolved line). Rebuild the description from the same
+ * `data` the producer built it from, so rows already in the database read the
+ * same as new ones.
+ *
+ * ponytail: rebuilt in English — the clobbered text it replaces is English as
+ * well, and this serializer has no viewer locale. Thread `req.locale` through
+ * if a localized repair ever matters.
+ */
+function repairLoginBody(data: Record<string, string>): string {
+  const device = data.browser
+    ? t("NOTIF_AUTH_ON_BROWSER", "en", { browser: data.browser.toLowerCase() })
+    : t("NOTIF_AUTH_NEW_DEVICE", "en");
+  return data.location
+    ? t("NOTIF_AUTH_NEW_LOGIN_LOCATION", "en", {
+        device,
+        location: data.location,
+      })
+    : t("NOTIF_AUTH_NEW_LOGIN", "en", { device });
 }
 
 /**
@@ -165,7 +202,11 @@ export async function serializeNotification(
     data.friendshipId
   );
 
-  const body = payloadObj.body ?? "";
+  const storedBody = payloadObj.body ?? "";
+  const body =
+    row.type === LOGIN_DETECTED_TYPE && CLOBBERED_LOGIN_BODIES.has(storedBody)
+      ? repairLoginBody(data)
+      : storedBody;
   const rawTitle = nonEmpty(data.inboxTitle) ?? nonEmpty(payloadObj.title);
   const title =
     data.suppressTitle === "true" ||

@@ -278,8 +278,9 @@ export class NotificationService {
     );
     let resolved = 0;
     for (const row of due) {
-      // Mirrors auth-service's trustSession copy so a timed-out alert reads
-      // identically to one the user confirmed by hand.
+      // Same copy auth-service's trustSession sends. Login rows ignore it —
+      // their status is `data.actionTaken` — but keeping all three writers
+      // identical means the arg never has to be reasoned about per caller.
       const updated = await this.notificationRepo.recordAction(
         row.id,
         row.userId,
@@ -312,6 +313,7 @@ export class NotificationService {
   ): Promise<void> {
     const payloadObj = (updated.payload ?? {}) as {
       title?: string;
+      body?: string;
       data?: Record<string, string>;
     };
     try {
@@ -320,7 +322,9 @@ export class NotificationService {
         userId,
         type: updated.type,
         title: payloadObj.title ?? "",
-        body,
+        // The row's OWN body — for a login alert that is still the original
+        // description, never the status. Status travels in data.actionTaken.
+        body: payloadObj.body ?? body,
         isRead: true,
         version: updated.version ?? 1,
         createdAt: updated.createdAt.getTime(),

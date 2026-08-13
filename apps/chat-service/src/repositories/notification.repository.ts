@@ -1,9 +1,11 @@
 ﻿import type { PrismaClient, Notification } from "../generated/prisma/index.js";
-import { categoryWhere } from "../lib/notification-category.js";
+import {
+  categoryWhere,
+  LOGIN_DETECTED_TYPE,
+} from "../lib/notification-category.js";
 import { env } from "../config/env.js";
 
-/** The one notification type that carries the Terminate / It's Me actions. */
-export const LOGIN_DETECTED_TYPE = "auth.security_new_login";
+export { LOGIN_DETECTED_TYPE };
 
 /**
  * "Not yet resolved". Written as an explicit OR rather than the shorter
@@ -390,6 +392,14 @@ export class NotificationRepository {
    * "CONFIRM" login). Merges `actionTaken` into `payload.data`, updates `payload.body`,
    * and marks the row read in one write. Owner-scoped (IDOR-safe).
    *
+   * EXCEPT for login-detected rows, whose `payload.body` is left ALONE: their
+   * status has exactly one home, `data.actionTaken`, which every client renders
+   * in the viewer's own language ("This was you." / "Session terminated.").
+   * Writing that same status over the body as well cost the row its original
+   * "New login detected on …" description AND made the UI print the status
+   * twice — once as the body, once as the resolved line. `body` is still
+   * accepted (and honoured) for every other type, so no caller breaks.
+   *
    * For login-detected rows this is also the single state transition:
    * PENDING → APPROVED/TERMINATED, and nothing else. The `loginResolvedAt: null`
    * filter on the claim makes it exactly-once across every writer — the user on
@@ -408,7 +418,8 @@ export class NotificationRepository {
       where: { id, userId, isDeleted: false },
     });
     if (!existing) return null;
-    if (existing.type === LOGIN_DETECTED_TYPE) {
+    const isLogin = existing.type === LOGIN_DETECTED_TYPE;
+    if (isLogin) {
       const claim = await this.prisma.notification.updateMany({
         where: { id, userId, isDeleted: false, ...PENDING_LOGIN },
         data: { loginResolvedAt: new Date() },
@@ -422,7 +433,7 @@ export class NotificationRepository {
     };
     const updatedPayload = {
       ...existingPayload,
-      body,
+      ...(isLogin ? {} : { body }),
       data: { ...(existingPayload.data ?? {}), actionTaken: action },
     };
     return this.prisma.notification.update({

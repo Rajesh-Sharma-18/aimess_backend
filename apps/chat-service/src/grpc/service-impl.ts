@@ -4393,7 +4393,10 @@ export function createNotificationImpl(
           );
 
           if (updated) {
-            const payloadObj = (updated.payload ?? {}) as { title?: string };
+            const payloadObj = (updated.payload ?? {}) as {
+              title?: string;
+              body?: string;
+            };
             try {
               await publishUserSocketEvent(
                 redis,
@@ -4404,7 +4407,9 @@ export function createNotificationImpl(
                   userId: req.userId,
                   type: updated.type,
                   title: payloadObj.title ?? "",
-                  body: req.body ?? "",
+                  // Login rows keep their "New login detected on …" body; the
+                  // outcome the caller asked for rides in data.actionTaken.
+                  body: payloadObj.body ?? "",
                   isRead: true,
                   createdAt: updated.createdAt.getTime(),
                   data: {
