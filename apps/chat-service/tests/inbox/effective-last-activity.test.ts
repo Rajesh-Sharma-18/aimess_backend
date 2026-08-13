@@ -119,6 +119,56 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     expect(row.lastActivityAt).toBe(0);
   });
 
+  it("REGRESSION: a reaction overlay from BEFORE the clear does not resurrect the emptied row", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom({
+        clearFor: { [TEST_USER_ID]: "2026-08-10T10:11:00.000Z" },
+        // The viewer reacted at 10:09 — before their 10:11 clear.
+        reactionActivityAt: new Date("2026-08-10T10:09:00.000Z"),
+        reactionActivityMessageId: "m3",
+        reactionActivityEmoji: "🔥",
+        reactionActivityActorId: TEST_USER_ID,
+        reactionActivityActorPreview: 'You reacted 🔥 to "How are you?"',
+        reactionActivityTargetId: PEER,
+        reactionActivityTargetPreview: 'reacted 🔥 to "How are you?"',
+      }),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+
+    const res = await listPrivate();
+
+    expect(res.status).toBe(200);
+    const row = res.body.data.data[0];
+    expect(row.lastActivity.preview).toBe("");
+    expect(row.lastActivity.dateTime).toBe(0);
+    expect(row.lastActivityAt).toBe(0);
+  });
+
+  it("a reaction made AFTER the clear still previews (the row has genuinely new activity)", async () => {
+    const reactedAt = new Date("2026-08-10T10:12:00.000Z");
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      privateRoom({
+        clearFor: { [TEST_USER_ID]: "2026-08-10T10:11:00.000Z" },
+        reactionActivityAt: reactedAt,
+        reactionActivityMessageId: "m3",
+        reactionActivityEmoji: "🔥",
+        reactionActivityActorId: TEST_USER_ID,
+        reactionActivityActorPreview: 'You reacted 🔥 to "How are you?"',
+        reactionActivityTargetId: PEER,
+        reactionActivityTargetPreview: 'reacted 🔥 to "How are you?"',
+      }),
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mocks.privateMessageRepo.filterHiddenFromUser.mockResolvedValue(new Set());
+
+    const res = await listPrivate();
+
+    const row = res.body.data.data[0];
+    expect(row.lastActivity.preview).toBe('You reacted 🔥 to "How are you?"');
+    expect(row.lastActivity.dateTime).toBe(reactedAt.getTime());
+  });
+
   it("viewer hid EVERY message: lastActivityAt 0, empty preview", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       privateRoom(),

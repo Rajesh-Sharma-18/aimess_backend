@@ -20,7 +20,10 @@ import {
   type VisibilitySource,
 } from "./last-visible-resolver.js";
 import { privateVisibilitySource } from "./last-visible-adapters.js";
-import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import {
+  getPrivateDeletionCutoff,
+  isHiddenByCutoff,
+} from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
 import { buildAutoDeleteWire, readRoomAutoDelete } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
@@ -723,12 +726,8 @@ export class PrivateRoomService {
       // shows. Same cutoff the preview below applies.
       const statusCutoff = getPrivateDeletionCutoff(room, userId);
       const lmCreatedAt = (rawLmForStatus as Record<string, unknown> | null)
-        ?.createdAt;
-      const hiddenForStatus = Boolean(
-        statusCutoff &&
-        lmCreatedAt &&
-        new Date(lmCreatedAt as string | Date) <= statusCutoff
-      );
+        ?.createdAt as string | Date | undefined;
+      const hiddenForStatus = isHiddenByCutoff(lmCreatedAt, statusCutoff);
       if (
         lmSenderId !== userId ||
         !room.lastMessageId ||
@@ -819,10 +818,11 @@ export class PrivateRoomService {
         ? (perUserFallback.get(room.roomId) ?? null)
         : room.lastMessage;
       const cutoff = getPrivateDeletionCutoff(room, userId);
-      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt;
-      const hiddenByCutoff = Boolean(
-        cutoff && rawLmDate && new Date(rawLmDate as string | Date) <= cutoff
-      );
+      const rawLmDate = (rawLm as Record<string, unknown> | null)?.createdAt as
+        | string
+        | Date
+        | undefined;
+      const hiddenByCutoff = isHiddenByCutoff(rawLmDate, cutoff);
       const visibleRawLm = hiddenByCutoff ? null : rawLm;
       // "This viewer has NOTHING visible left in this room" — either their
       // clear/delete-conversation cutoff swallowed the last message, or the
@@ -894,9 +894,21 @@ export class PrivateRoomService {
       // stale reaction with no explicit clear needed. Every other viewer (never
       // more than one "other" here, since PRIVATE has exactly 2 participants)
       // keeps the real last message untouched.
+      //
+      // The cutoff gate is the SAME one the preview above applies: a reaction
+      // that landed at/before the viewer's clear is part of the history they
+      // emptied. Without it the overlay walked straight past `nothingVisible`
+      // (which forces `lastActivityAt` to 0, so *any* stored reaction compared
+      // as "newer") and re-rendered "You reacted 🔥 to …" — with the old
+      // timestamp — on a chat the viewer had just cleared.
+      // ponytail: gates on the reaction's OWN time only. A reaction made AFTER
+      // the clear still previews, even though its target message is below the
+      // cutoff; hiding that too needs the target's createdAt, i.e. a per-row
+      // message lookup.
       if (
         room.reactionActivityAt &&
-        room.reactionActivityAt.getTime() > lastActivityAt
+        room.reactionActivityAt.getTime() > lastActivityAt &&
+        !isHiddenByCutoff(room.reactionActivityAt, cutoff)
       ) {
         const isActor = room.reactionActivityActorId === userId;
         const isTarget = room.reactionActivityTargetId === userId;
