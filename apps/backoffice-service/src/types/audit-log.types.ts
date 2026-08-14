@@ -55,6 +55,12 @@ export type AuditLogListItem = {
   action: string;
   targetType: string;
   targetId: string | null;
+  /**
+   * Display name of the thing acted on, when backoffice can resolve one (user,
+   * admin, community). null for every other target type, and for a target that
+   * has since been deleted — the id stays authoritative either way.
+   */
+  targetName: string | null;
   createdAt: number;
 };
 
@@ -67,6 +73,8 @@ export type AuditLogDetail = {
   action: string;
   targetType: string;
   targetId: string | null;
+  /** See AuditLogListItem.targetName. */
+  targetName: string | null;
   createdAt: number;
   /** Best-effort human reason, lifted from the before/after payload if present. */
   reason: string | null;

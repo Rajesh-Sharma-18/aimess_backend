@@ -93,6 +93,7 @@ export async function emitAuditLogCreated(auditLogId: string): Promise<void> {
       action: detail.action,
       targetType: detail.targetType,
       targetId: detail.targetId,
+      targetName: detail.targetName,
       createdAt: detail.createdAt,
     };
 

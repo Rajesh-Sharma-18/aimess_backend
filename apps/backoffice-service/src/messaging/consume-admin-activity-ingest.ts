@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 
+import { resolveAuditSource } from "@aimess/constants";
 import { USER_AUDIT_ACTIONS } from "@aimess/messaging";
 import {
   AdminActivityEvents,
@@ -19,11 +20,17 @@ import { emitAuditLogCreated } from "../lib/audit-realtime.js";
 const ADMIN_ACTIVITY_INGEST_QUEUE = "admin.activity.ingest.queue";
 const ADMIN_ACTIVITY_INGEST_DLX = "admin.activity.ingest.dlx";
 const ADMIN_ACTIVITY_INGEST_DLQ_ROUTING_KEY = "admin.activity.ingest.dead";
+// Without a queue bound to the DLX, a dead-lettered event is discarded by the broker
+// and the evidence of the bad publish goes with it. Bind one so poison messages are
+// inspectable instead of silently gone.
+const ADMIN_ACTIVITY_INGEST_DLQ = "admin.activity.ingest.dlq";
+/** How long to wait before redelivering after a transient (infrastructure) failure. */
+const REQUEUE_DELAY_MS = 5_000;
 
 const KNOWN_ACTIONS = new Set<string>(Object.values(USER_AUDIT_ACTIONS));
-// Server-side allowlist for the client-declared source. An unrecognized value is
-// normalized to SYSTEM rather than rejected: a publisher on an older build sends
-// none at all, and losing the row would be worse than losing the attribution.
+// Server-side allowlist for the publisher-declared source. An unrecognized value is
+// normalized rather than rejected: a publisher on an older build sends none at all,
+// and losing the row would be worse than losing the attribution.
 const KNOWN_SOURCES = new Set<string>([
   "ADMIN_PANEL",
   "WEB",
@@ -31,6 +38,33 @@ const KNOWN_SOURCES = new Set<string>([
   "IOS",
   "SYSTEM",
 ]);
+// Which of those a person can actually have acted from. A user row may hold only
+// these — see resolveIngestSource.
+const CLIENT_SOURCES = new Set<string>([
+  "ADMIN_PANEL",
+  "WEB",
+  "ANDROID",
+  "IOS",
+]);
+
+/**
+ * Mirrors the publisher's rule so an older service still on the previous build
+ * cannot land a user action attributed to the platform: a row with an actor names
+ * the client that actor used, falling back to the stored user-agent and finally to
+ * WEB. SYSTEM is reserved for actor-less rows (sweepers, tripwires, consumers).
+ */
+function resolveIngestSource(data: AdminActivityIngestPayload): AuditSource {
+  const declared =
+    data.source && KNOWN_SOURCES.has(data.source) ? data.source : null;
+  if (data.actorType !== "USER") return (declared ?? "SYSTEM") as AuditSource;
+  if (declared && CLIENT_SOURCES.has(declared)) return declared as AuditSource;
+  const sniffed = data.userAgent
+    ? resolveAuditSource({ "user-agent": data.userAgent })
+    : null;
+  return (
+    sniffed && CLIENT_SOURCES.has(sniffed) ? sniffed : "WEB"
+  ) as AuditSource;
+}
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -53,19 +87,33 @@ function toJsonOrSkip(
   return { set: true, value: value as Prisma.InputJsonValue };
 }
 
+/**
+ * A message that will never succeed no matter how often it is redelivered — a
+ * malformed payload, an unknown action, a bad actor. Only these are dead-lettered;
+ * anything else (a DB outage, a dropped pool connection) is transient and must be
+ * retried, or a five-minute database blip would silently erase audit history.
+ */
+export class UnprocessableActivityEvent extends Error {
+  override readonly name = "UnprocessableActivityEvent";
+}
+
 export async function handleActivityIngest(
   data: AdminActivityIngestPayload
 ): Promise<void> {
   if (!data || !data.action || !data.targetType || !data.eventId) {
-    throw new Error("Malformed admin.activity.ingest payload");
+    throw new UnprocessableActivityEvent(
+      "Malformed admin.activity.ingest payload"
+    );
   }
   // An unknown action would silently pollute the filter dropdown; reject it loudly
   // (DLQ) so a publisher typo surfaces instead of landing an unfilterable row.
   if (!KNOWN_ACTIONS.has(data.action)) {
-    throw new Error(`Unknown admin.activity.ingest action "${data.action}"`);
+    throw new UnprocessableActivityEvent(
+      `Unknown admin.activity.ingest action "${data.action}"`
+    );
   }
   if (data.actorType !== "USER" && data.actorType !== "SYSTEM") {
-    throw new Error(
+    throw new UnprocessableActivityEvent(
       `Invalid admin.activity.ingest actorType "${String(data.actorType)}"`
     );
   }
@@ -74,17 +122,14 @@ export async function handleActivityIngest(
   const actorId =
     data.actorId && UUID_PATTERN.test(data.actorId) ? data.actorId : null;
   if (data.actorType === "USER" && !actorId) {
-    throw new Error(
+    throw new UnprocessableActivityEvent(
       "admin.activity.ingest USER row is missing a valid actorId"
     );
   }
 
   const before = toJsonOrSkip(data.before);
   const after = toJsonOrSkip(data.after);
-  const source: AuditSource =
-    data.source && KNOWN_SOURCES.has(data.source)
-      ? (data.source as AuditSource)
-      : "SYSTEM";
+  const source = resolveIngestSource(data);
 
   try {
     const row = await prisma.auditLog.create({
@@ -119,8 +164,48 @@ export async function handleActivityIngest(
   }
 }
 
-export async function startAdminActivityIngestConsumer(): Promise<void> {
+// A dropped broker connection used to end website-activity ingestion for the rest of
+// the process's life: publishers kept filling the durable queue and nothing drained it,
+// so every website/Android/iOS action silently stopped reaching the audit log until a
+// manual restart. The queue is durable, so re-attaching replays everything that piled up.
+const RECONNECT_DELAY_MS = 5_000;
+
+let activeConnection: amqp.ChannelModel | null = null;
+let reconnectTimer: NodeJS.Timeout | null = null;
+
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void openActivityIngestConsumer().catch((error) => {
+      logger.warn(
+        `Admin activity ingest consumer reconnect failed, retrying: ${String(error)}`
+      );
+      scheduleReconnect();
+    });
+  }, RECONNECT_DELAY_MS);
+  // Never hold the event loop open on this timer alone.
+  reconnectTimer.unref();
+}
+
+async function openActivityIngestConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
+  activeConnection = connection;
+
+  connection.on("error", (error: Error) => {
+    logger.warn(
+      `Admin activity ingest consumer connection error: ${error.message}`
+    );
+  });
+  // Only the connection currently in use may trigger a reconnect — a late `close`
+  // from a superseded connection must not spawn a second consumer.
+  connection.on("close", () => {
+    if (activeConnection !== connection) return;
+    activeConnection = null;
+    logger.warn("Admin activity ingest consumer disconnected — reconnecting");
+    scheduleReconnect();
+  });
+
   const channel = await connection.createChannel();
 
   await channel.assertExchange(ADMIN_ACTIVITY_INGEST_DLX, "direct", {
@@ -131,6 +216,12 @@ export async function startAdminActivityIngestConsumer(): Promise<void> {
     deadLetterExchange: ADMIN_ACTIVITY_INGEST_DLX,
     deadLetterRoutingKey: ADMIN_ACTIVITY_INGEST_DLQ_ROUTING_KEY,
   });
+  await channel.assertQueue(ADMIN_ACTIVITY_INGEST_DLQ, { durable: true });
+  await channel.bindQueue(
+    ADMIN_ACTIVITY_INGEST_DLQ,
+    ADMIN_ACTIVITY_INGEST_DLX,
+    ADMIN_ACTIVITY_INGEST_DLQ_ROUTING_KEY
+  );
   await channel.prefetch(20);
 
   logger.info("Admin activity ingest consumer started");
@@ -152,12 +243,44 @@ export async function startAdminActivityIngestConsumer(): Promise<void> {
         channel.ack(message);
       } catch (error) {
         // Deterministic/parse error → drop (no requeue) so it DLQs rather than spinning.
+        if (
+          error instanceof UnprocessableActivityEvent ||
+          error instanceof SyntaxError
+        ) {
+          logger.error(
+            "Admin activity ingest consumer rejected an unprocessable message",
+            error
+          );
+          channel.nack(message, false, false);
+          return;
+        }
+        // Anything else is infrastructure (DB down, pool exhausted). Requeue so the
+        // row survives the outage — dropping it would lose audit history that no
+        // later retry can reconstruct. Delayed so a sustained outage redelivers
+        // slowly instead of spinning the broker and the log.
         logger.error(
-          "Admin activity ingest consumer failed to process message",
+          "Admin activity ingest consumer failed to process message; requeueing",
           error
         );
-        channel.nack(message, false, false);
+        setTimeout(() => {
+          try {
+            channel.nack(message, false, true);
+          } catch {
+            // Channel already gone — the unacked message returns to the queue on close.
+          }
+        }, REQUEUE_DELAY_MS).unref();
       }
     })();
   });
+}
+
+export async function startAdminActivityIngestConsumer(): Promise<void> {
+  try {
+    await openActivityIngestConsumer();
+  } catch (error) {
+    // server.ts bounds the FIRST attempt with a 5s race, so a broker that is merely
+    // slow at boot must not disable ingestion for the lifetime of the process.
+    scheduleReconnect();
+    throw error;
+  }
 }

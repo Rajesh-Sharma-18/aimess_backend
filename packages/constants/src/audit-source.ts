@@ -12,7 +12,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * carried across the internal gRPC hop as `x-audit-source` metadata (see
  * `@aimess/grpc-utils`).
  *
- * SYSTEM is what a platform job / consumer / sweeper gets: there was no client.
+ * SYSTEM exists only for rows no client produced — a sweeper, a queue consumer,
+ * a tripwire the platform pulled on its own. A row with a user on it can never
+ * be SYSTEM: a person acted, so a client was involved by definition. See
+ * {@link isClientAuditSource} and the guard in `publishAdminActivitySafe`.
+ *
+ * These UPPERCASE values are the ONE canonical representation. Clients send
+ * lowercase `x-platform` (`web` / `android` / `ios`); it is mapped here, once,
+ * and nothing downstream ever sees a variant spelling.
  */
 export const AUDIT_SOURCES = {
   ADMIN_PANEL: "ADMIN_PANEL",
@@ -24,11 +31,29 @@ export const AUDIT_SOURCES = {
 
 export type AuditSource = (typeof AUDIT_SOURCES)[keyof typeof AUDIT_SOURCES];
 
+/** The platforms a human can actually act from. Excludes SYSTEM by construction. */
+export const CLIENT_AUDIT_SOURCES = [
+  AUDIT_SOURCES.ADMIN_PANEL,
+  AUDIT_SOURCES.WEB,
+  AUDIT_SOURCES.ANDROID,
+  AUDIT_SOURCES.IOS,
+] as const;
+
+export type ClientAuditSource = (typeof CLIENT_AUDIT_SOURCES)[number];
+
 const AUDIT_SOURCE_VALUES = new Set<string>(Object.values(AUDIT_SOURCES));
+const CLIENT_AUDIT_SOURCE_VALUES = new Set<string>(CLIENT_AUDIT_SOURCES);
 
 /** Server-side allowlist for a client-declared source; anything else is rejected. */
 export function isAuditSource(value: unknown): value is AuditSource {
   return typeof value === "string" && AUDIT_SOURCE_VALUES.has(value);
+}
+
+/** True when the value names a real client. SYSTEM is not one. */
+export function isClientAuditSource(
+  value: unknown
+): value is ClientAuditSource {
+  return typeof value === "string" && CLIENT_AUDIT_SOURCE_VALUES.has(value);
 }
 
 // Accepted `x-platform` values. Desktop builds are still the web client, so they

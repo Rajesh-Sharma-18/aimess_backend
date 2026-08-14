@@ -11,7 +11,10 @@ import type { AdminActivityIngestPayload } from "@aimess/shared-types";
 
 import { prisma } from "../../config/prisma.js";
 import { redis } from "../../config/redis.js";
-import { handleActivityIngest } from "../consume-admin-activity-ingest.js";
+import {
+  handleActivityIngest,
+  UnprocessableActivityEvent,
+} from "../consume-admin-activity-ingest.js";
 
 // A committed row fires the realtime push, which first asks Redis who may read
 // audit logs. With no server here that command never settles, and the pending
@@ -123,22 +126,67 @@ describe("handleActivityIngest", () => {
     assert.equal(createCalls[0].data.source, "ANDROID");
   });
 
-  it("normalizes an unknown or absent source to SYSTEM instead of dropping the row", async () => {
+  // A user row may never say SYSTEM: a person acted, so a client was involved.
+  // An unusable source is normalized to a real platform rather than dropping the row.
+  it("normalizes an unknown or absent source on a user row to a client platform, never SYSTEM", async () => {
     await handleActivityIngest(
       validPayload({
         source: "DESKTOP" as AdminActivityIngestPayload["source"],
       })
     );
-    assert.equal(createCalls[0].data.source, "SYSTEM");
+    assert.equal(createCalls[0].data.source, "WEB");
 
     await handleActivityIngest(validPayload({ eventId: "evt_2" }));
-    assert.equal(createCalls[1].data.source, "SYSTEM");
+    assert.equal(createCalls[1].data.source, "WEB");
+  });
+
+  it("recovers the platform from the user-agent when the publisher sent no source", async () => {
+    await handleActivityIngest(
+      validPayload({
+        source: undefined,
+        userAgent: "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)",
+      })
+    );
+    assert.equal(createCalls[0].data.source, "ANDROID");
+
+    await handleActivityIngest(
+      validPayload({
+        eventId: "evt_ios",
+        source: undefined,
+        userAgent: "AiMess/2.3 (iPhone; iOS 18.2) CFNetwork/1500",
+      })
+    );
+    assert.equal(createCalls[1].data.source, "IOS");
+  });
+
+  it("keeps SYSTEM for an actor-less row — that is what SYSTEM is for", async () => {
+    await handleActivityIngest(
+      validPayload({ actorId: null, actorType: "SYSTEM", source: undefined })
+    );
+    assert.equal(createCalls[0].data.source, "SYSTEM");
   });
 
   it("throws on a payload missing its idempotency key", async () => {
     await assert.rejects(
       () => handleActivityIngest(validPayload({ eventId: "" })),
       /Malformed admin.activity.ingest payload/
+    );
+  });
+
+  // The consumer routes on this distinction: UnprocessableActivityEvent dead-letters,
+  // anything else requeues. Get it backwards and a database blip erases audit history.
+  it("marks unprocessable payloads as such, and leaves infrastructure failures unmarked", async () => {
+    await assert.rejects(
+      () => handleActivityIngest(validPayload({ action: "message.sent" })),
+      (error: unknown) => error instanceof UnprocessableActivityEvent
+    );
+
+    nextCreateError = new Error(
+      "Connection terminated due to connection timeout"
+    );
+    await assert.rejects(
+      () => handleActivityIngest(validPayload({ eventId: "evt_3" })),
+      (error: unknown) => !(error instanceof UnprocessableActivityEvent)
     );
   });
 });

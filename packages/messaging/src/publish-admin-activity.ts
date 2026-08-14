@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import * as amqp from "amqplib";
 
-import { currentAuditContext, resolveAuditSource } from "@aimess/constants";
+import {
+  AUDIT_SOURCES,
+  currentAuditContext,
+  isClientAuditSource,
+  resolveAuditSource,
+  type AuditSource,
+} from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import {
   AdminActivityEvents,
@@ -58,26 +64,54 @@ function toPayload(data: AdminActivityInput): AdminActivityIngestPayload {
   // Source/IP/user-agent come from the ambient request context established at the
   // edge (@aimess/constants auditContextMiddleware, or the gRPC ingress wrapper for
   // socket-originated calls). An explicit value on the call site still wins — that
-  // is how backfill scripts stamp historical rows. Outside any request there is no
-  // client, so the row is SYSTEM.
+  // is how backfill scripts stamp historical rows.
   const ambient = currentAuditContext();
   const userAgent = data.userAgent ?? ambient?.userAgent ?? null;
+  const actorType = data.actorType ?? (data.actorId ? "USER" : "SYSTEM");
+  // Preference order: what the call site declared, then the request context, then
+  // the user-agent (the only client signal a backfill or a detached continuation
+  // still has). Any of them may legitimately be absent.
+  const declared = data.source ?? ambient?.source ?? null;
+  const sniffed = userAgent
+    ? resolveAuditSource({ "user-agent": userAgent })
+    : null;
+
   return {
     ...data,
-    actorType: data.actorType ?? (data.actorId ? "USER" : "SYSTEM"),
-    // Outside a request there is usually no client — except when replaying
-    // history, where the stored user-agent IS the original client signal. Falling
-    // back to it lets every backfill script stamp a real source with no per-script
-    // change; with neither, SYSTEM correctly means "the platform did this".
-    source:
-      data.source ??
-      ambient?.source ??
-      (userAgent ? resolveAuditSource({ "user-agent": userAgent }) : "SYSTEM"),
+    actorType,
+    source: resolveRowSource({ actorType, declared, sniffed }),
     ip: data.ip ?? ambient?.ip ?? null,
     userAgent,
     eventAt: data.eventAt ?? new Date().toISOString(),
     eventId: data.eventId ?? randomUUID(),
   };
+}
+
+/**
+ * The single place a row's `source` is decided.
+ *
+ * A row with a user on it MUST name the client that user acted from — Website,
+ * Android or iOS. SYSTEM there is not a safe default, it is a wrong answer: it
+ * tells the Super Admin "the platform did this" about something a person did,
+ * and no later query can recover the truth. So when the context is missing on a
+ * user row we fall back to the user-agent, and finally to WEB — the request came
+ * from *some* client, and WEB is the only honest guess left.
+ *
+ * SYSTEM survives for exactly what it was meant for: rows no client produced
+ * (the refresh-token-reuse tripwire, the auto-unmute sweeper, queue consumers),
+ * which carry no actor at all.
+ */
+function resolveRowSource(input: {
+  actorType: AdminActivityIngestPayload["actorType"];
+  declared: AuditSource | null;
+  sniffed: AuditSource | null;
+}): AuditSource {
+  if (input.actorType !== "USER") {
+    return input.declared ?? input.sniffed ?? AUDIT_SOURCES.SYSTEM;
+  }
+  if (isClientAuditSource(input.declared)) return input.declared;
+  if (isClientAuditSource(input.sniffed)) return input.sniffed;
+  return AUDIT_SOURCES.WEB;
 }
 
 /**
