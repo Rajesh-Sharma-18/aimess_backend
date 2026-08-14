@@ -259,6 +259,9 @@ export function startUserGrpcServer(): grpc.Server {
             quietHoursStart: row?.quietHoursStart ?? "",
             quietHoursEnd: row?.quietHoursEnd ?? "",
             quietHoursDays: row?.quietHoursDays ?? [],
+            // "" tells notifications-service to evaluate in server-local time,
+            // which is what every row did before the column existed.
+            timezone: row?.quietHoursTimezone ?? "",
           });
         } catch (err) {
           logger.error(`gRPC getNotificationSettings error: ${String(err)}`);

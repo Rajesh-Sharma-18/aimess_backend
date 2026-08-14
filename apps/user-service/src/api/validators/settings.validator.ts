@@ -45,8 +45,29 @@ const timeOfDaySchema = z
     "Time must be in HH:mm 24-hour format (e.g. 22:00)"
   );
 
-// 0 = Sunday .. 6 = Saturday.
+// 0 = Sunday .. 6 = Saturday. This numbering is the canon — the DB column, the
+// gRPC contract, the notifications-service evaluator and every client agree on
+// it, so do not renumber one layer in isolation.
 const dayOfWeekSchema = z.number().int().min(0).max(6);
+
+/**
+ * An IANA timezone id. Validated by asking Intl to build a formatter for it,
+ * which is the only authoritative list available and needs no dependency —
+ * `Intl.supportedValuesOf` misses aliases like "Asia/Calcutta" that browsers
+ * still resolve to. `null` clears it back to server-local evaluation.
+ */
+const timezoneSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value });
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Timezone must be a valid IANA zone id (e.g. Asia/Bangkok)");
 
 const updatePrivacySettingsSchema = z
   .object({
@@ -84,6 +105,7 @@ const updateQuietHoursSchema = z
       .max(7)
       .transform((days) => [...new Set(days)])
       .optional(),
+    timezone: timezoneSchema.nullable().optional(),
   })
   .strict();
 
@@ -95,6 +117,7 @@ const updateNotificationSettingsSchema = z
     system: z.boolean().optional(),
     community: z.boolean().optional(),
     liveStream: z.boolean().optional(),
+    showPreview: z.boolean().optional(),
     quietHours: updateQuietHoursSchema.optional(),
   })
   .strict();

@@ -71,7 +71,7 @@ describe("handleAnnouncementBatch", () => {
     redisMock.set.mockResolvedValue("OK");
   });
 
-  it("fans out via pushToUsers with bypassSettings:true and the correct payload", async () => {
+  it("fans out via pushToUsers gated on the System toggle, with the correct payload", async () => {
     await handleAnnouncementBatch(BASE);
 
     expect(pushMany).toHaveBeenCalledTimes(1);
@@ -81,7 +81,9 @@ describe("handleAnnouncementBatch", () => {
     ];
     expect(userIds).toEqual(BASE.userIds);
     const built = builderFn("u1");
-    expect(built.bypassSettings).toBe(true);
+    // Announcements are informational, not account-integrity: the System
+    // toggle and quiet hours both apply, so no bypass.
+    expect(built.bypassSettings).toBeUndefined();
     expect(built.category).toBe("systemEnabled");
     expect(built.title).toBe(BASE.title);
     expect(built.body).toBe(BASE.body);

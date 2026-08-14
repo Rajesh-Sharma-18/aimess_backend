@@ -181,6 +181,7 @@ channels:
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
       convMuted: { $ref: "#/components/messages/ConvMuted" }
       convUnmuted: { $ref: "#/components/messages/ConvUnmuted" }
+      settingsUpdated: { $ref: "#/components/messages/SettingsUpdated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -790,6 +791,30 @@ operations:
       mute simply expires — expiry is evaluated lazily at push time, so no event
       is needed and none is sent.
     messages: [{ $ref: "#/channels/chat/messages/convUnmuted" }]
+  chat.onSettingsUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "settings:updated — the caller's settings changed (own devices only)"
+    description: |
+      Multi-device sync for `GET /api/v1/users/settings/me`. user-service emits
+      it after every successful `PATCH /users/settings/me` (and after each
+      call-allow-list add/remove), so a notification toggle flipped on web lands
+      on Android and iOS with no refetch and no re-login.
+
+      Delivered ONLY to the changing user's own sockets — the gateway rewrites
+      it to `self:<id>`, never `user:<id>`, because the payload is the user's own
+      privacy and notification configuration and presence watchers join
+      `user:<id>`.
+
+      The payload is the COMPLETE settings envelope, byte-identical to what
+      `GET /users/settings/me` returns, so a client can swap its cache wholesale
+      rather than patch field-by-field. Clients should still merge rather than
+      replace, so a future narrowed payload cannot blank out a group.
+
+      Quiet-hours note: `notifications.quietHours.days` is `0=Sunday .. 6=Saturday`
+      and `notifications.quietHours.timezone` is an IANA zone id (null = the
+      server evaluates the window in its own local time).
+    messages: [{ $ref: "#/channels/chat/messages/settingsUpdated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -2629,6 +2654,44 @@ components:
             senderName: ""
             unread: false
             isOffline: true
+    SettingsUpdated:
+      name: "settings:updated"
+      title: "settings:updated"
+      payload: { $ref: "#/components/schemas/UserSettingsEnvelope" }
+      examples:
+        - name: Community notifications turned off, quiet hours on weeknights
+          payload:
+            privacy:
+              whoCanFindMe: EVERYONE
+              whoCanSendFriendRequests: EVERYONE
+              whoCanSeeOnlineStatus: EVERYONE
+              whoCanViewProfile: EVERYONE
+              whoCanCallMe: EVERYONE
+              callAllowedFriendIds: []
+            chat:
+              autoDeleteTimer: "OFF"
+              typingIndicators: true
+              readReceipts: true
+            app:
+              language: en
+              theme: AUTO
+            notifications:
+              chat: true
+              call: true
+              friendRequest: true
+              system: true
+              community: false
+              liveStream: true
+              showPreview: true
+              quietHours:
+                enabled: true
+                start: "22:00"
+                end: "07:00"
+                days: [1, 2, 3, 4, 5]
+                timezone: "Asia/Bangkok"
+            liveStream:
+              defaultVideoQuality: AUTO
+            updatedAt: "2026-08-14T09:00:00.000Z"
     ConvMuted:
       name: "conv:muted"
       title: "conv:muted"
@@ -5924,6 +5987,55 @@ components:
             type: boolean,
             description: "PRIVATE only — true when the OTHER participant (the recipient's chat peer) is currently offline, sourced from the same real-time PresenceService/Redis presence state as GET /chat/private/conversations and GET /chat/private/rooms/:peerId. Omitted for GROUP (no single peer). Re-emitted on its own whenever that peer's presence flips, independent of new messages.",
           }
+    UserSettingsEnvelope:
+      type: object
+      description: >
+        The complete settings envelope, identical to the `data` of
+        `GET /api/v1/users/settings/me`. Emitted on `settings:updated` to the
+        changing user's own devices.
+      properties:
+        privacy: { type: object }
+        chat: { type: object }
+        app: { type: object }
+        notifications:
+          type: object
+          properties:
+            chat: { type: boolean }
+            call: { type: boolean }
+            friendRequest: { type: boolean }
+            system: { type: boolean }
+            community: { type: boolean }
+            liveStream: { type: boolean }
+            showPreview:
+              {
+                type: boolean,
+                description: "false masks the message body in the push banner. The Notification Center row keeps the real body.",
+              }
+            quietHours:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                start:
+                  {
+                    type: string,
+                    nullable: true,
+                    description: '"HH:mm" 24-hour. Required whenever enabled is true.',
+                  }
+                end: { type: string, nullable: true }
+                days:
+                  {
+                    type: array,
+                    items: { type: integer, minimum: 0, maximum: 6 },
+                    description: "0=Sunday .. 6=Saturday. Empty means every day.",
+                  }
+                timezone:
+                  {
+                    type: string,
+                    nullable: true,
+                    description: "IANA zone id the window is evaluated in; null = server-local.",
+                  }
+        liveStream: { type: object }
+        updatedAt: { type: string, format: date-time }
     ConvMuteChangedPayload:
       type: object
       description: >

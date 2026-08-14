@@ -45,11 +45,13 @@ function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
       system: notifications.systemEnabled,
       community: notifications.communityEnabled,
       liveStream: notifications.liveStreamEnabled,
+      showPreview: notifications.showPreview,
       quietHours: {
         enabled: notifications.quietHoursEnabled,
         start: notifications.quietHoursStart,
         end: notifications.quietHoursEnd,
         days: notifications.quietHoursDays,
+        timezone: notifications.quietHoursTimezone,
       },
     },
     liveStream: {
@@ -129,6 +131,7 @@ function toNotificationUpdate(
   if (input.liveStream !== undefined) {
     update.liveStreamEnabled = input.liveStream;
   }
+  if (input.showPreview !== undefined) update.showPreview = input.showPreview;
 
   if (input.quietHours) {
     const qh = input.quietHours;
@@ -136,9 +139,30 @@ function toNotificationUpdate(
     if (qh.start !== undefined) update.quietHoursStart = qh.start;
     if (qh.end !== undefined) update.quietHoursEnd = qh.end;
     if (qh.days !== undefined) update.quietHoursDays = qh.days;
+    if (qh.timezone !== undefined) update.quietHoursTimezone = qh.timezone;
   }
 
   return update;
+}
+
+/**
+ * Quiet Hours has to end up with a window. Each field is independently optional
+ * so a client can PATCH just the toggle, but the MERGED result must still have
+ * both ends — otherwise the row reads "enabled" while the evaluator silently
+ * does nothing and the UI shows a schedule the server never stored.
+ */
+function assertQuietHoursWindow(
+  current: NonNullable<SettingsBundle["notificationSettings"]>,
+  update: NotificationSettingsUpdate
+): void {
+  const enabled = update.quietHoursEnabled ?? current.quietHoursEnabled;
+  if (!enabled) return;
+
+  const start = update.quietHoursStart ?? current.quietHoursStart;
+  const end = update.quietHoursEnd ?? current.quietHoursEnd;
+  if (!start || !end) {
+    throw new BadRequestError("USER_SETTINGS_INVALID_QUIET_HOURS");
+  }
 }
 
 export const userSettingsService = {
@@ -191,7 +215,7 @@ export const userSettingsService = {
     userId: string,
     input: UpdateSettingsInput
   ): Promise<UserSettingsResponse> {
-    await loadSettingsBundle(userId);
+    const current = await loadSettingsBundle(userId);
 
     const privacyUpdate = input.privacy;
     const callAllowedFriendIds = normalizeCallAllowedFriendIds(
@@ -210,6 +234,10 @@ export const userSettingsService = {
     const notifications = input.notifications
       ? toNotificationUpdate(input.notifications)
       : undefined;
+
+    if (notifications) {
+      assertQuietHoursWindow(current.notificationSettings!, notifications);
+    }
 
     await userSettingsRepository.updateSettings(userId, {
       privacy: privacyFields,

@@ -12,8 +12,11 @@ import { pushToUser } from "../services/push.service.js";
  * auth-service re-publishes admin ban/suspend/unban actions (after force-logout)
  * to this plain durable queue as notify-ready messages. We deliver each to the
  * affected user via pushToUser (settings/quiet-hours gate → inbox row → realtime
- * bridge → FCM-if-offline). Account-state notifications gate on the system
- * category. Envelope: JSON.stringify({ type, data }) where data is the
+ * bridge → FCM-if-offline). Ban/suspend/unban carry the `systemEnabled`
+ * category for tab placement, but they are account-integrity events and are
+ * exempt from the toggle and from quiet hours via NON_SUPPRESSIBLE_TYPES in
+ * push.service.ts — a banned user must always be told.
+ * Envelope: JSON.stringify({ type, data }) where data is the
  * notify-ready payload published by auth-service publish-admin-user-notify.ts.
  */
 const ADMIN_USER_NOTIFY_QUEUE = "admin.user.notify.queue";

@@ -202,6 +202,9 @@ model NotificationSettings {
   quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"
   quietHoursEnd        String? // "HH:mm" 24h, e.g. "07:00"
   quietHoursDays       Int[]       @default([]) // 0=Sunday .. 6=Saturday
+  // IANA zone the window is evaluated in, e.g. "Asia/Bangkok". NULL = fall back
+  // to server-local time, which is what every row did before this column.
+  quietHoursTimezone   String?
   updatedAt            DateTime    @updatedAt @db.Timestamptz(3)
 
   @@map("notification_settings")

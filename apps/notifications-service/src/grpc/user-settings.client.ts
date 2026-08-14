@@ -24,7 +24,10 @@ export interface NotificationSettings {
   quietHoursEnabled: boolean;
   quietHoursStart: string;
   quietHoursEnd: string;
+  /** Days the window applies to; 0=Sunday .. 6=Saturday. Empty = every day. */
   quietHoursDays: number[];
+  /** IANA timezone the quiet-hours window is evaluated in, "" = server-local. */
+  timezone: string;
   /** ISO 639-1 app language ("en" | "vi" | "th"), "" when the user never set one. */
   language: string;
 }

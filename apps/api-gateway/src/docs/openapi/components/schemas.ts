@@ -4652,8 +4652,15 @@ export const openApiSchemas = {
         description:
           "Days the quiet window applies to; 0=Sunday .. 6=Saturday.",
       },
+      timezone: {
+        type: "string",
+        nullable: true,
+        example: "Asia/Bangkok",
+        description:
+          "IANA zone the window is evaluated in. null falls back to server-local time; clients should send their own resolved zone.",
+      },
     },
-    required: ["enabled", "start", "end", "days"],
+    required: ["enabled", "start", "end", "days", "timezone"],
   },
   UserNotificationSettings: {
     type: "object",
@@ -4664,6 +4671,11 @@ export const openApiSchemas = {
       system: { type: "boolean" },
       community: { type: "boolean" },
       liveStream: { type: "boolean" },
+      showPreview: {
+        type: "boolean",
+        description:
+          "false hides message content in the push banner. The Notification Center row keeps the real body either way.",
+      },
       quietHours: { $ref: "#/components/schemas/QuietHoursSettings" },
     },
     required: [
@@ -4673,6 +4685,7 @@ export const openApiSchemas = {
       "system",
       "community",
       "liveStream",
+      "showPreview",
       "quietHours",
     ],
   },
@@ -4751,8 +4764,18 @@ export const openApiSchemas = {
         type: "array",
         maxItems: 7,
         items: { type: "integer", minimum: 0, maximum: 6 },
+        description: "0=Sunday .. 6=Saturday. Empty means every day.",
+      },
+      timezone: {
+        type: "string",
+        nullable: true,
+        example: "Asia/Bangkok",
+        description:
+          "IANA zone id. null clears it back to server-local evaluation.",
       },
     },
+    description:
+      "Fields are individually optional, but the MERGED result must have both start and end whenever enabled is true — otherwise 400 USER_SETTINGS_INVALID_QUIET_HOURS.",
   },
   UpdateUserNotificationSettingsRequest: {
     type: "object",
@@ -4763,6 +4786,7 @@ export const openApiSchemas = {
       system: { type: "boolean" },
       community: { type: "boolean" },
       liveStream: { type: "boolean" },
+      showPreview: { type: "boolean" },
       quietHours: { $ref: "#/components/schemas/UpdateQuietHoursRequest" },
     },
   },

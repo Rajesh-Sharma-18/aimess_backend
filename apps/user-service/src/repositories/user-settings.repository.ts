@@ -35,10 +35,12 @@ export type SettingsBundle = {
     systemEnabled: boolean;
     communityEnabled: boolean;
     liveStreamEnabled: boolean;
+    showPreview: boolean;
     quietHoursEnabled: boolean;
     quietHoursStart: string | null;
     quietHoursEnd: string | null;
     quietHoursDays: number[];
+    quietHoursTimezone: string | null;
     updatedAt: Date;
   } | null;
   liveStreamSettings: {
@@ -74,10 +76,12 @@ export type NotificationSettingsUpdate = {
   systemEnabled?: boolean;
   communityEnabled?: boolean;
   liveStreamEnabled?: boolean;
+  showPreview?: boolean;
   quietHoursEnabled?: boolean;
   quietHoursStart?: string;
   quietHoursEnd?: string;
   quietHoursDays?: number[];
+  quietHoursTimezone?: string | null;
 };
 
 export type LiveStreamSettingsUpdate = {
@@ -91,10 +95,12 @@ const notificationSelect = {
   systemEnabled: true,
   communityEnabled: true,
   liveStreamEnabled: true,
+  showPreview: true,
   quietHoursEnabled: true,
   quietHoursStart: true,
   quietHoursEnd: true,
   quietHoursDays: true,
+  quietHoursTimezone: true,
   updatedAt: true,
 } as const;
 
@@ -110,6 +116,7 @@ export type NotificationSettingsRow = {
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
   quietHoursDays: number[];
+  quietHoursTimezone: string | null;
 };
 
 export const userSettingsRepository = {
@@ -148,6 +155,7 @@ export const userSettingsRepository = {
         quietHoursStart: true,
         quietHoursEnd: true,
         quietHoursDays: true,
+        quietHoursTimezone: true,
       },
     });
   },

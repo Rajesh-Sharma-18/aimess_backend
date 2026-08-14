@@ -70,7 +70,8 @@ message NotificationSettings {
   // "HH:mm" 24h local time, or empty string when unset.
   string quiet_hours_start      = 8;
   string quiet_hours_end        = 9;
-  // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
+  // Days the quiet-hours window applies to (0=Sun … 6=Sat), matching the
+  // numbering the REST validator accepts and the clients render. Empty = daily.
   repeated int32 quiet_hours_days = 10;
   bool   show_preview           = 11;
   // The user's app language (ISO 639-1: "en" | "vi" | "th"), empty when unset.
@@ -79,6 +80,9 @@ message NotificationSettings {
   // their delivery preferences are read at exactly the same moment. Additive
   // field: older callers simply ignore it.
   string language               = 12;
+  // IANA timezone the quiet-hours window is evaluated in ("Asia/Bangkok").
+  // Empty string = evaluate in server-local time (pre-timezone behaviour).
+  string timezone               = 13;
 }
 
 // Admin Panel: enrich a user list with display profile data.

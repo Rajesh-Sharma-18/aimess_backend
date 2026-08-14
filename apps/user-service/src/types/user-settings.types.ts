@@ -52,6 +52,8 @@ export type UserNotificationSettings = {
   system: boolean;
   community: boolean;
   liveStream: boolean;
+  /** false hides message content in the push banner (lock-screen privacy). */
+  showPreview: boolean;
   quietHours: {
     enabled: boolean;
     /** "HH:mm" 24h, or null when unset. */
@@ -59,6 +61,11 @@ export type UserNotificationSettings = {
     end: string | null;
     /** Days the quiet window applies to; 0=Sunday .. 6=Saturday. */
     days: number[];
+    /**
+     * IANA zone the window is evaluated in ("Asia/Bangkok"), or null to use
+     * server-local time. Clients should send their own resolved zone.
+     */
+    timezone: string | null;
   };
 };
 

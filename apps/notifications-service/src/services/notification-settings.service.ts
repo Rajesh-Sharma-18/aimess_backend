@@ -26,6 +26,7 @@ const ALLOW_ALL: NotificationSettings = {
   quietHoursStart: "",
   quietHoursEnd: "",
   quietHoursDays: [],
+  timezone: "",
   language: "",
 };
 
@@ -106,30 +107,84 @@ export async function invalidateNotificationSettings(
 }
 
 /**
- * Whether a category is enabled AND we are not inside the user's quiet-hours
- * window. Quiet hours suppress delivery for ALL categories.
+ * Why a notification was (or wasn't) allowed through. CATEGORY_OFF and
+ * QUIET_HOURS are deliberately distinct outcomes: "I don't want this class of
+ * thing" suppresses the push AND the inbox row, whereas "not right now" only
+ * silences the push and leaves the row waiting in the Notification Center.
+ * Callers that collapse both back into a boolean lose that distinction.
  */
-export function isDeliveryAllowed(
+export type DeliveryDecision = "ALLOW" | "CATEGORY_OFF" | "QUIET_HOURS";
+
+/**
+ * The single decision point for account-level notification preferences.
+ * Category toggle first, then quiet hours.
+ */
+export function evaluateDelivery(
   settings: NotificationSettings,
   category: NotificationCategory
-): boolean {
-  if (!settings[category]) return false;
-  if (isInQuietHours(settings)) return false;
-  return true;
+): DeliveryDecision {
+  if (!settings[category]) return "CATEGORY_OFF";
+  // A ring is time-critical and comes from a known contact, so quiet hours
+  // never silence it — the `callEnabled` toggle above is the only thing that
+  // can. This matches how every mainstream messenger treats Do Not Disturb.
+  if (category === "callEnabled") return "ALLOW";
+  if (isInQuietHours(settings)) return "QUIET_HOURS";
+  return "ALLOW";
 }
 
 /**
- * Whether the notification payload should include message content in the
- * preview. Defaults to true when the setting is absent.
+ * Wall-clock minutes-since-midnight and day-of-week (0=Sunday .. 6=Saturday)
+ * in the user's IANA timezone. An empty or unrecognised timezone falls back to
+ * server-local time, which is exactly what every row did before the column
+ * existed — so no backfill is required.
  */
-export function shouldShowPreview(settings: NotificationSettings): boolean {
-  return settings.showPreview !== false;
+function wallClock(
+  now: Date,
+  timeZone: string
+): { minutes: number; day: number } {
+  const serverLocal = {
+    minutes: now.getHours() * 60 + now.getMinutes(),
+    day: now.getDay(),
+  };
+
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone || undefined,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(now);
+  } catch {
+    return serverLocal;
+  }
+
+  const get = (type: Intl.DateTimeFormatPart["type"]): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+
+  // Some ICU builds render midnight as "24" under hour12:false.
+  const hour = get("hour") % 24;
+  // The weekday has to come from the SHIFTED calendar date, not from `now` —
+  // 01:00 Tuesday in Bangkok is still Monday in UTC.
+  const day = new Date(
+    Date.UTC(get("year"), get("month") - 1, get("day"))
+  ).getUTCDay();
+
+  return { minutes: hour * 60 + get("minute"), day };
 }
 
 /**
- * Quiet-hours check in server-local time. start/end are "HH:mm"; a window that
- * wraps past midnight (start > end) is handled. quietHoursDays uses ISO weekday
- * numbers (1=Mon … 7=Sun); empty days = every day.
+ * Quiet-hours check in the user's timezone. start/end are "HH:mm"; a window
+ * that wraps past midnight (start > end) is handled. quietHoursDays uses
+ * 0=Sunday .. 6=Saturday — the same numbering the API validator accepts and the
+ * clients render; empty days = every day.
+ *
+ * ponytail: the day filter matches the day the window is evaluated on, not the
+ * day it started. A 22:00-07:00 window with only Monday selected therefore
+ * stops at midnight. Revisit if users report the tail hours leaking through.
  */
 export function isInQuietHours(
   settings: NotificationSettings,
@@ -138,10 +193,11 @@ export function isInQuietHours(
   if (!settings.quietHoursEnabled) return false;
   if (!settings.quietHoursStart || !settings.quietHoursEnd) return false;
 
-  const isoDay = now.getDay() === 0 ? 7 : now.getDay(); // JS Sun=0 → ISO 7
+  const { minutes: cur, day } = wallClock(now, settings.timezone || "");
+
   if (
     settings.quietHoursDays.length > 0 &&
-    !settings.quietHoursDays.includes(isoDay)
+    !settings.quietHoursDays.includes(day)
   ) {
     return false;
   }
@@ -159,9 +215,16 @@ export function isInQuietHours(
   const end = toMinutes(settings.quietHoursEnd);
   if (start === null || end === null) return false;
 
-  const cur = now.getHours() * 60 + now.getMinutes();
   if (start === end) return false; // zero-length window
   return start < end
     ? cur >= start && cur < end // same-day window
     : cur >= start || cur < end; // wraps past midnight
+}
+
+/**
+ * Whether the notification payload should include message content in the
+ * preview. Defaults to true when the setting is absent.
+ */
+export function shouldShowPreview(settings: NotificationSettings): boolean {
+  return settings.showPreview !== false;
 }
