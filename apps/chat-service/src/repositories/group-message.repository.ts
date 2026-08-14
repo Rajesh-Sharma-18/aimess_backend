@@ -4,6 +4,7 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import type { GroupRoomRepository } from "./group-room.repository.js";
 import {
   buildTextSearchPipeline,
@@ -325,6 +326,26 @@ export class GroupMessageRepository {
       select: { id: true },
     });
     return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * Of `ids`, the ones `userId` has hidden with delete-for-me. Filtered in
+   * memory (same as every other `deletedForUserIds` read path in this repo);
+   * `ids` is a single page, so the read stays bounded.
+   */
+  async findHiddenIdsForUser(
+    roomId: string,
+    ids: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (ids.length === 0 || !userId) return new Set();
+    const rows = await this.prisma.groupMessage.findMany({
+      where: { roomId, id: { in: ids } },
+      select: { id: true, deletedForUserIds: true },
+    });
+    return new Set(
+      rows.filter((r) => isHiddenForUser(r, userId)).map((r) => r.id)
+    );
   }
 
   async findAfterSeq(

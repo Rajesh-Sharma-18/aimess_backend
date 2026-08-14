@@ -35,10 +35,14 @@ function buildOrchestrator() {
   const privatePinService = {
     pin: jest.fn(),
     unpin: jest.fn(),
+    unpinDeletedMessage: jest.fn().mockResolvedValue(null),
+    findActivePinRoomId: jest.fn().mockResolvedValue(null),
   };
   const groupPinService = {
     pin: jest.fn(),
     unpin: jest.fn(),
+    unpinDeletedMessage: jest.fn().mockResolvedValue(null),
+    findActivePinRoomId: jest.fn().mockResolvedValue(null),
   };
 
   const orchestrator = new ChatMessageOrchestrator(
@@ -131,6 +135,105 @@ describe("ChatMessageOrchestrator.deleteDirect", () => {
       `conv:${ROOM_ID}`,
       expect.stringContaining("message:delete")
     );
+  });
+
+  // The pin hook is fire-and-forget inside deleteDirect — let its microtasks drain.
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("forEveryone on a PINNED message unpins it for EVERYONE (conv:<roomId>)", async () => {
+    const { orchestrator, privateMessageService, privatePinService, redis } =
+      buildOrchestrator();
+    privateMessageService.deleteForEveryone.mockResolvedValue({
+      id: MSG_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 5,
+      createdAt: new Date(),
+    });
+    privatePinService.unpinDeletedMessage.mockResolvedValue({
+      roomId: ROOM_ID,
+      pinnedCount: 0,
+    });
+
+    await orchestrator.deleteDirect({
+      conversationType: "PRIVATE",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+      scope: "forEveryone",
+    });
+    await settle();
+
+    expect(privatePinService.unpinDeletedMessage).toHaveBeenCalledWith(
+      MSG_ID,
+      USER_ID
+    );
+    const pinPublish = redis.publish.mock.calls.find((c: unknown[]) =>
+      String(c[1]).includes("pin:updated")
+    );
+    expect(pinPublish?.[0]).toBe(`conv:${ROOM_ID}`);
+    expect(JSON.parse(String(pinPublish?.[1])).data).toMatchObject({
+      messageId: MSG_ID,
+      action: "unpinned",
+      pinnedCount: 0,
+    });
+  });
+
+  it("forMe on a PINNED message unpins for the ACTOR ONLY (user:<id>), leaving the pin row intact", async () => {
+    const { orchestrator, groupMessageService, groupPinService, redis } =
+      buildOrchestrator();
+    groupMessageService.deleteForMe.mockResolvedValue({
+      id: MSG_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 5,
+      createdAt: new Date(),
+    });
+    groupPinService.findActivePinRoomId.mockResolvedValue(ROOM_ID);
+
+    await orchestrator.deleteDirect({
+      conversationType: "GROUP",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+      scope: "forMe",
+    });
+    await settle();
+
+    // The pin row itself must NOT be touched — every other member keeps it.
+    expect(groupPinService.unpinDeletedMessage).not.toHaveBeenCalled();
+    const pinPublish = redis.publish.mock.calls.find((c: unknown[]) =>
+      String(c[1]).includes("pin:updated")
+    );
+    // Actor's own channel only — never conv:<roomId>, which is every member.
+    expect(pinPublish?.[0]).toBe(`user:${USER_ID}`);
+    expect(JSON.parse(String(pinPublish?.[1])).data).toMatchObject({
+      messageId: MSG_ID,
+      action: "unpinned",
+    });
+  });
+
+  it("publishes no pin event when the deleted message was not pinned", async () => {
+    const { orchestrator, privateMessageService, redis } = buildOrchestrator();
+    privateMessageService.deleteForEveryone.mockResolvedValue({
+      id: MSG_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 5,
+      createdAt: new Date(),
+    });
+
+    await orchestrator.deleteDirect({
+      conversationType: "PRIVATE",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+      scope: "forEveryone",
+    });
+    await settle();
+
+    expect(
+      redis.publish.mock.calls.filter((c: unknown[]) =>
+        String(c[1]).includes("pin:updated")
+      )
+    ).toHaveLength(0);
   });
 
   it("throws NotFoundError when the underlying service returns null", async () => {

@@ -4,7 +4,6 @@ import type { Redis, Cluster } from "ioredis";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { NotFoundError } from "@aimess/errors";
-import { logger } from "@aimess/logger";
 
 import {
   buildPaginatedResponse,
@@ -16,6 +15,7 @@ import {
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
+import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
 import {
   autoDeleteWireFields,
   buildChatMessageEvent,
@@ -491,34 +491,18 @@ export class GroupMessageController {
       );
     }
 
-    // When deleted for everyone, check if the message was actively pinned.
-    // If so: mark the pin unavailable and emit pin:updated so the banner reflects it live.
-    if (result?.roomId && scope === "forEveryone") {
-      const rId = result.roomId;
-      void this.pinService
-        .handleMessageDeleted(messageId)
-        .then((affectedPin) => {
-          if (!affectedPin) return;
-          return this.redis.publish(
-            `conv:${rId}`,
-            JSON.stringify({
-              event: "pin:updated",
-              data: {
-                roomId: rId,
-                conversationId: rId,
-                messageId,
-                action: "pinned",
-                pinnedCount: null,
-                pin: { ...affectedPin, isAvailable: false },
-              },
-            })
-          );
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `deleteMessage|pin hook failed messageId=${messageId}: ${String(err)}`
-          );
-        });
+    // Keep pin state consistent with the delete: forEveryone unpins for the
+    // whole room, forMe only for the deleting user. See lib/pin-after-delete.
+    if (result?.roomId) {
+      void unpinAfterDelete({
+        redis: this.redis,
+        pinService: this.pinService,
+        kind: "DIRECT",
+        roomId: result.roomId,
+        messageId,
+        userId,
+        scope,
+      });
     }
 
     // delete-for-everyone: recalc the SHARED snapshot and bump every member's

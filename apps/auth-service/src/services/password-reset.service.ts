@@ -91,6 +91,16 @@ export const passwordResetService = {
       ttlSeconds: env.OTP_TTL_SECONDS,
       requestedAt: new Date().toISOString(),
     });
+
+    // Recorded only past the existence + eligibility checks above, so the row
+    // always means "a reset was really started for this account". The OTP itself
+    // never leaves this function.
+    publishAdminActivitySafe({
+      actorId: user.id,
+      action: USER_AUDIT_ACTIONS.USER_PASSWORD_RESET_REQUESTED,
+      targetType: "user",
+      targetId: user.id,
+    });
   },
 
   async verifyOtp(

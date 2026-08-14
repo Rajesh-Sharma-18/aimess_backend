@@ -24,6 +24,7 @@
     "@aimess/errors": "workspace:*",
     "@aimess/grpc-utils": "workspace:*",
     "@aimess/logger": "workspace:*",
+    "@aimess/messaging": "workspace:*",
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",
     "@aimess/storage": "workspace:*",

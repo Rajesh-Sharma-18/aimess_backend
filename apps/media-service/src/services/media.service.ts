@@ -15,6 +15,10 @@ import {
   ServiceUnavailableError,
   UnsupportedMediaTypeError,
 } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import {
   presignClient,
@@ -467,6 +471,16 @@ export const mediaService = {
       await mediaFileRepository
         .setUsage(params.objectKey, "DELETED")
         .catch(() => undefined);
+
+      // Only inside `deleted` — a failed storage delete must not be audited as
+      // a destroyed object.
+      publishAdminActivitySafe({
+        actorId: params.requesterId,
+        action: USER_AUDIT_ACTIONS.MEDIA_DELETED,
+        targetType: "media",
+        targetId: params.objectKey,
+        after: { category: params.category, reason: "upload_cancelled" },
+      });
     }
   },
 

@@ -55,6 +55,7 @@ import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { PresenceService } from "./presence.service.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
+import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 
@@ -1047,6 +1048,25 @@ export class ChatMessageOrchestrator {
         `conv:${result.roomId}`,
         JSON.stringify({ event: "message:delete", data: tombstone })
       );
+    }
+
+    // Keep pin state consistent with the delete — the same hook the REST delete
+    // controllers run, so the socket/gRPC path can't leave a pin behind that
+    // REST would have cleared. forEveryone unpins for the whole room, forMe
+    // only for the deleting user. See lib/pin-after-delete.
+    if (result.roomId) {
+      void unpinAfterDelete({
+        redis: this.redis,
+        pinService:
+          conversationType === "GROUP"
+            ? this.groupPinService
+            : this.privatePinService,
+        kind: "DIRECT",
+        roomId: result.roomId,
+        messageId: params.messageId,
+        userId: params.userId,
+        scope: params.scope,
+      });
     }
 
     if (params.scope === "forEveryone" && result.roomId) {

@@ -360,24 +360,8 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_JOINED: {
       const p = data as CommunityMemberJoinedPayload;
-      await pushToUser({
-        userId: p.userId,
-        copy: communityCopy.memberJoined(p.communityName),
-        ...base(
-          type,
-          p.communityId,
-          p.userId,
-          {
-            communityName: p.communityName,
-            communityHandle: p.communityHandle,
-            communityAvatarUrl: p.communityAvatarUrl ?? "",
-          },
-          buildDeepLink("community", p.communityId),
-          "communityEnabled",
-          { screen: "COMMUNITY_DETAILS" },
-          generateEventThreadId(type)
-        ),
-      });
+      // No push — the user joined deliberately on this device; they already
+      // see the result. Only sync the socket state.
       // Real-time UI flip: "Join" button → "Joined" without a page refresh.
       await publishUserSocketEvent(redis, p.userId, "community:joined", {
         communityId: p.communityId,

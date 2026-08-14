@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { auditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 
 import { createMediaRoutes } from "./api/routes/media.routes.js";
@@ -24,6 +25,10 @@ export function createApp(): Express {
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
   app.use(localeMiddleware);
+  // Establishes the ambient audit context (client source + IP + user-agent) for
+  // every request below it, so audit rows written deep in a service know where
+  // the action came from without threading a parameter through each call site.
+  app.use(auditContextMiddleware);
 
   app.use("/", createHealthRoutes());
   app.use("/api/v1/media", createMediaRoutes());

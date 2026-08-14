@@ -683,7 +683,11 @@ export class LivestreamService {
    */
   private async finalizeAsEnded(
     stream: Livestream,
-    reason = "HOST_ENDED"
+    reason = "HOST_ENDED",
+    // Set by the platform-admin force-end, where backoffice-service already
+    // audited `livestream.ended` against the admin who ordered it. Mirroring
+    // here as well would land two rows for one force-end.
+    skipAdminActivity = false
   ): Promise<Livestream> {
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
@@ -707,20 +711,22 @@ export class LivestreamService {
     // timeout or a reconnect timeout is the platform ending someone else's stream, and
     // attributing those to the broadcaster misreads the trail.
     const hostEnded = reason === "HOST_ENDED";
-    publishAdminActivitySafe({
-      actorId: hostEnded ? updated.creatorId : null,
-      actorType: hostEnded ? "USER" : "SYSTEM",
-      action: USER_AUDIT_ACTIONS.STREAM_ENDED,
-      targetType: "stream",
-      targetId: updated.id,
-      after: {
-        communityId: updated.communityId,
-        creatorId: updated.creatorId,
-        durationSeconds: computeDurationSeconds(updated),
-        peakViewers: updated.peakViewers,
-        reason,
-      },
-    });
+    if (!skipAdminActivity) {
+      publishAdminActivitySafe({
+        actorId: hostEnded ? updated.creatorId : null,
+        actorType: hostEnded ? "USER" : "SYSTEM",
+        action: USER_AUDIT_ACTIONS.STREAM_ENDED,
+        targetType: "stream",
+        targetId: updated.id,
+        after: {
+          communityId: updated.communityId,
+          creatorId: updated.creatorId,
+          durationSeconds: computeDurationSeconds(updated),
+          peakViewers: updated.peakViewers,
+          reason,
+        },
+      });
+    }
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -894,7 +900,7 @@ export class LivestreamService {
 
     // The reason was accepted and then dropped, so a force-end was indistinguishable
     // from the host ending their own broadcast in every downstream event.
-    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED");
+    await this.finalizeAsEnded(stream, reason || "ADMIN_FORCE_ENDED", true);
 
     return { success: true, status: "ENDED" };
   }

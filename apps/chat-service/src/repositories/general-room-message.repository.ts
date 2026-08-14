@@ -22,6 +22,7 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import {
   buildSearchCursor,
   buildTextSearchPipeline,
@@ -250,6 +251,26 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.findUnique({
       where: { id: messageId },
     });
+  }
+
+  /**
+   * Of `ids`, the ones `userId` has hidden with delete-for-me (`deletedBy`, the
+   * per-user Json array — NOT `deletedForAllBy`). Filtered in memory, same as
+   * the other per-user read paths; `ids` is a single page, so it stays bounded.
+   */
+  async findHiddenIdsForUser(
+    roomId: string,
+    ids: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (ids.length === 0 || !userId) return new Set();
+    const rows = await this.prisma.generalRoomMessage.findMany({
+      where: { roomId, id: { in: ids } },
+      select: { id: true, deletedBy: true },
+    });
+    return new Set(
+      rows.filter((r) => isHiddenForUser(r, userId)).map((r) => r.id)
+    );
   }
 
   /**

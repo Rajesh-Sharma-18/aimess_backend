@@ -26,7 +26,21 @@ export const listAuditLogsQuerySchema = z.object({
   // Action names are free-form domain strings (e.g. "user.banned"); filter by
   // one or many. Bound the length so a rogue query can't blow up the IN clause.
   action: repeatableString(z.string().trim().min(1).max(100)),
-  // Which side performed it: ADMIN (admin panel), USER (website), SYSTEM (platform job).
+  // One of the five mandatory audit categories. Server-side allowlist.
+  category: repeatableString(
+    z.enum([
+      "MODERATOR_MANAGEMENT",
+      "ADMIN_MANAGEMENT",
+      "USER_MANAGEMENT",
+      "CONTENT_MANAGEMENT",
+      "AUTH_SECURITY",
+    ])
+  ),
+  // Which client it came from — the Source column. Server-side allowlist.
+  source: repeatableString(
+    z.enum(["ADMIN_PANEL", "WEB", "ANDROID", "IOS", "SYSTEM"])
+  ),
+  // Who performed it: ADMIN (an admin account), USER (an end user), SYSTEM (platform job).
   actorType: repeatableString(z.enum(["ADMIN", "USER", "SYSTEM"])),
   sort: z
     .string()

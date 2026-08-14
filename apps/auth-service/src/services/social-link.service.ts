@@ -1,4 +1,8 @@
 import { BadRequestError, ConflictError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import type {
   LinkAppleInput,
@@ -120,6 +124,17 @@ async function linkProvider(
     provider
   );
 
+  // A new way into the account — recorded past every guard and the insert, so a
+  // rejected or racing link leaves no row. The provider id is deliberately not
+  // stored: the fact of the link is the security signal, the credential is not.
+  publishAdminActivitySafe({
+    actorId: userId,
+    action: USER_AUDIT_ACTIONS.USER_SOCIAL_ACCOUNT_LINKED,
+    targetType: "user",
+    targetId: userId,
+    after: { provider: socialProvider, primaryAccount },
+  });
+
   return { provider: socialProvider, primaryAccount };
 }
 
@@ -145,6 +160,14 @@ async function unlinkProvider(
   }
 
   await linkedAccountRepository.deleteByUserIdAndProvider(userId, provider);
+
+  publishAdminActivitySafe({
+    actorId: userId,
+    action: USER_AUDIT_ACTIONS.USER_SOCIAL_ACCOUNT_UNLINKED,
+    targetType: "user",
+    targetId: userId,
+    after: { provider: socialProvider },
+  });
 
   return { provider: socialProvider };
 }

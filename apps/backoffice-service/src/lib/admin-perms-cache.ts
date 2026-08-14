@@ -1,6 +1,7 @@
 import { redis } from "../config/redis.js";
 import type { RoleKey } from "../generated/prisma/client.js";
 import { rbacService } from "../services/rbac.service.js";
+import { invalidateAuditLogReaders } from "./audit-realtime.js";
 
 const ADMIN_PERMS_PREFIX = "aimess:admin:perms:";
 const ADMIN_PERMS_TTL_SECONDS = 60;
@@ -53,4 +54,7 @@ export async function invalidateAdminPermissions(
   } catch {
     // Stale for at most ADMIN_PERMS_TTL_SECONDS.
   }
+  // The audit-log live feed fans out to "every admin holding auditlogs.read",
+  // a set this edit may just have changed.
+  await invalidateAuditLogReaders();
 }

@@ -607,6 +607,9 @@ importers:
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/messaging":
+        specifier: workspace:*
+        version: link:../../packages/messaging
       "@aimess/redis":
         specifier: workspace:*
         version: link:../../packages/redis
@@ -1016,6 +1019,9 @@ importers:
 
   packages/messaging:
     dependencies:
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../constants
       "@aimess/logger":
         specifier: workspace:*
         version: link:../logger

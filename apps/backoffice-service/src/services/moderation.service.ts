@@ -434,6 +434,28 @@ export const moderationService = {
       userAgent: ctx.userAgent,
     });
 
+    // A sanction on the reported user is a second, separate fact from the
+    // decision itself — and the one a later appeal actually asks about. Only
+    // recorded when one was chosen, so a plain resolution stays a single row.
+    if (input.actionOnReportedUser && input.actionOnReportedUser !== "NONE") {
+      await auditService.record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.REPORT_ACTIONED,
+        targetType: "user",
+        // The sanctioned party, not the report — a COMMUNITY/MESSAGE report still
+        // punishes a person, and that person is who this row is about.
+        targetId: before?.reportedUser?.id ?? before?.target.id ?? null,
+        after: {
+          reportId,
+          action: input.actionOnReportedUser,
+          resolution: result.resolution,
+          note: input.note ?? null,
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+    }
+
     return result;
   },
 
