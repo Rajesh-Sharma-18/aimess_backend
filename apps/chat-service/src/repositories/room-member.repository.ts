@@ -74,14 +74,14 @@ export class RoomMemberRepository {
    * pointer is moved only when `messageCreatedAt` is newer than the stored
    * `lastReadAt` (never regresses). No-op if the member has no VISIBLE row.
    *
-   * ACTIVE rows only. A BANNED member's read state is FROZEN: "Mark as Read" is
-   * one of the two community-list actions a ban revokes (the other is mute —
-   * only "Delete Conversation" survives), so their pointer must not move from
-   * any path — the community-list menu, the transcript auto-advance on open, the
-   * per-message receipt, or a hand-rolled API call. A ban still leaves history
-   * up to `bannedAt` READABLE (see {@link assertCommunityReadAccess}); what it
-   * takes away is the ability to acknowledge it. This is the single choke point
-   * for that rule — every read-pointer write in community chat routes here.
+   * ACTIVE **and BANNED** rows both qualify. A ban is a read CUTOFF, not a
+   * read-state freeze: the banned member still opens the community to re-read
+   * the history they had before `bannedAt`, and that has to clear their unread
+   * badge exactly like it does for anyone else — otherwise the badge is stuck
+   * forever with no way to dismiss it. Nothing created after the ban is
+   * readable (see {@link assertCommunityReadAccess}), so the pointer can only
+   * ever advance to at most their cutoff. This is the single choke point for
+   * that rule — every read-pointer write in community chat routes here.
    */
   async advanceReadPointer(
     roomId: string,
@@ -90,7 +90,7 @@ export class RoomMemberRepository {
     messageCreatedAt: Date
   ): Promise<RoomMember | null> {
     const existing = await this.prisma.roomMember.findFirst({
-      where: { roomId, userId, status: "active" },
+      where: { roomId, userId, status: { in: ["active", "banned"] } },
     });
     if (!existing) return null;
 
@@ -113,10 +113,10 @@ export class RoomMemberRepository {
    * across many rooms. The caller may pass the boundary so the same instant can
    * be reused for the post-write unread recount and the read_sync payload.
    *
-   * ACTIVE rows only, for the same reason as {@link advanceReadPointer}: a
-   * banned member may not mark read, so "Mark as Read" over a list that
-   * contains a banned community skips exactly that row and reports it in the
-   * count (the caller returns `updatedCount`, so a single banned id yields 0).
+   * ACTIVE **and BANNED** rows both qualify, for the same reason as
+   * {@link advanceReadPointer}: a banned community stays in the caller's list
+   * carrying an unread badge, so "Mark all as read" has to be able to clear it
+   * too — otherwise it is the one row in the list the action silently skips.
    */
   async bulkAdvanceReadToNow(
     userId: string,
@@ -127,7 +127,7 @@ export class RoomMemberRepository {
     const result = await this.prisma.roomMember.updateMany({
       where: {
         userId,
-        status: "active",
+        status: { in: ["active", "banned"] },
         roomId: { in: roomIds },
       },
       data: { lastReadAt: readAt },

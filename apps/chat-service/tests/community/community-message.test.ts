@@ -811,7 +811,7 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("BANNED (non-active) member: 200, page capped at bannedAt — and the read pointer stays FROZEN", async () => {
+  it("BANNED (non-active) member: 200, page capped at bannedAt — and the read pointer still advances so their badge clears", async () => {
     const bannedAt = new Date(5);
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "banned",
@@ -843,12 +843,16 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({ beforeMs: bannedAt.getTime() })
     );
-    // ...but a ban DOES freeze their read STATE. Mark as Read is one of the two
-    // community-list actions a ban revokes (the other is Mute Notifications;
-    // only Delete Conversation survives), and that has to hold for the implicit
-    // advance on opening the transcript too — otherwise the action the menu
-    // disables happens anyway just by opening the room.
-    expect(mocks.roomMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
+    // A ban freezes what they can READ, not their read STATE: the pointer
+    // advances to the newest row in this already-capped page, so opening the
+    // room clears their unread badge without ever acknowledging a post-ban
+    // message. Without this the badge was stuck with no way to dismiss it.
+    expect(mocks.roomMemberRepo.advanceReadPointer).toHaveBeenCalledWith(
+      ROOM,
+      expect.any(String),
+      "m1",
+      new Date(5)
+    );
   });
 });
 

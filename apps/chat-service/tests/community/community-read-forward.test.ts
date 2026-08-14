@@ -10,10 +10,10 @@
  *
  * Coverage goals:
  *   markMessageRead     — happy path, membership-not-found throws, redis published,
- *                         banned reader rejected with USER_BANNED (no write, no publish)
+ *                         banned reader clears their own badge without broadcasting
  *   getMessageReactions — happy path, returns grouped reactions, non-member throws
  *   forwardMessage      — happy path, delegates to sendMessage, deleted source throws
- *   read pointer        — RoomMemberRepository is ACTIVE-only (suite 4)
+ *   read pointer        — RoomMemberRepository accepts BANNED rows (suite 4)
  */
 
 // ---------------------------------------------------------------------------
@@ -337,10 +337,11 @@ describe("CommunityMessageService.markMessageRead", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  // Community-list menu rule: a ban leaves ONLY "Delete Conversation". "Mark as
-  // Read" is revoked on the API too, so the socket/REST receipt must reject
-  // rather than silently no-op — and nothing may be published either way.
-  it("rejects a BANNED reader with USER_BANNED and writes/publishes nothing", async () => {
+  // A ban is a read CUTOFF, not a read-state freeze: the banned member still
+  // acknowledges the history they can see so their badge clears when they open
+  // the room. What the ban DOES revoke is the room broadcast — they must not
+  // surface as a live reader to the community they were banned from.
+  it("banned reader still advances their pointer, but publishes ONLY read_sync (no community broadcast)", async () => {
     const { service, memberRepo } = buildService({
       memberRepo: {
         findByRoomAndUser: jest.fn().mockResolvedValue({
@@ -358,20 +359,28 @@ describe("CommunityMessageService.markMessageRead", () => {
       },
     });
 
-    await expect(
-      service.markMessageRead({
-        communityId: COMMUNITY_ID,
-        roomId: ROOM_ID,
-        readerId: READER_ID,
-        upToMessageId: MESSAGE_ID,
-      })
-    ).rejects.toMatchObject({ messageKey: "USER_BANNED", statusCode: 403 });
+    const result = await service.markMessageRead({
+      communityId: COMMUNITY_ID,
+      roomId: ROOM_ID,
+      readerId: READER_ID,
+      upToMessageId: MESSAGE_ID,
+    });
 
-    expect(memberRepo.advanceReadPointer).not.toHaveBeenCalled();
-    expect(redisMock.publish).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(memberRepo.advanceReadPointer).toHaveBeenCalledWith(
+      ROOM_ID,
+      READER_ID,
+      MESSAGE_ID,
+      expect.any(Date)
+    );
+    const channels = redisMock.publish.mock.calls.map(
+      ([channel]: [string]) => channel
+    );
+    expect(channels).toContain(`user:${READER_ID}`);
+    expect(channels).not.toContain(`community:${COMMUNITY_ID}`);
   });
 
-  it("throws ForbiddenError when the reader LEFT — only active rows own a read pointer", async () => {
+  it("throws ForbiddenError when the reader LEFT — only active and banned rows own a read pointer", async () => {
     const { service } = buildService({
       memberRepo: {
         findByRoomAndUser: jest.fn().mockResolvedValue({ status: "left" }),
@@ -896,40 +905,49 @@ describe("CommunityMessageService.forwardMessage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 4 — RoomMemberRepository read-pointer queries: a BANNED row's read
-// state is FROZEN.
+// Suite 4 — RoomMemberRepository read-pointer queries: a BANNED row still owns
+// a read pointer.
 //
-// Community-list menu rule: a banned member may only "Delete Conversation".
-// "Mark as Read" is revoked, and these two queries are the single choke point
-// every community read-pointer write funnels through — the list menu, the
-// transcript auto-advance on open, and the per-message receipt — so filtering
-// on `status: "active"` here enforces the rule for a direct API call too. A ban
-// still leaves history up to `bannedAt` READABLE; it only removes the ability
-// to acknowledge it.
+// A ban is a read CUTOFF, not a read-state freeze. Both write paths used to
+// filter on `status: "active"`, which left a banned member's badge stuck:
+// opening the room could not clear it (advanceReadPointer matched nothing) and
+// neither could "Mark all as read" from the community list (bulkAdvanceReadToNow
+// skipped the row). Nothing created after `bannedAt` is readable, so widening
+// these two queries cannot mark a post-ban message read.
 // ---------------------------------------------------------------------------
 
-describe("RoomMemberRepository — a banned row's read pointer is frozen", () => {
-  it("advanceReadPointer looks up ACTIVE rows only, so a banned row never advances", async () => {
-    const findFirst = jest.fn().mockResolvedValue(null);
-    const update = jest.fn();
+const VISIBLE_STATUSES = { in: ["active", "banned"] };
+
+describe("RoomMemberRepository — banned rows own a read pointer", () => {
+  it("advanceReadPointer looks up active AND banned rows, and advances a banned one", async () => {
+    const banned = {
+      roomId: ROOM_ID,
+      userId: READER_ID,
+      status: "banned",
+      lastReadAt: new Date("2026-07-01T00:00:00.000Z"),
+    };
+    const findFirst = jest.fn().mockResolvedValue(banned);
+    const update = jest.fn().mockResolvedValue(banned);
     const repo = new RoomMemberRepository({
       roomMember: { findFirst, update },
     } as never);
 
     const readAt = new Date("2026-07-15T00:00:00.000Z");
-    await expect(
-      repo.advanceReadPointer(ROOM_ID, READER_ID, MESSAGE_ID, readAt)
-    ).resolves.toBeNull();
+    await repo.advanceReadPointer(ROOM_ID, READER_ID, MESSAGE_ID, readAt);
 
-    expect(findFirst.mock.calls[0][0].where.status).toBe("active");
-    expect(update).not.toHaveBeenCalled();
+    expect(findFirst.mock.calls[0][0].where.status).toEqual(VISIBLE_STATUSES);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { lastReadMessageId: MESSAGE_ID, lastReadAt: readAt },
+      })
+    );
   });
 
-  it("advanceReadPointer still advances an ACTIVE row, forward-only", async () => {
+  it("advanceReadPointer stays forward-only for a banned row", async () => {
     const active = {
       roomId: ROOM_ID,
       userId: READER_ID,
-      status: "active",
+      status: "banned",
       lastReadAt: new Date("2026-07-01T00:00:00.000Z"),
     };
     const findFirst = jest.fn().mockResolvedValue(active);
@@ -949,7 +967,7 @@ describe("RoomMemberRepository — a banned row's read pointer is frozen", () =>
     // Older than the stored pointer → no write.
     update.mockClear();
     findFirst.mockResolvedValue({
-      status: "active",
+      status: "banned",
       lastReadAt: new Date("2026-07-20T00:00:00.000Z"),
     });
     await repo.advanceReadPointer(
@@ -961,7 +979,7 @@ describe("RoomMemberRepository — a banned row's read pointer is frozen", () =>
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("bulkAdvanceReadToNow (Mark as Read) skips banned rows", async () => {
+  it("bulkAdvanceReadToNow (Mark all as read) includes banned rows", async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 2 });
     const repo = new RoomMemberRepository({
       roomMember: { updateMany },
@@ -975,7 +993,7 @@ describe("RoomMemberRepository — a banned row's read pointer is frozen", () =>
     expect(updateMany).toHaveBeenCalledWith({
       where: {
         userId: READER_ID,
-        status: "active",
+        status: VISIBLE_STATUSES,
         roomId: { in: [ROOM_ID, TARGET_ROOM_ID] },
       },
       data: { lastReadAt: readAt },

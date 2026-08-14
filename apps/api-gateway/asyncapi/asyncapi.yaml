@@ -1452,13 +1452,13 @@ operations:
       2. Emits `community:read_sync` to the reader's own `user:<readerId>` room (multi-device HWM).
       Ack `data` on success is `{}`.
 
-      Requires an ACTIVE membership. A BANNED member is rejected with
-      `USER_BANNED` (left/removed/non-member → `CHAT_NOT_A_MEMBER`), and no
-      pointer is advanced and nothing is broadcast. Mark as Read is one of the
-      two community-list actions a ban revokes (the other is Mute
-      Notifications); only Delete Conversation stays available. A ban still
-      leaves history up to `bannedAt` readable — it only removes the ability to
-      acknowledge it.
+      Requires a membership row; left/removed/non-member → `CHAT_NOT_A_MEMBER`.
+      A BANNED member is NOT rejected: a ban is a read CUTOFF, not a read-state
+      freeze, so they may acknowledge the history they can still see (up to
+      `bannedAt`) and clear their own badge — otherwise the badge sticks with no
+      way to dismiss it. Their pointer advances and `community:read_sync` still
+      reaches their own devices, but step 1 is SKIPPED for them: a banned reader
+      must not surface as a live reader to the community they were banned from.
     messages: [{ $ref: "#/channels/community/messages/communityMessageRead" }]
     reply:
       channel: { $ref: "#/channels/community" }

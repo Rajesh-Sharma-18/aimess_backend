@@ -4639,7 +4639,7 @@ export const communityPaths = {
       operationId: "bulkMarkCommunityChatsRead",
       summary: "Bulk mark community chats as read",
       description:
-        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's ACTIVE room-member rows in chat-service. Communities not joined, where chat is not enabled, or where the caller is **BANNED** are silently skipped — `updatedCount` reflects only rows actually updated, so a request naming a single banned community returns `0`. Mark as Read is one of the two community-list actions a ban revokes (the other is Mute Notifications); only *Delete Conversation* (`DELETE /communities/{id}/me`) stays available to a banned member.",
+        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped — `updatedCount` reflects only rows actually updated. A community the caller is **BANNED** from is NOT skipped: it stays in their list carrying an unread badge, so *Mark all as read* has to be able to clear it too. (Mute Notifications remains revoked by a ban; *Delete Conversation* and *Mark as Read* both stay available.)",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {

@@ -239,7 +239,9 @@ function conversationPath(tag: string, summary: string) {
       tags: [tag],
       summary,
       description:
-        "Offset-paginated message history, newest-first, returning messages with `createdAt < timestamp` (defaults to now). Side effect: advances the caller's read pointer, marking the room read up to the newest returned message.",
+        "Offset-paginated message history, newest-first, returning messages with `createdAt < timestamp` (defaults to now). Side effect: advances the caller's read pointer, marking the room read up to the newest returned message. " +
+        "For a BANNED community member the page is capped at their ban timestamp and the pointer advances within that cap, so opening the room clears their unread badge without ever acknowledging a post-ban message. " +
+        "A PUBLIC-community non-member holds no membership row and so has no read pointer to advance.",
       security: [{ bearerAuth: [] }],
       parameters: [
         roomIdPathParam,
@@ -2082,8 +2084,9 @@ const communityMessages = {
       "but anything created after the ban is never returned, even on rejoin/resync. This applies in both PUBLIC and PRIVATE " +
       "communities and replaces the previous behavior where a banned member was rejected outright.\n\n" +
       "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community', " +
-      "MEMBER_BANNED 'You were banned from this community.', MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
-      "— other members never see them in this history, even in PUBLIC communities.\n\n" +
+      "MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
+      "— other members never see them in this history, even in PUBLIC communities. MEMBER_BANNED is NOT among them: it is " +
+      "hidden from everyone including the banned user, whose sticky banned banner (driven by `isBanned`) already states it.\n\n" +
       "**Scroll / history mode** (`before_seq`, `before_ts`, or neither):\n" +
       "- `before_seq` → messages with `sequenceNumber < before_seq`, newest-first. **Preferred**: gap-safe, the same " +
       "axis private/group page on, and it takes precedence over the `*_ts` params. Walk forward with `after_seq`.\n" +

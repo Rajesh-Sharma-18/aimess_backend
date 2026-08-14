@@ -21,7 +21,10 @@ import { CommunitySystemMessageService } from "../../src/services/community-syst
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
 import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
-import { PERSONAL_JOIN_SESSION_TYPES } from "@aimess/constants";
+import {
+  HIDDEN_SYSTEM_MESSAGE_TYPES,
+  PERSONAL_JOIN_SESSION_TYPES,
+} from "@aimess/constants";
 
 /** Role authorization for CommunityPinService.pin/unpin is sourced LIVE from
  *  community-service, not RoomMember.role — see access-guard.ts
@@ -423,24 +426,26 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Suppressed moderation lines (removed) are hidden from EVERYONE — including
-  // active members. MEMBER_BANNED is now PERSONAL (Telegram parity: the banned
-  // user themselves gets a private "You were banned…" line); a viewer who
-  // ISN'T the target still never sees it.
+  // Suppressed moderation lines (removed, banned) are hidden from EVERYONE —
+  // including active members and, for MEMBER_BANNED, the banned target
+  // themselves: their client already pins a sticky banned banner, so a bubble
+  // saying the same thing was a duplicate. Legacy rows persisted before the
+  // policy change are hidden by this same read filter.
   // -------------------------------------------------------------------------
-  it("hides the SILENT moderation/lifecycle lines (left/joined/removed); shows MEMBER_BANNED only to its target; unbanned stays visible — Telegram parity", async () => {
+  it("hides the SILENT moderation/lifecycle lines (left/joined/removed/banned) from everyone including the ban target; unbanned stays visible — Telegram parity", async () => {
     const rows = [
       // Hidden: removal must be SILENT from the chat-message perspective —
       // the affected user learns via `community:membership:removed` instead.
       { id: "removed", deletedBy: [], systemMessageType: "MEMBER_REMOVED" },
-      // PERSONAL: visible to its target (this viewer), not to anyone else.
+      // Hidden even from its own target — a legacy row from before MEMBER_BANNED
+      // joined HIDDEN_SYSTEM_MESSAGE_TYPES.
       {
         id: "banned",
         deletedBy: [],
         systemMessageType: "MEMBER_BANNED",
         visibleToUserId: USER_ID,
       },
-      // PERSONAL, but targeted at someone else — never visible to this viewer.
+      // Hidden, and targeted at someone else on top of that.
       {
         id: "banned-other",
         deletedBy: [],
@@ -476,21 +481,16 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       viewerIsActiveMember: true,
     });
 
-    // left + joined + removed + the other user's ban line dropped; this
-    // viewer's own ban line + unbanned + role change + message survive.
-    expect(messages.map((m) => m.id)).toEqual([
-      "banned",
-      "unbanned",
-      "rolechg",
-      "msg",
-    ]);
+    // left + joined + removed + BOTH ban lines dropped; unbanned + role change +
+    // message survive.
+    expect(messages.map((m) => m.id)).toEqual(["unbanned", "rolechg", "msg"]);
   });
 
   // -------------------------------------------------------------------------
   // MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL (Telegram parity): only the
   // muted/unmuted member ever sees their own line via history/sync — never
   // other members, moderators, or admins, and never each other's lines. They
-  // persist exactly like any other PERSONAL line (e.g. MEMBER_BANNED) and
+  // persist exactly like any other PERSONAL line (e.g. COMMUNITY_JOINED) and
   // remain available to the affected member after reload/reconnect.
   // -------------------------------------------------------------------------
   it("shows MEMBER_MUTED/MEMBER_UNMUTED only to their own target — never to other members, via the real history/sync read path", async () => {
@@ -657,8 +657,10 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
             ?.$match
       )
       .find((m) => m?.systemMessageType?.$nin);
+    // Compared against the constant, not a hard-coded copy — the policy set is
+    // the single source of truth and this filter must track it.
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"],
+      $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES],
     });
   });
 
@@ -678,7 +680,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       .map((call) => call[0].pipeline[0].$match)
       .find((m) => m?.systemMessageType?.$nin);
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"],
+      $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES],
     });
   });
 
@@ -737,38 +739,28 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
-    // Scoped to this viewer's own PERSONAL rows only — no type-based exclusion
-    // (MEMBER_MUTED/MEMBER_UNMUTED persist like any other PERSONAL line).
+    // Scoped to this viewer's own PERSONAL rows, minus the hidden types only —
+    // MEMBER_MUTED/MEMBER_UNMUTED persist like any other PERSONAL line.
     expect(match.visibleToUserId).toBe(USER_ID);
-    expect(match.systemMessageType).toBeUndefined();
+    expect(match.systemMessageType.$nin).not.toContain("MEMBER_MUTED");
+    expect(match.systemMessageType.$nin).not.toContain("MEMBER_UNMUTED");
   });
 
-  it("findLatestPersonalByRooms surfaces the banned user's own MEMBER_BANNED row — a ban IS the true latest activity visible to them (product decision)", async () => {
-    const aggregateRaw = jest.fn().mockResolvedValue([
-      {
-        _id: { $oid: ROOM_ID },
-        message: "You were banned from this community",
-        createdAt: {},
-      },
-    ]);
+  it("findLatestPersonalByRooms excludes a legacy MEMBER_BANNED row — the list preview may not show what the timeline hides", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([]);
     const prisma = { generalRoomMessage: { aggregateRaw } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
 
-    const map = await repo.findLatestPersonalByRooms({
+    await repo.findLatestPersonalByRooms({
       userId: USER_ID,
       roomIds: [ROOM_ID],
     });
 
-    // No type filter blocks MEMBER_BANNED — it's persisted with
-    // visibleToUserId set (never hidden), so it's eligible like any other
-    // PERSONAL row. unbanMember hard-deletes it (purgeAndTombstone), which is
-    // what stops it from winning here again after unban — not a query-level
-    // exclusion.
+    // This overlay is a PREVIEW of the timeline, so it applies the same
+    // hidden-type exclusion every timeline read path does. Rows persisted before
+    // MEMBER_BANNED became hidden must not keep winning the preview slot.
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
-    expect(match.systemMessageType).toBeUndefined();
-    expect(map.get(ROOM_ID)?.message).toBe(
-      "You were banned from this community"
-    );
+    expect(match.systemMessageType.$nin).toContain("MEMBER_BANNED");
   });
 
   it("bulk unread count excludes ALL system messages (any systemMessageType) via $in:[null]", async () => {
