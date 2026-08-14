@@ -35,7 +35,10 @@ export interface CallPeerSnapshot {
 }
 
 export interface CallAuthorizationDeps {
-  friendshipRepo: Pick<FriendshipRepository, "areFriends">;
+  friendshipRepo: Pick<
+    FriendshipRepository,
+    "areFriends" | "isBlockedEitherWay"
+  >;
   privateRoomRepo: Pick<
     PrivateRoomRepository,
     "findByRoomId" | "findByParticipantsKey"
@@ -96,6 +99,16 @@ export async function assertCanStartCall(
     throw new ForbiddenError("CALLING_DISABLED");
   }
 
+  // Gate 0.5: blocking, in BOTH directions, before every other gate. A block is
+  // stored one-way but bans calling both ways, and it has to be answered from
+  // the Friendship replica rather than only from `room.blockedBy` below: a pair
+  // with no DM room at all has no `blockedBy` list to consult, and this must
+  // also fire ahead of the privacy read so a blocked caller never learns the
+  // callee's `whoCanCallMe` scope.
+  if (await deps.friendshipRepo.isBlockedEitherWay(callerId, calleeId)) {
+    throw new ForbiddenError("CALL_BLOCKED");
+  }
+
   // Gate 1: the target must still be a usable account. A deleted user keeps its
   // Friendship rows (deletion is soft), so without this a call would ring a row
   // that no longer belongs to anybody. Free: this snapshot is needed anyway for
@@ -151,6 +164,9 @@ export async function assertCanStartCall(
   // for a replica that has seen the block but not yet the unfriend. Previously
   // only the caller's own block was checked, so being blocked BY the callee did
   // not stop the call.
+  // A private room has exactly these two participants, so ANY entry in
+  // `blockedBy` names one of them — the id check and a bare `length > 0` are the
+  // same test here; the explicit form documents which direction it covers.
   const blockedBy = Array.isArray(room.blockedBy)
     ? (room.blockedBy as string[])
     : [];
