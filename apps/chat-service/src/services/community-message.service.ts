@@ -2062,8 +2062,8 @@ export class CommunityMessageService {
    * Enforces read access (active member, banned member capped at their ban
    * timestamp, or PUBLIC non-member — see `assertCommunityReadAccess`), fetches
    * the offset page (createdAt < timestamp, newest first), then advances the
-   * caller's read pointer to the newest returned message (forward-only, ACTIVE
-   * members only — a banned member has nothing new to mark read).
+   * caller's read pointer to the newest returned message (forward-only; members
+   * only — ACTIVE or BANNED, never a PUBLIC non-member).
    */
   async getConversation(params: {
     roomId: string;
@@ -2108,8 +2108,10 @@ export class CommunityMessageService {
     // Mark-as-read: advance to the newest message in the page (index 0, since
     // the page is createdAt DESC). Forward-only; skip when the page is empty.
     // Runs on the RAW rows (needs id/createdAt) before we map to the wire shape.
-    // Skipped entirely for a non-active viewer (banned/PUBLIC-non-member) — read
-    // state is a member-only concept.
+    // Skipped for a PUBLIC non-member (read state is a member-only concept) and
+    // for a BANNED member, whose read state is frozen — a ban revokes "Mark as
+    // Read" on every path, including this implicit one (see
+    // `RoomMemberRepository#advanceReadPointer`, which enforces it anyway).
     const newest = messages[0];
     if (newest && isActiveMember(member)) {
       await this.memberRepo
@@ -2905,6 +2907,13 @@ export class CommunityMessageService {
    * `upToMessageId` and publish two Redis events:
    *   1. `community:<communityId>` → `community:message:read`  (room broadcast)
    *   2. `user:<readerId>`         → `community:read_sync`      (own-device sync)
+   *
+   * Requires an ACTIVE membership row. A BANNED member is rejected with
+   * `USER_BANNED`: of the three community-list actions, a ban leaves only
+   * "Delete Conversation" — "Mark as Read" and "Mute Notifications" are revoked,
+   * on the API as well as in the UI, so a hand-rolled call cannot perform what
+   * the menu disables. A ban still leaves pre-ban history readable (see
+   * {@link assertCommunityReadAccess}); it only takes away acknowledging it.
    */
   async markMessageRead(params: {
     communityId: string;
@@ -2912,11 +2921,13 @@ export class CommunityMessageService {
     readerId: string;
     upToMessageId: string;
   }): Promise<{ ok: boolean; communityId: string; readAt: number }> {
-    // Validate active membership.
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
       params.readerId
     );
+    // Banned → USER_BANNED. Left/removed/never-a-member (and PUBLIC non-members,
+    // who hold no row at all) → CHAT_NOT_A_MEMBER. Neither has read state to
+    // advance.
     assertRoomMemberActive(member);
 
     // Fetch the message to get its createdAt (advanceReadPointer is forward-only).

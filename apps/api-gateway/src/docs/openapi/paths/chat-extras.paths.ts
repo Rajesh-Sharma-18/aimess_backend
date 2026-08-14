@@ -575,7 +575,7 @@ const communityMarkRead = {
     operationId: "markCommunityRead",
     summary: "Mark community room read",
     description:
-      "Marks the community room read for the caller. Community read is **coarser** than private/group: it advances the member's read pointer to *now* (read-to-now) rather than to a specific message, and emits **no** socket receipt. The body's `upToMessageId` is accepted for request parity but is not used as a per-message high-water mark.",
+      "Marks the community room read for the caller, advancing the read pointer to `upToMessageId` (forward-only) and emitting `community:message:read` to the room plus `community:read_sync` to the caller's own devices.\n\nRequires an **ACTIVE** membership. A **BANNED** member is rejected with `403 USER_BANNED`: of the three community-list actions, a ban leaves only *Delete Conversation* — *Mark as Read* and *Mute Notifications* are revoked on the API as well as in the UI, so calling this directly cannot do what the menu disables. A ban still leaves history up to `bannedAt` readable; it only removes the ability to acknowledge it. Left/removed/non-members get `403 CHAT_NOT_A_MEMBER`.",
     security: [{ bearerAuth: [] }],
     parameters: [roomIdParam],
     requestBody: markReadRequestBody,

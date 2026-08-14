@@ -4573,6 +4573,142 @@ export const openApiSchemas = {
   AutoDeleteTimer: {
     type: "string",
     enum: ["OFF", "DAYS_7", "DAYS_15", "DAYS_30"],
+    description:
+      "**Legacy.** The account-wide default message timer, in an enum whose values never matched the per-conversation preset list (`DAYS_15` exists nowhere else). Still accepted and still returned; prefer `autoDeleteDefault`, which expresses the same decision in the seconds a room policy actually stores. Writing either keeps both consistent.",
+  },
+  AutoDeleteDefault: {
+    type: "object",
+    description:
+      'Account-wide **"Default message timer for new private chats"**.\n\n' +
+      "Snapshotted into a private room **once**, when that room is created, by whoever opens it. It never rewrites an existing conversation (the room policy is shared with the peer and is theirs to change too), and it never applies to groups — a group timer is an ADMIN/MODERATOR room decision.\n\n" +
+      "`AFTER_VIEWING` is deliberately not offered here: it is an explicit per-conversation choice, not something to make the silent default for every new chat.\n\n" +
+      "`version` is `0` until the user saves this setting once; while it is `0` the legacy `autoDeleteTimer` is what applies.",
+    properties: {
+      mode: { type: "string", enum: ["OFF", "TIMER"] },
+      ttlSeconds: {
+        type: "integer",
+        nullable: true,
+        minimum: 60,
+        maximum: 31536000,
+        example: 604800,
+        description: "Required when `mode` is `TIMER`; null otherwise.",
+      },
+      version: { type: "integer", example: 3 },
+    },
+    required: ["mode", "ttlSeconds", "version"],
+  },
+  AutoDeleteMode: {
+    type: "string",
+    enum: ["OFF", "TIMER", "AFTER_VIEWING"],
+    description:
+      "`OFF` — no timer.\n" +
+      "`TIMER` — every eligible message is deleted at `createdAt + ttlSeconds`, server-side, whether or not it was ever delivered, opened or read.\n" +
+      "`AFTER_VIEWING` — **PRIVATE only.** The deadline starts when the recipient's read receipt is accepted. Rejected for groups with `CHAT_AUTO_DELETE_MODE_UNSUPPORTED` (see `capabilities.supportsAfterViewing`).",
+  },
+  RoomAutoDeletePolicy: {
+    type: "object",
+    description:
+      "The auto-delete (disappearing messages) policy of ONE conversation.\n\n" +
+      "This exact object is returned by `GET` and `PUT` on both the private and the group endpoint, is embedded in unified-inbox rows and room-detail responses, and is the body of the `conv:auto_delete:updated` socket event — so a client has one shape to parse, wherever it arrives.\n\n" +
+      "The policy belongs to the CONVERSATION, not to a participant: whoever may edit it (see `canEdit`) changes it for everyone, and every eligible new message follows it.",
+    properties: {
+      conversationType: { type: "string", enum: ["PRIVATE", "GROUP"] },
+      mode: { $ref: "#/components/schemas/AutoDeleteMode" },
+      ttlSeconds: {
+        type: "integer",
+        nullable: true,
+        minimum: 60,
+        maximum: 31536000,
+        example: 604800,
+        description:
+          "Seconds. Non-null only when `mode` is `TIMER`. Product presets are `86400` (24 hours), `604800` (1 week) and `2592000` (30 days); any integer inside the bounds is accepted as a custom timer, which is what lets clients offer short values while testing.",
+      },
+      isEnabled: {
+        type: "boolean",
+        description: 'Convenience mirror of `mode !== "OFF"`.',
+      },
+      label: {
+        type: "string",
+        example: "7 days",
+        description:
+          "Localized human duration for the picker/system line, in the caller's `Accept-Language`. Empty string when `mode` is `OFF`.",
+      },
+      setAt: {
+        type: "integer",
+        format: "int64",
+        example: 1780000000000,
+        description: "Epoch ms of the last change; `0` if never configured.",
+      },
+      setBy: {
+        type: "string",
+        example: "b3f1…",
+        description: "Who last changed it; empty string if never configured.",
+      },
+      policyVersion: {
+        type: "integer",
+        example: 7,
+        description:
+          "Monotonic per-room version, allocated atomically on each accepted change. Use it to order policy updates and to discard a socket event older than what you already hold; `0` means never configured.",
+      },
+      canEdit: {
+        type: "boolean",
+        description:
+          "May the CALLER change this policy? Always true in a private chat (either participant may). In a group, true only for `ADMIN`/`MODERATOR` — grey out the picker rather than discovering the rule via a 403.",
+      },
+      capabilities: {
+        type: "object",
+        properties: {
+          supportsAfterViewing: {
+            type: "boolean",
+            description:
+              '`true` for PRIVATE, `false` for GROUP. Hide the After Viewing option when false: a group message carries one global deadline, so the mode could only mean "the first member to open the chat deletes it for everyone else", and the backend rejects it.',
+          },
+        },
+        required: ["supportsAfterViewing"],
+      },
+      restampPending: {
+        type: "boolean",
+        description:
+          "PUT responses only. `true` means the new policy is stored and durably recorded, but the messages already counting down have not been moved to the new deadline yet — a background repair pass will finish it. It is not an error and needs no retry from the client.",
+      },
+      self: {
+        type: "object",
+        deprecated: true,
+        description:
+          "Legacy mirror of `mode`/`ttlSeconds`/`setAt` from when each participant had their own timer. Carries no independent meaning; read the flat fields.",
+        properties: {
+          mode: { $ref: "#/components/schemas/AutoDeleteMode" },
+          ttlSeconds: { type: "integer", nullable: true },
+          setAt: { type: "integer", format: "int64" },
+        },
+      },
+    },
+    required: [
+      "conversationType",
+      "mode",
+      "ttlSeconds",
+      "isEnabled",
+      "setAt",
+      "setBy",
+      "policyVersion",
+      "canEdit",
+      "capabilities",
+    ],
+  },
+  UpdateRoomAutoDeleteRequest: {
+    type: "object",
+    properties: {
+      mode: { $ref: "#/components/schemas/AutoDeleteMode" },
+      ttlSeconds: {
+        type: "integer",
+        nullable: true,
+        minimum: 60,
+        maximum: 31536000,
+        example: 604800,
+        description: "Required when `mode` is `TIMER`; ignored otherwise.",
+      },
+    },
+    required: ["mode"],
   },
   AppTheme: {
     type: "string",
@@ -4612,10 +4748,16 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       autoDeleteTimer: { $ref: "#/components/schemas/AutoDeleteTimer" },
+      autoDeleteDefault: { $ref: "#/components/schemas/AutoDeleteDefault" },
       typingIndicators: { type: "boolean" },
       readReceipts: { type: "boolean" },
     },
-    required: ["autoDeleteTimer", "typingIndicators", "readReceipts"],
+    required: [
+      "autoDeleteTimer",
+      "autoDeleteDefault",
+      "typingIndicators",
+      "readReceipts",
+    ],
   },
   UserAppSettings: {
     type: "object",
@@ -4741,8 +4883,24 @@ export const openApiSchemas = {
   },
   UpdateUserChatSettingsRequest: {
     type: "object",
+    description:
+      "Send either `autoDeleteTimer` (legacy) or `autoDeleteDefault` (canonical) — the server keeps both representations consistent and bumps `autoDeleteDefault.version`. Sending both lets `autoDeleteDefault` win.",
     properties: {
       autoDeleteTimer: { $ref: "#/components/schemas/AutoDeleteTimer" },
+      autoDeleteDefault: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["OFF", "TIMER"] },
+          ttlSeconds: {
+            type: "integer",
+            nullable: true,
+            minimum: 60,
+            maximum: 31536000,
+            description: "Required when `mode` is `TIMER`.",
+          },
+        },
+        required: ["mode"],
+      },
       typingIndicators: { type: "boolean" },
       readReceipts: { type: "boolean" },
     },
@@ -5979,7 +6137,7 @@ export const openApiSchemas = {
       isBanned: {
         type: "boolean",
         description:
-          "True when the caller is BANNED from this community. The community stays in this list (until the caller deletes/hides it), but every read/write/socket action on it is rejected with USER_BANNED.",
+          "True when the caller is BANNED from this community. The community stays in this list (until the caller deletes/hides it), and history up to `bannedAt` stays readable, but every write/socket action on it is rejected with USER_BANNED.\n\n**Drives the list-row context menu**: when true, only *Delete Conversation* (`DELETE /communities/{id}/me`) may be offered — *Mute Notifications* and *Mark as Read* must be rendered disabled. The server enforces the same rule (mute → `403`/skipped, mark-read → `403 USER_BANNED`/skipped), so this flag is for affordances, not for security.",
       },
       membershipStatus: {
         type: "string",
@@ -9670,15 +9828,17 @@ export const openApiSchemas = {
           "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +
           "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
           "MEMBER_UNBANNED → '{{targetName}} was unbanned'; " +
-          "MEMBER_BANNED (target only) → 'You were banned from this community.'; " +
           "MEMBER_MUTED (target only) → 'You are muted until {{date}}' or 'You are muted indefinitely' when no expiry; " +
           "MEMBER_UNMUTED (target only) → 'You were unmuted'. " +
           "PERSONAL types (isPersonal=true, only ever returned to the target user): " +
           "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF / " +
-          "MEMBER_BANNED / MEMBER_MUTED / MEMBER_UNMUTED. " +
-          "Hidden in chat timeline (never returned to anyone): MEMBER_LEFT, MEMBER_JOINED, MEMBER_REMOVED — " +
-          "the removed/left member learns via the `community:membership:removed` socket event instead. " +
-          "MEMBER_UNBANNED is COMMUNITY-visible (all members see it); MEMBER_BANNED, MEMBER_MUTED and " +
+          "MEMBER_MUTED / MEMBER_UNMUTED. " +
+          "Hidden in chat timeline (never returned to anyone, including the affected user): MEMBER_LEFT, " +
+          "MEMBER_JOINED, MEMBER_REMOVED, MEMBER_BANNED — the removed/left member learns via the " +
+          "`community:membership:removed` socket event, and the banned member via " +
+          "`community:membership:restricted` (isBanned: true) plus `isBanned` on the community detail/list, " +
+          "which is what drives the sticky banned banner. No ban bubble is written to their history. " +
+          "MEMBER_UNBANNED is COMMUNITY-visible (all members see it); MEMBER_MUTED and " +
           "MEMBER_UNMUTED are PERSONAL — silent for everyone else, visible only to the affected member's " +
           "own history/sync/catch-up on reload or reconnect. " +
           "MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old rows only).",

@@ -68,3 +68,56 @@ describe("communityService.bulkMute", () => {
     expect(repo.upsertMute).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * bulkUnmute — same ACTIVE-membership gate as bulkMute and as the single-community
+ * `clearMute` (which throws COMMUNITY_FORBIDDEN for a non-ACTIVE caller). Without
+ * it, the bulk path was the one way for a BANNED member to change mute state:
+ * of the three community-list menu actions, a ban leaves only Delete Conversation.
+ */
+describe("communityService.bulkUnmute", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    repo.findActiveMembershipsByCommunityIds = jest.fn();
+    repo.findMutesByUserAndCommunityIds = jest.fn();
+    repo.bulkClearMute = jest.fn().mockResolvedValue(undefined);
+  });
+
+  it("unmutes a muted community the caller is an ACTIVE member of", async () => {
+    repo.findActiveMembershipsByCommunityIds.mockResolvedValue([
+      { communityId: A },
+    ]);
+    repo.findMutesByUserAndCommunityIds.mockResolvedValue([{ communityId: A }]);
+
+    const result = await communityService.bulkUnmute(CALLER, [A]);
+
+    expect(result).toEqual({ unmuted: [A], skipped: [] });
+    expect(repo.bulkClearMute).toHaveBeenCalledWith(CALLER, [A]);
+  });
+
+  it("skips a muted community the caller is BANNED from (no membership row returned)", async () => {
+    // B is muted but the caller holds no ACTIVE membership for it — banned.
+    repo.findActiveMembershipsByCommunityIds.mockResolvedValue([
+      { communityId: A },
+    ]);
+    repo.findMutesByUserAndCommunityIds.mockResolvedValue([
+      { communityId: A },
+      { communityId: B },
+    ]);
+
+    const result = await communityService.bulkUnmute(CALLER, [A, B]);
+
+    expect(result).toEqual({ unmuted: [A], skipped: [B] });
+    expect(repo.bulkClearMute).toHaveBeenCalledWith(CALLER, [A]);
+  });
+
+  it("writes nothing when every id is skipped", async () => {
+    repo.findActiveMembershipsByCommunityIds.mockResolvedValue([]);
+    repo.findMutesByUserAndCommunityIds.mockResolvedValue([{ communityId: B }]);
+
+    const result = await communityService.bulkUnmute(CALLER, [B]);
+
+    expect(result).toEqual({ unmuted: [], skipped: [B] });
+    expect(repo.bulkClearMute).not.toHaveBeenCalled();
+  });
+});

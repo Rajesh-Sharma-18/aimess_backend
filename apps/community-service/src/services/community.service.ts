@@ -162,7 +162,6 @@ import {
   publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
-  publishCommunitySystemMessageForChatAwaited,
   publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
@@ -3352,27 +3351,14 @@ export const communityService = {
       return toMemberData(target);
     }
 
-    // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
-    // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
-    // themselves gets a private "You were banned from this community." line
-    // in their own history (Telegram parity). Enqueued and AWAITED here,
-    // BEFORE removeActiveMember below fires the client-facing eviction
-    // (community:member:removed) and ban-notice (community:membership:
-    // restricted, isBanned:true) events. Those are near-instant Redis
-    // publishes; this system message is consumed async by chat-service over
-    // RabbitMQ, so publishing it first (and confirming the broker has it)
-    // narrows the window where a client could render "you're banned" before
-    // the system message / their final personal-channel state arrives.
-    // MEMBER_BANNED is never a hidden type, so this always reaches the
-    // target via visibleToUserId.
-    await publishCommunitySystemMessageForChatAwaited({
-      communityId,
-      systemMessageType: "MEMBER_BANNED",
-      metadata: { targetUserId },
-      triggeredByUserId: callerId,
-      eventAt: new Date().toISOString(),
-      visibleToUserId: targetUserId,
-    });
+    // NOTE: no MEMBER_BANNED chat SYSTEM message is published — it is in
+    // HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as the authoritative
+    // policy. The banned user learns of the ban from the eviction/ban-notice
+    // events fired by removeActiveMember below (community:member:removed +
+    // community:membership:restricted, isBanned:true), the push notification,
+    // and `isBanned` on the community detail/list — which is what drives the
+    // persistent banned banner in the client. A "You were banned from this
+    // community." bubble in their own history was a second copy of that banner.
 
     // Ban = automatic leave: reuse the same removal core as leaveCommunity
     // (status flip, memberCount recompute, audit, socket eviction via
@@ -8043,15 +8029,30 @@ export const communityService = {
     callerId: string,
     communityIds: string[]
   ): Promise<{ unmuted: string[]; skipped: string[] }> {
-    const existingMutes =
-      await communityRepository.findMutesByUserAndCommunityIds(
+    // Active membership is required to change mute state, exactly like the
+    // single-community path (`setMute` / `clearMute` throw COMMUNITY_FORBIDDEN
+    // for anything that is not ACTIVE) and like `bulkMute`. A BANNED member is
+    // skipped: of the three community-list actions a ban leaves only "Delete
+    // Conversation" — muting and unmuting are both revoked. Without this the
+    // bulk path was the one way around the single-community gate.
+    const [memberships, existingMutes] = await Promise.all([
+      communityRepository.findActiveMembershipsByCommunityIds(
         callerId,
         communityIds
-      );
+      ),
+      communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      ),
+    ]);
 
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
     const mutedSet = new Set(existingMutes.map((m) => m.communityId));
-    const toUnmute = communityIds.filter((id) => mutedSet.has(id));
-    const skipped = communityIds.filter((id) => !mutedSet.has(id));
+    const toUnmute = communityIds.filter(
+      (id) => mutedSet.has(id) && activeMemberSet.has(id)
+    );
+    const toUnmuteSet = new Set(toUnmute);
+    const skipped = communityIds.filter((id) => !toUnmuteSet.has(id));
 
     if (toUnmute.length > 0) {
       await communityRepository.bulkClearMute(callerId, toUnmute);

@@ -811,7 +811,7 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("BANNED (non-active) member: 200, page capped at bannedAt — no read-pointer write", async () => {
+  it("BANNED (non-active) member: 200, page capped at bannedAt — and the read pointer stays FROZEN", async () => {
     const bannedAt = new Date(5);
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "banned",
@@ -843,8 +843,11 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({ beforeMs: bannedAt.getTime() })
     );
-    // Read state is a member-only concept — a banned viewer never advances
-    // the read pointer, even on a successful capped read.
+    // ...but a ban DOES freeze their read STATE. Mark as Read is one of the two
+    // community-list actions a ban revokes (the other is Mute Notifications;
+    // only Delete Conversation survives), and that has to hold for the implicit
+    // advance on opening the transcript too — otherwise the action the menu
+    // disables happens anyway just by opening the room.
     expect(mocks.roomMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 });

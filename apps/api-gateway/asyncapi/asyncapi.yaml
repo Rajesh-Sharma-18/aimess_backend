@@ -1451,6 +1451,14 @@ operations:
       1. Broadcasts `community:message:read` to all members of `community:<communityId>` room.
       2. Emits `community:read_sync` to the reader's own `user:<readerId>` room (multi-device HWM).
       Ack `data` on success is `{}`.
+
+      Requires an ACTIVE membership. A BANNED member is rejected with
+      `USER_BANNED` (left/removed/non-member → `CHAT_NOT_A_MEMBER`), and no
+      pointer is advanced and nothing is broadcast. Mark as Read is one of the
+      two community-list actions a ban revokes (the other is Mute
+      Notifications); only Delete Conversation stays available. A ban still
+      leaves history up to `bannedAt` readable — it only removes the ability to
+      acknowledge it.
     messages: [{ $ref: "#/channels/community/messages/communityMessageRead" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -6609,7 +6617,6 @@ components:
               ROLE_CHANGED (bystander)      → "{{targetName}} is now a moderator/admin/member"
               ROLE_CHANGED (viewer=target)  → "You are now a moderator/admin/member"
               MEMBER_REMOVED                → "{{targetName}} was removed"
-              MEMBER_BANNED (target only)   → "You were banned from this community." (PERSONAL)
               MEMBER_UNBANNED               → "{{targetName}} was unbanned"
               MEMBER_MUTED (target only)    → "You are muted until {{date}}" or
                                               "You are muted indefinitely" (PERSONAL)
@@ -6620,10 +6627,14 @@ components:
               JOIN_REQUEST_APPROVED         → "Your request to join was approved" (PERSONAL)
               JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
 
-            Hidden in chat timeline (never returned in history): MEMBER_LEFT, MEMBER_JOINED.
-            MEMBER_REMOVED / MEMBER_UNBANNED are visible to all members.
+            Hidden in chat timeline (never returned in history, to anyone —
+            including the affected user): MEMBER_LEFT, MEMBER_JOINED,
+            MEMBER_REMOVED, MEMBER_BANNED. A banned user is told via
+            `community:membership:restricted` (isBanned: true) + `isBanned` on
+            the community detail/list, which drives the sticky banned banner —
+            no chat bubble repeats it. MEMBER_UNBANNED is visible to all members.
             PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
-            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED,
+            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_MUTED,
             MEMBER_UNMUTED — delivered ONLY to the affected user's `user:<id>`
             channel and never broadcast to / readable by other members. They
             persist like any other PERSONAL line and remain available to the
@@ -6637,7 +6648,7 @@ components:
             target user, never broadcast to the community room and never returned
             to other members in history. PERSONAL types: COMMUNITY_JOINED,
             JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF,
-            MEMBER_BANNED, MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
+            MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
             affected user's `user:<id>` channel only. All other system types are
             COMMUNITY-visible (isPersonal=false / absent). Null/absent for normal
             messages.

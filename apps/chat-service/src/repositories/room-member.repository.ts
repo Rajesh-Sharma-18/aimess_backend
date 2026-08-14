@@ -72,7 +72,16 @@ export class RoomMemberRepository {
   /**
    * Advance the member's read pointer to a specific message, forward-only: the
    * pointer is moved only when `messageCreatedAt` is newer than the stored
-   * `lastReadAt` (never regresses). No-op if the member isn't active.
+   * `lastReadAt` (never regresses). No-op if the member has no VISIBLE row.
+   *
+   * ACTIVE rows only. A BANNED member's read state is FROZEN: "Mark as Read" is
+   * one of the two community-list actions a ban revokes (the other is mute —
+   * only "Delete Conversation" survives), so their pointer must not move from
+   * any path — the community-list menu, the transcript auto-advance on open, the
+   * per-message receipt, or a hand-rolled API call. A ban still leaves history
+   * up to `bannedAt` READABLE (see {@link assertCommunityReadAccess}); what it
+   * takes away is the ability to acknowledge it. This is the single choke point
+   * for that rule — every read-pointer write in community chat routes here.
    */
   async advanceReadPointer(
     roomId: string,
@@ -100,9 +109,14 @@ export class RoomMemberRepository {
   }
 
   /**
-   * Advance lastReadAt to `readAt` (default: now) for the user's active rows
+   * Advance lastReadAt to `readAt` (default: now) for the user's VISIBLE rows
    * across many rooms. The caller may pass the boundary so the same instant can
    * be reused for the post-write unread recount and the read_sync payload.
+   *
+   * ACTIVE rows only, for the same reason as {@link advanceReadPointer}: a
+   * banned member may not mark read, so "Mark as Read" over a list that
+   * contains a banned community skips exactly that row and reports it in the
+   * count (the caller returns `updatedCount`, so a single banned id yields 0).
    */
   async bulkAdvanceReadToNow(
     userId: string,
@@ -111,7 +125,11 @@ export class RoomMemberRepository {
   ): Promise<number> {
     if (!roomIds.length) return 0;
     const result = await this.prisma.roomMember.updateMany({
-      where: { userId, status: "active", roomId: { in: roomIds } },
+      where: {
+        userId,
+        status: "active",
+        roomId: { in: roomIds },
+      },
       data: { lastReadAt: readAt },
     });
     return result.count;
