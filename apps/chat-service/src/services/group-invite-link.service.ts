@@ -10,9 +10,11 @@ import { env } from "../config/env.js";
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
+import { inviteContentType } from "@aimess/constants";
 import {
   buildGroupInvitationAction,
   buildChatMessageEvent,
+  buildInvitationContent,
 } from "../lib/chat-message.serializer.js";
 import { generateRoomId, buildParticipantsKey } from "../lib/room-id.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
@@ -359,7 +361,6 @@ export class GroupInviteLinkService {
     const previewText = groupName
       ? `Invitation to join ${groupName}`
       : "Group invitation";
-    const content = { text: previewText };
     // Server-derived, canonical URL/deep-link — mirrors community's
     // buildInviteUrl/buildInviteDeepLink. The client-supplied `inviteUrl` (if
     // any) was the root cause of "Join Now" doing nothing: it was optional and
@@ -367,16 +368,35 @@ export class GroupInviteLinkService {
     // both here so the card is actionable regardless of what the client sent.
     const resolvedInviteUrl = buildGroupInviteUrl(token);
     const inviteDeepLink = buildGroupInviteDeepLink(token);
-    const systemData: Record<string, unknown> = {
+    // Same shape as the community invite and as a call row: dedicated
+    // `contentType`, structured card on `content.invitation`, event-level
+    // metadata only in `systemData`.
+    const messageType = inviteContentType("GROUP");
+    const invitation = buildGroupInvitationAction({
       groupId,
       groupName,
       groupAvatarUrl,
       memberCount,
+      inviteToken: token,
+      deepLink: inviteDeepLink,
+      alreadyJoined: false,
+      status: "ACTIVE",
+    });
+    const content = buildInvitationContent(previewText, invitation);
+    const systemData: Record<string, unknown> = {
+      invitationType: "GROUP",
+      groupId,
       token,
+      // Link identity, not presentation: the https share URL has no home on
+      // `content.invitation` (which carries the app deep link), so it is not a
+      // duplicate.
       inviteUrl: resolvedInviteUrl,
-      inviteDeepLink,
       inviterId,
       inviterName,
+      // Read by the shared private-system-text renderer; without them the line
+      // personalizes to "Someone shared a group invite".
+      actorId: inviterId,
+      actorName: inviterName,
     };
 
     const seq = await privateRoomRepo.allocateSequence(room.roomId);
@@ -386,7 +406,7 @@ export class GroupInviteLinkService {
         senderId: inviterId,
         receiverId: recipientId,
         content,
-        messageType: "SYSTEM",
+        messageType,
         systemEvent: SystemEvent.GROUP_INVITE,
         systemData,
         clientMessageId,
@@ -412,7 +432,7 @@ export class GroupInviteLinkService {
           _id: message.id,
           content,
           senderId: inviterId,
-          messageType: "SYSTEM",
+          messageType,
           systemEvent: SystemEvent.GROUP_INVITE,
           systemData,
           createdAt,
@@ -427,17 +447,6 @@ export class GroupInviteLinkService {
         )
       );
 
-    const systemAction = buildGroupInvitationAction({
-      groupId,
-      groupName,
-      groupAvatarUrl,
-      memberCount,
-      inviteToken: token,
-      deepLink: inviteDeepLink,
-      alreadyJoined: false,
-      status: "ACTIVE",
-    });
-
     const wireEvent = buildChatMessageEvent({
       id: message.id,
       clientMessageId,
@@ -447,13 +456,14 @@ export class GroupInviteLinkService {
       senderName: inviterName,
       senderAvatar: "",
       receiverId: recipientId,
-      messageType: "SYSTEM",
+      messageType,
       content,
       sequenceNumber: seq,
       serverTs: sentAt,
       systemEvent: SystemEvent.GROUP_INVITE,
       systemData,
-      systemAction,
+      // Legacy mirror of `content.invitation` — see the community consumer.
+      systemAction: invitation,
       countInUnread: (message as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -479,7 +489,11 @@ export class GroupInviteLinkService {
         recipientIds: [inviterId, recipientId],
         lastMessageId: message.id,
         lastMessageAt: sentAt,
-        preview: { contentType: "SYSTEM", text: previewText, systemAction },
+        preview: {
+          contentType: messageType,
+          text: previewText,
+          systemAction: invitation,
+        },
       });
     }
 
@@ -492,7 +506,7 @@ export class GroupInviteLinkService {
       senderName: inviterName,
       senderAvatar: "",
       preview: previewText,
-      messageType: "SYSTEM",
+      messageType,
       sentAt,
       recipientIds: [recipientId],
     });

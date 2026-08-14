@@ -2,6 +2,7 @@ import {
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
+  isPersonalizableSystemContentType,
   STORED_TEXT_LOCALE,
   type CommunitySystemMessageType,
   type SupportedLocale,
@@ -72,7 +73,9 @@ export function personalizeGroupSocketMessage(
   const contentType = String(
     d.contentType ?? d.messageType ?? ""
   ).toUpperCase();
-  if (contentType !== "SYSTEM") return data;
+  // Invitation cards carry their own kind but still render a `systemEvent`-
+  // driven sentence, so they personalize exactly like a generic SYSTEM row.
+  if (!isPersonalizableSystemContentType(contentType)) return data;
 
   const systemEvent = String(d.systemEvent ?? "");
   if (!systemEvent) return data;

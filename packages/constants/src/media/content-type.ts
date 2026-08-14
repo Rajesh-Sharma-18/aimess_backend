@@ -51,10 +51,35 @@ export const CALL_CONTENT_TYPES = ["VOICE_CALL", "VIDEO_CALL"] as const;
 
 export type CallContentType = (typeof CALL_CONTENT_TYPES)[number];
 
+/**
+ * Invitation-card message kinds — the exact same argument as
+ * {@link CALL_CONTENT_TYPES}, one rung up. A shared community/group invite is
+ * NOT a generic SYSTEM line either: the client renders a join card whose name,
+ * avatar, member count and CTA come from structured data, and whether to render
+ * that card at all must come from the message KIND, not from combining
+ * `contentType === "SYSTEM"` with a `systemEvent` string.
+ *
+ * The values match the `systemEvent` they have always carried
+ * (COMMUNITY_INVITE / GROUP_INVITE), so nothing about an existing row's
+ * identity changes — the kind is simply promoted out of `systemEvent` and onto
+ * `contentType` where every reader already looks.
+ *
+ * Deliberately NOT part of {@link CONTENT_TYPES}: server-emitted only, so a
+ * client can never forge a join card by sending
+ * `messageType: "COMMUNITY_INVITE"`.
+ */
+export const INVITE_CONTENT_TYPES = [
+  "COMMUNITY_INVITE",
+  "GROUP_INVITE",
+] as const;
+
+export type InviteContentType = (typeof INVITE_CONTENT_TYPES)[number];
+
 /** Every kind that can appear as `contentType` on a READ/broadcast wire. */
 export const ALL_CONTENT_TYPES = [
   ...CONTENT_TYPES,
   ...CALL_CONTENT_TYPES,
+  ...INVITE_CONTENT_TYPES,
 ] as const;
 
 export type AnyContentType = (typeof ALL_CONTENT_TYPES)[number];
@@ -80,6 +105,41 @@ export function isCallContentType(value: string): boolean {
   return (CALL_CONTENT_TYPES as readonly string[]).includes(
     String(value ?? "").toUpperCase()
   );
+}
+
+/**
+ * Map the invited-to room kind to the message kind its invitation card is
+ * stored as — the {@link callContentType} of invitations. The SINGLE place this
+ * mapping exists, so both invite writers (community room-sync consumer, group
+ * invite-link service) derive the kind the same way.
+ */
+export function inviteContentType(
+  target: "COMMUNITY" | "GROUP"
+): InviteContentType {
+  return target === "GROUP" ? "GROUP_INVITE" : "COMMUNITY_INVITE";
+}
+
+/** True if `value` is an invitation-card message kind (case-insensitive). */
+export function isInviteContentType(value: string): boolean {
+  return (INVITE_CONTENT_TYPES as readonly string[]).includes(
+    String(value ?? "").toUpperCase()
+  );
+}
+
+/**
+ * True for any kind whose `content.text` is a server-rendered lifecycle line
+ * that must be re-rendered per viewer/locale before it goes out — i.e. generic
+ * SYSTEM rows plus the invitation cards, which carry the same
+ * `systemEvent`-driven sentence under a more specific kind.
+ *
+ * Call rows are deliberately EXCLUDED: their text is rebuilt from
+ * `systemData.callType/status/durationSec` on the paths that need it, and
+ * routing them through the personalizer here would change long-settled
+ * VOICE_CALL/VIDEO_CALL output.
+ */
+export function isPersonalizableSystemContentType(value: string): boolean {
+  const v = String(value ?? "").toUpperCase();
+  return v === "SYSTEM" || isInviteContentType(v);
 }
 
 /**

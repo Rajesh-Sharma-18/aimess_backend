@@ -490,6 +490,12 @@ export function buildPrivateSystemFallbackText(
       if (isActor) return t("SYS_GROUP_INVITE_SHARED_SELF", locale);
       return t("SYS_GROUP_INVITE_SHARED", locale, { actor });
 
+    // Was missing, so every shared community invite fell through to the
+    // `default:` branch and rendered as "{{actor}} updated the chat".
+    case "COMMUNITY_INVITE":
+      if (isActor) return t("SYS_COMMUNITY_INVITE_SHARED_SELF", locale);
+      return t("SYS_COMMUNITY_INVITE_SHARED", locale, { actor });
+
     case "CALL_STARTED":
     case "CALL_ENDED":
       return buildCallTimelineText({

@@ -34,6 +34,7 @@ import {
   buildCommunityInvitationAction,
   isGroupInvitationMessage,
   buildGroupInvitationAction,
+  readInvitationContent,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import {
@@ -100,6 +101,8 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import {
   currentLocale,
   isCallContentType,
+  inviteContentType,
+  isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
 import { allocateRoomSlot } from "../lib/room-lock.js";
@@ -2283,12 +2286,18 @@ export class PrivateMessageService {
     }
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
-    // Resolve `systemAction` for every COMMUNITY_INVITE card on this page in
-    // ONE batched gRPC call (deduped by communityId+code) — unlike the live
-    // send path (`deliverInviteLinkDm`), a historical read can't assume the
+    // Re-resolve the invitation card for every COMMUNITY_INVITE row on this
+    // page in ONE batched gRPC call (deduped by communityId+code) — unlike the
+    // live send path (`deliverInviteLinkDm`), a historical read can't assume the
     // invite is still fresh: the recipient may have joined since, or the
     // link may have been revoked/expired/the community deleted.
-    const systemActionByMessageId = new Map<
+    //
+    // The result is stamped onto `content.invitation` (canonical) and mirrored
+    // onto `systemAction` (legacy clients). The row's OWN identity fields come
+    // from the stored `content.invitation` when present, and from `systemData`
+    // for rows written before invitations carried structured content — which is
+    // the only thing that makes those legacy rows still render a card.
+    const invitationByMessageId = new Map<
       string,
       | ReturnType<typeof buildCommunityInvitationAction>
       | ReturnType<typeof buildGroupInvitationAction>
@@ -2321,37 +2330,54 @@ export class PrivateMessageService {
 
       for (const m of inviteMessages) {
         const sd = (m.systemData ?? {}) as Record<string, unknown>;
-        const communityId = String(sd.communityId ?? "");
-        const communityName = String(sd.communityName ?? "");
-        const storedHandle = sd.communityHandle
-          ? String(sd.communityHandle)
-          : null;
-        const inviteCode = sd.linkCode ? String(sd.linkCode) : null;
-        const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
+        const stored = readInvitationContent(m.content) as
+          | ReturnType<typeof buildCommunityInvitationAction>
+          | undefined;
+        const communityId = String(stored?.communityId ?? sd.communityId ?? "");
+        const communityName = String(
+          stored?.communityName ?? sd.communityName ?? ""
+        );
+        const storedHandle =
+          stored?.communityHandle ??
+          (sd.communityHandle ? String(sd.communityHandle) : null);
+        // Presentational, never returned by the invite-context RPC — carried
+        // forward from whatever the row itself stored.
+        const communityAvatarUrl =
+          stored?.communityAvatarUrl ??
+          (sd.communityAvatarUrl ? String(sd.communityAvatarUrl) : null);
+        const memberCount = Number(stored?.memberCount ?? sd.memberCount ?? 0);
+        const inviteCode =
+          stored?.inviteCode ?? (sd.linkCode ? String(sd.linkCode) : null);
+        const deepLink = String(
+          stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
+        );
         const ctx = communityId
           ? contextByCommunityId.get(communityId)
           : undefined;
+        const base = {
+          communityId,
+          communityAvatarUrl,
+          memberCount,
+          inviteCode,
+          deepLink,
+        };
 
-        systemActionByMessageId.set(
+        invitationByMessageId.set(
           m.id,
           ctx
             ? buildCommunityInvitationAction({
-                communityId,
+                ...base,
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
-                inviteCode,
-                deepLink,
                 alreadyJoined: ctx.isMember,
                 status: ctx.found ? ctx.linkStatus : "DELETED",
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
               // stored data rather than telling every past invite it's dead.
               buildCommunityInvitationAction({
-                communityId,
+                ...base,
                 communityName,
                 communityHandle: storedHandle,
-                inviteCode,
-                deepLink,
                 alreadyJoined: false,
                 status: "ACTIVE",
               })
@@ -2371,14 +2397,20 @@ export class PrivateMessageService {
     ) {
       for (const m of groupInviteMessages) {
         const sd = (m.systemData ?? {}) as Record<string, unknown>;
-        const groupId = String(sd.groupId ?? "");
-        const groupName = String(sd.groupName ?? "");
-        const groupAvatarUrl = sd.groupAvatarUrl
-          ? String(sd.groupAvatarUrl)
-          : null;
-        const memberCount = Number(sd.memberCount ?? 0);
-        const token = sd.token ? String(sd.token) : null;
-        const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
+        const stored = readInvitationContent(m.content) as
+          | ReturnType<typeof buildGroupInvitationAction>
+          | undefined;
+        const groupId = String(stored?.groupId ?? sd.groupId ?? "");
+        const groupName = String(stored?.groupName ?? sd.groupName ?? "");
+        const groupAvatarUrl =
+          stored?.groupAvatarUrl ??
+          (sd.groupAvatarUrl ? String(sd.groupAvatarUrl) : null);
+        const memberCount = Number(stored?.memberCount ?? sd.memberCount ?? 0);
+        const token =
+          stored?.inviteToken ?? (sd.token ? String(sd.token) : null);
+        const deepLink = String(
+          stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
+        );
 
         const room = groupId
           ? await this.groupRoomRepo.findActiveByRoomId(groupId)
@@ -2401,7 +2433,7 @@ export class PrivateMessageService {
             ? "REVOKED"
             : "ACTIVE";
 
-        systemActionByMessageId.set(
+        invitationByMessageId.set(
           m.id,
           buildGroupInvitationAction({
             groupId,
@@ -2446,8 +2478,19 @@ export class PrivateMessageService {
         explicit: (message as unknown as { countInUnread?: boolean | null })
           .countInUnread,
       });
-      const systemAction = systemActionByMessageId.get(message.id);
-      if (systemAction) wire.systemAction = systemAction;
+      const invitation = invitationByMessageId.get(message.id);
+      if (invitation) {
+        // Legacy mirror — pre-existing mobile clients read the card from
+        // `systemAction`. Canonical placement is `content.invitation`, stamped
+        // onto `resolvedContent` below.
+        wire.systemAction = invitation;
+        // Project a legacy row (stored `messageType: "SYSTEM"`, written before
+        // invitations had their own kind) onto the current contract, so a
+        // client only ever sees one shape and needs no backfill migration.
+        wire.contentType = inviteContentType(
+          invitation.type === "GROUP_INVITATION" ? "GROUP" : "COMMUNITY"
+        );
+      }
       const displayName = (snapshot.displayName as string) || "";
       const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
 
@@ -2458,7 +2501,7 @@ export class PrivateMessageService {
       let contentForWire = content;
       if (
         viewerId &&
-        String(wire.contentType).toUpperCase() === "SYSTEM" &&
+        isPersonalizableSystemContentType(String(wire.contentType)) &&
         message.systemEvent
       ) {
         const systemData = (message.systemData ?? {}) as Record<
@@ -2481,6 +2524,10 @@ export class PrivateMessageService {
       const resolvedContent = contentForWire
         ? {
             ...contentForWire,
+            // Canonical placement of the card, re-resolved above. Overwrites the
+            // stored copy (membership/link status go stale) and BACKFILLS it on
+            // legacy rows that never had one.
+            ...(invitation ? { invitation } : {}),
             ...(Array.isArray(contentForWire.files)
               ? {
                   files: applyUrlMapToFiles(

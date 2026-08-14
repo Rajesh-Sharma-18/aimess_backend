@@ -5476,6 +5476,8 @@ components:
           SYSTEM,
           VOICE_CALL,
           VIDEO_CALL,
+          COMMUNITY_INVITE,
+          GROUP_INVITE,
         ]
       description: |
         Message kind — **UPPER-CASE on every surface** (socket + REST,
@@ -5495,6 +5497,29 @@ components:
         - `STICKER` — requires `sticker`; `LOCATION` — requires `location`;
           `CONTACT` — requires `contact`.
         - `SYSTEM` — group/community lifecycle event (carries `systemEvent`/`systemData`).
+        - `COMMUNITY_INVITE` / `GROUP_INVITE` — a community or group invitation
+          shared into a private chat, rendered as a join card. **Read-only**:
+          the send validators reject them, they are only ever written by the
+          invite-share paths. Read the whole card from `content.invitation`
+          (`{ type, deepLink, alreadyJoined, status, canOpen, … }`, where `type`
+          is `COMMUNITY_INVITATION` | `GROUP_INVITATION` and `status` is
+          `ACTIVE` | `EXPIRED` | `REVOKED` | `DELETED`) — never by combining
+          `contentType: SYSTEM` with `systemEvent`.
+
+          `alreadyJoined` / `status` / `canOpen` are **re-resolved on every
+          read** (the recipient may have joined since, the link may have been
+          revoked, the community/group may be gone), so never cache the card.
+          `content.text` is the human fallback line; `systemData` carries only
+          event-level metadata (`invitationType`, the target id, the invite
+          code/token, and the inviter/actor).
+
+          `systemAction` carries the SAME object as `content.invitation` and is
+          retained only for clients written before the card moved into
+          `content`. New clients must read `content.invitation`.
+
+          Rows written before this kind existed are stored as `SYSTEM` with the
+          card fields spread across `systemData`; the REST history read projects
+          them onto the shape above, so a client needs one code path only.
         - `VOICE_CALL` / `VIDEO_CALL` — a call lifecycle entry in a private or
           group timeline. **Read-only**: the send validators reject them, they are
           only ever written by the call service. The kind comes from the call's
@@ -5908,9 +5933,12 @@ components:
         systemEvent:
           type: string
           description: >-
-            Set when contentType=SYSTEM, and on call rows
+            Set when contentType=SYSTEM; on call rows
             (contentType=VOICE_CALL/VIDEO_CALL): CALL_STARTED while the call is
-            live (RINGING/ANSWERED), CALL_ENDED once it settles.
+            live (RINGING/ANSWERED), CALL_ENDED once it settles; and on
+            invitation rows (contentType=COMMUNITY_INVITE/GROUP_INVITE), where
+            it repeats the kind. Do NOT classify a message by this field — use
+            `contentType`.
           enum:
             [
               GROUP_CREATED,
@@ -5924,6 +5952,8 @@ components:
               DESCRIPTION_CHANGED,
               CALL_STARTED,
               CALL_ENDED,
+              COMMUNITY_INVITE,
+              GROUP_INVITE,
             ]
         systemData:
           type: object

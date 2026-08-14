@@ -416,6 +416,14 @@ export interface CommunityInvitationSystemAction {
   communityId: string;
   communityHandle?: string | null;
   communityName: string;
+  /**
+   * Presentational facts sourced from the message's own `systemData` — the
+   * invite-context RPC does not return them. They live on the invitation object
+   * so the client reads the whole card from ONE place instead of stitching it
+   * together from `systemAction` + `systemData`.
+   */
+  communityAvatarUrl?: string | null;
+  memberCount?: number;
   inviteCode?: string | null;
   deepLink: string;
   alreadyJoined: boolean;
@@ -423,13 +431,21 @@ export interface CommunityInvitationSystemAction {
   canOpen: boolean;
 }
 
-/** True for a stored SYSTEM message that carries a COMMUNITY_INVITE card. */
+/**
+ * True for a stored message that carries a COMMUNITY_INVITE card.
+ *
+ * Matches on `systemEvent`, which every such row has always carried, so this
+ * covers BOTH the current rows (stored as `messageType: "COMMUNITY_INVITE"`)
+ * and every legacy row written while invitations were generic
+ * `messageType: "SYSTEM"`. Nothing needs backfilling.
+ */
 export function isCommunityInvitationMessage(m: {
   messageType?: string | null;
   systemEvent?: string | null;
 }): boolean {
+  const kind = normalizeMessageType(m.messageType);
   return (
-    normalizeMessageType(m.messageType) === "SYSTEM" &&
+    (kind === "SYSTEM" || kind === "COMMUNITY_INVITE") &&
     m.systemEvent === "COMMUNITY_INVITE"
   );
 }
@@ -446,6 +462,8 @@ export function buildCommunityInvitationAction(params: {
   communityId: string;
   communityName: string;
   communityHandle?: string | null;
+  communityAvatarUrl?: string | null;
+  memberCount?: number;
   inviteCode?: string | null;
   deepLink: string;
   alreadyJoined: boolean;
@@ -455,6 +473,8 @@ export function buildCommunityInvitationAction(params: {
     communityId,
     communityName,
     communityHandle = null,
+    communityAvatarUrl = null,
+    memberCount,
     inviteCode = null,
     deepLink,
     alreadyJoined,
@@ -470,6 +490,8 @@ export function buildCommunityInvitationAction(params: {
     communityId,
     communityHandle,
     communityName,
+    communityAvatarUrl,
+    memberCount,
     inviteCode,
     deepLink,
     alreadyJoined,
@@ -497,13 +519,15 @@ export interface GroupInvitationSystemAction {
   canOpen: boolean;
 }
 
-/** True for a stored SYSTEM message that carries a GROUP_INVITE card. */
+/** True for a stored message that carries a GROUP_INVITE card — see
+ *  {@link isCommunityInvitationMessage} for why both kinds match. */
 export function isGroupInvitationMessage(m: {
   messageType?: string | null;
   systemEvent?: string | null;
 }): boolean {
+  const kind = normalizeMessageType(m.messageType);
   return (
-    normalizeMessageType(m.messageType) === "SYSTEM" &&
+    (kind === "SYSTEM" || kind === "GROUP_INVITE") &&
     m.systemEvent === "GROUP_INVITE"
   );
 }
@@ -548,6 +572,50 @@ export function buildGroupInvitationAction(params: {
     status,
     canOpen,
   };
+}
+
+/**
+ * The structured invitation object a COMMUNITY_INVITE / GROUP_INVITE row
+ * carries. `type` is the discriminator the client switches on, exactly as
+ * `content.call.callType` is for a call row.
+ */
+export type InvitationCard =
+  | CommunityInvitationSystemAction
+  | GroupInvitationSystemAction;
+
+/**
+ * Build the `content` of an invitation message — the invitation equivalent of a
+ * call row's `{ text, urls, files, call }`.
+ *
+ * `text` is the human-readable line (inbox preview, push body, and the fallback
+ * any client that doesn't know the kind still renders); `invitation` is the
+ * structured card. Same three base keys as every other message content so the
+ * shared media/preview helpers keep working on it unchanged.
+ *
+ * Deliberately NOT a second source of truth: `invitation` is whatever
+ * {@link buildCommunityInvitationAction} / {@link buildGroupInvitationAction}
+ * returned, so the card is built by the same two functions on the send path and
+ * on every historical read.
+ */
+export function buildInvitationContent(
+  text: string,
+  invitation: InvitationCard
+): Record<string, unknown> {
+  return { text, urls: [], files: [], invitation };
+}
+
+/**
+ * Read the invitation card off a stored/wire message's `content`. Returns
+ * `undefined` for a legacy row written before invitations carried
+ * `content.invitation` (those are re-stamped at read time from `systemData`).
+ */
+export function readInvitationContent(
+  content: unknown
+): InvitationCard | undefined {
+  const invitation = (content as { invitation?: unknown } | null)?.invitation;
+  return invitation && typeof invitation === "object"
+    ? (invitation as InvitationCard)
+    : undefined;
 }
 
 export interface ChatMessageEventInput {

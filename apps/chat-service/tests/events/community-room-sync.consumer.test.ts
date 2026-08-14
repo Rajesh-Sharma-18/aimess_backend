@@ -416,7 +416,7 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
     redisPublish.mockClear();
   });
 
-  it("stores a SYSTEM invitation message with the enriched card payload + idempotency key", async () => {
+  it("stores a COMMUNITY_INVITE message shaped like a call row + idempotency key", async () => {
     const fake = await start();
     await fake.deliver(inviteShared());
 
@@ -426,7 +426,8 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       roomId: ROOM.roomId,
       senderId: INVITER,
       receiverId: RECIPIENT,
-      messageType: "SYSTEM",
+      // Dedicated kind, not a generic SYSTEM row — same rule as VOICE_CALL.
+      messageType: "COMMUNITY_INVITE",
       systemEvent: "COMMUNITY_INVITE",
       sequenceNumber: 7,
       // deterministic dedupe key
@@ -435,19 +436,35 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
     });
     // content.text is a non-blank human fallback (drives the inbox preview).
     expect(arg.content.text).toBe("Invitation to join Developers");
-    // structured card data the client renders.
-    expect(arg.systemData).toMatchObject({
+    expect(arg.content.urls).toEqual([]);
+    expect(arg.content.files).toEqual([]);
+    // The structured card the client renders — content.invitation is to an
+    // invite row what content.call is to a call row.
+    expect(arg.content.invitation).toEqual({
+      type: "COMMUNITY_INVITATION",
       communityId: COMMUNITY,
       communityName: "Developers",
       communityHandle: "developers",
       communityAvatarUrl: "community/avatars/dev.jpg",
       memberCount: 256,
+      inviteCode: LINK_CODE,
+      deepLink: "aimess://join?code=abc123",
+      alreadyJoined: false,
+      status: "ACTIVE",
+      canOpen: true,
+    });
+    // systemData keeps ONLY event-level metadata; nothing presentational is
+    // duplicated out of content.invitation.
+    expect(arg.systemData).toEqual({
+      invitationType: "COMMUNITY",
+      communityId: COMMUNITY,
       linkCode: LINK_CODE,
       inviteUrl: "https://aimess.me/+abc123",
-      inviteDeepLink: "aimess://join?code=abc123",
       isPermanent: true,
       inviterId: INVITER,
       inviterName: "John",
+      actorId: INVITER,
+      actorName: "John",
     });
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
   });
@@ -475,10 +492,17 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       conversationType: "PRIVATE",
       senderId: INVITER,
       receiverId: RECIPIENT,
-      contentType: "SYSTEM",
+      contentType: "COMMUNITY_INVITE",
       systemEvent: "COMMUNITY_INVITE",
-      // The whole point of the fix: card must carry the handle so FE routes
-      // Join Now → /community/@handle instead of the invite landing.
+      // The card must carry the handle so FE routes Join Now →
+      // /community/@handle instead of the invite landing.
+      content: {
+        invitation: {
+          type: "COMMUNITY_INVITATION",
+          communityHandle: "developers",
+        },
+      },
+      // Legacy mirror for pre-existing mobile clients — same object.
       systemAction: {
         type: "COMMUNITY_INVITATION",
         communityHandle: "developers",
@@ -495,7 +519,10 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       type: "PRIVATE",
       roomId: ROOM.roomId,
       recipientIds: [INVITER, RECIPIENT],
-      preview: { contentType: "SYSTEM", text: "Invitation to join Developers" },
+      preview: {
+        contentType: "COMMUNITY_INVITE",
+        text: "Invitation to join Developers",
+      },
     });
 
     expect(publishMessageSentSafe).toHaveBeenCalledTimes(1);
