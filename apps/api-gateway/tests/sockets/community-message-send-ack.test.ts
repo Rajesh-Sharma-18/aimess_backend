@@ -64,6 +64,7 @@ describe("community:message:send — ack surfaces the specific media-limit error
       error: "INVALID_PAYLOAD",
       retryable: false,
       message: "Audio exceeds 25 MB",
+      detail: "CHAT_AUDIO_TOO_LARGE",
     });
   });
 
@@ -115,6 +116,7 @@ describe("community:message:send — ack surfaces the specific media-limit error
       error: "FORBIDDEN",
       retryable: false,
       message: "Community chat is currently unavailable",
+      detail: "COMMUNITY_CHAT_DISABLED",
     });
   });
 

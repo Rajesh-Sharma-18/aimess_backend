@@ -49,8 +49,8 @@ const MAX_URL_LEN = 3000; // a single URL / objectKey / avatar
  */
 const PRESENCE_REFRESH_MS = Number(process.env.PRESENCE_REFRESH_MS ?? 45_000);
 
-const CALL_INITIATE_RATE_MAX = 5; // call attempts allowed per caller…
-const CALL_INITIATE_RATE_WINDOW_SEC = 60; // …per this window
+const CALL_INITIATE_RATE_MAX = env.CALL_INITIATE_RATE_MAX;
+const CALL_INITIATE_RATE_WINDOW_SEC = env.CALL_INITIATE_RATE_WINDOW_SEC;
 
 /**
  * Cross-namespace request-DTO parity (/community is the reference contract).
@@ -1848,14 +1848,19 @@ export function registerChatNamespace(
      * Socket.IO frames, and it is skipped outright in development. Same
      * incr+expire+fail-open shape as the /stream comment limiter.
      */
-    const isCallInitiateRateLimited = async (): Promise<boolean> => {
+    // Returns the remaining TTL in seconds when rate-limited, false otherwise.
+    const isCallInitiateRateLimited = async (): Promise<number | false> => {
       const key = `rl:call-initiate:${userId}`;
       try {
         const count = await redisPub.incr(key);
         if (count === 1) {
           await redisPub.expire(key, CALL_INITIATE_RATE_WINDOW_SEC);
         }
-        return count > CALL_INITIATE_RATE_MAX;
+        if (count > CALL_INITIATE_RATE_MAX) {
+          const ttl = await redisPub.ttl(key);
+          return Math.max(1, ttl);
+        }
+        return false;
       } catch {
         return false; // fail open
       }
@@ -1870,8 +1875,15 @@ export function registerChatNamespace(
           return;
         }
         void (async () => {
-          if (await isCallInitiateRateLimited()) {
-            ackError(callback, "RATE_LIMITED", locale);
+          const rateLimitedTtl = await isCallInitiateRateLimited();
+          if (rateLimitedTtl !== false) {
+            ackError(
+              callback,
+              "RATE_LIMITED",
+              locale,
+              undefined,
+              rateLimitedTtl
+            );
             return;
           }
           socket.data.callLegId = r.data.legId ?? deviceId;

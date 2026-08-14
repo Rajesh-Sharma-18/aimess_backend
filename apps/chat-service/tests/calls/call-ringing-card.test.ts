@@ -6,6 +6,22 @@
  * timeline writer.
  */
 import { CallService } from "../../src/services/call.service.js";
+import {
+  publishCallCancelSafe,
+  publishCallHandledPushSafe,
+} from "../../src/events/publish-call-incoming.js";
+
+// Stub the fire-and-forget push publishers so we can assert WHICH one the answer
+// path fires. The regression this guards: answering must push `call.handled`
+// (non-terminal "stop ringing on your other devices"), NEVER `call.cancelled`,
+// which every device — including the one that just answered — would treat as
+// "call is over" and tear down, leaving the caller connected to nobody.
+jest.mock("../../src/events/publish-call-incoming.js", () => ({
+  publishCallIncomingSafe: jest.fn(),
+  publishCallMissedSafe: jest.fn(),
+  publishCallCancelSafe: jest.fn(),
+  publishCallHandledPushSafe: jest.fn(),
+}));
 
 const ROOM = { roomId: "room-1", participants: ["caller", "callee"] };
 
@@ -35,7 +51,10 @@ function buildService() {
     livekit: {
       mintToken: jest.fn().mockResolvedValue({ url: "wss://lk", token: "t" }),
     },
-    friendshipRepo: { areFriends: jest.fn().mockResolvedValue(true) },
+    friendshipRepo: {
+      areFriends: jest.fn().mockResolvedValue(true),
+      isBlockedEitherWay: jest.fn().mockResolvedValue(false),
+    },
     getCallPrivacy: jest
       .fn()
       .mockResolvedValue({ whoCanCallMe: "FRIENDS", allowedUserIds: [] }),
@@ -132,6 +151,34 @@ describe("CallService — the card appears while ringing", () => {
     expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
       expect.objectContaining({ callId: "c-1", outcome: "ANSWERED" })
     );
+  });
+
+  it("answerCall pushes call.handled to the answerer, never call.cancelled", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c-1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      groupId: null,
+      privateRoomId: "room-1",
+      type: "AUDIO",
+      status: "RINGING",
+    });
+
+    await service.answerCall({ callId: "c-1", calleeId: "callee" });
+
+    // The answered-elsewhere signal must be the non-terminal one, addressed to
+    // the callee, carrying the reason the client keys on.
+    expect(publishCallHandledPushSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        calleeId: "callee",
+        callId: "c-1",
+        reason: "answered_elsewhere",
+      })
+    );
+    // The bug, pinned: a live answered call must never emit a cancellation push.
+    expect(publishCallCancelSafe).not.toHaveBeenCalled();
   });
 
   it("initiateGroupCall posts a RINGING row into the GROUP timeline", async () => {

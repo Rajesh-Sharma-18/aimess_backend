@@ -169,6 +169,27 @@ export const SOCKET_MESSAGES = {
     th: "วางสายแล้ว",
   },
 
+  /**
+   * Busy-gate rejections thrown by chat-service's `initiateCall`. Both reach the
+   * client as ack `error: "CONFLICT"`, so without their own copy they both
+   * resolved to the generic `SOCKET_ERR_CONFLICT` sentence ("This action has
+   * already been applied") — and a client that only shows `message` could not
+   * tell "you are busy" from "they are busy". Call state is per-USER, not
+   * per-device: a caller already on a call on ANOTHER device hits
+   * CALL_ALREADY_IN_CALL, never CALL_USER_BUSY. Keyed by the `AppError`
+   * messageKey verbatim so `resolveGrpcAckError`'s detail lookup finds them.
+   */
+  CALL_ALREADY_IN_CALL: {
+    vi: "Bạn đang trong một cuộc gọi khác.",
+    en: "You're already on a call.",
+    th: "คุณกำลังสนทนาสายอื่นอยู่",
+  },
+  CALL_USER_BUSY: {
+    vi: "Người này đang trong một cuộc gọi khác.",
+    en: "This person is on another call right now.",
+    th: "ผู้ใช้รายนี้กำลังสนทนาสายอื่นอยู่",
+  },
+
   // ── /community ──────────────────────────────────────────────────────────
   SOCKET_COMMUNITY_JOINED: {
     vi: "Đã tham gia cộng đồng",

@@ -27,6 +27,7 @@ import {
   publishCallIncomingSafe,
   publishCallMissedSafe,
   publishCallCancelSafe,
+  publishCallHandledPushSafe,
 } from "../events/publish-call-incoming.js";
 import { CallStatus, CallType, SystemEvent } from "../types/enums.js";
 
@@ -283,6 +284,21 @@ export class CallService {
       throw new ForbiddenError("CALLING_DISABLED");
     }
 
+    // Gate 0.5: blocking, in BOTH directions, before every other gate. A block
+    // is stored one-way but bans calling both ways — and it has to be checked
+    // here, not only via `room.blockedBy` below, because
+    // `whoCanCallMe = EVERYONE` waives the friendship gate and would otherwise
+    // let the BLOCKED party ring their blocker (a pair with no DM room at all
+    // has no `blockedBy` list to consult either).
+    if (
+      await this.friendshipRepo.isBlockedEitherWay(
+        params.callerId,
+        params.calleeId
+      )
+    ) {
+      throw new ForbiddenError("CALL_BLOCKED");
+    }
+
     // Gate 1: callee's `whoCanCallMe` privacy setting (user-service). Read
     // BEFORE friendship, because EVERYONE is the one scope that deliberately
     // admits a non-friend — running the friendship gate first would reject
@@ -356,7 +372,9 @@ export class CallService {
     const blockedBy = Array.isArray(room.blockedBy)
       ? (room.blockedBy as string[])
       : [];
-    if (blockedBy.includes(params.callerId)) {
+    // ANY blocker in this room kills calling for both sides — checking only
+    // `callerId` let the blocked party ring the person who blocked them.
+    if (blockedBy.length > 0) {
       throw new ForbiddenError("CALL_BLOCKED");
     }
 
@@ -884,7 +902,14 @@ export class CallService {
       ),
     ]);
 
-    publishCallCancelSafe({
+    // NOT publishCallCancelSafe: this fires against a callee who is now MID-CALL
+    // on the device that just answered. A `call.cancelled` push reaches every one
+    // of their devices with no leg exclusion (the socket `call:handled` above is
+    // leg-excluded; the push cannot carry a leg), so the answering device would
+    // dismiss the very call it just picked up — caller left connected, callee
+    // cut. `call.handled` is the non-terminal "stop ringing, call continues
+    // elsewhere" signal; a device mid-call on this callId ignores it.
+    publishCallHandledPushSafe({
       calleeId: params.calleeId,
       callId: params.callId,
       reason: "answered_elsewhere",
@@ -1215,6 +1240,39 @@ export class CallService {
     }
 
     return { ...updated, durationSec };
+  }
+
+  /**
+   * Cut every live 1:1 call between this pair — a block must not leave the two
+   * of them still talking, and a ring must not keep ringing.
+   *
+   * Ends each call through the normal `endCall` path (attributed to `endedBy`,
+   * always a participant here), so the hangup fan-out and the timeline row are
+   * identical to a manual hangup — no second teardown path to keep in sync.
+   * Best-effort per call: one failure must not strand the others, and the
+   * caller (an event consumer) must never nack over it.
+   */
+  async terminateCallsBetween(
+    userA: string,
+    userB: string,
+    endedBy: string
+  ): Promise<void> {
+    const now = new Date();
+    const active = await this.callRepo.findAllActiveBetween(
+      userA,
+      userB,
+      new Date(now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000),
+      new Date(now.getTime() - env.CALL_MAX_DURATION_SEC * 1000)
+    );
+    for (const call of active) {
+      try {
+        await this.endCall({ callId: call.callId, userId: endedBy });
+      } catch (err) {
+        logger.warn(
+          `CallService|terminateCallsBetween|failed callId=${call.callId}: ${String(err)}`
+        );
+      }
+    }
   }
 
   async getCallByCallId(

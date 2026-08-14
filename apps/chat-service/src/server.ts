@@ -95,6 +95,7 @@ import {
   initializeEventConsumers,
   closeEventConsumers,
 } from "./events/index.js";
+import { setCallTerminator } from "./events/call-terminator.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
 import {
@@ -530,6 +531,13 @@ const startServer = async () => {
       groupMemberRepo,
       // GROUP call timeline audit rows (VOICE_CALL / VIDEO_CALL).
       groupSystemMessageService
+    );
+
+    // Blocking must cut a live call. The friendship consumer is already running
+    // (started above, before this graph exists), so it reaches CallService
+    // through this late-bound hook rather than a constructor argument.
+    setCallTerminator((userA, userB, endedBy) =>
+      callService.terminateCallsBetween(userA, userB, endedBy)
     );
 
     const communityRoomService = new CommunityRoomService(
