@@ -1,5 +1,9 @@
 ﻿import { logger } from "@aimess/logger";
 import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
+import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
@@ -2647,6 +2651,17 @@ export class CommunityMessageService {
       deletedType,
       deletedBy: userId,
       revision,
+    });
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
+      targetType: "message",
+      targetId: messageId,
+      after: {
+        roomType: "COMMUNITY",
+        roomId: message.roomId,
+        deletedType,
+      },
     });
     // Best-effort: flip `quoteData.isDeleted` on every existing reply to this
     // message so "Message deleted" shows up everywhere, not just for replies

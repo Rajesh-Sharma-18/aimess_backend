@@ -9,7 +9,8 @@ import {
 
 import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
-import type { Prisma } from "../generated/prisma/client.js";
+import type { AuditSource, Prisma } from "../generated/prisma/client.js";
+import { emitAuditLogCreated } from "../lib/audit-realtime.js";
 
 // Consumer for `admin.activity.ingest` — end-user activity rows published by auth,
 // user, community, chat and stream services. Writes them into admin_db.AuditLog with
@@ -20,6 +21,16 @@ const ADMIN_ACTIVITY_INGEST_DLX = "admin.activity.ingest.dlx";
 const ADMIN_ACTIVITY_INGEST_DLQ_ROUTING_KEY = "admin.activity.ingest.dead";
 
 const KNOWN_ACTIONS = new Set<string>(Object.values(USER_AUDIT_ACTIONS));
+// Server-side allowlist for the client-declared source. An unrecognized value is
+// normalized to SYSTEM rather than rejected: a publisher on an older build sends
+// none at all, and losing the row would be worse than losing the attribution.
+const KNOWN_SOURCES = new Set<string>([
+  "ADMIN_PANEL",
+  "WEB",
+  "ANDROID",
+  "IOS",
+  "SYSTEM",
+]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -70,12 +81,17 @@ export async function handleActivityIngest(
 
   const before = toJsonOrSkip(data.before);
   const after = toJsonOrSkip(data.after);
+  const source: AuditSource =
+    data.source && KNOWN_SOURCES.has(data.source)
+      ? (data.source as AuditSource)
+      : "SYSTEM";
 
   try {
-    await prisma.auditLog.create({
+    const row = await prisma.auditLog.create({
       data: {
         actorId,
         actorType: data.actorType,
+        source,
         action: data.action,
         targetType: data.targetType,
         targetId: data.targetId ?? null,
@@ -88,6 +104,9 @@ export async function handleActivityIngest(
         createdAt: new Date(data.eventAt),
       },
     });
+    // Live push to any Super Admin with the audit-log page open. After the commit
+    // only: a row that never landed must never appear in the list.
+    void emitAuditLogCreated(row.id);
   } catch (error) {
     // eventId is unique: a redelivery after a committed write is a no-op, not a duplicate.
     if (isUniqueConstraintViolation(error)) {

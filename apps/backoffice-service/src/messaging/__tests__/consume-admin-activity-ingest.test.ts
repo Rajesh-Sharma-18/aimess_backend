@@ -10,7 +10,20 @@ import { USER_AUDIT_ACTIONS } from "@aimess/messaging";
 import type { AdminActivityIngestPayload } from "@aimess/shared-types";
 
 import { prisma } from "../../config/prisma.js";
+import { redis } from "../../config/redis.js";
 import { handleActivityIngest } from "../consume-admin-activity-ingest.js";
+
+// A committed row fires the realtime push, which first asks Redis who may read
+// audit logs. With no server here that command never settles, and the pending
+// command keeps the event loop alive so the runner never exits. Stub the reads:
+// the push is fire-and-forget and swallows its own errors, so the handler
+// assertions below are unaffected either way.
+Object.assign(redis as unknown as Record<string, unknown>, {
+  get: () => Promise.resolve(null),
+  set: () => Promise.resolve("OK"),
+  del: () => Promise.resolve(0),
+  publish: () => Promise.resolve(0),
+});
 
 let createCalls: Array<{ data: Record<string, unknown> }>;
 let nextCreateError: unknown;
@@ -103,6 +116,23 @@ describe("handleActivityIngest", () => {
     );
     assert.equal(createCalls[0].data.actorId, null);
     assert.equal(createCalls[0].data.actorType, "SYSTEM");
+  });
+
+  it("persists the client source the publisher derived", async () => {
+    await handleActivityIngest(validPayload({ source: "ANDROID" }));
+    assert.equal(createCalls[0].data.source, "ANDROID");
+  });
+
+  it("normalizes an unknown or absent source to SYSTEM instead of dropping the row", async () => {
+    await handleActivityIngest(
+      validPayload({
+        source: "DESKTOP" as AdminActivityIngestPayload["source"],
+      })
+    );
+    assert.equal(createCalls[0].data.source, "SYSTEM");
+
+    await handleActivityIngest(validPayload({ eventId: "evt_2" }));
+    assert.equal(createCalls[1].data.source, "SYSTEM");
   });
 
   it("throws on a payload missing its idempotency key", async () => {

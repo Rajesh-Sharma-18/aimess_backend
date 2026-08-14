@@ -2,6 +2,7 @@ import { prisma } from "../config/prisma.js";
 import type {
   AuditActorType,
   AuditLog,
+  AuditSource,
   Prisma,
 } from "../generated/prisma/client.js";
 import type {
@@ -14,14 +15,19 @@ import type {
 } from "../types/audit-log.types.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import { userClient } from "../grpc/user.client.js";
-import { AUDIT_ACTIONS } from "../constants/index.js";
 import { logger } from "@aimess/logger";
+import {
+  MANDATORY_AUDIT_ACTIONS,
+  auditActionsForCategory,
+  auditCategoryOf,
+} from "@aimess/messaging";
+import type { AuditCategoryKind } from "../types/audit-log.types.js";
 
-// Read-audit rows would bury the moderation trail on the unfiltered default
-// page. Derived from the constant KEYS (…_VIEWED) so "…_REVIEWED" is excluded.
-const VIEW_ACTIONS: string[] = Object.entries(AUDIT_ACTIONS)
-  .filter(([key]) => key.endsWith("_VIEWED"))
-  .map(([, value]) => value);
+// The unfiltered default page shows the mandatory classification only — the five
+// categories in @aimess/messaging mandatory-audit-actions.ts. Everything else
+// (views, joins, token refreshes) stays queryable through an explicit ?action=
+// filter, it just no longer buries the moderation trail.
+const MANDATORY_ACTIONS: string[] = [...MANDATORY_AUDIT_ACTIONS];
 
 export type AuditLogInput = {
   actorId: string;
@@ -181,6 +187,9 @@ export const auditLogRepository = {
       data: {
         actorId: input.actorId,
         actorType: "ADMIN",
+        // Written only by admin-panel request handlers, so the source is known
+        // without asking the client — no header to spoof on this path.
+        source: "ADMIN_PANEL",
         action: input.action,
         targetType: input.targetType,
         targetId: input.targetId ?? null,
@@ -197,17 +206,25 @@ export const auditLogRepository = {
     const { field, dir } = parseSort(query.sort);
     const where: Prisma.AuditLogWhereInput = {};
 
+    // Category is a named slice of the action filter — both narrow the same
+    // column, so they are ordered rather than combined: an explicit ?action=
+    // wins, then ?category=, then the full mandatory set.
     if (query.action && query.action.length > 0) {
       where.action = { in: query.action };
+    } else if (query.category && query.category.length > 0) {
+      where.action = {
+        in: query.category.flatMap((c) => auditActionsForCategory(c)),
+      };
     } else {
-      // View rows stay reachable, but only via an explicit ?action= filter.
-      where.action = { notIn: VIEW_ACTIONS };
+      where.action = { in: MANDATORY_ACTIONS };
+    }
+    if (query.source && query.source.length > 0) {
+      where.source = { in: query.source as AuditSource[] };
     }
     if (query.actorType && query.actorType.length > 0) {
-      // The admin panel offers two sources, not three: "System" means everything that
-      // did NOT come from the admin panel, so it covers USER rows as well as SYSTEM ones.
+      // Legacy filter, kept so old links keep working: it selects who acted
+      // (admin / end user / platform), where `source` selects which client.
       const actorTypes = new Set<AuditActorType>(query.actorType);
-      if (actorTypes.has("SYSTEM")) actorTypes.add("USER");
       where.actorType = { in: [...actorTypes] };
     }
     if (query.search) {
@@ -245,6 +262,8 @@ export const auditLogRepository = {
       rows.map(async (row) => ({
         id: row.id,
         performer: await toPerformer(row),
+        source: row.source,
+        category: auditCategoryOf(row.action) as AuditCategoryKind | null,
         action: row.action,
         targetType: row.targetType,
         targetId: row.targetId,
@@ -272,6 +291,8 @@ export const auditLogRepository = {
     return {
       id: row.id,
       performer: await toPerformer(row),
+      source: row.source,
+      category: auditCategoryOf(row.action) as AuditCategoryKind | null,
       action: row.action,
       targetType: row.targetType,
       targetId: row.targetId,

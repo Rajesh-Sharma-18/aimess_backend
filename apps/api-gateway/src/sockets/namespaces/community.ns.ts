@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
@@ -532,6 +533,7 @@ export function registerCommunityNamespace(
   community.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
     scopeSocketLocale(socket);
+    bindSocketAuditContext(socket);
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/community connected userId=${userId}`);

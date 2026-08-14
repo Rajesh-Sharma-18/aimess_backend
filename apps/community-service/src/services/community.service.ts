@@ -209,8 +209,10 @@ const ACTOR_UUID =
 export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
   Record<CommunityAuditAction, string>
 > = {
-  MEMBER_PROMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
-  MEMBER_DEMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
+  // updateMemberRole only ever toggles MODERATOR ↔ MEMBER (the community admin's
+  // role is immutable there), so these two ARE the moderator grant/removal.
+  MEMBER_PROMOTED: USER_AUDIT_ACTIONS.COMMUNITY_MODERATOR_PROMOTED,
+  MEMBER_DEMOTED: USER_AUDIT_ACTIONS.COMMUNITY_MODERATOR_DEMOTED,
   MEMBER_KICKED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED,
   MEMBER_BANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_BANNED,
   MEMBER_UNBANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_UNBANNED,
@@ -229,6 +231,7 @@ export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
   JOIN_REQUEST_REJECTED: USER_AUDIT_ACTIONS.COMMUNITY_JOIN_REQUEST_REJECTED,
   INVITE_LINK_CREATED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_CREATED,
   INVITE_LINK_REVOKED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_REVOKED,
+  COMMUNITY_REPORT_DELETED: USER_AUDIT_ACTIONS.REPORT_DELETED,
 };
 
 /**
@@ -2425,14 +2428,19 @@ export const communityService = {
       // uuid column, so those MUST go over as SYSTEM with no actor — otherwise the
       // consumer rejects the message and the row is lost to the dead-letter queue.
       const isUserActor = ACTOR_UUID.test(entry.actorId);
+      // An action taken against a person targets the PERSON — the audit reader
+      // asks "who was promoted / banned", and a community id does not answer it.
+      // The community stays in the metadata either way.
+      const targetsUser = Boolean(entry.targetUserId);
       publishAdminActivitySafe({
         actorId: isUserActor ? entry.actorId : null,
         actorType: isUserActor ? "USER" : "SYSTEM",
         action: mirrored,
-        targetType: "community",
-        targetId: entry.communityId,
+        targetType: targetsUser ? "user" : "community",
+        targetId: targetsUser ? entry.targetUserId : entry.communityId,
         after: {
           communityAction: entry.action,
+          communityId: entry.communityId,
           targetUserId: entry.targetUserId ?? null,
           ...(entry.reason ? { reason: entry.reason } : {}),
         },
@@ -7850,6 +7858,16 @@ export const communityService = {
     logger.info(
       `Community report withdrawn: community=${communityId} report=${reportId} by=${callerId}`
     );
+
+    // Not a moderation action (so no community audit entry), but the platform
+    // trail still needs it: a report that vanishes should say who retracted it.
+    publishAdminActivitySafe({
+      actorId: callerId,
+      action: USER_AUDIT_ACTIONS.REPORT_WITHDRAWN,
+      targetType: "report",
+      targetId: reportId,
+      after: { communityId, reason: "withdrawn_by_reporter" },
+    });
 
     return toReportData(updated);
   },

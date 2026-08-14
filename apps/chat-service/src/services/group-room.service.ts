@@ -871,13 +871,16 @@ export class GroupRoomService {
 
     // Disband posts no SYSTEM message, so the admin-panel mirror is emitted here
     // rather than in GroupSystemMessageService like the other lifecycle events.
-    publishAdminActivitySafe({
-      actorId: opts?.asPlatformAdmin ? null : userId,
-      action: USER_AUDIT_ACTIONS.GROUP_DISBANDED,
-      targetType: "group",
-      targetId: roomId,
-      after: { asPlatformAdmin: Boolean(opts?.asPlatformAdmin) },
-    });
+    // Skipped for a platform-admin disband: backoffice-service already wrote the
+    // canonical row, with the acting admin on it instead of a null actor.
+    if (!opts?.asPlatformAdmin) {
+      publishAdminActivitySafe({
+        actorId: userId,
+        action: USER_AUDIT_ACTIONS.GROUP_DISBANDED,
+        targetType: "group",
+        targetId: roomId,
+      });
+    }
 
     // Fan out on every member's own `user:<id>` channel — the gateway re-emits
     // it on /chat, so open clients flip to read-only without a reload. Members

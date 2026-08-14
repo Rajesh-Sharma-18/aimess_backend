@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import * as amqp from "amqplib";
 
+import { currentAuditContext, resolveAuditSource } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 import {
   AdminActivityEvents,
@@ -54,9 +55,26 @@ export type AdminActivityInput = Omit<
 };
 
 function toPayload(data: AdminActivityInput): AdminActivityIngestPayload {
+  // Source/IP/user-agent come from the ambient request context established at the
+  // edge (@aimess/constants auditContextMiddleware, or the gRPC ingress wrapper for
+  // socket-originated calls). An explicit value on the call site still wins — that
+  // is how backfill scripts stamp historical rows. Outside any request there is no
+  // client, so the row is SYSTEM.
+  const ambient = currentAuditContext();
+  const userAgent = data.userAgent ?? ambient?.userAgent ?? null;
   return {
     ...data,
     actorType: data.actorType ?? (data.actorId ? "USER" : "SYSTEM"),
+    // Outside a request there is usually no client — except when replaying
+    // history, where the stored user-agent IS the original client signal. Falling
+    // back to it lets every backfill script stamp a real source with no per-script
+    // change; with neither, SYSTEM correctly means "the platform did this".
+    source:
+      data.source ??
+      ambient?.source ??
+      (userAgent ? resolveAuditSource({ "user-agent": userAgent }) : "SYSTEM"),
+    ip: data.ip ?? ambient?.ip ?? null,
+    userAgent,
     eventAt: data.eventAt ?? new Date().toISOString(),
     eventId: data.eventId ?? randomUUID(),
   };

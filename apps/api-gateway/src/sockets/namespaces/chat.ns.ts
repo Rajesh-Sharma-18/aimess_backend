@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { readPresenceSnapshots } from "@aimess/redis";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import {
@@ -996,6 +997,7 @@ export function registerChatNamespace(
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
     scopeSocketLocale(socket);
+    bindSocketAuditContext(socket);
     const deviceId = sessionId ?? socket.id;
     // One socket is one call leg. `deviceId` is only session-granular (two tabs
     // share a login), so the client's per-page-load `legId` supersedes it as soon

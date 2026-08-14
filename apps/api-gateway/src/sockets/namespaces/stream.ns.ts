@@ -4,6 +4,7 @@ import { z } from "zod";
 import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import { scopeSocketLocale } from "../locale-scope.js";
@@ -453,6 +454,7 @@ export function registerStreamNamespace(
   streamNs.on("connection", (socket: Socket) => {
     const { userId, locale } = socket.data;
     scopeSocketLocale(socket);
+    bindSocketAuditContext(socket);
     logger.debug(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );

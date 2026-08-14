@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { auditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 
 import { accountDeletionRoutes } from "./api/routes/account-deletion.routes.js";
@@ -34,6 +35,10 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(localeMiddleware);
+// Establishes the ambient audit context (client source + IP + user-agent) for
+// every request below it, so audit rows written deep in a service know where
+// the action came from without threading a parameter through each call site.
+app.use(auditContextMiddleware);
 
 app.get("/health", (_req, res) => {
   res.status(200).json({

@@ -3,9 +3,14 @@ import * as grpc from "@grpc/grpc-js";
 import CircuitBreaker from "opossum";
 import { logger } from "@aimess/logger";
 import {
+  AUDIT_SOURCES,
+  currentAuditContext,
   currentLocale,
+  isAuditSource,
   resolveLocale,
+  runWithAuditContext,
   runWithLocale,
+  type AuditSource,
   type SupportedLocale,
 } from "@aimess/constants";
 
@@ -38,6 +43,15 @@ const SERVICE_TOKEN_METADATA_KEY = "x-aimess-service-token";
  */
 const LOCALE_METADATA_KEY = "x-lang";
 
+/**
+ * Which client the in-flight action originated from, carried across the same
+ * hop for the same reason as `x-lang`: a message deleted from the Android app
+ * reaches chat-service over gRPC from the gateway, and the audit row it writes
+ * must say ANDROID — not "the service that happened to call me". Same trust
+ * boundary as the service token: only an authenticated service can set it.
+ */
+const AUDIT_SOURCE_METADATA_KEY = "x-audit-source";
+
 const serviceToken = (): string => process.env.GRPC_SERVICE_TOKEN ?? "";
 
 /** Constant-time compare of two possibly-different-length strings. */
@@ -63,7 +77,30 @@ function serviceCallMetadata(locale?: SupportedLocale): grpc.Metadata {
   const token = serviceToken();
   if (token) metadata.set(SERVICE_TOKEN_METADATA_KEY, token);
   metadata.set(LOCALE_METADATA_KEY, locale ?? currentLocale());
+  const audit = currentAuditContext();
+  if (audit) {
+    metadata.set(AUDIT_SOURCE_METADATA_KEY, audit.source);
+    if (audit.ip) metadata.set("x-audit-ip", audit.ip);
+    if (audit.userAgent) metadata.set("x-audit-user-agent", audit.userAgent);
+  }
   return metadata;
+}
+
+function metadataValue(
+  metadata: grpc.Metadata | undefined,
+  key: string
+): string | null {
+  const raw = metadata?.get(key)[0];
+  const value = typeof raw === "string" ? raw : raw?.toString();
+  return value?.trim() ? value.trim() : null;
+}
+
+/** Read `x-audit-source` off an inbound call; SYSTEM when the caller sent none. */
+export function auditSourceFromMetadata(
+  metadata: grpc.Metadata | undefined
+): AuditSource {
+  const value = metadataValue(metadata, AUDIT_SOURCE_METADATA_KEY);
+  return isAuditSource(value) ? value : AUDIT_SOURCES.SYSTEM;
 }
 
 /**
@@ -132,7 +169,14 @@ export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
       // awaits) so downstream serializers can localize without every signature
       // between here and them growing a `locale` parameter.
       runWithLocale(localeFromMetadata(call.metadata), () =>
-        (handler as (c: unknown, cb?: unknown) => void)(call, callback)
+        runWithAuditContext(
+          {
+            source: auditSourceFromMetadata(call.metadata),
+            ip: metadataValue(call.metadata, "x-audit-ip"),
+            userAgent: metadataValue(call.metadata, "x-audit-user-agent"),
+          },
+          () => (handler as (c: unknown, cb?: unknown) => void)(call, callback)
+        )
       );
     };
   }

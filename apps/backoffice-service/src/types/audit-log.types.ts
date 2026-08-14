@@ -11,6 +11,24 @@ import type { MediaObject } from "@aimess/shared-types";
 // Which side of the platform the actor belongs to.
 export type AuditActorKind = "ADMIN" | "USER" | "SYSTEM";
 
+// Which client the action originated from. Mirrors the AuditSource DB enum.
+export type AuditSourceKind =
+  | "ADMIN_PANEL"
+  | "WEB"
+  | "ANDROID"
+  | "IOS"
+  | "SYSTEM";
+
+// The five mandatory audit categories. Derived from the action at read time
+// (see @aimess/messaging AUDIT_ACTION_CATEGORY) — never stored, so re-classifying
+// an action is a one-line change with no migration and no stale rows.
+export type AuditCategoryKind =
+  | "MODERATOR_MANAGEMENT"
+  | "ADMIN_MANAGEMENT"
+  | "USER_MANAGEMENT"
+  | "CONTENT_MANAGEMENT"
+  | "AUTH_SECURITY";
+
 /** Who performed the action (admin table, user-service profile, or nobody for SYSTEM). */
 export type AuditPerformer = {
   // AdminUser.id / AuthUser.id; null for SYSTEM rows.
@@ -30,6 +48,10 @@ export type AuditPerformer = {
 export type AuditLogListItem = {
   id: string;
   performer: AuditPerformer;
+  /** Admin Panel / Website / Android / iOS / System — what the UI's Source column shows. */
+  source: AuditSourceKind;
+  /** Which of the five mandatory categories this action belongs to; null if unclassified. */
+  category: AuditCategoryKind | null;
   action: string;
   targetType: string;
   targetId: string | null;
@@ -40,6 +62,8 @@ export type AuditLogListItem = {
 export type AuditLogDetail = {
   id: string;
   performer: AuditPerformer;
+  source: AuditSourceKind;
+  category: AuditCategoryKind | null;
   action: string;
   targetType: string;
   targetId: string | null;
@@ -58,7 +82,11 @@ export type AuditLogDetail = {
 export type ListAuditLogsQuery = {
   search?: string;
   action?: string[];
-  // ADMIN = admin-panel action, USER = website action, SYSTEM = platform job.
+  // One of the five mandatory categories; narrows to that category's actions.
+  category?: AuditCategoryKind[];
+  // Which client it came from — the Source column's filter.
+  source?: AuditSourceKind[];
+  // Who acted: ADMIN (an admin account), USER (an end user), SYSTEM (platform job).
   actorType?: AuditActorKind[];
   dateFrom?: string;
   dateTo?: string;
