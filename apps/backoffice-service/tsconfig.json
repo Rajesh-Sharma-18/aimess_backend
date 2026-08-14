@@ -8,5 +8,11 @@
     // re-declares it for the same reason.
     "outDir": "dist"
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests are never part of the shipped build. Jest runs only `tests/**` (see
+  // tooling/jest/jest.preset.cjs) and transpiles with `diagnostics: false`, so
+  // compiling test files here only lets a mock's type mismatch break `docker
+  // build`. Every other service keeps tests outside `src`; this service has
+  // legacy `__tests__` folders inside it, so exclude them explicitly.
+  "exclude": ["src/**/__tests__/**", "src/**/*.test.ts", "src/**/*.spec.ts"]
 }
