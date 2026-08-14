@@ -95,6 +95,8 @@ describe("getCommunityMessages — pinnedMessageJson", () => {
       ...BASE_REQUEST,
       roomId: "room_42",
     });
-    expect(getActivePinSummary).toHaveBeenCalledWith("room_42");
+    // Viewer-scoped: the requester rides along so a message THEY deleted for
+    // themselves is not still served back to them as the pinned message.
+    expect(getActivePinSummary).toHaveBeenCalledWith("room_42", "usr_1");
   });
 });

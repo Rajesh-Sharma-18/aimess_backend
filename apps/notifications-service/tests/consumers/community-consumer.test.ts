@@ -225,6 +225,65 @@ describe("MEMBER_ADDED branch", () => {
   });
 });
 
+describe("REPORT_CREATED branch", () => {
+  const REPORT_PAYLOAD = {
+    communityId: CID,
+    eventAt: "2026-08-14T10:00:00.000Z",
+    reportId: "report-1",
+    reporterId: MOD,
+    targetUserId: REQUESTER,
+    reason: "SPAM",
+    communityName: "Cool Community",
+    communityAvatarUrl: "https://cdn.example.com/cool.png",
+  };
+
+  it("excludes the reporter from the review push and names the community", async () => {
+    await deliver(CommunityEvents.REPORT_CREATED, {
+      ...REPORT_PAYLOAD,
+      moderatorRecipientIds: [MOD, "moderator-2"],
+    });
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    const [recipients, build] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { copy: (l: string) => { title: string; body: string } },
+    ];
+    expect(recipients).toEqual(["moderator-2"]);
+    const arg = build("moderator-2");
+    expect(arg.copy("en").title).toBe("Cool Community");
+    expect(arg.copy("en").body).toBe("A new report needs review.");
+  });
+
+  it("sends nothing when the reporter is the only moderator", async () => {
+    await deliver(CommunityEvents.REPORT_CREATED, {
+      ...REPORT_PAYLOAD,
+      moderatorRecipientIds: [MOD],
+    });
+
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("MEMBER_UNBANNED branch", () => {
+  it("titles the push with the community and drops the redundant body", async () => {
+    await deliver(CommunityEvents.MEMBER_UNBANNED, {
+      communityId: CID,
+      eventAt: "2026-08-14T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      communityName: "Vasundhara Community",
+      communityAvatarUrl: "https://cdn.example.com/v.png",
+    });
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const arg = push.mock.calls[0][0];
+    expect(arg.userId).toBe(REQUESTER);
+    expect(arg.copy("en").title).toBe("Vasundhara Community");
+    expect(arg.copy("en").body).toBe("Your ban has been lifted.");
+    expect(arg.data.communityAvatarUrl).toBe("https://cdn.example.com/v.png");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Deep-link navigation tests (T8 — navigation + actorSnapshot in FCM data)
 // ---------------------------------------------------------------------------

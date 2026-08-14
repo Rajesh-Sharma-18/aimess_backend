@@ -311,16 +311,16 @@ describe("banMember — real-time broadcasts", () => {
     expect(pubRoomEvent).not.toHaveBeenCalled();
   });
 
-  it("posts a MEMBER_BANNED chat system message (PERSONAL — visible only to the banned user), via the AWAITED publish", async () => {
+  it("posts NO MEMBER_BANNED chat system message (hidden end-to-end — the sticky banned banner covers it)", async () => {
     await communityService.banMember(CID, ADMIN, TARGET, "spam");
 
-    // MEMBER_BANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES, so it's always
-    // posted. It rides the AWAITED variant (not the fire-and-forget Safe one)
-    // so the enqueue is confirmed before eviction/ban-notice events fire.
+    // MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES, so no chat line is
+    // created on either publish variant — the banned user's own history stays
+    // free of a bubble duplicating their sticky banner.
     const postedTypes = pubSysMsgAwaited.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).toContain("MEMBER_BANNED");
+    expect(postedTypes).not.toContain("MEMBER_BANNED");
   });
 
   it("does NOT write removal/ban to lastActivity (ban never becomes the list preview)", async () => {

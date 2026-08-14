@@ -18,6 +18,18 @@ const createLimit = createRateLimit({
   keyPrefix: "gr:create",
 });
 
+/**
+ * Changing the auto-delete policy — low-frequency and abuse-sensitive: each
+ * accepted change posts a system line to every member, wakes every member's
+ * devices, and re-stamps every enrolled message in the room. Same budget as
+ * private's `pm:sensitive`, which this endpoint was missing entirely.
+ */
+const sensitiveLimit = createRateLimit({
+  windowMs: 60_000,
+  maxRequests: 30,
+  keyPrefix: "gr:sensitive",
+});
+
 export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
   const router = Router();
 
@@ -50,6 +62,7 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
   router.put(
     "/rooms/:roomId/auto-delete",
     authenticate,
+    sensitiveLimit,
     validateBody(autoDeleteSchema),
     ctrl.setAutoDelete
   );

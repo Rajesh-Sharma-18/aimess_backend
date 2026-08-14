@@ -19,6 +19,11 @@ export interface UserSnapshotRecord {
   username: string;
   displayName: string;
   avatarObjectKey: string;
+  /**
+   * Presigned GET URL, already resolved by user-service (proto `avatar_url`).
+   * "" when there is no avatar or MinIO was unreachable. Never persist it.
+   */
+  avatarUrl?: string;
 }
 export type UserClient = {
   bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[] | null>;

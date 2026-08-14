@@ -19,6 +19,26 @@ export class FriendshipRepository {
     return friendship?.status === "BLOCKED";
   }
 
+  /**
+   * Is EITHER party blocking the other? A block is stored one-way
+   * (blocker -> blocked), but its effect is mutual: neither side may call the
+   * other afterwards. Read here rather than from `PrivateRoom.blockedBy` so the
+   * answer also holds for a pair with no DM room yet.
+   */
+  async isBlockedEitherWay(userA: string, userB: string): Promise<boolean> {
+    const blocked = await prisma.friendship.findFirst({
+      where: {
+        status: "BLOCKED",
+        OR: [
+          { userId: userA, friendId: userB },
+          { userId: userB, friendId: userA },
+        ],
+      },
+      select: { id: true },
+    });
+    return blocked !== null;
+  }
+
   async getFriendshipStatus(
     userA: string,
     userB: string

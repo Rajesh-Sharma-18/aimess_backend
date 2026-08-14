@@ -221,6 +221,7 @@ MongoDB uses `db push` (index sync), one database per service — swap
 | stream        | `stream_db`            | `pnpm db:push:stream` (uses `STREAM_DATABASE_URL`)       |
 | chat          | `aimess_chat`          | `pnpm db:push:chat` (uses `MONGO_DATABASE_URL`)          |
 | notifications | `aimess_notifications` | `pnpm db:push:notifications` (uses `MONGO_DATABASE_URL`) |
+| media         | `media_db`             | `pnpm db:push:media` (uses `MONGO_DATABASE_URL`)         |
 
 Run migrations **before** starting the new service image if a release adds
 columns the code requires.

@@ -239,7 +239,9 @@ function conversationPath(tag: string, summary: string) {
       tags: [tag],
       summary,
       description:
-        "Offset-paginated message history, newest-first, returning messages with `createdAt < timestamp` (defaults to now). Side effect: advances the caller's read pointer, marking the room read up to the newest returned message.",
+        "Offset-paginated message history, newest-first, returning messages with `createdAt < timestamp` (defaults to now). Side effect: advances the caller's read pointer, marking the room read up to the newest returned message. " +
+        "For a BANNED community member the page is capped at their ban timestamp and the pointer advances within that cap, so opening the room clears their unread badge without ever acknowledging a post-ban message. " +
+        "A PUBLIC-community non-member holds no membership row and so has no read pointer to advance.",
       security: [{ bearerAuth: [] }],
       parameters: [
         roomIdPathParam,
@@ -843,6 +845,231 @@ const privateRoomMute = {
       "400": badRequest,
       "401": unauthorized,
       "404": notFound,
+    },
+  },
+};
+
+// ── Auto-delete (disappearing messages) ─────────────────────────────────────
+//
+// One policy per conversation, one wire shape (`RoomAutoDeletePolicy`) for both
+// conversation kinds, GET and PUT alike, and for the `conv:auto_delete:updated`
+// socket event. The two endpoints below differ ONLY in who may write and in
+// `capabilities.supportsAfterViewing`.
+
+const roomIdParam = {
+  name: "roomId",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+};
+
+const tooManyRequests = {
+  description:
+    "Rate limited — 30 policy changes per minute per caller. Changing the policy posts a system line to the conversation, wakes every participant's devices and re-stamps every enrolled message, so it is deliberately not a per-keystroke endpoint.",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
+const autoDeletePolicyExample = {
+  conversationType: "PRIVATE",
+  mode: "TIMER",
+  ttlSeconds: 604800,
+  isEnabled: true,
+  label: "7 days",
+  setAt: 1780000000000,
+  setBy: "b3f1c2d4-0000-4000-8000-000000000001",
+  policyVersion: 7,
+  canEdit: true,
+  capabilities: { supportsAfterViewing: true },
+  self: { mode: "TIMER", ttlSeconds: 604800, setAt: 1780000000000 },
+};
+
+const privateAutoDelete = {
+  get: {
+    tags: ["Chat — Private"],
+    operationId: "getPrivateAutoDelete",
+    summary: "Get a private chat's disappearing-messages policy",
+    description:
+      "The conversation's ONE auto-delete policy — the same answer for either participant.\n\n" +
+      "The same object is embedded in unified-inbox rows and in room details, so a cold-started client does not need one request per conversation to render timer icons.\n\n" +
+      "**Permissions:** any participant. A non-participant gets `404` (not `403`), so a stranger cannot probe which room ids exist.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    responses: {
+      "200": {
+        description: "Current policy",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      $ref: "#/components/schemas/RoomAutoDeletePolicy",
+                    },
+                  },
+                },
+              ],
+            },
+            example: { success: true, data: autoDeletePolicyExample },
+          },
+        },
+      },
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+  put: {
+    tags: ["Chat — Private"],
+    operationId: "setPrivateAutoDelete",
+    summary: "Set a private chat's disappearing-messages policy",
+    description:
+      "Sets the policy for the CONVERSATION. Either participant may change it and both then follow it; the actor is taken from the access token, never from the body.\n\n" +
+      "**Effects of an accepted change**\n" +
+      "- messages already counting down are re-stamped onto the new deadline;\n" +
+      "- messages sent while the policy was `OFF` are **not** retroactively enrolled;\n" +
+      "- turning the policy `OFF` does **not** cancel deadlines already armed — those messages still disappear on schedule;\n" +
+      "- a system line is posted to the chat and `conv:auto_delete:updated` is published to every device of both participants;\n" +
+      "- saving the identical policy is a no-op: no version bump, no system line, no event.\n\n" +
+      "**Timer semantics.** `autoDeleteAt` is computed from the server's canonical creation time plus `ttlSeconds` and stored with the message. Delivery receipts, read receipts, view events, app state and connectivity never start, pause, reset or extend it, and a recipient who is offline or never opens the conversation does not delay server-side expiry.\n\n" +
+      "**Errors**\n" +
+      "- `CHAT_AUTO_DELETE_INVALID_MODE` — `mode` is not one of the enum values;\n" +
+      "- `CHAT_AUTO_DELETE_INVALID_TTL` — `mode` is `TIMER` and `ttlSeconds` is missing, non-integer, or outside 60…31536000;\n" +
+      "- `CHAT_ROOM_NOT_FOUND` — unknown room, or the caller is not a participant.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            $ref: "#/components/schemas/UpdateRoomAutoDeleteRequest",
+          },
+          examples: {
+            oneWeekTimer: {
+              summary: "Delete after 1 week",
+              value: { mode: "TIMER", ttlSeconds: 604800 },
+            },
+            twentyFourHours: {
+              summary: "Delete after 24 hours",
+              value: { mode: "TIMER", ttlSeconds: 86400 },
+            },
+            thirtyDays: {
+              summary: "Delete after 30 days",
+              value: { mode: "TIMER", ttlSeconds: 2592000 },
+            },
+            afterViewing: {
+              summary: "Delete shortly after the recipient reads it",
+              value: { mode: "AFTER_VIEWING" },
+            },
+            off: { summary: "Turn it off", value: { mode: "OFF" } },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Policy updated", "RoomAutoDeletePolicy"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+      "429": tooManyRequests,
+    },
+  },
+};
+
+const groupAutoDelete = {
+  get: {
+    tags: ["Chat — Groups"],
+    operationId: "getGroupAutoDelete",
+    summary: "Get a group's disappearing-messages policy",
+    description:
+      "The group's ONE auto-delete policy — the same answer for every member.\n\n" +
+      "`capabilities.supportsAfterViewing` is always `false` here; hide that option in group UI. `canEdit` reflects the CALLER's role, so a plain member can be shown the policy read-only instead of discovering the rule via a 403.\n\n" +
+      "**Permissions:** any active member may read. A non-member gets `404`, not `403`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    responses: {
+      "200": {
+        description: "Current policy",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      $ref: "#/components/schemas/RoomAutoDeletePolicy",
+                    },
+                  },
+                },
+              ],
+            },
+            example: {
+              success: true,
+              data: {
+                ...autoDeletePolicyExample,
+                conversationType: "GROUP",
+                capabilities: { supportsAfterViewing: false },
+              },
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+  put: {
+    tags: ["Chat — Groups"],
+    operationId: "setGroupAutoDelete",
+    summary: "Set a group's disappearing-messages policy",
+    description:
+      "Sets the policy for the whole group. Every member's messages follow it regardless of who sent them, and a message expires whether or not every member has read it — an offline or never-opening member does not hold it back.\n\n" +
+      "**Permissions:** `ADMIN` and `MODERATOR` only. A plain member gets `403 CHAT_INSUFFICIENT_PERMISSIONS`; a non-member gets `404`.\n\n" +
+      "**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean \"the first member to open the chat deletes it for everyone who hasn't\" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n" +
+      "Restamp, no-op, turn-off and timer semantics are identical to the private endpoint.\n\n" +
+      "**Errors**\n" +
+      "- `CHAT_AUTO_DELETE_MODE_UNSUPPORTED` — `AFTER_VIEWING` in a group;\n" +
+      "- `CHAT_AUTO_DELETE_INVALID_MODE` / `CHAT_AUTO_DELETE_INVALID_TTL` — as private;\n" +
+      "- `CHAT_INSUFFICIENT_PERMISSIONS` — caller is an active member but not ADMIN/MODERATOR;\n" +
+      "- `CHAT_ROOM_NOT_FOUND` — unknown group, or the caller is not an active member.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            $ref: "#/components/schemas/UpdateRoomAutoDeleteRequest",
+          },
+          examples: {
+            oneWeekTimer: {
+              summary: "Delete after 1 week",
+              value: { mode: "TIMER", ttlSeconds: 604800 },
+            },
+            off: { summary: "Turn it off", value: { mode: "OFF" } },
+            rejected: {
+              summary: "Rejected — After Viewing is not supported in groups",
+              value: { mode: "AFTER_VIEWING" },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Policy updated", "RoomAutoDeletePolicy"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "429": tooManyRequests,
     },
   },
 };
@@ -2082,8 +2309,9 @@ const communityMessages = {
       "but anything created after the ban is never returned, even on rejoin/resync. This applies in both PUBLIC and PRIVATE " +
       "communities and replaces the previous behavior where a banned member was rejected outright.\n\n" +
       "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community', " +
-      "MEMBER_BANNED 'You were banned from this community.', MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
-      "— other members never see them in this history, even in PUBLIC communities.\n\n" +
+      "MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
+      "— other members never see them in this history, even in PUBLIC communities. MEMBER_BANNED is NOT among them: it is " +
+      "hidden from everyone including the banned user, whose sticky banned banner (driven by `isBanned`) already states it.\n\n" +
       "**Scroll / history mode** (`before_seq`, `before_ts`, or neither):\n" +
       "- `before_seq` → messages with `sequenceNumber < before_seq`, newest-first. **Preferred**: gap-safe, the same " +
       "axis private/group page on, and it takes precedence over the `*_ts` params. Walk forward with `after_seq`.\n" +
@@ -3950,6 +4178,7 @@ export const chatPaths = {
   "/chat/private/messages/{messageId}": privateMessageDelete,
   "/chat/private/messages/{messageId}/report": privateMessageReport,
   "/chat/private/rooms/{roomId}/report": privateUserReport,
+  "/chat/private/rooms/{roomId}/auto-delete": privateAutoDelete,
   "/chat/private/rooms/{roomId}/mute": privateRoomMute,
   "/chat/private/rooms/{roomId}/unmute": privateRoomUnmute,
   "/chat/private/rooms/{roomId}/archive": privateRoomArchive,
@@ -3961,6 +4190,7 @@ export const chatPaths = {
   "/chat/groups": groupCreate,
   "/chat/groups/my-groups": groupMyGroups,
   "/chat/groups/rooms/{roomId}": groupById,
+  "/chat/groups/rooms/{roomId}/auto-delete": groupAutoDelete,
   "/chat/groups/rooms/{roomId}/clear": groupClear,
   "/chat/groups/rooms/{roomId}/disband": groupDisband,
   "/chat/groups/rooms/{roomId}/archive": groupArchive,

@@ -27,6 +27,9 @@ import type {
   UserStatusResult,
 } from "../types/user-management.types.js";
 
+/** The statuses that count as an ACTIVE ban — the single definition. */
+const BANNED_STATUSES: UserStatus[] = ["BANNED", "SUSPENDED"];
+
 /**
  * Derive the simplified 2-value moderation view from the full `status`.
  * BANNED and SUSPENDED both count as an active ban — see {@link ModerationStatus}.
@@ -35,8 +38,25 @@ export function deriveModerationStatus(status: UserStatus): {
   moderationStatus: ModerationStatus;
   isBanned: boolean;
 } {
-  const isBanned = status === "BANNED" || status === "SUSPENDED";
+  const isBanned = BANNED_STATUSES.includes(status);
   return { moderationStatus: isBanned ? "BANNED" : "ACTIVE", isBanned };
+}
+
+/**
+ * Dashboard "Banned Users" — DB-level COUNT over the `UserIndex` mirror, which
+ * per {@link resolveModerationStatus} is the ONLY place a ban is persisted
+ * (auth-service never writes AccountStatus.BANNED/SUSPENDED, so counting there
+ * always yields 0). Uses the same {@link BANNED_STATUSES} set the User
+ * Management list's `status=BANNED` filter expands to, so the card and the list
+ * can't disagree. One row per user (userId is the PK) — no duplicate inflation.
+ *
+ * ponytail: counts SUSPENDED rows whose `suspendedUntil` has already passed,
+ * because nothing sweeps expired suspensions back to ACTIVE — the whole panel
+ * still shows those users as banned. Add `suspendedUntil` filtering here only
+ * together with an expiry sweep, or the card and the list will diverge.
+ */
+export function countBannedUsers(): Promise<number> {
+  return prisma.userIndex.count({ where: { status: { in: BANNED_STATUSES } } });
 }
 
 /** The `UserIndex` columns needed to merge moderation state into a live-sourced row. */

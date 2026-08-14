@@ -1995,10 +1995,15 @@ export const communityPaths = {
       summary: "Ban a member",
       description:
         "Admin only. Sets the member's status to BANNED and recomputes memberCount. You cannot ban yourself or the community admin. Idempotent when the member is already banned. " +
-        "Posts a PERSONAL `MEMBER_BANNED` system message ('You were banned from this community.') visible only to the banned " +
-        "user's own chat history — silent for everyone else. The banned member keeps read access to their pre-ban chat " +
-        "history (via GET /chat/community/rooms/{roomId}/messages and the sync endpoint) but never sees anything created " +
-        "after the ban.",
+        "Posts NO chat system message at all — `MEMBER_BANNED` is hidden end-to-end, for the banned user as well as for " +
+        "everyone else. The banned user learns of the ban from `community:membership:restricted` (isBanned: true), the push " +
+        "notification, and `isBanned` on the community detail/list, which is what drives the persistent banned banner in the " +
+        "client; a chat bubble repeating that sentence would be a duplicate of it. The banned member keeps read access to " +
+        "their pre-ban chat history (via GET /chat/community/rooms/{roomId}/messages and the sync endpoint) but never sees " +
+        "anything created after the ban. Their existing unread count is left untouched by the ban itself but is then FROZEN: " +
+        "a ban revokes Mark as Read (and Mute Notifications), so neither opening the room nor the community-list menu " +
+        "advances their read pointer any more. Delete Conversation (DELETE /communities/{id}/me) is the only list action " +
+        "left to them, and it removes the row outright.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4592,7 +4597,7 @@ export const communityPaths = {
       operationId: "bulkMuteCommunities",
       summary: "Bulk mute or unmute communities",
       description:
-        'Mute or unmute multiple communities at once. Set `action` to `"mute"` or `"unmute"`. For mute: communities already muted or where the caller is not an ACTIVE member are silently skipped; `durationMinutes` null/omitted → indefinite mute. For unmute: communities not currently muted are silently skipped.',
+        'Mute or unmute multiple communities at once. Set `action` to `"mute"` or `"unmute"`. Both directions require an **ACTIVE** membership — a community the caller is BANNED from is silently skipped (it appears in `skipped`, never in `muted`/`unmuted`), matching the single-community `PUT`/`DELETE /communities/{id}/mute`, which reject a banned caller with `403`. A ban leaves only *Delete Conversation* usable from the community-list menu. For mute: `durationMinutes` null/omitted → indefinite mute. For unmute: communities not currently muted are also skipped.',
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -4634,7 +4639,7 @@ export const communityPaths = {
       operationId: "bulkMarkCommunityChatsRead",
       summary: "Bulk mark community chats as read",
       description:
-        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped (updatedCount reflects only rows actually updated).",
+        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped — `updatedCount` reflects only rows actually updated. A community the caller is **BANNED** from is NOT skipped: it stays in their list carrying an unread badge, so *Mark all as read* has to be able to clear it too. (Mute Notifications remains revoked by a ban; *Delete Conversation* and *Mark as Read* both stay available.)",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {

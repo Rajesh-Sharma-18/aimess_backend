@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
@@ -6,10 +8,12 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   buildAutoDeleteWire,
   formatAutoDeleteDuration,
+  readPolicyVersion,
   readRoomAutoDelete,
   validateAutoDeleteInput,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
+import { AUTO_DELETE_STUCK_ATTEMPTS } from "../lib/auto-delete-claim.js";
 import { SystemEvent } from "../types/enums.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -22,15 +26,28 @@ export interface AutoDeleteInput {
   ttlSeconds?: number | null;
 }
 
+/** What one sweep page actually did — see {@link AutoDeleteService.sweepDue}. */
+export interface SweepResult {
+  /** Rows this worker leased. Drives the caller's drain loop. */
+  claimed: number;
+  /** Rows whose canonical delete completed. */
+  completed: number;
+  /** Rows whose delete threw and were handed back with backoff. */
+  failed: number;
+}
+
 /**
  * "Automatically Delete Messages" for PRIVATE 1:1 chats.
  *
- * Owns the three moving parts the feature needs beyond the send path (which
- * stamps each new message itself — see `PrivateMessageService.sendMessage`):
+ * Owns the four things the feature needs beyond the send path (which stamps
+ * each new message itself — see `PrivateMessageService.sendMessage`):
  *
- *   1. the per-user setting (read/write + system message + realtime fan-out),
- *   2. re-stamping messages already counting down when the timer CHANGES,
- *   3. the sweeper that actually deletes due messages.
+ *   1. the room policy (read/write + system message + realtime fan-out),
+ *   2. re-stamping messages already counting down when the timer CHANGES —
+ *      durably, via `PrivateRoom.autoDeleteRestampPending`,
+ *   3. the sweeper that actually deletes due messages, exactly once across
+ *      replicas via the claim/lease in `lib/auto-delete-claim.ts`,
+ *   4. the repair pass that finishes a restamp a crash interrupted.
  *
  * Deletion deliberately routes through `ChatMessageOrchestrator.deleteDirect`
  * — the same entry point a manual "delete for everyone" uses — so an
@@ -56,13 +73,30 @@ export class AutoDeleteService {
     return { room, peerId };
   }
 
+  /**
+   * The canonical room-policy DTO for this conversation — identical shape to
+   * the group endpoint, the PUT response and the socket event. Either
+   * participant may edit a private policy, so `canEdit` is always true here.
+   */
+  private wire(room: {
+    autoDelete?: unknown;
+    autoDeleteBy?: unknown;
+    autoDeletePolicyVersion?: number | null;
+  }): Record<string, unknown> {
+    return buildAutoDeleteWire(readRoomAutoDelete(room), {
+      conversationType: "PRIVATE",
+      policyVersion: readPolicyVersion(room),
+      canEdit: true,
+    });
+  }
+
   /** This conversation's timer — the same answer for either participant. */
   async getSettings(
     roomId: string,
     userId: string
   ): Promise<Record<string, unknown>> {
     const { room } = await this.loadRoom(roomId, userId);
-    return buildAutoDeleteWire(readRoomAutoDelete(room));
+    return this.wire(room);
   }
 
   /**
@@ -75,7 +109,7 @@ export class AutoDeleteService {
     userId: string,
     input: AutoDeleteInput
   ): Promise<Record<string, unknown>> {
-    const invalid = validateAutoDeleteInput(input);
+    const invalid = validateAutoDeleteInput(input, "PRIVATE");
     if (invalid) throw new BadRequestError(invalid);
 
     const mode = String(input.mode).toUpperCase() as AutoDeleteMode;
@@ -84,43 +118,46 @@ export class AutoDeleteService {
     const { room, peerId } = await this.loadRoom(roomId, userId);
     const before = readRoomAutoDelete(room);
     // No-op guard: a repeated tap on the same option must not spam the chat with
-    // an identical system message, re-stamp anything, or wake the other client.
+    // an identical system message, allocate a policy version, re-stamp anything,
+    // or wake the other client.
     if (before.mode === mode && (before.ttlSeconds ?? null) === ttlSeconds) {
-      return buildAutoDeleteWire(before);
+      return this.wire(room);
     }
 
+    // ONE atomic write: policy + its new version + the durable restamp intent.
     const updated = await this.roomRepo.setAutoDelete(roomId, userId, {
       mode,
       ttlSeconds,
     });
     if (!updated) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-    const after = readRoomAutoDelete(updated);
+    const policyVersion = readPolicyVersion(updated);
 
     // §8.8 — a timer CHANGE (longer or shorter) applies to messages already
     // counting down. Turning it OFF does NOT: §7 is explicit that messages that
-    // already have a timer keep deleting on schedule.
-    if (mode !== "OFF") {
-      // BOTH participants' pending messages: one timer governs the whole
-      // conversation, so leaving the peer's messages on the old deadline would
-      // split the chat into two schedules again.
-      await this.messageRepo
-        .restampPendingAutoDeletes({
-          roomId,
-          senderIds: [userId, peerId].filter(Boolean),
-          ttlSeconds,
-          afterView: mode === "AFTER_VIEWING",
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `AutoDeleteService|restamp failed room=${roomId}: ${String(err)}`
-          );
-        });
-    }
+    // already have a timer keep deleting on schedule, so `setAutoDelete` leaves
+    // no pending intent for OFF and there is nothing to run here.
+    //
+    // AWAITED, unlike before. A failure no longer disappears into a `.catch`:
+    // the pending marker written above survives it and `sweepPendingRestamps`
+    // finishes the job, so the response can say `restampPending: true` instead
+    // of claiming a change that never reached the messages.
+    const restampPending =
+      mode === "OFF"
+        ? false
+        : !(await this.runRestamp({
+            roomId,
+            senderIds: [userId, peerId].filter(Boolean),
+            ttlSeconds,
+            afterView: mode === "AFTER_VIEWING",
+            policyVersion,
+          }));
 
-    const wire = buildAutoDeleteWire(after);
+    const wire = { ...this.wire(updated), restampPending };
 
     // §2 / §7 — both sides see a system message in the chat when the setting
     // changes. Best-effort inside the system-message service; never throws.
+    // Posted HERE and never in the repair pass, so a retried restamp cannot
+    // produce a second system line or a second socket event.
     void this.systemMessageService.post({
       roomId,
       actorId: userId,
@@ -156,17 +193,98 @@ export class AutoDeleteService {
   }
 
   /**
-   * Delete one page of due messages. Returns how many rows were CLAIMED (the
-   * caller keeps draining while this equals the batch size).
+   * Re-stamp enrolled rows and retire the pending marker. Returns true when the
+   * room is fully settled, false when the work is still owed (and therefore
+   * still recorded for the repair pass).
    *
-   * Multi-node safe without a distributed lock: `deleteForEveryone` rejects an
-   * already-deleted row, so a node that loses the race simply skips it.
+   * The clear is conditional on `policyVersion`: if a newer PUT landed while we
+   * were re-stamping it has written its own, higher pending version and owes
+   * its own pass — clearing unconditionally would discard that.
    */
-  async sweepDue(now: Date, batchSize: number): Promise<number> {
-    const due = await this.messageRepo.findDueAutoDeletes(now, batchSize);
+  private async runRestamp(params: {
+    roomId: string;
+    senderIds: string[];
+    ttlSeconds: number | null;
+    afterView: boolean;
+    policyVersion: number;
+  }): Promise<boolean> {
+    try {
+      await this.messageRepo.restampPendingAutoDeletes({
+        roomId: params.roomId,
+        senderIds: params.senderIds,
+        ttlSeconds: params.ttlSeconds,
+        afterView: params.afterView,
+      });
+      await this.roomRepo.clearAutoDeleteRestampPending(
+        params.roomId,
+        params.policyVersion
+      );
+      return true;
+    } catch (err) {
+      logger.warn(
+        `AutoDeleteService|restamp deferred room=${params.roomId} version=${params.policyVersion}: ${String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Repair pass for restamps that never completed — a crash between the policy
+   * write and the message write, or a transient DB failure during it.
+   *
+   * Always re-stamps from the room's CURRENT policy rather than a remembered
+   * one, so a room that changed twice while the repair was owed converges on
+   * the latest value instead of replaying an intermediate one. Returns how many
+   * rooms it settled.
+   */
+  async sweepPendingRestamps(limit: number): Promise<number> {
+    const rooms = await this.roomRepo.findPendingAutoDeleteRestamps(limit);
+    let settled = 0;
+    for (const room of rooms) {
+      const setting = readRoomAutoDelete(room);
+      const pending = (room as { autoDeleteRestampPending?: number | null })
+        .autoDeleteRestampPending;
+      if (typeof pending !== "number") continue;
+      // The policy was turned OFF after the intent was written — nothing to
+      // re-stamp, just retire the marker.
+      if (setting.mode === "OFF") {
+        await this.roomRepo
+          .clearAutoDeleteRestampPending(room.roomId, pending)
+          .catch(() => false);
+        settled += 1;
+        continue;
+      }
+      const ok = await this.runRestamp({
+        roomId: room.roomId,
+        senderIds: (room.participants ?? []).filter(Boolean),
+        ttlSeconds: setting.ttlSeconds,
+        afterView: setting.mode === "AFTER_VIEWING",
+        policyVersion: pending,
+      });
+      if (ok) settled += 1;
+    }
+    return settled;
+  }
+
+  /**
+   * Delete one page of due messages.
+   *
+   * Rows are LEASED before anything is deleted (see `lib/auto-delete-claim.ts`),
+   * so of N replicas racing the same due row exactly one runs the canonical
+   * delete and its side effects. The previous "delete and swallow the error if
+   * someone beat us" shape ran the full side-effect chain on every replica.
+   */
+  async sweepDue(now: Date, batchSize: number): Promise<SweepResult> {
+    const claimed = await this.messageRepo.claimDueAutoDeletes({
+      now,
+      limit: batchSize,
+      token: randomUUID(),
+    });
     // One participants lookup per ROOM per sweep, not per message.
     const participantsByRoom = new Map<string, string[]>();
-    for (const row of due) {
+    let completed = 0;
+    let failed = 0;
+    for (const row of claimed) {
       if (!row.senderId) continue; // system messages are never stamped
       try {
         const { tombstone } = await this.orchestrator.deleteDirect({
@@ -178,20 +296,40 @@ export class AutoDeleteService {
         });
         await this.fanOutTombstone(row.roomId, tombstone, participantsByRoom);
         await this.clearPin(row.roomId, row.id);
+        completed += 1;
       } catch (err) {
-        // Already deleted by another node / a manual delete that beat us — both
-        // are the desired end state, so never let one row stop the page.
+        failed += 1;
+        // Hand the row back with bounded backoff rather than re-attempting it on
+        // every 30s tick forever. A manual delete that beat us is the desired
+        // end state and will simply never be selected again (`isDeleted`
+        // excludes it); anything else is a real failure worth diagnosing.
         //
-        // WARN, not debug: this used to be `logger.debug?.()`, which in a dev
-        // environment (level=info) discarded the reason a message failed to
-        // sweep. A sweep that deletes the row but cannot broadcast leaves the
-        // message on every open client, so the failure must be visible.
-        logger.warn(
-          `AutoDeleteService|sweep failed messageId=${row.id}: ${String(err)}`
+        // WARN, not debug: a sweep that deletes the row but cannot broadcast
+        // leaves the message on every open client, so the failure must be
+        // visible. Escalates once a row looks genuinely stuck.
+        const message = String(err);
+        const log =
+          row.attempts >= AUTO_DELETE_STUCK_ATTEMPTS ? logger.error : logger.warn;
+        log(
+          `AutoDeleteService|sweep failed messageId=${row.id} attempt=${row.attempts}: ${message}`
         );
+        await this.messageRepo
+          .releaseAutoDeleteClaim({
+            id: row.id,
+            attempts: row.attempts,
+            error: message,
+            now,
+          })
+          .catch((releaseErr: unknown) => {
+            // The lease expiry recovers the row one interval later, so this is
+            // a diagnostics loss, not a correctness one.
+            logger.warn(
+              `AutoDeleteService|claim release failed messageId=${row.id}: ${String(releaseErr)}`
+            );
+          });
       }
     }
-    return due.length;
+    return { claimed: claimed.length, completed, failed };
   }
 
   /**

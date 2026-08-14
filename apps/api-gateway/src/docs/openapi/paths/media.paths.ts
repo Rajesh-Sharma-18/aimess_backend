@@ -606,10 +606,109 @@ const mediaCancelUpload = {
   },
 };
 
+const mediaDataUsage = {
+  get: {
+    tags: ["Media"],
+    operationId: "getDataUsage",
+    summary: "Data usage for the current user",
+    description:
+      "The authenticated user's **uploaded** bytes for the current calendar month, split by media kind. Backs the Settings → General → Data Usage screen on web, iOS, and Android; all three render this response and none of them recompute totals or percentages locally.\n\n" +
+      '**What `totalBytes` measures.** Bytes this user uploaded, as reported by object storage itself at confirm time — not a client-declared file size. `measured` states this explicitly and is part of the contract: clients must label the figure by that field rather than calling it "network usage".\n\n' +
+      '**Downloads are not included, and are not currently measurable.** Media is delivered by presigned URLs redeemed directly against object storage, so no service observes download bytes, and the one available signal ("a presigned URL was issued") is decoupled from real transfer in both directions — a single issued URL can back many downloads or none, while re-issuing one for an unchanged object forces a fresh download by rotating its signature. Reporting that as a download total would be a plausible-looking wrong number.\n\n' +
+      "**Also excluded:** text messages, voice/video calls, livestream playback, and third-party media (GIF pickers, emoji sets, externally-hosted streams) — none of which produce a per-user byte figure the backend can verify.\n\n" +
+      "`categories` omits kinds with no usage and is sorted by `bytes` descending. `percentage` values are integers computed server-side and always sum to exactly 100; a user with no uploads this period gets `totalBytes: 0` and an empty array, which clients should render as an empty state rather than a zeroed chart.",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      "200": {
+        description: "Usage for the current period.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    periodStart: {
+                      type: "integer" as const,
+                      format: "int64" as const,
+                      description:
+                        "Inclusive start of the reported window (epoch ms, UTC). First instant of the current calendar month.",
+                      example: 1785542400000,
+                    },
+                    measured: {
+                      type: "string" as const,
+                      enum: ["UPLOAD"],
+                      description:
+                        "Which direction of transfer totalBytes covers. Only UPLOAD is produceable today; the field exists so adding downloads later is a value change, not a breaking one.",
+                      example: "UPLOAD",
+                    },
+                    totalBytes: {
+                      type: "integer" as const,
+                      format: "int64" as const,
+                      description:
+                        "Sum of every category's bytes. Bytes, never a formatted string — clients format at render time.",
+                      example: 52428800,
+                    },
+                    categories: {
+                      type: "array" as const,
+                      items: {
+                        type: "object" as const,
+                        properties: {
+                          type: {
+                            type: "string" as const,
+                            enum: ["VIDEO", "IMAGE", "AUDIO", "DOCUMENT"],
+                            description:
+                              "Derived from the stored MIME type. There is no VOICE bucket: voice notes are ordinary audio/* attachments and nothing distinguishes them in storage.",
+                            example: "VIDEO",
+                          },
+                          bytes: {
+                            type: "integer" as const,
+                            format: "int64" as const,
+                            example: 19922944,
+                          },
+                          percentage: {
+                            type: "integer" as const,
+                            description:
+                              "Integer share of totalBytes. Across categories these sum to exactly 100.",
+                            example: 38,
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              example: {
+                success: true,
+                data: {
+                  periodStart: 1785542400000,
+                  measured: "UPLOAD",
+                  totalBytes: 52428800,
+                  categories: [
+                    { type: "VIDEO", bytes: 31457280, percentage: 60 },
+                    { type: "IMAGE", bytes: 12582912, percentage: 24 },
+                    { type: "DOCUMENT", bytes: 6291456, percentage: 12 },
+                    { type: "AUDIO", bytes: 2097152, percentage: 4 },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "500": internalError,
+    },
+  },
+};
+
 export const mediaPaths = {
   "/media/upload-url": mediaUploadUrl,
   "/media/confirm": mediaConfirm,
   "/media/download-url": mediaDownloadUrl,
   "/media/scan-status": mediaScanStatus,
+  "/media/usage/me": mediaDataUsage,
   "/media/uploads/{objectKey}": mediaCancelUpload,
 };

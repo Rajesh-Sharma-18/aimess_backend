@@ -628,6 +628,8 @@ describe("pins + forward + reactions", () => {
     ]);
     mocks.groupMessagePinRepo.countPinsByRoom.mockResolvedValue(1);
     mocks.groupMessageRepo.findLiveIds.mockResolvedValue(new Set(["m1"]));
+    // Nothing hidden by delete-for-me for this viewer.
+    mocks.groupMessageRepo.findHiddenIdsForUser.mockResolvedValue(new Set());
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/pins`)

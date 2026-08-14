@@ -162,7 +162,6 @@ import {
   publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
-  publishCommunitySystemMessageForChatAwaited,
   publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
@@ -209,8 +208,10 @@ const ACTOR_UUID =
 export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
   Record<CommunityAuditAction, string>
 > = {
-  MEMBER_PROMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
-  MEMBER_DEMOTED: USER_AUDIT_ACTIONS.COMMUNITY_ROLE_CHANGED,
+  // updateMemberRole only ever toggles MODERATOR ↔ MEMBER (the community admin's
+  // role is immutable there), so these two ARE the moderator grant/removal.
+  MEMBER_PROMOTED: USER_AUDIT_ACTIONS.COMMUNITY_MODERATOR_PROMOTED,
+  MEMBER_DEMOTED: USER_AUDIT_ACTIONS.COMMUNITY_MODERATOR_DEMOTED,
   MEMBER_KICKED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED,
   MEMBER_BANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_BANNED,
   MEMBER_UNBANNED: USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_UNBANNED,
@@ -229,6 +230,7 @@ export const ADMIN_ACTIVITY_BY_COMMUNITY_ACTION: Partial<
   JOIN_REQUEST_REJECTED: USER_AUDIT_ACTIONS.COMMUNITY_JOIN_REQUEST_REJECTED,
   INVITE_LINK_CREATED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_CREATED,
   INVITE_LINK_REVOKED: USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_REVOKED,
+  COMMUNITY_REPORT_DELETED: USER_AUDIT_ACTIONS.REPORT_DELETED,
 };
 
 /**
@@ -1310,6 +1312,25 @@ function assertInviteLinkActive(link: {
     throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
+}
+
+/**
+ * A PENDING `CommunityInvite` row is a MODERATOR+ issued, per-user invitation —
+ * and it is the ONE thing that waives an existing ban: an explicitly invited
+ * member may redeem/accept it, which re-admits them and clears the ban metadata
+ * (see `reactivateMemberWithSnapshot`). Every other join path keeps rejecting a
+ * BANNED user with `COMMUNITY_JOIN_BANNED`, so a shared link picked up from
+ * elsewhere still can't get them back in.
+ *
+ * Returns the invite row (callers close it out on join) or null.
+ */
+async function findPendingInvite(communityId: string, userId: string) {
+  if (!userId) return null;
+  const invite = await communityRepository.findInviteByCommunityAndInvitee(
+    communityId,
+    userId
+  );
+  return invite?.status === CommunityInviteStatus.PENDING ? invite : null;
 }
 
 /**
@@ -2425,14 +2446,19 @@ export const communityService = {
       // uuid column, so those MUST go over as SYSTEM with no actor — otherwise the
       // consumer rejects the message and the row is lost to the dead-letter queue.
       const isUserActor = ACTOR_UUID.test(entry.actorId);
+      // An action taken against a person targets the PERSON — the audit reader
+      // asks "who was promoted / banned", and a community id does not answer it.
+      // The community stays in the metadata either way.
+      const targetsUser = Boolean(entry.targetUserId);
       publishAdminActivitySafe({
         actorId: isUserActor ? entry.actorId : null,
         actorType: isUserActor ? "USER" : "SYSTEM",
         action: mirrored,
-        targetType: "community",
-        targetId: entry.communityId,
+        targetType: targetsUser ? "user" : "community",
+        targetId: targetsUser ? entry.targetUserId : entry.communityId,
         after: {
           communityAction: entry.action,
+          communityId: entry.communityId,
           targetUserId: entry.targetUserId ?? null,
           ...(entry.reason ? { reason: entry.reason } : {}),
         },
@@ -3352,27 +3378,14 @@ export const communityService = {
       return toMemberData(target);
     }
 
-    // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
-    // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
-    // themselves gets a private "You were banned from this community." line
-    // in their own history (Telegram parity). Enqueued and AWAITED here,
-    // BEFORE removeActiveMember below fires the client-facing eviction
-    // (community:member:removed) and ban-notice (community:membership:
-    // restricted, isBanned:true) events. Those are near-instant Redis
-    // publishes; this system message is consumed async by chat-service over
-    // RabbitMQ, so publishing it first (and confirming the broker has it)
-    // narrows the window where a client could render "you're banned" before
-    // the system message / their final personal-channel state arrives.
-    // MEMBER_BANNED is never a hidden type, so this always reaches the
-    // target via visibleToUserId.
-    await publishCommunitySystemMessageForChatAwaited({
-      communityId,
-      systemMessageType: "MEMBER_BANNED",
-      metadata: { targetUserId },
-      triggeredByUserId: callerId,
-      eventAt: new Date().toISOString(),
-      visibleToUserId: targetUserId,
-    });
+    // NOTE: no MEMBER_BANNED chat SYSTEM message is published — it is in
+    // HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as the authoritative
+    // policy. The banned user learns of the ban from the eviction/ban-notice
+    // events fired by removeActiveMember below (community:member:removed +
+    // community:membership:restricted, isBanned:true), the push notification,
+    // and `isBanned` on the community detail/list — which is what drives the
+    // persistent banned banner in the client. A "You were banned from this
+    // community." bubble in their own history was a second copy of that banner.
 
     // Ban = automatic leave: reuse the same removal core as leaveCommunity
     // (status flip, memberCount recompute, audit, socket eviction via
@@ -4689,11 +4702,15 @@ export const communityService = {
 
     // Cross-service event → notifications-service pushes/in-apps the unbanned
     // user ("Ban lifted"). Mirrors the MEMBER_BANNED publish on ban.
+    const unbannedCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
     publishCommunityMemberUnbannedSafe({
       communityId,
       eventAt: new Date().toISOString(),
       actorId: callerId,
       targetUserId,
+      communityName: community.name,
+      communityAvatarUrl: unbannedCommunityAvatar?.url ?? null,
     });
 
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
@@ -6896,11 +6913,11 @@ export const communityService = {
         continue;
       }
 
+      // A BANNED user is NOT skipped here: this endpoint is MODERATOR+ only, so
+      // inviting someone who was banned is a deliberate act of re-admission. The
+      // invite row created below is the ban waiver (see findPendingInvite) —
+      // accepting it lifts the ban; ignoring it leaves the ban fully in force.
       const member = membershipByUserId.get(userId);
-      if (member?.status === CommunityMemberStatus.BANNED) {
-        results.push({ userId, outcome: "FAILED", reason: "USER_BANNED" });
-        continue;
-      }
       if (member?.status === CommunityMemberStatus.ACTIVE) {
         results.push({ userId, outcome: "ALREADY_MEMBER" });
         continue;
@@ -7188,20 +7205,10 @@ export const communityService = {
         member: await toMemberData(targetMember),
       };
     }
-    if (targetMember?.status === CommunityMemberStatus.BANNED) {
-      try {
-        await communityRepository.updateInvite(inviteId, {
-          status: CommunityInviteStatus.DECLINED,
-        });
-      } catch (closeErr) {
-        logger.error(
-          `Failed to close BANNED-race invite ${inviteId} during accept`
-        );
-        logger.error(closeErr);
-      }
-      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
-    }
-
+    // A BANNED invitee is deliberately NOT rejected here: only a MODERATOR+ can
+    // issue an invite, so accepting one lifts the ban and re-admits them. The
+    // reactivation below clears bannedAt/bannedBy/banReason with the rest of the
+    // previous membership cycle's markers.
     const snapshotMap = await fetchUserSnapshots([callerId]);
     const snap = snapshotMap.get(callerId)!;
 
@@ -7210,7 +7217,9 @@ export const communityService = {
     // RabbitMQ redeliveries (same publish → same dedup key → chat-service no-ops).
     const activatedAt = new Date().toISOString();
 
-    if (targetMember?.status === CommunityMemberStatus.LEFT) {
+    // Any surviving row (LEFT, BANNED, PENDING) is reactivated — createMember
+    // would collide with the [communityId, userId] unique index.
+    if (targetMember) {
       await communityRepository.reactivateMemberWithSnapshot(
         invite.communityId,
         callerId,
@@ -7528,6 +7537,8 @@ export const communityService = {
       ]);
     // One timestamp for both events so they correlate for the same report.
     const reportEventAt = new Date().toISOString();
+    const reportCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
     publishCommunityReportCreatedSafe({
       communityId,
       eventAt: reportEventAt,
@@ -7536,6 +7547,8 @@ export const communityService = {
       targetUserId,
       reason: input.reason,
       moderatorRecipientIds: reportModeratorRecipientIds,
+      communityName: community.name,
+      communityAvatarUrl: reportCommunityAvatar?.url ?? null,
     });
 
     // Message reports carry the messageId as targetId + the SERVER-RESOLVED
@@ -7851,6 +7864,16 @@ export const communityService = {
       `Community report withdrawn: community=${communityId} report=${reportId} by=${callerId}`
     );
 
+    // Not a moderation action (so no community audit entry), but the platform
+    // trail still needs it: a report that vanishes should say who retracted it.
+    publishAdminActivitySafe({
+      actorId: callerId,
+      action: USER_AUDIT_ACTIONS.REPORT_WITHDRAWN,
+      targetType: "report",
+      targetId: reportId,
+      after: { communityId, reason: "withdrawn_by_reporter" },
+    });
+
     return toReportData(updated);
   },
 
@@ -8043,15 +8066,30 @@ export const communityService = {
     callerId: string,
     communityIds: string[]
   ): Promise<{ unmuted: string[]; skipped: string[] }> {
-    const existingMutes =
-      await communityRepository.findMutesByUserAndCommunityIds(
+    // Active membership is required to change mute state, exactly like the
+    // single-community path (`setMute` / `clearMute` throw COMMUNITY_FORBIDDEN
+    // for anything that is not ACTIVE) and like `bulkMute`. A BANNED member is
+    // skipped: of the three community-list actions a ban leaves only "Delete
+    // Conversation" — muting and unmuting are both revoked. Without this the
+    // bulk path was the one way around the single-community gate.
+    const [memberships, existingMutes] = await Promise.all([
+      communityRepository.findActiveMembershipsByCommunityIds(
         callerId,
         communityIds
-      );
+      ),
+      communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      ),
+    ]);
 
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
     const mutedSet = new Set(existingMutes.map((m) => m.communityId));
-    const toUnmute = communityIds.filter((id) => mutedSet.has(id));
-    const skipped = communityIds.filter((id) => !mutedSet.has(id));
+    const toUnmute = communityIds.filter(
+      (id) => mutedSet.has(id) && activeMemberSet.has(id)
+    );
+    const toUnmuteSet = new Set(toUnmute);
+    const skipped = communityIds.filter((id) => !toUnmuteSet.has(id));
 
     if (toUnmute.length > 0) {
       await communityRepository.bulkClearMute(callerId, toUnmute);
@@ -8362,7 +8400,11 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (existing?.status === CommunityMemberStatus.BANNED) {
+    const banWaiver =
+      existing?.status === CommunityMemberStatus.BANNED
+        ? await findPendingInvite(community.id, callerId)
+        : null;
+    if (existing?.status === CommunityMemberStatus.BANNED && !banWaiver) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     if (existing?.status === CommunityMemberStatus.ACTIVE) {
@@ -8375,6 +8417,19 @@ export const communityService = {
           invitationCode: code,
         }),
         member: await toMemberData(existing),
+      };
+    }
+
+    // Explicitly invited (and thereby unbanned) redeemer joins outright — same
+    // rule as redeemInviteLink: the invite is the approval, not a request.
+    if (banWaiver) {
+      const { member } = await this.acceptInvite(callerId, banWaiver.id);
+      return {
+        link: toPermanentLinkAsInviteLinkData({
+          ...community,
+          invitationCode: code,
+        }),
+        member,
       };
     }
 
@@ -8913,7 +8968,11 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (existing?.status === CommunityMemberStatus.BANNED) {
+    const banWaiver =
+      existing?.status === CommunityMemberStatus.BANNED
+        ? await findPendingInvite(community.id, callerId)
+        : null;
+    if (existing?.status === CommunityMemberStatus.BANNED && !banWaiver) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     if (existing?.status === CommunityMemberStatus.ACTIVE) {
@@ -8922,6 +8981,14 @@ export const communityService = {
         link: toInviteLinkData(link, community),
         member: await toMemberData(existing),
       };
+    }
+
+    // Explicitly invited (and thereby unbanned) redeemer: the moderator's invite
+    // IS the approval, so join outright rather than filing a join request — and
+    // burn no usage slot, since the invite, not the link, is what admitted them.
+    if (banWaiver) {
+      const { member } = await this.acceptInvite(callerId, banWaiver.id);
+      return { link: toInviteLinkData(link, community), member };
     }
 
     // A redeem only consumes a usage slot when it produces a REAL join effect:
@@ -9056,7 +9123,10 @@ export const communityService = {
         communityByCode.id,
         callerId
       );
-      if (membership?.status === CommunityMemberStatus.BANNED) {
+      if (
+        membership?.status === CommunityMemberStatus.BANNED &&
+        !(await findPendingInvite(communityByCode.id, callerId))
+      ) {
         throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
       }
       const isJoinedPerm = membership?.status === CommunityMemberStatus.ACTIVE;
@@ -9110,7 +9180,12 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (membership?.status === CommunityMemberStatus.BANNED) {
+    // A banned viewer may still preview the invite when a moderator explicitly
+    // invited them — otherwise the card they were just sent 403s on open.
+    if (
+      membership?.status === CommunityMemberStatus.BANNED &&
+      !(await findPendingInvite(community.id, callerId))
+    ) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     const isJoined = membership?.status === CommunityMemberStatus.ACTIVE;

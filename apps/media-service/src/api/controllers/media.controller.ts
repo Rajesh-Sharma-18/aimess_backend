@@ -112,6 +112,22 @@ export class MediaController {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
+
+  /**
+   * GET /media/usage/me
+   *
+   * The caller's own upload bytes for the current calendar month. Scoped to
+   * req.auth.userId with no by-id variant and no query parameters — usage is
+   * private, and an endpoint that takes a userId is an endpoint someone
+   * eventually forgets to authorize.
+   */
+  getDataUsage = asyncHandler(async (req: Request, res: Response) => {
+    const result = await mediaService.getDataUsage({
+      userId: req.auth.userId,
+    });
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
 }
 
 export const mediaController = new MediaController();

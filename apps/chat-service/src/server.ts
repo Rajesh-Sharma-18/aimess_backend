@@ -34,6 +34,7 @@ import { InboxService } from "./services/inbox.service.js";
 import { ConversationBulkService } from "./services/conversation-bulk.service.js";
 import { UnreadSummaryService } from "./services/unread-summary.service.js";
 import { registerUnreadSummaryPusher } from "./events/unread-summary-bridge.js";
+import { registerCallTerminator } from "./events/call-teardown-bridge.js";
 import { publishChatUserEvent } from "@aimess/redis";
 import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
@@ -95,6 +96,7 @@ import {
   initializeEventConsumers,
   closeEventConsumers,
 } from "./events/index.js";
+import { setCallTerminator } from "./events/call-terminator.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
 import {
@@ -115,6 +117,9 @@ const GROUP_MUTE_SWEEP_MAX_BATCHES = 50;
 
 /** Same backstop for the auto-delete sweep. */
 const AUTO_DELETE_SWEEP_MAX_BATCHES = 50;
+
+/** Rooms per tick for the restamp repair pass — normally zero rows to fix. */
+const AUTO_DELETE_RESTAMP_REPAIR_BATCH = 100;
 
 /** Same backstop for the login-detected auto-approval sweep. */
 const LOGIN_EXPIRY_SWEEP_MAX_BATCHES = 50;
@@ -235,6 +240,69 @@ const startServer = async () => {
       } catch (err) {
         logger.warn(
           `Failed to create idempotency index ${idx.name} — continuing`
+        );
+        logger.warn(err);
+      }
+    }
+
+    // Auto-delete claiming/backoff/repair. Declared on the schema too; created
+    // here so existing deployments pick them up without a `prisma db push`.
+    // Every one of these backs a query the sweeper runs on every tick, so a
+    // missing index is a full collection scan every 30 seconds.
+    const autoDeleteIndexes: {
+      collection: string;
+      key: Record<string, 1 | -1 | "text">;
+      name: string;
+    }[] = [
+      // Stale-claim recovery: WHERE autoDeleteClaimedAt < leaseCutoff.
+      {
+        collection: "private_messages",
+        key: { autoDeleteClaimedAt: 1 },
+        name: "private_messages_auto_delete_claimed_at_idx",
+      },
+      // Claim winner read-back: WHERE autoDeleteClaimToken = <token>.
+      {
+        collection: "private_messages",
+        key: { autoDeleteClaimToken: 1 },
+        name: "private_messages_auto_delete_claim_token_idx",
+      },
+      // Watermark-bounded After Viewing arming.
+      {
+        collection: "private_messages",
+        key: { roomId: 1, autoDeleteAfterView: 1, sequenceNumber: 1 },
+        name: "private_messages_after_view_seq_idx",
+      },
+      {
+        collection: "group_messages",
+        key: { autoDeleteClaimedAt: 1 },
+        name: "group_messages_auto_delete_claimed_at_idx",
+      },
+      {
+        collection: "group_messages",
+        key: { autoDeleteClaimToken: 1 },
+        name: "group_messages_auto_delete_claim_token_idx",
+      },
+      // Restamp repair pass: WHERE autoDeleteRestampPending != null.
+      {
+        collection: "private_rooms",
+        key: { autoDeleteRestampPending: 1 },
+        name: "private_rooms_auto_delete_restamp_pending_idx",
+      },
+      {
+        collection: "group_rooms",
+        key: { autoDeleteRestampPending: 1 },
+        name: "group_rooms_auto_delete_restamp_pending_idx",
+      },
+    ];
+    for (const idx of autoDeleteIndexes) {
+      try {
+        await ensureMongoIndex(prisma, idx.collection, {
+          key: idx.key,
+          name: idx.name,
+        });
+      } catch (err) {
+        logger.warn(
+          `Failed to create auto-delete index ${idx.name} — continuing`
         );
         logger.warn(err);
       }
@@ -498,6 +566,11 @@ const startServer = async () => {
         return {
           displayName: snap.displayName || snap.username || "",
           avatarUrl,
+          // Read by the call authorization gate to refuse ringing a deleted
+          // account (deletion is soft, so the Friendship rows survive it).
+          // Only ever trusted when explicitly true — the catch below returns an
+          // unknown snapshot, which must not read as "deleted".
+          isDeleted: snap.isDeleted === true,
         };
       } catch {
         return { displayName: "", avatarUrl: "" };
@@ -530,6 +603,18 @@ const startServer = async () => {
       groupMemberRepo,
       // GROUP call timeline audit rows (VOICE_CALL / VIDEO_CALL).
       groupSystemMessageService
+    );
+    // An unfriend/block must end the pair's live calls, and the AMQP consumer
+    // that hears about it has no CallService — see events/call-teardown-bridge.ts.
+    registerCallTerminator((userA, userB) =>
+      callService.endCallsBetween(userA, userB)
+    );
+
+    // Blocking must cut a live call. The friendship consumer is already running
+    // (started above, before this graph exists), so it reaches CallService
+    // through this late-bound hook rather than a constructor argument.
+    setCallTerminator((userA, userB, endedBy) =>
+      callService.terminateCallsBetween(userA, userB, endedBy)
     );
 
     const communityRoomService = new CommunityRoomService(
@@ -867,32 +952,73 @@ const startServer = async () => {
     // is load-bearing: it performs the actual deletion, server-side, so a
     // message disappears on schedule even when neither client is running
     // (§5.2 offline sender, §8.4 offline device). Drains in pages.
-    autoDeleteSweepHandle = setInterval(() => {
+    //
+    // Rows are LEASED, so several replicas may sweep concurrently and still
+    // produce exactly one delete per message. What a lease does NOT prevent is
+    // one process starting a second pass over its own un-drained backlog every
+    // 30s until it is doing nothing but re-reading the same pages — hence the
+    // in-flight flag below, which is per-process and per-conversation-type.
+    const sweepInFlight: Record<string, boolean> = {};
+    const runAutoDeleteSweep = (): void => {
       // Private and group drain independently and are caught separately, so a
       // failure on one conversation type can never stall the other.
-      for (const [label, sweep] of [
-        ["private", (n: number) => autoDeleteService.sweepDue(new Date(), n)],
+      for (const [label, sweep, repair] of [
+        [
+          "private",
+          (n: number) => autoDeleteService.sweepDue(new Date(), n),
+          (n: number) => autoDeleteService.sweepPendingRestamps(n),
+        ],
         [
           "group",
           (n: number) => groupAutoDeleteService.sweepDue(new Date(), n),
+          (n: number) => groupAutoDeleteService.sweepPendingRestamps(n),
         ],
       ] as const) {
+        if (sweepInFlight[label]) {
+          logger.warn(
+            `autoDeleteSweep(${label}) still running — skipping this tick`
+          );
+          continue;
+        }
+        sweepInFlight[label] = true;
         void (async () => {
           try {
             for (let i = 0; i < AUTO_DELETE_SWEEP_MAX_BATCHES; i++) {
-              const n = await sweep(env.AUTO_DELETE_SWEEP_BATCH);
-              if (n > 0)
+              const { claimed, completed, failed } = await sweep(
+                env.AUTO_DELETE_SWEEP_BATCH
+              );
+              if (claimed > 0)
                 logger.info(
-                  `Auto-delete sweep (${label}) processed ${n} message(s)`
+                  `Auto-delete sweep (${label}) claimed ${claimed}, deleted ${completed}, failed ${failed}`
                 );
-              if (n < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
+              if (claimed < env.AUTO_DELETE_SWEEP_BATCH) break; // drained
             }
+            // Finish any setting change whose re-stamp never completed. Cheap:
+            // an indexed lookup that returns nothing on a healthy system.
+            const settled = await repair(AUTO_DELETE_RESTAMP_REPAIR_BATCH);
+            if (settled > 0)
+              logger.info(
+                `Auto-delete restamp repair (${label}) settled ${settled} room(s)`
+              );
           } catch (err) {
             logger.warn(`autoDeleteSweep(${label}) failed: ${String(err)}`);
+          } finally {
+            sweepInFlight[label] = false;
           }
         })();
       }
-    }, env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000);
+    };
+
+    // Catch-up pass at startup, BEFORE the first interval fires. Without it,
+    // everything that expired while the service was down (a deploy, a crash, a
+    // scale-to-zero) sat undeleted for a further AUTO_DELETE_SWEEP_INTERVAL_SEC
+    // — the exact window in which a disappearing message is expected to have
+    // already disappeared.
+    runAutoDeleteSweep();
+    autoDeleteSweepHandle = setInterval(
+      runAutoDeleteSweep,
+      env.AUTO_DELETE_SWEEP_INTERVAL_SEC * 1000
+    );
     if (typeof autoDeleteSweepHandle.unref === "function") {
       autoDeleteSweepHandle.unref();
     }

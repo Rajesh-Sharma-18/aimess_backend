@@ -1,7 +1,8 @@
 /**
- * push.service.ts — verifies skipInbox, NOTIFY_SUPPRESSED_TYPES, and that
- * non-ACTIVE community members are blocked from community FCM/inbox pushes
- * (fail-closed membership gate).
+ * push.service.ts — verifies skipInbox, the settings/quiet-hours gate and its
+ * push-vs-inbox split, the non-suppressible security types, and that non-ACTIVE
+ * community members are blocked from community FCM/inbox pushes (fail-closed
+ * membership gate).
  */
 jest.mock("../../src/repositories/device-token.repository.js", () => ({
   deviceTokenRepository: {
@@ -22,7 +23,11 @@ jest.mock("../../src/grpc/user-settings.client.js", () => ({
   createUserSettingsClient: () => mockUserSettingsClient,
 }));
 
-import { CommunityEvents } from "@aimess/shared-types";
+import {
+  AdminUserEvents,
+  AuthEvents,
+  CommunityEvents,
+} from "@aimess/shared-types";
 
 import { communityClient } from "../../src/grpc/community.client.js";
 import { pushToUser } from "../../src/services/push.service.js";
@@ -51,6 +56,7 @@ beforeEach(() => {
     quietHoursStart: "",
     quietHoursEnd: "",
     quietHoursDays: [],
+    timezone: "",
   });
   send.mockResolvedValue({ invalidToken: false });
   checkPref.mockResolvedValue({ enabled: true });
@@ -91,19 +97,174 @@ describe("pushToUser — skipInbox", () => {
   });
 });
 
-describe("pushToUser — NOTIFY_SUPPRESSED_TYPES", () => {
-  it("still fully suppresses MEMBER_KICKED (inbox + push)", async () => {
+describe("pushToUser — the settings gate", () => {
+  const withSettings = (over: Record<string, unknown>) => {
+    userSettingsClient.getNotificationSettings.mockResolvedValue({
+      chatEnabled: true,
+      callEnabled: true,
+      friendRequestEnabled: true,
+      systemEnabled: true,
+      communityEnabled: true,
+      liveStreamEnabled: true,
+      showPreview: true,
+      quietHoursEnabled: false,
+      quietHoursStart: "",
+      quietHoursEnd: "",
+      quietHoursDays: [],
+      timezone: "",
+      ...over,
+    });
+  };
+
+  const friendRequest = {
+    userId: USER_ID,
+    category: "friendRequestEnabled" as const,
+    type: "friend.requested",
+    title: "New friend request",
+    body: "Jane sent you a friend request.",
+  };
+
+  it("category OFF suppresses the push AND the inbox row", async () => {
+    withSettings({ friendRequestEnabled: false });
+
+    await pushToUser(friendRequest);
+
+    expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("quiet hours suppresses the push but KEEPS the inbox row", async () => {
+    // A window covering the whole day, so the test never depends on the clock.
+    withSettings({
+      quietHoursEnabled: true,
+      quietHoursStart: "00:00",
+      quietHoursEnd: "23:59",
+      timezone: "UTC",
+    });
+
+    await pushToUser(friendRequest);
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("a call rings through quiet hours", async () => {
+    withSettings({
+      quietHoursEnabled: true,
+      quietHoursStart: "00:00",
+      quietHoursEnd: "23:59",
+      timezone: "UTC",
+    });
+
     await pushToUser({
       userId: USER_ID,
-      category: "communityEnabled",
-      type: CommunityEvents.MEMBER_KICKED,
-      title: "x",
-      body: "y",
+      category: "callEnabled",
+      type: "CALL_INCOMING",
+      title: "Jane",
+      body: "Incoming call",
+      skipInbox: true,
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a security alert is delivered even with System off and quiet hours on", async () => {
+    withSettings({
+      systemEnabled: false,
+      quietHoursEnabled: true,
+      quietHoursStart: "00:00",
+      quietHoursEnd: "23:59",
+      timezone: "UTC",
+    });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "systemEnabled",
+      type: AuthEvents.SECURITY_NEW_LOGIN,
+      title: "Login Detected",
+      body: "New login on Chrome.",
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("an admin ban is delivered even with System off — it is not an opt-in", async () => {
+    withSettings({ systemEnabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "systemEnabled",
+      type: AdminUserEvents.USER_BANNED,
+      title: "Account banned",
+      body: "Your account has been banned.",
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("an announcement IS suppressible — the System toggle is what it is for", async () => {
+    withSettings({ systemEnabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "systemEnabled",
+      type: "ANNOUNCEMENT",
+      title: "Scheduled maintenance",
+      body: "We will be down at 02:00.",
     });
 
     expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
+
+  it("showPreview=false masks the pushed body but not the stored inbox row", async () => {
+    withSettings({ showPreview: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "friendRequestEnabled",
+      type: "friend.requested",
+      title: "New friend request",
+      body: "Jane sent you a friend request.",
+      showPreviewOverride: "New notification",
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Jane sent you a friend request." })
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "New notification" })
+    );
+  });
+});
+
+describe("pushToUser — NOTIFY_SUPPRESSED_TYPES", () => {
+  // MEMBER_KICKED and DELETED used to sit in NOTIFY_SUPPRESSED_TYPES, which
+  // hard-returned before the gate and made their producers' bypassSettings
+  // flags dead code — a kicked user got no push, no inbox row and no socket
+  // event. They are now delivered like their sibling MEMBER_BANNED.
+  it.each([CommunityEvents.MEMBER_KICKED, CommunityEvents.DELETED])(
+    "delivers %s to the inbox and to FCM",
+    async (type) => {
+      await pushToUser({
+        userId: USER_ID,
+        category: "communityEnabled",
+        type,
+        title: "x",
+        body: "y",
+        // Producers pass this: the recipient is by definition no longer an
+        // ACTIVE member, so the membership gate has to be skipped.
+        bypassSettings: true,
+      });
+
+      expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(
+        1
+      );
+      expect(send).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it.each([
     CommunityEvents.JOIN_REQUEST_REJECTED,

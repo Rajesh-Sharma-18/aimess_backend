@@ -29,3 +29,22 @@ export function zodErrorMessage(error: ZodLikeError): string {
   }
   return messages.join(", ");
 }
+
+/**
+ * The same issues keyed by their dotted field path, e.g.
+ * `{ "notifications.quietHours.start": ["Time must be in HH:mm 24-hour format"] }`.
+ *
+ * `zodErrorMessage` flattens everything into one sentence, which is fine for a
+ * toast but leaves a client unable to mark the offending field. Emitted
+ * alongside it so both consumers are served without a breaking change.
+ * Top-level (whole-object) issues land under `_`.
+ */
+export function zodFieldErrors(error: ZodLikeError): Record<string, string[]> {
+  const fields: Record<string, string[]> = {};
+  for (const issue of error.issues) {
+    const key = issue.path.length > 0 ? issue.path.join(".") : "_";
+    const bucket = (fields[key] ??= []);
+    if (!bucket.includes(issue.message)) bucket.push(issue.message);
+  }
+  return fields;
+}

@@ -6,6 +6,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -66,8 +70,9 @@ import {
   computeSeqPageCursors,
 } from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
+// No AFTER_VIEWING grace period here: group reads never arm, because group
+// AFTER_VIEWING is unsupported (see GroupAutoDeleteService).
 import {
-  AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
   AUTO_DELETE_NONE,
   computeAutoDeleteStamp,
   readRoomAutoDelete,
@@ -1267,6 +1272,15 @@ export class GroupMessageService {
       userId,
       deletedType
     );
+    publishAdminActivitySafe({
+      // A system-driven purge (auto-delete sweeper) has no human actor.
+      actorId: bySystem ? null : userId,
+      actorType: bySystem ? "SYSTEM" : "USER",
+      action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
+      targetType: "message",
+      targetId: messageId,
+      after: { roomType: "GROUP", roomId, deletedType },
+    });
     if (
       shouldCountInUnread({
         messageType: message.messageType,
@@ -2155,21 +2169,13 @@ export class GroupMessageService {
     }
   }
 
-  /**
-   * Auto-delete "After Viewing": start the countdown on every such message this
-   * reader RECEIVED in the room. Idempotent, so every mark-read can call it
-   * unconditionally. Returns how many messages were armed.
-   */
-  async armAfterViewingMessages(
-    roomId: string,
-    readerId: string
-  ): Promise<number> {
-    return this.messageRepo.armAfterViewing(
-      roomId,
-      readerId,
-      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000)
-    );
-  }
+  // NOTE — there is deliberately no `armAfterViewingMessages` here.
+  //
+  // Group AFTER_VIEWING is unsupported (see GroupAutoDeleteService), so a group
+  // read must never arm anything. The removed version also ran BEFORE the
+  // target was validated and was bounded by nothing but the room, so a single
+  // read receipt started the countdown on every unarmed message in the group,
+  // including ones the reader had never scrolled to.
 
   async markReadUpTo(params: {
     roomId: string;
@@ -2184,20 +2190,6 @@ export class GroupMessageService {
       params.userId
     );
     if (!member) return { readToSeq: 0, remainingUnread: 0 };
-
-    // Auto-delete "After Viewing" arms HERE — the single point every group read
-    // path (REST via the orchestrator, socket/gRPC via markMessagesRead, bulk
-    // mark-read) funnels through, so no caller can forget it. Placed after the
-    // membership check so a non-member can never arm someone else's timers.
-    // Fire-and-forget: the sweeper still owns the deletion, a failure here only
-    // delays it to the next read.
-    void this.armAfterViewingMessages(params.roomId, params.userId).catch(
-      (err: unknown) => {
-        logger.warn(
-          `GroupMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
-        );
-      }
-    );
 
     const message = await this.messageRepo.findById(params.upToMessageId);
     if (!message || message.roomId !== params.roomId)

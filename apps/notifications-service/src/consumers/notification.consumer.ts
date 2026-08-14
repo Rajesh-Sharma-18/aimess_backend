@@ -171,7 +171,6 @@ export async function startConsumer() {
             userId: p.userId,
             category: "systemEnabled",
             type: parsed.type,
-            bypassSettings: true,
             copy: authCopy.passwordChanged(),
             data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });
@@ -183,7 +182,6 @@ export async function startConsumer() {
             userId: p.userId,
             category: "systemEnabled",
             type: parsed.type,
-            bypassSettings: true,
             copy: authCopy.emailChanged(),
             data: { navigation: ACCOUNT_STATUS_NAVIGATION },
           });

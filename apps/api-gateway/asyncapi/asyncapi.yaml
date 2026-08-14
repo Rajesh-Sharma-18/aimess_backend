@@ -181,6 +181,7 @@ channels:
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
       convMuted: { $ref: "#/components/messages/ConvMuted" }
       convUnmuted: { $ref: "#/components/messages/ConvUnmuted" }
+      settingsUpdated: { $ref: "#/components/messages/SettingsUpdated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -693,6 +694,25 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "call:initiate — start a call"
+    description: |
+      **1-to-1 calls are friends-only, and the server is the authority.** The
+      caller and callee must have an ACTIVE friendship at the moment the call
+      session is created; neither the callee's `whoCanCallMe` setting nor any
+      client-side state can waive it. Hiding the call buttons is an affordance,
+      not the control — a stale tab, a deep link or a hand-crafted emit reaching
+      this event is refused with `FORBIDDEN` + `detail: FRIENDSHIP_REQUIRED`, and
+      no call row, LiveKit token, ring or push notification is produced.
+
+      Failure `detail` values specific to this event:
+      `FRIENDSHIP_REQUIRED` (not friends / unfriended), `CALL_BLOCKED` (either
+      party blocked the other), `PRIVACY_BLOCKED` (`whoCanCallMe` = `NO_ONE`, or
+      `SELECTED_FRIENDS` without the caller allow-listed), `CALL_USER_UNAVAILABLE`
+      (the target account is deleted), `CALLING_DISABLED` (platform kill-switch),
+      `CALL_ALREADY_IN_CALL` / `CALL_USER_BUSY` (busy gate).
+
+      GROUP calls (`groupId` instead of `calleeId`) are authorized by ACTIVE group
+      membership rather than friendship; a member's `whoCanCallMe = NO_ONE`
+      still excludes them from the ring.
     messages: [{ $ref: "#/channels/chat/messages/callInitiate" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -771,6 +791,30 @@ operations:
       mute simply expires — expiry is evaluated lazily at push time, so no event
       is needed and none is sent.
     messages: [{ $ref: "#/channels/chat/messages/convUnmuted" }]
+  chat.onSettingsUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "settings:updated — the caller's settings changed (own devices only)"
+    description: |
+      Multi-device sync for `GET /api/v1/users/settings/me`. user-service emits
+      it after every successful `PATCH /users/settings/me` (and after each
+      call-allow-list add/remove), so a notification toggle flipped on web lands
+      on Android and iOS with no refetch and no re-login.
+
+      Delivered ONLY to the changing user's own sockets — the gateway rewrites
+      it to `self:<id>`, never `user:<id>`, because the payload is the user's own
+      privacy and notification configuration and presence watchers join
+      `user:<id>`.
+
+      The payload is the COMPLETE settings envelope, byte-identical to what
+      `GET /users/settings/me` returns, so a client can swap its cache wholesale
+      rather than patch field-by-field. Clients should still merge rather than
+      replace, so a future narrowed payload cannot blank out a group.
+
+      Quiet-hours note: `notifications.quietHours.days` is `0=Sunday .. 6=Saturday`
+      and `notifications.quietHours.timezone` is an IANA zone id (null = the
+      server evaluates the window in its own local time).
+    messages: [{ $ref: "#/channels/chat/messages/settingsUpdated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -1407,6 +1451,14 @@ operations:
       1. Broadcasts `community:message:read` to all members of `community:<communityId>` room.
       2. Emits `community:read_sync` to the reader's own `user:<readerId>` room (multi-device HWM).
       Ack `data` on success is `{}`.
+
+      Requires a membership row; left/removed/non-member → `CHAT_NOT_A_MEMBER`.
+      A BANNED member is NOT rejected: a ban is a read CUTOFF, not a read-state
+      freeze, so they may acknowledge the history they can still see (up to
+      `bannedAt`) and clear their own badge — otherwise the badge sticks with no
+      way to dismiss it. Their pointer advances and `community:read_sync` still
+      reaches their own devices, but step 1 is SKIPPED for them: a banned reader
+      must not surface as a live reader to the community they were banned from.
     messages: [{ $ref: "#/channels/community/messages/communityMessageRead" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -2610,6 +2662,44 @@ components:
             senderName: ""
             unread: false
             isOffline: true
+    SettingsUpdated:
+      name: "settings:updated"
+      title: "settings:updated"
+      payload: { $ref: "#/components/schemas/UserSettingsEnvelope" }
+      examples:
+        - name: Community notifications turned off, quiet hours on weeknights
+          payload:
+            privacy:
+              whoCanFindMe: EVERYONE
+              whoCanSendFriendRequests: EVERYONE
+              whoCanSeeOnlineStatus: EVERYONE
+              whoCanViewProfile: EVERYONE
+              whoCanCallMe: EVERYONE
+              callAllowedFriendIds: []
+            chat:
+              autoDeleteTimer: "OFF"
+              typingIndicators: true
+              readReceipts: true
+            app:
+              language: en
+              theme: AUTO
+            notifications:
+              chat: true
+              call: true
+              friendRequest: true
+              system: true
+              community: false
+              liveStream: true
+              showPreview: true
+              quietHours:
+                enabled: true
+                start: "22:00"
+                end: "07:00"
+                days: [1, 2, 3, 4, 5]
+                timezone: "Asia/Bangkok"
+            liveStream:
+              defaultVideoQuality: AUTO
+            updatedAt: "2026-08-14T09:00:00.000Z"
     ConvMuted:
       name: "conv:muted"
       title: "conv:muted"
@@ -5281,6 +5371,24 @@ components:
             - `NOT_FOUND` — the target message/conversation/community does not exist.
             - `RATE_LIMITED` — a server rate limit tripped (back off).
             - `CONFLICT` — the operation conflicts with current state (e.g. already applied / edit window expired).
+        detail:
+          type: string
+          description: |
+            Present on failure **when the downstream service sent a specific
+            reason**. The originating `AppError.messageKey` verbatim — a short
+            UPPER_SNAKE_CASE catalog token, never free text (e.g.
+            `CALL_ALREADY_IN_CALL`, `CALL_USER_BUSY`, `CHAT_FILE_TOO_LARGE`).
+
+            `error` is a deliberately coarse taxonomy: several unrelated
+            failures share one code — `FORBIDDEN` cannot separate
+            `FRIENDSHIP_REQUIRED` from `CALL_BLOCKED` or `PRIVACY_BLOCKED`.
+            Branch on `detail` when the distinction
+            matters to the UI — e.g. `call:initiate` returns `CONFLICT` both
+            when the CALLER is already on a call (`CALL_ALREADY_IN_CALL`,
+            including on one of their OTHER devices — call state is per-user,
+            not per-device) and when the CALLEE is busy (`CALL_USER_BUSY`).
+            Treat an unknown or absent `detail` as "no extra information" and
+            fall back to `error` + `message`.
         retryable:
           type: boolean
           description: |
@@ -5297,11 +5405,10 @@ components:
         retryAfter:
           type: integer
           description: |
-            **Reserved — NOT emitted in V1.** The live `ackError()` helper
-            (`sockets/ack.ts`) returns only `{ success, error, retryable, message }`
-            and never sets `retryAfter`. The field is reserved for a future
-            server-side rate limiter. Until then, on `RATE_LIMITED` always back off
-            a fixed **30 s** window. Do not wait on this field — it will be absent.
+            Seconds until the rate-limit window resets. `ackError()`
+            (`sockets/ack.ts`) emits it only when the caller passes one, so it is
+            present on some `RATE_LIMITED` acks and absent on the rest — back off
+            a fixed **30 s** window whenever it is missing.
       required: [success, message]
     MessageSendResult:
       type: object
@@ -5374,6 +5481,8 @@ components:
           SYSTEM,
           VOICE_CALL,
           VIDEO_CALL,
+          COMMUNITY_INVITE,
+          GROUP_INVITE,
         ]
       description: |
         Message kind — **UPPER-CASE on every surface** (socket + REST,
@@ -5393,6 +5502,29 @@ components:
         - `STICKER` — requires `sticker`; `LOCATION` — requires `location`;
           `CONTACT` — requires `contact`.
         - `SYSTEM` — group/community lifecycle event (carries `systemEvent`/`systemData`).
+        - `COMMUNITY_INVITE` / `GROUP_INVITE` — a community or group invitation
+          shared into a private chat, rendered as a join card. **Read-only**:
+          the send validators reject them, they are only ever written by the
+          invite-share paths. Read the whole card from `content.invitation`
+          (`{ type, deepLink, alreadyJoined, status, canOpen, … }`, where `type`
+          is `COMMUNITY_INVITATION` | `GROUP_INVITATION` and `status` is
+          `ACTIVE` | `EXPIRED` | `REVOKED` | `DELETED`) — never by combining
+          `contentType: SYSTEM` with `systemEvent`.
+
+          `alreadyJoined` / `status` / `canOpen` are **re-resolved on every
+          read** (the recipient may have joined since, the link may have been
+          revoked, the community/group may be gone), so never cache the card.
+          `content.text` is the human fallback line; `systemData` carries only
+          event-level metadata (`invitationType`, the target id, the invite
+          code/token, and the inviter/actor).
+
+          `systemAction` carries the SAME object as `content.invitation` and is
+          retained only for clients written before the card moved into
+          `content`. New clients must read `content.invitation`.
+
+          Rows written before this kind existed are stored as `SYSTEM` with the
+          card fields spread across `systemData`; the REST history read projects
+          them onto the shape above, so a client needs one code path only.
         - `VOICE_CALL` / `VIDEO_CALL` — a call lifecycle entry in a private or
           group timeline. **Read-only**: the send validators reject them, they are
           only ever written by the call service. The kind comes from the call's
@@ -5806,9 +5938,12 @@ components:
         systemEvent:
           type: string
           description: >-
-            Set when contentType=SYSTEM, and on call rows
+            Set when contentType=SYSTEM; on call rows
             (contentType=VOICE_CALL/VIDEO_CALL): CALL_STARTED while the call is
-            live (RINGING/ANSWERED), CALL_ENDED once it settles.
+            live (RINGING/ANSWERED), CALL_ENDED once it settles; and on
+            invitation rows (contentType=COMMUNITY_INVITE/GROUP_INVITE), where
+            it repeats the kind. Do NOT classify a message by this field — use
+            `contentType`.
           enum:
             [
               GROUP_CREATED,
@@ -5822,6 +5957,8 @@ components:
               DESCRIPTION_CHANGED,
               CALL_STARTED,
               CALL_ENDED,
+              COMMUNITY_INVITE,
+              GROUP_INVITE,
             ]
         systemData:
           type: object
@@ -5893,6 +6030,55 @@ components:
             type: boolean,
             description: "PRIVATE only — true when the OTHER participant (the recipient's chat peer) is currently offline, sourced from the same real-time PresenceService/Redis presence state as GET /chat/private/conversations and GET /chat/private/rooms/:peerId. Omitted for GROUP (no single peer). Re-emitted on its own whenever that peer's presence flips, independent of new messages.",
           }
+    UserSettingsEnvelope:
+      type: object
+      description: >
+        The complete settings envelope, identical to the `data` of
+        `GET /api/v1/users/settings/me`. Emitted on `settings:updated` to the
+        changing user's own devices.
+      properties:
+        privacy: { type: object }
+        chat: { type: object }
+        app: { type: object }
+        notifications:
+          type: object
+          properties:
+            chat: { type: boolean }
+            call: { type: boolean }
+            friendRequest: { type: boolean }
+            system: { type: boolean }
+            community: { type: boolean }
+            liveStream: { type: boolean }
+            showPreview:
+              {
+                type: boolean,
+                description: "false masks the message body in the push banner. The Notification Center row keeps the real body.",
+              }
+            quietHours:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                start:
+                  {
+                    type: string,
+                    nullable: true,
+                    description: '"HH:mm" 24-hour. Required whenever enabled is true.',
+                  }
+                end: { type: string, nullable: true }
+                days:
+                  {
+                    type: array,
+                    items: { type: integer, minimum: 0, maximum: 6 },
+                    description: "0=Sunday .. 6=Saturday. Empty means every day.",
+                  }
+                timezone:
+                  {
+                    type: string,
+                    nullable: true,
+                    description: "IANA zone id the window is evaluated in; null = server-local.",
+                  }
+        liveStream: { type: object }
+        updatedAt: { type: string, format: date-time }
     ConvMuteChangedPayload:
       type: object
       description: >
@@ -6466,7 +6652,6 @@ components:
               ROLE_CHANGED (bystander)      → "{{targetName}} is now a moderator/admin/member"
               ROLE_CHANGED (viewer=target)  → "You are now a moderator/admin/member"
               MEMBER_REMOVED                → "{{targetName}} was removed"
-              MEMBER_BANNED (target only)   → "You were banned from this community." (PERSONAL)
               MEMBER_UNBANNED               → "{{targetName}} was unbanned"
               MEMBER_MUTED (target only)    → "You are muted until {{date}}" or
                                               "You are muted indefinitely" (PERSONAL)
@@ -6477,10 +6662,14 @@ components:
               JOIN_REQUEST_APPROVED         → "Your request to join was approved" (PERSONAL)
               JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
 
-            Hidden in chat timeline (never returned in history): MEMBER_LEFT, MEMBER_JOINED.
-            MEMBER_REMOVED / MEMBER_UNBANNED are visible to all members.
+            Hidden in chat timeline (never returned in history, to anyone —
+            including the affected user): MEMBER_LEFT, MEMBER_JOINED,
+            MEMBER_REMOVED, MEMBER_BANNED. A banned user is told via
+            `community:membership:restricted` (isBanned: true) + `isBanned` on
+            the community detail/list, which drives the sticky banned banner —
+            no chat bubble repeats it. MEMBER_UNBANNED is visible to all members.
             PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
-            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED,
+            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_MUTED,
             MEMBER_UNMUTED — delivered ONLY to the affected user's `user:<id>`
             channel and never broadcast to / readable by other members. They
             persist like any other PERSONAL line and remain available to the
@@ -6494,7 +6683,7 @@ components:
             target user, never broadcast to the community room and never returned
             to other members in history. PERSONAL types: COMMUNITY_JOINED,
             JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF,
-            MEMBER_BANNED, MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
+            MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
             affected user's `user:<id>` channel only. All other system types are
             COMMUNITY-visible (isPersonal=false / absent). Null/absent for normal
             messages.

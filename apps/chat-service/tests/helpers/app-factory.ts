@@ -344,7 +344,15 @@ export function buildApp(): BuiltApp {
     userSnapshotService,
     userServiceClient,
     privateMessageReportRepo,
-    communityClient
+    communityClient,
+    // Matches server.ts wiring — without the group repos, GROUP_INVITE cards
+    // are never re-resolved on a history read and the harness silently tests a
+    // degraded path production never takes.
+    undefined,
+    undefined,
+    groupRoomRepo,
+    groupMemberRepo,
+    groupInviteLinkRepo
   );
 
   const groupSystemMessageService = new GroupSystemMessageService(

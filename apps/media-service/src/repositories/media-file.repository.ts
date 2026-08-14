@@ -12,7 +12,7 @@ import type {
   MediaUsageStatus,
 } from "@aimess/constants";
 
-import type { MediaFile } from "../generated/prisma/index.js";
+import type { MediaFile, Prisma } from "../generated/prisma/index.js";
 import { prisma } from "../config/prisma.js";
 
 export interface RegisterMediaInput {
@@ -104,6 +104,45 @@ export const mediaFileRepository = {
       where: { objectKey },
       data: { size },
     });
+  },
+
+  /**
+   * Sum verified upload bytes for one user in a time window, grouped by the raw
+   * MIME type. Backs GET /media/usage/me.
+   *
+   * Grouped by `contentType` (~30 distinct MIMEs) rather than by a derived
+   * VIDEO/IMAGE/AUDIO/DOCUMENT bucket, so the MIME→kind mapping stays in
+   * `contentTypeFromMime` (@aimess/constants) instead of being re-typed as a
+   * `$switch` of `$regexMatch` stages that would then drift from it.
+   *
+   * `scannedAt: { $ne: null }` is load-bearing: it is the only signal that
+   * separates "bytes actually landed in MinIO and were HEAD-verified" from "a
+   * presigned URL was minted and the client never PUT anything". Rows in the
+   * latter state stay PENDING forever — there is no orphan sweep — so without
+   * this filter an abandoned upload dialog inflates the meter.
+   */
+  async sumVerifiedBytesByMime(
+    ownerId: string,
+    since: Date
+  ): Promise<Array<{ contentType: string; bytes: number }>> {
+    const rows = (await prisma.mediaFile.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            ownerId,
+            createdAt: { $gte: { $date: since.toISOString() } },
+            scannedAt: { $ne: null },
+            size: { $gt: 0 },
+          },
+        },
+        { $group: { _id: "$contentType", bytes: { $sum: "$size" } } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id: string | null; bytes: number }>;
+
+    return rows.map((row) => ({
+      contentType: row._id ?? "",
+      bytes: row.bytes ?? 0,
+    }));
   },
 
   /** Lifecycle transition (ACTIVE -> UNUSED on dereference, -> DELETED on purge). */

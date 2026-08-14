@@ -710,6 +710,19 @@ export const SYSTEM_MESSAGES = {
     en: "You unpinned a message",
     th: "คุณเลิกปักหมุดข้อความ",
   },
+  // Shared into a PRIVATE chat as an invitation card — mirrors
+  // SYS_GROUP_INVITE_SHARED. Without this the COMMUNITY_INVITE row fell through
+  // to SYS_PRIVATE_UPDATED and rendered as "Someone updated the chat".
+  SYS_COMMUNITY_INVITE_SHARED: {
+    vi: "{{actor}} đã chia sẻ lời mời vào cộng đồng",
+    en: "{{actor}} shared a community invite",
+    th: "{{actor}}แชร์คำเชิญเข้าคอมมูนิตี้",
+  },
+  SYS_COMMUNITY_INVITE_SHARED_SELF: {
+    vi: "Bạn đã chia sẻ lời mời vào cộng đồng",
+    en: "You shared a community invite",
+    th: "คุณแชร์คำเชิญเข้าคอมมูนิตี้",
+  },
   SYS_COMMUNITY_INVITE_CREATED: {
     vi: "{{actor}} đã tạo liên kết mời",
     en: "{{actor}} created an invite link",

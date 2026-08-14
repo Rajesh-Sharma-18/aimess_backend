@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
@@ -6,10 +8,13 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 import {
   buildAutoDeleteWire,
   formatAutoDeleteDuration,
+  readPolicyVersion,
   readRoomAutoDelete,
   validateAutoDeleteInput,
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
+import { AUTO_DELETE_STUCK_ATTEMPTS } from "../lib/auto-delete-claim.js";
+import type { SweepResult } from "./auto-delete.service.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -39,8 +44,14 @@ const AUTO_DELETE_ROLES = ["ADMIN", "MODERATOR"];
  * What differs from private, and why:
  *   - ONE timer for the room, changeable only by ADMIN/MODERATOR, but every
  *     member's messages follow it.
- *   - "After Viewing" arms on the FIRST recipient's read receipt, not the last.
- *     Waiting for every member of a large group would mean "never".
+ *   - "After Viewing" is NOT SUPPORTED and is rejected with a stable domain
+ *     error. It used to arm on the FIRST recipient's read receipt — justified
+ *     as "waiting for every member would mean never", but the observable
+ *     behaviour was that one member opening the chat deleted the message for
+ *     everyone who had not. A group message carries one global `autoDeleteAt`,
+ *     so honest group After Viewing needs per-member visibility and deadline
+ *     state; until that exists the mode is refused rather than approximated.
+ *     Clients see `capabilities.supportsAfterViewing = false`.
  *   - The sweep deletes `bySystem`, so a message still disappears when its
  *     sender has since left, been kicked, or been muted.
  */
@@ -66,13 +77,29 @@ export class GroupAutoDeleteService {
     return { room, member };
   }
 
+  /**
+   * The canonical room-policy DTO — identical shape to the private endpoint.
+   * `canEdit` reflects THIS member's role, so a client can grey out the picker
+   * without duplicating the permission rule.
+   */
+  private wire(
+    room: { autoDelete?: unknown; autoDeletePolicyVersion?: number | null },
+    role: string
+  ): Record<string, unknown> {
+    return buildAutoDeleteWire(readRoomAutoDelete(room), {
+      conversationType: "GROUP",
+      policyVersion: readPolicyVersion(room),
+      canEdit: AUTO_DELETE_ROLES.includes(role),
+    });
+  }
+
   /** This group's timer — the same answer for every member. */
   async getSettings(
     roomId: string,
     userId: string
   ): Promise<Record<string, unknown>> {
-    const { room } = await this.loadRoomForMember(roomId, userId);
-    return buildAutoDeleteWire(readRoomAutoDelete(room));
+    const { room, member } = await this.loadRoomForMember(roomId, userId);
+    return this.wire(room, member.role);
   }
 
   /**
@@ -85,7 +112,9 @@ export class GroupAutoDeleteService {
     userId: string,
     input: AutoDeleteInput
   ): Promise<Record<string, unknown>> {
-    const invalid = validateAutoDeleteInput(input);
+    // GROUP rejects AFTER_VIEWING here, before any lookup — a stable domain
+    // error rather than a hidden "first reader deletes for everyone".
+    const invalid = validateAutoDeleteInput(input, "GROUP");
     if (invalid) throw new BadRequestError(invalid);
 
     const mode = String(input.mode).toUpperCase() as AutoDeleteMode;
@@ -97,36 +126,31 @@ export class GroupAutoDeleteService {
 
     const before = readRoomAutoDelete(room);
     // No-op guard: a repeated tap on the same option must not spam the chat
-    // with an identical system message, re-stamp anything, or wake any client.
+    // with an identical system message, allocate a policy version, re-stamp
+    // anything, or wake any client.
     if (before.mode === mode && (before.ttlSeconds ?? null) === ttlSeconds) {
-      return buildAutoDeleteWire(before);
+      return this.wire(room, member.role);
     }
 
+    // ONE atomic write: policy + its new version + the durable restamp intent.
     const updated = await this.roomRepo.setAutoDelete(roomId, userId, {
       mode,
       ttlSeconds,
     });
     if (!updated) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-    const after = readRoomAutoDelete(updated);
+    const policyVersion = readPolicyVersion(updated);
 
     // A timer CHANGE (longer or shorter) applies to messages already counting
     // down. Turning it OFF does NOT: messages that already have a deadline keep
-    // deleting on schedule, exactly as in private.
-    if (mode !== "OFF") {
-      await this.messageRepo
-        .restampPendingAutoDeletes({
-          roomId,
-          ttlSeconds,
-          afterView: mode === "AFTER_VIEWING",
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `GroupAutoDeleteService|restamp failed room=${roomId}: ${String(err)}`
-          );
-        });
-    }
+    // deleting on schedule, exactly as in private. Awaited, and a failure
+    // leaves the durable pending marker for `sweepPendingRestamps` rather than
+    // being swallowed while the endpoint reports success.
+    const restampPending =
+      mode === "OFF"
+        ? false
+        : !(await this.runRestamp({ roomId, ttlSeconds, policyVersion }));
 
-    const wire = buildAutoDeleteWire(after);
+    const wire = { ...this.wire(updated, member.role), restampPending };
 
     // Everyone in the room sees a system line when the setting changes. The
     // service publishes `message:new` to `conv:<roomId>` itself and never
@@ -179,17 +203,80 @@ export class GroupAutoDeleteService {
   }
 
   /**
-   * Delete one page of due group messages. Returns how many rows were CLAIMED
-   * (the caller keeps draining while this equals the batch size).
-   *
-   * Multi-node safe without a distributed lock: the delete rejects an
-   * already-deleted row, so a node that loses the race simply skips it.
+   * Re-stamp enrolled rows and retire the pending marker — the group twin of
+   * `AutoDeleteService.runRestamp`; read its comment for why the clear is
+   * conditional on the policy version.
    */
-  async sweepDue(now: Date, batchSize: number): Promise<number> {
-    const due = await this.messageRepo.findDueAutoDeletes(now, batchSize);
+  private async runRestamp(params: {
+    roomId: string;
+    ttlSeconds: number | null;
+    policyVersion: number;
+  }): Promise<boolean> {
+    try {
+      await this.messageRepo.restampPendingAutoDeletes({
+        roomId: params.roomId,
+        ttlSeconds: params.ttlSeconds,
+        // Group has no AFTER_VIEWING, so a restamp is always a TIMER restamp.
+        afterView: false,
+      });
+      await this.roomRepo.clearAutoDeleteRestampPending(
+        params.roomId,
+        params.policyVersion
+      );
+      return true;
+    } catch (err) {
+      logger.warn(
+        `GroupAutoDeleteService|restamp deferred room=${params.roomId} version=${params.policyVersion}: ${String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /** Repair pass for restamps a crash interrupted. Returns rooms settled. */
+  async sweepPendingRestamps(limit: number): Promise<number> {
+    const rooms = await this.roomRepo.findPendingAutoDeleteRestamps(limit);
+    let settled = 0;
+    for (const room of rooms) {
+      const setting = readRoomAutoDelete(room);
+      const pending = (room as { autoDeleteRestampPending?: number | null })
+        .autoDeleteRestampPending;
+      if (typeof pending !== "number") continue;
+      if (setting.mode === "OFF") {
+        await this.roomRepo
+          .clearAutoDeleteRestampPending(room.roomId, pending)
+          .catch(() => false);
+        settled += 1;
+        continue;
+      }
+      const ok = await this.runRestamp({
+        roomId: room.roomId,
+        ttlSeconds: setting.ttlSeconds,
+        policyVersion: pending,
+      });
+      if (ok) settled += 1;
+    }
+    return settled;
+  }
+
+  /**
+   * Delete one page of due group messages.
+   *
+   * Rows are LEASED before anything is deleted (see `lib/auto-delete-claim.ts`),
+   * so of N replicas racing the same due row exactly one runs the canonical
+   * delete and its side effects — the same guarantee private has, from the same
+   * shared implementation.
+   */
+  async sweepDue(now: Date, batchSize: number): Promise<SweepResult> {
+    const claimed = await this.messageRepo.claimDueAutoDeletes({
+      now,
+      limit: batchSize,
+      token: randomUUID(),
+    });
     // One roster lookup per ROOM per sweep, not per message.
     const membersByRoom = new Map<string, string[]>();
-    for (const row of due) {
+    let completed = 0;
+    let failed = 0;
+    for (const row of claimed) {
       if (!row.senderId) continue; // system messages are never stamped
       try {
         const { tombstone } = await this.orchestrator.deleteDirect({
@@ -202,17 +289,37 @@ export class GroupAutoDeleteService {
         });
         await this.fanOutTombstone(row.roomId, tombstone, membersByRoom);
         await this.clearPin(row.roomId, row.id);
+        completed += 1;
       } catch (err) {
-        // Already deleted by another node / a manual delete that beat us — both
-        // are the desired end state, so never let one row stop the page. WARN,
-        // not debug: a sweep that deletes the row but cannot broadcast leaves
-        // the message on every open client, so the failure must be visible.
-        logger.warn(
-          `GroupAutoDeleteService|sweep failed messageId=${row.id}: ${String(err)}`
+        failed += 1;
+        // WARN, not debug: a sweep that deletes the row but cannot broadcast
+        // leaves the message on every open client, so the failure must be
+        // visible. The row is handed back with bounded backoff rather than
+        // retried on every tick; a manual delete that beat us simply never
+        // reappears, because `isDeleted` drops it from the due query.
+        const message = String(err);
+        const log =
+          row.attempts >= AUTO_DELETE_STUCK_ATTEMPTS
+            ? logger.error
+            : logger.warn;
+        log(
+          `GroupAutoDeleteService|sweep failed messageId=${row.id} attempt=${row.attempts}: ${message}`
         );
+        await this.messageRepo
+          .releaseAutoDeleteClaim({
+            id: row.id,
+            attempts: row.attempts,
+            error: message,
+            now,
+          })
+          .catch((releaseErr: unknown) => {
+            logger.warn(
+              `GroupAutoDeleteService|claim release failed messageId=${row.id}: ${String(releaseErr)}`
+            );
+          });
       }
     }
-    return due.length;
+    return { claimed: claimed.length, completed, failed };
   }
 
   /**

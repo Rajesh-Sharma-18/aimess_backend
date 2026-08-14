@@ -22,6 +22,7 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import {
   buildSearchCursor,
   buildTextSearchPipeline,
@@ -55,9 +56,9 @@ function isVisibleToUser(
   userId: string,
   viewerIsActiveMember = true
 ): boolean {
-  // Hidden membership-lifecycle lines (left / joined) are never shown in the
-  // chat timeline. MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are NOT
-  // hidden — moderation actions are visible (Telegram parity). This also kills
+  // Hidden membership-lifecycle lines (left / joined / removed / banned) are
+  // never shown in the chat timeline. MEMBER_UNBANNED is NOT hidden — lifting a
+  // ban is informational and stays visible (Telegram parity). This also kills
   // the duplicate "You joined the community" the joiner saw: the legacy
   // MEMBER_JOINED was personalized to "You joined…", doubling the personal
   // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly one personal line.
@@ -250,6 +251,26 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.findUnique({
       where: { id: messageId },
     });
+  }
+
+  /**
+   * Of `ids`, the ones `userId` has hidden with delete-for-me (`deletedBy`, the
+   * per-user Json array — NOT `deletedForAllBy`). Filtered in memory, same as
+   * the other per-user read paths; `ids` is a single page, so it stays bounded.
+   */
+  async findHiddenIdsForUser(
+    roomId: string,
+    ids: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (ids.length === 0 || !userId) return new Set();
+    const rows = await this.prisma.generalRoomMessage.findMany({
+      where: { roomId, id: { in: ids } },
+      select: { id: true, deletedBy: true },
+    });
+    return new Set(
+      rows.filter((r) => isHiddenForUser(r, userId)).map((r) => r.id)
+    );
   }
 
   /**
@@ -1129,14 +1150,13 @@ export class GeneralRoomMessageRepository {
             // excluded — they're already covered by room.lastMessage).
             visibleToUserId: params.userId,
             deletedBy: { $ne: params.userId },
-            // No type filter — MEMBER_MUTED/MEMBER_UNMUTED/MEMBER_BANNED etc. all
-            // surface here like any other PERSONAL line. A banned user's own
-            // "You were banned from this community" line is INTENDED to become
-            // their lastActivity overlay (product decision — it's the true latest
-            // event visible to them). unbanMember hard-deletes this row (see
-            // purgeAndTombstone(["MEMBER_BANNED"]) in community-room-sync.consumer.ts)
-            // so it naturally stops winning here once unbanned, falling back to
-            // the next-latest personal row or the shared base lastActivity.
+            // Same hidden-type exclusion every other read path applies — this
+            // overlay is a list PREVIEW of the timeline, so a line the timeline
+            // refuses to render (MEMBER_BANNED, and any legacy MEMBER_LEFT /
+            // MEMBER_REMOVED / MEMBER_JOINED row) must not become the preview
+            // either. MEMBER_MUTED/MEMBER_UNMUTED and COMMUNITY_JOINED still
+            // surface here like any other PERSONAL line.
+            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },
         },
         { $sort: { createdAt: -1 } },

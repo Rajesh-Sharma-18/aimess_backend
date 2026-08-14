@@ -3,6 +3,7 @@ import { logger } from "@aimess/logger";
 import {
   CommunitySystemMessageType,
   PERSONAL_JOIN_SESSION_TYPES,
+  inviteContentType,
 } from "@aimess/constants";
 
 import { prisma } from "../config/prisma.js";
@@ -20,6 +21,7 @@ import {
   buildChatMessageEvent,
   buildDeletePayload,
   buildCommunityInvitationAction,
+  buildInvitationContent,
 } from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
@@ -600,28 +602,54 @@ export class CommunityRoomSyncConsumer {
       return;
     }
 
-    // 3. Structured invitation payload — carried in systemData so the client
-    //    renders a rich "join community" card. content.text is a human fallback
-    //    so the inbox preview + push body are never blank.
+    // 3. The invitation message, shaped like a call row (see
+    //    CallChatMessageService): a dedicated `contentType`, the structured card
+    //    under `content.invitation`, and only event-level metadata in
+    //    `systemData`.
+    //
+    //    Built synchronously with no gRPC lookup because this event is firing
+    //    the invite into existence right now: the recipient is guaranteed
+    //    not-yet-a-member (bulk-send filters out ACTIVE members before
+    //    publishing) and the code was just minted, so ACTIVE/false is the only
+    //    truthful answer. Historical reads (`enrichMessages`) re-resolve the
+    //    same object, since either fact can go stale later.
     const previewText = communityName
       ? `Invitation to join ${communityName}`
       : "Community invitation";
-    const content = { text: previewText };
-    const systemData: Record<string, unknown> = {
+    const messageType = inviteContentType("COMMUNITY");
+    const invitation = buildCommunityInvitationAction({
       communityId,
       communityName,
       communityHandle,
       communityAvatarUrl,
       memberCount,
+      inviteCode: linkCode,
+      deepLink: inviteDeepLink ?? inviteUrl ?? "",
+      alreadyJoined: false,
+      status: "ACTIVE",
+    });
+    const content = buildInvitationContent(previewText, invitation);
+    // Event-level only: WHO shared WHAT, and the link identity needed to
+    // re-resolve the card on read. Everything presentational lives on
+    // `content.invitation` and is not duplicated here. `actorId`/`actorName` are
+    // the names the shared private-system-text renderer reads — without them
+    // the line personalizes to "Someone …".
+    const systemData: Record<string, unknown> = {
+      invitationType: "COMMUNITY",
+      communityId,
       linkCode,
+      // Link identity, not presentation: the https share URL has no home on
+      // `content.invitation` (which carries the app deep link), so it is not a
+      // duplicate.
       inviteUrl,
-      inviteDeepLink,
       isPermanent,
       inviterId,
       inviterName,
+      actorId: inviterId,
+      actorName: inviterName,
     };
 
-    // 4. Allocate sequence + persist the SYSTEM message. The create is guarded
+    // 4. Allocate sequence + persist the invitation message. The create is guarded
     //    against the idempotency unique index losing a race (two events in
     //    flight): a duplicate-key error is treated as "already delivered".
     const seq = await this.privateRoomRepo.allocateSequence(room.roomId);
@@ -631,7 +659,7 @@ export class CommunityRoomSyncConsumer {
         senderId: inviterId,
         receiverId: recipientId,
         content,
-        messageType: "SYSTEM",
+        messageType,
         systemEvent: "COMMUNITY_INVITE",
         systemData,
         clientMessageId,
@@ -664,7 +692,7 @@ export class CommunityRoomSyncConsumer {
           _id: message.id,
           content,
           senderId: inviterId,
-          messageType: "SYSTEM",
+          messageType,
           systemEvent: "COMMUNITY_INVITE",
           systemData,
           createdAt,
@@ -679,26 +707,9 @@ export class CommunityRoomSyncConsumer {
         )
       );
 
-    // 5b. The `systemAction` card — built synchronously (no gRPC lookup) since
-    //     this event is firing the invite into existence right now: the
-    //     recipient is guaranteed not-yet-a-member (bulk-send filters out
-    //     ACTIVE members before publishing) and the code was just minted, so
-    //     ACTIVE/false is the only truthful answer. Historical reads (REST
-    //     `enrichMessages`) re-resolve this dynamically since either fact can
-    //     go stale later.
-    const systemAction = buildCommunityInvitationAction({
-      communityId,
-      communityName,
-      communityHandle,
-      inviteCode: linkCode,
-      deepLink: inviteDeepLink ?? inviteUrl ?? "",
-      alreadyJoined: false,
-      status: "ACTIVE",
-    });
-
     // 6. Live broadcast — the canonical message:new wire event (identical shape
-    //    to a normal private message; systemEvent/systemData/systemAction ride
-    //    along for the card). Reaches every device joined to the conversation room.
+    //    to a normal private message; the card rides on `content.invitation`).
+    //    Reaches every device joined to the conversation room.
     const wireEvent = buildChatMessageEvent({
       id: message.id,
       clientMessageId,
@@ -708,13 +719,15 @@ export class CommunityRoomSyncConsumer {
       senderName: inviterName ?? "",
       senderAvatar: "",
       receiverId: recipientId,
-      messageType: "SYSTEM",
+      messageType,
       content,
       sequenceNumber: seq,
       serverTs: sentAt,
       systemEvent: "COMMUNITY_INVITE",
       systemData,
-      systemAction,
+      // Legacy mirror of `content.invitation` — pre-existing mobile clients
+      // read the card from here. Same object, never a second computation.
+      systemAction: invitation,
       countInUnread: (message as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -739,7 +752,11 @@ export class CommunityRoomSyncConsumer {
       recipientIds: [inviterId, recipientId],
       lastMessageId: message.id,
       lastMessageAt: sentAt,
-      preview: { contentType: "SYSTEM", text: previewText, systemAction },
+      preview: {
+        contentType: messageType,
+        text: previewText,
+        systemAction: invitation,
+      },
     });
 
     // 8. FCM/APNs push for the recipient when offline — reuses the normal chat
@@ -754,7 +771,7 @@ export class CommunityRoomSyncConsumer {
       senderName: inviterName ?? "",
       senderAvatar: inviterAvatarUrl ?? "",
       preview: previewText,
-      messageType: "SYSTEM",
+      messageType,
       sentAt,
       recipientIds: [recipientId],
       communityId,

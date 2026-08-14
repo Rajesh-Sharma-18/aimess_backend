@@ -1,5 +1,9 @@
 ﻿import { logger } from "@aimess/logger";
 import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
+import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
@@ -185,6 +189,18 @@ function isActiveMember(
   member: { status?: string | null } | null | undefined
 ): boolean {
   return member?.status === "active";
+}
+
+/** A viewer OWNS a read pointer when they hold a membership row at all — ACTIVE
+ *  or BANNED. A ban is a read CUTOFF, not a read-state freeze: the banned member
+ *  still opens the community to re-read their pre-ban history, and doing so must
+ *  clear their unread badge like it does for anyone else (nothing after `bannedAt`
+ *  is readable, so the pointer can never pass their cutoff). PUBLIC non-members
+ *  have no row and therefore no read state to advance. */
+function ownsReadPointer(
+  member: { status?: string | null } | null | undefined
+): boolean {
+  return member?.status === "active" || member?.status === "banned";
 }
 
 /** Denormalized last-message JSON stored on a GeneralRoom. */
@@ -2062,8 +2078,8 @@ export class CommunityMessageService {
    * Enforces read access (active member, banned member capped at their ban
    * timestamp, or PUBLIC non-member — see `assertCommunityReadAccess`), fetches
    * the offset page (createdAt < timestamp, newest first), then advances the
-   * caller's read pointer to the newest returned message (forward-only, ACTIVE
-   * members only — a banned member has nothing new to mark read).
+   * caller's read pointer to the newest returned message (forward-only; members
+   * only — ACTIVE or BANNED, never a PUBLIC non-member).
    */
   async getConversation(params: {
     roomId: string;
@@ -2108,10 +2124,12 @@ export class CommunityMessageService {
     // Mark-as-read: advance to the newest message in the page (index 0, since
     // the page is createdAt DESC). Forward-only; skip when the page is empty.
     // Runs on the RAW rows (needs id/createdAt) before we map to the wire shape.
-    // Skipped entirely for a non-active viewer (banned/PUBLIC-non-member) — read
-    // state is a member-only concept.
+    // Skipped for a PUBLIC non-member — read state is a member-only concept —
+    // but NOT for a banned member: the page they just read is already clamped to
+    // `bannedAtCutoff`, so opening the room clears their badge without ever
+    // marking a post-ban message read (see {@link ownsReadPointer}).
     const newest = messages[0];
-    if (newest && isActiveMember(member)) {
+    if (newest && ownsReadPointer(member)) {
       await this.memberRepo
         .advanceReadPointer(
           params.roomId,
@@ -2648,6 +2666,17 @@ export class CommunityMessageService {
       deletedBy: userId,
       revision,
     });
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
+      targetType: "message",
+      targetId: messageId,
+      after: {
+        roomType: "COMMUNITY",
+        roomId: message.roomId,
+        deletedType,
+      },
+    });
     // Best-effort: flip `quoteData.isDeleted` on every existing reply to this
     // message so "Message deleted" shows up everywhere, not just for replies
     // sent after this delete.
@@ -2905,6 +2934,15 @@ export class CommunityMessageService {
    * `upToMessageId` and publish two Redis events:
    *   1. `community:<communityId>` → `community:message:read`  (room broadcast)
    *   2. `user:<readerId>`         → `community:read_sync`      (own-device sync)
+   *
+   * Requires a membership row, but a BANNED one counts: a ban is a read CUTOFF,
+   * not a read-state freeze, so the banned member may acknowledge the history
+   * they can still see and clear their own badge — otherwise the badge sticks
+   * forever with no way to dismiss it. This is the one documented exception to
+   * {@link assertRoomMemberActive}; every genuine WRITE path keeps calling it
+   * unconditionally. What the ban DOES revoke here is the room broadcast: a
+   * banned reader must not surface as a live reader to the members they were
+   * banned away from.
    */
   async markMessageRead(params: {
     communityId: string;
@@ -2912,12 +2950,14 @@ export class CommunityMessageService {
     readerId: string;
     upToMessageId: string;
   }): Promise<{ ok: boolean; communityId: string; readAt: number }> {
-    // Validate active membership.
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
       params.readerId
     );
-    assertRoomMemberActive(member);
+    const readerIsBanned = member?.status === "banned";
+    // Left/removed/never-a-member (and PUBLIC non-members, who hold no row at
+    // all) still have no read state to advance.
+    if (!readerIsBanned) assertRoomMemberActive(member);
 
     // Fetch the message to get its createdAt (advanceReadPointer is forward-only).
     const message = await this.messageRepo.findById(params.upToMessageId);
@@ -2952,8 +2992,10 @@ export class CommunityMessageService {
     // was publishing the reader's identity to the whole room regardless.
     // Gates the room broadcast ONLY: the pointer above, `community:read_sync`
     // below, the unread recount and the nav badge are the reader's own state
-    // and must keep working with the switch off.
-    if (await mayBroadcastReadReceipts(params.readerId)) {
+    // and must keep working with the switch off. A BANNED reader is excluded for
+    // the same reason: their own read state is theirs to clear, but they must not
+    // appear as a live reader to the community they were banned from.
+    if (!readerIsBanned && (await mayBroadcastReadReceipts(params.readerId))) {
       redis
         .publish(
           `community:${params.communityId}`,

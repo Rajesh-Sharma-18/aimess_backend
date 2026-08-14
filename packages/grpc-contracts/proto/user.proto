@@ -70,7 +70,8 @@ message NotificationSettings {
   // "HH:mm" 24h local time, or empty string when unset.
   string quiet_hours_start      = 8;
   string quiet_hours_end        = 9;
-  // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
+  // Days the quiet-hours window applies to (0=Sun … 6=Sat), matching the
+  // numbering the REST validator accepts and the clients render. Empty = daily.
   repeated int32 quiet_hours_days = 10;
   bool   show_preview           = 11;
   // The user's app language (ISO 639-1: "en" | "vi" | "th"), empty when unset.
@@ -79,6 +80,9 @@ message NotificationSettings {
   // their delivery preferences are read at exactly the same moment. Additive
   // field: older callers simply ignore it.
   string language               = 12;
+  // IANA timezone the quiet-hours window is evaluated in ("Asia/Bangkok").
+  // Empty string = evaluate in server-local time (pre-timezone behaviour).
+  string timezone               = 13;
 }
 
 // Admin Panel: enrich a user list with display profile data.
@@ -200,17 +204,27 @@ message GetChatSettingsRequest {
   string user_id = 1;
 }
 
-// auto_delete_timer is "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30" — the
-// account-wide default from ChatSettings, NOT a per-chat setting.
+// auto_delete_timer is the LEGACY account-wide default: "OFF" | "DAYS_7" |
+// "DAYS_15" | "DAYS_30". NOT a per-chat setting.
+//
+// auto_delete_default_mode / _ttl_seconds are the CANONICAL form of the same
+// decision, in the seconds a room policy actually stores. `mode` is "" when the
+// user has never explicitly saved it, which is the signal for the consumer to
+// dual-read the legacy enum instead; otherwise "OFF" or "TIMER". Only ever
+// applied when a new PRIVATE room is created — it never rewrites an existing
+// room and never applies to groups.
 //
 // Both booleans default to TRUE in the schema, and proto3 cannot tell "false"
 // from "absent" — so the server ALWAYS sets them explicitly, and a caller that
 // fails to reach this RPC must fall back to true (fail open: a blip must not
 // silently stop a user's typing indicators or read receipts).
 message GetChatSettingsResponse {
-  string auto_delete_timer = 1;
-  bool   typing_indicators = 2;
-  bool   read_receipts     = 3;
+  string auto_delete_timer            = 1;
+  bool   typing_indicators            = 2;
+  bool   read_receipts                = 3;
+  string auto_delete_default_mode     = 4;
+  int32  auto_delete_default_ttl_seconds = 5;
+  int32  auto_delete_default_version  = 6;
 }
 
 message FilterVisiblePresenceRequest {

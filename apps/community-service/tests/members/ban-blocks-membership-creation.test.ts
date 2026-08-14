@@ -1,10 +1,15 @@
 /**
  * Ban must block EVERY membership-creation surface, not just the direct
- * `POST /:id/join` endpoint — 1:1 invite acceptance, invite-link redemption
- * (which QR-code join also uses — QR just scans the same link/code, no
- * separate backend path), permanent invitation codes, join-request creation,
- * and join-request approval (defends against the ban landing in the race
- * window between a user requesting and a moderator approving).
+ * `POST /:id/join` endpoint — invite-link redemption (which QR-code join also
+ * uses — QR just scans the same link/code, no separate backend path), permanent
+ * invitation codes, join-request creation, and join-request approval (defends
+ * against the ban landing in the race window between a user requesting and a
+ * moderator approving).
+ *
+ * The single exception is an explicit per-user invite (`CommunityInvite`,
+ * MODERATOR+ only): accepting one re-admits and unbans the invitee, and a
+ * BANNED user holding one may also redeem a link. A banned user with no invite
+ * is still refused everywhere.
  *
  * Pattern: real communityService, only the I/O boundary mocked (global-mocks.ts
  * setupFilesAfterEnv already stubs the repository/publishers/redis/gRPC — this
@@ -14,8 +19,10 @@
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
+import { fetchUserSnapshots } from "../../src/lib/user-client.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
+const snapshots = fetchUserSnapshots as unknown as jest.Mock;
 
 const CID = "c".repeat(24);
 const ADMIN = "11111111-1111-4111-8111-111111111111";
@@ -59,15 +66,37 @@ beforeEach(() => {
   jest.clearAllMocks();
   repo.findById.mockResolvedValue(publicCommunity);
   repo.findMembership.mockResolvedValue(adminMembership);
+  // Default: no explicit invite, so every ban gate stays closed. The two
+  // re-admission cases below opt in by overriding this.
+  repo.findInviteByCommunityAndInvitee.mockResolvedValue(null);
+  snapshots.mockResolvedValue(
+    new Map([
+      [
+        TARGET,
+        {
+          username: "target",
+          displayName: "Target User",
+          avatarObjectKey: null,
+        },
+      ],
+    ])
+  );
 });
 
-describe("acceptInvite — rejects a BANNED invitee", () => {
+/**
+ * The ONE exception to the rule above: an explicit MODERATOR+ invitation is a
+ * deliberate re-admission, so accepting it unbans the invitee. The reactivation
+ * write is what clears bannedAt/bannedBy/banReason.
+ */
+describe("acceptInvite — an explicit invite unbans the invitee", () => {
   const pendingInvite = {
     id: INVITE_ID,
     communityId: CID,
     inviterId: ADMIN,
     inviteeId: TARGET,
     status: "PENDING",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
   };
 
   beforeEach(() => {
@@ -75,31 +104,32 @@ describe("acceptInvite — rejects a BANNED invitee", () => {
     repo.findMemberByUserId.mockResolvedValue(bannedTarget);
     repo.updateInvite.mockResolvedValue({
       ...pendingInvite,
-      status: "DECLINED",
+      status: "ACCEPTED",
     });
   });
 
-  it("throws COMMUNITY_JOIN_BANNED and does not create/reactivate a member", async () => {
-    await expect(
-      communityService.acceptInvite(TARGET, INVITE_ID)
-    ).rejects.toMatchObject({ message: "COMMUNITY_JOIN_BANNED" });
+  it("reactivates the BANNED row instead of throwing COMMUNITY_JOIN_BANNED", async () => {
+    await communityService.acceptInvite(TARGET, INVITE_ID);
 
+    expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      expect.any(Object)
+    );
+    // Never createMember — the BANNED row already occupies [communityId, userId].
     expect(repo.createMember).not.toHaveBeenCalled();
-    expect(repo.reactivateMemberWithSnapshot).not.toHaveBeenCalled();
   });
 
-  it("closes the invite as DECLINED instead of leaving it PENDING (race defense)", async () => {
-    await expect(
-      communityService.acceptInvite(TARGET, INVITE_ID)
-    ).rejects.toBeTruthy();
+  it("closes the invite as ACCEPTED", async () => {
+    await communityService.acceptInvite(TARGET, INVITE_ID);
 
     expect(repo.updateInvite).toHaveBeenCalledWith(INVITE_ID, {
-      status: "DECLINED",
+      status: "ACCEPTED",
     });
   });
 });
 
-describe("redeemInviteLink — rejects a BANNED redeemer", () => {
+describe("redeemInviteLink — rejects a BANNED redeemer with no invite", () => {
   const activeLink = {
     id: LINK_ID,
     communityId: CID,
@@ -109,6 +139,7 @@ describe("redeemInviteLink — rejects a BANNED redeemer", () => {
     expiresAt: null,
     maxUses: null,
     usedCount: 0,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
   };
 
   beforeEach(() => {
@@ -125,9 +156,37 @@ describe("redeemInviteLink — rejects a BANNED redeemer", () => {
     expect(repo.createMember).not.toHaveBeenCalled();
     expect(repo.reactivateMemberWithSnapshot).not.toHaveBeenCalled();
   });
+
+  it("admits a BANNED redeemer who holds a PENDING invite, without burning a use", async () => {
+    const pendingInvite = {
+      id: INVITE_ID,
+      communityId: CID,
+      inviterId: ADMIN,
+      inviteeId: TARGET,
+      status: "PENDING",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    repo.findInviteByCommunityAndInvitee.mockResolvedValue(pendingInvite);
+    repo.findInviteById.mockResolvedValue(pendingInvite);
+    repo.updateInvite.mockResolvedValue({
+      ...pendingInvite,
+      status: "ACCEPTED",
+    });
+
+    await communityService.redeemInviteLink("abc123", TARGET);
+
+    expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      expect.any(Object)
+    );
+    // The invite, not the link, admitted them — the link's usage is untouched.
+    expect(repo.incrementInviteLinkUsageIfUnder).not.toHaveBeenCalled();
+  });
 });
 
-describe("redeemPermanentInviteCode — rejects a BANNED redeemer (QR / permanent link share to the same underlying flow)", () => {
+describe("redeemPermanentInviteCode — rejects a BANNED redeemer with no invite (QR / permanent link share to the same underlying flow)", () => {
   const communityWithCode = {
     ...publicCommunity,
     invitationCode: "perm-code",

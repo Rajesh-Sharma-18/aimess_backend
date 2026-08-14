@@ -60,6 +60,10 @@ export const AUDIT_ACTIONS = {
   USER_COMMUNITY_MEMBERS_VIEWED: "user.community_members_viewed",
   REPORT_RESOLVED: "report.resolved",
   REPORT_DISMISSED: "report.dismissed",
+  // A sanction was applied to the reported user as part of a resolution. Distinct
+  // from REPORT_RESOLVED (which records the decision): this records the punishment,
+  // and only fires when one was actually chosen.
+  REPORT_ACTIONED: "report.actioned",
   REPORT_BULK_RESOLVED: "report.bulk_resolved",
   REPORT_BULK_DISMISSED: "report.bulk_dismissed",
   COMMUNITY_LIST_VIEWED: "community.list_viewed",

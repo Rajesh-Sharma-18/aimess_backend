@@ -70,5 +70,6 @@ model MediaFile {
   @@index([scanStatus]) // find pending / quarantined
   @@index([usageStatus, unusedAt]) // orphan cleanup sweep
   @@index([createdAt])
+  @@index([ownerId, createdAt]) // per-user data-usage rollup (GET /media/usage/me)
   @@map("media_files")
 }

@@ -9,6 +9,10 @@ import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
 import { UNREAD_COUNTABLE_RAW_MATCH } from "../lib/unread-count.js";
+import {
+  autoDeletePolicyUpdatePipeline,
+  type AutoDeleteMode,
+} from "../lib/auto-delete.js";
 
 // ponytail: post-fetch delete-for-me filter. Reappears when a newer message
 // arrives after the user's deletion timestamp (Telegram-style). Dynamic-key
@@ -220,6 +224,12 @@ export class PrivateRoomRepository {
         clearFor: (data.clearFor as object) ?? {},
         pinnedCount: (data.pinnedCount as number) ?? 0,
         lastPinnedAt: (data.lastPinnedAt as Date) ?? null,
+        // Profile default snapshot, taken ONCE at creation (see
+        // `ensurePrivateRoom`). Absent => the room starts Off. From here the
+        // room policy is independent: either participant may change it, and a
+        // later change to the account default never rewrites this room.
+        autoDelete: (data.autoDelete as object) ?? undefined,
+        autoDeletePolicyVersion: data.autoDelete ? 1 : 0,
       },
     });
   }
@@ -464,12 +474,16 @@ export class PrivateRoomRepository {
 
     // Forward-only: a read pointer must never move backward (multi-device — a second device that
     // read to an OLDER message would otherwise regress the pointer and wrongly re-zero unread).
+    // Bound to THIS room. A foreign message id used to resolve to a sequence
+    // number from another conversation, which was then written into this room's
+    // read pointer and used to compute its remaining-unread count.
     const upToSeq = (
-      await this.prisma.privateMessage.findUnique({
-        where: { id: upToMessageId },
+      await this.prisma.privateMessage.findFirst({
+        where: { id: upToMessageId, roomId },
         select: { sequenceNumber: true },
       })
     )?.sequenceNumber;
+    if (upToSeq == null) return existing;
     const currentReadId = lastReadMessageIdByUser[userId];
     if (upToSeq != null && currentReadId && isObjectId(currentReadId)) {
       const currentSeq = (
@@ -927,28 +941,59 @@ export class PrivateRoomRepository {
    * The legacy per-user `autoDeleteBy` map is cleared in the same update, so a
    * room can never be read through both models at once.
    */
+  /**
+   * Store THE conversation's timer, allocate its policy version, and record the
+   * restamp intent — one atomic write. See
+   * `lib/auto-delete.ts#autoDeletePolicyUpdatePipeline` for why all three have
+   * to land together.
+   *
+   * `findAndModify` rather than a typed `update` because a pipeline update is
+   * the only way to derive the new version from the stored one inside the same
+   * write. Addresses the MONGO COLLECTION (`private_rooms`), not the Prisma
+   * model — a wrong name here returns `{value: null}` rather than erroring.
+   */
   async setAutoDelete(
     roomId: string,
     userId: string,
     setting: { mode: string; ttlSeconds: number | null }
   ): Promise<PrivateRoom | null> {
-    const existing = await this.prisma.privateRoom.findUnique({
-      where: { roomId },
-      select: { roomId: true },
-    });
-    if (!existing) return null;
+    const res = (await this.prisma.$runCommandRaw({
+      findAndModify: "private_rooms",
+      query: { roomId },
+      update: autoDeletePolicyUpdatePipeline({
+        mode: setting.mode as AutoDeleteMode,
+        ttlSeconds: setting.ttlSeconds,
+        setBy: userId,
+        setAt: new Date().toISOString(),
+        clearLegacyMap: true,
+      }),
+      new: true,
+    } as unknown as Prisma.InputJsonObject)) as { value?: unknown } | null;
+    return (res?.value as PrivateRoom | undefined) ?? null;
+  }
 
-    return this.prisma.privateRoom.update({
-      where: { roomId },
-      data: {
-        autoDelete: {
-          mode: setting.mode,
-          ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
-          setAt: new Date().toISOString(),
-          setBy: userId,
-        } as unknown as Prisma.InputJsonValue,
-        autoDeleteBy: {} as unknown as Prisma.InputJsonValue,
-      },
+  /**
+   * Clear the restamp intent, but ONLY if it still names the version we just
+   * finished restamping. A newer PUT that landed mid-restamp has already
+   * written its own (higher) pending version and owes its own pass; clearing
+   * unconditionally would drop that work on the floor.
+   */
+  async clearAutoDeleteRestampPending(
+    roomId: string,
+    policyVersion: number
+  ): Promise<boolean> {
+    const res = await this.prisma.privateRoom.updateMany({
+      where: { roomId, autoDeleteRestampPending: policyVersion },
+      data: { autoDeleteRestampPending: null },
+    });
+    return res.count > 0;
+  }
+
+  /** Rooms whose policy is stored but whose enrolled rows were never moved. */
+  async findPendingAutoDeleteRestamps(limit: number): Promise<PrivateRoom[]> {
+    return this.prisma.privateRoom.findMany({
+      where: { autoDeleteRestampPending: { not: null } },
+      take: limit,
     });
   }
 

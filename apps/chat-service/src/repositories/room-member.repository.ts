@@ -72,7 +72,16 @@ export class RoomMemberRepository {
   /**
    * Advance the member's read pointer to a specific message, forward-only: the
    * pointer is moved only when `messageCreatedAt` is newer than the stored
-   * `lastReadAt` (never regresses). No-op if the member isn't active.
+   * `lastReadAt` (never regresses). No-op if the member has no VISIBLE row.
+   *
+   * ACTIVE **and BANNED** rows both qualify. A ban is a read CUTOFF, not a
+   * read-state freeze: the banned member still opens the community to re-read
+   * the history they had before `bannedAt`, and that has to clear their unread
+   * badge exactly like it does for anyone else — otherwise the badge is stuck
+   * forever with no way to dismiss it. Nothing created after the ban is
+   * readable (see {@link assertCommunityReadAccess}), so the pointer can only
+   * ever advance to at most their cutoff. This is the single choke point for
+   * that rule — every read-pointer write in community chat routes here.
    */
   async advanceReadPointer(
     roomId: string,
@@ -81,7 +90,7 @@ export class RoomMemberRepository {
     messageCreatedAt: Date
   ): Promise<RoomMember | null> {
     const existing = await this.prisma.roomMember.findFirst({
-      where: { roomId, userId, status: "active" },
+      where: { roomId, userId, status: { in: ["active", "banned"] } },
     });
     if (!existing) return null;
 
@@ -100,9 +109,14 @@ export class RoomMemberRepository {
   }
 
   /**
-   * Advance lastReadAt to `readAt` (default: now) for the user's active rows
+   * Advance lastReadAt to `readAt` (default: now) for the user's VISIBLE rows
    * across many rooms. The caller may pass the boundary so the same instant can
    * be reused for the post-write unread recount and the read_sync payload.
+   *
+   * ACTIVE **and BANNED** rows both qualify, for the same reason as
+   * {@link advanceReadPointer}: a banned community stays in the caller's list
+   * carrying an unread badge, so "Mark all as read" has to be able to clear it
+   * too — otherwise it is the one row in the list the action silently skips.
    */
   async bulkAdvanceReadToNow(
     userId: string,
@@ -111,7 +125,11 @@ export class RoomMemberRepository {
   ): Promise<number> {
     if (!roomIds.length) return 0;
     const result = await this.prisma.roomMember.updateMany({
-      where: { userId, status: "active", roomId: { in: roomIds } },
+      where: {
+        userId,
+        status: { in: ["active", "banned"] },
+        roomId: { in: roomIds },
+      },
       data: { lastReadAt: readAt },
     });
     return result.count;

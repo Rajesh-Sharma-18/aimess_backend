@@ -387,6 +387,47 @@ export const CHAT_MESSAGES = {
     th: "ไม่สามารถส่งข้อความถึงผู้ใช้ที่ถูกบล็อกได้",
   },
 
+  // --- Call permission gate ---
+  // Keys match the `AppError.messageKey` thrown by chat-service's call
+  // authorization verbatim: the gateway forwards that key as the gRPC detail and
+  // `ackError` resolves it here, so a refused call reaches the client as a
+  // finished sentence instead of the generic "forbidden" fallback.
+  FRIENDSHIP_REQUIRED: {
+    vi: "Chỉ có thể gọi giữa những người bạn bè",
+    en: "Calls are only available between friends.",
+    th: "การโทรใช้ได้เฉพาะระหว่างเพื่อนเท่านั้น",
+  },
+  PRIVACY_BLOCKED: {
+    vi: "Người dùng này không nhận cuộc gọi từ bạn",
+    en: "This user is not accepting calls from you.",
+    th: "ผู้ใช้รายนี้ไม่รับสายจากคุณ",
+  },
+  CALL_BLOCKED: {
+    vi: "Không thể gọi cho người dùng bị chặn",
+    en: "You cannot call a blocked user.",
+    th: "คุณไม่สามารถโทรหาผู้ใช้ที่ถูกบล็อกได้",
+  },
+  CALLING_DISABLED: {
+    vi: "Tính năng gọi hiện không khả dụng",
+    en: "Calling is currently unavailable.",
+    th: "ขณะนี้ไม่สามารถใช้งานการโทรได้",
+  },
+  CALL_USER_UNAVAILABLE: {
+    vi: "Tài khoản này không còn tồn tại",
+    en: "This account is no longer available.",
+    th: "บัญชีนี้ไม่พร้อมใช้งานอีกต่อไป",
+  },
+  CALL_SELF_NOT_ALLOWED: {
+    vi: "Bạn không thể tự gọi cho chính mình",
+    en: "You cannot call yourself.",
+    th: "คุณไม่สามารถโทรหาตัวเองได้",
+  },
+  CALL_TARGET_REQUIRED: {
+    vi: "Thiếu người nhận cuộc gọi",
+    en: "A call recipient is required.",
+    th: "ต้องระบุผู้รับสาย",
+  },
+
   // --- Pins ---
   CHAT_PIN_LIMIT_REACHED: {
     vi: "Đã đạt giới hạn ghim cho phòng này",

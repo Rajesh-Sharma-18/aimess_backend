@@ -141,10 +141,12 @@ export const NOTIFICATION_MESSAGES = {
     en: "You were banned from {{community}}",
     th: "คุณถูกแบนจาก{{community}}",
   },
+  // The community name is the notification TITLE (and its avatar the image), so
+  // repeating it in the body read as "Your community: Your ban in Your community…".
   NOTIF_COMMUNITY_MEMBER_UNBANNED: {
-    vi: "Lệnh cấm của bạn trong {{community}} đã được gỡ bỏ",
-    en: "Your ban in {{community}} has been lifted",
-    th: "การแบนของคุณใน{{community}}ถูกยกเลิกแล้ว",
+    vi: "Lệnh cấm của bạn đã được gỡ bỏ.",
+    en: "Your ban has been lifted.",
+    th: "การแบนของคุณถูกยกเลิกแล้ว",
   },
   NOTIF_COMMUNITY_MEMBER_MUTED_UNTIL: {
     vi: "Bạn bị cấm nói trong {{community}} đến {{until}}",
@@ -177,9 +179,9 @@ export const NOTIFICATION_MESSAGES = {
     th: "คำเชิญเข้าร่วม{{community}}ของคุณได้รับการตอบรับแล้ว",
   },
   NOTIF_COMMUNITY_REPORT_CREATED: {
-    vi: "Có báo cáo mới trong {{community}} cần xem xét",
-    en: "A new report in {{community}} needs review",
-    th: "มีรายงานใหม่ใน{{community}}ที่ต้องตรวจสอบ",
+    vi: "Có báo cáo mới cần xem xét.",
+    en: "A new report needs review.",
+    th: "มีรายงานใหม่ที่ต้องตรวจสอบ",
   },
   NOTIF_COMMUNITY_REPORT_ACTIONED: {
     vi: "Người kiểm duyệt đã xem xét báo cáo của bạn trong {{community}}",

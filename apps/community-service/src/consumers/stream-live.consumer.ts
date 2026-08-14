@@ -178,11 +178,27 @@ export async function startStreamLiveConsumer(): Promise<void> {
           ? "community:stream:ended"
           : "community:stream:updated";
 
-      const memberIds =
-        await communityRepository.findActiveMemberIds(communityId);
+      // The host does not need a banner for their own stream, and a member who
+      // muted this community's streams must not get the "went live" one either
+      // — the sibling push consumer (stream-lifecycle.consumer) already filters
+      // on exactly this and these two paths were disagreeing.
+      //
+      // ENDED / UPDATED are deliberately NOT mute-filtered: they clear or
+      // correct live state that a muted member can still be holding from the
+      // community list REST payload, and suppressing them strands a stale badge.
+      const [activeIds, mutedIds] = await Promise.all([
+        communityRepository.findActiveMemberIds(communityId),
+        isStarted
+          ? communityRepository.findStreamMutedMemberIds(communityId)
+          : Promise.resolve<string[]>([]),
+      ]);
+      const muted = new Set(mutedIds);
+      const memberIds = activeIds.filter(
+        (id) => id !== data.creatorId && !muted.has(id)
+      );
 
       logger.info(
-        `🔴 [STREAM:CONSUMER] found ${String(memberIds.length)} active members in community=${communityId} — fanning out ${socketEvent}`
+        `🔴 [STREAM:CONSUMER] ${String(memberIds.length)}/${String(activeIds.length)} active members eligible in community=${communityId} (host + ${String(muted.size)} stream-muted excluded) — fanning out ${socketEvent}`
       );
 
       if (memberIds.length === 0) {

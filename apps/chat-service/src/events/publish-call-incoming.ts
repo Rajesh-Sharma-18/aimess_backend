@@ -18,6 +18,16 @@ const CALL_PUSH_QUEUE = "call.push.queue";
 export const CALL_INCOMING_EVENT = "call.incoming";
 export const CALL_MISSED_EVENT = "call.missed";
 export const CALL_CANCELLED_EVENT = "call.cancelled";
+/**
+ * "One of your OWN devices answered/handled this ring — stop ringing, but this
+ * call is NOT over." Distinct from `call.cancelled` on purpose: cancelled means
+ * the call is gone (dismiss + tear down), handled means it lives on another of
+ * the recipient's devices. Reusing `call.cancelled` for the answered-elsewhere
+ * case is exactly what let a client dismiss the very call it had just answered —
+ * `call.cancelled` fires against a RINGING recipient, `call.handled` can fire
+ * against one who is mid-call, so it must be a separate, non-destructive signal.
+ */
+export const CALL_HANDLED_EVENT = "call.handled";
 
 export interface CallIncomingPayload {
   callId: string;
@@ -57,6 +67,14 @@ export interface CallCancelPayload {
   callerId?: string;
   callerName?: string;
 }
+
+/**
+ * Same shape as {@link CallCancelPayload} — the difference is entirely in the
+ * event `type` on the wire (`call.handled` vs `call.cancelled`), which is what
+ * lets a client tell "stop ringing, call continues elsewhere" apart from "call
+ * is over".
+ */
+export type CallHandledPayload = CallCancelPayload;
 
 let channelPromise: Promise<amqp.Channel> | null = null;
 
@@ -162,6 +180,38 @@ export function publishCallCancelSafe(p: CallCancelPayload): void {
       channelPromise = null;
       logger.warn(
         `Failed to publish call.cancelled for ${p.callId}: ${String(error)}`
+      );
+    }
+  })();
+}
+
+/**
+ * Fire-and-forget "answered/handled on another of YOUR devices — stop ringing"
+ * push. Separate from {@link publishCallCancelSafe} because the recipient may be
+ * mid-call on the device that answered, so this must NEVER be treated as
+ * terminal by the receiver. Carries the ringing-window expiration: a "stop
+ * ringing" is meaningless once the ring is over, and bounding it keeps a queued
+ * copy from surfacing minutes later. Best-effort: a failure is logged, never
+ * thrown.
+ */
+export function publishCallHandledPushSafe(p: CallHandledPayload): void {
+  const url = env.RABBITMQ_URL;
+  if (!url) return; // RabbitMQ not configured — skip (push is a fallback channel)
+  void (async () => {
+    try {
+      const channel = await getChannel(url);
+      const payload = JSON.stringify({ type: CALL_HANDLED_EVENT, data: p });
+      channel.sendToQueue(CALL_PUSH_QUEUE, Buffer.from(payload), {
+        persistent: true,
+        expiration: String(env.CALL_RINGING_TIMEOUT_SEC * 1000),
+      });
+      logger.info(
+        `[push:publish] call.handled callId=${p.callId} callee=${p.calleeId} reason=${p.reason}`
+      );
+    } catch (error) {
+      channelPromise = null;
+      logger.warn(
+        `Failed to publish call.handled for ${p.callId}: ${String(error)}`
       );
     }
   })();

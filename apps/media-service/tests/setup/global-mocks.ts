@@ -27,6 +27,9 @@ jest.mock("../../src/repositories/media-file.repository.js", () => ({
     setScanStatus: jest.fn(async () => undefined),
     setUsage: jest.fn(async () => undefined),
     setVerifiedSize: jest.fn(async () => undefined),
+    sumVerifiedBytesByMime: jest.fn(
+      async (): Promise<Array<{ contentType: string; bytes: number }>> => []
+    ),
   },
 }));
 

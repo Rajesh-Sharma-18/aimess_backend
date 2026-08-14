@@ -2,6 +2,7 @@ export * from "./http-status";
 export * from "./i18n";
 export * from "./locale";
 export * from "./locale-context.js";
+export * from "./audit-source.js";
 export * from "./media/classification.js";
 export * from "./media/content-type.js";
 export * from "./media/limits.js";

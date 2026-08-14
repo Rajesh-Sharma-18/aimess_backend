@@ -27,9 +27,50 @@ import {
 export const AUTO_DELETE_MODES = ["OFF", "TIMER", "AFTER_VIEWING"] as const;
 export type AutoDeleteMode = (typeof AUTO_DELETE_MODES)[number];
 
-/** Presets the clients surface — WhatsApp's set (24 hours / 7 days / 90 days).
- *  Any other value inside the bounds below is a valid "Custom" timer. */
-export const AUTO_DELETE_PRESET_SECONDS = [86400, 604800, 7776000];
+/** A conversation kind, for the capability/validation split below. */
+export type AutoDeleteConversationType = "PRIVATE" | "GROUP";
+
+/**
+ * Modes a conversation of each kind may be put into.
+ *
+ * GROUP deliberately omits AFTER_VIEWING. Under the current schema a message
+ * carries ONE global `autoDeleteAt`, so "after viewing" in a group would mean
+ * "the first member to open the chat deletes it for everyone else" — including
+ * members who never saw it. That is a per-member visibility/deadline design,
+ * not a flag, so the mode is rejected outright rather than shipped as a hidden
+ * behaviour. See `capabilities.supportsAfterViewing` on the wire block.
+ */
+export const AUTO_DELETE_MODES_BY_TYPE: Record<
+  AutoDeleteConversationType,
+  readonly AutoDeleteMode[]
+> = {
+  PRIVATE: ["OFF", "TIMER", "AFTER_VIEWING"],
+  GROUP: ["OFF", "TIMER"],
+};
+
+/** May this conversation kind be put into `mode`? */
+export function supportsAutoDeleteMode(
+  conversationType: AutoDeleteConversationType,
+  mode: AutoDeleteMode
+): boolean {
+  return AUTO_DELETE_MODES_BY_TYPE[conversationType].includes(mode);
+}
+
+/**
+ * Presets the clients surface: 24 hours / 1 week / 30 days.
+ *
+ * The 90-day entry that used to sit here was a stale copy of an early spec —
+ * no client ever offered it and no server code read this constant, but it
+ * disagreed with both the product list and the Profile default's own values.
+ */
+export const AUTO_DELETE_PRESET_SECONDS = [86400, 604800, 2592000];
+
+/**
+ * Additional values the backend accepts so clients can exercise the feature
+ * without waiting a day. Everything here is inside the MIN/MAX bounds below —
+ * the bounds, not this list, are what validation enforces.
+ */
+export const AUTO_DELETE_DEBUG_TTL_SECONDS = [300, 600, 1800, 3600, 21600];
 
 /**
  * Grace period between the recipient's read receipt and an "After Viewing"
@@ -161,14 +202,29 @@ export function computeAutoDeleteStamp(
   return AUTO_DELETE_NONE;
 }
 
-/** Validation for the PUT body. Returns an error CODE (i18n key) or null. */
-export function validateAutoDeleteInput(input: {
-  mode: string;
-  ttlSeconds?: number | null;
-}): string | null {
+/**
+ * Validation for the PUT body. Returns an error CODE (i18n key) or null.
+ *
+ * `conversationType` is optional so the pure-mode/ttl checks stay callable on
+ * their own; when supplied, a mode the conversation kind does not support (the
+ * only case today being group AFTER_VIEWING) is rejected with its own stable
+ * code so clients can distinguish "typo" from "not available here".
+ */
+export function validateAutoDeleteInput(
+  input: {
+    mode: string;
+    ttlSeconds?: number | null;
+  },
+  conversationType?: AutoDeleteConversationType
+): string | null {
   const mode = String(input.mode ?? "").toUpperCase();
   if (!AUTO_DELETE_MODES.includes(mode as AutoDeleteMode))
     return "CHAT_AUTO_DELETE_INVALID_MODE";
+  if (
+    conversationType &&
+    !supportsAutoDeleteMode(conversationType, mode as AutoDeleteMode)
+  )
+    return "CHAT_AUTO_DELETE_MODE_UNSUPPORTED";
   if (mode !== "TIMER") return null;
   const ttl = Number(input.ttlSeconds);
   if (!Number.isInteger(ttl)) return "CHAT_AUTO_DELETE_INVALID_TTL";
@@ -192,29 +248,180 @@ export function formatAutoDeleteDuration(
   return formatTtlDuration(ttlSeconds, locale);
 }
 
+/** Everything the canonical room-policy DTO needs beyond the stored setting. */
+export interface RoomPolicyContext {
+  conversationType: AutoDeleteConversationType;
+  /** Monotonic per-room policy version — see `*RoomRepository.setAutoDelete`. */
+  policyVersion: number;
+  /** May the CALLER change this policy? (private: always; group: ADMIN/MODERATOR.) */
+  canEdit: boolean;
+}
+
 /**
- * The wire block returned by the REST settings endpoints and the socket event.
+ * THE room-policy wire block — one shape for private and group, returned
+ * verbatim by GET, by PUT, and by the `conv:auto_delete:updated` socket event,
+ * and embedded in inbox/room-detail rows so a fresh client can render the timer
+ * icon without one request per conversation.
  *
- * One conversation, one timer — the same payload for both participants, which is
- * what lets the socket event be published verbatim to each of them. `self` is
- * kept as a mirror of the flat fields so clients written against the older
- * per-user shape keep rendering the right thing.
+ * One conversation, one timer — the same payload for every participant, which
+ * is what lets the socket event be published verbatim to each of them.
+ *
+ * `label` and `self` are the pre-existing fields, kept byte-identical so
+ * current clients keep rendering; `self` is a mirror of the flat fields from
+ * when each participant had their own timer and carries no independent meaning.
+ * New clients read `mode`/`ttlSeconds`/`policyVersion`/`capabilities` instead.
  */
 export function buildAutoDeleteWire(
-  setting: AutoDeleteSetting
+  setting: AutoDeleteSetting,
+  ctx: RoomPolicyContext = {
+    conversationType: "PRIVATE",
+    policyVersion: 0,
+    canEdit: true,
+  }
 ): Record<string, unknown> {
   const setAt = setting.setAt ? new Date(setting.setAt).getTime() : 0;
   return {
+    conversationType: ctx.conversationType,
     mode: setting.mode,
     ttlSeconds: setting.ttlSeconds,
     isEnabled: setting.mode !== "OFF",
     label: formatAutoDeleteDuration(setting.ttlSeconds, currentLocale()),
     setAt,
     setBy: setting.setBy ?? "",
+    policyVersion: ctx.policyVersion,
+    canEdit: ctx.canEdit,
+    capabilities: {
+      supportsAfterViewing: supportsAutoDeleteMode(
+        ctx.conversationType,
+        "AFTER_VIEWING"
+      ),
+    },
     self: {
       mode: setting.mode,
       ttlSeconds: setting.ttlSeconds,
       setAt,
     },
   };
+}
+
+/**
+ * The monotonic policy version stored beside a room's `autoDelete` JSON.
+ *
+ * Kept in its OWN integer column rather than inside the JSON so it can be
+ * allocated with an atomic `$inc` in the same write that stores the policy —
+ * two concurrent PUTs then get two distinct versions instead of both reading
+ * the same "current" value and writing the same successor.
+ */
+export function readPolicyVersion(room: {
+  autoDeletePolicyVersion?: number | null;
+}): number {
+  const v = room.autoDeletePolicyVersion;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/**
+ * The MongoDB aggregation-pipeline update that stores a room's new policy.
+ *
+ * ONE atomic write does three things that used to be split across two writes
+ * and a fire-and-forget promise:
+ *
+ *   1. allocates the next `autoDeletePolicyVersion` with `$add` on the stored
+ *      value, so two concurrent PUTs get two distinct versions rather than both
+ *      reading "7" and both writing "8";
+ *   2. stores the policy itself;
+ *   3. records `autoDeleteRestampPending` = that same new version — the DURABLE
+ *      intent that already-enrolled rows still need moving to the new deadline.
+ *
+ * Because (2) and (3) land together, a crash after the write leaves a room whose
+ * policy is stored AND whose restamp is still owed, which the repair pass
+ * finishes. Previously the restamp was a `.catch(log)` after the write, so a
+ * failure there returned 200 to the client while every enrolled message stayed
+ * on the old deadline with nothing left to fix it.
+ *
+ * `$literal` wraps the stored document so a user id or mode that happened to
+ * start with `$` could never be interpreted as a field path.
+ */
+export function autoDeletePolicyUpdatePipeline(params: {
+  mode: AutoDeleteMode;
+  ttlSeconds: number | null;
+  setBy: string;
+  setAt: string;
+  /** PRIVATE only — the legacy per-user map is retired on the first new write. */
+  clearLegacyMap?: boolean;
+}): Record<string, unknown>[] {
+  return [
+    {
+      $set: {
+        autoDeletePolicyVersion: {
+          $add: [{ $ifNull: ["$autoDeletePolicyVersion", 0] }, 1],
+        },
+      },
+    },
+    {
+      $set: {
+        autoDelete: {
+          $literal: {
+            mode: params.mode,
+            ttlSeconds: params.mode === "TIMER" ? params.ttlSeconds : null,
+            setAt: params.setAt,
+            setBy: params.setBy,
+          },
+        },
+        // Turning the timer OFF never re-stamps: messages already counting down
+        // keep their deadline (§7), so there is nothing owed and nothing to
+        // repair. Only an ENABLED policy leaves work behind.
+        autoDeleteRestampPending:
+          params.mode === "OFF" ? null : "$autoDeletePolicyVersion",
+        ...(params.clearLegacyMap ? { autoDeleteBy: { $literal: {} } } : {}),
+      },
+    },
+  ];
+}
+
+// ─────────────────────── account default (Profile setting) ──────────────────
+
+/**
+ * LEGACY Profile enum → seconds. `DAYS_15` has no counterpart in the room-level
+ * preset list; it is still honoured as a plain custom TTL so nobody's existing
+ * account default silently changes meaning, but it is not offered going
+ * forward — the canonical `{ mode, ttlSeconds }` shape is.
+ */
+export const LEGACY_ACCOUNT_TIMER_SECONDS: Record<string, number | null> = {
+  OFF: null,
+  DAYS_7: 604800,
+  DAYS_15: 1296000,
+  DAYS_30: 2592000,
+};
+
+/**
+ * "Default message timer for new private chats" — the account-wide Profile
+ * setting, resolved to the same {@link AutoDeleteSetting} shape a room stores.
+ *
+ * DUAL-READ during the migration window: the canonical versioned
+ * `{ mode, ttlSeconds }` wins when user-service has one, otherwise the legacy
+ * `autoDeleteTimer` enum is mapped. AFTER_VIEWING is never an account default —
+ * it is an explicit per-conversation choice — so anything else degrades to OFF.
+ */
+export function resolveAccountDefaultSetting(settings: {
+  autoDeleteDefaultMode?: string | null;
+  autoDeleteDefaultTtlSeconds?: number | null;
+  autoDeleteTimer?: string | null;
+}): AutoDeleteSetting {
+  const canonical = String(settings.autoDeleteDefaultMode ?? "").toUpperCase();
+  if (canonical === "TIMER") {
+    const ttl = Number(settings.autoDeleteDefaultTtlSeconds);
+    if (
+      Number.isInteger(ttl) &&
+      ttl >= AUTO_DELETE_MIN_TTL_SEC &&
+      ttl <= AUTO_DELETE_MAX_TTL_SEC
+    )
+      return { mode: "TIMER", ttlSeconds: ttl, setAt: "" };
+    return AUTO_DELETE_OFF;
+  }
+  if (canonical === "OFF") return AUTO_DELETE_OFF;
+
+  const ttl = LEGACY_ACCOUNT_TIMER_SECONDS[
+    String(settings.autoDeleteTimer ?? "OFF").toUpperCase()
+  ] ?? null;
+  return ttl ? { mode: "TIMER", ttlSeconds: ttl, setAt: "" } : AUTO_DELETE_OFF;
 }

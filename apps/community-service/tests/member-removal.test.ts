@@ -8,11 +8,11 @@
  * must all still fire correctly.
  *
  * Key invariants verified:
- *  1. publishCommunitySystemMessageForChatSafe is NEVER called for MEMBER_REMOVED
- *     (kick has no chat line at all) or for MEMBER_BANNED (ban's PERSONAL line
- *     goes through the AWAITED variant instead — see the "silent-chat policy"
- *     describe block below — so its enqueue is confirmed before the eviction/
- *     ban-notice events fire).
+ *  1. NEITHER publishCommunitySystemMessageForChatSafe NOR its AWAITED variant is
+ *     called for MEMBER_REMOVED or MEMBER_BANNED — both are in
+ *     HIDDEN_SYSTEM_MESSAGE_TYPES, so a kick and a ban each leave no chat line at
+ *     all (the banned user learns of the ban from the sticky banner driven by
+ *     `isBanned` + community:membership:restricted, and from the push).
  *  2. publishChatUserEvent is called with "community:membership:removed" on the
  *     removed/banned user's personal channel (multi-device delivery).
  *  3. publishCommunityRoomEvent is called with "community:member:removed" (roster
@@ -199,24 +199,19 @@ describe("kickMember — silent-chat policy", () => {
 describe("banMember — silent-chat policy", () => {
   beforeEach(setupBanMocks);
 
-  it("publishes a PERSONAL MEMBER_BANNED chat system message visible only to the banned user (Telegram parity), AWAITED before eviction/ban-notice fire", async () => {
+  it("publishes NO MEMBER_BANNED chat system message — the ban shows as a sticky banner, not a chat bubble", async () => {
     await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
-    // Ban uses the AWAITED publish variant (not the fire-and-forget Safe one
-    // every other moderation event uses) so the enqueue is confirmed before
-    // removeActiveMember's eviction/ban-notice events fire — see
-    // community.service.ts banMember().
+    // MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES, so neither publish
+    // variant may carry it: the banned user's client already renders a
+    // persistent banned banner over the composer, and a
+    // "You were banned from this community." bubble in their own history was a
+    // second copy of that same sentence.
     expect(publishSystemMsg).not.toHaveBeenCalled();
     const banCalls = publishSystemMsgAwaited.mock.calls.filter(
       (call: any[]) => call[0]?.systemMessageType === "MEMBER_BANNED"
     );
-    expect(banCalls).toHaveLength(1);
-    expect(banCalls[0][0]).toMatchObject({
-      communityId: COMMUNITY_ID,
-      systemMessageType: "MEMBER_BANNED",
-      triggeredByUserId: CALLER_ID,
-      visibleToUserId: TARGET_ID,
-    });
+    expect(banCalls).toHaveLength(0);
   });
 
   it("publishes community:membership:restricted (not :removed) to the banned user's personal channel — the community stays in their list, fully blocked (USER_BANNED)", async () => {
@@ -282,11 +277,9 @@ describe("HIDDEN_SYSTEM_MESSAGE_TYPES policy contract", () => {
     expect(isHiddenSystemMessage("MEMBER_REMOVED")).toBe(true);
   });
 
-  it("MEMBER_BANNED is NOT hidden — it is PERSONAL (visible only to the banned user), not community-hidden", async () => {
-    const { isHiddenSystemMessage, isPersonalSystemMessage } =
-      await import("@aimess/constants");
-    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(false);
-    expect(isPersonalSystemMessage("MEMBER_BANNED")).toBe(true);
+  it("MEMBER_BANNED is hidden — the banned user gets a sticky banner, not a chat bubble", async () => {
+    const { isHiddenSystemMessage } = await import("@aimess/constants");
+    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(true);
   });
 
   it("MEMBER_LEFT is hidden (voluntary leave is also silent)", async () => {

@@ -32,7 +32,10 @@ function buildService() {
       eval: jest.fn().mockResolvedValue(1),
     },
     livekit: { mintToken: jest.fn() },
-    friendshipRepo: { areFriends: jest.fn() },
+    // These lifecycle tests are about legs/status transitions, not the call
+    // permission gate — answering a ringing call now re-asserts the friendship,
+    // so the pair has to actually be friends for any of it to run.
+    friendshipRepo: { areFriends: jest.fn().mockResolvedValue(true) },
     getCallPrivacy: jest.fn(),
     getUserSnapshot: jest
       .fn()

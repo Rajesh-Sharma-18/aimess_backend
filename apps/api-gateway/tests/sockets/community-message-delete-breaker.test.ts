@@ -137,6 +137,7 @@ describe("community:message:delete — full breaker -> ack chain (the actual rep
       error: "NOT_FOUND",
       retryable: false,
       message: "Message not found",
+      detail: "CHAT_MESSAGE_NOT_FOUND",
     });
   });
 

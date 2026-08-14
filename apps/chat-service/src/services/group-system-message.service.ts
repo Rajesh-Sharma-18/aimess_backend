@@ -51,6 +51,28 @@ export const ADMIN_ACTIVITY_BY_SYSTEM_EVENT: Partial<
   OWNERSHIP_TRANSFERRED: USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED,
 };
 
+/**
+ * ROLE_CHANGED covers moderator grants, admin hand-offs and plain demotions
+ * alike. Moderator grants/removals are their own mandatory audit category, so
+ * the `newRole`/`oldRole` the caller already puts in `systemData` splits them
+ * out; everything else stays the generic role change.
+ */
+function refineGroupAuditAction(
+  systemEvent: SystemEvent,
+  systemData: Record<string, unknown>
+): string | undefined {
+  const mirrored = ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
+  if (mirrored !== USER_AUDIT_ACTIONS.GROUP_ROLE_CHANGED) return mirrored;
+
+  const newRole = String(systemData.newRole ?? "").toUpperCase();
+  const oldRole = String(systemData.oldRole ?? "").toUpperCase();
+  if (newRole === "MODERATOR")
+    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_PROMOTED;
+  if (oldRole === "MODERATOR")
+    return USER_AUDIT_ACTIONS.GROUP_MODERATOR_DEMOTED;
+  return mirrored;
+}
+
 export interface PostSystemMessageParams {
   roomId: string;
   /** User who triggered the event (null for a pure-system event). */
@@ -58,6 +80,12 @@ export interface PostSystemMessageParams {
   systemEvent: SystemEvent;
   /** Event-specific fields (e.g. targetUserId, newRole, newName). */
   systemData?: Record<string, unknown>;
+  /**
+   * Suppress the admin-panel audit mirror. Set only by platform-admin paths,
+   * where backoffice-service already recorded the canonical row against the
+   * acting admin — without this one action would land twice.
+   */
+  skipAdminActivity?: boolean;
   /**
    * Stored/broadcast message kind. Defaults to "SYSTEM" — the only reason to
    * override is a lifecycle row the client renders as a dedicated card rather
@@ -138,16 +166,24 @@ export class GroupSystemMessageService {
       : [];
 
     // Every group lifecycle event funnels through here, so the admin-panel mirror
-    // lives here too rather than at each service call site.
-    const mirrored = ADMIN_ACTIVITY_BY_SYSTEM_EVENT[systemEvent];
+    // lives here too rather than at each service call site. `skipAdminActivity`
+    // is set by the platform-admin paths, where backoffice-service already wrote
+    // the canonical row with the acting admin's identity on it.
+    const mirrored = params.skipAdminActivity
+      ? undefined
+      : refineGroupAuditAction(systemEvent, inData);
     if (mirrored) {
+      // A membership/role event is about the PERSON; a room-level event is about
+      // the room. The other id stays in the metadata either way.
+      const targetsUser = Boolean(targetUserId);
       publishAdminActivitySafe({
         actorId,
         action: mirrored,
-        targetType: "group",
-        targetId: roomId,
+        targetType: targetsUser ? "user" : "group",
+        targetId: targetsUser ? targetUserId : roomId,
         after: {
           systemEvent,
+          roomId,
           targetUserIds: targetUserId ? [targetUserId] : targetUserIds,
         },
       });

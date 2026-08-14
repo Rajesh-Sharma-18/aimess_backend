@@ -136,7 +136,10 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(res.body.data).toHaveProperty("pagination");
   });
 
-  it("POSITIVE: a COMMUNITY_INVITE SYSTEM message carries a resolved systemAction card", async () => {
+  // BACKWARD COMPAT: this row is stored the LEGACY way — `messageType: "SYSTEM"`
+  // with everything in `systemData` and no structured `content.invitation`. It
+  // must still come back on the current contract, with no migration.
+  it("POSITIVE: a legacy SYSTEM COMMUNITY_INVITE row is projected onto the current invitation contract", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
       roomId: ROOM,
       participants: [TEST_USER_ID, "peer"],
@@ -183,17 +186,189 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     ).toHaveBeenCalledWith(TEST_USER_ID, [
       { communityId: "community-1", code: "abc123" },
     ]);
-    expect(res.body.data.data[0].systemAction).toEqual({
+    const card = {
       type: "COMMUNITY_INVITATION",
       communityId: "community-1",
       communityHandle: "mighty-raju",
       communityName: "Mighty Raju",
+      communityAvatarUrl: null,
+      memberCount: 0,
       inviteCode: "abc123",
       deepLink: "aimess://join?code=abc123",
       alreadyJoined: false,
       status: "ACTIVE",
       canOpen: true,
+    };
+    const row = res.body.data.data[0];
+    // The stored kind was "SYSTEM"; the read projects it onto the invitation kind.
+    expect(row.contentType).toBe("COMMUNITY_INVITE");
+    // Canonical placement — backfilled onto a row that never stored one.
+    expect(row.content.invitation).toEqual(card);
+    // Legacy mirror kept for pre-existing mobile clients.
+    expect(row.systemAction).toEqual(card);
+  });
+
+  it("POSITIVE: a current-shape COMMUNITY_INVITE row re-resolves content.invitation with fresh membership", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
     });
+    const storedInvitation = {
+      type: "COMMUNITY_INVITATION",
+      communityId: "community-3",
+      communityHandle: "dr-jhatka",
+      communityName: "Dr. Jhatka",
+      communityAvatarUrl: "community/avatars/dj.jpg",
+      memberCount: 15,
+      inviteCode: "code3",
+      deepLink: "aimess://join?code=code3",
+      alreadyJoined: false,
+      status: "ACTIVE",
+      canOpen: true,
+    };
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-invite-3",
+          senderId: "peer",
+          messageType: "COMMUNITY_INVITE",
+          systemEvent: "COMMUNITY_INVITE",
+          // Event-level only — the card lives on content.
+          systemData: {
+            invitationType: "COMMUNITY",
+            communityId: "community-3",
+            linkCode: "code3",
+            inviterId: "peer",
+            actorId: "peer",
+            actorName: "Peer",
+          },
+          content: {
+            text: "Invitation to join Dr. Jhatka",
+            urls: [],
+            files: [],
+            invitation: storedInvitation,
+          },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+    // The viewer has joined since the invite was sent.
+    mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
+      {
+        communityId: "community-3",
+        found: true,
+        communityName: "Dr. Jhatka",
+        communityHandle: "dr-jhatka",
+        isMember: true,
+        linkStatus: "REVOKED",
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const row = res.body.data.data[0];
+    expect(row.contentType).toBe("COMMUNITY_INVITE");
+    expect(row.content.invitation).toMatchObject({
+      type: "COMMUNITY_INVITATION",
+      // Presentational facts survive from the stored card (the RPC never
+      // returns them)…
+      communityAvatarUrl: "community/avatars/dj.jpg",
+      memberCount: 15,
+      inviteCode: "code3",
+      deepLink: "aimess://join?code=code3",
+      // …while live state is re-resolved, never trusted from the stored copy.
+      alreadyJoined: true,
+      status: "REVOKED",
+      canOpen: true,
+    });
+    // The fallback line is rendered per viewer, like every other private
+    // lifecycle row — NOT the old generic "… updated the chat".
+    expect(row.content.text).toBe("Peer shared a community invite");
+  });
+
+  it("POSITIVE: a GROUP_INVITE row carries content.invitation with the GROUP discriminator", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-ginvite",
+          senderId: "peer",
+          messageType: "GROUP_INVITE",
+          systemEvent: "GROUP_INVITE",
+          systemData: {
+            invitationType: "GROUP",
+            groupId: "grp_1",
+            token: "tok123",
+            actorId: "peer",
+            actorName: "Peer",
+          },
+          content: {
+            text: "Invitation to join Weekend Squad",
+            urls: [],
+            files: [],
+            invitation: {
+              type: "GROUP_INVITATION",
+              groupId: "grp_1",
+              groupName: "Weekend Squad",
+              groupAvatarUrl: "group/avatars/squad.jpg",
+              memberCount: 8,
+              inviteToken: "tok123",
+              deepLink: "aimess://join-group?token=tok123",
+              alreadyJoined: false,
+              status: "ACTIVE",
+              canOpen: true,
+            },
+          },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Weekend Squad",
+      avatar: "",
+      memberCount: 9,
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
+      token: "tok123",
+    });
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const row = res.body.data.data[0];
+    expect(row.contentType).toBe("GROUP_INVITE");
+    expect(row.content.invitation).toMatchObject({
+      type: "GROUP_INVITATION",
+      groupId: "grp_1",
+      groupName: "Weekend Squad",
+      inviteToken: "tok123",
+      // Live count wins over the stored snapshot.
+      memberCount: 9,
+      alreadyJoined: false,
+      status: "ACTIVE",
+      canOpen: true,
+    });
+    expect(row.systemAction).toEqual(row.content.invitation);
+    // The community RPC is never consulted for a group invitation.
+    expect(
+      mocks.communityClient.getCommunityInviteContexts
+    ).not.toHaveBeenCalled();
   });
 
   it("POSITIVE: systemAction.status reflects a revoked/deleted community as canOpen:false", async () => {
@@ -825,6 +1000,8 @@ describe("pins: GET list + POST pin + DELETE unpin", () => {
     mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(2);
     // Only m1 survives → its pin is available; m2's is a "pinned-but-deleted" banner.
     mocks.privateMessageRepo.findLiveIds.mockResolvedValue(new Set(["m1"]));
+    // Nothing hidden by delete-for-me for this viewer.
+    mocks.privateMessageRepo.findHiddenIdsForUser.mockResolvedValue(new Set());
 
     const res = await request(app)
       .get(`/api/chat/private/rooms/${ROOM}/pins`)

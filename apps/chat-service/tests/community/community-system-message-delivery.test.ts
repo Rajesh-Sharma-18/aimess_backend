@@ -136,7 +136,7 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -160,7 +160,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
     }
   );
 
-  it("MEMBER_BANNED is PERSONAL — persisted + delivered only to the target's own channel, never the community room, and never bumps lastActivity", async () => {
+  it("MEMBER_BANNED is dropped even when addressed PERSONALLY to the target — no bubble duplicating their sticky banned banner", async () => {
     const h = makeService({
       withMemberRepo: true,
       snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -171,26 +171,14 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       systemMessageType: "MEMBER_BANNED",
       metadata: { targetUserId: TARGET },
       triggeredByUserId: ACTOR,
+      // A PERSONAL visibleToUserId must NOT smuggle a hidden type past the
+      // backstop — the hidden check runs before visibility is resolved.
       visibleToUserId: TARGET,
       eventAt: EVENT_AT,
     });
 
-    // Persisted (not hidden) with the PERSONAL target and the exact banned copy.
-    expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
-    const createArgs = h.createSystemMessage.mock.calls[0][0] as {
-      visibleToUserId: string | null;
-      fallbackText: string;
-    };
-    expect(createArgs.visibleToUserId).toBe(TARGET);
-    expect(createArgs.fallbackText).toBe(
-      "You were banned from this community."
-    );
-
-    // Delivered ONLY on the target's personal channel — never the community room.
-    expect(h.redis.publish).toHaveBeenCalledTimes(1);
-    expect(h.redis.publish.mock.calls[0][0]).toBe(`user:${TARGET}`);
-
-    // Never eligible to bump/become the community-list preview.
+    expect(h.createSystemMessage).not.toHaveBeenCalled();
+    expect(h.redis.publish).not.toHaveBeenCalled();
     expect(pubActivity).not.toHaveBeenCalled();
     expect(pubListBump).not.toHaveBeenCalled();
   });

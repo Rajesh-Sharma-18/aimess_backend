@@ -209,6 +209,34 @@ export class CallRepository {
   }
 
   /**
+   * Every active call between exactly this pair, either direction. Same
+   * freshness rule as `findActiveBetween`, which answers the glare question for
+   * a single row; this one is for tearing the pair's calls down wholesale
+   * (a block, or an unfriend).
+   *
+   * Must be exhaustive, unlike `findActiveBetween`: glare can legitimately
+   * leave one ring alive in each direction at once. GROUP calls can never
+   * match — their rows carry `calleeId: ""` and are authorized by membership,
+   * not by the pair relationship.
+   */
+  async findAllActiveBetween(
+    userA: string,
+    userB: string,
+    freshCutoff: Date,
+    liveCutoff: Date
+  ): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        OR: [
+          { callerId: userA, calleeId: userB },
+          { callerId: userB, calleeId: userA },
+        ],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
+      },
+    });
+  }
+
+  /**
    * GROUP calls only: atomically drop one rung member from the roster (they
    * declined, or left before answering). Non-atomic read-then-write is an
    * acceptable MVP gap — a lost concurrent decline just leaves that id in the

@@ -171,25 +171,18 @@ describe("banMember — reuses the leave removal core (architecture requirement)
     );
   });
 
-  it("enqueues the MEMBER_BANNED system message BEFORE evicting the socket / notifying the target — narrows the race where 'you're banned' could reach the client ahead of their final system message", async () => {
+  it("enqueues NO MEMBER_BANNED system message — the eviction + ban-notice events are the whole story the client gets", async () => {
     await communityService.banMember(CID, ADMIN, TARGET);
 
-    expect(pubSysMsgAwaited).toHaveBeenCalledWith(
-      expect.objectContaining({
-        communityId: CID,
-        systemMessageType: "MEMBER_BANNED",
-        visibleToUserId: TARGET,
-      })
+    // MEMBER_BANNED is hidden end-to-end (HIDDEN_SYSTEM_MESSAGE_TYPES): the
+    // banned user's sticky banner already says "You're banned from this
+    // community", so a chat bubble repeating it was a duplicate. Removing the
+    // publish also removes the race it used to be awaited to narrow.
+    expect(pubSysMsgAwaited).not.toHaveBeenCalledWith(
+      expect.objectContaining({ systemMessageType: "MEMBER_BANNED" })
     );
-    // Jest tracks a monotonic invocation order across ALL mocks — use it to
-    // pin that the (awaited) system-message enqueue lands before the
-    // eviction (community:member:removed) and ban-notice
-    // (community:membership:restricted) Redis publishes fire.
-    const sysMsgOrder = pubSysMsgAwaited.mock.invocationCallOrder[0]!;
-    const evictOrder = pubRoomEvent.mock.invocationCallOrder[0]!;
-    const restrictedOrder = pubUserEvent.mock.invocationCallOrder[0]!;
-    expect(sysMsgOrder).toBeLessThan(evictOrder);
-    expect(sysMsgOrder).toBeLessThan(restrictedOrder);
+    expect(pubRoomEvent).toHaveBeenCalled();
+    expect(pubUserEvent).toHaveBeenCalled();
   });
 
   it("resets role to MEMBER in the same write, so a banned MODERATOR can never have rank restored on a later reactivation", async () => {

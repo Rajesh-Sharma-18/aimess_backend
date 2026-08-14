@@ -811,7 +811,7 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("BANNED (non-active) member: 200, page capped at bannedAt — no read-pointer write", async () => {
+  it("BANNED (non-active) member: 200, page capped at bannedAt — and the read pointer still advances so their badge clears", async () => {
     const bannedAt = new Date(5);
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "banned",
@@ -843,9 +843,16 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({ beforeMs: bannedAt.getTime() })
     );
-    // Read state is a member-only concept — a banned viewer never advances
-    // the read pointer, even on a successful capped read.
-    expect(mocks.roomMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
+    // A ban freezes what they can READ, not their read STATE: the pointer
+    // advances to the newest row in this already-capped page, so opening the
+    // room clears their unread badge without ever acknowledging a post-ban
+    // message. Without this the badge was stuck with no way to dismiss it.
+    expect(mocks.roomMemberRepo.advanceReadPointer).toHaveBeenCalledWith(
+      ROOM,
+      expect.any(String),
+      "m1",
+      new Date(5)
+    );
   });
 });
 
@@ -1324,6 +1331,10 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
     mocks.communityMessagePinRepo.findPinsByRoom.mockResolvedValue([
       { id: "pin1", pinnedAt: new Date(1) },
     ]);
+    // Nothing hidden by delete-for-me for this viewer.
+    mocks.generalRoomMessageRepo.findHiddenIdsForUser.mockResolvedValue(
+      new Set()
+    );
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/pins`)

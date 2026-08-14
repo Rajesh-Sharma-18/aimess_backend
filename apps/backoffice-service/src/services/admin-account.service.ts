@@ -118,10 +118,19 @@ async function buildPermissionsView(
 }
 
 export const adminAccountService = {
+  /**
+   * SUPER_ADMIN rows are never listed — the role is the permission ceiling, so
+   * there is nothing to grant or revoke on one, and a lesser admin can't manage
+   * one at all (assertCanManageRole). Callers also never see their own row.
+   */
   async listAdminAccounts(
-    query: ListAdminAccountsQuery
+    query: ListAdminAccountsQuery,
+    actor: RequestAdmin
   ): Promise<Paginated<AdminAccountListItem>> {
-    const { rows, total } = await adminUserRepository.list(query);
+    const { rows, total } = await adminUserRepository.list(query, {
+      excludeAdminId: actor.id,
+      excludeSuperAdmins: true,
+    });
     const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
     return {
       data: await Promise.all(rows.map(toListItem)),

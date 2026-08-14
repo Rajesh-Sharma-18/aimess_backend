@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { AUDIT_SOURCES, createAuditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 
 import { serviceRoutes } from "./api/routes/index.js";
@@ -43,6 +44,13 @@ export function createApp(): Express {
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
   app.use(localeMiddleware);
+  // Establishes the ambient audit context (client source + IP + user-agent) for
+  // every request below it, so audit rows written deep in a service know where
+  // the action came from without threading a parameter through each call site.
+  // Pinned: this service has exactly one client, and the pin also rides the gRPC
+  // hop, so a community closed from the panel is audited as ADMIN_PANEL in
+  // community-service too — not as the admin's browser.
+  app.use(createAuditContextMiddleware(AUDIT_SOURCES.ADMIN_PANEL));
 
   // Direct infra/k8s probes hit `/health`; the gateway-proxied admin surface
   // reaches the same probes at `/v1/health` (it strips `/admin`, so the spec's

@@ -192,4 +192,127 @@ describe("GET /api/chat/inbox", () => {
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });
+
+  /**
+   * Every row carries its conversation's auto-delete policy, in the same DTO
+   * the dedicated GET/PUT endpoints and the socket event return. Without it a
+   * cold-started client had to issue one request PER CONVERSATION just to know
+   * whether to draw a timer icon.
+   */
+  it("CONTRACT: every row carries the effective auto-delete policy", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
+      {
+        roomId: "prv_1",
+        participants: [TEST_USER_ID, "peer-1"],
+        lastMessageAt: new Date(2000),
+        lastMessageId: "m2",
+        unreadCountByUser: { [TEST_USER_ID]: 0 },
+        mutedBy: {},
+        pinnedCount: 0,
+        autoDelete: {
+          mode: "TIMER",
+          ttlSeconds: 604800,
+          setAt: "2026-08-14T00:00:00.000Z",
+          setBy: "peer-1",
+        },
+        autoDeletePolicyVersion: 3,
+      },
+    ]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(1);
+    mockGroupMemberships(mocks, [
+      {
+        roomId: "grp_1",
+        role: "MEMBER",
+        unreadCount: 0,
+        notificationSettings: {},
+      },
+    ]);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupRoomRepo.getInboxGroups.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        name: "Devs",
+        avatar: "",
+        lastMessageAt: new Date(3000),
+        lastMessageId: "g9",
+        pinnedCount: 0,
+        autoDelete: { mode: "OFF", ttlSeconds: null, setAt: "", setBy: "" },
+        autoDeletePolicyVersion: 1,
+      },
+    ]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(3000) },
+    ]);
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+
+    const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const items = res.body.data.data as Array<Record<string, any>>;
+    const priv = items.find((i) => i.type === "PRIVATE")!;
+    const group = items.find((i) => i.type === "GROUP")!;
+
+    expect(priv.autoDelete).toMatchObject({
+      conversationType: "PRIVATE",
+      mode: "TIMER",
+      ttlSeconds: 604800,
+      isEnabled: true,
+      policyVersion: 3,
+      // Either participant may change a private conversation's timer.
+      canEdit: true,
+      capabilities: { supportsAfterViewing: true },
+    });
+
+    expect(group.autoDelete).toMatchObject({
+      conversationType: "GROUP",
+      mode: "OFF",
+      ttlSeconds: null,
+      isEnabled: false,
+      policyVersion: 1,
+      // A plain MEMBER may read the group policy but not change it — surfaced
+      // so the client greys out the picker instead of discovering it via 403.
+      canEdit: false,
+      capabilities: { supportsAfterViewing: false },
+    });
+  });
+
+  it("CONTRACT: an ADMIN's group row reports canEdit true", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
+    mockGroupMemberships(mocks, [
+      {
+        roomId: "grp_1",
+        role: "ADMIN",
+        unreadCount: 0,
+        notificationSettings: {},
+      },
+    ]);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupRoomRepo.getInboxGroups.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        name: "Devs",
+        avatar: "",
+        lastMessageAt: new Date(3000),
+        lastMessageId: "g9",
+        pinnedCount: 0,
+      },
+    ]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.groupRoomRepo.findLastMessageAtForRooms.mockResolvedValue([
+      { roomId: "grp_1", lastMessageAt: new Date(3000) },
+    ]);
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+
+    const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
+
+    const group = (res.body.data.data as Array<Record<string, any>>).find(
+      (i) => i.type === "GROUP"
+    )!;
+    expect(group.autoDelete.canEdit).toBe(true);
+    // A room nobody configured reads as OFF with version 0 — no backfill needed.
+    expect(group.autoDelete.mode).toBe("OFF");
+    expect(group.autoDelete.policyVersion).toBe(0);
+  });
 });

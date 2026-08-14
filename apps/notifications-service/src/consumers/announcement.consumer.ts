@@ -54,7 +54,8 @@ export async function handleAnnouncementBatch(
     type: kind,
     title: data.title,
     body: data.body,
-    bypassSettings: true,
+    // Informational, not account-integrity: the System toggle and quiet hours
+    // both apply. Security events are exempted by NON_SUPPRESSIBLE_TYPES.
     data: {
       type: kind,
       announcementId: data.announcementId,

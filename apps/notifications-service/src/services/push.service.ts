@@ -18,9 +18,10 @@ import {
   isCommunityNotificationEnabled,
 } from "./notification-eligibility.service.js";
 import {
+  evaluateDelivery,
   getNotificationSettings,
   getUserLocale,
-  isDeliveryAllowed,
+  type DeliveryDecision,
   type NotificationCategory,
 } from "./notification-settings.service.js";
 import type { LocalizedCopy } from "../lib/notification-copy.js";
@@ -54,10 +55,29 @@ const chatNotificationClient = createChatNotificationClient();
  * Notification Center business requirement lists them as required entries
  * (see `friend.consumer.ts` / `community.consumer.ts`), so they must reach
  * the inbox + push like any other business event.
+ *
+ * Kick and community-deleted used to sit here, which made the `bypassSettings`
+ * flags at their producers dead code and left a kicked user with no signal at
+ * all. They are now delivered like MEMBER_BANNED, which they are siblings of.
  */
-const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
-  CommunityEvents.MEMBER_KICKED,
-  CommunityEvents.DELETED,
+const NOTIFY_SUPPRESSED_TYPES = new Set<string>([]);
+
+/**
+ * Account-integrity events the user may never silence, whatever their category
+ * toggles or quiet hours say. This list IS the policy — producers no longer
+ * each carry their own `bypassSettings: true`, which is how admin ban/suspend/
+ * unban ended up silently suppressible for anyone with System notifications off.
+ *
+ * Informational SYSTEM events (ANNOUNCEMENT, MAINTENANCE, UPDATE_REQUIRED) are
+ * deliberately absent: they are exactly what the System toggle is for.
+ */
+const NON_SUPPRESSIBLE_TYPES = new Set<string>([
+  AuthEvents.SECURITY_NEW_LOGIN,
+  AuthEvents.PASSWORD_CHANGED,
+  AuthEvents.EMAIL_CHANGED,
+  AdminUserEvents.USER_BANNED,
+  AdminUserEvents.USER_SUSPENDED,
+  AdminUserEvents.USER_UNBANNED,
 ]);
 
 /**
@@ -76,6 +96,8 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   FriendshipEvents.FRIEND_REJECTED,
   FriendshipEvents.FRIEND_CANCELLED,
   CommunityEvents.MEMBER_BANNED,
+  CommunityEvents.MEMBER_KICKED,
+  CommunityEvents.DELETED,
   // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
   // missed call is exactly the kind of thing a user wants to find later.
   "CALL_MISSED",
@@ -170,7 +192,13 @@ export interface PushInput {
   dataOnly?: boolean;
   /**
    * When true, skip the notification-settings/quiet-hours gate entirely.
-   * Use ONLY for non-toggleable critical events (kick, ban, delete, calls).
+   * Use ONLY for mechanical sends the user never sees as a notification —
+   * read-receipt and call-cancellation data pushes — and for community
+   * kick/ban/delete, which must also skip the ACTIVE-membership gate because
+   * the recipient is by definition no longer a member.
+   *
+   * Do NOT use it for security alerts: add the type to NON_SUPPRESSIBLE_TYPES
+   * instead, so the policy stays in one auditable place.
    * Inbox row is still persisted; FCM is still sent.
    */
   bypassSettings?: boolean;
@@ -226,10 +254,11 @@ export interface PushInput {
 
 /**
  * Deliver one notification to one recipient:
- *   1. check per-category setting + quiet hours (allow-on-failure),
- *      unless bypassSettings=true,
- *   2. apply showPreview masking if setting is false,
- *   3. persist an inbox row via chat-service CreateNotification (best-effort),
+ *   1. check the per-category setting + quiet hours (allow-on-failure), unless
+ *      bypassSettings=true or the type is non-suppressible. Category OFF stops
+ *      here; quiet hours only stops the push at step 4,
+ *   2. persist an inbox row via chat-service CreateNotification (best-effort),
+ *   3. apply showPreview masking to the provider payload only,
  *   4. fan a push out to every (deduplicated) device token, pruning dead tokens.
  * Never throws — push delivery must not poison the consumer (which would DLQ).
  */
@@ -267,20 +296,24 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const inboxTitleOverride =
     input.inboxTitle !== undefined ? input.inboxTitle : rendered?.inboxTitle;
 
-  let body = rendered?.body ?? input.body ?? "";
+  const body = rendered?.body ?? input.body ?? "";
   const data = input.localizedData
     ? { ...(rawData ?? {}), ...input.localizedData(locale) }
     : rawData;
 
-  let allowed = true;
-  // NotificationSettings from gRPC does not yet expose showPreview at the
-  // proto level, so we read it as an optional extra field and default to true.
+  // `bypassSettings` remains for mechanical, non-user-facing sends (read
+  // receipts, call cancellations) that would be nonsense to gate. Security and
+  // account-integrity events are exempted by TYPE instead, so the policy is
+  // auditable in one list rather than spread across producers.
+  const skipSettingsGate = bypassSettings || NON_SUPPRESSIBLE_TYPES.has(type);
+
+  let decision: DeliveryDecision = "ALLOW";
   let showPreview = true;
 
-  if (!bypassSettings) {
+  if (!skipSettingsGate) {
     try {
       const settings = await getNotificationSettings(userId);
-      allowed = isDeliveryAllowed(settings, category);
+      decision = evaluateDelivery(settings, category);
       showPreview = settings.showPreview !== false;
     } catch (error) {
       // getNotificationSettings already allows-on-open; defensive catch only.
@@ -289,9 +322,12 @@ export async function pushToUser(input: PushInput): Promise<void> {
     }
   }
 
-  if (!allowed) {
+  // Category OFF means "I do not want this class of thing" — kill the push and
+  // the inbox row. Quiet hours means "not right now", so it only silences the
+  // push further down and the inbox row is still written to be found later.
+  if (decision === "CATEGORY_OFF") {
     logger.info(
-      `Notification suppressed by settings/quiet-hours: user=${userId} type=${type}`
+      `Notification suppressed by category setting: user=${userId} type=${type} category=${category}`
     );
     return;
   }
@@ -347,13 +383,15 @@ export async function pushToUser(input: PushInput): Promise<void> {
     }
   }
 
-  // Apply preview masking — title is intentionally left unchanged.
-  if (!showPreview) {
-    body =
-      typeof showPreviewOverride === "function"
-        ? showPreviewOverride(locale)
-        : (showPreviewOverride ?? t("NOTIF_CHAT_NEW_MESSAGE", locale));
-  }
+  // Preview masking is a lock-screen concern — it hides the message from
+  // whoever is looking over the user's shoulder. The Notification Center is
+  // already behind the app's own auth, so the inbox row keeps the real body and
+  // only the provider payload below is masked. Title is left unchanged either way.
+  const pushBody = showPreview
+    ? body
+    : typeof showPreviewOverride === "function"
+      ? showPreviewOverride(locale)
+      : (showPreviewOverride ?? t("NOTIF_CHAT_NEW_MESSAGE", locale));
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
   // for chat-activity pushes (skipInbox) and for any type not on the
@@ -381,6 +419,15 @@ export async function pushToUser(input: PushInput): Promise<void> {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
       logger.warn(error);
     }
+  }
+
+  // Quiet hours: the inbox row above is written and the badge bumps, but no
+  // device is woken. The user finds it waiting when the window ends.
+  if (decision === "QUIET_HOURS") {
+    logger.info(
+      `Push suppressed by quiet hours (inbox row kept): user=${userId} type=${type}`
+    );
+    return;
   }
 
   // Load all device tokens for this user.
@@ -466,9 +513,13 @@ export async function pushToUser(input: PushInput): Promise<void> {
           : await sendPush({
               token,
               title,
-              body,
+              body: pushBody,
               data,
               deepLink,
+              // The community avatar already rides in `data` on every community
+              // push — reuse it as the tray image so the OS stops falling back
+              // to the app logo. Non-community pushes simply have no key here.
+              imageUrl: data?.communityAvatarUrl,
               collapseKey,
               apnsThreadId,
               ttl,

@@ -19,6 +19,9 @@ export type SettingsBundle = {
   } | null;
   chatSettings: {
     autoDeleteTimer: AutoDeleteTimer;
+    autoDeleteDefaultMode: string;
+    autoDeleteDefaultTtlSeconds: number | null;
+    autoDeleteDefaultVersion: number;
     typingIndicators: boolean;
     readReceipts: boolean;
     updatedAt: Date;
@@ -35,10 +38,12 @@ export type SettingsBundle = {
     systemEnabled: boolean;
     communityEnabled: boolean;
     liveStreamEnabled: boolean;
+    showPreview: boolean;
     quietHoursEnabled: boolean;
     quietHoursStart: string | null;
     quietHoursEnd: string | null;
     quietHoursDays: number[];
+    quietHoursTimezone: string | null;
     updatedAt: Date;
   } | null;
   liveStreamSettings: {
@@ -58,6 +63,9 @@ export type PrivacySettingsUpdate = {
 
 export type ChatSettingsUpdate = {
   autoDeleteTimer?: AutoDeleteTimer;
+  autoDeleteDefaultMode?: string;
+  autoDeleteDefaultTtlSeconds?: number | null;
+  autoDeleteDefaultVersion?: number;
   typingIndicators?: boolean;
   readReceipts?: boolean;
 };
@@ -74,10 +82,12 @@ export type NotificationSettingsUpdate = {
   systemEnabled?: boolean;
   communityEnabled?: boolean;
   liveStreamEnabled?: boolean;
+  showPreview?: boolean;
   quietHoursEnabled?: boolean;
   quietHoursStart?: string;
   quietHoursEnd?: string;
   quietHoursDays?: number[];
+  quietHoursTimezone?: string | null;
 };
 
 export type LiveStreamSettingsUpdate = {
@@ -91,10 +101,12 @@ const notificationSelect = {
   systemEnabled: true,
   communityEnabled: true,
   liveStreamEnabled: true,
+  showPreview: true,
   quietHoursEnabled: true,
   quietHoursStart: true,
   quietHoursEnd: true,
   quietHoursDays: true,
+  quietHoursTimezone: true,
   updatedAt: true,
 } as const;
 
@@ -110,6 +122,7 @@ export type NotificationSettingsRow = {
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
   quietHoursDays: number[];
+  quietHoursTimezone: string | null;
 };
 
 export const userSettingsRepository = {
@@ -148,6 +161,7 @@ export const userSettingsRepository = {
         quietHoursStart: true,
         quietHoursEnd: true,
         quietHoursDays: true,
+        quietHoursTimezone: true,
       },
     });
   },
@@ -184,6 +198,9 @@ export const userSettingsRepository = {
    */
   async findChatSettings(userId: string): Promise<{
     autoDeleteTimer: string;
+    autoDeleteDefaultMode: string;
+    autoDeleteDefaultTtlSeconds: number | null;
+    autoDeleteDefaultVersion: number;
     typingIndicators: boolean;
     readReceipts: boolean;
   }> {
@@ -191,12 +208,24 @@ export const userSettingsRepository = {
       where: { userId },
       select: {
         autoDeleteTimer: true,
+        autoDeleteDefaultMode: true,
+        autoDeleteDefaultTtlSeconds: true,
+        autoDeleteDefaultVersion: true,
         typingIndicators: true,
         readReceipts: true,
       },
     });
     return {
       autoDeleteTimer: row?.autoDeleteTimer ?? "OFF",
+      // Version 0 means "never explicitly saved", which the chat-service
+      // dual-read uses to keep honouring the legacy enum. Reporting "" rather
+      // than the column default is what makes that distinction survive the RPC.
+      autoDeleteDefaultMode:
+        (row?.autoDeleteDefaultVersion ?? 0) > 0
+          ? (row?.autoDeleteDefaultMode ?? "OFF")
+          : "",
+      autoDeleteDefaultTtlSeconds: row?.autoDeleteDefaultTtlSeconds ?? null,
+      autoDeleteDefaultVersion: row?.autoDeleteDefaultVersion ?? 0,
       typingIndicators: row?.typingIndicators ?? true,
       readReceipts: row?.readReceipts ?? true,
     };
@@ -249,6 +278,9 @@ export const userSettingsRepository = {
         chatSettings: {
           select: {
             autoDeleteTimer: true,
+            autoDeleteDefaultMode: true,
+            autoDeleteDefaultTtlSeconds: true,
+            autoDeleteDefaultVersion: true,
             typingIndicators: true,
             readReceipts: true,
             updatedAt: true,

@@ -37,16 +37,29 @@ export async function resolveSocketUserDetails(
     const snap = snaps?.find((s) => s.userId === userId);
     if (!snap) return degraded;
 
-    let avatarUrl: string | null = null;
+    // The avatar is a NICE-TO-HAVE; the name is the whole point of this call.
+    // Resolving it must never be able to take the identity down with it — a
+    // presign that rejects (media-service down, breaker open, or the antivirus
+    // gate in generateDownloadUrl refusing an unscanned avatar) used to fall
+    // through to the outer catch and return the degraded shape, which is what
+    // made peers render "Someone is typing…" for a user with a perfectly good
+    // name. Scoped catch, so a bad avatar costs the avatar and nothing else.
+    let avatarUrl: string | null = snap.avatarUrl?.trim() || null;
     const key = snap.avatarObjectKey?.trim();
-    if (key) {
-      // USER_AVATAR downloads have no ownership gate, so requesterId:userId is fine.
-      const dl = await mediaClient.generateDownloadUrl({
-        objectKey: key,
-        category: "USER_AVATAR",
-        requesterId: userId,
-      });
-      avatarUrl = dl?.downloadUrl ?? null;
+    if (!avatarUrl && key) {
+      try {
+        // USER_AVATAR downloads have no ownership gate, so requesterId:userId is fine.
+        const dl = await mediaClient.generateDownloadUrl({
+          objectKey: key,
+          category: "USER_AVATAR",
+          requesterId: userId,
+        });
+        avatarUrl = dl?.downloadUrl ?? null;
+      } catch (avatarErr) {
+        logger.warn(
+          `resolveSocketUserDetails avatar presign failed for ${userId}: ${String(avatarErr)}`
+        );
+      }
     }
     return {
       userId,

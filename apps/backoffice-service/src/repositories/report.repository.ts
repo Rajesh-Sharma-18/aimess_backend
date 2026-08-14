@@ -663,6 +663,20 @@ function toReportStatus(dbStatus: string): ReportStatus {
 
 const CLOSED_DB_STATUSES = new Set(["resolved", "dismissed"]);
 
+/**
+ * Dashboard "Open Reports" — every report NOT in a terminal state, i.e. the
+ * `open` + `reviewing` buckets (API statuses PENDING / UNDER_REVIEW /
+ * ESCALATED). Shares {@link CLOSED_DB_STATUSES} with resolve()/dismiss() so the
+ * dashboard can never drift from the report workflow's own idea of "closed".
+ * DB-level COUNT over the same `Report` table the Reports list reads — no
+ * pagination, no date filter.
+ */
+export function countOpenReports(): Promise<number> {
+  return prisma.report.count({
+    where: { status: { notIn: [...CLOSED_DB_STATUSES] } },
+  });
+}
+
 type RawReportRow = {
   id: string;
   type: string;

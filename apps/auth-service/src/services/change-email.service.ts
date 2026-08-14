@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
 import { BadRequestError, ConflictError } from "@aimess/errors";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import type {
   RequestChangeEmailInput,
@@ -65,6 +69,15 @@ export const changeEmailService = {
       ttlSeconds: env.OTP_TTL_SECONDS,
       requestedAt: new Date().toISOString(),
     });
+
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.USER_EMAIL_CHANGE_REQUESTED,
+      targetType: "user",
+      targetId: userId,
+      before: { email: oldEmail },
+      after: { email: newEmail },
+    });
   },
 
   async verifyAndChange(
@@ -124,6 +137,17 @@ export const changeEmailService = {
       userId: updated.id,
       newEmail,
       at: new Date().toISOString(),
+    });
+
+    // After the write commits — a failed OTP or a conflicting email must never
+    // leave a "the address changed" row behind.
+    publishAdminActivitySafe({
+      actorId: updated.id,
+      action: USER_AUDIT_ACTIONS.USER_EMAIL_CHANGE_CONFIRMED,
+      targetType: "user",
+      targetId: updated.id,
+      before: { email: oldEmail },
+      after: { email: newEmail },
     });
 
     return {

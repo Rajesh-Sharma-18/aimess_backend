@@ -83,8 +83,8 @@ export function buildNewLoginNotification(
     userId: p.userId,
     category: "systemEnabled",
     type: eventType,
-    // Security alert — must ignore notification settings / quiet hours.
-    bypassSettings: true,
+    // Security alert — exempt from settings/quiet hours via
+    // NON_SUPPRESSIBLE_TYPES in push.service.ts, not a flag here.
     copy: authCopy.newLogin(p.browser, location),
     data,
   };

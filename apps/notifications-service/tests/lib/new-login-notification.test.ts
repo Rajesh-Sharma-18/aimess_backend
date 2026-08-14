@@ -42,7 +42,9 @@ describe("buildNewLoginNotification", () => {
 
     expect(out.userId).toBe("user-1");
     expect(out.type).toBe(AuthEvents.SECURITY_NEW_LOGIN);
-    expect(out.bypassSettings).toBe(true);
+    // The exemption is the TYPE being on NON_SUPPRESSIBLE_TYPES in
+    // push.service, not a per-producer flag — see the gate tests.
+    expect(out.bypassSettings).toBeUndefined();
     expect(out.copy("en").title).toBe("Login Detected");
     expect(out.copy("en").body).toBe(
       "New login detected on a chrome from India. If this wasn't you, Terminate Session"

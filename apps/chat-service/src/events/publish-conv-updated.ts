@@ -119,6 +119,23 @@ interface PublishConvUpdatedParams {
    * a recalc must never raise a badge.
    */
   deleteRecalc?: boolean;
+  /**
+   * Monotonic version of the ROOM PROJECTION this payload describes — the
+   * room's `lastRevision` at the mutation that produced it.
+   *
+   * `lastMessageAt` cannot order projection updates, because a delete
+   * legitimately moves it BACKWARD (to the previous surviving message, or to
+   * nothing at all). A client comparing timestamps cannot tell that from a
+   * stale bump, which is exactly why `deleteRecalc` had to be invented as an
+   * override — and an override is not an ordering. With this field the client
+   * keeps ONE rule for every payload: apply if `projectionRevision` is greater
+   * than what it holds, ignore otherwise, whichever way the timestamp moved.
+   *
+   * Deliberately NOT `lastMessage.revision`: that is the previewed MESSAGE's
+   * own revision, which for a delete-recalc points at the older surviving
+   * message and therefore goes backwards with it.
+   */
+  projectionRevision?: number;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -216,6 +233,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       selfPreview: p.selfPreview,
       unreadCountByRecipient,
       deleteRecalc: p.deleteRecalc,
+      projectionRevision: p.projectionRevision,
     });
   })().catch((error) => {
     logger.warn(
@@ -256,6 +274,10 @@ export async function publishConvUpdated(
       );
     }
   }
+
+  // Room-scoped and identical for every recipient: the projection mutation is
+  // one event, however many personalized previews it fans out as.
+  const projectionRevision = p.projectionRevision ?? p.preview.revision ?? 0;
 
   try {
     const pipeline = p.redis.pipeline();
@@ -327,6 +349,12 @@ export async function publishConvUpdated(
           data: {
             type: p.type,
             roomId: p.roomId,
+            // Explicit emptiness. `lastMessageId: ""` and a preview whose
+            // contentType is "" ALSO describe a thin payload that simply didn't
+            // carry a preview, so a client could not tell "this room is now
+            // empty, clear the row" from "I wasn't sent the details". This flag
+            // says which, without changing either existing field.
+            hasLastMessage: Boolean(lastMessageId),
             lastMessageId,
             lastMessage: bumpLastMessage(lastMessage, {
               senderId: effectiveSenderId,
@@ -334,6 +362,16 @@ export async function publishConvUpdated(
               createdAt: lastMessageAt,
             }),
             lastMessageAt,
+            // Explicit when the caller has a mutation revision that differs
+            // from the previewed message's (the delete-recalc case, where the
+            // preview points BACKWARD at an older surviving message). For an
+            // ordinary new-message bump the two coincide — the message being
+            // previewed IS the mutation — so the preview's own revision is the
+            // correct default and every existing call site gets the field for
+            // free. Omitted rather than sent as 0 when neither is known, so a
+            // client ordering strictly by this number is never handed a value
+            // that would make it discard a real update.
+            ...(projectionRevision > 0 ? { projectionRevision } : {}),
             senderId: effectiveSenderId,
             senderName: effectiveSenderName,
             unread,
