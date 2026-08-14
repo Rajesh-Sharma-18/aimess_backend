@@ -98,6 +98,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createJoinRequest: jest.fn(),
     findInvite: jest.fn(),
     findInviteById: jest.fn(),
+    findInviteByCommunityAndInvitee: jest.fn(),
     updateInvite: jest.fn(),
     findInviteLink: jest.fn(),
     findInviteLinkByCode: jest.fn(),

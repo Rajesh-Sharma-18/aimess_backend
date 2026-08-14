@@ -1312,6 +1312,25 @@ function assertInviteLinkActive(link: {
 }
 
 /**
+ * A PENDING `CommunityInvite` row is a MODERATOR+ issued, per-user invitation —
+ * and it is the ONE thing that waives an existing ban: an explicitly invited
+ * member may redeem/accept it, which re-admits them and clears the ban metadata
+ * (see `reactivateMemberWithSnapshot`). Every other join path keeps rejecting a
+ * BANNED user with `COMMUNITY_JOIN_BANNED`, so a shared link picked up from
+ * elsewhere still can't get them back in.
+ *
+ * Returns the invite row (callers close it out on join) or null.
+ */
+async function findPendingInvite(communityId: string, userId: string) {
+  if (!userId) return null;
+  const invite = await communityRepository.findInviteByCommunityAndInvitee(
+    communityId,
+    userId
+  );
+  return invite?.status === CommunityInviteStatus.PENDING ? invite : null;
+}
+
+/**
  * Build the shareable HTTPS invite URL. Invite links are code-based (the PRIVATE
  * mechanism), so the path carries the Telegram-style `+` marker:
  * `https://aimess.me/+<code>` (Sharing & Deep-Linking spec §9.5). base64url codes
@@ -4675,11 +4694,15 @@ export const communityService = {
 
     // Cross-service event → notifications-service pushes/in-apps the unbanned
     // user ("Ban lifted"). Mirrors the MEMBER_BANNED publish on ban.
+    const unbannedCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
     publishCommunityMemberUnbannedSafe({
       communityId,
       eventAt: new Date().toISOString(),
       actorId: callerId,
       targetUserId,
+      communityName: community.name,
+      communityAvatarUrl: unbannedCommunityAvatar?.url ?? null,
     });
 
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
@@ -6882,11 +6905,11 @@ export const communityService = {
         continue;
       }
 
+      // A BANNED user is NOT skipped here: this endpoint is MODERATOR+ only, so
+      // inviting someone who was banned is a deliberate act of re-admission. The
+      // invite row created below is the ban waiver (see findPendingInvite) —
+      // accepting it lifts the ban; ignoring it leaves the ban fully in force.
       const member = membershipByUserId.get(userId);
-      if (member?.status === CommunityMemberStatus.BANNED) {
-        results.push({ userId, outcome: "FAILED", reason: "USER_BANNED" });
-        continue;
-      }
       if (member?.status === CommunityMemberStatus.ACTIVE) {
         results.push({ userId, outcome: "ALREADY_MEMBER" });
         continue;
@@ -7174,20 +7197,10 @@ export const communityService = {
         member: await toMemberData(targetMember),
       };
     }
-    if (targetMember?.status === CommunityMemberStatus.BANNED) {
-      try {
-        await communityRepository.updateInvite(inviteId, {
-          status: CommunityInviteStatus.DECLINED,
-        });
-      } catch (closeErr) {
-        logger.error(
-          `Failed to close BANNED-race invite ${inviteId} during accept`
-        );
-        logger.error(closeErr);
-      }
-      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
-    }
-
+    // A BANNED invitee is deliberately NOT rejected here: only a MODERATOR+ can
+    // issue an invite, so accepting one lifts the ban and re-admits them. The
+    // reactivation below clears bannedAt/bannedBy/banReason with the rest of the
+    // previous membership cycle's markers.
     const snapshotMap = await fetchUserSnapshots([callerId]);
     const snap = snapshotMap.get(callerId)!;
 
@@ -7196,7 +7209,9 @@ export const communityService = {
     // RabbitMQ redeliveries (same publish → same dedup key → chat-service no-ops).
     const activatedAt = new Date().toISOString();
 
-    if (targetMember?.status === CommunityMemberStatus.LEFT) {
+    // Any surviving row (LEFT, BANNED, PENDING) is reactivated — createMember
+    // would collide with the [communityId, userId] unique index.
+    if (targetMember) {
       await communityRepository.reactivateMemberWithSnapshot(
         invite.communityId,
         callerId,
@@ -7514,6 +7529,8 @@ export const communityService = {
       ]);
     // One timestamp for both events so they correlate for the same report.
     const reportEventAt = new Date().toISOString();
+    const reportCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
     publishCommunityReportCreatedSafe({
       communityId,
       eventAt: reportEventAt,
@@ -7522,6 +7539,8 @@ export const communityService = {
       targetUserId,
       reason: input.reason,
       moderatorRecipientIds: reportModeratorRecipientIds,
+      communityName: community.name,
+      communityAvatarUrl: reportCommunityAvatar?.url ?? null,
     });
 
     // Message reports carry the messageId as targetId + the SERVER-RESOLVED
@@ -8363,7 +8382,11 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (existing?.status === CommunityMemberStatus.BANNED) {
+    const banWaiver =
+      existing?.status === CommunityMemberStatus.BANNED
+        ? await findPendingInvite(community.id, callerId)
+        : null;
+    if (existing?.status === CommunityMemberStatus.BANNED && !banWaiver) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     if (existing?.status === CommunityMemberStatus.ACTIVE) {
@@ -8376,6 +8399,19 @@ export const communityService = {
           invitationCode: code,
         }),
         member: await toMemberData(existing),
+      };
+    }
+
+    // Explicitly invited (and thereby unbanned) redeemer joins outright — same
+    // rule as redeemInviteLink: the invite is the approval, not a request.
+    if (banWaiver) {
+      const { member } = await this.acceptInvite(callerId, banWaiver.id);
+      return {
+        link: toPermanentLinkAsInviteLinkData({
+          ...community,
+          invitationCode: code,
+        }),
+        member,
       };
     }
 
@@ -8914,7 +8950,11 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (existing?.status === CommunityMemberStatus.BANNED) {
+    const banWaiver =
+      existing?.status === CommunityMemberStatus.BANNED
+        ? await findPendingInvite(community.id, callerId)
+        : null;
+    if (existing?.status === CommunityMemberStatus.BANNED && !banWaiver) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     if (existing?.status === CommunityMemberStatus.ACTIVE) {
@@ -8923,6 +8963,14 @@ export const communityService = {
         link: toInviteLinkData(link, community),
         member: await toMemberData(existing),
       };
+    }
+
+    // Explicitly invited (and thereby unbanned) redeemer: the moderator's invite
+    // IS the approval, so join outright rather than filing a join request — and
+    // burn no usage slot, since the invite, not the link, is what admitted them.
+    if (banWaiver) {
+      const { member } = await this.acceptInvite(callerId, banWaiver.id);
+      return { link: toInviteLinkData(link, community), member };
     }
 
     // A redeem only consumes a usage slot when it produces a REAL join effect:
@@ -9057,7 +9105,10 @@ export const communityService = {
         communityByCode.id,
         callerId
       );
-      if (membership?.status === CommunityMemberStatus.BANNED) {
+      if (
+        membership?.status === CommunityMemberStatus.BANNED &&
+        !(await findPendingInvite(communityByCode.id, callerId))
+      ) {
         throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
       }
       const isJoinedPerm = membership?.status === CommunityMemberStatus.ACTIVE;
@@ -9111,7 +9162,12 @@ export const communityService = {
       community.id,
       callerId
     );
-    if (membership?.status === CommunityMemberStatus.BANNED) {
+    // A banned viewer may still preview the invite when a moderator explicitly
+    // invited them — otherwise the card they were just sent 403s on open.
+    if (
+      membership?.status === CommunityMemberStatus.BANNED &&
+      !(await findPendingInvite(community.id, callerId))
+    ) {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
     const isJoined = membership?.status === CommunityMemberStatus.ACTIVE;
