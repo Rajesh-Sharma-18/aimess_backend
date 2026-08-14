@@ -7,6 +7,7 @@ import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
 import { LINK_TEXT_REGEX } from "../lib/media-list-filter.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
@@ -564,6 +565,26 @@ export class PrivateMessageRepository {
       select: { id: true },
     });
     return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * Of `ids`, the ones `userId` has hidden with delete-for-me. Filtered in
+   * memory because `deletedFor` is a Json MAP whose per-user key the typed
+   * Prisma API can't express; `ids` is a single page, so the read is bounded.
+   */
+  async findHiddenIdsForUser(
+    roomId: string,
+    ids: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (ids.length === 0 || !userId) return new Set();
+    const rows = await this.prisma.privateMessage.findMany({
+      where: { roomId, id: { in: ids } },
+      select: { id: true, deletedFor: true },
+    });
+    return new Set(
+      rows.filter((r) => isHiddenForUser(r, userId)).map((r) => r.id)
+    );
   }
 
   async searchByText(params: {

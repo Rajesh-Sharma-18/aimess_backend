@@ -30,6 +30,7 @@ import {
   bumpTimestampAfterDelete,
 } from "../../events/community-last-activity.js";
 import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
+import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
 import { getCommunityReconcileClient } from "../../grpc/community.client.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
@@ -165,7 +166,10 @@ export class CommunityMessageController {
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
       );
-      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      const pinnedMessage = await this.pinService.getActivePinSummary(
+        roomId,
+        userId
+      );
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -208,7 +212,10 @@ export class CommunityMessageController {
         ...result.cursors,
         roomRevision: result.roomRevision,
       };
-      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      const pinnedMessage = await this.pinService.getActivePinSummary(
+        roomId,
+        userId
+      );
       const msg = paginated.data.length
         ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
         : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
@@ -250,7 +257,10 @@ export class CommunityMessageController {
         fromTs: new Date(afterTs),
         limit,
       });
-      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      const pinnedMessage = await this.pinService.getActivePinSummary(
+        roomId,
+        userId
+      );
       const msg = result.items.length
         ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
         : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
@@ -297,7 +307,10 @@ export class CommunityMessageController {
       ...result.cursors,
       roomRevision: result.roomRevision,
     };
-    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+    const pinnedMessage = await this.pinService.getActivePinSummary(
+      roomId,
+      userId
+    );
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
@@ -322,7 +335,7 @@ export class CommunityMessageController {
 
     const [result, pinnedMessage] = await Promise.all([
       this.service.getChanges({ roomId, userId, sinceRevision, limit }),
-      this.pinService.getActivePinSummary(roomId),
+      this.pinService.getActivePinSummary(roomId, userId),
     ]);
 
     res.status(HTTP_STATUS.OK).json(
@@ -821,34 +834,19 @@ export class CommunityMessageController {
       }
     }
 
-    // When deleted for everyone, check if the message was actively pinned.
-    // If so: mark the pin unavailable and emit community:message:pinned update.
-    if (type === "forEveryone" && result.roomId) {
-      void this.pinService
-        .handleMessageDeleted(messageId)
-        .then((affectedPin) => {
-          if (!affectedPin) return;
-          return this.redis.publish(
-            `community:${result.roomId}`,
-            JSON.stringify({
-              event: "community:message:pinned",
-              data: {
-                communityId: result.roomId,
-                roomId: result.roomId,
-                pin: {
-                  ...affectedPin,
-                  originalMessage: { isAvailable: false },
-                },
-                pinnedCount: null, // unchanged; client uses cached count
-              },
-            })
-          );
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `deleteMessage|pin hook failed messageId=${messageId}: ${String(err)}`
-          );
-        });
+    // Keep pin state consistent with the delete: forEveryone unpins for the
+    // whole community, forMe only for the deleting user. See lib/pin-after-delete.
+    if (result.roomId) {
+      void unpinAfterDelete({
+        redis: this.redis,
+        pinService: this.pinService,
+        kind: "COMMUNITY",
+        roomId: result.roomId,
+        communityId: result.roomId,
+        messageId,
+        userId,
+        scope: type === "forEveryone" ? "forEveryone" : "forMe",
+      });
     }
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));

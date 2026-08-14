@@ -1324,6 +1324,10 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
     mocks.communityMessagePinRepo.findPinsByRoom.mockResolvedValue([
       { id: "pin1", pinnedAt: new Date(1) },
     ]);
+    // Nothing hidden by delete-for-me for this viewer.
+    mocks.generalRoomMessageRepo.findHiddenIdsForUser.mockResolvedValue(
+      new Set()
+    );
 
     const res = await request(app)
       .get(`${BASE}/rooms/${ROOM}/pins`)
