@@ -317,19 +317,50 @@ inbound from `eth0`, so new ports are closed by default; on Dev 01 only
 
 ## 11. Troubleshooting
 
-| Symptom                                    | Likely cause                              | Check                                                               |
-| ------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------- |
-| Container restart-loops                    | env validation or a missing dependency    | `docker logs <name> --tail 50`                                      |
-| `503` from HAProxy                         | backend health check failing              | `echo "show stat" \| sudo socat stdio /run/haproxy/admin.sock`      |
-| `522` from Cloudflare                      | HAProxy down, or :443 not listening       | `sudo haproxy -c -f /etc/haproxy/haproxy.cfg; ss -tlnp \| grep 443` |
-| Frontend calls the wrong API               | `NEXT_PUBLIC_*` baked into an old image   | rebuild the frontend image                                          |
-| `NOAUTH` from Redis                        | `REDIS_PASSWORD` missing/wrong            | check `.env.dev02`                                                  |
-| Prisma "Transactions are not supported"    | replica set lost its primary              | `rs.status().myState` must be 1                                     |
-| Prisma "could not locate the Query Engine" | builder/runner libc or openssl mismatch   | both stages must be `bookworm-slim` with `openssl` installed        |
-| `ENOENT … .proto`                          | proto files missing from the image        | Dockerfile must copy them to `/packages/grpc-contracts/proto`       |
-| Socket.IO 404                              | wrong path                                | it is `/socket.io/` on api-gateway, **not** `/z-socket/`            |
-| Upload 413 at ~100 MB                      | `minio.ai5dev.tech` is Cloudflare-proxied | grey-cloud that record                                              |
-| Call connects, no audio/video              | `media.ai5stream.tech` is proxied         | grey-cloud it — UDP cannot proxy                                    |
+| Symptom                                             | Likely cause                                             | Check                                                                        |
+| --------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Container restart-loops                             | env validation or a missing dependency                   | `docker logs <name> --tail 50`                                               |
+| `503` from HAProxy                                  | backend health check failing                             | `echo "show stat" \| sudo socat stdio /run/haproxy/admin.sock`               |
+| `522` from Cloudflare                               | HAProxy down, or :443 not listening                      | `sudo haproxy -c -f /etc/haproxy/haproxy.cfg; ss -tlnp \| grep 443`          |
+| **`301` loop — a URL redirects to itself**          | Cloudflare on **Flexible**, edge redirecting :80 → HTTPS | see "Redirect loop" below — count `fe_http` vs `fe_https` in the HAProxy log |
+| `526` from Cloudflare                               | Full (strict) with no origin cert for that name          | `sudo certbot certificates` — is that exact name covered?                    |
+| Attachment send fails, `MEDIA_REGISTRY_UNAVAILABLE` | `MEDIA_GRPC_URL` unset or `0.0.0.0:4009`                 | must be `media-service:4009`; the guard fails CLOSED                         |
+| Prisma `P2022 … column does not exist`              | a migration was never applied                            | run §7; `pnpm db:migrate:deploy` is idempotent                               |
+| Frontend calls the wrong API                        | `NEXT_PUBLIC_*` baked into an old image                  | rebuild the frontend image                                                   |
+| `NOAUTH` from Redis                                 | `REDIS_PASSWORD` missing/wrong                           | check `.env.dev02`                                                           |
+| Prisma "Transactions are not supported"             | replica set lost its primary                             | `rs.status().myState` must be 1                                              |
+| Prisma "could not locate the Query Engine"          | builder/runner libc or openssl mismatch                  | both stages must be `bookworm-slim` with `openssl` installed                 |
+| `ENOENT … .proto`                                   | proto files missing from the image                       | Dockerfile must copy them to `/packages/grpc-contracts/proto`                |
+| Socket.IO 404                                       | wrong path                                               | it is `/socket.io/` on api-gateway, **not** `/z-socket/`                     |
+| Upload 413 at ~100 MB                               | `minio.ai5dev.tech` is Cloudflare-proxied                | grey-cloud that record                                                       |
+| Call connects, no audio/video                       | `media.ai5stream.tech` is proxied                        | grey-cloud it — UDP cannot proxy                                             |
+
+### Redirect loop — the failure that looks like "the backend is down"
+
+Every domain 301s to itself and nothing loads, while the containers are healthy
+and answer 200 locally. Cloudflare is on **Flexible**: it reaches the origin over
+plain HTTP, so an edge that blindly redirects `:80 → https` bounces the browser
+forever.
+
+Diagnose it in one command — a healthy box handles almost everything on
+`fe_web` with TLS; a looping one shows a flood of plaintext hits:
+
+```bash
+sudo journalctl -u haproxy --since -5m | grep -oE "fe_[a-z]+~? " | sort | uniq -c
+# during the 2026-08-13 outage: 7,838 plaintext vs 1 TLS, every one a 301
+```
+
+Confirm the origin itself is fine before touching anything:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --resolve api.ai5dev.tech:443:127.0.0.1 \
+  https://api.ai5dev.tech/health      # 200 = the app is healthy, the edge is not
+```
+
+The config now tolerates either Cloudflare mode: one frontend serves `:80` and
+`:443`, and the redirect fires only for a genuine plaintext visitor
+(`!acme !tls_here !visitor_tls`), trusting Cloudflare's `X-Forwarded-Proto`.
+**Do not reintroduce an unconditional `:80 → https` redirect.**
 
 Full reset of one service:
 

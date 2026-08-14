@@ -108,6 +108,7 @@ services:
       USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users
       AUTH_GRPC_URL: auth-service:4001
       CHAT_GRPC_URL: chat-service:4004
+      MEDIA_GRPC_URL: media-service:4009
     # No published ports. gRPC is reached as `user-service:4002` on the compose
     # network. An earlier revision published this for a remote stream-service,
     # but stream-service runs here now, so nothing off-box needs gRPC.
@@ -153,6 +154,11 @@ services:
       USER_SERVICE_GRPC_URL: user-service:4002
       COMMUNITY_GRPC_URL: community-service:4003
       NOTIFICATION_GRPC_URL: notifications-service:4006
+      # Attachment scan-verdict lookups. The schema default is 0.0.0.0:4009 —
+      # a BIND address, which as a dial target is ECONNREFUSED. Left unset, the
+      # attachment guard fails closed and every message with a file is rejected
+      # with MEDIA_REGISTRY_UNAVAILABLE.
+      MEDIA_GRPC_URL: media-service:4009
       MINIO_BUCKET: aimess-chat
     ports:
       - "127.0.0.1:3004:3004"
@@ -241,6 +247,7 @@ services:
       USER_GRPC_URL: user-service:4002
       COMMUNITY_GRPC_URL: community-service:4003
       CHAT_GRPC_URL: chat-service:4004
+      MEDIA_GRPC_URL: media-service:4009
       STREAM_GRPC_URL: ${STREAM_GRPC_URL}
       CORS_ALLOWED_ORIGINS: ${ADMIN_WEB_ORIGIN}
       TRUST_PROXY_HOPS: "1"
