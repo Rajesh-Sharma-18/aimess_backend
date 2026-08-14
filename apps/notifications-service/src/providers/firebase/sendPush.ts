@@ -166,12 +166,27 @@ export async function sendPush({
 
       // ── Web push ─────────────────────────────────────────────────────────
       webpush: {
-        notification: {
-          icon: image ?? "/icons/icon-192.png",
-          badge: "/icons/badge-72.png",
-          // requireInteraction keeps the notification visible for calls.
-          requireInteraction: priority === "high",
-        },
+        // Gated on !dataOnly, NOT on omitNotification. Presence of any
+        // webpush.notification (even title-less, icon/badge only) makes FCM's JS
+        // SDK render the push itself using its own defaults ("Google Chrome /
+        // New notification"), which also causes our SW handleBackgroundMessage
+        // to early-return on payload.notification — so the caller-name branch
+        // for CALL_INCOMING and the tag-close branch for CALL_CANCELLED never
+        // run. dataOnly is the correct semantic: "app owns UI, no OS card".
+        // The Android-MESSAGE carveout in omitNotification is Android-only —
+        // web MESSAGE tokens still need the tray card drawn by the SDK.
+        ...(dataOnly
+          ? {}
+          : {
+              notification: {
+                // Sender/community avatar when the payload carries one, so the
+                // tray card is not always the generic app icon.
+                icon: image ?? "/icons/icon-192.png",
+                badge: "/icons/badge-72.png",
+                // requireInteraction keeps the notification visible for calls.
+                requireInteraction: priority === "high",
+              },
+            }),
         fcmOptions: {
           ...(deepLink ? { link: deepLink } : {}),
         },

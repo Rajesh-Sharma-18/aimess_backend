@@ -180,6 +180,10 @@ model AuditLog {
   // foreign key to AdminUser would reject every website-side row.
   actorId    String? @db.Uuid
   actorType  AuditActorType @default(ADMIN)
+  // Which client the action came from, derived server-side at the request
+  // boundary (x-platform header / socket handshake), never taken on trust from
+  // a request body. SYSTEM = no client at all (job, sweeper, queue consumer).
+  source     AuditSource    @default(SYSTEM)
   action     String // "user.ban", "community.member_joined", ...
   targetType String // "user" | "community" | "group" | "stream" | "settings" | "admin"
   targetId   String?
@@ -195,11 +199,20 @@ model AuditLog {
   @@index([targetType, targetId])
   @@index([action, createdAt])
   @@index([actorType, createdAt])
+  @@index([source, createdAt])
 }
 
 enum AuditActorType {
   ADMIN
   USER
+  SYSTEM
+}
+
+enum AuditSource {
+  ADMIN_PANEL
+  WEB
+  ANDROID
+  IOS
   SYSTEM
 }
 

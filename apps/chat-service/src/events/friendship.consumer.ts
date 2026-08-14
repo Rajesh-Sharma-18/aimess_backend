@@ -14,6 +14,7 @@ import { SystemEvent } from "../types/enums.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../services/message-preview.service.js";
 import { publishConvUpdatedSafe } from "./publish-conv-updated.js";
+import { terminateCallsBetweenSafe } from "./call-terminator.js";
 import { notifyRelationshipEnded } from "./call-teardown-bridge.js";
 
 const FRIENDSHIP_EXCHANGE = "user.events";
@@ -168,11 +169,19 @@ export class FriendshipEventConsumer {
             "BLOCKED"
           );
           await this.addBlockedByToRoom(event.userA, event.userB);
-          // Blocking has to sever contact immediately — waiting for whichever
-          // side happens to hang up is not "blocked". user-service also unfriends
-          // as part of a block, but that arrives as a SEPARATE event with its own
-          // ordering, so this path ends the call itself rather than relying on it.
-          await notifyRelationshipEnded(event.userA, event.userB);
+          // A block takes effect NOW, not when the current call happens to
+          // end: any ringing or in-progress call between the pair is hung up
+          // here. Runs after the read-model write above, so a client that
+          // immediately redials hits the (already-updated) block gate.
+          //
+          // user-service also unfriends as part of a block, but that arrives as
+          // a SEPARATE event with its own ordering, so this path ends the call
+          // itself rather than relying on the `friendship.deleted` handler above.
+          await terminateCallsBetweenSafe(
+            event.userA,
+            event.userB,
+            event.userA
+          );
           // No system message: blocking must stay silent to the blocked
           // party (see friendship.service.ts blockUser) — posting a shared
           // chat bubble would tell them "X blocked you" regardless.

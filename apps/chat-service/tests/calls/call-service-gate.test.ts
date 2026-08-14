@@ -22,6 +22,7 @@ interface Stubs {
     findCallerRinging: jest.Mock;
     findActiveByParticipant: jest.Mock;
     findActiveBetween: jest.Mock;
+    findAllActiveBetween: jest.Mock;
     claimStatusTransition: jest.Mock;
   };
   privateRoomRepo: {
@@ -31,7 +32,7 @@ interface Stubs {
   };
   redis: Redis;
   livekit: { mintToken: jest.Mock };
-  friendshipRepo: { areFriends: jest.Mock };
+  friendshipRepo: { areFriends: jest.Mock; isBlockedEitherWay: jest.Mock };
   getCallPrivacy: jest.Mock<Promise<CallPrivacy>, [string]>;
   getUserSnapshot: jest.Mock<
     Promise<{ displayName: string; avatarUrl: string; isDeleted?: boolean }>,
@@ -59,6 +60,7 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
       findCallerRinging: jest.fn().mockResolvedValue([]),
       findActiveByParticipant: jest.fn().mockResolvedValue([]),
       findActiveBetween: jest.fn().mockResolvedValue(null),
+      findAllActiveBetween: jest.fn().mockResolvedValue([]),
       claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
     },
     privateRoomRepo: {
@@ -88,7 +90,10 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
         .fn()
         .mockResolvedValue({ url: "ws://livekit", token: "tk" }),
     },
-    friendshipRepo: { areFriends: jest.fn().mockResolvedValue(true) },
+    friendshipRepo: {
+      areFriends: jest.fn().mockResolvedValue(true),
+      isBlockedEitherWay: jest.fn().mockResolvedValue(false),
+    },
     getCallPrivacy: jest.fn().mockResolvedValue({
       whoCanCallMe: overrides.whoCanCallMe ?? "FRIENDS",
       allowedUserIds: overrides.allowedUserIds ?? [],
@@ -332,22 +337,148 @@ describe("CallService.initiateCall gate", () => {
     expect(stubs.getCallPrivacy).not.toHaveBeenCalled();
   });
 
-  // Both directions. Being blocked BY the callee used to sail past this gate —
-  // only the caller's own block was checked.
-  it.each(["caller", "callee"])(
-    "SECURITY: block gate fires when room.blockedBy contains %s",
-    async (blocker) => {
+  // A block is stored one-way but bans calling BOTH ways. The old gate only
+  // looked for the caller in `room.blockedBy`, so the blocked party could still
+  // ring their blocker whenever the friendship gate was waived (EVERYONE).
+  describe("blocking is mutual", () => {
+    it("NEGATIVE: blocker → blocked is CALL_BLOCKED, before privacy is even read", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.isBlockedEitherWay.mockResolvedValue(true);
+
+      await expect(service.initiateCall(params)).rejects.toThrow(
+        /CALL_BLOCKED/
+      );
+      expect(stubs.getCallPrivacy).not.toHaveBeenCalled();
+      expect(stubs.callRepo.create).not.toHaveBeenCalled();
+      expect(stubs.livekit.mintToken).not.toHaveBeenCalled();
+    });
+
+    it("REGRESSION: blocked → blocker is CALL_BLOCKED even with whoCanCallMe=EVERYONE and no DM room", async () => {
+      const { service, stubs } = buildService({ whoCanCallMe: "EVERYONE" });
+      stubs.friendshipRepo.isBlockedEitherWay.mockResolvedValue(true);
+      stubs.friendshipRepo.areFriends.mockResolvedValue(false);
+      stubs.privateRoomRepo.findByRoomId.mockResolvedValue(null);
+      stubs.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+
+      await expect(service.initiateCall(params)).rejects.toThrow(
+        /CALL_BLOCKED/
+      );
+      expect(stubs.privateRoomRepo.create).not.toHaveBeenCalled();
+      expect(stubs.callRepo.create).not.toHaveBeenCalled();
+    });
+
+    it("REGRESSION: room.blockedBy naming the CALLEE also blocks the caller", async () => {
       const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
       stubs.privateRoomRepo.findByRoomId.mockResolvedValue({
         participants: ["caller", "callee"],
-        blockedBy: [blocker],
+        blockedBy: ["callee"],
       });
+
       await expect(service.initiateCall(params)).rejects.toThrow(
         /CALL_BLOCKED/
       );
       expect(stubs.callRepo.create).not.toHaveBeenCalled();
-    }
-  );
+    });
+  });
+
+  it("SECURITY: existing block gate still fires when room.blockedBy contains caller", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+    stubs.privateRoomRepo.findByRoomId.mockResolvedValue({
+      participants: ["caller", "callee"],
+      blockedBy: ["caller"],
+    });
+    await expect(service.initiateCall(params)).rejects.toThrow(/CALL_BLOCKED/);
+    expect(stubs.callRepo.create).not.toHaveBeenCalled();
+  });
+});
+
+// Blocking mid-call: the friendship consumer calls this, and the call has to
+// drop immediately instead of surviving until someone hangs up.
+describe("CallService.terminateCallsBetween", () => {
+  it("ends an IN_PROGRESS call between the pair and fans out call:ended", async () => {
+    const { service, stubs } = buildService();
+    const live = {
+      callId: "live-1",
+      callerId: "callee", // blocked party is the caller here — direction agnostic
+      calleeId: "caller",
+      calleeIds: [],
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 5000),
+      durationSec: 0,
+    };
+    stubs.callRepo.findAllActiveBetween.mockResolvedValue([live]);
+    stubs.callRepo.findByCallId.mockResolvedValue(live);
+
+    await service.terminateCallsBetween("caller", "callee", "caller");
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "live-1",
+      "IN_PROGRESS",
+      expect.objectContaining({ status: "ENDED", endedBy: "caller" })
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:callee",
+      expect.stringContaining("call:ended")
+    );
+  });
+
+  it("cancels a RINGING call so the blocked party's phone stops ringing", async () => {
+    const { service, stubs } = buildService();
+    const ringing = {
+      callId: "ring-1",
+      callerId: "caller",
+      calleeId: "callee",
+      calleeIds: [],
+      status: "RINGING",
+      answeredAt: null,
+      durationSec: 0,
+    };
+    stubs.callRepo.findAllActiveBetween.mockResolvedValue([ringing]);
+    stubs.callRepo.findByCallId.mockResolvedValue(ringing);
+
+    await service.terminateCallsBetween("caller", "callee", "caller");
+
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:callee",
+      expect.stringContaining("call:cancelled")
+    );
+  });
+
+  it("no active call → nothing to end, and never throws", async () => {
+    const { service, stubs } = buildService();
+    await expect(
+      service.terminateCallsBetween("caller", "callee", "caller")
+    ).resolves.toBeUndefined();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("one failing call does not strand the rest", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findAllActiveBetween.mockResolvedValue([
+      { callId: "bad" },
+      { callId: "good" },
+    ]);
+    stubs.callRepo.findByCallId.mockImplementation(async (callId: string) => {
+      if (callId === "bad") throw new Error("db down");
+      return {
+        callId: "good",
+        callerId: "caller",
+        calleeId: "callee",
+        calleeIds: [],
+        status: "RINGING",
+        answeredAt: null,
+        durationSec: 0,
+      };
+    });
+
+    await service.terminateCallsBetween("caller", "callee", "caller");
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "good",
+      "RINGING",
+      expect.objectContaining({ status: "ENDED" })
+    );
+  });
 });
 
 describe("CallService.initiateGroupCall — whoCanCallMe=NO_ONE opt-out", () => {

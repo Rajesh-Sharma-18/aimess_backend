@@ -395,8 +395,8 @@ export class CallChatMessageService {
 
   /**
    * Shared fan-out for both the insert and every transition: the canonical
-   * ChatMessage on `conv:<roomId>`, the inbox bump, and (missed calls only) the
-   * push fallback.
+   * ChatMessage on each participant's `user:<id>` bus, the inbox bump, and
+   * (missed calls only) the push fallback.
    */
   private async broadcast(args: {
     event: "message:new" | "message:edited";
@@ -451,13 +451,36 @@ export class CallChatMessageService {
       systemData,
     });
 
-    await this.redis
-      .publish(`conv:${roomId}`, JSON.stringify({ event, data: wire }))
-      .catch((error: unknown) => {
-        logger.warn(
-          `CallChatMessageService|${event} publish failed callId=${params.callId}: ${String(error)}`
-        );
-      });
+    // The PERSONAL bus, not `conv:<roomId>`. A socket joins `user:<id>` at
+    // connect; it joins `conv:<roomId>` only while the client has that exact
+    // chat open, and that membership is fragile — a chat switch, a sidebar list
+    // change, or a `conv:join` roster check that failed on a transient error all
+    // drop it silently, with no rejoin until the page reloads. Every ordinary
+    // message survives that because the send path publishes to BOTH channels
+    // (see publishMessageNewToParticipants in grpc/service-impl.ts); the call
+    // row published only on `conv:` did not, which is why a call card could go
+    // missing while the very same chat kept receiving normal messages.
+    //
+    // Both participants of a private room cover every socket `conv:<roomId>`
+    // could have reached (the join is roster-gated, and a private room has
+    // exactly these two members), so this is a strict superset — and it stays
+    // ONE copy per user, since a second copy of `message:new` for the same row
+    // re-enters the client's clientMessageId reconciliation and rewrites the
+    // card's direction.
+    const payload = JSON.stringify({ event, data: wire });
+    await Promise.all(
+      [...new Set([params.callerId, params.calleeId])]
+        .filter(Boolean)
+        .map((userId) =>
+          this.redis
+            .publish(`user:${userId}`, payload)
+            .catch((error: unknown) => {
+              logger.warn(
+                `CallChatMessageService|${event} publish failed callId=${params.callId} userId=${userId}: ${String(error)}`
+              );
+            })
+        )
+    );
 
     publishConvUpdatedSafe({
       redis: this.redis,

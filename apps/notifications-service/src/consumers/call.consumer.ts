@@ -51,6 +51,9 @@ interface CallCancelPayload {
   callerName?: string;
 }
 
+// Same wire shape as the cancel payload; the meaning lives in the queue `type`.
+type CallHandledPayload = CallCancelPayload;
+
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   // HOP 3 of the push pipeline (RabbitMQ → notifications-service). If this
   // appears but [push:deliver] shows tokens=0, the callee never registered a
@@ -208,6 +211,53 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
   });
 }
 
+async function handleCallHandled(data: CallHandledPayload): Promise<void> {
+  logger.info(
+    `[push:consume] call.handled callId=${data.callId} callee=${data.calleeId} reason=${data.reason}`
+  );
+  if (!data.calleeId || !data.callId) {
+    logger.warn("[push:consume] dropped — missing calleeId/callId");
+    return;
+  }
+
+  // "One of your OWN devices answered this ring — stop ringing." Reaches ALL of
+  // the recipient's devices, including the one that answered, so it must be
+  // non-terminal: a client that is mid-call on this callId ignores it; a client
+  // still ringing dismisses. That policy lives on the client; the backend's job
+  // is to make the two cases distinguishable, which the `CALL_HANDLED` type does.
+  //
+  // allowVoip is deliberately OFF (unlike handleCallCancel). A PushKit/VoIP push
+  // MUST report an incoming call to CallKit or iOS penalises the app — so the
+  // VoIP channel can only ever mean "incoming", never "stop". Routing a
+  // stop-ringing hint over VoIP is precisely what turned an answered call into a
+  // cancelled one. A normal data push is correct here; live devices are already
+  // told over the socket (`call:handled`), and this only backstops backgrounded
+  // siblings.
+  await pushToUser({
+    userId: data.calleeId,
+    category: "callEnabled",
+    type: "CALL_HANDLED",
+    title: "",
+    body: "",
+    bypassSettings: true,
+    skipInbox: true,
+    dataOnly: true,
+    priority: "high",
+    ttl: 30,
+    // Shares the ring's collapse key so it REPLACES the ring notification on the
+    // sibling device rather than stacking beside it.
+    collapseKey: `call:${data.callId}`,
+    allowVoip: false,
+    data: {
+      type: "CALL_HANDLED",
+      callId: data.callId,
+      reason: data.reason ?? "",
+      callerId: data.callerId ?? "",
+      callerName: data.callerName ?? "",
+    },
+  });
+}
+
 export async function startCallConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
@@ -234,6 +284,8 @@ export async function startCallConsumer(): Promise<void> {
           await handleCallMissed(parsed.data as CallMissedPayload);
         } else if (parsed.type === "call.cancelled") {
           await handleCallCancel(parsed.data as CallCancelPayload);
+        } else if (parsed.type === "call.handled") {
+          await handleCallHandled(parsed.data as CallHandledPayload);
         } else {
           logger.warn(`Unknown call event type: ${parsed.type}`);
         }

@@ -32,14 +32,16 @@ export interface AckError {
   /** Localized, human-readable explanation for the error (display-ready). */
   message: string;
   /**
-   * The originating `AppError.messageKey` behind the coarse `error` code, when
-   * the callee supplied one. The taxonomy is intentionally small, so several
-   * distinct business rules collapse onto one code — `FORBIDDEN` cannot tell
-   * "not friends" from "blocked", and `CONFLICT` cannot tell "you are busy"
-   * from "they are busy". Clients that need to branch (rather than just show
-   * `message`) key off this.
+   * The originating `AppError.messageKey` when the callee sent one (e.g.
+   * "CALL_ALREADY_IN_CALL"). `error` is a deliberately coarse taxonomy —
+   * several unrelated failures share one code — so this is the only thing a
+   * client can branch on to pick its OWN localized copy or a different UI
+   * treatment. Always a short catalog token, never free text (see
+   * `MESSAGE_KEY_PATTERN`); absent when the callee sent no key.
    */
   detail?: string;
+  /** Seconds until the rate-limit window resets. Present only on RATE_LIMITED. */
+  retryAfter?: number;
 }
 
 export interface AckSuccess {
@@ -114,12 +116,17 @@ export function ackOk(
  * response shape: `success`/`error`/`retryable` are unaffected, only `message`.
  * If `detailKey` is omitted, unresolved (not in the catalog — `t()` echoes the key
  * back unchanged), or falsy, the existing generic per-code message is used as-is.
+ *
+ * `detailKey` is ALSO echoed back on the envelope as `detail` (whether or not it
+ * resolved to copy) so clients can branch on the exact reason, not just on the
+ * coarse `error` code — see {@link AckError.detail}.
  */
 export function ackError(
   callback: SocketAck,
   code: AckErrorCode,
   locale: SupportedLocale,
-  detailKey?: string
+  detailKey?: string,
+  retryAfter?: number
 ): void {
   const resolvedDetail = detailKey
     ? t(detailKey as MessageKey, locale)
@@ -134,6 +141,7 @@ export function ackError(
     retryable: ACK_RETRYABLE[code],
     message,
     ...(detailKey ? { detail: detailKey } : {}),
+    ...(retryAfter !== undefined ? { retryAfter } : {}),
   };
   ack(callback, err);
 }

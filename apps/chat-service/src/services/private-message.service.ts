@@ -6,6 +6,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -1309,6 +1313,15 @@ export class PrivateMessageService {
       message.roomId,
       userId
     );
+    publishAdminActivitySafe({
+      actorId: userId,
+      action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
+      targetType: "message",
+      targetId: messageId,
+      // Never the message body: the audit trail records that evidence was
+      // destroyed and by whom, it is not a copy of the evidence.
+      after: { roomType: "PRIVATE", roomId: message.roomId },
+    });
     if (
       shouldCountInUnread({
         messageType: message.messageType,

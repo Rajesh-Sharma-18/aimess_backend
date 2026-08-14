@@ -2,6 +2,7 @@ import { prisma } from "../config/prisma.js";
 import type {
   AuditActorType,
   AuditLog,
+  AuditSource,
   Prisma,
 } from "../generated/prisma/client.js";
 import type {
@@ -13,15 +14,21 @@ import type {
   PaginationMeta,
 } from "../types/audit-log.types.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
+import { communityClient } from "../grpc/community.client.js";
 import { userClient } from "../grpc/user.client.js";
-import { AUDIT_ACTIONS } from "../constants/index.js";
 import { logger } from "@aimess/logger";
+import {
+  MANDATORY_AUDIT_ACTIONS,
+  auditActionsForCategory,
+  auditCategoryOf,
+} from "@aimess/messaging";
+import type { AuditCategoryKind } from "../types/audit-log.types.js";
 
-// Read-audit rows would bury the moderation trail on the unfiltered default
-// page. Derived from the constant KEYS (…_VIEWED) so "…_REVIEWED" is excluded.
-const VIEW_ACTIONS: string[] = Object.entries(AUDIT_ACTIONS)
-  .filter(([key]) => key.endsWith("_VIEWED"))
-  .map(([, value]) => value);
+// The unfiltered default page shows the mandatory classification only — the five
+// categories in @aimess/messaging mandatory-audit-actions.ts. Everything else
+// (views, joins, token refreshes) stays queryable through an explicit ?action=
+// filter, it just no longer buries the moderation trail.
+const MANDATORY_ACTIONS: string[] = [...MANDATORY_AUDIT_ACTIONS];
 
 export type AuditLogInput = {
   actorId: string;
@@ -68,28 +75,49 @@ const ADMIN_SELECT = {
   avatarUrl: true,
 } as const;
 
-/**
- * Resolves every row's performer in ONE batch per actor kind. There is no FK to
- * follow any more: ADMIN actors live in admin_db, USER actors in user-service
- * (gRPC), and SYSTEM rows have no actor at all. A user-service outage degrades to
- * an unnamed performer instead of failing the page.
- */
-async function buildPerformerResolver(
-  rows: Pick<AuditLog, "actorId" | "actorType">[]
-): Promise<
-  (row: Pick<AuditLog, "actorId" | "actorType">) => Promise<AuditPerformer>
-> {
-  const idsOf = (type: AuditActorType) => [
-    ...new Set(
-      rows
-        .filter((r) => r.actorType === type && r.actorId)
-        .map((r) => r.actorId as string)
-    ),
-  ];
-  const adminIds = idsOf("ADMIN");
-  const userIds = idsOf("USER");
+/** The columns the resolver below reads off a row. */
+type ResolvableRow = Pick<
+  AuditLog,
+  "actorId" | "actorType" | "targetType" | "targetId"
+>;
 
-  const [admins, profiles] = await Promise.all([
+/**
+ * A raw target id answers "which one", never "which one is that". The Target
+ * column was printing a bare uuid for every row, so a reader could not tell who
+ * was banned without pasting the id into another screen. These are the target
+ * types whose display name is resolvable from a service backoffice already talks
+ * to; anything else (session, report, livestream, …) keeps showing its id.
+ */
+const NAMED_TARGET_TYPES = new Set(["user", "admin", "community", "session"]);
+
+/**
+ * Resolves every row's performer AND target display name in ONE batch per source.
+ * There is no FK to follow: ADMIN actors live in admin_db, USER actors and user
+ * targets in user-service (gRPC), community targets in community-service. Actor
+ * and target ids are folded into the same batches, so naming the target costs no
+ * extra round trip. Any lookup failing degrades to an unnamed row rather than
+ * failing the page.
+ */
+async function buildRowResolver(rows: ResolvableRow[]): Promise<{
+  toPerformer: (row: ResolvableRow) => Promise<AuditPerformer>;
+  targetNameOf: (row: ResolvableRow) => string | null;
+}> {
+  const actorIdsOf = (type: AuditActorType) =>
+    rows
+      .filter((r) => r.actorType === type && r.actorId)
+      .map((r) => r.actorId as string);
+  const targetIdsOf = (targetType: string) =>
+    rows
+      .filter((r) => r.targetType === targetType && r.targetId)
+      .map((r) => r.targetId as string);
+
+  const adminIds = [
+    ...new Set([...actorIdsOf("ADMIN"), ...targetIdsOf("admin")]),
+  ];
+  const userIds = [...new Set([...actorIdsOf("USER"), ...targetIdsOf("user")])];
+  const communityIds = [...new Set(targetIdsOf("community"))];
+
+  const [admins, profiles, communities] = await Promise.all([
     adminIds.length
       ? prisma.adminUser.findMany({
           where: { id: { in: adminIds } },
@@ -104,12 +132,48 @@ async function buildPerformerResolver(
           return [];
         })
       : Promise.resolve([]),
+    communityIds.length
+      ? communityClient
+          .adminGetCommunitiesByIds(communityIds)
+          .catch((error: unknown) => {
+            logger.warn(
+              `Audit log target lookup failed (community-service): ${String(error)}`
+            );
+            return new Map<string, { name: string }>();
+          })
+      : Promise.resolve(new Map<string, { name: string }>()),
   ]);
 
   const adminMap = new Map(admins.map((a) => [a.id, a]));
   const profileMap = new Map(profiles.map((p) => [p.userId, p]));
 
-  return async (row) => {
+  /** Full name, else username — the same precedence the performer column uses. */
+  const displayNameOf = (userId: string): string | null => {
+    const profile = profileMap.get(userId);
+    if (!profile) return null;
+    const fullName =
+      `${profile.firstName ?? ""} ${profile.lastName ?? ""}`.trim();
+    return fullName || profile.username || null;
+  };
+
+  const targetNameOf = (row: ResolvableRow): string | null => {
+    if (!row.targetId || !NAMED_TARGET_TYPES.has(row.targetType)) return null;
+    if (row.targetType === "user") return displayNameOf(row.targetId);
+    if (row.targetType === "admin")
+      return adminMap.get(row.targetId)?.name ?? null;
+    // A session id names nobody, and login/logout rows are all session-targeted.
+    // The session belongs to the account that opened it — the actor on this very
+    // row — so that is the name a reader is looking for.
+    if (row.targetType === "session") {
+      if (!row.actorId) return null;
+      return row.actorType === "ADMIN"
+        ? (adminMap.get(row.actorId)?.name ?? null)
+        : displayNameOf(row.actorId);
+    }
+    return communities.get(row.targetId)?.name ?? null;
+  };
+
+  const toPerformer = async (row: ResolvableRow): Promise<AuditPerformer> => {
     if (row.actorType === "SYSTEM" || !row.actorId) {
       return {
         id: row.actorId,
@@ -121,13 +185,10 @@ async function buildPerformerResolver(
     }
     if (row.actorType === "USER") {
       const profile = profileMap.get(row.actorId);
-      const fullName = profile
-        ? `${profile.firstName ?? ""} ${profile.lastName ?? ""}`.trim()
-        : "";
       return {
         id: row.actorId,
         type: row.actorType,
-        name: fullName || profile?.username || null,
+        name: displayNameOf(row.actorId),
         // user-service's admin profile projection carries no email — username stands in.
         email: profile?.username ?? null,
         avatar: await resolveAvatarOrNull(profile?.avatarUrl ?? null),
@@ -142,6 +203,8 @@ async function buildPerformerResolver(
       avatar: await resolveAvatarOrNull(admin?.avatarUrl ?? null),
     };
   };
+
+  return { toPerformer, targetNameOf };
 }
 
 /**
@@ -181,6 +244,9 @@ export const auditLogRepository = {
       data: {
         actorId: input.actorId,
         actorType: "ADMIN",
+        // Written only by admin-panel request handlers, so the source is known
+        // without asking the client — no header to spoof on this path.
+        source: "ADMIN_PANEL",
         action: input.action,
         targetType: input.targetType,
         targetId: input.targetId ?? null,
@@ -197,17 +263,25 @@ export const auditLogRepository = {
     const { field, dir } = parseSort(query.sort);
     const where: Prisma.AuditLogWhereInput = {};
 
+    // Category is a named slice of the action filter — both narrow the same
+    // column, so they are ordered rather than combined: an explicit ?action=
+    // wins, then ?category=, then the full mandatory set.
     if (query.action && query.action.length > 0) {
       where.action = { in: query.action };
+    } else if (query.category && query.category.length > 0) {
+      where.action = {
+        in: query.category.flatMap((c) => auditActionsForCategory(c)),
+      };
     } else {
-      // View rows stay reachable, but only via an explicit ?action= filter.
-      where.action = { notIn: VIEW_ACTIONS };
+      where.action = { in: MANDATORY_ACTIONS };
+    }
+    if (query.source && query.source.length > 0) {
+      where.source = { in: query.source as AuditSource[] };
     }
     if (query.actorType && query.actorType.length > 0) {
-      // The admin panel offers two sources, not three: "System" means everything that
-      // did NOT come from the admin panel, so it covers USER rows as well as SYSTEM ones.
+      // Legacy filter, kept so old links keep working: it selects who acted
+      // (admin / end user / platform), where `source` selects which client.
       const actorTypes = new Set<AuditActorType>(query.actorType);
-      if (actorTypes.has("SYSTEM")) actorTypes.add("USER");
       where.actorType = { in: [...actorTypes] };
     }
     if (query.search) {
@@ -240,14 +314,17 @@ export const auditLogRepository = {
       prisma.auditLog.count({ where }),
     ]);
 
-    const toPerformer = await buildPerformerResolver(rows);
+    const { toPerformer, targetNameOf } = await buildRowResolver(rows);
     const data: AuditLogListItem[] = await Promise.all(
       rows.map(async (row) => ({
         id: row.id,
         performer: await toPerformer(row),
+        source: row.source,
+        category: auditCategoryOf(row.action) as AuditCategoryKind | null,
         action: row.action,
         targetType: row.targetType,
         targetId: row.targetId,
+        targetName: targetNameOf(row),
         createdAt: row.createdAt.getTime(),
       }))
     );
@@ -268,13 +345,16 @@ export const auditLogRepository = {
   async getById(id: string): Promise<AuditLogDetail | null> {
     const row = await prisma.auditLog.findUnique({ where: { id } });
     if (!row) return null;
-    const toPerformer = await buildPerformerResolver([row]);
+    const { toPerformer, targetNameOf } = await buildRowResolver([row]);
     return {
       id: row.id,
       performer: await toPerformer(row),
+      source: row.source,
+      category: auditCategoryOf(row.action) as AuditCategoryKind | null,
       action: row.action,
       targetType: row.targetType,
       targetId: row.targetId,
+      targetName: targetNameOf(row),
       createdAt: row.createdAt.getTime(),
       reason: extractReason(row),
       metadata: {

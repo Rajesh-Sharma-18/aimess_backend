@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { auditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 
 import { createRoutes, type Controllers } from "./api/routes/index.js";
@@ -15,6 +16,10 @@ export function createApp(controllers: Controllers): Express {
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: true, limit: "2mb" }));
   app.use(localeMiddleware);
+  // Establishes the ambient audit context (client source + IP + user-agent) for
+  // every request below it, so audit rows written deep in a service know where
+  // the action came from without threading a parameter through each call site.
+  app.use(auditContextMiddleware);
 
   // Mount all chat routes
   app.use(createRoutes(controllers));

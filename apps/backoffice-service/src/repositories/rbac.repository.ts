@@ -83,6 +83,68 @@ export const rbacRepository = {
     });
   },
 
+  /**
+   * ACTIVE admins whose EFFECTIVE permissions include `permissionKey` — the
+   * reverse of getPermissionKeysForAdmin, for pushes that must reach everyone
+   * allowed to see something rather than answer "may this one admin?".
+   *
+   * ponytail: resolves every active admin's role + overrides in two queries and
+   * folds them in memory. Admin counts are in the tens; switch to a SQL-side
+   * EXISTS if that ever stops being true.
+   */
+  async findActiveAdminIdsWithPermission(
+    permissionKey: string
+  ): Promise<string[]> {
+    const [admins, overrides] = await Promise.all([
+      prisma.adminUser.findMany({
+        where: { status: "ACTIVE" },
+        select: {
+          id: true,
+          role: {
+            select: {
+              permissions: {
+                select: { permission: { select: { key: true } } },
+              },
+            },
+          },
+        },
+      }),
+      prisma.adminPermissionOverride.findMany({
+        select: {
+          adminId: true,
+          allow: true,
+          permission: { select: { key: true } },
+        },
+      }),
+    ]);
+
+    const overridesByAdmin = new Map<
+      string,
+      { key: string; allow: boolean }[]
+    >();
+    for (const o of overrides) {
+      const list = overridesByAdmin.get(o.adminId) ?? [];
+      list.push({ key: o.permission.key, allow: o.allow });
+      overridesByAdmin.set(o.adminId, list);
+    }
+
+    return admins
+      .filter((admin) => {
+        const own = overridesByAdmin.get(admin.id) ?? [];
+        // Same precedence as getPermissionKeysForAdmin: implied reads resolve
+        // first, then an explicit deny wins over both role and allow.
+        const effective = new Set(
+          withImpliedReads([
+            ...admin.role.permissions.map((rp) => rp.permission.key),
+            ...own.filter((o) => o.allow).map((o) => o.key),
+          ])
+        );
+        for (const o of own) if (!o.allow) effective.delete(o.key);
+        return effective.has(permissionKey);
+      })
+      .map((admin) => admin.id);
+  },
+
   listRoles() {
     return prisma.adminRole.findMany({
       orderBy: { key: "asc" },

@@ -1000,6 +1000,8 @@ describe("pins: GET list + POST pin + DELETE unpin", () => {
     mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(2);
     // Only m1 survives → its pin is available; m2's is a "pinned-but-deleted" banner.
     mocks.privateMessageRepo.findLiveIds.mockResolvedValue(new Set(["m1"]));
+    // Nothing hidden by delete-for-me for this viewer.
+    mocks.privateMessageRepo.findHiddenIdsForUser.mockResolvedValue(new Set());
 
     const res = await request(app)
       .get(`/api/chat/private/rooms/${ROOM}/pins`)

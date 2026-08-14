@@ -96,6 +96,7 @@ import {
   initializeEventConsumers,
   closeEventConsumers,
 } from "./events/index.js";
+import { setCallTerminator } from "./events/call-terminator.js";
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 import { startChatSettingsInvalidationListener } from "./startup/chat-settings-invalidation.js";
 import {
@@ -607,6 +608,13 @@ const startServer = async () => {
     // that hears about it has no CallService — see events/call-teardown-bridge.ts.
     registerCallTerminator((userA, userB) =>
       callService.endCallsBetween(userA, userB)
+    );
+
+    // Blocking must cut a live call. The friendship consumer is already running
+    // (started above, before this graph exists), so it reaches CallService
+    // through this late-bound hook rather than a constructor argument.
+    setCallTerminator((userA, userB, endedBy) =>
+      callService.terminateCallsBetween(userA, userB, endedBy)
     );
 
     const communityRoomService = new CommunityRoomService(

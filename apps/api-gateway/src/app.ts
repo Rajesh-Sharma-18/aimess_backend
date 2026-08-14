@@ -1,6 +1,7 @@
 ﻿import cors, { type CorsOptions } from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { auditContextMiddleware } from "@aimess/constants";
 import { localeMiddleware } from "@aimess/utils";
 import { NotFoundError } from "@aimess/errors";
 
@@ -61,6 +62,10 @@ export function createApp(
   // request itself or fans out to gRPC (the proxied routes forward the raw
   // header onward, so downstream services still resolve it independently).
   app.use(localeMiddleware);
+  // Establishes the ambient audit context (client source + IP + user-agent) for
+  // every request below it, so audit rows written deep in a service know where
+  // the action came from without threading a parameter through each call site.
+  app.use(auditContextMiddleware);
 
   // Dedicated community link host (aimess.me): .well-known proofs + "Open in
   // app" preview. Host-gated — non-link hosts pass straight through to the API.

@@ -26,6 +26,16 @@ jest.mock("../../src/services/index.js", () => {
 
 import request from "supertest";
 
+import { resolveAuditSource } from "@aimess/constants";
+import {
+  AUDIT_ACTION_CATEGORY,
+  AUDIT_CATEGORY_VALUES,
+  MANDATORY_AUDIT_ACTIONS,
+  auditActionsForCategory,
+  auditCategoryOf,
+  isMandatoryAuditAction,
+} from "@aimess/messaging";
+
 import { app } from "../../src/app.js";
 import { adminUserRepository } from "../../src/repositories/index.js";
 import { getCachedAdminPermissions } from "../../src/lib/admin-perms-cache.js";
@@ -48,6 +58,8 @@ const PERFORMER = {
 const DETAIL = {
   id: LOG_ID,
   performer: PERFORMER,
+  source: "ADMIN_PANEL",
+  category: "USER_MANAGEMENT",
   action: "user.banned",
   targetType: "user",
   targetId: "user-42",
@@ -63,6 +75,8 @@ const DETAIL = {
 const LIST_ITEM = {
   id: LOG_ID,
   performer: { id: PERFORMER.id, name: PERFORMER.name, avatarUrl: null },
+  source: "ANDROID",
+  category: "USER_MANAGEMENT",
   action: "user.banned",
   targetType: "user",
   targetId: "user-42",
@@ -208,5 +222,191 @@ describe("GET /v1/audit-logs/:auditLogId", () => {
     const res = await request(app).get(`/v1/audit-logs/${LOG_ID}`).set(auth());
     expect(res.status).toBe(403);
     expect(svc.getAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unified source: every audit row says which client produced it, and the
+// default list is restricted to the mandatory classification.
+// ---------------------------------------------------------------------------
+describe("audit-log source", () => {
+  it("surfaces the source on list rows and on the detail", async () => {
+    const list = await request(app).get("/v1/audit-logs").set(auth());
+    expect(list.body.data[0].source).toBe("ANDROID");
+
+    const detail = await request(app)
+      .get(`/v1/audit-logs/${LOG_ID}`)
+      .set(auth());
+    expect(detail.body.data.source).toBe("ADMIN_PANEL");
+  });
+
+  it.each(["ADMIN_PANEL", "WEB", "ANDROID", "IOS", "SYSTEM"])(
+    "forwards ?source=%s to the service",
+    async (source) => {
+      await request(app).get(`/v1/audit-logs?source=${source}`).set(auth());
+      expect(svc.listAuditLogs.mock.calls[0][0].source).toEqual([source]);
+    }
+  );
+
+  it("accepts a repeated source param", async () => {
+    await request(app)
+      .get("/v1/audit-logs?source=ANDROID&source=IOS")
+      .set(auth());
+    expect(svc.listAuditLogs.mock.calls[0][0].source).toEqual([
+      "ANDROID",
+      "IOS",
+    ]);
+  });
+
+  it("rejects a source outside the server-side allowlist", async () => {
+    const res = await request(app)
+      .get("/v1/audit-logs?source=DESKTOP")
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.listAuditLogs).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveAuditSource (request-boundary derivation)", () => {
+  it.each([
+    ["android", "ANDROID"],
+    ["ios", "IOS"],
+    ["web", "WEB"],
+    ["macos", "WEB"],
+    ["admin_panel", "ADMIN_PANEL"],
+    ["ANDROID", "ANDROID"],
+  ])("maps x-platform:%s to %s", (platform, expected) => {
+    expect(resolveAuditSource({ "x-platform": platform })).toBe(expected);
+  });
+
+  it("falls back to the user agent when no platform header is sent", () => {
+    expect(
+      resolveAuditSource({ "user-agent": "Dalvik/2.1.0 (Linux; Android 14)" })
+    ).toBe("ANDROID");
+    expect(resolveAuditSource({ "user-agent": "AIMess/1.0 CFNetwork" })).toBe(
+      "IOS"
+    );
+    expect(resolveAuditSource({ "user-agent": "Mozilla/5.0 Chrome/148" })).toBe(
+      "WEB"
+    );
+  });
+
+  it("ignores an unrecognized platform rather than trusting it", () => {
+    expect(
+      resolveAuditSource({
+        "x-platform": "not-a-platform",
+        "user-agent": "Dalvik/2.1.0 (Linux; Android 14)",
+      })
+    ).toBe("ANDROID");
+  });
+
+  it("defaults to WEB for a request with no signal at all — never SYSTEM", () => {
+    expect(resolveAuditSource({})).toBe("WEB");
+  });
+});
+
+describe("mandatory audit classification", () => {
+  it("includes security/business events from every client", () => {
+    for (const action of [
+      "user.registered",
+      "user.login",
+      "message.deleted",
+      "community.member_banned",
+      "report.actioned",
+      "media.deleted",
+      "admin.permissions_updated",
+    ]) {
+      expect(isMandatoryAuditAction(action)).toBe(true);
+    }
+  });
+
+  it("excludes the high-volume noise the default page must not show", () => {
+    for (const action of [
+      "user.list_viewed",
+      "community.list_viewed",
+      "admin.token_refreshed",
+      "user.profile_updated",
+      "community.member_joined",
+    ]) {
+      expect(isMandatoryAuditAction(action)).toBe(false);
+    }
+  });
+
+  it("never lists the same action twice", () => {
+    expect(new Set(MANDATORY_AUDIT_ACTIONS).size).toBe(
+      MANDATORY_AUDIT_ACTIONS.length
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The five mandatory categories: every mandatory action belongs to exactly one,
+// and the list endpoint can be narrowed to any of them.
+// ---------------------------------------------------------------------------
+describe("the five mandatory audit categories", () => {
+  it("defines exactly five", () => {
+    expect(AUDIT_CATEGORY_VALUES).toHaveLength(5);
+    expect([...AUDIT_CATEGORY_VALUES].sort()).toEqual([
+      "ADMIN_MANAGEMENT",
+      "AUTH_SECURITY",
+      "CONTENT_MANAGEMENT",
+      "MODERATOR_MANAGEMENT",
+      "USER_MANAGEMENT",
+    ]);
+  });
+
+  it("classifies every mandatory action into one of them, and nothing else", () => {
+    for (const action of MANDATORY_AUDIT_ACTIONS) {
+      expect(AUDIT_CATEGORY_VALUES).toContain(auditCategoryOf(action));
+    }
+    expect(Object.keys(AUDIT_ACTION_CATEGORY)).toHaveLength(
+      MANDATORY_AUDIT_ACTIONS.length
+    );
+    expect(auditCategoryOf("user.list_viewed")).toBeNull();
+  });
+
+  it("partitions the actions — the five slices rebuild the whole set", () => {
+    const rebuilt = AUDIT_CATEGORY_VALUES.flatMap((c) =>
+      auditActionsForCategory(c)
+    );
+    expect(rebuilt.sort()).toEqual([...MANDATORY_AUDIT_ACTIONS].sort());
+  });
+
+  it.each([
+    ["MODERATOR_MANAGEMENT", "community.moderator_promoted"],
+    ["MODERATOR_MANAGEMENT", "community.moderator_demoted"],
+    ["ADMIN_MANAGEMENT", "admin.permissions_updated"],
+    ["USER_MANAGEMENT", "user.banned"],
+    ["CONTENT_MANAGEMENT", "category.created"],
+    ["AUTH_SECURITY", "admin.login_failed"],
+  ])("puts %s events like %s in that category", (category, action) => {
+    expect(auditCategoryOf(action)).toBe(category);
+  });
+
+  it("narrows the list to one category's actions", async () => {
+    await request(app)
+      .get("/v1/audit-logs?category=MODERATOR_MANAGEMENT")
+      .set(auth());
+    expect(svc.listAuditLogs.mock.calls[0][0].category).toEqual([
+      "MODERATOR_MANAGEMENT",
+    ]);
+  });
+
+  it("rejects a category outside the five", async () => {
+    const res = await request(app)
+      .get("/v1/audit-logs?category=BILLING")
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.listAuditLogs).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the category on list rows and on the detail", async () => {
+    const list = await request(app).get("/v1/audit-logs").set(auth());
+    expect(list.body.data[0].category).toBe("USER_MANAGEMENT");
+
+    const detail = await request(app)
+      .get(`/v1/audit-logs/${LOG_ID}`)
+      .set(auth());
+    expect(detail.body.data.category).toBe("USER_MANAGEMENT");
   });
 });

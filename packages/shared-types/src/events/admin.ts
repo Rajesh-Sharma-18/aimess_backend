@@ -120,11 +120,24 @@ export type AdminActivityEventType =
 // Who performed a website-side action: an end user, or the platform itself (jobs/sweepers).
 export type AdminActivityActorType = "USER" | "SYSTEM";
 
+// Which client the action came from. Mirrors AUDIT_SOURCES in @aimess/constants
+// and the AuditSource enum in admin_db — kept as a literal union here so
+// shared-types stays dependency-free.
+export type AdminActivitySource =
+  | "ADMIN_PANEL"
+  | "WEB"
+  | "ANDROID"
+  | "IOS"
+  | "SYSTEM";
+
 // One end-user action, normalized into the same shape backoffice's AuditLog stores.
 export type AdminActivityIngestPayload = {
   // AuthUser.id (UUID). Null for SYSTEM actors — no user performed the action.
   actorId: string | null;
   actorType: AdminActivityActorType;
+  // Client the action originated from, derived server-side at the request boundary
+  // (never a raw client-declared value). Absent on messages from an older publisher.
+  source?: AdminActivitySource;
   // Domain action name, e.g. "user.login" — MUST exist in backoffice USER_AUDIT_ACTIONS.
   action: string;
   targetType: string;

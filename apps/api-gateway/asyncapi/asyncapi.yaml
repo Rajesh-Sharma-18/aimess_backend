@@ -5371,6 +5371,24 @@ components:
             - `NOT_FOUND` — the target message/conversation/community does not exist.
             - `RATE_LIMITED` — a server rate limit tripped (back off).
             - `CONFLICT` — the operation conflicts with current state (e.g. already applied / edit window expired).
+        detail:
+          type: string
+          description: |
+            Present on failure **when the downstream service sent a specific
+            reason**. The originating `AppError.messageKey` verbatim — a short
+            UPPER_SNAKE_CASE catalog token, never free text (e.g.
+            `CALL_ALREADY_IN_CALL`, `CALL_USER_BUSY`, `CHAT_FILE_TOO_LARGE`).
+
+            `error` is a deliberately coarse taxonomy: several unrelated
+            failures share one code — `FORBIDDEN` cannot separate
+            `FRIENDSHIP_REQUIRED` from `CALL_BLOCKED` or `PRIVACY_BLOCKED`.
+            Branch on `detail` when the distinction
+            matters to the UI — e.g. `call:initiate` returns `CONFLICT` both
+            when the CALLER is already on a call (`CALL_ALREADY_IN_CALL`,
+            including on one of their OTHER devices — call state is per-user,
+            not per-device) and when the CALLEE is busy (`CALL_USER_BUSY`).
+            Treat an unknown or absent `detail` as "no extra information" and
+            fall back to `error` + `message`.
         retryable:
           type: boolean
           description: |
@@ -5384,26 +5402,13 @@ components:
             Resend with the same `clientMessageId` (idempotency is guaranteed server-side).
             For **`RATE_LIMITED`** (retryable): back off for the full rate-limit window
             (use 30 s as a safe default if no `retryAfter` is present), then retry once.
-        detail:
-          type: string
-          description: |
-            Present on failure **when the downstream service named a specific
-            reason** — the originating `AppError.messageKey` in UPPER_SNAKE_CASE.
-            The `error` enum is deliberately coarse, so several distinct business
-            rules share one code: `FORBIDDEN` cannot separate `FRIENDSHIP_REQUIRED`
-            from `CALL_BLOCKED` or `PRIVACY_BLOCKED`, and `CONFLICT` cannot separate
-            `CALL_ALREADY_IN_CALL` (you are busy) from `CALL_USER_BUSY` (they are).
-            Show `message` to the user; branch on `error` first and use `detail`
-            only where the distinction changes client behaviour. Treat an
-            unrecognized or absent `detail` as "no extra information".
         retryAfter:
           type: integer
           description: |
-            **Reserved — NOT emitted in V1.** The live `ackError()` helper
-            (`sockets/ack.ts`) returns only `{ success, error, retryable, message }`
-            and never sets `retryAfter`. The field is reserved for a future
-            server-side rate limiter. Until then, on `RATE_LIMITED` always back off
-            a fixed **30 s** window. Do not wait on this field — it will be absent.
+            Seconds until the rate-limit window resets. `ackError()`
+            (`sockets/ack.ts`) emits it only when the caller passes one, so it is
+            present on some `RATE_LIMITED` acks and absent on the rest — back off
+            a fixed **30 s** window whenever it is missing.
       required: [success, message]
     MessageSendResult:
       type: object

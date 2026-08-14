@@ -209,14 +209,15 @@ export class CallRepository {
   }
 
   /**
-   * EVERY active 1:1 call between this pair, either direction — the set a
-   * relationship change (unfriend / block) has to tear down. Unlike
-   * {@link findActiveBetween}, which answers "is there a rival call" and so only
-   * needs the first hit, this is the teardown list and must be exhaustive:
-   * glare can legitimately leave one ring in each direction alive at once.
+   * Every active call between exactly this pair, either direction. Same
+   * freshness rule as `findActiveBetween`, which answers the glare question for
+   * a single row; this one is for tearing the pair's calls down wholesale
+   * (a block, or an unfriend).
    *
-   * GROUP calls can never match — their rows carry `calleeId: ""` and are
-   * authorized by membership, not friendship.
+   * Must be exhaustive, unlike `findActiveBetween`: glare can legitimately
+   * leave one ring alive in each direction at once. GROUP calls can never
+   * match — their rows carry `calleeId: ""` and are authorized by membership,
+   * not by the pair relationship.
    */
   async findAllActiveBetween(
     userA: string,

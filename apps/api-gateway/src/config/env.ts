@@ -151,6 +151,8 @@ const envSchema = z.object({
     .string()
     .min(1)
     .default("devsecretchangeme_at_least_32_chars_long"),
+  CALL_INITIATE_RATE_MAX: z.coerce.number().int().positive().default(7),
+  CALL_INITIATE_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);

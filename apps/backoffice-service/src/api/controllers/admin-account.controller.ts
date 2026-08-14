@@ -18,7 +18,8 @@ export const listAdminAccounts: RequestHandler = (req, res, next) => {
     try {
       const query = req.query as unknown as ListAdminAccountsQueryInput;
       const result = await adminAccountService.listAdminAccounts(
-        query as ListAdminAccountsQuery
+        query as ListAdminAccountsQuery,
+        req.admin!
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,

@@ -14,6 +14,7 @@ import {
   resolveMediaUrl,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import type { CommunityMessagePinRepository } from "../repositories/community-message-pin.repository.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -328,6 +329,52 @@ export class CommunityPinService {
     return updated[0] ?? null;
   }
 
+  /**
+   * Delete-for-everyone hook: the pinned message no longer exists for anyone,
+   * so the pin must not survive for anyone either — soft-delete it, drop the
+   * room's pinnedCount and retract its "pinned a message" system line. Merely
+   * flagging it unavailable (handleMessageDeleted) left a dead banner pinned
+   * for every member. Idempotent: null when the message has no active pin
+   * (never pinned, or already unpinned), so a repeat delete is a clean no-op.
+   * Carries no role check — the caller's delete was already authorized, and an
+   * ADMIN_DELETE by a moderator must clear the pin regardless.
+   */
+  async unpinDeletedMessage(
+    messageId: string,
+    actorId: string
+  ): Promise<{ roomId: string; pinnedCount: number } | null> {
+    const activePin = await this.pinRepo.findActivePinByMessageId(messageId);
+    if (!activePin) return null;
+
+    const now = new Date();
+    // Keep the historical marker (WHY the pin ended) next to the soft-delete.
+    await this.pinRepo.markPinnedMessageDeleted(messageId, now);
+    await this.pinRepo.softDeletePin(activePin.id, actorId, now);
+    const updated = await this.roomRepo.incPinnedCount(activePin.roomId, -1);
+
+    if (activePin.pinSystemMessageId) {
+      await this.systemMessageService
+        ?.retractSystemMessage({
+          communityId: activePin.communityId || activePin.roomId,
+          messageId: activePin.pinSystemMessageId,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `CommunityPinService|unpinDeletedMessage retract failed: ${String(err)}`
+          );
+        });
+    }
+
+    return { roomId: activePin.roomId, pinnedCount: updated?.pinnedCount ?? 0 };
+  }
+
+  /** roomId of this message's ACTIVE pin, or null — the delete-for-me hook's
+   *  cheap "is this the pinned one?" probe. */
+  async findActivePinRoomId(messageId: string): Promise<string | null> {
+    const pin = await this.pinRepo.findActivePinByMessageId(messageId);
+    return pin?.roomId ?? null;
+  }
+
   async list(
     roomId: string,
     userId: string,
@@ -347,7 +394,14 @@ export class CommunityPinService {
     const visible = bannedAtCutoff
       ? pins.filter((p) => p.pinnedAt <= bannedAtCutoff)
       : pins;
-    return resolvePinsMedia(visible);
+    // A message this member deleted FOR THEMSELVES is gone from their pins
+    // too — the pin row stays, so every other member is unaffected.
+    const hiddenIds = await this.messageRepo.findHiddenIdsForUser(
+      roomId,
+      visible.map((p) => p.messageId),
+      userId
+    );
+    return resolvePinsMedia(visible.filter((p) => !hiddenIds.has(p.messageId)));
   }
 
   async countPins(roomId: string): Promise<number> {
@@ -367,12 +421,17 @@ export class CommunityPinService {
    * the number of messages in the requested page (no N+1).
    */
   async getActivePinSummary(
-    roomId: string
+    roomId: string,
+    userId?: string
   ): Promise<PinnedMessageSummary | null> {
     const pin = await this.pinRepo.findActivePinByRoom(roomId);
     if (!pin) return null;
 
     const message = await this.messageRepo.findById(pin.messageId);
+    // Delete-for-me is per-user: the message is hidden from THIS viewer only,
+    // so their pin banner goes with it while every other member keeps theirs.
+    // Read-time, so a reconnect/cold load resolves to the same state.
+    if (userId && isHiddenForUser(message, userId)) return null;
     const isAvailable = Boolean(
       message && !message.deletedForAll && !pin.originalMessageDeletedAt
     );

@@ -137,8 +137,6 @@ describe("community:message:delete — full breaker -> ack chain (the actual rep
       error: "NOT_FOUND",
       retryable: false,
       message: "Message not found",
-      // The originating messageKey rides along so clients can branch on the
-      // specific reason behind a coarse error code.
       detail: "CHAT_MESSAGE_NOT_FOUND",
     });
   });

@@ -6,6 +6,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import {
+  publishAdminActivitySafe,
+  USER_AUDIT_ACTIONS,
+} from "@aimess/messaging";
 
 import {
   CHAT_EDIT_WINDOW_MS,
@@ -1268,6 +1272,15 @@ export class GroupMessageService {
       userId,
       deletedType
     );
+    publishAdminActivitySafe({
+      // A system-driven purge (auto-delete sweeper) has no human actor.
+      actorId: bySystem ? null : userId,
+      actorType: bySystem ? "SYSTEM" : "USER",
+      action: USER_AUDIT_ACTIONS.MESSAGE_DELETED,
+      targetType: "message",
+      targetId: messageId,
+      after: { roomType: "GROUP", roomId, deletedType },
+    });
     if (
       shouldCountInUnread({
         messageType: message.messageType,

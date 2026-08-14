@@ -133,6 +133,11 @@ describe("GET /v1/admin-accounts", () => {
     expect(arg.limit).toBe(10);
   });
 
+  it("passes the caller so their own row (and SUPER_ADMINs) are excluded", async () => {
+    await request(app).get("/v1/admin-accounts").set(auth());
+    expect(svc.listAdminAccounts.mock.calls[0][1].id).toBe(TEST_ADMIN_ID);
+  });
+
   it("returns 400 for an invalid roleKey", async () => {
     const res = await request(app)
       .get("/v1/admin-accounts?roleKey=NOT_A_ROLE")

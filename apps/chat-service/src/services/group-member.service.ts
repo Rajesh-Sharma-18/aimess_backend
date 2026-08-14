@@ -533,6 +533,9 @@ export class GroupMemberService {
       systemEvent: SystemEvent.MEMBER_REMOVED,
       systemData: { targetUserId: params.targetUserId },
       excludeUserId: params.targetUserId,
+      // backoffice-service already audited this removal against the admin who
+      // ordered it; mirroring here too would double the row.
+      skipAdminActivity: params.asPlatformAdmin,
     });
     await this.publishRosterChange({
       roomId: params.roomId,

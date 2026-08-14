@@ -1,4 +1,5 @@
 import { prisma } from "../config/prisma.js";
+import { ROLE_KEYS } from "../constants/index.js";
 import type {
   AdminStatus,
   Prisma,
@@ -169,11 +170,29 @@ export const adminUserRepository = {
     return new Map(rows.map((r) => [r.id, r.name]));
   },
 
-  /** Paginated + filtered admin list (newest first by default). */
-  async list(query: ListAdminAccountsQuery) {
+  /**
+   * Paginated + filtered admin list (newest first by default). `excludeAdminId`
+   * drops the caller's own row and `excludeSuperAdmins` drops every SUPER_ADMIN
+   * row — filtering in the query (not after) keeps `total`/`totalPages` honest.
+   * Both go through `AND` so the roleKey/search filters below can't override them.
+   */
+  async list(
+    query: ListAdminAccountsQuery,
+    opts: { excludeAdminId?: string; excludeSuperAdmins?: boolean } = {}
+  ) {
     const { field, dir } = parseAdminAccountSort(query.sort);
     const where: Prisma.AdminUserWhereInput = {};
+    const and: Prisma.AdminUserWhereInput[] = [];
 
+    if (opts.excludeAdminId) {
+      and.push({ id: { not: opts.excludeAdminId } });
+    }
+    if (opts.excludeSuperAdmins) {
+      and.push({ role: { key: { not: ROLE_KEYS.SUPER_ADMIN } } });
+    }
+    if (and.length > 0) {
+      where.AND = and;
+    }
     if (query.status && query.status !== "all") {
       where.status = query.status;
     }

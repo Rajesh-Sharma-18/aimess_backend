@@ -157,7 +157,7 @@ describe("ackError — detailKey resolution", () => {
     );
   });
 
-  it("preserves success/error/retryable exactly as before — only `message` changes", () => {
+  it("preserves success/error/retryable exactly as before — only `message`/`detail` change", () => {
     const generic = capture();
     ackError(generic.cb, "NOT_FOUND", "en");
     const specific = capture();
@@ -169,6 +169,10 @@ describe("ackError — detailKey resolution", () => {
     expect(s.error).toBe(g.error);
     expect(s.retryable).toBe(g.retryable);
     expect(s.message).not.toBe(g.message); // the improvement: message differs
+    expect(s.detail).toBe("CHAT_MESSAGE_NOT_FOUND");
+    // Omitted entirely (not `undefined`) when there is no key to report, so a
+    // client can use `"detail" in ack` as a presence check.
+    expect(g).not.toHaveProperty("detail");
   });
 });
 

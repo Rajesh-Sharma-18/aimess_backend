@@ -75,6 +75,7 @@ import {
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
@@ -3028,7 +3029,10 @@ export function createCommunityImpl(
               cursor: req.cursor || undefined,
               limit,
             }),
-            deps.communityPinService.getActivePinSummary(req.roomId),
+            deps.communityPinService.getActivePinSummary(
+              req.roomId,
+              req.requesterId
+            ),
           ]);
 
           const last = messages[messages.length - 1];
@@ -3629,6 +3633,22 @@ export function createCommunityImpl(
               },
             })
           );
+
+          // Keep pin state consistent with the delete — the same hook the REST
+          // delete controller runs, so the socket path can't leave a pin behind
+          // that REST would have cleared. See lib/pin-after-delete.
+          if (result?.roomId) {
+            void unpinAfterDelete({
+              redis,
+              pinService: deps.communityPinService,
+              kind: "COMMUNITY",
+              roomId: result.roomId,
+              communityId: req.communityId,
+              messageId: req.messageId,
+              userId: req.userId,
+              scope: req.deleteType === "forEveryone" ? "forEveryone" : "forMe",
+            });
+          }
 
           // lastActivity recalculation MUST complete (including the
           // synchronous community-service confirmation below) BEFORE the ack
