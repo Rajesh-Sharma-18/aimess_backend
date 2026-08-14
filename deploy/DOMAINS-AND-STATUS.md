@@ -1,6 +1,12 @@
 # AIMESS — Domains, Routing and Live Status
 
-Every row below was probed on **2026-08-12**. Nothing here is assumed.
+Every row below was probed on **2026-08-13**. Nothing here is assumed.
+
+> **Cloudflare is currently on Flexible SSL.** It reaches the origin over plain
+> HTTP, so traffic between Cloudflare and these servers crosses the public
+> internet unencrypted — auth tokens included. The origin still holds valid
+> certificates and still serves `:443`, so switching back to **Full (strict)**
+> needs no change here and is recommended. See §6c.
 
 **The website moved to the apex `ai5dev.tech` and the edge moved from nginx to
 HAProxy.** `website.ai5dev.tech` was retired, not redirected — it now returns
@@ -19,9 +25,9 @@ HAProxy.** `website.ai5dev.tech` was retired, not redirected — it now returns
 | All public endpoints                         | **200** (`www` 301 → apex)                            |
 | All containers                               | running, incl. notifications-service                  |
 | Error count, last 10 min, 8 backend services | **0** (gateway logs stale-origin CORS — see below)    |
-| Edge proxy                                   | **HAProxy 2.8.16** on both hosts, nginx stopped       |
+| Edge proxy                                   | **HAProxy 2.8.16**, one frontend serving :80 and :443 |
 | Certificate renewal                          | `certbot renew --dry-run` passes on both hosts        |
-| PostgreSQL migrations                        | auth 10 · users 13 · admin_db 17 applied              |
+| PostgreSQL migrations                        | auth 10 · users 13 · admin_db 20 applied              |
 | MongoDB replica set                          | `myState=1` (PRIMARY)                                 |
 | PostgreSQL                                   | 5 databases, 38 tables, 38 migrations applied         |
 | MinIO                                        | 4 buckets, all private                                |
@@ -33,16 +39,16 @@ HAProxy.** `website.ai5dev.tech` was retired, not redirected — it now returns
 
 ### Not working
 
-| Problem                                       | Impact                                                                                                                                                                                                                                | Needs                                                                                                                                       |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Website bundle is stale** — rebuild fails   | The site serves fine, but `NEXT_PUBLIC_*` is inlined at build time, so the running bundle still contains `website.ai5dev.tech`. Apple Sign-In redirects to a dead host and client-built deep links point nowhere                      | Build is blocked: `accountDeletion` exists only in `en.json`, so `Record<Locale, Dict>` fails to typecheck. Add it to `th.json` + `vi.json` |
-| ~~notifications-service is down~~             | **Fixed 2026-08-12.** Running with zero errors                                                                                                                                                                                        | done                                                                                                                                        |
-| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                                                                                     | Grey-cloud the record                                                                                                                       |
-| ~~`notification.ai5dev.tech` is proxied~~     | **Fixed 2026-08-12.** LiveKit moved to `media.ai5stream.tech`, which is DNS-only and resolves straight to Dev 01 — so call media and TURN/TLS 5349 now reach the host. The old name stays routed for clients holding the previous URL | done                                                                                                                                        |
-| ~~SRS hooks point at the other environment~~  | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                                                                                   | done — `deploy/scripts/07-srs-add-hook.md`                                                                                                  |
-| `APPLE_CLIENT_IDS` is a placeholder           | Apple Sign-In rejects tokens                                                                                                                                                                                                          | Apple Service ID                                                                                                                            |
-| Website social/Giphy/Maps keys blank          | Those buttons and features inert                                                                                                                                                                                                      | Keys + one website rebuild                                                                                                                  |
-| **No database backups**                       | Total loss if a disk fails                                                                                                                                                                                                            | Scheduling — see OPERATIONS.md §13                                                                                                          |
+| Problem                                       | Impact                                                                                                                                                                                                                                | Needs                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| ~~Website bundle is stale~~                   | **Fixed 2026-08-13.** `accountDeletion` added to `th.json`/`vi.json`, which unblocked `next build`; the bundle now carries the apex values and no longer references `website.ai5dev.tech`                                             | done — strings want a native-speaker review |
+| ~~notifications-service is down~~             | **Fixed 2026-08-12.** Running with zero errors                                                                                                                                                                                        | done                                        |
+| **`minio.ai5dev.tech` is Cloudflare-proxied** | Uploads at the 100 MB video limit **will 413** before reaching MinIO, and the error appears in no application log                                                                                                                     | Grey-cloud the record                       |
+| ~~`notification.ai5dev.tech` is proxied~~     | **Fixed 2026-08-12.** LiveKit moved to `media.ai5stream.tech`, which is DNS-only and resolves straight to Dev 01 — so call media and TURN/TLS 5349 now reach the host. The old name stays routed for clients holding the previous URL | done                                        |
+| ~~SRS hooks point at the other environment~~  | **Fixed 2026-08-07.** Both hook-bearing SRS instances now authorise against ai5dev; RTMP + WHIP verified publishing                                                                                                                   | done — `deploy/scripts/07-srs-add-hook.md`  |
+| `APPLE_CLIENT_IDS` is a placeholder           | Apple Sign-In rejects tokens                                                                                                                                                                                                          | Apple Service ID                            |
+| Website social/Giphy/Maps keys blank          | Those buttons and features inert                                                                                                                                                                                                      | Keys + one website rebuild                  |
+| **No database backups**                       | Total loss if a disk fails                                                                                                                                                                                                            | Scheduling — see OPERATIONS.md §13          |
 
 ---
 
@@ -296,11 +302,44 @@ authorised domains. Those consoles are not reachable from here.
 
 ---
 
+## 6c. Cloudflare SSL mode — read before changing the edge
+
+Cloudflare is on **Flexible**, which means it connects to the origin over plain
+HTTP on port 80.
+
+An edge that redirects `:80 → https` unconditionally deadlocks in this mode:
+the visitor arrives over HTTPS, Cloudflare connects over HTTP, the edge 301s to
+HTTPS, Cloudflare hands that back to the browser, and the browser starts over.
+That happened on 2026-08-13 — every domain unreachable, **7,838 looping requests
+in five minutes**, while the containers were healthy and answered 200 locally.
+
+The config now works under either mode. One frontend serves both ports and the
+redirect is conditional:
+
+```
+http-request redirect scheme https code 301 if !acme !tls_here !visitor_tls
+```
+
+`visitor_tls` trusts Cloudflare's `X-Forwarded-Proto`, which reports the scheme
+the **visitor** used regardless of how Cloudflare reached us. `X-Forwarded-Proto`
+is only overwritten when TLS actually terminated here — otherwise Cloudflare's
+value is the truth, and overwriting it would tell the application a plaintext
+connection was secure.
+
+| Mode              | Works today | Origin leg    | Notes                                                         |
+| ----------------- | ----------- | ------------- | ------------------------------------------------------------- |
+| **Flexible**      | yes         | **plaintext** | current setting; tokens cross the internet in the clear       |
+| **Full (strict)** | yes         | encrypted     | **recommended** — certificates are already valid and in place |
+
+Switching to Full (strict) requires nothing on these servers.
+
+---
+
 ## 7. What to do next, in order
 
-1. **Unblock the website rebuild** — `accountDeletion` is in `en.json` only, so
-   the build fails typechecking and the running bundle still points at the dead
-   `website.ai5dev.tech` for Apple Sign-In and deep links.
+1. **Restore Cloudflare to Full (strict)** — Flexible leaves the origin leg
+   plaintext. Nothing on these servers needs changing; the certificates are
+   already valid and `:443` is already served. See §6c.
 2. **Update Apple / Google / Firebase consoles** to authorise `ai5dev.tech`.
 3. **Decide on APNs** — send the four `APNS_*` values, or approve lazy-init so
    notifications-service starts and Android/web push work now.

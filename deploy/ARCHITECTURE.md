@@ -1,11 +1,16 @@
 # AIMESS — Deployed Architecture
 
-Verified live on **2026-08-12**. Every port, container and connection below was
+Verified live on **2026-08-13**. Every port, container and connection below was
 read off the running servers, not copied from a plan.
 
 The edge is **HAProxy**, not nginx, since 2026-08-12, and the website is on the
-apex `ai5dev.tech`. TLS still terminates at the origin with the same
-certificates — Cloudflare is unchanged at Full (strict).
+apex `ai5dev.tech`. HAProxy serves `:80` and `:443` from a **single frontend** —
+one that only redirects to HTTPS for a genuine plaintext visitor, so it works
+whether Cloudflare is set to Flexible or Full (strict).
+
+> Cloudflare is currently on **Flexible**, so the Cloudflare→origin leg is
+> plaintext. The origin certificates are valid and `:443` is served, so Full
+> (strict) can be restored at any time with no change here.
 
 ---
 
@@ -152,9 +157,13 @@ flowchart LR
 | stream-service → SRS (WHIP)     | `https://ai5stream.tech` (bare origin)        | I-02. Code appends `/api/v1/streams/` itself |
 | stream-service → SRS (OBS/RTMP) | `https://ai5stream.tech/ingest`               | I-01's API — OBS lands there, not on I-02    |
 
-> The `.env.example` files ship `AUTH_GRPC_URL=0.0.0.0:4001`. That is a **bind**
-> address, not a dial target — connecting to `0.0.0.0` reaches nothing. The
-> compose files override every one of these with a service name.
+> The `.env.example` files ship gRPC targets as `0.0.0.0:<port>` — e.g.
+> `AUTH_GRPC_URL=0.0.0.0:4001`, `MEDIA_GRPC_URL=0.0.0.0:4009`. Those are **bind**
+> addresses, not dial targets; dialling `0.0.0.0` is `ECONNREFUSED`. Every one is
+> overridden with a service name in compose, and **that is where they belong** —
+> putting them in `.env.dev02` is silently shadowed for any service whose compose
+> block also sets it. `MEDIA_GRPC_URL` was missing for three services on
+> 2026-08-13; harmless until the attachment guard shipped, which fails CLOSED.
 
 ---
 
