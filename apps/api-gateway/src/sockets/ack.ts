@@ -31,6 +31,15 @@ export interface AckError {
   retryable: boolean;
   /** Localized, human-readable explanation for the error (display-ready). */
   message: string;
+  /**
+   * The originating `AppError.messageKey` behind the coarse `error` code, when
+   * the callee supplied one. The taxonomy is intentionally small, so several
+   * distinct business rules collapse onto one code — `FORBIDDEN` cannot tell
+   * "not friends" from "blocked", and `CONFLICT` cannot tell "you are busy"
+   * from "they are busy". Clients that need to branch (rather than just show
+   * `message`) key off this.
+   */
+  detail?: string;
 }
 
 export interface AckSuccess {
@@ -124,6 +133,7 @@ export function ackError(
     error: code,
     retryable: ACK_RETRYABLE[code],
     message,
+    ...(detailKey ? { detail: detailKey } : {}),
   };
   ack(callback, err);
 }

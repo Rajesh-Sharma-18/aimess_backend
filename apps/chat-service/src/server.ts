@@ -498,6 +498,11 @@ const startServer = async () => {
         return {
           displayName: snap.displayName || snap.username || "",
           avatarUrl,
+          // Read by the call authorization gate to refuse ringing a deleted
+          // account (deletion is soft, so the Friendship rows survive it).
+          // Only ever trusted when explicitly true — the catch below returns an
+          // unknown snapshot, which must not read as "deleted".
+          isDeleted: snap.isDeleted === true,
         };
       } catch {
         return { displayName: "", avatarUrl: "" };

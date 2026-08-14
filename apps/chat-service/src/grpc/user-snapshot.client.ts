@@ -41,7 +41,12 @@ export interface ChatSettings {
 }
 
 export interface CallPrivacy {
-  /** `EVERYONE` is the only scope that admits a non-friend caller. */
+  /**
+   * Narrows who may call, on top of the mandatory friendship rule — it can no
+   * longer widen it. `EVERYONE` and `FRIENDS` are therefore equivalent for
+   * calling (both mean "any friend"); only `NO_ONE` and `SELECTED_FRIENDS`
+   * restrict further. See `lib/call-authorization.ts`.
+   */
   whoCanCallMe: "EVERYONE" | "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
   allowedUserIds: string[];
 }

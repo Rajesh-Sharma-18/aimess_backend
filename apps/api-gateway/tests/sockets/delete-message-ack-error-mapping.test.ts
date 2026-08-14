@@ -105,6 +105,7 @@ describe("ackError — detailKey resolution", () => {
       error: "NOT_FOUND",
       retryable: false,
       message: "Message not found",
+      detail: "CHAT_MESSAGE_NOT_FOUND",
     });
   });
 
@@ -194,6 +195,7 @@ describe("community:message:delete — end-to-end error scenarios (gRPC error ->
       error: "NOT_FOUND",
       retryable: false,
       message: "Message not found",
+      detail: "CHAT_MESSAGE_NOT_FOUND",
     });
   });
 

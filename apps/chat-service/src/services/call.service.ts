@@ -22,7 +22,11 @@ import type {
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
 import type { CallFlagService } from "./call-flag.service.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
-import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import {
+  assertCanStartCall,
+  assertFriendshipStillValid,
+  type CallPeerSnapshot,
+} from "../lib/call-authorization.js";
 import {
   publishCallIncomingSafe,
   publishCallMissedSafe,
@@ -52,9 +56,7 @@ const CALL_LEG_TTL_SEC = 4 * 60 * 60;
  * event so the callee's FE can render the ringing UI without a second lookup.
  * Returns empty strings on failure — a lookup miss must never block a call.
  */
-export type GetUserSnapshotFn = (
-  userId: string
-) => Promise<{ displayName: string; avatarUrl: string }>;
+export type GetUserSnapshotFn = (userId: string) => Promise<CallPeerSnapshot>;
 
 export class CallService {
   constructor(
@@ -270,95 +272,20 @@ export class CallService {
     type: string;
     privateRoomId?: string | null;
   }): Promise<Call & { livekit: LiveKitCredentials }> {
-    if (params.callerId === params.calleeId) {
-      throw new BadRequestError("CALL_SELF_NOT_ALLOWED");
-    }
-
-    // Gate 0: platform-wide kill-switch (admin panel). Checked before every
-    // other gate because it's global — no point resolving friendship/privacy
-    // for a feature that is switched off. Fails OPEN: `isCallingEnabled` never
-    // throws, and an absent flag service means calling is on. Blocks only NEW
-    // calls; anything already connected keeps running.
-    if (this.callFlags && !(await this.callFlags.isCallingEnabled())) {
-      throw new ForbiddenError("CALLING_DISABLED");
-    }
-
-    // Gate 1: callee's `whoCanCallMe` privacy setting (user-service). Read
-    // BEFORE friendship, because EVERYONE is the one scope that deliberately
-    // admits a non-friend — running the friendship gate first would reject
-    // those callers with FRIENDSHIP_REQUIRED and make EVERYONE unreachable.
-    const privacy = await this.getCallPrivacy(params.calleeId);
-    if (privacy.whoCanCallMe === "NO_ONE") {
-      throw new ForbiddenError("PRIVACY_BLOCKED");
-    }
-
-    // Gate 2: friendship, waived ONLY by EVERYONE. Local Prisma read on
-    // chat-service's event-sourced Friendship replica — no gRPC hop. Blocks
-    // non-friends AND ex-friends (the shared-DM-room check below is a
-    // defense-in-depth, not this).
-    if (privacy.whoCanCallMe !== "EVERYONE") {
-      const areFriends = await this.friendshipRepo.areFriends(
-        params.callerId,
-        params.calleeId
-      );
-      if (!areFriends) throw new ForbiddenError("FRIENDSHIP_REQUIRED");
-    }
-
-    // SELECTED_FRIENDS additionally requires the caller to be in the allow-list
-    // (friendship itself was already enforced by gate 2).
-    if (
-      privacy.whoCanCallMe === "SELECTED_FRIENDS" &&
-      !privacy.allowedUserIds.includes(params.callerId)
-    ) {
-      throw new ForbiddenError("PRIVACY_BLOCKED");
-    }
-
-    // The caller and callee MUST share a private DM room — without this, any
-    // authenticated user could ring an arbitrary calleeId (stranger, non-friend)
-    // by supplying a fabricated/omitted privateRoomId. When the client omits
-    // privateRoomId, derive the canonical room for this pair instead of
-    // trusting an unrelated calleeId outright.
-    const participantsKey = buildParticipantsKey(
-      params.callerId,
-      params.calleeId
+    // Kill-switch, deleted target, friendship, privacy scope, shared DM room and
+    // blocks — the ENTIRE call permission rule, in one place, for every entry
+    // point. Throws a business ForbiddenError/NotFoundError before any side
+    // effect exists: no call row, no LiveKit token, no ring, no push.
+    const { room, calleeSnapshot } = await assertCanStartCall(
+      {
+        friendshipRepo: this.friendshipRepo,
+        privateRoomRepo: this.privateRoomRepo,
+        getCallPrivacy: this.getCallPrivacy,
+        getUserSnapshot: this.getUserSnapshot,
+        callFlags: this.callFlags,
+      },
+      params
     );
-    let room = params.privateRoomId
-      ? await this.privateRoomRepo.findByRoomId(params.privateRoomId, {
-          projection: { participants: 1, blockedBy: 1 },
-        })
-      : await this.privateRoomRepo.findByParticipantsKey(participantsKey);
-    // whoCanCallMe=EVERYONE means a stranger may ring — and a stranger has no
-    // DM room yet, so requiring one would silently re-impose the friendship
-    // gate this scope exists to waive. Open the canonical room for the pair,
-    // exactly as the first message between them would.
-    // ponytail: no conv:created fan-out here (the ringing UI is the client's
-    // signal); add it if an empty room ever needs to appear in the inbox
-    // before the call is answered.
-    if (!room && privacy.whoCanCallMe === "EVERYONE" && !params.privateRoomId) {
-      room = await this.privateRoomRepo.create({
-        roomId: generateRoomId("prv"),
-        participants: [params.callerId, params.calleeId].sort(),
-        participantsKey,
-      });
-    }
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
-
-    const participants = Array.isArray(room.participants)
-      ? (room.participants as string[])
-      : [];
-    if (
-      !participants.includes(params.callerId) ||
-      !participants.includes(params.calleeId)
-    ) {
-      throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
-    }
-
-    const blockedBy = Array.isArray(room.blockedBy)
-      ? (room.blockedBy as string[])
-      : [];
-    if (blockedBy.includes(params.callerId)) {
-      throw new ForbiddenError("CALL_BLOCKED");
-    }
 
     // Busy/conflict handling. Only GENUINELY-active calls block a new one: a
     // call is active iff IN_PROGRESS, or RINGING and still within the ringing
@@ -439,6 +366,17 @@ export class CallService {
       // means the caller is IN_PROGRESS or has a fresh INCOMING ring to handle.
       if (callerBusy) throw new ConflictError("CALL_ALREADY_IN_CALL");
 
+      // (c) Last-moment friendship re-check. The gates above ran before the room
+      // lookup, the lock and the busy queries, so a callee who unfriends inside
+      // that window would still be rung. One indexed read on the local replica,
+      // immediately before the row exists — the only position that actually
+      // closes the race. Cached client-side state is never trusted for this.
+      await assertFriendshipStillValid(
+        this.friendshipRepo,
+        params.callerId,
+        params.calleeId
+      );
+
       return this.callRepo.create({
         callId,
         callerId: params.callerId,
@@ -482,21 +420,18 @@ export class CallService {
     }
 
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
-    // UI in parallel — all three are independent I/O.
+    // UI in parallel — independent I/O. The CALLEE snapshot is not refetched:
+    // the authorization gate already read it (that is how it rejects a deleted
+    // account), so the outgoing-mirror reuses it instead of a second lookup.
     // roomName == callId — generalizes cleanly to group later.
-    const [callerCreds, calleeCreds, callerSnapshot, calleeSnapshot] =
-      await Promise.all([
-        this.livekit.mintToken(callId, params.callerId),
-        this.livekit.mintToken(callId, params.calleeId),
-        this.getUserSnapshot(params.callerId).catch(() => ({
-          displayName: "",
-          avatarUrl: "",
-        })),
-        this.getUserSnapshot(params.calleeId).catch(() => ({
-          displayName: "",
-          avatarUrl: "",
-        })),
-      ]);
+    const [callerCreds, calleeCreds, callerSnapshot] = await Promise.all([
+      this.livekit.mintToken(callId, params.callerId),
+      this.livekit.mintToken(callId, params.calleeId),
+      this.getUserSnapshot(params.callerId).catch(() => ({
+        displayName: "",
+        avatarUrl: "",
+      })),
+    ]);
 
     // Notify callee via Redis `self:<id>` — NOT `user:<id>`. Every peer that
     // presence:subscribed joins Socket.IO `user:<calleeId>`; publishing there
@@ -777,6 +712,25 @@ export class CallService {
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+
+    // Answering a still-RINGING call ESTABLISHES it, so the friendship must hold
+    // here too — otherwise a ring that was in flight when the relationship ended
+    // could still be picked up. A call already IN_PROGRESS is deliberately left
+    // alone (this only runs while it is ringing): an established call is not
+    // torn down by a relationship change. GROUP calls are membership-gated, not
+    // friendship-gated, so they skip this.
+    if (
+      !call.groupId &&
+      call.status === CallStatus.RINGING &&
+      call.callerId &&
+      call.callerId !== params.calleeId
+    ) {
+      await assertFriendshipStillValid(
+        this.friendshipRepo,
+        params.calleeId,
+        call.callerId
+      );
+    }
 
     // Decide WHICH of this user's devices is answering before anything else, and
     // before a token exists. Every device of the callee is ringing with the same
