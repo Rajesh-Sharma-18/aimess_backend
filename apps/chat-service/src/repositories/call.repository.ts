@@ -209,6 +209,33 @@ export class CallRepository {
   }
 
   /**
+   * EVERY active 1:1 call between this pair, either direction — the set a
+   * relationship change (unfriend / block) has to tear down. Unlike
+   * {@link findActiveBetween}, which answers "is there a rival call" and so only
+   * needs the first hit, this is the teardown list and must be exhaustive:
+   * glare can legitimately leave one ring in each direction alive at once.
+   *
+   * GROUP calls can never match — their rows carry `calleeId: ""` and are
+   * authorized by membership, not friendship.
+   */
+  async findAllActiveBetween(
+    userA: string,
+    userB: string,
+    freshCutoff: Date,
+    liveCutoff: Date
+  ): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        OR: [
+          { callerId: userA, calleeId: userB },
+          { callerId: userB, calleeId: userA },
+        ],
+        AND: [this.activeWhere(freshCutoff, liveCutoff)],
+      },
+    });
+  }
+
+  /**
    * GROUP calls only: atomically drop one rung member from the roster (they
    * declined, or left before answering). Non-atomic read-then-write is an
    * acceptable MVP gap — a lost concurrent decline just leaves that id in the

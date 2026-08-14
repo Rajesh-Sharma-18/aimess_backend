@@ -52,6 +52,13 @@ export type GetCallPrivacyFn = (userId: string) => Promise<CallPrivacy>;
 const CALL_LEG_TTL_SEC = 4 * 60 * 60;
 
 /**
+ * `endedBy` sentinel for a call the SERVER ended because the friendship behind
+ * it disappeared — kept distinguishable from a real hangup and from the other
+ * `SYSTEM_*` reasons so call analytics and support can tell them apart.
+ */
+const END_REASON_FRIENDSHIP = "SYSTEM_FRIENDSHIP";
+
+/**
  * Fetch caller display name + presigned avatar URL for the `call:incoming`
  * event so the callee's FE can render the ringing UI without a second lookup.
  * Returns empty strings on failure — a lookup miss must never block a call.
@@ -1169,6 +1176,128 @@ export class CallService {
     }
 
     return { ...updated, durationSec };
+  }
+
+  /**
+   * Tear down every active 1:1 call between a pair whose relationship no longer
+   * permits one — driven by `friendship.deleted` / `friendship.blocked` (see
+   * `events/friendship.consumer.ts`).
+   *
+   * `assertCanStartCall` only guards the START of a call, and `answerCall` only
+   * re-checks while the call is RINGING. Without this, unfriending or blocking
+   * someone mid-conversation left the two of them talking: the relationship the
+   * call was authorized by no longer existed, but nothing revisited the call.
+   * Blocking in particular has to sever contact NOW, not when the other side
+   * happens to hang up.
+   *
+   * Both live states are covered, with the same terminal shape their user-driven
+   * equivalents produce, so clients need no new handling:
+   *  - RINGING     → ENDED + `call:cancelled` + push dismiss + a CANCELLED card.
+   *  - IN_PROGRESS → ENDED + `call:ended` (with the real duration) + ENDED card.
+   *
+   * Every transition goes through `claimStatusTransition`, so a redelivered AMQP
+   * event, a concurrent hangup and this sweep can all race safely: only the
+   * winner publishes. Returns how many rows it actually ended.
+   *
+   * ponytail: the media session is torn down by the clients reacting to
+   * `call:ended` — LiveKitService mints tokens only, it has no room-delete. A
+   * client that ignores the event keeps its leg until LiveKit's own timeout.
+   * Add a RoomServiceClient `deleteRoom` here if that ever needs to be forced.
+   */
+  async endCallsBetween(userA: string, userB: string): Promise<number> {
+    if (!userA || !userB || userA === userB) return 0;
+    const now = new Date();
+    const freshCutoff = new Date(
+      now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
+    );
+    const liveCutoff = new Date(
+      now.getTime() - env.CALL_MAX_DURATION_SEC * 1000
+    );
+
+    const active = await this.callRepo.findAllActiveBetween(
+      userA,
+      userB,
+      freshCutoff,
+      liveCutoff
+    );
+
+    let ended = 0;
+    for (const call of active) {
+      const wasRinging = call.status === CallStatus.RINGING;
+      const durationSec = call.answeredAt
+        ? Math.max(
+            0,
+            Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
+          )
+        : 0;
+
+      const { won } = await this.callRepo.claimStatusTransition(
+        call.callId,
+        call.status,
+        {
+          status: CallStatus.ENDED,
+          endedAt: now,
+          durationSec,
+          endedBy: END_REASON_FRIENDSHIP,
+        }
+      );
+      if (!won) continue;
+      ended++;
+
+      const updated: Call = {
+        ...call,
+        status: CallStatus.ENDED,
+        endedAt: now,
+        durationSec,
+        endedBy: END_REASON_FRIENDSHIP,
+        updatedAt: now,
+      };
+
+      await this.publishToCallAndParticipants(
+        updated,
+        JSON.stringify(
+          wasRinging
+            ? { event: "call:cancelled", data: { callId: call.callId } }
+            : {
+                event: "call:ended",
+                data: {
+                  callId: call.callId,
+                  endedBy: END_REASON_FRIENDSHIP,
+                  durationSec,
+                },
+              }
+        ),
+        "endCallsBetween"
+      );
+
+      if (wasRinging) {
+        // The callee never joined `call:<id>`, and their device may not even be
+        // awake — the push is what actually clears a ring in the tray.
+        for (const calleeId of this.ringTargets(call)) {
+          publishCallCancelSafe({
+            calleeId,
+            callId: call.callId,
+            reason: "cancelled",
+            callerId: call.callerId,
+          });
+        }
+      }
+
+      await this.postCallChatMessageSafe(
+        updated,
+        wasRinging ? "CANCELLED" : "ENDED",
+        now,
+        durationSec,
+        END_REASON_FRIENDSHIP
+      );
+    }
+
+    if (ended > 0) {
+      logger.info(
+        `CallService|endCallsBetween|ended ${ended} call(s) for ${userA}<->${userB}`
+      );
+    }
+    return ended;
   }
 
   async getCallByCallId(

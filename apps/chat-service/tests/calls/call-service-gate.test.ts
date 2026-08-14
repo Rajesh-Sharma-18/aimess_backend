@@ -735,7 +735,11 @@ describe("CallService.answerCall busy gate (cross-caller race)", () => {
     expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
   });
 
-  // Requirement: an ESTABLISHED call is not torn down by a relationship change.
+  // `answerCall` is a re-ENTRY point, not a teardown point: re-answering a call
+  // that is already IN_PROGRESS (reconnect, retry) must stay idempotent rather
+  // than start failing the moment the relationship ends. Actually ENDING such a
+  // call is `endCallsBetween`'s job, driven by the friendship event — see
+  // tests/calls/call-teardown-on-unfriend.test.ts.
   it("IN_PROGRESS: an established call is not refused when friendship ends", async () => {
     const { service, stubs } = buildAnswerService();
     stubs.friendshipRepo.areFriends.mockResolvedValue(false);

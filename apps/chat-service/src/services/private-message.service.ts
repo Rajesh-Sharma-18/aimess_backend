@@ -198,16 +198,7 @@ export class PrivateMessageService {
     );
     const receiverId = privateRoomPeerId(room, params.senderId);
 
-    const [friends, blocked] = await Promise.all([
-      this.userServiceClient.checkFriendship(params.senderId, receiverId),
-      this.userServiceClient.isFriendshipBlocked(params.senderId, receiverId),
-    ]);
-    if (blocked) {
-      throw new ForbiddenError("CHAT_BLOCKED");
-    }
-    if (!friends) {
-      throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
-    }
+    await this.assertPeerInteractionAllowed(params.senderId, receiverId);
 
     // Idempotency: if clientMessageId provided, check for existing message (album
     // batch includes `base:N` sibling rows).
@@ -429,6 +420,51 @@ export class PrivateMessageService {
     });
 
     return attachAlbumMessages(message, created);
+  }
+
+  /**
+   * "May these two still interact in this DM at all?" — the friend-only rule for
+   * every WRITE into a private conversation, in one place.
+   *
+   * Participation (`assertPrivateParticipant`) answers a different question: it
+   * says the caller belongs to this room, which stays true forever once the room
+   * exists — including after an unfriend or a block, since neither deletes the
+   * room or its history. So participation alone let a non-friend keep reacting to
+   * and editing messages in a conversation they are no longer allowed to send
+   * into. Reading is deliberately still permitted; the history does not vanish.
+   *
+   * BLOCK is checked before friendship because it is the stronger, more specific
+   * state — blocking also unfriends, so testing friendship first would report
+   * every block as a plain "you are not friends".
+   */
+  private async assertPeerInteractionAllowed(
+    userId: string,
+    peerId: string
+  ): Promise<void> {
+    const [friends, blocked] = await Promise.all([
+      this.userServiceClient.checkFriendship(userId, peerId),
+      this.userServiceClient.isFriendshipBlocked(userId, peerId),
+    ]);
+    if (blocked) {
+      throw new ForbiddenError("CHAT_BLOCKED");
+    }
+    if (!friends) {
+      throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
+    }
+  }
+
+  /**
+   * {@link assertPeerInteractionAllowed} for callers that hold a roomId rather
+   * than the peer's id. A room with no resolvable peer is reported as missing,
+   * not as a permission failure — there is nobody to be friends with.
+   */
+  private async assertRoomInteractionAllowed(
+    roomId: string,
+    userId: string
+  ): Promise<void> {
+    const peerId = await this.getPeerId(roomId, userId);
+    if (!peerId) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    await this.assertPeerInteractionAllowed(userId, peerId);
   }
 
   /**
@@ -841,44 +877,90 @@ export class PrivateMessageService {
   }
 
   /**
-   * Auto-delete "After Viewing": start the countdown on every such message this
-   * reader RECEIVED in this room (§3.4 — the deadline only exists once the
-   * recipient has actually seen it; §8.7 — never before the receipt lands).
-   * Idempotent, so every mark-read can call it unconditionally. Returns the
-   * number of messages armed.
+   * Auto-delete "After Viewing": start the countdown on the messages this
+   * reader has now actually READ (§3.4 — the deadline only exists once the
+   * recipient has seen it; §8.7 — never before the receipt lands).
+   *
+   * `upToSequence` is the ACCEPTED watermark — the sequence of a message this
+   * caller has already proven belongs to the room and is at or below the
+   * reader's forward-only read pointer. Idempotent, so every accepted mark-read
+   * can call it unconditionally. Returns the number of messages armed.
    */
   async armAfterViewingMessages(
     roomId: string,
-    readerId: string
+    readerId: string,
+    upToSequence: number
   ): Promise<number> {
     return this.messageRepo.armAfterViewing(
       roomId,
       readerId,
-      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000)
+      new Date(Date.now() + AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000),
+      upToSequence
     );
   }
 
+  /**
+   * THE private read operation. Every read path — REST, bulk REST, the socket
+   * handler and the gRPC `markMessagesRead` handler — funnels through here, so
+   * the validation below cannot be forgotten by a caller and cannot drift
+   * between transports.
+   *
+   * Order is load-bearing:
+   *
+   *   1. the caller must be a PARTICIPANT. This used to live only in
+   *      `ChatMessageOrchestrator.markReadDirect`, so the gRPC handler reached
+   *      the room write with no membership check at all — a stranger could
+   *      advance a real participant's unread state and emit a read receipt
+   *      attributed to a reader who was never in the conversation.
+   *   2. the target must exist and BELONG TO THIS ROOM. Without this a
+   *      foreign message id resolved to a sequence number from another
+   *      conversation and was written into this room's read pointer.
+   *   3. only then does the watermark advance (forward-only, in the repo), and
+   *      only the ACCEPTED watermark arms After Viewing rows.
+   *
+   * A malformed, foreign, unauthorized or stale target therefore performs zero
+   * arming, zero unread mutation and zero fan-out: it returns null and every
+   * caller's publish is gated on the result.
+   */
   async markRead(params: {
     roomId: string;
     userId: string;
     lastMessageId: string;
   }): Promise<unknown> {
-    // Auto-delete "After Viewing" arms HERE — the single point every read path
-    // (REST via the orchestrator, socket/gRPC via markMessagesRead) funnels
-    // through — so no caller can forget it. Fire-and-forget: the sweeper still
-    // owns the deletion, a failure here only delays it to the next read.
-    void this.armAfterViewingMessages(params.roomId, params.userId).catch(
-      (err: unknown) => {
-        logger.warn(
-          `PrivateMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
-        );
-      }
-    );
-    return this.roomRepo.markReadUpTo({
+    await this.assertParticipant(params.roomId, params.userId);
+
+    // Bind the target to the room before anything is written. `findById`
+    // already returns null for a non-ObjectId, which covers optimistic "tmp-…"
+    // client ids as well as outright malformed input.
+    const target = await this.messageRepo.findById(params.lastMessageId);
+    if (!target || target.roomId !== params.roomId) return null;
+    const acceptedSeq =
+      typeof (target as { sequenceNumber?: number }).sequenceNumber === "number"
+        ? (target as { sequenceNumber: number }).sequenceNumber
+        : 0;
+
+    const room = await this.roomRepo.markReadUpTo({
       roomId: params.roomId,
       userId: params.userId,
       upToMessageId: params.lastMessageId,
     });
+
+    // Arming runs only on an ACCEPTED read, and only up to its watermark.
+    // Still not allowed to fail the read — the sweeper owns the deletion, so a
+    // failure here delays a countdown by one read rather than breaking one.
+    if (room && acceptedSeq > 0) {
+      void this.armAfterViewingMessages(
+        params.roomId,
+        params.userId,
+        acceptedSeq
+      ).catch((err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|armAfterViewingMessages failed room=${params.roomId}: ${String(err)}`
+        );
+      });
+    }
+
+    return room;
   }
 
   /**
@@ -1274,6 +1356,10 @@ export class PrivateMessageService {
     // the room can't mutate even their own old message. NotFound so existence
     // isn't leaked; keeps the room-bind uniform across all private writes.
     await this.assertCallerInMessageRoom(message, params.userId);
+    // An edit is a WRITE into the conversation, so it answers to the same
+    // friend-only rule as sending. (Deleting your own message deliberately does
+    // NOT — taking your content back must stay possible after an unfriend.)
+    await this.assertRoomInteractionAllowed(message.roomId, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -1470,6 +1556,11 @@ export class PrivateMessageService {
     const MAX_ATTEMPTS = 5;
     let message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Guarded HERE rather than in `react()` / `reactToMessage()` / the REST
+    // orchestrator, because this is the one primitive every reaction path funnels
+    // through — socket, gRPC and REST alike. A caller that cannot send into this
+    // conversation cannot react in it either.
+    await this.assertRoomInteractionAllowed(message.roomId, userId);
     let added = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
@@ -1554,6 +1645,9 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage | null> {
     const raw = await this.messageRepo.getReactions(messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Same friend-only rule as `reactCas` — this SET path skips it, so it needs
+    // its own copy rather than inheriting one.
+    await this.assertRoomInteractionAllowed(raw.roomId, userId);
     const updated = setStoredReaction(raw.reactions, userId, emoji);
     return this.messageRepo.addReactions(messageId, raw.roomId, updated);
   }
@@ -1856,12 +1950,9 @@ export class PrivateMessageService {
     );
     const receiverId = privateRoomPeerId(targetRoom, params.senderId);
 
-    // friendship gate
-    const friends = await this.userServiceClient.checkFriendship(
-      params.senderId,
-      receiverId
-    );
-    if (!friends) throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
+    // Friend-only gate — shared with `sendMessage`, which also closes the gap
+    // where this path checked friendship but never the block.
+    await this.assertPeerInteractionAllowed(params.senderId, receiverId);
 
     // idempotency
     if (params.clientMessageId) {
