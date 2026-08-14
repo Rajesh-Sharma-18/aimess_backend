@@ -1,6 +1,6 @@
 /**
  * Notification consumer tests for the `community.member_joined` (MEMBER_JOINED)
- * event — the dedicated self-join push added in the community join-flow overhaul.
+ * event — a self-initiated join is socket-sync only, never a push.
  *
  * Mirrors the pattern in community-consumer.test.ts:
  *   - startCommunityConsumer() is booted, the channel.consume callback is
@@ -8,10 +8,9 @@
  *   - Assertions are on the mocked pushToUser / pushToUsers + publishUserSocketEvent.
  *
  * Verifies:
- *   4.1 MEMBER_JOINED → pushToUser the joiner (userId), title = communityName,
- *       body contains communityName.
+ *   4.1 MEMBER_JOINED → no push at all; only the community:joined socket event.
  *   4.2 MEMBER_ADDED via self_join → does NOT send a welcome push to the joiner
- *       (MEMBER_JOINED owns the welcome copy) but DOES fan to mods.
+ *       but DOES fan to mods.
  */
 
 // ---------------------------------------------------------------------------
@@ -105,32 +104,10 @@ describe("MEMBER_JOINED branch", () => {
     eventAt: "2026-06-17T12:00:00.000Z",
   };
 
-  it("4.1 sends push notification to userId with correct title", async () => {
+  it("4.1 sends NO push to the joiner — self-initiated join needs no notification", async () => {
     await deliver(CommunityEvents.MEMBER_JOINED, memberJoinedPayload);
 
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.userId).toBe(USER_ID);
-    expect(arg.copy("en").title).toBe("Cool Community");
-  });
-
-  it("4.1 push body contains the community name", async () => {
-    await deliver(CommunityEvents.MEMBER_JOINED, memberJoinedPayload);
-
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.copy("en").body).toContain("Cool Community");
-  });
-
-  it("4.1 push data contains communityId and communityName", async () => {
-    await deliver(CommunityEvents.MEMBER_JOINED, memberJoinedPayload);
-
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.data).toMatchObject({
-      communityId: CID,
-      communityName: "Cool Community",
-    });
+    expect(push).not.toHaveBeenCalled();
   });
 
   it("4.1 emits community:joined socket event to the joiner for real-time UI flip", async () => {
@@ -147,15 +124,13 @@ describe("MEMBER_JOINED branch", () => {
     });
   });
 
-  it("4.1 reactivated join — same push shape (body still contains communityName)", async () => {
+  it("4.1 reactivated join — still no push, socket event only", async () => {
     const reactivatedPayload = { ...memberJoinedPayload, reactivated: true };
 
     await deliver(CommunityEvents.MEMBER_JOINED, reactivatedPayload);
 
-    expect(push).toHaveBeenCalledTimes(1);
-    const arg = push.mock.calls[0][0];
-    expect(arg.userId).toBe(USER_ID);
-    expect(arg.copy("en").body).toContain("Cool Community");
+    expect(push).not.toHaveBeenCalled();
+    expect(pubSocket).toHaveBeenCalledTimes(1);
   });
 });
 
