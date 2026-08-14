@@ -693,13 +693,22 @@ export function registerCommunityNamespace(
     // Shared with /chat via buildTypingBroadcast so private, group, and community
     // presence events are byte-for-byte the same shape (roomId === communityId,
     // because the community GeneralRoom id === communityId).
+    //
+    // The client-supplied `senderName` is carried as a LAST-RESORT display
+    // fallback (identical to /chat's typingHints): buildTypingBroadcast only
+    // reaches for it when the server-side snapshot has neither a displayName
+    // nor a username — i.e. the gRPC identity lookup degraded. It is never an
+    // identity source; `userId` stays server-authoritative. Without this the
+    // schema accepted a field that was then thrown away, and a degraded
+    // snapshot left peers with nothing but "Someone is typing…".
+    const senderNameHints = new Map<string, string | undefined>();
     const communityTypingPayload = (communityId: string) =>
       buildTypingBroadcast(
         userId,
         socket.data.userDetails,
         communityId,
         Date.now(),
-        { communityId }
+        { communityId, senderName: senderNameHints.get(communityId) }
       );
 
     // Room-independent typing, now driven by the SHARED presence engine that
@@ -728,12 +737,16 @@ export function registerCommunityNamespace(
     const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
+      // Remembered so the TTL-expiry and disconnect-flush stops — which carry
+      // no client payload — keep the same fallback name the start had.
+      senderNameHints.set(r.data.communityId, r.data.senderName);
       typing.start(r.data.communityId);
     };
 
     const handleTypingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
+      senderNameHints.set(r.data.communityId, r.data.senderName);
       typing.stop(r.data.communityId);
     };
 

@@ -258,7 +258,25 @@ describe("resolveSocketUserDetails", () => {
     expect(gen).not.toHaveBeenCalled();
   });
 
-  it("generateDownloadUrl throws → degraded shape, swallowed (no throw)", async () => {
+  it("snapshot avatarUrl present → used directly, media NOT called", async () => {
+    const { client: userClient } = userClientReturning([
+      snapshot({ avatarUrl: "https://cdn.aimess.com/presigned/alice.jpg" }),
+    ]);
+    const { client: mediaClient, gen } = mediaClientReturning(
+      downloadResult("should-not-be-used")
+    );
+
+    const result = await resolveSocketUserDetails(
+      userClient,
+      mediaClient,
+      USER_ID
+    );
+
+    expect(result.avatarUrl).toBe("https://cdn.aimess.com/presigned/alice.jpg");
+    expect(gen).not.toHaveBeenCalled();
+  });
+
+  it("generateDownloadUrl throws → identity intact, only the avatar is lost", async () => {
     const { client: userClient } = userClientReturning([snapshot()]);
     const gen = jest.fn(async () => {
       throw new Error("media down");
@@ -274,11 +292,13 @@ describe("resolveSocketUserDetails", () => {
       USER_ID
     );
 
-    // Falls all the way back to degraded (the catch wraps the whole resolve).
+    // The avatar presign has its OWN catch: a dead media service (or the
+    // antivirus gate refusing an unscanned avatar) must not erase the name —
+    // that is what left peers rendering "Someone is typing…".
     expect(result).toEqual<SocketUserDetails>({
       userId: USER_ID,
-      username: "",
-      displayName: "",
+      username: "alice",
+      displayName: "Alice",
       avatarUrl: null,
     });
   });
