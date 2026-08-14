@@ -12,6 +12,9 @@ import {
   getCommunityCountBreaker,
 } from "../grpc/community.client.js";
 import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
+import { streamClient } from "../grpc/stream.client.js";
+import { countOpenReports } from "../repositories/report.repository.js";
+import { countBannedUsers } from "../repositories/user-directory.repository.js";
 
 /**
  * Dashboard aggregation — live, read-only gRPC fan-out across services, split
@@ -25,9 +28,17 @@ import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
  * to 0. (The grpc-utils breaker fallback THROWS "<name> unavailable", so we
  * cannot rely on a silent fallback — we catch.)
  *
- * `totalLivestreams` and `openReports` have no backoffice gRPC client yet, so
- * they are STATIC stubs (0). `churnedUsers` is likewise a stub (0) — we do not
- * fabricate churn.
+ * Every stat card reads the SAME source of truth as its management screen:
+ *   - totalLivestreams → stream-service `adminListStreams` total (what the
+ *     Livestream list paginates over), NOT the `LivestreamIndex` event mirror.
+ *   - openReports      → `countOpenReports()` in report.repository (the Report
+ *     table the Reports list reads), sharing its closed-status set.
+ *   - bannedUsers      → `countBannedUsers()` over the `UserIndex` mirror — the
+ *     only place a ban is persisted. auth-service's `getUserCounts().bannedUsers`
+ *     is deliberately IGNORED: no auth-service code path ever writes
+ *     AccountStatus.BANNED/SUSPENDED, so that field is always 0.
+ *   - churnedUsers     → today's bucket of the same live churn series the
+ *     Active-vs-Churned chart plots.
  */
 
 const OVERVIEW_CACHE_KEY = "backoffice:dashboard:overview";
@@ -225,21 +236,36 @@ export const dashboardService = {
     );
     if (cached) return cached;
 
-    const [userCounts, activeCounts, communityCount, groupCount] =
-      await Promise.allSettled([
-        authClient.getUserCounts(),
-        authClient.getActiveUserCounts(),
-        communityClient.getCommunityCount(),
-        chatClient.getGroupCount(),
-      ]);
+    // Today (UTC) — the churn series is UTC/day-granular, same as periodToRange.
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [
+      userCounts,
+      activeCounts,
+      communityCount,
+      groupCount,
+      livestreams,
+      openReportCount,
+      bannedCount,
+      churnSeries,
+    ] = await Promise.allSettled([
+      authClient.getUserCounts(),
+      authClient.getActiveUserCounts(),
+      communityClient.getCommunityCount(),
+      chatClient.getGroupCount(),
+      // Same RPC + filter-less args the Livestream list uses; we want only its
+      // `total`, so ask for the smallest legal page (limit 0 is coerced to 20).
+      streamClient.adminListStreams({ page: 1, limit: 1 }),
+      countOpenReports(),
+      countBannedUsers(),
+      authClient.getActiveUserSeries(today, today),
+    ]);
 
     let totalUsers = 0;
     let newUsersToday = 0;
-    let bannedUsers = 0;
     if (userCounts.status === "fulfilled") {
       totalUsers = userCounts.value.totalUsers;
       newUsersToday = userCounts.value.newUsersToday;
-      bannedUsers = userCounts.value.bannedUsers;
     }
 
     let dailyActiveUsers = 0;
@@ -259,6 +285,27 @@ export const dashboardService = {
       totalGroups = groupCount.value;
     }
 
+    let totalLivestreams = 0;
+    if (livestreams.status === "fulfilled") {
+      totalLivestreams = livestreams.value.total;
+    }
+
+    let openReports = 0;
+    if (openReportCount.status === "fulfilled") {
+      openReports = openReportCount.value;
+    }
+
+    let bannedUsers = 0;
+    if (bannedCount.status === "fulfilled") {
+      bannedUsers = bannedCount.value;
+    }
+
+    // Churn for TODAY = the single bucket the series returns for [today, today].
+    let churnedUsers = 0;
+    if (churnSeries.status === "fulfilled") {
+      churnedUsers = churnSeries.value.at(-1)?.churned ?? 0;
+    }
+
     const stats: DashboardStats = {
       totalUsers,
       newUsersToday,
@@ -266,11 +313,10 @@ export const dashboardService = {
       monthlyActiveUsers,
       totalCommunities,
       totalGroups,
-      // Static stubs — no live source wired yet.
-      totalLivestreams: 0,
-      openReports: 0,
+      totalLivestreams,
+      openReports,
       bannedUsers,
-      churnedUsers: 0,
+      churnedUsers,
     };
 
     const overview = { stats };

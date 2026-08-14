@@ -527,18 +527,26 @@ export const openApiSchemas = {
       totalLivestreams: {
         type: "integer",
         example: 17,
-        description: "STATIC stub for now — no live source wired yet.",
+        description:
+          "Every livestream record — the same unfiltered total the Livestream Management list paginates over.",
       },
       openReports: {
         type: "integer",
         example: 8,
-        description: "STATIC stub for now — no live source wired yet.",
+        description:
+          "Reports not in a terminal state (PENDING / UNDER_REVIEW / ESCALATED). Excludes RESOLVED and DISMISSED.",
       },
-      bannedUsers: { type: "integer", example: 34 },
+      bannedUsers: {
+        type: "integer",
+        example: 34,
+        description:
+          "Users currently banned or suspended — the same set the User Management `status=BANNED` filter returns.",
+      },
       churnedUsers: {
         type: "integer",
         example: 0,
-        description: "STATIC stub (0) for now — no live source wired yet.",
+        description:
+          "Today's bucket of the live churn series: users active in the prior trailing-30d window who dropped out of the current one.",
       },
     },
   },
