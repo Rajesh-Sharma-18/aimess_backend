@@ -42,6 +42,7 @@
     "db:generate:stream": "pnpm --filter @aimess/stream-service db:generate",
     "db:push:chat": "pnpm --filter @aimess/chat-service db:push",
     "db:push:notifications": "pnpm --filter @aimess/notifications-service db:push",
+    "db:push:media": "pnpm --filter @aimess/media-service db:push",
     "db:seed:community": "pnpm --filter @aimess/community-service db:seed",
     "db:seed:backoffice": "pnpm --filter @aimess/backoffice-service db:seed",
     "db:seed": "pnpm db:seed:community",

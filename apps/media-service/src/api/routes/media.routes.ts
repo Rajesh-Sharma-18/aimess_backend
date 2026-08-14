@@ -42,6 +42,15 @@ export function createMediaRoutes(): IRouter {
     mediaController.getScanStatus
   );
 
+  // The caller's own upload-byte totals for the current calendar month.
+  // GET /media/usage/me — no params, no by-id variant: usage is private.
+  router.get(
+    "/usage/me",
+    authenticateAccessToken,
+    mediaRateLimiter,
+    mediaController.getDataUsage
+  );
+
   // Cancel an in-progress upload and delete the object from storage.
   // DELETE /uploads/:objectKey?category=CHAT_ATTACHMENT
   // objectKey must be URL-encoded if it contains slashes.

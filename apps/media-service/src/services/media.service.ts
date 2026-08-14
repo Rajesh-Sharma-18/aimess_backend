@@ -53,6 +53,11 @@ import {
   authorizeMediaAccess,
   assertUploadResourceAccess,
 } from "../lib/download-authz.js";
+import {
+  currentPeriodStart,
+  summarizeUsage,
+  type DataUsageSummary,
+} from "../lib/data-usage.js";
 
 export type GenerateUploadUrlParams = {
   category: MediaCategoryKey;
@@ -115,6 +120,22 @@ export type GetScanStatusParams = {
 export type GetScanStatusResult = {
   objectKey: string;
   scanStatus: MediaScanStatus;
+};
+
+export type GetDataUsageParams = {
+  /** Authenticated caller. There is no by-id variant: usage is private. */
+  userId: string;
+};
+
+export type GetDataUsageResult = DataUsageSummary & {
+  /** Inclusive start of the reported window (serialized to epoch ms). */
+  periodStart: Date;
+  /**
+   * Which direction of transfer `totalBytes` covers. Only "UPLOAD" is
+   * produceable today; the field exists so adding downloads later is a value
+   * change rather than a breaking contract change.
+   */
+  measured: "UPLOAD";
 };
 
 /** One row of the internal batch verdict lookup (gRPC `CheckMediaStatus`). */
@@ -708,6 +729,34 @@ export const mediaService = {
     return {
       objectKey: params.objectKey,
       scanStatus: status ?? "PENDING",
+    };
+  },
+
+  /**
+   * GET /media/usage/me — this user's upload bytes for the current calendar
+   * month, split by media kind.
+   *
+   * Reads the MediaFile registry directly rather than maintaining a counter:
+   * every byte fact already sits on one collection, keyed by ownerId and
+   * indexed by [ownerId, createdAt]. A rollup table would be a second copy to
+   * keep correct for no measured benefit.
+   *
+   * `measured: "UPLOAD"` is part of the contract, not a note — it tells web,
+   * iOS, and Android what this total covers so none of them label it "network
+   * usage". Downloads are not measurable in this architecture; see
+   * lib/data-usage.ts and docs/DATA_USAGE_PHASE1_AUDIT.md.
+   */
+  async getDataUsage(params: GetDataUsageParams): Promise<GetDataUsageResult> {
+    const periodStart = currentPeriodStart(new Date());
+    const rows = await mediaFileRepository.sumVerifiedBytesByMime(
+      params.userId,
+      periodStart
+    );
+
+    return {
+      periodStart,
+      measured: "UPLOAD",
+      ...summarizeUsage(rows),
     };
   },
 };
