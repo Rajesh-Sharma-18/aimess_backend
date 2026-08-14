@@ -10,6 +10,13 @@ interface SendPushParams {
   /** Canonical deep-link for click-to-navigate (web + native). */
   deepLink?: string;
   /**
+   * Large image / avatar shown by the OS (FCM `notification.image`, APNs
+   * `fcm_options.image`, Web Push `icon`). Must be an already-resolved absolute
+   * https URL — object keys are not fetchable by the device. Ignored on
+   * data-only pushes, where the app draws the tray entry itself.
+   */
+  imageUrl?: string;
+  /**
    * FCM collapse key — multiple pending notifications with the same key are
    * collapsed into one on the device. Useful for chat threads (Android).
    */
@@ -74,6 +81,7 @@ export async function sendPush({
   body,
   data,
   deepLink,
+  imageUrl,
   collapseKey,
   apnsThreadId,
   ttl = 86_400,
@@ -106,16 +114,31 @@ export async function sendPush({
   const androidPriority =
     priority === "high" || androidOwnsRendering ? "high" : "normal";
 
+  // Only absolute http(s) URLs are fetchable by the OS; an object key or a
+  // relative path would make FCM reject the whole message.
+  const image = /^https?:\/\//i.test(imageUrl ?? "") ? imageUrl : undefined;
+
   try {
     const messageId = await messaging.send({
       token,
-      ...(omitNotification ? {} : { notification: { title, body } }),
+      ...(omitNotification
+        ? {}
+        : {
+            notification: {
+              title,
+              body,
+              ...(image ? { imageUrl: image } : {}),
+            },
+          }),
 
       // ── Android ──────────────────────────────────────────────────────────
       android: {
         priority: androidPriority,
         ttl: ttl * 1000,
         ...(collapseKey ? { collapseKey } : {}),
+        ...(omitNotification || !image
+          ? {}
+          : { notification: { imageUrl: image } }),
       },
 
       // ── APNs (iOS) ───────────────────────────────────────────────────────
@@ -134,12 +157,17 @@ export async function sendPush({
                 ...(apnsCategory ? { category: apnsCategory } : {}),
               },
         },
+        // Rendered by the app's Notification Service Extension as the
+        // attachment (iOS ignores it without one — harmless when absent).
+        ...(omitNotification || !image
+          ? {}
+          : { fcmOptions: { imageUrl: image } }),
       },
 
       // ── Web push ─────────────────────────────────────────────────────────
       webpush: {
         notification: {
-          icon: "/icons/icon-192.png",
+          icon: image ?? "/icons/icon-192.png",
           badge: "/icons/badge-72.png",
           // requireInteraction keeps the notification visible for calls.
           requireInteraction: priority === "high",

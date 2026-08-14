@@ -516,6 +516,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
               body: pushBody,
               data,
               deepLink,
+              // The community avatar already rides in `data` on every community
+              // push — reuse it as the tray image so the OS stops falling back
+              // to the app logo. Non-community pushes simply have no key here.
+              imageUrl: data?.communityAvatarUrl,
               collapseKey,
               apnsThreadId,
               ttl,

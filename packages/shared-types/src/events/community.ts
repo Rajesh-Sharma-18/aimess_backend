@@ -84,6 +84,10 @@ export type CommunityMemberBannedPayload = CommunityEventBase & {
 export type CommunityMemberUnbannedNotifyPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
+  /** Community display name — the unban notification TITLE. Mirrors the ban payload. */
+  communityName: string;
+  /** Resolved avatar URL — rendered as the push image. */
+  communityAvatarUrl: string | null;
 };
 
 export type CommunityMemberMutedPayload = CommunityEventBase & {
@@ -324,8 +328,10 @@ export type CommunityReportCreatedPayload = CommunityEventBase & {
   /** Null when the report targets the community itself. */
   targetUserId: string | null;
   reason: string;
-  /** Admins + moderators that should review the report — notify each. */
+  /** Admins + moderators that should review the report — notify each (consumer excludes the reporter). */
   moderatorRecipientIds: string[];
+  communityName: string;
+  communityAvatarUrl: string | null;
 };
 
 export type CommunityReportActionedPayload = CommunityEventBase & {

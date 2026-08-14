@@ -531,12 +531,15 @@ async function handleCommunityEvent(
       const p = data as CommunityMemberUnbannedNotifyPayload;
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberUnbanned(),
+        copy: communityCopy.memberUnbanned(p.communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
-          {},
+          {
+            communityName: p.communityName ?? "",
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+          },
           buildDeepLink("communities"),
           "communityEnabled",
           { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
@@ -662,10 +665,15 @@ async function handleCommunityEvent(
 
     case CommunityEvents.REPORT_CREATED: {
       const p = data as CommunityReportCreatedPayload;
-      const recipients = p.moderatorRecipientIds;
+      // The reporter is often an admin/moderator themselves — they filed the
+      // report, so "a new report needs review" back at them is noise.
+      const recipients = (p.moderatorRecipientIds ?? []).filter(
+        (id) => id !== p.reporterId
+      );
+      if (recipients.length === 0) break;
       await pushToUsers(recipients, (userId) => ({
         userId,
-        copy: communityCopy.reportCreated(),
+        copy: communityCopy.reportCreated(p.communityName),
         ...base(
           type,
           p.communityId,
@@ -674,6 +682,8 @@ async function handleCommunityEvent(
             reportId: p.reportId,
             reporterId: p.reporterId,
             targetUserId: p.targetUserId ?? "",
+            communityName: p.communityName ?? "",
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
