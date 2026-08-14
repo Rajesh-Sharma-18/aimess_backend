@@ -80,9 +80,31 @@ const updatePrivacySettingsSchema = z
   })
   .strict();
 
+/**
+ * CANONICAL "Default message timer for new private chats".
+ *
+ * OFF and TIMER only: AFTER_VIEWING is an explicit per-conversation choice, not
+ * something a user should be able to make the silent default for every new
+ * chat they start. Bounds mirror `chat-service`'s
+ * AUTO_DELETE_MIN_TTL_SEC/MAX_TTL_SEC exactly, so a value accepted here is
+ * always a value a room can be set to.
+ */
+const autoDeleteDefaultSchema = z
+  .object({
+    mode: z.enum(["OFF", "TIMER"]),
+    ttlSeconds: z.number().int().min(60).max(365 * 24 * 3600).nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.mode !== "TIMER" || typeof v.ttlSeconds === "number", {
+    message: "ttlSeconds is required when mode is TIMER",
+    path: ["ttlSeconds"],
+  });
+
 const updateChatSettingsSchema = z
   .object({
+    // LEGACY — still accepted so existing clients keep working.
     autoDeleteTimer: autoDeleteTimerSchema.optional(),
+    autoDeleteDefault: autoDeleteDefaultSchema.optional(),
     typingIndicators: z.boolean().optional(),
     readReceipts: z.boolean().optional(),
   })

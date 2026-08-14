@@ -19,6 +19,9 @@ export type SettingsBundle = {
   } | null;
   chatSettings: {
     autoDeleteTimer: AutoDeleteTimer;
+    autoDeleteDefaultMode: string;
+    autoDeleteDefaultTtlSeconds: number | null;
+    autoDeleteDefaultVersion: number;
     typingIndicators: boolean;
     readReceipts: boolean;
     updatedAt: Date;
@@ -60,6 +63,9 @@ export type PrivacySettingsUpdate = {
 
 export type ChatSettingsUpdate = {
   autoDeleteTimer?: AutoDeleteTimer;
+  autoDeleteDefaultMode?: string;
+  autoDeleteDefaultTtlSeconds?: number | null;
+  autoDeleteDefaultVersion?: number;
   typingIndicators?: boolean;
   readReceipts?: boolean;
 };
@@ -192,6 +198,9 @@ export const userSettingsRepository = {
    */
   async findChatSettings(userId: string): Promise<{
     autoDeleteTimer: string;
+    autoDeleteDefaultMode: string;
+    autoDeleteDefaultTtlSeconds: number | null;
+    autoDeleteDefaultVersion: number;
     typingIndicators: boolean;
     readReceipts: boolean;
   }> {
@@ -199,12 +208,24 @@ export const userSettingsRepository = {
       where: { userId },
       select: {
         autoDeleteTimer: true,
+        autoDeleteDefaultMode: true,
+        autoDeleteDefaultTtlSeconds: true,
+        autoDeleteDefaultVersion: true,
         typingIndicators: true,
         readReceipts: true,
       },
     });
     return {
       autoDeleteTimer: row?.autoDeleteTimer ?? "OFF",
+      // Version 0 means "never explicitly saved", which the chat-service
+      // dual-read uses to keep honouring the legacy enum. Reporting "" rather
+      // than the column default is what makes that distinction survive the RPC.
+      autoDeleteDefaultMode:
+        (row?.autoDeleteDefaultVersion ?? 0) > 0
+          ? (row?.autoDeleteDefaultMode ?? "OFF")
+          : "",
+      autoDeleteDefaultTtlSeconds: row?.autoDeleteDefaultTtlSeconds ?? null,
+      autoDeleteDefaultVersion: row?.autoDeleteDefaultVersion ?? 0,
       typingIndicators: row?.typingIndicators ?? true,
       readReceipts: row?.readReceipts ?? true,
     };
@@ -257,6 +278,9 @@ export const userSettingsRepository = {
         chatSettings: {
           select: {
             autoDeleteTimer: true,
+            autoDeleteDefaultMode: true,
+            autoDeleteDefaultTtlSeconds: true,
+            autoDeleteDefaultVersion: true,
             typingIndicators: true,
             readReceipts: true,
             updatedAt: true,

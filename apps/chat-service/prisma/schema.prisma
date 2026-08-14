@@ -59,6 +59,18 @@ model PrivateRoom {
   // `autoDelete` existed — see `lib/auto-delete.ts#readRoomAutoDelete`. Never
   // written any more; drop the field once no room relies on it.
   autoDeleteBy              Json     @default("{}")
+  // Monotonic policy version, allocated with an atomic `$inc` in the same write
+  // that stores `autoDelete`. Two concurrent PUTs therefore get two distinct
+  // versions instead of both computing the same successor from a stale read.
+  // Kept OUT of the JSON for exactly that reason. 0 = never configured.
+  autoDeletePolicyVersion   Int      @default(0)
+  // Durable restamp intent. Set to the new policy version in the SAME write as
+  // `autoDelete`, cleared once the enrolled rows have been re-stamped. A
+  // non-null value means "policy stored, enrolled rows not yet moved" — the
+  // repair pass in AutoDeleteService.sweepPendingRestamps retries it, so a
+  // crash between the two writes can no longer report success while leaving
+  // messages on the old deadline. Null = settled.
+  autoDeleteRestampPending  Int?
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
@@ -85,6 +97,8 @@ model PrivateRoom {
 
   @@index([participants])
   @@index([lastMessageAt(sort: Desc)])
+  // Backs the restamp repair pass: WHERE autoDeleteRestampPending != null.
+  @@index([autoDeleteRestampPending])
   @@map("private_rooms")
 }
 
@@ -130,6 +144,21 @@ model PrivateMessage {
   // on the recipient's read receipt to arm its deadline. Both null/false = no timer.
   autoDeleteAt        DateTime?
   autoDeleteAfterView Boolean  @default(false)
+  // EXACTLY-ONCE sweep claiming. A due row is claimed with a per-batch random
+  // token before any delete side effect runs, so of N racing replicas exactly
+  // one owns the row. `autoDeleteClaimedAt` doubles as the lease clock: a claim
+  // older than AUTO_DELETE_CLAIM_LEASE_SEC is re-claimable, which is how a row
+  // recovers when the worker holding it dies mid-delete. A completed row can
+  // never be reclaimed because `isDeleted: true` drops it from the due query.
+  autoDeleteClaimToken    String?
+  autoDeleteClaimedAt     DateTime?
+  // Bounded backoff for a row that keeps failing to delete: attempts counts the
+  // claims, nextAttemptAt holds it out of the due query until the backoff
+  // elapses, lastError is the diagnostic. Without these a permanently failing
+  // row is retried on every tick forever and drowns the log.
+  autoDeleteAttempts      Int      @default(0)
+  autoDeleteNextAttemptAt DateTime?
+  autoDeleteLastError     String?
 
   @@index([roomId, createdAt(sort: Desc)])
   // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
@@ -145,8 +174,14 @@ model PrivateMessage {
   @@index([clientMessageId])
   // Backs the auto-delete sweeper: WHERE autoDeleteAt <= now AND isDeleted = false.
   @@index([autoDeleteAt])
-  // Backs arming "After Viewing" messages on a read receipt.
-  @@index([roomId, autoDeleteAfterView])
+  // Backs stale-claim recovery: WHERE autoDeleteClaimedAt < leaseCutoff.
+  @@index([autoDeleteClaimedAt])
+  // Backs "did I win this claim?": WHERE autoDeleteClaimToken = <token>.
+  @@index([autoDeleteClaimToken])
+  // Backs arming "After Viewing" messages on a read receipt, bounded by the
+  // reader's accepted watermark: WHERE roomId=? AND autoDeleteAfterView=true
+  // AND sequenceNumber <= ?.
+  @@index([roomId, autoDeleteAfterView, sequenceNumber])
   @@map("private_messages")
 }
 
@@ -212,6 +247,10 @@ model GroupRoom {
   // member's messages follow it. Same shape and same reader as
   // PrivateRoom.autoDelete — see `lib/auto-delete.ts#readRoomAutoDelete`.
   autoDelete         Json?
+  /// Monotonic policy version + durable restamp intent — see
+  /// PrivateRoom.autoDeletePolicyVersion / .autoDeleteRestampPending.
+  autoDeletePolicyVersion  Int      @default(0)
+  autoDeleteRestampPending Int?
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
@@ -236,6 +275,8 @@ model GroupRoom {
   @@index([status, createdAt(sort: Desc)])
   @@index([normalizedName])
   @@index([status, memberCount(sort: Desc)])
+  // Backs the restamp repair pass: WHERE autoDeleteRestampPending != null.
+  @@index([autoDeleteRestampPending])
   @@map("group_rooms")
 }
 
@@ -284,8 +325,19 @@ model GroupMessage {
   // Auto-delete (disappearing messages) — identical semantics to
   // PrivateMessage.autoDeleteAt / autoDeleteAfterView, swept by
   // GroupAutoDeleteService. Both null/false = no timer.
+  //
+  // `autoDeleteAfterView` is retained for rows written before group
+  // AFTER_VIEWING was rejected; nothing sets it any more and group reads never
+  // arm — see AUTO_DELETE_MODES_BY_TYPE in lib/auto-delete.ts.
   autoDeleteAt        DateTime?
   autoDeleteAfterView Boolean  @default(false)
+  /// Exactly-once sweep claiming + bounded backoff — identical semantics to
+  /// PrivateMessage's equivalent columns.
+  autoDeleteClaimToken    String?
+  autoDeleteClaimedAt     DateTime?
+  autoDeleteAttempts      Int      @default(0)
+  autoDeleteNextAttemptAt DateTime?
+  autoDeleteLastError     String?
 
   // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
   // get a deterministic, index-backed total order with early-termination preserved.
@@ -305,8 +357,9 @@ model GroupMessage {
   @@index([deletedAt])
   // Backs the auto-delete sweeper: WHERE autoDeleteAt <= now AND isDeleted = false.
   @@index([autoDeleteAt])
-  // Backs arming "After Viewing" messages on a read receipt.
-  @@index([roomId, autoDeleteAfterView])
+  // Backs stale-claim recovery and claim-winner lookup — see PrivateMessage.
+  @@index([autoDeleteClaimedAt])
+  @@index([autoDeleteClaimToken])
   @@map("group_messages")
 }
 

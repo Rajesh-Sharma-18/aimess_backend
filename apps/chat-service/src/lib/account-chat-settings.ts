@@ -26,6 +26,8 @@ const MAX_ENTRIES = 10_000;
  */
 const FALLBACK: ChatSettings = {
   autoDeleteTimer: "OFF",
+  autoDeleteDefaultMode: "",
+  autoDeleteDefaultTtlSeconds: null,
   typingIndicators: true,
   readReceipts: true,
 };

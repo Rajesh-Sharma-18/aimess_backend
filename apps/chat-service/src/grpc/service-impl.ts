@@ -863,6 +863,16 @@ export function createMessagingImpl(
               participants?: string[];
               lastMessageId?: string | null;
             } | null;
+            // `markRead` asserts participation and binds the target to the room
+            // itself (it is THE private read operation — see its comment), and
+            // returns null when either check fails. This handler used to reach
+            // the room write with no membership check at all, so a caller that
+            // could speak gRPC could advance a stranger's unread state and emit
+            // a receipt in their name. Bail before ANY publish below.
+            if (!room) {
+              callback(null, { updatedCount: 0 });
+              return;
+            }
             unreadCount = room?.unreadCountByUser?.[req.readerId] ?? 0;
             otherUserIds = (room?.participants ?? []).filter(
               (id) => id !== req.readerId

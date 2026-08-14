@@ -7,11 +7,12 @@
  *   1. WHO may change the timer — admin/moderator only, member is 403;
  *   2. WHICH timer a message gets — the room's one record, read off the same
  *      write that allocates the sequence;
- *   3. "After Viewing" arming on a member's read receipt, and only after the
- *      membership check;
+ *   3. "After Viewing" being REJECTED — a group message carries one global
+ *      deadline, so the old behaviour was "the first member to open the chat
+ *      deletes it for everyone who hasn't";
  *   4. the sweeper deleting through the SAME delete-for-everyone path a manual
  *      delete uses, but `bySystem` so a departed/muted sender's messages still
- *      disappear;
+ *      disappear — and claiming each row so two replicas cannot both delete it;
  *   5. the `not: null` guard on the sweeper query, without which Mongo treats
  *      "no timer" as "overdue" and deletes the entire group.
  *
@@ -24,7 +25,6 @@ import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import {
   computeAutoDeleteStamp,
   readRoomAutoDelete,
-  AUTO_DELETE_AFTER_VIEW_GRACE_SEC,
 } from "../../src/lib/auto-delete.js";
 
 let app: import("express").Express;
@@ -115,8 +115,49 @@ describe("permission", () => {
     const res = await request(app)
       .put(url)
       .set(bearer(makeAccessToken()))
-      .send({ mode: "AFTER_VIEWING" });
+      .send({ mode: "TIMER", ttlSeconds: 86400 });
     expect(res.status).toBe(200);
+    expect(mocks.groupRoomRepo.setAutoDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports canEdit per ROLE so the client can grey out the picker", async () => {
+    asRole("MEMBER");
+    const asMember = await request(app).get(url).set(bearer(makeAccessToken()));
+    expect(asMember.body.data.canEdit).toBe(false);
+
+    asRole("ADMIN");
+    const asAdmin = await request(app).get(url).set(bearer(makeAccessToken()));
+    expect(asAdmin.body.data.canEdit).toBe(true);
+  });
+});
+
+// ── 1b. After Viewing is UNSUPPORTED for groups ──────────────────────────────
+describe("After Viewing is rejected", () => {
+  it("400s an ADMIN who asks for AFTER_VIEWING, and writes nothing", async () => {
+    // One global `autoDeleteAt` per group message means "after viewing" can only
+    // ever mean "after the FIRST member views it" — a silent delete-for-everyone
+    // triggered by one reader. Refused rather than approximated.
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "AFTER_VIEWING" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message ?? res.body.error?.code ?? "").toBeDefined();
+    expect(mocks.groupRoomRepo.setAutoDelete).not.toHaveBeenCalled();
+    expect(
+      mocks.groupMessageRepo.restampPendingAutoDeletes
+    ).not.toHaveBeenCalled();
+    expect(
+      publishes().filter((p) => p.event === "conv:auto_delete:updated")
+    ).toHaveLength(0);
+  });
+
+  it("advertises supportsAfterViewing=false on GET so clients hide the option", async () => {
+    const res = await request(app).get(url).set(bearer(makeAccessToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.data.capabilities.supportsAfterViewing).toBe(false);
+    expect(res.body.data.conversationType).toBe("GROUP");
   });
 
   it("rejects a plain MEMBER with 403 and writes nothing", async () => {
@@ -295,6 +336,8 @@ describe("stamping sent messages", () => {
   });
 
   it("marks an AFTER_VIEWING message as waiting, with no deadline yet", () => {
+    // The pure stamp function is shared with private and still understands the
+    // mode; what changed is that no GROUP room can be put INTO that mode.
     const stamp = computeAutoDeleteStamp(
       readRoomAutoDelete(room({ mode: "AFTER_VIEWING", setAt: "" })),
       new Date()
@@ -303,9 +346,21 @@ describe("stamping sent messages", () => {
   });
 });
 
-// ── 4. "After Viewing" arms on a member's read receipt ───────────────────────
-describe("After Viewing arming", () => {
-  it("arms the reader's RECEIVED messages on markReadUpTo, never their own", async () => {
+// ── 4. A group read NEVER arms anything ──────────────────────────────────────
+describe("group reads never arm", () => {
+  it("has no arming method on the repository at all", async () => {
+    // Deleted rather than left unused: an unused method is an invitation to
+    // call it again, and calling it deletes a message for members who never
+    // opened the chat.
+    const { GroupMessageRepository } =
+      await import("../../src/repositories/group-message.repository.js");
+    expect(
+      (GroupMessageRepository.prototype as Record<string, unknown>)
+        .armAfterViewing
+    ).toBeUndefined();
+  });
+
+  it("markReadUpTo advances the watermark without arming", async () => {
     mocks.groupMessageRepo.findById.mockResolvedValue({
       id: "507f1f77bcf86cd799439011",
       roomId: ROOM,
@@ -313,37 +368,60 @@ describe("After Viewing arming", () => {
       sequenceNumber: 4,
     });
 
-    await mocks.groupMessageService.markReadUpTo({
+    const res = await mocks.groupMessageService.markReadUpTo({
       roomId: ROOM,
       userId: TEST_USER_ID,
       upToMessageId: "507f1f77bcf86cd799439011",
     });
 
-    expect(mocks.groupMessageRepo.armAfterViewing).toHaveBeenCalledTimes(1);
-    const [roomId, readerId, deleteAt] =
-      mocks.groupMessageRepo.armAfterViewing.mock.calls[0];
-    expect(roomId).toBe(ROOM);
-    expect(readerId).toBe(TEST_USER_ID);
-    // A short grace period after the receipt, not immediate.
-    const delta = (deleteAt as Date).getTime() - Date.now();
-    expect(delta).toBeGreaterThan(0);
-    expect(delta).toBeLessThanOrEqual(
-      AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000 + 500
-    );
+    expect(res.readToSeq).toBe(4);
+    expect(mocks.groupMemberRepo.advanceReadPointer).toHaveBeenCalledTimes(1);
+    expect(mocks.groupMessageRepo.armAfterViewing).not.toHaveBeenCalled();
   });
 
-  it("never arms for a non-member", async () => {
+  it("mutates nothing for a non-member", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
-    await mocks.groupMessageService.markReadUpTo({
+    const res = await mocks.groupMessageService.markReadUpTo({
       roomId: ROOM,
       userId: TEST_USER_ID,
       upToMessageId: "507f1f77bcf86cd799439011",
     });
+    expect(res).toEqual({ readToSeq: 0, remainingUnread: 0 });
+    expect(mocks.groupMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
     expect(mocks.groupMessageRepo.armAfterViewing).not.toHaveBeenCalled();
+  });
+
+  it("mutates nothing for a target belonging to ANOTHER room", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: "507f1f77bcf86cd799439011",
+      roomId: "grp_somewhere_else",
+      createdAt: new Date(),
+      sequenceNumber: 99,
+    });
+    const res = await mocks.groupMessageService.markReadUpTo({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      upToMessageId: "507f1f77bcf86cd799439011",
+    });
+    expect(res).toEqual({ readToSeq: 0, remainingUnread: 0 });
+    expect(mocks.groupMemberRepo.advanceReadPointer).not.toHaveBeenCalled();
   });
 });
 
 // ── 5. The sweeper ───────────────────────────────────────────────────────────
+
+/** Stub the claim step with the rows this worker "won". */
+function claims(
+  rows: Array<{
+    id: string;
+    roomId: string;
+    senderId: string | null;
+    attempts: number;
+  }>
+): void {
+  mocks.groupMessageRepo.claimDueAutoDeletes.mockResolvedValue(rows);
+}
+
 describe("group auto-delete sweeper", () => {
   it("deletes due messages bySystem, through the normal delete path", async () => {
     const { groupAutoDeleteService, chatMessageOrchestrator } = mocks as any;
@@ -351,16 +429,16 @@ describe("group auto-delete sweeper", () => {
       .spyOn(chatMessageOrchestrator, "deleteDirect")
       .mockResolvedValue({ tombstone: { messageId: "msg-1" } } as any);
 
-    mocks.groupMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID },
-      { id: "msg-2", roomId: ROOM, senderId: MEMBER_B },
+    claims([
+      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 },
+      { id: "msg-2", roomId: ROOM, senderId: MEMBER_B, attempts: 1 },
       // System messages are never stamped; guard against one slipping through.
-      { id: "msg-3", roomId: ROOM, senderId: null },
+      { id: "msg-3", roomId: ROOM, senderId: null, attempts: 1 },
     ]);
 
-    const n = await groupAutoDeleteService.sweepDue(new Date(), 200);
+    const res = await groupAutoDeleteService.sweepDue(new Date(), 200);
 
-    expect(n).toBe(3); // page size drives the drain loop
+    expect(res).toEqual({ claimed: 3, completed: 2, failed: 0 });
     expect(deleteDirect).toHaveBeenCalledTimes(2);
     // `bySystem` is what lets a message from a member who has since LEFT or been
     // muted still disappear — without it the sweep 400s on every such row.
@@ -379,9 +457,7 @@ describe("group auto-delete sweeper", () => {
     jest
       .spyOn(chatMessageOrchestrator, "deleteDirect")
       .mockResolvedValue({ tombstone: { messageId: "msg-1" } } as any);
-    mocks.groupMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID },
-    ]);
+    claims([{ id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 }]);
 
     await groupAutoDeleteService.sweepDue(new Date(), 200);
 
@@ -414,9 +490,7 @@ describe("group auto-delete sweeper", () => {
       createdAt: new Date(),
       deletedAt: new Date(),
     });
-    mocks.groupMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-gone", roomId: ROOM, senderId: MEMBER_B },
-    ]);
+    claims([{ id: "msg-gone", roomId: ROOM, senderId: MEMBER_B, attempts: 1 }]);
 
     await groupAutoDeleteService.sweepDue(new Date(), 200);
 
@@ -429,18 +503,33 @@ describe("group auto-delete sweeper", () => {
   });
 });
 
-// ── 6. The query guard that a mocked-repo suite can never catch by behaviour ─
-describe("sweeper query shape", () => {
-  it("keeps the `not: null` guard on the due-messages filter", async () => {
-    // On MongoDB, Prisma's `lte` on a nullable DateTime also matches explicit
-    // NULLs. Every message we write sets `autoDeleteAt: null` when it has no
-    // timer, so dropping this guard deletes the whole group ~30s after each
-    // send. This exact bug destroyed 53 dev messages when private shipped, and
-    // a mocked-repo suite cannot observe it — so pin the query text instead.
-    const { GroupMessageRepository } =
-      await import("../../src/repositories/group-message.repository.js");
-    const src = GroupMessageRepository.prototype.findDueAutoDeletes.toString();
-    expect(src).toContain("not: null");
-    expect(src).toContain("lte: now");
+// ── 6. Claim/backoff behaviour ───────────────────────────────────────────────
+describe("claiming and backoff", () => {
+  it("hands a failing row back with bounded backoff instead of retrying it hot", async () => {
+    const { groupAutoDeleteService, chatMessageOrchestrator } = mocks as any;
+    jest
+      .spyOn(chatMessageOrchestrator, "deleteDirect")
+      .mockRejectedValue(new Error("boom"));
+    claims([{ id: "msg-bad", roomId: ROOM, senderId: MEMBER_B, attempts: 3 }]);
+
+    const res = await groupAutoDeleteService.sweepDue(new Date(), 200);
+
+    expect(res).toEqual({ claimed: 1, completed: 0, failed: 1 });
+    expect(mocks.groupMessageRepo.releaseAutoDeleteClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "msg-bad", attempts: 3, error: expect.any(String) })
+    );
+  });
+
+  it("deletes ONLY the rows this worker claimed", async () => {
+    // The lease is the whole point: a replica that lost the race receives an
+    // empty claim list and must run no side effects at all.
+    const { groupAutoDeleteService, chatMessageOrchestrator } = mocks as any;
+    const deleteDirect = jest.spyOn(chatMessageOrchestrator, "deleteDirect");
+    claims([]);
+
+    const res = await groupAutoDeleteService.sweepDue(new Date(), 200);
+
+    expect(res).toEqual({ claimed: 0, completed: 0, failed: 0 });
+    expect(deleteDirect).not.toHaveBeenCalled();
   });
 });

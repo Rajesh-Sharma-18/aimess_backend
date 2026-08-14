@@ -25,7 +25,13 @@ import {
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
-import { buildAutoDeleteWire, readRoomAutoDelete } from "../lib/auto-delete.js";
+import {
+  AUTO_DELETE_OFF,
+  buildAutoDeleteWire,
+  readPolicyVersion,
+  readRoomAutoDelete,
+  resolveAccountDefaultSetting,
+} from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -63,11 +69,31 @@ export async function ensurePrivateRoom(
     await deps.privateRoomRepo.findByParticipantsKey(participantsKey);
   if (existing) return existing;
 
+  // "Default message timer for new private chats" — snapshotted from the
+  // INITIATING user's account settings, once, at creation. This is the only
+  // moment the account default touches a room: afterwards the room policy is
+  // shared and independent, so changing the account default later must not
+  // silently rewrite conversations the peer also participates in. Fails OPEN
+  // (no timer) — a settings lookup must never block opening a chat.
+  const accountDefault = await getAccountChatSettings(userId)
+    .then(resolveAccountDefaultSetting)
+    .catch(() => AUTO_DELETE_OFF);
+
   const roomId = generateRoomId("prv");
   const room = await deps.privateRoomRepo.create({
     roomId,
     participants: [userId, peerId].sort(),
     participantsKey,
+    ...(accountDefault.mode === "OFF"
+      ? {}
+      : {
+          autoDelete: {
+            mode: accountDefault.mode,
+            ttlSeconds: accountDefault.ttlSeconds,
+            setAt: new Date().toISOString(),
+            setBy: userId,
+          },
+        }),
   });
 
   logger.debug(`PrivateRoomService|ensurePrivateRoom|created room=${roomId}`);
@@ -529,7 +555,12 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
-      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(enriched)),
+      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(enriched), {
+        conversationType: "PRIVATE",
+        policyVersion: readPolicyVersion(enriched),
+        // Either participant may change a private conversation's timer.
+        canEdit: true,
+      }),
       ...toPeerFriendshipRelationship(enriched.friendship),
     };
   }

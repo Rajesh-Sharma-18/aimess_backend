@@ -12,6 +12,11 @@ import type {
   GroupConversationLastActivity,
 } from "./group-room.service.js";
 import { toWireMessage } from "../lib/chat-message.serializer.js";
+import {
+  buildAutoDeleteWire,
+  readPolicyVersion,
+  readRoomAutoDelete,
+} from "../lib/auto-delete.js";
 
 export type InboxDirection = "before" | "after";
 
@@ -124,6 +129,17 @@ export interface InboxItem {
    * `group:disbanded` socket event. Null for PRIVATE rows.
    */
   isDisbanded: boolean | null;
+  /**
+   * The room's effective auto-delete policy — the SAME DTO the
+   * GET/PUT `/auto-delete` endpoints and the `conv:auto_delete:updated` socket
+   * event return (see `lib/auto-delete.ts#buildAutoDeleteWire`), including
+   * `capabilities.supportsAfterViewing` and the caller's `canEdit`.
+   *
+   * Carried on the row so a cold-started client can render the timer icon on
+   * every conversation from ONE inbox response, instead of issuing a per-room
+   * request for a field that is three integers wide.
+   */
+  autoDelete: Record<string, unknown>;
 }
 
 export interface InboxResult {
@@ -316,6 +332,12 @@ export class InboxService {
       memberMutedUntil: null,
       memberMutedUntilMs: null,
       isDisbanded: null,
+      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
+        conversationType: "PRIVATE",
+        policyVersion: readPolicyVersion(room),
+        // Either participant may change a private conversation's timer.
+        canEdit: true,
+      }),
     };
   }
 
@@ -358,6 +380,14 @@ export class InboxService {
       memberMutedUntil: room.memberMutedUntil ?? null,
       memberMutedUntilMs: room.memberMutedUntilMs ?? null,
       isDisbanded: room.status === "DISBANDED",
+      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
+        conversationType: "GROUP",
+        policyVersion: readPolicyVersion(room),
+        // Only ADMIN/MODERATOR may change a group's timer — same rule the PUT
+        // enforces, surfaced so the client can grey out the picker rather than
+        // discovering it via a 403.
+        canEdit: room.role === "ADMIN" || room.role === "MODERATOR",
+      }),
     };
   }
 }

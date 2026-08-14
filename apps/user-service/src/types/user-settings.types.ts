@@ -32,7 +32,20 @@ export type UserPrivacySettings = {
 };
 
 export type UserChatSettings = {
+  /** LEGACY enum, still returned for clients written against it. */
   autoDeleteTimer: AutoDeleteTimerValue;
+  /**
+   * CANONICAL "Default message timer for new private chats". Snapshotted into
+   * a private room when it is created; never rewrites existing rooms, and
+   * never applies to groups (a group timer is an admin/moderator room
+   * decision). `version` is 0 until the user saves it once, which is how the
+   * dual-read in chat-service knows to fall back to `autoDeleteTimer`.
+   */
+  autoDeleteDefault: {
+    mode: "OFF" | "TIMER";
+    ttlSeconds: number | null;
+    version: number;
+  };
   typingIndicators: boolean;
   readReceipts: boolean;
 };

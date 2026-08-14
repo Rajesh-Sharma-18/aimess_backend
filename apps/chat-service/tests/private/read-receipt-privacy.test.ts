@@ -39,9 +39,18 @@ const published = () =>
 beforeEach(() => {
   ({ app, mocks } = buildApp());
   mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+  // `roomId` is required on the read target: it is bound to the room before the
+  // watermark advances, so a target that names no room is a no-op read.
   mocks.privateMessageRepo.findById.mockResolvedValue({
     id: "msg_hw_1",
+    roomId: ROOM,
     sequenceNumber: 9,
+  });
+  mocks.privateRoomRepo.markReadUpTo.mockResolvedValue({
+    roomId: ROOM,
+    participants: [TEST_USER_ID, "peer-1"],
+    unreadCountByUser: { [TEST_USER_ID]: 0 },
+    lastMessageId: "msg_hw_1",
   });
   invalidateAccountChatSettings();
   setReadReceipts(true);

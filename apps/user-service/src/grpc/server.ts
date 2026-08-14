@@ -118,16 +118,24 @@ export function startUserGrpcServer(): grpc.Server {
       call: grpc.ServerUnaryCall<{ userId: string }, unknown>,
       callback: grpc.sendUnaryData<{
         autoDeleteTimer: string;
+        autoDeleteDefaultMode: string;
+        autoDeleteDefaultTtlSeconds: number;
+        autoDeleteDefaultVersion: number;
         typingIndicators: boolean;
         readReceipts: boolean;
       }>
     ) => {
       void (async () => {
         try {
-          callback(
-            null,
-            await userSettingsRepository.findChatSettings(call.request.userId)
+          const row = await userSettingsRepository.findChatSettings(
+            call.request.userId
           );
+          callback(null, {
+            ...row,
+            // proto3 int32 has no null — 0 is "no ttl", which is only ever read
+            // alongside mode === "TIMER" on the consumer side.
+            autoDeleteDefaultTtlSeconds: row.autoDeleteDefaultTtlSeconds ?? 0,
+          });
         } catch (err) {
           logger.error(`gRPC getChatSettings error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

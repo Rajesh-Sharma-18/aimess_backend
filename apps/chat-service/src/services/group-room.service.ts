@@ -10,6 +10,11 @@ import { publishChatUserEvent } from "@aimess/redis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import {
+  buildAutoDeleteWire,
+  readPolicyVersion,
+  readRoomAutoDelete,
+} from "../lib/auto-delete.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
@@ -671,7 +676,20 @@ export class GroupRoomService {
     };
   }
 
-  async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
+  /**
+   * `autoDelete` is REPLACED by the canonical wire DTO rather than being the
+   * raw stored JSON — same field name, strictly more information (mode and
+   * ttlSeconds are still there, plus policyVersion, canEdit and capabilities),
+   * so a client reading `room.autoDelete.mode` is unaffected.
+   */
+  async getRoom(
+    roomId: string,
+    userId?: string
+  ): Promise<
+    Omit<GroupRoomMembership, "autoDelete"> & {
+      autoDelete: Record<string, unknown>;
+    }
+  > {
     const found = await this.roomRepo.findActiveByRoomId(roomId);
     if (!found) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
     // Same read rule as the timeline and the roster: ACTIVE members, plus
@@ -736,6 +754,19 @@ export class GroupRoomService {
         isMemberMuted && membership?.moderationMutedUntil
           ? membership.moderationMutedUntil.getTime()
           : null,
+      // The effective auto-delete policy, in the SAME DTO the dedicated
+      // GET/PUT `/auto-delete` endpoints and the socket event return — so
+      // opening a group renders the timer state (and whether THIS member may
+      // change it) without a second request. `canEdit` mirrors the PUT's
+      // ADMIN/MODERATOR rule; `capabilities.supportsAfterViewing` is false for
+      // every group.
+      autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
+        conversationType: "GROUP",
+        policyVersion: readPolicyVersion(room),
+        canEdit:
+          membership?.status === "ACTIVE" &&
+          (membership.role === "ADMIN" || membership.role === "MODERATOR"),
+      }),
     };
   }
 

@@ -161,7 +161,23 @@ model CallAllowedFriend {
 model ChatSettings {
   userId           String          @id @db.Uuid
   user             UserProfile     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  // LEGACY "Default message timer" enum. Kept, still written, still returned —
+  // clients built against it keep working. Its value set (DAYS_7/15/30) never
+  // matched the per-conversation preset list, which is why the canonical
+  // columns below exist. Retire once no client reads it.
   autoDeleteTimer  AutoDeleteTimer @default(OFF)
+  // CANONICAL "Default message timer for new private chats": an explicit
+  // { mode, ttlSeconds } pair in the SAME units the chat-service room policy
+  // uses, so the value can be snapshotted into a new room without a lossy enum
+  // round trip. AFTER_VIEWING is deliberately not an account default — it is an
+  // explicit per-conversation choice — so `mode` is only ever OFF or TIMER.
+  //
+  // `autoDeleteDefaultVersion` is bumped on every write so a consumer can tell
+  // a genuine change from a re-read, and so the dual-read below can prefer the
+  // canonical pair only once the user has actually set it (version > 0).
+  autoDeleteDefaultMode       String  @default("OFF")
+  autoDeleteDefaultTtlSeconds Int?
+  autoDeleteDefaultVersion    Int     @default(0)
   typingIndicators Boolean         @default(true)
   readReceipts     Boolean         @default(true)
   updatedAt        DateTime        @updatedAt @db.Timestamptz(3)

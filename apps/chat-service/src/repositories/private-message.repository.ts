@@ -19,6 +19,12 @@ import {
   readTextSearchPage,
 } from "./message-search.js";
 import type { PrivateRoomRepository } from "./private-room.repository.js";
+import {
+  claimDueAutoDeletes,
+  releaseAutoDeleteClaim,
+  type AutoDeleteClaimDelegate,
+  type ClaimedAutoDelete,
+} from "../lib/auto-delete-claim.js";
 
 /**
  * NOTE — zero-loss revision axis. Every CONTENT mutation in this file allocates a room
@@ -955,8 +961,16 @@ export class PrivateMessageRepository {
   // ───────────────────────── auto-delete (disappearing messages) ────────────
 
   /**
-   * Arm every "After Viewing" message the reader RECEIVED in this room: the
-   * deadline only starts once the recipient has actually seen it (§3.4/§8.7).
+   * Arm the "After Viewing" messages this reader has now actually READ.
+   *
+   * `upToSequence` is the reader's ACCEPTED watermark — the sequence of the
+   * message the read was validated against, after the forward-only advance.
+   * Without that bound this armed every unarmed incoming AFTER_VIEWING row in
+   * the room, so opening a chat also started the countdown on messages the
+   * reader had not scrolled to yet, and a read receipt replayed for an OLD
+   * message armed everything sent since. The bound is the difference between
+   * "delete what you viewed" and "delete what exists".
+   *
    * Own messages are skipped — the sender has trivially "viewed" theirs, so the
    * recipient's receipt is the only signal that matters. Idempotent: a second
    * read receipt matches nothing because `autoDeleteAt` is already set.
@@ -964,8 +978,13 @@ export class PrivateMessageRepository {
   async armAfterViewing(
     roomId: string,
     readerId: string,
-    deleteAt: Date
+    deleteAt: Date,
+    upToSequence: number
   ): Promise<number> {
+    // A non-positive watermark means the read never resolved to a real message
+    // in this room; arming anything at all would be arming on an unvalidated
+    // target.
+    if (!Number.isFinite(upToSequence) || upToSequence <= 0) return 0;
     const res = await this.prisma.privateMessage.updateMany({
       where: {
         roomId,
@@ -973,6 +992,7 @@ export class PrivateMessageRepository {
         autoDeleteAfterView: true,
         autoDeleteAt: null,
         isDeleted: false,
+        sequenceNumber: { lte: upToSequence },
       },
       data: { autoDeleteAt: deleteAt },
     });
@@ -980,30 +1000,32 @@ export class PrivateMessageRepository {
   }
 
   /**
-   * One page of messages whose auto-delete deadline has passed.
-   *
-   * `not: null` is LOAD-BEARING, not defensive noise. On MongoDB, Prisma's
-   * `lte` comparison also matches a column whose value is explicitly `null`
-   * (BSON orders Null before Date and this comparison is not type-bracketed).
-   * Every message we write sets `autoDeleteAt: null` when it has no timer, so
-   * without this guard the sweeper treats "no timer" as "overdue" and deletes
-   * every ordinary message ~30s after it is sent — including "After Viewing"
-   * messages the recipient has not opened yet. Verified against a live Mongo:
-   * a filter of `{lte: now}` alone returns explicit-null rows.
+   * Lease one page of due messages to THIS worker. See `lib/auto-delete-claim.ts`
+   * — only the returned rows may be deleted by the caller, and only once.
    */
-  async findDueAutoDeletes(
-    now: Date,
-    limit: number
-  ): Promise<Array<{ id: string; roomId: string; senderId: string | null }>> {
-    return this.prisma.privateMessage.findMany({
-      where: {
-        AND: [{ autoDeleteAt: { not: null } }, { autoDeleteAt: { lte: now } }],
-        isDeleted: false,
-      },
-      orderBy: { autoDeleteAt: "asc" },
-      take: limit,
-      select: { id: true, roomId: true, senderId: true },
-    });
+  async claimDueAutoDeletes(params: {
+    now: Date;
+    limit: number;
+    token: string;
+    leaseSeconds?: number;
+  }): Promise<ClaimedAutoDelete[]> {
+    return claimDueAutoDeletes(
+      this.prisma.privateMessage as unknown as AutoDeleteClaimDelegate,
+      params
+    );
+  }
+
+  /** Hand a claimed row back after a failed delete, with bounded backoff. */
+  async releaseAutoDeleteClaim(params: {
+    id: string;
+    attempts: number;
+    error: string;
+    now: Date;
+  }): Promise<void> {
+    await releaseAutoDeleteClaim(
+      this.prisma.privateMessage as unknown as AutoDeleteClaimDelegate,
+      params
+    );
   }
 
   /**

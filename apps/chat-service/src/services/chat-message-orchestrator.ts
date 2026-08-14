@@ -1090,6 +1090,11 @@ export class ChatMessageOrchestrator {
               // Without this the bump is discarded by the client's monotonic
               // list guard — it points BACKWARD at the previous visible message.
               deleteRecalc: true,
+              // The DELETE's own room revision, not the surviving message's:
+              // this projection update is newer than everything before it even
+              // though its `lastMessageAt` is older. Lets a client order by one
+              // monotonic number instead of special-casing `deleteRecalc`.
+              projectionRevision: result.revision ?? 0,
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
@@ -1123,6 +1128,9 @@ export class ChatMessageOrchestrator {
               resolveUnreadCounts: () =>
                 this.privateMessageService.getUnreadCountsByUser(rId),
               deleteRecalc: true,
+              // See the GROUP branch above — the delete's revision, not the
+              // surviving message's.
+              projectionRevision: result.revision ?? 0,
               senderId: recalc.senderId ?? "",
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
@@ -1334,17 +1342,12 @@ export class ChatMessageOrchestrator {
       otherUserIds = members.filter((id) => id !== params.readerId);
       lastMessageSeq = lastSeq;
     } else {
-      // The GROUP branch above is self-guarding — `markReadUpTo` resolves the
-      // member row and returns seq 0 for a non-member. The PRIVATE branch went
-      // straight to the room write, so a stranger could mark someone else's DM
-      // read: it advanced the real participants' unread state and published a
-      // `message:read` receipt (to `conv:<roomId>` AND to each participant's
-      // `user:<id>`) attributed to a reader who was never in the conversation.
-      // Reached from both `POST .../read` and `POST /chat/conversations/read/bulk`.
-      await this.privateMessageService.assertParticipant(
-        params.roomId,
-        params.readerId
-      );
+      // Both branches are now self-guarding: `markReadUpTo` (group) resolves the
+      // member row and returns seq 0 for a non-member, and `markRead` (private)
+      // asserts participation and binds the target to the room before touching
+      // anything. The participation check used to live HERE and only here, so
+      // the gRPC `markMessagesRead` handler — a second copy of this flow —
+      // reached the room write unguarded.
       const room = (await this.privateMessageService.markRead({
         roomId: params.roomId,
         userId: params.readerId,
@@ -1354,6 +1357,10 @@ export class ChatMessageOrchestrator {
         participants?: string[];
         lastMessageId?: string | null;
       } | null;
+      // A target that is malformed, or belongs to another room, is REJECTED —
+      // null result. Returning here is what makes "zero unread mutation, zero
+      // socket fan-out" true: everything below this point publishes.
+      if (!room) return { readToSeq: 0 };
       unreadCount = room?.unreadCountByUser?.[params.readerId] ?? 0;
       otherUserIds = (room?.participants ?? []).filter(
         (id) => id !== params.readerId

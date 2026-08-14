@@ -160,7 +160,7 @@ describe("effective timer resolution", () => {
     // message never contradicts the option the user just tapped.
     expect(formatAutoDeleteDuration(86400)).toBe("24 hours");
     expect(formatAutoDeleteDuration(604800)).toBe("7 days");
-    expect(formatAutoDeleteDuration(7776000)).toBe("90 days");
+    expect(formatAutoDeleteDuration(2592000)).toBe("30 days");
     // Custom timers fall back to generic humanization.
     expect(formatAutoDeleteDuration(3600)).toBe("1 hour");
     expect(formatAutoDeleteDuration(10800)).toBe("3 hours");
@@ -361,17 +361,147 @@ describe("PUT /chat/private/rooms/:roomId/auto-delete", () => {
   });
 });
 
+// ── 2b. The canonical room-policy DTO ────────────────────────────────────────
+describe("room-policy contract", () => {
+  const url = `/api/chat/private/rooms/${ROOM}/auto-delete`;
+  const REQUIRED = [
+    "conversationType",
+    "mode",
+    "ttlSeconds",
+    "isEnabled",
+    "setAt",
+    "setBy",
+    "policyVersion",
+    "canEdit",
+    "capabilities",
+  ];
+
+  it("GET and PUT return the SAME shape", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
+      room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: PEER })
+    );
+    const got = await request(app).get(url).set(bearer(makeAccessToken()));
+    const put = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 86400 });
+
+    expect(got.status).toBe(200);
+    expect(put.status).toBe(200);
+    for (const key of REQUIRED) {
+      expect(got.body.data).toHaveProperty(key);
+      expect(put.body.data).toHaveProperty(key);
+    }
+    // Only `restampPending` is PUT-specific — it describes the write, not the
+    // policy, so a GET consumer never has to handle it.
+    expect(Object.keys(put.body.data).sort()).toEqual(
+      [...Object.keys(got.body.data), "restampPending"].sort()
+    );
+  });
+
+  it("the socket event carries the same block as the REST payload", async () => {
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 86400 });
+
+    const [event] = publishes().filter(
+      (p) => p.event === "conv:auto_delete:updated"
+    );
+    // Same policy block, plus the routing/actor fields the socket needs.
+    for (const key of REQUIRED) {
+      expect(event.data[key]).toEqual(res.body.data[key]);
+    }
+    expect(event.data.type).toBe("PRIVATE");
+    expect(event.data.actorId).toBe(TEST_USER_ID);
+  });
+
+  it("advertises PRIVATE capabilities and an always-editable policy", async () => {
+    const res = await request(app).get(url).set(bearer(makeAccessToken()));
+    expect(res.body.data.conversationType).toBe("PRIVATE");
+    // Either participant may change a private conversation's timer.
+    expect(res.body.data.canEdit).toBe(true);
+    expect(res.body.data.capabilities.supportsAfterViewing).toBe(true);
+  });
+
+  it("accepts AFTER_VIEWING, which groups reject", async () => {
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "AFTER_VIEWING" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.mode).toBe("AFTER_VIEWING");
+  });
+
+  it("surfaces the room's policyVersion", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      ...room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: PEER }),
+      autoDeletePolicyVersion: 12,
+    });
+    const res = await request(app).get(url).set(bearer(makeAccessToken()));
+    expect(res.body.data.policyVersion).toBe(12);
+  });
+
+  it("accepts every canonical TTL preset and the debug values", async () => {
+    for (const ttlSeconds of [
+      86400, 604800, 2592000, 300, 600, 1800, 3600, 21600,
+    ]) {
+      expect(validateAutoDeleteInput({ mode: "TIMER", ttlSeconds })).toBeNull();
+    }
+    // Bounds, not the preset list, are what validation enforces.
+    expect(validateAutoDeleteInput({ mode: "TIMER", ttlSeconds: 59 })).toBe(
+      "CHAT_AUTO_DELETE_INVALID_TTL"
+    );
+  });
+
+  it("rejects group AFTER_VIEWING at the pure-validation layer too", async () => {
+    expect(
+      validateAutoDeleteInput({ mode: "AFTER_VIEWING" }, "GROUP")
+    ).toBe("CHAT_AUTO_DELETE_MODE_UNSUPPORTED");
+    expect(
+      validateAutoDeleteInput({ mode: "AFTER_VIEWING" }, "PRIVATE")
+    ).toBeNull();
+  });
+});
+
 // ── 3. "After Viewing" arms on the recipient's read receipt (§3.4, §8.7) ─────
+const TARGET_ID = "507f1f77bcf86cd799439011";
+
+/** A valid in-room read target at `seq`. */
+function target(seq: number, roomId = ROOM) {
+  mocks.privateMessageRepo.findById.mockResolvedValue({
+    id: TARGET_ID,
+    roomId,
+    senderId: PEER,
+    sequenceNumber: seq,
+    createdAt: new Date(),
+  });
+}
+
 describe("After Viewing arming", () => {
-  it("arms the reader's RECEIVED messages on markRead, never their own", async () => {
+  beforeEach(() => {
+    mocks.privateRoomRepo.markReadUpTo.mockResolvedValue(room());
+  });
+
+  it("arms the reader's RECEIVED messages up to the ACCEPTED watermark", async () => {
     const { privateMessageService } = mocks as any;
-    await privateMessageService.armAfterViewingMessages(ROOM, TEST_USER_ID);
+    target(12);
+
+    await privateMessageService.markRead({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      lastMessageId: TARGET_ID,
+    });
+    await new Promise((r) => setImmediate(r)); // arming is fire-and-forget
 
     expect(mocks.privateMessageRepo.armAfterViewing).toHaveBeenCalledTimes(1);
-    const [roomId, readerId, deleteAt] =
+    const [roomId, readerId, deleteAt, upToSeq] =
       mocks.privateMessageRepo.armAfterViewing.mock.calls[0];
     expect(roomId).toBe(ROOM);
     expect(readerId).toBe(TEST_USER_ID);
+    // BOUNDED: a read to seq 12 must never arm a message at seq 13. Without
+    // this the countdown started on messages the reader had not scrolled to.
+    expect(upToSeq).toBe(12);
     // A short grace period after the receipt, not immediate.
     const delta = (deleteAt as Date).getTime() - Date.now();
     expect(delta).toBeGreaterThan(0);
@@ -379,9 +509,140 @@ describe("After Viewing arming", () => {
       AUTO_DELETE_AFTER_VIEW_GRACE_SEC * 1000 + 500
     );
   });
+
+  it("passes the bound straight through to an indexed, own-message-excluding query", async () => {
+    // The repository is where "incoming only, unarmed only, at-or-below the
+    // watermark" actually lives — a mocked-repo suite cannot observe it, so
+    // exercise the real method against a captured Prisma call.
+    const captured: any[] = [];
+    const prisma = {
+      privateMessage: {
+        updateMany: jest.fn(async (args: any) => {
+          captured.push(args);
+          return { count: 2 };
+        }),
+      },
+    };
+    const { PrivateMessageRepository } =
+      await import("../../src/repositories/private-message.repository.js");
+    const repo = new PrivateMessageRepository(prisma as any, {} as any);
+
+    await repo.armAfterViewing(ROOM, TEST_USER_ID, new Date(), 12);
+
+    expect(captured[0].where).toMatchObject({
+      roomId: ROOM,
+      senderId: { not: TEST_USER_ID },
+      autoDeleteAfterView: true,
+      autoDeleteAt: null,
+      isDeleted: false,
+      sequenceNumber: { lte: 12 },
+    });
+  });
+
+  it("arms NOTHING when the watermark could not be resolved", async () => {
+    const { PrivateMessageRepository } =
+      await import("../../src/repositories/private-message.repository.js");
+    const updateMany = jest.fn();
+    const repo = new PrivateMessageRepository(
+      { privateMessage: { updateMany } } as any,
+      {} as any
+    );
+    await expect(
+      repo.armAfterViewing(ROOM, TEST_USER_ID, new Date(), 0)
+    ).resolves.toBe(0);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("arms nothing and mutates nothing for a FOREIGN target", async () => {
+    const { privateMessageService } = mocks as any;
+    target(12, "prv_someone_elses_room");
+
+    const res = await privateMessageService.markRead({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      lastMessageId: TARGET_ID,
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(res).toBeNull();
+    expect(mocks.privateRoomRepo.markReadUpTo).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.armAfterViewing).not.toHaveBeenCalled();
+  });
+
+  it("arms nothing and mutates nothing for a MALFORMED target", async () => {
+    const { privateMessageService } = mocks as any;
+    mocks.privateMessageRepo.findById.mockResolvedValue(null);
+
+    const res = await privateMessageService.markRead({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      lastMessageId: "tmp-optimistic-id",
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(res).toBeNull();
+    expect(mocks.privateRoomRepo.markReadUpTo).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.armAfterViewing).not.toHaveBeenCalled();
+  });
+
+  it("rejects a NON-PARTICIPANT before anything is written", async () => {
+    const { privateMessageService } = mocks as any;
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: ["someone-else", PEER],
+      autoDeleteBy: {},
+    });
+    target(12);
+
+    await expect(
+      privateMessageService.markRead({
+        roomId: ROOM,
+        userId: TEST_USER_ID,
+        lastMessageId: TARGET_ID,
+      })
+    ).rejects.toThrow();
+    await new Promise((r) => setImmediate(r));
+
+    expect(mocks.privateRoomRepo.markReadUpTo).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.armAfterViewing).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent across repeated reads to the same watermark", async () => {
+    const { privateMessageService } = mocks as any;
+    target(12);
+    for (let i = 0; i < 3; i++) {
+      await privateMessageService.markRead({
+        roomId: ROOM,
+        userId: TEST_USER_ID,
+        lastMessageId: TARGET_ID,
+      });
+    }
+    await new Promise((r) => setImmediate(r));
+
+    // Three calls, each bounded by the SAME watermark — the repository's
+    // `autoDeleteAt: null` predicate makes the 2nd and 3rd match nothing, so
+    // the deadline never moves.
+    const bounds = mocks.privateMessageRepo.armAfterViewing.mock.calls.map(
+      (c: any[]) => c[3]
+    );
+    expect(bounds).toEqual([12, 12, 12]);
+  });
 });
 
 // ── 4. The sweeper (§5.1, §5.2, §5.3) ────────────────────────────────────────
+
+/** Stub the claim step with the rows this worker "won". */
+function claims(
+  rows: Array<{
+    id: string;
+    roomId: string;
+    senderId: string | null;
+    attempts: number;
+  }>
+): void {
+  mocks.privateMessageRepo.claimDueAutoDeletes.mockResolvedValue(rows);
+}
+
 describe("auto-delete sweeper", () => {
   it("deletes due messages through the normal delete-for-everyone path", async () => {
     const { autoDeleteService, chatMessageOrchestrator } = mocks as any;
@@ -389,16 +650,16 @@ describe("auto-delete sweeper", () => {
       .spyOn(chatMessageOrchestrator, "deleteDirect")
       .mockResolvedValue({ tombstone: {} } as any);
 
-    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID },
-      { id: "msg-2", roomId: ROOM, senderId: PEER },
+    claims([
+      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 },
+      { id: "msg-2", roomId: ROOM, senderId: PEER, attempts: 1 },
       // System messages are never stamped; guard against one slipping through.
-      { id: "msg-3", roomId: ROOM, senderId: null },
+      { id: "msg-3", roomId: ROOM, senderId: null, attempts: 1 },
     ]);
 
-    const n = await autoDeleteService.sweepDue(new Date(), 200);
+    const res = await autoDeleteService.sweepDue(new Date(), 200);
 
-    expect(n).toBe(3); // page size drives the drain loop
+    expect(res).toEqual({ claimed: 3, completed: 2, failed: 0 });
     expect(deleteDirect).toHaveBeenCalledTimes(2);
     expect(deleteDirect).toHaveBeenCalledWith({
       conversationType: "PRIVATE",
@@ -421,8 +682,8 @@ describe("auto-delete sweeper", () => {
     const prevAt = new Date("2026-08-10T10:05:00.000Z");
     const expiredAt = new Date("2026-08-10T10:10:00.000Z");
 
-    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-latest", roomId: ROOM, senderId: TEST_USER_ID },
+    claims([
+      { id: "msg-latest", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 },
     ]);
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg-latest",
@@ -476,8 +737,8 @@ describe("auto-delete sweeper", () => {
     const { autoDeleteService } = mocks as any;
     const newerAt = new Date("2026-08-10T10:12:00.000Z");
 
-    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-expired", roomId: ROOM, senderId: TEST_USER_ID },
+    claims([
+      { id: "msg-expired", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 },
     ]);
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg-expired",
@@ -525,25 +786,152 @@ describe("auto-delete sweeper", () => {
     expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps going when one message loses the delete race", async () => {
+  it("keeps going, and backs off, when one message fails to delete", async () => {
     const { autoDeleteService, chatMessageOrchestrator } = mocks as any;
     const deleteDirect = jest
       .spyOn(chatMessageOrchestrator, "deleteDirect")
       .mockRejectedValueOnce(new Error("CHAT_MESSAGE_ALREADY_DELETED"))
       .mockResolvedValue({ tombstone: {} } as any);
 
-    mocks.privateMessageRepo.findDueAutoDeletes.mockResolvedValue([
-      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID },
-      { id: "msg-2", roomId: ROOM, senderId: TEST_USER_ID },
+    claims([
+      { id: "msg-1", roomId: ROOM, senderId: TEST_USER_ID, attempts: 2 },
+      { id: "msg-2", roomId: ROOM, senderId: TEST_USER_ID, attempts: 1 },
     ]);
 
-    await expect(autoDeleteService.sweepDue(new Date(), 200)).resolves.toBe(2);
+    await expect(autoDeleteService.sweepDue(new Date(), 200)).resolves.toEqual({
+      claimed: 2,
+      completed: 1,
+      failed: 1,
+    });
     expect(deleteDirect).toHaveBeenCalledTimes(2);
+    // The failing row is handed back with its attempt count so the shared
+    // backoff can space out the retry, instead of being re-tried every tick.
+    expect(mocks.privateMessageRepo.releaseAutoDeleteClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "msg-1", attempts: 2 })
+    );
+  });
+
+  it("runs no side effects at all when it claims nothing", async () => {
+    // A replica that lost every race gets an empty list. This is the whole
+    // point of leasing: losing the race must cost nothing, not "delete anyway
+    // and swallow the error".
+    const { autoDeleteService, chatMessageOrchestrator } = mocks as any;
+    const deleteDirect = jest.spyOn(chatMessageOrchestrator, "deleteDirect");
+    claims([]);
+
+    await expect(autoDeleteService.sweepDue(new Date(), 200)).resolves.toEqual({
+      claimed: 0,
+      completed: 0,
+      failed: 0,
+    });
+    expect(deleteDirect).not.toHaveBeenCalled();
   });
 });
 
-// ── 5. The due-query must never treat "no timer" as "overdue" ────────────────
-describe("findDueAutoDeletes query shape", () => {
+// ── 5. Restamp durability ────────────────────────────────────────────────────
+describe("restamp durability", () => {
+  const url = `/api/chat/private/rooms/${ROOM}/auto-delete`;
+
+  it("retires the pending marker for THIS policy version once re-stamped", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
+      room({ mode: "TIMER", ttlSeconds: 86400, setAt: "", setBy: TEST_USER_ID })
+    );
+    mocks.privateRoomRepo.setAutoDelete.mockResolvedValue({
+      ...room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID }),
+      autoDeletePolicyVersion: 8,
+    });
+
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 3600 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.policyVersion).toBe(8);
+    expect(res.body.data.restampPending).toBe(false);
+    expect(
+      mocks.privateRoomRepo.clearAutoDeleteRestampPending
+    ).toHaveBeenCalledWith(ROOM, 8);
+  });
+
+  it("reports restampPending instead of claiming a change that never landed", async () => {
+    // The old code did `.catch(log)` here and returned 200 regardless, leaving
+    // every enrolled message on the old deadline with nothing left to fix it.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(
+      room({ mode: "TIMER", ttlSeconds: 86400, setAt: "", setBy: TEST_USER_ID })
+    );
+    mocks.privateRoomRepo.setAutoDelete.mockResolvedValue({
+      ...room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID }),
+      autoDeletePolicyVersion: 9,
+    });
+    mocks.privateMessageRepo.restampPendingAutoDeletes.mockRejectedValue(
+      new Error("mongo down")
+    );
+
+    const res = await request(app)
+      .put(url)
+      .set(bearer(makeAccessToken()))
+      .send({ mode: "TIMER", ttlSeconds: 3600 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.restampPending).toBe(true);
+    // The marker written alongside the policy is NOT cleared, so the repair
+    // pass still owns the work.
+    expect(
+      mocks.privateRoomRepo.clearAutoDeleteRestampPending
+    ).not.toHaveBeenCalled();
+  });
+
+  it("finishes an interrupted restamp from the room's CURRENT policy", async () => {
+    const { autoDeleteService } = mocks as any;
+    mocks.privateRoomRepo.findPendingAutoDeleteRestamps.mockResolvedValue([
+      {
+        roomId: ROOM,
+        participants: [TEST_USER_ID, PEER],
+        autoDelete: { mode: "TIMER", ttlSeconds: 600, setAt: "", setBy: PEER },
+        autoDeleteRestampPending: 4,
+      },
+    ]);
+
+    await expect(autoDeleteService.sweepPendingRestamps(100)).resolves.toBe(1);
+
+    expect(
+      mocks.privateMessageRepo.restampPendingAutoDeletes
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ roomId: ROOM, ttlSeconds: 600 })
+    );
+    expect(
+      mocks.privateRoomRepo.clearAutoDeleteRestampPending
+    ).toHaveBeenCalledWith(ROOM, 4);
+  });
+
+  it("emits no duplicate system message or socket event on repair", async () => {
+    const { autoDeleteService } = mocks as any;
+    mocks.privateRoomRepo.findPendingAutoDeleteRestamps.mockResolvedValue([
+      {
+        roomId: ROOM,
+        participants: [TEST_USER_ID, PEER],
+        autoDelete: { mode: "TIMER", ttlSeconds: 600, setAt: "", setBy: PEER },
+        autoDeleteRestampPending: 4,
+      },
+    ]);
+
+    await autoDeleteService.sweepPendingRestamps(100);
+
+    expect(
+      publishes().filter((p) => p.event === "conv:auto_delete:updated")
+    ).toHaveLength(0);
+    const created = mocks.privateMessageRepo.createMessage.mock.calls.map(
+      ([arg]: [any]) => arg
+    );
+    expect(
+      created.filter((c: any) => c.systemEvent === "AUTO_DELETE_UPDATED")
+    ).toHaveLength(0);
+  });
+});
+
+// ── 6. The due-query must never treat "no timer" as "overdue" ────────────────
+describe("claimDueAutoDeletes query shape", () => {
   /**
    * REGRESSION GUARD. On MongoDB, Prisma's `lte` also matches a column whose
    * value is explicitly `null` — and every message we write sets
@@ -552,39 +940,113 @@ describe("findDueAutoDeletes query shape", () => {
    * message) as due, and the sweeper deletes them seconds after they are sent.
    * That shipped once and destroyed messages on a live database; this test
    * fails if the `not: null` guard is ever "simplified" away.
+   *
+   * The claim path is now shared by private and group, so this covers both.
    */
-  it("excludes rows with no deadline (autoDeleteAt null)", async () => {
+  async function captureClaimQueries() {
     const captured: any[] = [];
-    const prisma = {
-      privateMessage: {
-        findMany: jest.fn(async (args: any) => {
-          captured.push(args);
-          return [];
-        }),
-      },
+    const delegate = {
+      findMany: jest.fn(async (args: any) => {
+        captured.push(args);
+        return [];
+      }),
+      updateMany: jest.fn(async () => ({ count: 0 })),
+      update: jest.fn(),
     };
-    const { PrivateMessageRepository } =
-      await import("../../src/repositories/private-message.repository.js");
-    const repo = new PrivateMessageRepository(
-      prisma as any,
-      { allocateRevision: jest.fn(async () => 1) } as any
-    );
-
+    const { claimDueAutoDeletes } =
+      await import("../../src/lib/auto-delete-claim.js");
     const now = new Date();
-    await repo.findDueAutoDeletes(now, 200);
+    await claimDueAutoDeletes(delegate as any, {
+      now,
+      limit: 200,
+      token: "tok-1",
+    });
+    return { captured, delegate, now };
+  }
 
-    const where = captured[0]?.where;
-    const conditions: any[] = where?.AND ?? [where];
-    const excludesNull = conditions.some(
-      (c) =>
-        c?.autoDeleteAt &&
-        "not" in c.autoDeleteAt &&
-        c.autoDeleteAt.not === null
+  it("excludes rows with no deadline (autoDeleteAt null)", async () => {
+    const { captured, now } = await captureClaimQueries();
+    const conditions: any[] = captured[0]?.where?.AND ?? [];
+    expect(
+      conditions.some(
+        (c) => c?.autoDeleteAt && "not" in c.autoDeleteAt && c.autoDeleteAt.not === null
+      )
+    ).toBe(true);
+    expect(conditions.some((c) => c?.autoDeleteAt?.lte === now)).toBe(true);
+    expect(captured[0]?.where?.isDeleted).toBe(false);
+  });
+
+  it("skips rows still inside their retry backoff", async () => {
+    const { captured, now } = await captureClaimQueries();
+    const conditions: any[] = captured[0]?.where?.AND ?? [];
+    const backoff = conditions.find((c) =>
+      (c?.OR ?? []).some((o: any) => "autoDeleteNextAttemptAt" in o)
     );
-    const boundedByNow = conditions.some((c) => c?.autoDeleteAt?.lte === now);
+    // Explicit OR against null rather than relying on "lte also matches null":
+    // if that quirk ever changes, the sweeper must not stop entirely.
+    expect(backoff.OR).toEqual([
+      { autoDeleteNextAttemptAt: null },
+      { autoDeleteNextAttemptAt: { lte: now } },
+    ]);
+  });
 
-    expect(excludesNull).toBe(true);
-    expect(boundedByNow).toBe(true);
-    expect(where?.isDeleted).toBe(false);
+  it("only claims rows nobody holds, or whose lease has expired", async () => {
+    const { captured } = await captureClaimQueries();
+    const conditions: any[] = captured[0]?.where?.AND ?? [];
+    const claimable = conditions.find((c) =>
+      (c?.OR ?? []).some((o: any) => "autoDeleteClaimToken" in o)
+    );
+    expect(claimable.OR[0]).toEqual({ autoDeleteClaimToken: null });
+    // The `not: null` guard again: without it a NEVER-claimed row matches `lt`
+    // and the stale-recovery branch would take rows a live worker just claimed.
+    expect(claimable.OR[1].AND[0]).toEqual({
+      autoDeleteClaimedAt: { not: null },
+    });
+  });
+
+  it("resolves the winner by reading the token back, not by trusting a count", async () => {
+    const captured: any[] = [];
+    const delegate = {
+      findMany: jest.fn(async (args: any) => {
+        captured.push(args);
+        // First call = candidates; second = the rows we actually won.
+        return captured.length === 1
+          ? [{ id: "a" }, { id: "b" }]
+          : [
+              {
+                id: "a",
+                roomId: ROOM,
+                senderId: PEER,
+                autoDeleteAttempts: 1,
+              },
+            ];
+      }),
+      updateMany: jest.fn(async () => ({ count: 2 })),
+      update: jest.fn(),
+    };
+    const { claimDueAutoDeletes } =
+      await import("../../src/lib/auto-delete-claim.js");
+
+    const won = await claimDueAutoDeletes(delegate as any, {
+      now: new Date(),
+      limit: 200,
+      token: "tok-mine",
+    });
+
+    // updateMany said 2; only ONE row actually carries our token. The count
+    // says how many, never WHICH — so the read-back is what makes this safe.
+    expect(won).toEqual([
+      { id: "a", roomId: ROOM, senderId: PEER, attempts: 1 },
+    ]);
+    expect(captured[1].where).toEqual({ autoDeleteClaimToken: "tok-mine" });
+  });
+
+  it("backs off exponentially, with a ceiling", async () => {
+    const { autoDeleteRetryDelaySec, AUTO_DELETE_RETRY_MAX_SEC } =
+      await import("../../src/lib/auto-delete-claim.js");
+    expect(autoDeleteRetryDelaySec(1)).toBe(60);
+    expect(autoDeleteRetryDelaySec(2)).toBe(120);
+    expect(autoDeleteRetryDelaySec(3)).toBe(240);
+    expect(autoDeleteRetryDelaySec(50)).toBe(AUTO_DELETE_RETRY_MAX_SEC);
   });
 });

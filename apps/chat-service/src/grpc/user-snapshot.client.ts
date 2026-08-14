@@ -34,8 +34,16 @@ interface BulkSnapshotsResult {
 
 /** The account-wide Settings → Chat block (user-service `ChatSettings`). */
 export interface ChatSettings {
-  /** "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30". */
+  /** LEGACY: "OFF" | "DAYS_7" | "DAYS_15" | "DAYS_30". */
   autoDeleteTimer: string;
+  /**
+   * CANONICAL "Default message timer for new private chats": "OFF" | "TIMER",
+   * or "" when the user has never saved it — the signal to dual-read
+   * `autoDeleteTimer`. See `lib/auto-delete.ts#resolveAccountDefaultSetting`.
+   */
+  autoDeleteDefaultMode: string;
+  /** Seconds; 0/null unless `autoDeleteDefaultMode === "TIMER"`. */
+  autoDeleteDefaultTtlSeconds: number | null;
   typingIndicators: boolean;
   readReceipts: boolean;
 }
@@ -246,6 +254,8 @@ export const userGrpcClient = {
       const r = await getChatSettingsBreaker.fire({ userId });
       return {
         autoDeleteTimer: r.autoDeleteTimer || "OFF",
+        autoDeleteDefaultMode: r.autoDeleteDefaultMode || "",
+        autoDeleteDefaultTtlSeconds: r.autoDeleteDefaultTtlSeconds || null,
         typingIndicators: r.typingIndicators !== false,
         readReceipts: r.readReceipts !== false,
       };

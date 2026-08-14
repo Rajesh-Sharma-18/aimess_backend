@@ -11,6 +11,10 @@ import {
 import { newerSnapshotWhere } from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
+import {
+  autoDeletePolicyUpdatePipeline,
+  type AutoDeleteMode,
+} from "../lib/auto-delete.js";
 
 /** Clone a date pinned to the end of its UTC calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
@@ -101,27 +105,47 @@ export class GroupRoomRepository {
    * nothing to merge. `userId` is recorded only as who last changed it — the
    * permission check lives in the service.
    */
+  /**
+   * Store THE group's timer, allocate its policy version and record the restamp
+   * intent in one atomic write — the exact mirror of
+   * `PrivateRoomRepository.setAutoDelete`; read its comment for the reasoning.
+   */
   async setAutoDelete(
     roomId: string,
     userId: string,
     setting: { mode: string; ttlSeconds: number | null }
   ): Promise<GroupRoom | null> {
-    const existing = await this.prisma.groupRoom.findUnique({
-      where: { roomId },
-      select: { roomId: true },
-    });
-    if (!existing) return null;
+    const res = (await this.prisma.$runCommandRaw({
+      findAndModify: "group_rooms",
+      query: { roomId },
+      update: autoDeletePolicyUpdatePipeline({
+        mode: setting.mode as AutoDeleteMode,
+        ttlSeconds: setting.ttlSeconds,
+        setBy: userId,
+        setAt: new Date().toISOString(),
+      }),
+      new: true,
+    } as unknown as Prisma.InputJsonObject)) as { value?: unknown } | null;
+    return (res?.value as GroupRoom | undefined) ?? null;
+  }
 
-    return this.prisma.groupRoom.update({
-      where: { roomId },
-      data: {
-        autoDelete: {
-          mode: setting.mode,
-          ttlSeconds: setting.mode === "TIMER" ? setting.ttlSeconds : null,
-          setAt: new Date().toISOString(),
-          setBy: userId,
-        } as unknown as Prisma.InputJsonValue,
-      },
+  /** Clear the restamp intent only if it still names this policy version. */
+  async clearAutoDeleteRestampPending(
+    roomId: string,
+    policyVersion: number
+  ): Promise<boolean> {
+    const res = await this.prisma.groupRoom.updateMany({
+      where: { roomId, autoDeleteRestampPending: policyVersion },
+      data: { autoDeleteRestampPending: null },
+    });
+    return res.count > 0;
+  }
+
+  /** Groups whose policy is stored but whose enrolled rows were never moved. */
+  async findPendingAutoDeleteRestamps(limit: number): Promise<GroupRoom[]> {
+    return this.prisma.groupRoom.findMany({
+      where: { autoDeleteRestampPending: { not: null } },
+      take: limit,
     });
   }
 

@@ -169,8 +169,12 @@ describe("AUDIT-106/115 — the peer comes from the room, never the client", () 
 
 describe("AUDIT-105 — mark-read requires participation", () => {
   beforeEach(() => {
+    // `roomId` is REQUIRED now: the read target is bound to the room before the
+    // watermark advances, so a message that names no room (or another one) is
+    // not an acceptable read target.
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg_hw_1",
+      roomId: ROOM,
       sequenceNumber: 9,
     });
   });
@@ -208,6 +212,32 @@ describe("AUDIT-105 — mark-read requires participation", () => {
 
     expect(res.status).toBe(200);
     expect(mocks.privateRoomRepo.markReadUpTo).toHaveBeenCalled();
+  });
+
+  it("SECURITY: a FOREIGN target mutates nothing and publishes nothing", async () => {
+    // A message id from another conversation used to resolve to that room's
+    // sequence number, which was then written into THIS room's read pointer
+    // and used to recompute its unread count.
+    callerIsParticipant();
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "msg_hw_1",
+      roomId: "prv_some_other_room",
+      sequenceNumber: 900,
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "msg_hw_1" });
+
+    expect(res.status).toBe(200); // accepted, but a no-op
+    expect(mocks.privateRoomRepo.markReadUpTo).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.armAfterViewing).not.toHaveBeenCalled();
+    const readEvents = mocks.redis.publish.mock.calls.filter(
+      (c: unknown[]) =>
+        typeof c[1] === "string" && (c[1] as string).includes('"message:read"')
+    );
+    expect(readEvents).toHaveLength(0);
   });
 });
 

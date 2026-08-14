@@ -4,12 +4,80 @@ import type { UpdateSettingsInput } from "../api/validators/settings.validator.j
 import { emitSettingsUpdatedSafe } from "../lib/friend-socket.js";
 import { publishSettingsUpdatedSafe } from "../messaging/publish-settings-updated.js";
 import {
+  type ChatSettingsUpdate,
   type NotificationSettingsUpdate,
   type PrivacySettingsUpdate,
   type SettingsBundle,
   userSettingsRepository,
 } from "../repositories/user-settings.repository.js";
 import type { UserSettingsResponse } from "../types/user-settings.types.js";
+
+/** The seconds each LEGACY enum value stands for — see `ChatSettings` in the schema. */
+const LEGACY_TIMER_SECONDS: Record<string, number | null> = {
+  OFF: null,
+  DAYS_7: 604800,
+  DAYS_15: 1296000,
+  DAYS_30: 2592000,
+};
+
+/** Nearest LEGACY enum for a canonical ttl, so old clients still read something true. */
+function legacyTimerFor(
+  mode: string,
+  ttlSeconds: number | null | undefined
+): ChatSettingsUpdate["autoDeleteTimer"] | undefined {
+  if (mode !== "TIMER") return "OFF";
+  const match = Object.entries(LEGACY_TIMER_SECONDS).find(
+    ([, secs]) => secs === ttlSeconds
+  );
+  // A canonical value the legacy enum cannot express (e.g. 24 hours) leaves the
+  // enum ALONE rather than lying about it — the canonical columns are the truth
+  // and `autoDeleteDefaultVersion > 0` tells every reader to prefer them.
+  return match
+    ? (match[0] as ChatSettingsUpdate["autoDeleteTimer"])
+    : undefined;
+}
+
+/**
+ * Fold the request's chat block into the columns the repository writes.
+ *
+ * Two shapes are accepted for the same decision: the legacy `autoDeleteTimer`
+ * enum and the canonical `autoDeleteDefault` pair. Whichever arrives, BOTH
+ * representations are kept consistent so a mixed fleet of clients never sees
+ * two different answers — and the canonical version is bumped so a consumer can
+ * tell a real change from a re-read.
+ */
+function toChatUpdate(
+  input: UpdateSettingsInput["chat"],
+  current: SettingsBundle
+): ChatSettingsUpdate | undefined {
+  if (!input) return undefined;
+  const { autoDeleteDefault, ...rest } = input;
+  const update: ChatSettingsUpdate = { ...rest };
+
+  if (autoDeleteDefault) {
+    const ttl =
+      autoDeleteDefault.mode === "TIMER"
+        ? (autoDeleteDefault.ttlSeconds ?? null)
+        : null;
+    update.autoDeleteDefaultMode = autoDeleteDefault.mode;
+    update.autoDeleteDefaultTtlSeconds = ttl;
+    update.autoDeleteDefaultVersion =
+      (current.chatSettings?.autoDeleteDefaultVersion ?? 0) + 1;
+    const legacy = legacyTimerFor(autoDeleteDefault.mode, ttl);
+    if (legacy && update.autoDeleteTimer === undefined)
+      update.autoDeleteTimer = legacy;
+  } else if (rest.autoDeleteTimer) {
+    // Legacy-only write: mirror it forward so a later canonical read is right.
+    update.autoDeleteDefaultMode =
+      rest.autoDeleteTimer === "OFF" ? "OFF" : "TIMER";
+    update.autoDeleteDefaultTtlSeconds =
+      LEGACY_TIMER_SECONDS[rest.autoDeleteTimer] ?? null;
+    update.autoDeleteDefaultVersion =
+      (current.chatSettings?.autoDeleteDefaultVersion ?? 0) + 1;
+  }
+
+  return Object.keys(update).length > 0 ? update : undefined;
+}
 
 function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
   const privacy = bundle.privacySettings!;
@@ -31,6 +99,11 @@ function mapSettingsBundle(bundle: SettingsBundle): UserSettingsResponse {
     },
     chat: {
       autoDeleteTimer: chat.autoDeleteTimer,
+      autoDeleteDefault: {
+        mode: chat.autoDeleteDefaultMode === "TIMER" ? "TIMER" : "OFF",
+        ttlSeconds: chat.autoDeleteDefaultTtlSeconds,
+        version: chat.autoDeleteDefaultVersion,
+      },
       typingIndicators: chat.typingIndicators,
       readReceipts: chat.readReceipts,
     },
@@ -241,7 +314,7 @@ export const userSettingsService = {
 
     await userSettingsRepository.updateSettings(userId, {
       privacy: privacyFields,
-      chat: input.chat,
+      chat: toChatUpdate(input.chat, current),
       app: input.app,
       notifications,
       liveStream: input.liveStream,

@@ -147,9 +147,18 @@ describe("POST /rooms/:roomId/messages (send → orchestrator)", () => {
 describe("POST /rooms/:roomId/read (mark-read → orchestrator)", () => {
   it("POSITIVE: 200 and emits both message:read (conv) and read_sync (reader)", async () => {
     // getMessageSequence → messageRepo.findById → sequenceNumber high-water mark.
+    // `roomId` is required: the read target is bound to the room before the
+    // watermark advances, so a target that names no room is rejected as a
+    // no-op (readToSeq 0, nothing written, nothing published).
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg_hw_1",
+      roomId: ROOM,
       sequenceNumber: 9,
+    });
+    mocks.privateRoomRepo.markReadUpTo.mockResolvedValue({
+      participants: [TEST_USER_ID, PEER],
+      unreadCountByUser: { [TEST_USER_ID]: 0 },
+      lastMessageId: "msg_hw_1",
     });
 
     const res = await request(app)

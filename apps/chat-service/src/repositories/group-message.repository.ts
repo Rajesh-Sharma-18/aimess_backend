@@ -21,6 +21,12 @@ import {
   refreshQuoteDataForParent,
   type QuoteRefreshPatch,
 } from "../lib/quote-refresh.js";
+import {
+  claimDueAutoDeletes,
+  releaseAutoDeleteClaim,
+  type AutoDeleteClaimDelegate,
+  type ClaimedAutoDelete,
+} from "../lib/auto-delete-claim.js";
 
 /**
  * NOTE — zero-loss revision axis. Every CONTENT mutation in this file allocates a room
@@ -92,64 +98,44 @@ export class GroupMessageRepository {
 
   // ───────────────────────── auto-delete (disappearing messages) ────────────
   // Direct mirror of PrivateMessageRepository's block — read its comments for
-  // the reasoning, especially the `not: null` guard below, which is load-bearing
-  // rather than defensive.
+  // the reasoning behind the `not: null` guards in `lib/auto-delete-claim.ts`,
+  // which are load-bearing rather than defensive.
+  //
+  // There is deliberately NO `armAfterViewing` here. A group message carries one
+  // GLOBAL deadline, so arming on the first member's read receipt deleted the
+  // message for members who had never opened it — presented as a feature
+  // ("don't wait for the slowest member"), but in practice a silent
+  // delete-for-everyone triggered by one reader. Group AFTER_VIEWING is now
+  // rejected at the settings endpoint instead; re-introducing it needs
+  // per-member visibility/deadline state, not a re-added method.
 
   /**
-   * Arm every "After Viewing" message this reader RECEIVED in the room: the
-   * deadline only starts once a recipient has actually seen it. The reader's own
-   * messages are skipped (they have trivially "viewed" them).
-   *
-   * A group has many recipients, so the FIRST reader arms the message for
-   * everyone — matching the private rule ("delete shortly after it is viewed")
-   * rather than waiting for the slowest member, which in a large group would
-   * mean "never".
-   *
-   * Idempotent: a second read receipt matches nothing because `autoDeleteAt` is
-   * already set.
+   * Lease one page of due group messages to THIS worker — same guarantees and
+   * the same shared implementation as private. See `lib/auto-delete-claim.ts`.
    */
-  async armAfterViewing(
-    roomId: string,
-    readerId: string,
-    deleteAt: Date
-  ): Promise<number> {
-    const res = await this.prisma.groupMessage.updateMany({
-      where: {
-        roomId,
-        senderId: { not: readerId },
-        autoDeleteAfterView: true,
-        autoDeleteAt: null,
-        isDeleted: false,
-      },
-      data: { autoDeleteAt: deleteAt },
-    });
-    return res.count;
+  async claimDueAutoDeletes(params: {
+    now: Date;
+    limit: number;
+    token: string;
+    leaseSeconds?: number;
+  }): Promise<ClaimedAutoDelete[]> {
+    return claimDueAutoDeletes(
+      this.prisma.groupMessage as unknown as AutoDeleteClaimDelegate,
+      params
+    );
   }
 
-  /**
-   * One page of group messages whose auto-delete deadline has passed.
-   *
-   * `not: null` is LOAD-BEARING: on MongoDB, Prisma's `lte` on a nullable
-   * DateTime ALSO matches rows whose value is explicitly `null` (BSON orders
-   * Null before Date and the comparison is not type-bracketed). Every message we
-   * write sets `autoDeleteAt: null` when it has no timer, so without this guard
-   * the sweeper treats "no timer" as "overdue" and deletes the entire group.
-   * This exact bug destroyed 53 messages on the dev DB when the private sweeper
-   * shipped — do not "simplify" it away.
-   */
-  async findDueAutoDeletes(
-    now: Date,
-    limit: number
-  ): Promise<Array<{ id: string; roomId: string; senderId: string | null }>> {
-    return this.prisma.groupMessage.findMany({
-      where: {
-        AND: [{ autoDeleteAt: { not: null } }, { autoDeleteAt: { lte: now } }],
-        isDeleted: false,
-      },
-      orderBy: { autoDeleteAt: "asc" },
-      take: limit,
-      select: { id: true, roomId: true, senderId: true },
-    });
+  /** Hand a claimed row back after a failed delete, with bounded backoff. */
+  async releaseAutoDeleteClaim(params: {
+    id: string;
+    attempts: number;
+    error: string;
+    now: Date;
+  }): Promise<void> {
+    await releaseAutoDeleteClaim(
+      this.prisma.groupMessage as unknown as AutoDeleteClaimDelegate,
+      params
+    );
   }
 
   /**
