@@ -11,5 +11,7 @@ export * from "./webrtc.js";
 export * from "./community/system-message.js";
 export * from "./community/system-message-text.js";
 export * from "./chat/group-system-message-text.js";
+export * from "./chat/call-activity-text.js";
+export * from "./chat/call-activity-text.js";
 export * from "./chat/socket-events.js";
 export * from "./user/deleted-account.js";

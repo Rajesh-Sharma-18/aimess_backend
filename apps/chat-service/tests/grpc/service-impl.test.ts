@@ -225,41 +225,52 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     );
   });
 
-  it("markMessagesRead routes grp_ rooms to GROUP even when conversationType is missing", async () => {
-    const markReadUpTo = jest.fn(async () => ({
-      readToSeq: 7,
-      remainingUnread: 0,
-    }));
-    const markPrivateRead = jest.fn();
-    const deps = makeDeps({
-      groupMessageService: {
-        markReadUpTo,
-        getActiveMemberIds: jest.fn(async () => ["reader", "peer"]),
-        getRoomLastMessageSeq: jest.fn(async () => 7),
-      },
-      privateMessageService: {
-        markRead: markPrivateRead,
-      },
-    });
+  it("markMessagesRead delegates to the ONE orchestrator read path, resolving grp_ to GROUP", async () => {
+    // This handler used to be a hand-copied second implementation of
+    // `markReadDirect`; the two drifted. It is now a thin delegate, so the
+    // socket read path and the REST read path cannot diverge again. The
+    // pointer/receipt/read_sync behaviour itself is covered where it lives —
+    // tests/groups/rest-mark-read.test.ts and tests/private/rest-send-read.test.ts.
+    const markReadDirect = jest.fn(async () => ({ readToSeq: 7 }));
+    const deps = makeDeps({ chatMessageOrchestrator: { markReadDirect } });
 
-    await invoke(createMessagingImpl(deps).markMessagesRead as Handler, {
-      conversationId: "grp_9ksRLM8soItjKho0",
+    const res = await invoke(
+      createMessagingImpl(deps).markMessagesRead as Handler,
+      {
+        conversationId: "grp_9ksRLM8soItjKho0",
+        readerId: "reader",
+        upToMessageId: "507f1f77bcf86cd799439011",
+        // Client historically omitted this (gateway defaulted to PRIVATE).
+        // Room-id prefix must win so group unread actually clears.
+      }
+    );
+
+    expect(markReadDirect).toHaveBeenCalledWith({
+      conversationType: "GROUP",
+      roomId: "grp_9ksRLM8soItjKho0",
       readerId: "reader",
       upToMessageId: "507f1f77bcf86cd799439011",
-      // Client historically omitted this (gateway defaulted to PRIVATE).
-      // Room-id prefix must win so group unread actually clears.
+    });
+    expect(res.updatedCount).toBe(1);
+  });
+
+  it("markMessagesRead reports updatedCount 0 when the read was rejected", async () => {
+    const deps = makeDeps({
+      chatMessageOrchestrator: {
+        markReadDirect: jest.fn(async () => ({ readToSeq: 0 })),
+      },
     });
 
-    expect(markReadUpTo).toHaveBeenCalledWith({
-      roomId: "grp_9ksRLM8soItjKho0",
-      userId: "reader",
-      upToMessageId: "507f1f77bcf86cd799439011",
-    });
-    expect(markPrivateRead).not.toHaveBeenCalled();
+    const res = await invoke(
+      createMessagingImpl(deps).markMessagesRead as Handler,
+      {
+        conversationId: "room1",
+        readerId: "stranger",
+        upToMessageId: "507f1f77bcf86cd799439011",
+      }
+    );
 
-    const sync = published("read_sync");
-    expect(sync.data.conversationType).toBe("GROUP");
-    expect(sync.data.unreadCount).toBe(0);
+    expect(res.updatedCount).toBe(0);
   });
 
   it("forwardMessage (PRIVATE) → message:new resolves sender avatar + content.files[]", async () => {

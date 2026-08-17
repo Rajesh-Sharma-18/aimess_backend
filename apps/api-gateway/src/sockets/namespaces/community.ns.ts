@@ -19,7 +19,10 @@ import {
 } from "../presence-indicator.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
-import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
+import {
+  personalizeCommunitySocketMessage,
+  personalizeCommunityUpdatedPreview,
+} from "../system-message-personalize.js";
 import {
   emitPersonalizedSender,
   type PersonalizeFn,
@@ -301,8 +304,10 @@ export function registerCommunityNamespace(
             // Per-socket delivery (not a bare room emit) so the recipient's own
             // locale drives both the SYSTEM-line translation and the "You"
             // sender swap — see emitPersonalizedSender. `community:updated`
-            // needs no special case: its senderId/senderName pair is handled
-            // generically there.
+            // gets the sender swap generically from its senderId/senderName
+            // pair, but its SYSTEM list preview needs the same explicit rebuild
+            // the timeline line gets, or the list row keeps the write-time
+            // English while the open community reads in the viewer's language.
             void emitPersonalizedSender(
               community,
               channel,
@@ -310,7 +315,9 @@ export function registerCommunityNamespace(
               parsed.data,
               parsed.event === "community:message:new"
                 ? personalizeCommunitySocketMessage
-                : undefined
+                : parsed.event === "community:updated"
+                  ? personalizeCommunityUpdatedPreview
+                  : undefined
             );
 
             // Auto-join the typing room when the user is added to a new community

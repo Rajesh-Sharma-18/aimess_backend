@@ -39,6 +39,8 @@ import {
   type MediaStructuralLimits,
 } from "@aimess/constants";
 
+import { isClassicQuickTime } from "./magic-bytes.js";
+
 // ─── Public surface ──────────────────────────────────────────────────────────
 
 export interface DeepInspectInput {
@@ -160,7 +162,8 @@ function dispatch(
     case "video/webm":
       return inspectMatroska(input, base, limits);
     case "audio/ogg":
-      return inspectOgg(input, base);
+    case "audio/opus":
+      return inspectOgg(input, base, mime);
     case "audio/wav":
       return inspectWav(input, base);
     case "audio/flac":
@@ -219,6 +222,7 @@ const DETECTED_MIME_ALIASES: Record<string, ReadonlySet<string>> = {
   "video/x-m4v": new Set(["video/mp4"]),
   "audio/mp4": new Set(["video/mp4", "audio/mp4"]),
   "audio/x-m4a": new Set(["video/mp4", "audio/mp4"]),
+  "audio/opus": new Set(["audio/ogg", "audio/opus"]),
   "video/webm": new Set(["video/webm", "video/x-matroska"]),
   "video/x-matroska": new Set(["video/webm", "video/x-matroska"]),
   "image/heif": new Set(["image/heic", "image/heif"]),
@@ -365,6 +369,8 @@ export function sniff(buf: Buffer): string | null {
   }
   if (b.length >= 12 && ascii(b, 4, 4) === "ftyp")
     return isobmffMimeForBrands(b);
+  // Classic QuickTime carries no ftyp box at all.
+  if (isClassicQuickTime(b)) return "video/quicktime";
   if (
     b.length >= 4 &&
     b[0] === 0x1a &&
@@ -876,7 +882,13 @@ function inspectIsobmff(
 ): DeepInspectResult {
   const b = input.head;
   need(b, 0, 12, "ftyp");
-  if (ascii(b, 4, 4) !== "ftyp") {
+
+  // A classic QuickTime movie has no `ftyp` box at all (see `isClassicQuickTime`
+  // in magic-bytes.ts) — its first atom is moov/mdat/wide/free. That layout is
+  // only valid for video/quicktime; everything else in this family must lead
+  // with ftyp.
+  const hasFtyp = ascii(b, 4, 4) === "ftyp";
+  if (!hasFtyp && !isClassicQuickTime(b)) {
     reject(
       "SIGNATURE_MISMATCH",
       "ISO base media file must start with an ftyp box"
@@ -885,7 +897,7 @@ function inspectIsobmff(
 
   const out: DeepInspectResult = {
     ...base,
-    detectedMime: isobmffMimeForBrands(b),
+    detectedMime: hasFtyp ? isobmffMimeForBrands(b) : "video/quicktime",
     metadata: [],
   };
 
@@ -1022,8 +1034,21 @@ function readTkhd(
   out: DeepInspectResult
 ): void {
   const version = b[at]!;
-  // Trailing 8 bytes of a tkhd are width/height as 16.16 fixed point.
-  const size = version === 1 ? 92 : 80;
+  // Trailing 8 bytes of a tkhd BODY are width/height as 16.16 fixed point.
+  //
+  // The body is 84 bytes at version 0 — version+flags(4), creation(4),
+  // modification(4), track_ID(4), reserved(4), duration(4), reserved(8),
+  // layer(2), alternate_group(2), volume(2), reserved(2), matrix(36),
+  // width(4), height(4) — and 96 at version 1, where the three time/duration
+  // fields widen to 64 bits.
+  //
+  // These were 80 / 92: the BOX lengths minus a 12-byte header, applied to an
+  // offset that already points past an 8-byte header. Reading 4 bytes early
+  // lands on the last element of the transform matrix, which is a 2.30 fixed
+  // point 1.0 (0x40000000) in every ordinary file — 0x40000000 / 65536 =
+  // 16384, over the 8192px limit. So EVERY real MP4/MOV was reported as
+  // 16384 x <its true width> and rejected with DIMENSIONS_EXCEEDED.
+  const size = version === 1 ? 96 : 84;
   if (at + size > end) return;
   const w = b.readUInt32BE(at + size - 8) / 65536;
   const h = b.readUInt32BE(at + size - 4) / 65536;
@@ -1196,7 +1221,8 @@ function readEbmlFloat(b: Buffer, at: number, len: number): number {
 
 function inspectOgg(
   input: DeepInspectInput,
-  base: DeepInspectResult
+  base: DeepInspectResult,
+  declaredMime = "audio/ogg"
 ): DeepInspectResult {
   const b = input.head;
   need(b, 0, 27, "Ogg page header");
@@ -1211,6 +1237,15 @@ function inspectOgg(
 
   // Codec identification lives in the first packet of the first page.
   const idx = b.indexOf(Buffer.from("OpusHead"));
+  // `audio/opus` claims a specific codec, not just the container — so the codec
+  // header has to be there. Without this the label would be the one part of the
+  // declaration nothing checked.
+  if (declaredMime === "audio/opus" && idx < 0) {
+    reject(
+      "SIGNATURE_MISMATCH",
+      "declared audio/opus but the Ogg stream carries no OpusHead header"
+    );
+  }
   let rate = 48_000;
   if (idx >= 0 && idx + 16 <= b.length) {
     rate = 48_000; // Opus granule positions are always in 48 kHz units

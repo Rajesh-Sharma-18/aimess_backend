@@ -6,7 +6,10 @@ import { readPresenceSnapshots } from "@aimess/redis";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
-import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
+import {
+  personalizeConvUpdatedPreview,
+  personalizeGroupSocketMessage,
+} from "../system-message-personalize.js";
 import {
   emitPersonalizedSender,
   type PersonalizeFn,
@@ -523,6 +526,13 @@ export function registerChatNamespace(
         }
 
         let personalizeFn: PersonalizeFn | undefined;
+        // The inbox bump previews the same SYSTEM line `message:new` carries, so
+        // it needs the same per-viewer rebuild — otherwise the open room reads
+        // in the viewer's language while the list row above it stays in the
+        // write-time English.
+        if (parsed.event === "conv:updated" && pattern === "user:*") {
+          personalizeFn = personalizeConvUpdatedPreview;
+        }
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(
             (parsed.data as { contentType?: string; messageType?: string })
@@ -932,6 +942,11 @@ export function registerChatNamespace(
   const CallEndSchema = z.object({
     callId: z.string().min(1),
     legId: z.string().min(1).max(128).optional(),
+    // The caller's client reporting that its ring window elapsed rather than
+    // that the user hung up. Closed enum — chat-service re-validates the call
+    // state before it changes the outcome, so this can only ever pick between
+    // two legitimate readings of the same hangup.
+    reason: z.enum(["NO_ANSWER"]).optional(),
   });
   const CallRejoinSchema = z.object({ callId: z.string().min(1) });
 
@@ -1995,6 +2010,7 @@ export function registerChatNamespace(
             callId: r.data.callId,
             userId,
             legId: r.data.legId ?? socket.data.callLegId,
+            reason: r.data.reason,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)

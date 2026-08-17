@@ -94,6 +94,31 @@ export async function filterToActiveCommunityMembers(
 }
 
 /**
+ * Intersect `userIds` with the members of `communityId` who are ACTIVE **and**
+ * still want `field` pushes. One gRPC call for the whole fan-out — the batched
+ * replacement for calling `isCommunityActiveMember` + `isCommunityNotificationEnabled`
+ * once per recipient (4 DB queries each, which saturated community-service, tripped
+ * the 2s breaker, and — because that breaker is fail-CLOSED — silently dropped the
+ * push). Fail-closed: oracle outage → empty list.
+ */
+export async function filterToNotifiableCommunityMembers(
+  communityId: string,
+  userIds: string[],
+  field: "chatEnabled" | "streamEnabled" | "announcementEnabled"
+): Promise<string[]> {
+  const unique = [...new Set(userIds.filter(Boolean))];
+  if (unique.length === 0) return [];
+
+  const { userIds: notifiableIds } =
+    await communityClient.getCommunityNotifiableMemberIds({
+      communityId,
+      field,
+    });
+  const notifiable = new Set(notifiableIds);
+  return unique.filter((id) => notifiable.has(id));
+}
+
+/**
  * True when `recipientId` wants pushes of `field` from `communityId` — the
  * recipient's own per-community notification-preference toggle. Also requires
  * ACTIVE membership (community-service oracle). Fail-closed on oracle outage.

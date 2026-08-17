@@ -32,6 +32,23 @@ jest.mock("amqplib", () => ({
   })),
 }));
 
+// Room rows the publisher reads for the GROUP/COMMUNITY push header. Both
+// columns hold RAW object keys — resolveMediaUrl (real) signs them.
+const findGroupRoom = jest.fn(async () => ({
+  name: "Family Group",
+  avatar: "group-avatars/grp_1/a.jpg",
+}));
+const findGeneralRoom = jest.fn(async () => ({
+  name: "Dubai Ice Rink",
+  logo: "community/avatar/comm_1/a.jpg",
+}));
+jest.mock("../../src/config/prisma.js", () => ({
+  prisma: {
+    groupRoom: { findUnique: (...a: unknown[]) => findGroupRoom(...a) },
+    generalRoom: { findUnique: (...a: unknown[]) => findGeneralRoom(...a) },
+  },
+}));
+
 import {
   publishMessageSentSafe,
   CHAT_MESSAGE_SENT_EVENT,
@@ -99,5 +116,114 @@ describe("publishMessageSentSafe — senderAvatar resolve-on-read", () => {
 
     const data = lastQueuedPayload().data as Record<string, unknown>;
     expect(data.senderAvatar).toBe("https://cdn.example.com/legacy.png");
+  });
+});
+
+/**
+ * Conversation identity for GROUP/COMMUNITY pushes.
+ *
+ * A group/community push must represent the CONVERSATION — its name as the
+ * title, its avatar as the tray image — not the sender. Every producer
+ * (REST/socket orchestrator, gRPC send, community system-message bridge, call
+ * rows, group-invite DMs) publishes through this one function, and none of them
+ * supplied a community avatar, so the resolution lives HERE. Name and image come
+ * from the SAME row, so a rename or a new picture can never desync them.
+ */
+describe("publishMessageSentSafe — conversation identity", () => {
+  const COMMUNITY_BUCKET = "aimess-community"; // MINIO_BUCKET_COMMUNITY test default
+
+  const base = {
+    messageId: "m-9",
+    clientMessageId: "c-9",
+    senderId: "u-sender",
+    senderName: "Spider Man",
+    senderAvatar: "",
+    preview: "hi",
+    messageType: "TEXT",
+    sentAt: 1_700_000_000_002,
+    recipientIds: ["u-recipient"],
+  };
+
+  it("COMMUNITY: title name + tray image both come from the mirrored room row", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "comm_1",
+      conversationType: "COMMUNITY",
+      communityId: "comm_1",
+      // Stale name off the request body — the mirror must win.
+      communityName: "Your Community",
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.communityName).toBe("Dubai Ice Rink");
+    expect(data.conversationAvatar).toBe(
+      `https://media.test/${COMMUNITY_BUCKET}/community/avatar/comm_1/a.jpg`
+    );
+  });
+
+  it("COMMUNITY: a changed avatar is picked up on the very next push", async () => {
+    findGeneralRoom.mockResolvedValueOnce({
+      name: "Dubai Ice Rink",
+      logo: "community/avatar/comm_1/B.jpg",
+    });
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "comm_1",
+      conversationType: "COMMUNITY",
+      communityId: "comm_1",
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.conversationAvatar).toBe(
+      `https://media.test/${COMMUNITY_BUCKET}/community/avatar/comm_1/B.jpg`
+    );
+  });
+
+  it("GROUP: carries the group name + avatar even when the producer sent neither", async () => {
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "grp_1",
+      conversationType: "GROUP",
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data.groupName).toBe("Family Group");
+    expect(data.conversationAvatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/a.jpg"
+    );
+  });
+
+  it("no avatar on the room → the field is omitted, never an empty string", async () => {
+    findGeneralRoom.mockResolvedValueOnce({ name: "No Picture", logo: "" });
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "comm_1",
+      conversationType: "COMMUNITY",
+      communityId: "comm_1",
+    });
+    await flush();
+
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data).not.toHaveProperty("conversationAvatar");
+  });
+
+  it("PRIVATE: no room lookup, no conversation avatar (1:1 keeps its behaviour)", async () => {
+    findGroupRoom.mockClear();
+    findGeneralRoom.mockClear();
+    publishMessageSentSafe({
+      ...base,
+      conversationId: "conv-3",
+      conversationType: "PRIVATE",
+    });
+    await flush();
+
+    expect(findGroupRoom).not.toHaveBeenCalled();
+    expect(findGeneralRoom).not.toHaveBeenCalled();
+    const data = lastQueuedPayload().data as Record<string, unknown>;
+    expect(data).not.toHaveProperty("conversationAvatar");
+    expect(data).not.toHaveProperty("groupName");
   });
 });

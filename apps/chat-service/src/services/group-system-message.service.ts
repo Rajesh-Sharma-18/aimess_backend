@@ -260,6 +260,10 @@ export class GroupSystemMessageService {
           clientMessageId: message.clientMessageId,
           sequenceNumber: message.sequenceNumber,
           revision: message.revision,
+          // Persisted next to the baked English so a REST inbox read can
+          // re-render this preview in the reader's language.
+          systemEvent,
+          systemData,
         });
       }
 
@@ -319,7 +323,10 @@ export class GroupSystemMessageService {
           senderId: "",
           lastMessageId: message.id,
           lastMessageAt: sysServerTs,
-          preview: { contentType: messageType, text },
+          // `text` is the write-time English; the canonical pair travels with it
+          // so the gateway can re-render the row in each recipient's language
+          // (see publish-conv-updated.ts BumpPreview).
+          preview: { contentType: messageType, text, systemEvent, systemData },
           countInUnread: false,
           ...(subjectUserId && selfPreview
             ? { subjectUserId, selfPreview }
@@ -490,6 +497,8 @@ export class GroupSystemMessageService {
             clientMessageId: message.clientMessageId,
             sequenceNumber: message.sequenceNumber,
             revision: message.revision,
+            systemEvent: params.systemEvent,
+            systemData,
           })
           .catch((err: unknown) => {
             logger.warn(
@@ -508,7 +517,12 @@ export class GroupSystemMessageService {
           senderId: "",
           lastMessageId: message.id,
           lastMessageAt: serverTs,
-          preview: { contentType: messageType, text },
+          preview: {
+            contentType: messageType,
+            text,
+            systemEvent: params.systemEvent,
+            systemData,
+          },
           countInUnread: false,
         });
       }

@@ -69,7 +69,15 @@ export function categorize(type: string): Exclude<NotificationCategory, "ALL"> {
   // Mentions checked before COMMUNITIES so `community.mention` doesn't get
   // swallowed by the `community.` prefix branch.
   if ((MENTION_TYPES as readonly string[]).includes(type)) return "MENTIONS";
-  if (type.startsWith("friend.") || type === "CALL_MISSED") return "FRIENDS";
+  // `call.*` is private 1:1 call history — friend activity, never community
+  // activity (a group/community call is never projected here at all).
+  // "CALL_MISSED" is the legacy type of rows written before call.activity.
+  if (
+    type.startsWith("friend.") ||
+    type.startsWith("call.") ||
+    type === "CALL_MISSED"
+  )
+    return "FRIENDS";
   if (type.startsWith("community.")) return "COMMUNITIES";
   if (
     type.startsWith("auth.") ||
@@ -97,6 +105,7 @@ export function categoryWhere(
       return {
         OR: [
           { type: { startsWith: "friend." } },
+          { type: { startsWith: "call." } },
           { type: { in: ["CALL_MISSED"] } },
         ],
       };

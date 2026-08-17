@@ -35,8 +35,9 @@ const internalError = {
 };
 
 /**
- * Supported content-types for chat attachment categories.
- * Updated with ZIP support (Phase 2).
+ * Supported content-types for chat attachment categories. Mirrors `CHAT_MIME`
+ * in apps/media-service/src/config/uploads.ts — that table is the enforcement
+ * point; this list is the published contract and must not drift from it.
  */
 const CHAT_CONTENT_TYPES = [
   // Images
@@ -44,6 +45,8 @@ const CHAT_CONTENT_TYPES = [
   "image/png",
   "image/webp",
   "image/gif",
+  "image/heic",
+  "image/heif",
   // Video
   "video/mp4",
   "video/quicktime",
@@ -54,6 +57,7 @@ const CHAT_CONTENT_TYPES = [
   // Audio
   "audio/mpeg",
   "audio/ogg",
+  "audio/opus",
   "audio/wav",
   "audio/mp4",
   "audio/x-m4a",
@@ -85,6 +89,9 @@ const UPLOAD_CATEGORIES = [
   "COMMUNITY_CHAT_ATTACHMENT",
   "GROUP_AVATAR",
   "GROUP_CHAT_ATTACHMENT",
+  // Accepted by media-service (see media.validator.ts VALID_CATEGORIES) but
+  // absent here, so the published enum rejected a call the server allows.
+  "LIVESTREAM_THUMBNAIL",
 ] as const;
 
 const tooManyRequests = {
@@ -126,15 +133,17 @@ For public media (avatars, community covers), \`resourceId\` is optional — any
 Without \`resourceId\`, media-service would have no way to know which room each file belongs to, and authorization would fail. It also enables lifecycle management: when a group/community is deleted, all media with that \`resourceId\` can be marked for cleanup.
 
 **Allowed \`contentType\` by category:**
-- **Avatars & covers** (\`USER_AVATAR\`, \`COMMUNITY_AVATAR\`, \`COMMUNITY_COVER\`, \`GROUP_AVATAR\`) — images only: \`image/jpeg\`, \`image/png\`, \`image/webp\`. Max 5 MB.
+- **Avatars & covers** (\`USER_AVATAR\`, \`COMMUNITY_AVATAR\`, \`COMMUNITY_COVER\`, \`GROUP_AVATAR\`) — images only: \`image/jpeg\`, \`image/png\`, \`image/webp\`, \`image/heic\`, \`image/heif\`. Max 5 MB.
 - **Chat attachments** (\`CHAT_ATTACHMENT\`, \`GROUP_CHAT_ATTACHMENT\`, \`COMMUNITY_CHAT_ATTACHMENT\`) — the full media set below.
 
-**Chat attachment types & per-MIME size caps:**
-- **Images** — \`image/jpeg\`, \`image/png\`, \`image/webp\` (25 MB), \`image/gif\` (30 MB)
+**Chat attachment types & per-MIME size caps** (defaults; ops tunes the byte values via env):
+- **Images** — \`image/jpeg\` (.jpg/.jpeg), \`image/png\`, \`image/webp\`, \`image/heic\`, \`image/heif\` (25 MB); \`image/gif\` (30 MB)
 - **Video** — \`video/mp4\`, \`video/quicktime\` (mov), \`video/x-matroska\` (mkv), \`video/webm\`, \`video/x-msvideo\` (avi), \`video/x-m4v\` (≤100 MB ceiling)
-- **Audio / voice** — \`audio/mpeg\` (mp3), \`audio/ogg\`, \`audio/wav\`, \`audio/mp4\` / \`audio/x-m4a\` (m4a), \`audio/aac\`, \`audio/flac\`
-- **Documents** — \`application/pdf\` (50 MB); Word \`application/msword\` / \`…wordprocessingml.document\` (50 MB); Excel \`application/vnd.ms-excel\` / \`…spreadsheetml.sheet\` (50 MB); PowerPoint \`application/vnd.ms-powerpoint\` / \`…presentationml.presentation\` (100 MB); \`text/plain\`, \`application/json\`, \`application/xml\`, \`text/xml\` (10 MB); \`text/csv\` (25 MB)
-- **Archives** — \`application/zip\`, \`application/x-zip-compressed\` (100 MB)`,
+- **Audio / voice** — \`audio/mpeg\` (mp3), \`audio/ogg\`, \`audio/opus\`, \`audio/wav\`, \`audio/mp4\` / \`audio/x-m4a\` (m4a), \`audio/aac\`, \`audio/flac\` (25 MB)
+- **Documents** — \`application/pdf\`; Word \`application/msword\` / \`…wordprocessingml.document\`; Excel \`application/vnd.ms-excel\` / \`…spreadsheetml.sheet\`; PowerPoint \`application/vnd.ms-powerpoint\` / \`…presentationml.presentation\`; \`text/plain\`, \`text/csv\`, \`application/json\`, \`application/xml\`, \`text/xml\` (25 MB)
+- **Archives** — \`application/zip\`, \`application/x-zip-compressed\` (25 MB)
+
+The declared \`contentType\` is only the *entry* check. After the PUT, **POST /media/confirm** re-reads the MIME the server itself recorded, verifies the file signature, walks the container structure, and runs the AV scan — a file whose bytes contradict its declared type is rejected there, never at the client's word.`,
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,

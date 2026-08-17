@@ -78,13 +78,12 @@ const MAX_IMAGES_PER_MESSAGE = 10;
 
 /**
  * Per-message-type media limits. `maxCount` caps the number of files in the
- * attachment array; `maxBytes` caps each file's size; `maxDurationMs` caps each
- * file's playback duration (videos / voice notes).
+ * attachment array; `maxBytes` caps each file's size.
  */
 export const MEDIA_LIMITS = {
   IMAGE: { maxCount: MAX_IMAGES_PER_MESSAGE, maxBytes: IMAGE_MAX_BYTES },
-  VIDEO: { maxBytes: VIDEO_MAX_BYTES, maxDurationMs: 180_000 },
-  VOICE: { maxBytes: GENERIC_MAX_BYTES, maxDurationMs: 300_000 },
+  VIDEO: { maxBytes: VIDEO_MAX_BYTES },
+  VOICE: { maxBytes: GENERIC_MAX_BYTES },
   AUDIO: { maxBytes: AUDIO_MAX_BYTES },
   GIF: { maxBytes: GENERIC_MAX_BYTES },
   DOCUMENT: { maxBytes: DOCUMENT_MAX_BYTES },
@@ -221,15 +220,6 @@ function findMediaLimitViolations(
             message: TOO_LARGE_MESSAGE[tooLargeCode]!,
           });
         }
-        if (
-          contentTypeFromMime(f.mime ?? "") === "VIDEO" &&
-          (f.durationMs ?? 0) > MEDIA_LIMITS.VIDEO.maxDurationMs
-        ) {
-          violations.push({
-            code: "CHAT_VIDEO_TOO_LONG",
-            message: "Video exceeds the maximum allowed duration",
-          });
-        }
       }
       break;
     }
@@ -247,15 +237,6 @@ function findMediaLimitViolations(
             message: TOO_LARGE_MESSAGE[tooLargeCode]!,
           });
         }
-        if (
-          contentTypeFromMime(f.mime ?? "") === "VIDEO" &&
-          (f.durationMs ?? 0) > MEDIA_LIMITS.VIDEO.maxDurationMs
-        ) {
-          violations.push({
-            code: "CHAT_VIDEO_TOO_LONG",
-            message: "Video exceeds the maximum allowed duration",
-          });
-        }
       }
       break;
     }
@@ -268,12 +249,6 @@ function findMediaLimitViolations(
           violations.push({
             code: "CHAT_FILE_TOO_LARGE",
             message: "Voice note exceeds the maximum allowed size",
-          });
-        }
-        if ((f.durationMs ?? 0) > MEDIA_LIMITS.VOICE.maxDurationMs) {
-          violations.push({
-            code: "CHAT_VOICE_TOO_LONG",
-            message: "Voice note exceeds the maximum allowed duration",
           });
         }
       }

@@ -566,16 +566,6 @@ export const CHAT_MESSAGES = {
     en: "Video exceeds 100 MB",
     th: "วิดีโอมีขนาดเกิน 100 MB",
   },
-  CHAT_VIDEO_TOO_LONG: {
-    vi: "Video vượt quá thời lượng cho phép",
-    en: "Video exceeds the maximum allowed duration",
-    th: "วิดีโอมีความยาวเกินกว่าที่กำหนด",
-  },
-  CHAT_VOICE_TOO_LONG: {
-    vi: "Tin nhắn thoại vượt quá thời lượng cho phép",
-    en: "Voice note exceeds the maximum allowed duration",
-    th: "ข้อความเสียงมีความยาวเกินกว่าที่กำหนด",
-  },
   CHAT_AUDIO_TOO_LARGE: {
     vi: "Tệp âm thanh vượt quá dung lượng cho phép (25 MB)",
     en: "Audio exceeds 25 MB",

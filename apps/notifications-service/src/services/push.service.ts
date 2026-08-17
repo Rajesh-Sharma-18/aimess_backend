@@ -98,9 +98,12 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_BANNED,
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
-  // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
-  // missed call is exactly the kind of thing a user wants to find later.
-  "CALL_MISSED",
+  // Call HISTORY — one row per call per participant, written by the
+  // `call.activity` projection (consumers/call.consumer.ts) from the canonical
+  // terminal CallTimelineStatus. The live ring (CALL_INCOMING) and the
+  // missed-call push (CALL_MISSED) stay push-only: they are live events, and
+  // letting either write here too would put two cards on one call.
+  "call.activity",
 
   // ── System / account-level ──────────────────────────────────────────────
   // These map to the SYSTEM tab in the Notification Center (categoryWhere).
@@ -231,6 +234,14 @@ export interface PushInput {
    */
   communityPrefField?: CommunityPrefField;
   /**
+   * Set by a caller that already resolved ACTIVE membership + the per-community
+   * preference toggle for the WHOLE recipient list in one batched oracle call
+   * (see `filterToNotifiableCommunityMembers`). Skips the two per-recipient gRPC
+   * gates below — same authority, same fail-closed semantics (an empty batch
+   * result means nobody is pushed), but 1 call instead of 2 per recipient.
+   */
+  communityGatesPreResolved?: boolean;
+  /**
    * When true, a recipient's registered VOIP (iOS PushKit) token is sent an
    * APNs VoIP push instead of being skipped. MUST be true only for an actual
    * live-ringing event (incoming call / cancel-the-ring) — Apple requires
@@ -239,6 +250,15 @@ export interface PushInput {
    * call, chat message, etc.).
    */
   allowVoip?: boolean;
+  /**
+   * Inbox-only: write the Notification-Center row and send NO push.
+   *
+   * The mirror image of `skipInbox`. Used by the call-history projection,
+   * whose live counterpart (the ring, the missed-call alert) was already
+   * pushed by its own producer — pushing again here would notify twice for
+   * one call. Settings/quiet-hours gating still applies to the row.
+   */
+  skipPush?: boolean;
   /**
    * Skip the device that originated the action. The read-dismiss push uses it so the device
    * where the conversation was read is not told to dismiss what it already cleared.
@@ -281,6 +301,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     bypassSettings = false,
     showPreviewOverride,
     skipInbox = false,
+    skipPush = false,
     dataOnly = false,
     allowVoip = false,
     excludeDeviceId,
@@ -336,7 +357,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // missing members never get community FCM or inbox pushes. Preference
   // toggles are checked second. Lifecycle events that intentionally target
   // non-members skip both via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
-  if (!bypassSettings && !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)) {
+  if (
+    !bypassSettings &&
+    !input.communityGatesPreResolved &&
+    !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)
+  ) {
     const communityId = data?.communityId;
     if (communityId) {
       try {
@@ -420,6 +445,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
       logger.warn(error);
     }
   }
+
+  // Inbox-only projection (call history): the row IS the deliverable and there
+  // is no device to wake — anything time-critical about the same call was
+  // already pushed by the ring / missed-call producer.
+  if (skipPush) return;
 
   // Quiet hours: the inbox row above is written and the badge bumps, but no
   // device is woken. The user finds it waiting when the window ends.
@@ -516,10 +546,23 @@ export async function pushToUser(input: PushInput): Promise<void> {
               body: pushBody,
               data,
               deepLink,
-              // The community avatar already rides in `data` on every community
-              // push — reuse it as the tray image so the OS stops falling back
-              // to the app logo. Non-community pushes simply have no key here.
-              imageUrl: data?.communityAvatarUrl,
+              // The notification represents the CONVERSATION/COMMUNITY, so the
+              // tray image is the entity's own avatar — never the actor's.
+              // `communityAvatarUrl` is what community.* events carry;
+              // `conversationAvatar` is what group/community chat messages and
+              // group lifecycle events carry. Both are already fully-qualified
+              // URLs (resolved by their producer). A private chat carries
+              // neither, so it keeps its existing sender-less tray entry, and
+              // an entity with no avatar simply has no key here — the OS/app
+              // falls back to its own placeholder rather than a broken image.
+              // ponytail: these are presigned GET URLs (1 h, MINIO_*VIEW_EXPIRES_IN)
+              // while FCM's TTL is 24 h, so a push held for a device that stays
+              // offline past the hour lands with an expired image URL — the OS
+              // silently drops the picture, title/body/tap are unaffected. Same
+              // ceiling `senderAvatar` has always had. Fix by wiring the existing
+              // permanent view-proxy URL (`viewProxyBaseUrl` + `MEDIA_SIGN_SECRET`
+              // in createMediaUrlStrategy) if delayed pushes matter.
+              imageUrl: data?.communityAvatarUrl || data?.conversationAvatar,
               collapseKey,
               apnsThreadId,
               ttl,

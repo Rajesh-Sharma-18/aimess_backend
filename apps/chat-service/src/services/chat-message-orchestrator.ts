@@ -541,16 +541,10 @@ export class ChatMessageOrchestrator {
         sentAt: serverTs,
       };
       if (conversationType === "GROUP") {
-        const header = await this.groupMessageService
-          .getPushHeader(params.roomId)
-          .catch(() => null);
-        const groupAvatar = header?.avatar
-          ? await resolveMediaUrl(header.avatar).catch(() => "")
-          : "";
+        // Group name + avatar are resolved from GroupRoom inside
+        // `publishMessageSentSafe` — the one place every producer goes through.
         publishMessageSentSafe({
           ...pushBase,
-          ...(header?.name ? { groupName: header.name } : {}),
-          ...(groupAvatar ? { conversationAvatar: groupAvatar } : {}),
           fetchRecipients: () =>
             this.groupMessageService.getActiveMemberIds(params.roomId),
         });
@@ -793,9 +787,13 @@ export class ChatMessageOrchestrator {
         conversationId: params.communityId,
         conversationType: "COMMUNITY",
         communityId: params.communityId,
-        communityName:
-          params.communityName ||
-          (await this.communityMessageService.getRoomName(params.roomId)),
+        // `params.communityName` comes off the REQUEST BODY — a client that
+        // hasn't seen a rename sends the old name — so it is only a fallback.
+        // `publishMessageSentSafe` prefers the locally-mirrored GeneralRoom
+        // row (name + logo, kept current by `community.meta_synced`), which is
+        // also where the push's tray image comes from, so title and image can
+        // never describe two different versions of the community.
+        communityName: params.communityName || "",
         messageId: saved.id,
         clientMessageId,
         senderId: params.senderId,
@@ -1376,6 +1374,7 @@ export class ChatMessageOrchestrator {
         unreadCountByUser?: Record<string, number>;
         participants?: string[];
         lastMessageId?: string | null;
+        lastReadMessageIdByUser?: Record<string, string>;
       } | null;
       // A target that is malformed, or belongs to another room, is REJECTED —
       // null result. Returning here is what makes "zero unread mutation, zero
@@ -1385,10 +1384,21 @@ export class ChatMessageOrchestrator {
       otherUserIds = (room?.participants ?? []).filter(
         (id) => id !== params.readerId
       );
+      // read_to_seq is the PERSISTED watermark, never the requested target.
+      // `markReadUpTo` is forward-only, so a stale/out-of-order request (a
+      // second device catching up, a jump-to-message landing on old history)
+      // leaves the pointer where it was — publishing the request's own seq
+      // would broadcast a REGRESSION the DB never made, flipping the sender's
+      // blue tick back to grey and re-inflating the reader's other devices'
+      // badge until a refresh. Falls back to the request only for legacy rows
+      // that have no pointer yet.
+      const acceptedReadId =
+        room?.lastReadMessageIdByUser?.[params.readerId] ??
+        params.upToMessageId;
       // Independent lookups — run together, not one after the other.
       [readToSeq, lastMessageSeq] = await Promise.all([
         this.privateMessageService
-          .getMessageSequence(params.upToMessageId)
+          .getMessageSequence(acceptedReadId)
           .catch(() => 0),
         room?.lastMessageId
           ? this.privateMessageService

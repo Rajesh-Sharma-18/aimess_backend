@@ -128,6 +128,48 @@ describe("inspectMedia — signature and structure mismatches", () => {
   });
 });
 
+describe("inspectMedia — classic QuickTime (.mov with no ftyp box)", () => {
+  /** A `.mov` as QuickTime Player and several recorders emit it: no ftyp. */
+  const classicMov = (): Buffer => {
+    const withFtyp = validMp4({
+      durationMs: 12_000,
+      width: 1920,
+      height: 1080,
+      brand: "qt  ",
+    });
+    const ftypLen = withFtyp.readUInt32BE(0);
+    const wide = Buffer.alloc(8);
+    wide.writeUInt32BE(8, 0);
+    wide.write("wide", 4, "latin1");
+    return Buffer.concat([wide, withFtyp.subarray(ftypLen)]);
+  };
+
+  it("accepts it and still reads duration and track size", () => {
+    const result = inspect(classicMov(), "video/quicktime");
+    expect(result.ok).toBe(true);
+    expect(result.detectedMime).toBe("video/quicktime");
+    expect(Math.round(result.durationMs ?? 0)).toBe(12_000);
+    expect(result.width).toBe(1920);
+  });
+
+  it("sniffs as video/quicktime", () => {
+    expect(sniff(classicMov())).toBe("video/quicktime");
+  });
+
+  it("does not let an arbitrary blob in as a .mov", () => {
+    const junk = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x01, 0x00]),
+      Buffer.from("junk", "latin1"),
+      Buffer.alloc(16),
+    ]);
+    expect(inspect(junk, "video/quicktime").ok).toBe(false);
+  });
+
+  it("keeps the classic layout out of the other ISOBMFF types", () => {
+    expect(inspect(classicMov(), "video/mp4").ok).toBe(false);
+  });
+});
+
 describe("inspectMedia — polyglot files", () => {
   const ZIP = buildZip([{ name: "payload.txt", content: Buffer.from("x") }]);
   const HTML = Buffer.from("<html><script>alert(1)</script></html>");

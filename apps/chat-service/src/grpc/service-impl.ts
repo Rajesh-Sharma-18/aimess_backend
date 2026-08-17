@@ -26,7 +26,6 @@ import {
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
-import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
 import {
@@ -76,7 +75,6 @@ import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
-import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
 import {
@@ -810,170 +808,34 @@ export function createMessagingImpl(
             conversationType?: string;
           };
 
-          const conversationType = resolveConversationType(
-            req.conversationId,
-            req.conversationType
-          );
-
-          let readToSeq = 0;
-          let unreadCount = 0;
-          // The room's CURRENT last-message seq — lets us tell the sender's
-          // conversation-LIST row, authoritatively, whether this reader's
-          // watermark has caught up to the newest message. Without this the
-          // list has to guess by byte-matching the read boundary id against its
-          // (possibly stale) cached lastMessageId, which silently misses the
-          // READ tick — the room view stays lenient (watermark) and diverges.
-          let lastMessageSeq = 0;
-          // Every OTHER active participant/member — the sender(s) whose OWN tick
-          // needs to flip to READ. Resolved alongside the mark-read write itself
-          // (no extra query for PRIVATE — the room doc is already in hand).
-          let otherUserIds: string[] = [];
-          // Kicked off BEFORE the mark-read write: it depends on nothing below
-          // it, and on a cold TTL cache it is a gRPC round trip that used to sit
-          // in front of the receipt publish. Read receipts are the one event
-          // where a serial hop is directly visible to the user.
-          const mayBroadcastPromise = mayBroadcastReadReceipts(req.readerId);
-          if (conversationType === "GROUP") {
-            // Capture remainingUnread so read_sync / chat:unread_summary stay
-            // accurate after a group open — discarding it left the nav badge
-            // stuck while the list was optimistically cleared.
-            const groupRead = await deps.groupMessageService.markReadUpTo({
+          // ONE read path. This handler used to be a hand-copied second
+          // implementation of `markReadDirect`, and the two had already drifted
+          // (only the REST copy dismissed the reader's tray notification), so
+          // every fix had to be made twice or silently landed in one transport
+          // only. The socket `message:read` event arrives HERE, so the copy was
+          // the one most users actually hit. `markReadDirect` does the
+          // membership check, the forward-only pointer advance, the
+          // `message:read` receipt, the `read_sync` device fan-out, the
+          // nav-badge poke and the tray dismiss.
+          const { readToSeq } =
+            await deps.chatMessageOrchestrator.markReadDirect({
+              conversationType: resolveConversationType(
+                req.conversationId,
+                req.conversationType
+              ),
               roomId: req.conversationId,
-              userId: req.readerId,
-              upToMessageId: req.upToMessageId,
-            });
-            readToSeq = groupRead.readToSeq;
-            unreadCount = groupRead.remainingUnread;
-            const [members, lastSeq] = await Promise.all([
-              deps.groupMessageService
-                .getActiveMemberIds(req.conversationId)
-                .catch(() => [] as string[]),
-              deps.groupMessageService
-                .getRoomLastMessageSeq(req.conversationId)
-                .catch(() => 0),
-            ]);
-            otherUserIds = members.filter((id) => id !== req.readerId);
-            lastMessageSeq = lastSeq;
-          } else {
-            const room = (await deps.privateMessageService.markRead({
-              roomId: req.conversationId,
-              userId: req.readerId,
-              lastMessageId: req.upToMessageId,
-            })) as {
-              unreadCountByUser?: Record<string, number>;
-              participants?: string[];
-              lastMessageId?: string | null;
-            } | null;
-            // `markRead` asserts participation and binds the target to the room
-            // itself (it is THE private read operation — see its comment), and
-            // returns null when either check fails. This handler used to reach
-            // the room write with no membership check at all, so a caller that
-            // could speak gRPC could advance a stranger's unread state and emit
-            // a receipt in their name. Bail before ANY publish below.
-            if (!room) {
-              callback(null, { updatedCount: 0 });
-              return;
-            }
-            unreadCount = room?.unreadCountByUser?.[req.readerId] ?? 0;
-            otherUserIds = (room?.participants ?? []).filter(
-              (id) => id !== req.readerId
-            );
-            // Both sequence lookups are independent — run them together rather
-            // than one after the other on the receipt's critical path.
-            [readToSeq, lastMessageSeq] = await Promise.all([
-              deps.privateMessageService
-                .getMessageSequence(req.upToMessageId)
-                .catch(() => 0),
-              room?.lastMessageId
-                ? deps.privateMessageService
-                    .getMessageSequence(room.lastMessageId)
-                    .catch(() => 0)
-                : Promise.resolve(0),
-            ]);
-          }
-
-          // Authoritative "this reader has now read the room's current newest
-          // message" — the single flag the sender's inbox row keys off, so it
-          // never has to id-match a stale cached boundary. read_to_seq is the
-          // reader's forward-only watermark; lastMessageSeq is resolved above.
-          const readsLastMessage =
-            readToSeq > 0 && lastMessageSeq > 0 && readToSeq >= lastMessageSeq;
-
-          const readPayload = JSON.stringify({
-            event: "message:read",
-            data: {
-              conversationId: req.conversationId,
               readerId: req.readerId,
               upToMessageId: req.upToMessageId,
-              read_to_seq: readToSeq,
-              last_message_seq: lastMessageSeq,
-              readsLastMessage,
-            },
-          });
-
-          // Settings → Chat → Read Receipt, off: the read itself still lands,
-          // only the OUTBOUND receipt is withheld. Mirrors
-          // ChatMessageOrchestrator.markReadDirect — this handler is a second
-          // copy of that flow, so the gate has to exist in both.
-          const mayBroadcast = await mayBroadcastPromise;
-
-          // Read receipt to the conversation room. read_to_seq lets the peer flip EVERY own row at
-          // or below the boundary to READ (watermark), not just the boundary message.
-          if (mayBroadcast)
-            await redis.publish(`conv:${req.conversationId}`, readPayload);
-
-          // ALSO publish directly to every other participant/member's own
-          // `user:<id>` channel — every socket joins that room unconditionally
-          // at connect (see `socket.join(\`user:${userId}\`)`), unlike `conv:<roomId>`
-          // which requires an explicit `conv:join`. The conversation-LIST view
-          // (sidebar) only joins `conv:*` rooms it's currently rendering via a
-          // best-effort typing workaround — without this direct delivery, a
-          // sender's list row can miss the READ tick whenever their sidebar
-          // socket wasn't (yet) joined to this specific room, going stale until
-          // a manual refetch. Same direct-roster pattern already used for typing
-          // (`createDirectRosterBroadcast`) and community's read_sync.
-          for (const otherId of mayBroadcast ? otherUserIds : []) {
-            void redis
-              .publish(`user:${otherId}`, readPayload)
-              .catch((e: unknown) =>
-                logger.warn(
-                  `message:read direct publish failed userId=${otherId}: ${String(e)}`
-                )
-              );
-          }
-
-          // V2 §2.6/§5.5: read_sync to the reader's OWN other devices so their
-          // unread badge clears too. Published to user:<readerId> (every device of
-          // that user joins this room on connect). Fire-and-forget.
-          void redis
-            .publish(
-              `user:${req.readerId}`,
-              JSON.stringify({
-                event: "read_sync",
-                data: {
-                  conversationId: req.conversationId,
-                  readerId: req.readerId,
-                  read_to_seq: readToSeq,
-                  unreadCount,
-                  conversationType,
-                },
-              })
-            )
-            .catch((e: unknown) =>
-              logger.warn(`read_sync publish failed: ${String(e)}`)
-            );
-
-          // Nav-badge total changed for the reader — see unread-summary-bridge.ts.
-          notifyUnreadChanged(req.readerId);
-
-          callback(null, { updatedCount: 1 });
+            });
+          // 0 = rejected (not a member, foreign or malformed target) or nothing
+          // left to advance — either way no row was updated.
+          callback(null, { updatedCount: readToSeq > 0 ? 1 : 0 });
         } catch (err) {
           logger.error(`gRPC markMessagesRead error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
     },
-
     markDelivered: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -1757,11 +1619,13 @@ export function createMessagingImpl(
             callId?: string;
             userId?: string;
             legId?: string;
+            reason?: string;
           };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
+            reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -4148,7 +4012,11 @@ export function createNotificationImpl(
                 row,
                 req.userId as string
               );
-              const { excludeSessionId: _excl, ...clientData } = data;
+              const {
+                excludeSessionId: _excl,
+                markRead: _markRead,
+                ...clientData
+              } = data;
               await publishUserSocketEvent(
                 redis,
                 req.userId as string,
@@ -4305,6 +4173,15 @@ export function createNotificationImpl(
               data,
             },
             groupKey,
+            // Producer-declared read-on-arrival. Call history uses it so your
+            // OWN outgoing call, and a call you were present for, land as log
+            // entries instead of badging you — only a call you never answered
+            // arrives unread. It can only ever make a row LESS noisy, and it
+            // travels in `data` like every other publish-time directive
+            // (groupKey, resurface, excludeSessionId).
+            ...(data.markRead === "true"
+              ? { isRead: true, readAt: new Date() }
+              : {}),
           });
 
           await publishRow("notification:new", created);
