@@ -160,6 +160,7 @@ import {
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityMemberMuteRetractedForChatSafe,
+  publishCommunityNameChangedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -2588,6 +2589,10 @@ export const communityService = {
     if (nextName && nextName !== previousName) {
       await communityCache.invalidateNameAvailability(previousName);
       await communityCache.invalidateNameAvailability(nextName);
+      // Sync chat-service's denormalized GeneralRoom.name mirror, which titles
+      // community chat-message push notifications — otherwise pushes keep the
+      // OLD name after a rename.
+      publishCommunityNameChangedForChatSafe({ communityId, name: nextName });
     }
     if (nextHandle && nextHandle !== previousHandle) {
       await communityCache.invalidateHandleAvailability(previousHandle);

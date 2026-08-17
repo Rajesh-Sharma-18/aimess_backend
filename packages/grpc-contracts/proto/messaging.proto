@@ -34,6 +34,12 @@ service MessagingService {
   // and forwards `room_finished` events; chat-service flips IN_PROGRESS→ENDED
   // (idempotent for other states).
   rpc HandleLiveKitRoomFinished (HandleLiveKitRoomFinishedRequest) returns (HandleLiveKitRoomFinishedResponse);
+  // LiveKit `participant_joined` — used to stamp `answeredAt` only when the
+  // CALLEE's media actually joins, not when they emitted `call:answer`. This
+  // is what separates a real answered-and-connected call (has a duration)
+  // from an accept-then-immediately-end race (no duration, treated as
+  // cancelled). Idempotent per callId.
+  rpc HandleLiveKitParticipantJoined (HandleLiveKitParticipantJoinedRequest) returns (HandleLiveKitParticipantJoinedResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Room-independent typing indicator fan-out for private/group — the exact
   // mirror of community's GetCommunityActiveMemberIds. Lets the gateway resolve
@@ -609,6 +615,17 @@ message HandleLiveKitRoomFinishedRequest {
   int32 remaining_participants = 3;
 }
 message HandleLiveKitRoomFinishedResponse {}
+
+message HandleLiveKitParticipantJoinedRequest {
+  // LiveKit room_name == callId by our convention.
+  string room_name = 1;
+  // The joining participant's identity — matches the userId used to mint the
+  // LiveKit token (see livekit.service.ts). Chat-service uses it to skip the
+  // caller (their join is meaningless for "answered", they were in the room
+  // from initiate) and only stamp answeredAt when the callee actually joins.
+  string participant_identity = 2;
+}
+message HandleLiveKitParticipantJoinedResponse {}
 
 message CatchupRoomRequest {
   string           conversation_id   = 1;

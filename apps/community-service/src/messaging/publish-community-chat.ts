@@ -214,6 +214,26 @@ export function publishCommunityInviteLinkSharedForChatSafe(
   );
 }
 
+export interface CommunityNameChangedForChat {
+  communityId: string;
+  name: string;
+}
+
+/**
+ * Tells chat-service that a community was renamed, so it can refresh the
+ * denormalized `GeneralRoom.name` mirror that titles community chat-message
+ * push notifications. Without this, pushes keep showing the OLD name.
+ */
+export function publishCommunityNameChangedForChatSafe(
+  data: CommunityNameChangedForChat
+): void {
+  publishSafe(
+    "community.name_changed",
+    data,
+    "community.name_changed (chat-sync)"
+  );
+}
+
 export interface CommunitySystemMessageForChat {
   communityId: string;
   systemMessageType: string;

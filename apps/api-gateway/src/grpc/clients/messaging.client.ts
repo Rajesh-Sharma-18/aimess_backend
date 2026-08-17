@@ -363,6 +363,10 @@ export interface MessagingClient {
     /** Participants left in the room; -1 when the webhook didn't report one. */
     remainingParticipants?: number;
   }): Promise<unknown>;
+  handleLiveKitParticipantJoined(p: {
+    roomName: string;
+    participantIdentity: string;
+  }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
     p: GetRoomParticipantIdsParams
@@ -730,6 +734,15 @@ export function createMessagingClient(): MessagingClient {
       })
   );
 
+  const handleLiveKitParticipantJoinedBreaker = makeBreaker(
+    "messaging.handleLiveKitParticipantJoined",
+    (p: { roomName: string; participantIdentity: string }) =>
+      call<unknown, Record<string, never>>("handleLiveKitParticipantJoined", {
+        roomName: p.roomName,
+        participantIdentity: p.participantIdentity,
+      })
+  );
+
   const catchupRoomBreaker = makeBreaker(
     "messaging.catchupRoom",
     (p: CatchupRoomParams) => {
@@ -781,6 +794,8 @@ export function createMessagingClient(): MessagingClient {
     endCall: (p) => endCallBreaker.fire(p),
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
     handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
+    handleLiveKitParticipantJoined: (p) =>
+      handleLiveKitParticipantJoinedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
     getRoomParticipantIds: (p) => getRoomParticipantIdsBreaker.fire(p),
   };
