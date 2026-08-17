@@ -260,6 +260,10 @@ export class GroupSystemMessageService {
           clientMessageId: message.clientMessageId,
           sequenceNumber: message.sequenceNumber,
           revision: message.revision,
+          // Persisted next to the baked English so a REST inbox read can
+          // re-render this preview in the reader's language.
+          systemEvent,
+          systemData,
         });
       }
 
@@ -493,6 +497,8 @@ export class GroupSystemMessageService {
             clientMessageId: message.clientMessageId,
             sequenceNumber: message.sequenceNumber,
             revision: message.revision,
+            systemEvent: params.systemEvent,
+            systemData,
           })
           .catch((err: unknown) => {
             logger.warn(

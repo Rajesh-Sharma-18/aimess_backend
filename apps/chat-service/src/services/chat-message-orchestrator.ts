@@ -541,16 +541,10 @@ export class ChatMessageOrchestrator {
         sentAt: serverTs,
       };
       if (conversationType === "GROUP") {
-        const header = await this.groupMessageService
-          .getPushHeader(params.roomId)
-          .catch(() => null);
-        const groupAvatar = header?.avatar
-          ? await resolveMediaUrl(header.avatar).catch(() => "")
-          : "";
+        // Group name + avatar are resolved from GroupRoom inside
+        // `publishMessageSentSafe` — the one place every producer goes through.
         publishMessageSentSafe({
           ...pushBase,
-          ...(header?.name ? { groupName: header.name } : {}),
-          ...(groupAvatar ? { conversationAvatar: groupAvatar } : {}),
           fetchRecipients: () =>
             this.groupMessageService.getActiveMemberIds(params.roomId),
         });
@@ -793,15 +787,13 @@ export class ChatMessageOrchestrator {
         conversationId: params.communityId,
         conversationType: "COMMUNITY",
         communityId: params.communityId,
-        // The locally-mirrored GeneralRoom.name is the authoritative name here
-        // (kept current by `community.meta_synced`). `params.communityName`
-        // comes off the REQUEST BODY — a client that hasn't seen the rename
-        // sends the old name — so it is only a fallback for a room whose
-        // mirror hasn't been provisioned yet, never an override.
-        communityName:
-          (await this.communityMessageService.getRoomName(params.roomId)) ||
-          params.communityName ||
-          "",
+        // `params.communityName` comes off the REQUEST BODY — a client that
+        // hasn't seen a rename sends the old name — so it is only a fallback.
+        // `publishMessageSentSafe` prefers the locally-mirrored GeneralRoom
+        // row (name + logo, kept current by `community.meta_synced`), which is
+        // also where the push's tray image comes from, so title and image can
+        // never describe two different versions of the community.
+        communityName: params.communityName || "",
         messageId: saved.id,
         clientMessageId,
         senderId: params.senderId,

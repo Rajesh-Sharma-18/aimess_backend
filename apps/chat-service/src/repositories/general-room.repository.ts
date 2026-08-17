@@ -307,9 +307,10 @@ export class GeneralRoomRepository {
   /**
    * Mirror a community metadata edit (rename / avatar change) onto the room.
    *
-   * The room's `name` is the ONLY community name chat-service holds, and every
-   * community push title reads it (see getRoomName → publishMessageSentSafe), so
-   * without this a rename left every future push titled with the old name.
+   * The room's `name`/`logo` are the ONLY community identity chat-service holds,
+   * and every community push reads them for its title and tray image (see
+   * `conversationHeader` in publishMessageSentSafe), so without this a rename or
+   * a new avatar left every future push showing the old one.
    * `updateMany` (not `update`) so a not-yet-provisioned room is a no-op rather
    * than a throw — `community.created` provisions it.
    */

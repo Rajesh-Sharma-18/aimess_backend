@@ -155,10 +155,18 @@ export async function sendPush({
             : {
                 sound: "default",
                 ...(apnsCategory ? { category: apnsCategory } : {}),
+                // REQUIRED for the image below: iOS only invokes the app's
+                // Notification Service Extension when mutable-content is 1, and
+                // the NSE is what downloads `fcm_options.image` and attaches it.
+                // Without this flag the image field is delivered and ignored,
+                // which is why community/group pushes showed no picture. Set
+                // only when there IS an image, so alert-only pushes keep their
+                // current (cheaper, NSE-free) delivery path.
+                ...(image ? { mutableContent: true } : {}),
               },
         },
-        // Rendered by the app's Notification Service Extension as the
-        // attachment (iOS ignores it without one — harmless when absent).
+        // Downloaded and attached by the app's Notification Service Extension
+        // (paired with mutable-content above; harmless when no NSE exists).
         ...(omitNotification || !image
           ? {}
           : { fcmOptions: { imageUrl: image } }),

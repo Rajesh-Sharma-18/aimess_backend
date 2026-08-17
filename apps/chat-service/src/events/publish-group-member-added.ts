@@ -8,6 +8,8 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { prisma } from "../config/prisma.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 
 /**
  * Durable queue carrying "a member was added to a group" to notifications-service,
@@ -66,15 +68,42 @@ export function publishGroupMemberMuteSafe(
   publishGroupEventSafe(event, data);
 }
 
-function publishGroupEventSafe(type: string, data: { roomId: string }): void {
+function publishGroupEventSafe(
+  type: string,
+  data: { roomId: string; groupName?: string }
+): void {
   const url = env.RABBITMQ_URL;
   if (!url) return; // RabbitMQ not configured — skip (push is a fallback channel)
   void (async () => {
     try {
+      // A group notification represents the GROUP, so the tray image is the
+      // group avatar — never the actor's. Read from the authoritative GroupRoom
+      // row at publish time (same choke-point rule as publish-message-sent.ts),
+      // so a renamed/re-imaged group is correct on the very next event and the
+      // name and image always come from one row. Best-effort: no row, no MinIO
+      // → the fields are simply absent and the client falls back as before.
+      const room = await prisma.groupRoom
+        .findUnique({
+          where: { roomId: data.roomId },
+          select: { name: true, avatar: true },
+        })
+        .catch(() => null);
+      const groupAvatarUrl = await resolveMediaUrl(room?.avatar).catch(
+        () => ""
+      );
       const channel = await getChannel(url);
       channel.sendToQueue(
         CHAT_GROUP_QUEUE,
-        Buffer.from(JSON.stringify({ type, data })),
+        Buffer.from(
+          JSON.stringify({
+            type,
+            data: {
+              ...data,
+              groupName: room?.name || data.groupName || "",
+              ...(groupAvatarUrl ? { groupAvatarUrl } : {}),
+            },
+          })
+        ),
         { persistent: true }
       );
     } catch (error) {

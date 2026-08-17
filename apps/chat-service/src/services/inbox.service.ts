@@ -13,6 +13,10 @@ import type {
 } from "./group-room.service.js";
 import { toWireMessage } from "../lib/chat-message.serializer.js";
 import {
+  localizedActivityPreview,
+  withLocalizedSystemPreview,
+} from "../lib/localize-system-preview.js";
+import {
   buildAutoDeleteWire,
   readPolicyVersion,
   readRoomAutoDelete,
@@ -239,7 +243,7 @@ export class InboxService {
 
     const merged: InboxItem[] = [
       ...privateRooms.map((room) => this.toPrivateItem(room, userId)),
-      ...groupRooms.map((room) => this.toGroupItem(room)),
+      ...groupRooms.map((room) => this.toGroupItem(room, userId)),
     ];
 
     // PAGE SELECTION stays on the SHARED `lastMessageAt` — that is the column
@@ -306,7 +310,15 @@ export class InboxService {
       roomId: room.roomId,
       lastMessageAt: room.lastMessageAt,
       lastMessageId: room.lastMessageId,
-      lastMessage: room.lastMessage ?? null,
+      // SYSTEM previews are re-rendered from the snapshot's systemEvent/
+      // systemData in THIS reader's language — the same rebuild the message
+      // history does — so the list row and the transcript never disagree.
+      lastMessage:
+        withLocalizedSystemPreview(
+          room.lastMessage as Parameters<typeof withLocalizedSystemPreview>[0],
+          "PRIVATE",
+          userId
+        ) ?? null,
       lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: unreadByUser[userId] ?? 0,
       isMuted: room.isMuted,
@@ -341,7 +353,16 @@ export class InboxService {
     };
   }
 
-  private toGroupItem(room: EnrichedGroupRoom): InboxItem {
+  private toGroupItem(room: EnrichedGroupRoom, userId: string): InboxItem {
+    // Same per-reader SYSTEM rebuild as the private row above, applied BEFORE
+    // the wire normalization so it sees the stored `messageType`.
+    const groupPreview = withLocalizedSystemPreview(
+      room.lastMessagePreview as Parameters<
+        typeof withLocalizedSystemPreview
+      >[0],
+      "GROUP",
+      userId
+    );
     return {
       type: "GROUP",
       roomId: room.roomId,
@@ -350,17 +371,28 @@ export class InboxService {
       // Normalize the group preview's kind field (messageType -> contentType).
       // (Private previews are already normalized upstream in enrichConversations.)
       lastMessage:
-        room.lastMessagePreview && typeof room.lastMessagePreview === "object"
-          ? toWireMessage(
-              room.lastMessagePreview as { messageType?: string | null }
-            )
-          : (room.lastMessagePreview ?? null),
+        groupPreview && typeof groupPreview === "object"
+          ? toWireMessage(groupPreview as { messageType?: string | null })
+          : (groupPreview ?? null),
       lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: room.unreadCount,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,
-      lastActivity: room.lastActivity,
+      // The normalized activity line previews the SAME message as `lastMessage`
+      // above, so it has to follow the same language or one row shows two.
+      lastActivity:
+        room.lastActivity && groupPreview
+          ? {
+              ...room.lastActivity,
+              preview: localizedActivityPreview(
+                String(room.lastActivity.preview ?? ""),
+                groupPreview,
+                "GROUP",
+                userId
+              ),
+            }
+          : room.lastActivity,
       lastActivityAt: effectiveAtOf(room.lastActivity, room.lastMessageAt),
       isFriend: null,
       relationshipStatus: null,

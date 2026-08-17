@@ -243,9 +243,10 @@ export class CommunityRoomSyncConsumer {
         }
 
         case "community.meta_synced": {
-          // Rename / avatar change. GeneralRoom.name is the source every
-          // community PUSH TITLE reads (getRoomName), so it must follow the
-          // community row or every future push keeps the old name.
+          // Rename / avatar change. GeneralRoom.name + .logo are the source
+          // every community PUSH title and tray image read (see
+          // `conversationHeader` in publish-message-sent.ts), so they must
+          // follow the community row or every future push keeps the old pair.
           await this.roomRepo.setCommunityMeta(communityId, {
             ...(event.data.name !== undefined ? { name: event.data.name } : {}),
             ...(event.data.avatarUrl !== undefined
