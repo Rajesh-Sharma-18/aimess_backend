@@ -302,6 +302,8 @@ export interface EndCallParams {
   userId: string;
   /** A callee leg that did not answer cannot end the call. */
   legId?: string;
+  /** "NO_ANSWER" when the caller's ring window elapsed (see EndCallRequest). */
+  reason?: "NO_ANSWER";
 }
 export interface EndCallResult {
   callId: string;

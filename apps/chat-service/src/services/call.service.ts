@@ -1064,6 +1064,13 @@ export class CallService {
     callId: string;
     userId: string;
     legId?: string;
+    /**
+     * "NO_ANSWER" — the CALLER's client is ending this call because its ring
+     * window elapsed, not because the user hung up. Advisory: the outcome is
+     * still derived here from the persisted call (see `noAnswer` below), so a
+     * client cannot fabricate one.
+     */
+    reason?: "NO_ANSWER";
   }): Promise<Call & { durationSec: number }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -1108,11 +1115,29 @@ export class CallService {
         )
       : 0;
 
+    // A ring the CALLER let run out is a NO-ANSWER, not a cancellation — the
+    // very outcome the RINGING → MISSED sweep would record a beat later, only
+    // without the wait. That wait is why it never happened in practice: the
+    // client's ring timeout ends the call at the same 60s the server sweep uses,
+    // so the row always settled as CANCELLED first and the caller never saw
+    // "No answer" nor the callee a missed call.
+    //
+    // Every clause is server-side: the call must still be RINGING, must never
+    // have been answered, and the request must come from the caller. So this
+    // only ever picks between two honest readings of one hangup, and the
+    // CONNECTED race is impossible — an answer moves the row to IN_PROGRESS,
+    // and the claim below is scoped to the status read above.
+    const noAnswer =
+      wasRinging &&
+      !call.answeredAt &&
+      params.reason === "NO_ANSWER" &&
+      call.callerId === params.userId;
+
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
       call.status,
       {
-        status: CallStatus.ENDED,
+        status: noAnswer ? CallStatus.MISSED : CallStatus.ENDED,
         endedAt,
         durationSec,
         endedBy: params.userId,
@@ -1127,7 +1152,7 @@ export class CallService {
     }
     const updated: Call = {
       ...call,
-      status: CallStatus.ENDED,
+      status: noAnswer ? CallStatus.MISSED : CallStatus.ENDED,
       endedAt,
       durationSec,
       endedBy: params.userId,
@@ -1139,7 +1164,11 @@ export class CallService {
     // It goes to the CALLER's `self:` channel too — the caller's other devices
     // are showing an outgoing-mirror banner for this ring and would otherwise
     // never learn it was cancelled, leaving the banner up forever.
-    if (wasRinging) {
+    if (noAnswer) {
+      // Identical fan-out to the sweep's — one shared method, so the two paths
+      // to the same outcome can never drift into two different behaviours.
+      await this.fanOutUnansweredRing(updated, endedAt);
+    } else if (wasRinging) {
       const targets = this.ringTargets(call);
       await this.publishToCallAndParticipants(
         updated,
@@ -1399,67 +1428,84 @@ export class CallService {
       const { won } = await this.callRepo.claimForMissed(call.callId, now);
       if (!won) continue;
       flipped++;
-      // Kick this off now so it overlaps with the Redis publishes / chat message
-      // below instead of adding to the tail latency of the loop.
-      const snapshotPromise = this.getUserSnapshot(call.callerId).catch(() => ({
-        displayName: "",
-        avatarUrl: "",
-      }));
-      const payload = JSON.stringify({
-        event: "call:missed",
-        data: { callId: call.callId },
-      });
-      // Fire both publishes in parallel — non-fatal if either fails. GROUP
-      // calls loop the whole rung roster on the self:<id> side.
-      const targets = this.ringTargets(call);
-      await Promise.all([
-        this.redis
-          .publish(`call:${call.callId}`, payload)
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|sweep|publish call room failed: ${String(err)}`
-            )
-          ),
-        ...targets.map((calleeId) =>
-          this.redis
-            .publish(`self:${calleeId}`, payload)
-            .catch((err: unknown) =>
-              logger.warn(
-                `CallService|sweep|publish user room failed calleeId=${calleeId}: ${String(err)}`
-              )
-            )
-        ),
-      ]);
-      for (const calleeId of targets) {
-        publishCallCancelSafe({
-          calleeId,
-          callId: call.callId,
-          reason: "missed",
-          callerId: call.callerId,
-        });
-      }
-      await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
-
-      // Push fallback: the two Redis publishes above only reach a LIVE socket.
-      // A callee whose tab is backgrounded or closed would otherwise never learn
-      // they missed a call — this is the one place that tells them afterward.
-      const callerSnapshot = await snapshotPromise;
-      for (const calleeId of targets) {
-        publishCallMissedSafe({
-          callId: call.callId,
-          calleeId,
-          callerId: call.callerId,
-          callerName: callerSnapshot.displayName,
-          callerAvatar: callerSnapshot.avatarUrl,
-          callType: call.type,
-          missedAt: now.getTime(),
-        });
-      }
+      await this.fanOutUnansweredRing(call, now);
     }
     if (flipped > 0) {
       logger.info(`CallService|sweep|flipped ${flipped} call(s) to MISSED`);
     }
     return flipped;
+  }
+
+  /**
+   * Everything that happens once a ring is known to be unanswered, for BOTH
+   * paths that can discover it: the RINGING → MISSED sweep, and the caller's own
+   * client reporting its ring window elapsed (`endCall` with reason NO_ANSWER).
+   *
+   * Called only by a writer that already WON the atomic status claim, so it runs
+   * exactly once per call — no duplicate card, push or unread increment, even if
+   * the sweep and the caller race. Every step is individually non-fatal.
+   *
+   *  1. `call:missed` on `call:<id>` and each rung callee's `self:<id>` — the
+   *     caller's panel goes to "no answer", the callee's ring UI clears.
+   *  2. A dismissal data-push, so a device that never woke stops ringing.
+   *  3. ONE call card, transitioned in place to MISSED. Both participants read
+   *     that same row; the caller renders "No answer", the callee "Missed call".
+   *  4. The missed-call push, the only thing that tells a backgrounded or
+   *     offline callee afterwards.
+   */
+  private async fanOutUnansweredRing(call: Call, at: Date): Promise<void> {
+    // Kicked off first so it overlaps the publishes below instead of adding to
+    // the tail latency of the sweep loop.
+    const snapshotPromise = this.getUserSnapshot(call.callerId).catch(() => ({
+      displayName: "",
+      avatarUrl: "",
+    }));
+    const payload = JSON.stringify({
+      event: "call:missed",
+      data: { callId: call.callId },
+    });
+    // GROUP calls loop the whole rung roster on the self:<id> side.
+    const targets = this.ringTargets(call);
+    await Promise.all([
+      this.redis
+        .publish(`call:${call.callId}`, payload)
+        .catch((err: unknown) =>
+          logger.warn(
+            `CallService|missed|publish call room failed: ${String(err)}`
+          )
+        ),
+      ...targets.map((calleeId) =>
+        this.redis
+          .publish(`self:${calleeId}`, payload)
+          .catch((err: unknown) =>
+            logger.warn(
+              `CallService|missed|publish user room failed calleeId=${calleeId}: ${String(err)}`
+            )
+          )
+      ),
+    ]);
+    for (const calleeId of targets) {
+      publishCallCancelSafe({
+        calleeId,
+        callId: call.callId,
+        reason: "missed",
+        callerId: call.callerId,
+      });
+    }
+    await this.postCallChatMessageSafe(call, "MISSED", at, 0, "SYSTEM");
+
+    const callerSnapshot = await snapshotPromise;
+    for (const calleeId of targets) {
+      publishCallMissedSafe({
+        callId: call.callId,
+        calleeId,
+        callerId: call.callerId,
+        callerName: callerSnapshot.displayName,
+        callerAvatar: callerSnapshot.avatarUrl,
+        callType: call.type,
+        missedAt: at.getTime(),
+      });
+    }
   }
 
   /**

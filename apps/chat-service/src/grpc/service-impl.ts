@@ -1619,11 +1619,13 @@ export function createMessagingImpl(
             callId?: string;
             userId?: string;
             legId?: string;
+            reason?: string;
           };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
+            reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
           });
           callback(null, {
             callId: result.callId,

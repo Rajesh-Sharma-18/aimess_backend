@@ -932,6 +932,11 @@ export function registerChatNamespace(
   const CallEndSchema = z.object({
     callId: z.string().min(1),
     legId: z.string().min(1).max(128).optional(),
+    // The caller's client reporting that its ring window elapsed rather than
+    // that the user hung up. Closed enum — chat-service re-validates the call
+    // state before it changes the outcome, so this can only ever pick between
+    // two legitimate readings of the same hangup.
+    reason: z.enum(["NO_ANSWER"]).optional(),
   });
   const CallRejoinSchema = z.object({ callId: z.string().min(1) });
 
@@ -1995,6 +2000,7 @@ export function registerChatNamespace(
             callId: r.data.callId,
             userId,
             legId: r.data.legId ?? socket.data.callLegId,
+            reason: r.data.reason,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)
