@@ -448,7 +448,17 @@ export class CommunitySystemMessageService {
             senderName: "",
             lastMessageId: message.id,
             lastMessageAt: serverTs,
-            preview: { contentType: "SYSTEM", text: fallbackText },
+            // The canonical pair rides along so the gateway re-renders this row
+            // in each member's own language rather than fanning out the
+            // write-time English (see publish-conv-updated.ts BumpPreview).
+            // `wireMetadata`, not `enrichedMetadata`: actor-less types must not
+            // leak actor identity onto the wire.
+            preview: {
+              contentType: "SYSTEM",
+              text: fallbackText,
+              systemMessageType,
+              systemMetadata: wireMetadata,
+            },
             // Live-list parity with the REST personalization: the one subject
             // member receives the "You …" preview, everyone else the third-person.
             ...(selfActivity

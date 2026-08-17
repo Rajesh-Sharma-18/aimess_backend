@@ -42,6 +42,21 @@ interface BumpPreview {
    * refetch. Passed straight through into the bumped `lastMessage`.
    */
   systemAction?: CommunityInvitationSystemAction | GroupInvitationSystemAction;
+  /**
+   * SYSTEM rows only — the canonical event behind `text`, so the gateway can
+   * re-render the sentence in each recipient's own language instead of fanning
+   * out the one baked at write time (`STORED_TEXT_LOCALE`, English). See
+   * `api-gateway/src/sockets/system-message-personalize.ts`.
+   *
+   * `systemEvent`/`systemData` are the private+group pair (the same names the
+   * message row and `message:new` use); `systemMessageType`/`systemMetadata` are
+   * the community pair. Optional: a bump without them keeps `text` verbatim, so
+   * every non-SYSTEM caller and every already-published payload is unchanged.
+   */
+  systemEvent?: string;
+  systemData?: Record<string, unknown>;
+  systemMessageType?: string;
+  systemMetadata?: Record<string, unknown>;
 }
 
 /**

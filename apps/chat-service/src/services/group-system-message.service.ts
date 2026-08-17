@@ -319,7 +319,10 @@ export class GroupSystemMessageService {
           senderId: "",
           lastMessageId: message.id,
           lastMessageAt: sysServerTs,
-          preview: { contentType: messageType, text },
+          // `text` is the write-time English; the canonical pair travels with it
+          // so the gateway can re-render the row in each recipient's language
+          // (see publish-conv-updated.ts BumpPreview).
+          preview: { contentType: messageType, text, systemEvent, systemData },
           countInUnread: false,
           ...(subjectUserId && selfPreview
             ? { subjectUserId, selfPreview }
@@ -508,7 +511,12 @@ export class GroupSystemMessageService {
           senderId: "",
           lastMessageId: message.id,
           lastMessageAt: serverTs,
-          preview: { contentType: messageType, text },
+          preview: {
+            contentType: messageType,
+            text,
+            systemEvent: params.systemEvent,
+            systemData,
+          },
           countInUnread: false,
         });
       }
