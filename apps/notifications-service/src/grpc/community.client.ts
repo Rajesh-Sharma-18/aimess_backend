@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
+import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 
@@ -95,7 +96,15 @@ export interface CommunityBrief {
  */
 const BRIEF_FAIL_OPEN: CommunityBrief | null = null;
 
+export interface GetCommunityNotifiableMemberIdsParams {
+  communityId: string;
+  field: "chatEnabled" | "streamEnabled" | "announcementEnabled";
+}
+
 export interface CommunityClient {
+  getCommunityNotifiableMemberIds(
+    p: GetCommunityNotifiableMemberIdsParams
+  ): Promise<GetCommunityActiveMemberIdsResult>;
   checkCommunityMute(
     p: CheckCommunityMuteParams
   ): Promise<CheckCommunityMuteResult>;
@@ -202,8 +211,28 @@ export function createCommunityClient(): CommunityClient {
     }
   );
   briefBreaker.fallback(() => BRIEF_FAIL_OPEN);
+  const notifiableBreaker = makeBreaker(
+    "community.getCommunityNotifiableMemberIds",
+    (p: GetCommunityNotifiableMemberIdsParams) =>
+      makeGrpcCall<unknown, GetCommunityActiveMemberIdsResult>(
+        client,
+        "getCommunityNotifiableMemberIds",
+        { communityId: p.communityId, field: p.field }
+      )
+  );
+  // Loud: this fallback suppresses an ENTIRE community fan-out, and the breaker
+  // holds open for resetTimeout (10s) — so one blip silences every community push
+  // in that window. Silent before, it was indistinguishable from "roster is
+  // legitimately empty", which is exactly how dropped pushes went undiagnosed.
+  notifiableBreaker.fallback(() => {
+    logger.warn(
+      "community.getCommunityNotifiableMemberIds fail-closed — community push fan-out SUPPRESSED"
+    );
+    return ACTIVE_MEMBERS_FAIL_CLOSED;
+  });
 
   return {
+    getCommunityNotifiableMemberIds: (p) => notifiableBreaker.fire(p),
     checkCommunityMute: (p) => muteBreaker.fire(p),
     checkCommunityNotificationPref: (p) => prefBreaker.fire(p),
     checkCommunityMembership: (p) => membershipBreaker.fire(p),

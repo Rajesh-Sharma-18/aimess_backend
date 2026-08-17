@@ -68,6 +68,42 @@ const INVALID_TOKEN_CODES = new Set([
   "messaging/invalid-argument",
 ]);
 
+/** Transient transport failures — retrying helps, unlike a dead token or bad payload. */
+const RETRYABLE_CODES = new Set([
+  "messaging/server-unavailable",
+  "messaging/internal-error",
+  "messaging/unknown-error",
+  "messaging/quota-exceeded",
+]);
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * FCM's transport fails transiently far more often than permanently, and a single
+ * throw used to lose the notification outright — the caller only logs it, nothing
+ * retries, and the RabbitMQ message is already being ACKed. Three attempts with
+ * backoff. Anything non-retryable (dead token, malformed payload) rethrows at once
+ * so the caller's INVALID_TOKEN_CODES classifier still runs unchanged.
+ */
+async function sendWithRetry(
+  message: Parameters<typeof messaging.send>[0]
+): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await messaging.send(message);
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : "";
+      if (attempt >= 2 || !RETRYABLE_CODES.has(code)) throw error;
+      logger.warn(`FCM transient failure (${code}) — retry ${attempt + 1}/2`);
+      await sleep(200 * 2 ** attempt);
+    }
+  }
+}
+
 export interface SendPushResult {
   /** The FCM message id when delivered, else null. */
   messageId: string | null;
@@ -119,7 +155,7 @@ export async function sendPush({
   const image = /^https?:\/\//i.test(imageUrl ?? "") ? imageUrl : undefined;
 
   try {
-    const messageId = await messaging.send({
+    const messageId = await sendWithRetry({
       token,
       ...(omitNotification
         ? {}
