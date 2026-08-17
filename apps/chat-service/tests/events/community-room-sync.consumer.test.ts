@@ -34,6 +34,11 @@ jest.mock("../../src/events/publish-message-sent.js", () => ({
   publishMessageSentSafe,
 }));
 
+const notifyUnreadChanged = jest.fn();
+jest.mock("../../src/events/unread-summary-bridge.js", () => ({
+  notifyUnreadChanged,
+}));
+
 jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
@@ -139,6 +144,36 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     deletePersonalJoinMessages.mockResolvedValue([]);
     upsert.mockClear();
     redisPublish.mockClear();
+    notifyUnreadChanged.mockClear();
+  });
+
+  // The Community nav badge is summed from ACTIVE membership rows only
+  // (RoomMemberRepository.findActiveByUser), so any status flip silently changes
+  // the total: a ban/leave subtracts that room's unread, a rejoin adds it back.
+  // Nothing else recomputes it, so without this the badge kept its pre-ban value
+  // until the user's next mark-read or reconnect.
+  it.each(["BANNED", "LEFT", "ACTIVE"])(
+    "%s sync recomputes the user's unread summary",
+    async (status) => {
+      const fake = await start();
+      await fake.deliver(
+        memberSynced({
+          communityId: COMMUNITY,
+          userId: USER,
+          status,
+          eventAt: EVENT_AT,
+        })
+      );
+      expect(notifyUnreadChanged).toHaveBeenCalledWith(USER);
+    }
+  );
+
+  it("role-only sync does NOT recompute the badge (membership is unchanged)", async () => {
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({ communityId: COMMUNITY, userId: USER, role: "MODERATOR" })
+    );
+    expect(notifyUnreadChanged).not.toHaveBeenCalled();
   });
 
   it("LEFT purges the user's join lines bounded by eventAt, and acks", async () => {

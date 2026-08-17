@@ -25,6 +25,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 
 /** community member status → chat RoomMember status. */
 export function mapMemberStatus(status: string | undefined): string | null {
@@ -273,6 +274,14 @@ export class CommunityRoomSyncConsumer {
           logger.debug(
             `Synced RoomMember community=${communityId} user=${userId} status=${String(data.status ?? "-")} role=${String(data.role ?? "-")}`
           );
+
+          // A status flip changes what the Community nav badge sums: the total
+          // comes from findActiveByUser, which counts ACTIVE rows only, so a ban /
+          // leave / removal silently subtracts that room's unread and a rejoin
+          // adds it back. Nothing else recomputes the badge, so without this it
+          // kept the pre-transition total until the user's next mark-read or
+          // reconnect. Coalesced per user downstream; fire-and-forget.
+          if (data.status) notifyUnreadChanged(userId);
 
           // Membership-lifecycle cleanup (Telegram parity): when a membership
           // goes INACTIVE (left / removed / banned), hard-delete the user's
