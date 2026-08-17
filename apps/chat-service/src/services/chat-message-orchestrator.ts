@@ -793,9 +793,15 @@ export class ChatMessageOrchestrator {
         conversationId: params.communityId,
         conversationType: "COMMUNITY",
         communityId: params.communityId,
+        // The locally-mirrored GeneralRoom.name is the authoritative name here
+        // (kept current by `community.meta_synced`). `params.communityName`
+        // comes off the REQUEST BODY — a client that hasn't seen the rename
+        // sends the old name — so it is only a fallback for a room whose
+        // mirror hasn't been provisioned yet, never an override.
         communityName:
+          (await this.communityMessageService.getRoomName(params.roomId)) ||
           params.communityName ||
-          (await this.communityMessageService.getRoomName(params.roomId)),
+          "",
         messageId: saved.id,
         clientMessageId,
         senderId: params.senderId,

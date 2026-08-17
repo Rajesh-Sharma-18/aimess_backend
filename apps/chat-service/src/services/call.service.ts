@@ -1767,9 +1767,20 @@ export class CallService {
   ): Promise<void> {
     if (call.groupId) return;
     const empty = { displayName: "", avatarUrl: "" };
+    // Total isolation from the snapshot lookup: a rejection, a synchronous
+    // throw, or an absent resolver must never break a terminal call
+    // transition. The read path re-resolves name/avatar from `actorId` anyway,
+    // so these values are only a fallback.
+    const snapshot = async (userId: string): Promise<CallPeerSnapshot> => {
+      try {
+        return (await this.getUserSnapshot(userId)) ?? empty;
+      } catch {
+        return empty;
+      }
+    };
     const [caller, callee] = await Promise.all([
-      this.getUserSnapshot(call.callerId).catch(() => empty),
-      this.getUserSnapshot(call.calleeId).catch(() => empty),
+      snapshot(call.callerId),
+      snapshot(call.calleeId),
     ]);
     publishCallActivitySafe({
       callId: call.callId,

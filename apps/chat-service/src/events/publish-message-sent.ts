@@ -108,6 +108,15 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         senderId: p.senderId,
         senderName: p.senderName,
         senderAvatar,
+        // Group identity: resolved fresh from GroupRoom on every send (see
+        // chat-message-orchestrator's getPushHeader call). These were declared
+        // on the payload but never copied onto the wire, so a GROUP push had no
+        // group name to title on at all — renamed or not.
+        ...(p.groupName ? { groupName: p.groupName } : {}),
+        ...(p.conversationAvatar
+          ? { conversationAvatar: p.conversationAvatar }
+          : {}),
+        ...(p.canReply !== undefined ? { canReply: p.canReply } : {}),
         preview: p.preview,
         ...(previewImageUrl ? { previewImageUrl } : {}),
         messageType: p.messageType,

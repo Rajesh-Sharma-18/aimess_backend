@@ -242,6 +242,22 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.meta_synced": {
+          // Rename / avatar change. GeneralRoom.name is the source every
+          // community PUSH TITLE reads (getRoomName), so it must follow the
+          // community row or every future push keeps the old name.
+          await this.roomRepo.setCommunityMeta(communityId, {
+            ...(event.data.name !== undefined ? { name: event.data.name } : {}),
+            ...(event.data.avatarUrl !== undefined
+              ? { logo: event.data.avatarUrl }
+              : {}),
+          });
+          logger.debug(
+            `community.meta_synced: room metadata refreshed for ${communityId}`
+          );
+          break;
+        }
+
         case "community.visibility_changed": {
           const communityType = event.data.communityType;
           if (communityType === "PUBLIC" || communityType === "PRIVATE") {
