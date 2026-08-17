@@ -2,6 +2,7 @@ import { UnauthorizedError } from "@aimess/errors";
 import { OAuth2Client } from "google-auth-library";
 
 import { env } from "../config/env.js";
+import { resolveSocialProfileName } from "./social-profile-name.js";
 
 /** Normalized profile extracted from a verified Google ID token. */
 export type GoogleTokenProfile = {
@@ -10,6 +11,15 @@ export type GoogleTokenProfile = {
   email: string | null;
   emailVerified: boolean;
   displayName: string | null;
+  /** Token `given_name`, or the leading part of `name` when Google omits it. */
+  firstName: string | null;
+  /** Token `family_name`, or the trailing part of `name` when Google omits it. */
+  lastName: string | null;
+  /**
+   * Token `picture` — Google's avatar URL. Carried for completeness; NOT
+   * persisted, see the note in social-auth.service.
+   */
+  pictureUrl: string | null;
 };
 
 let cachedClient: OAuth2Client | null = null;
@@ -78,9 +88,17 @@ export async function verifyGoogleIdToken(
       ? payload.email.trim().toLowerCase()
       : null;
 
-  const displayName =
-    typeof payload.name === "string" && payload.name.trim().length > 0
-      ? payload.name.trim()
+  // Names come from the SIGNED token payload only — never from the request
+  // body — so a client cannot claim someone else's identity details.
+  const { firstName, lastName, displayName } = resolveSocialProfileName({
+    givenName: payload.given_name,
+    familyName: payload.family_name,
+    fullName: payload.name,
+  });
+
+  const pictureUrl =
+    typeof payload.picture === "string" && payload.picture.trim().length > 0
+      ? payload.picture.trim()
       : null;
 
   return {
@@ -88,5 +106,8 @@ export async function verifyGoogleIdToken(
     email,
     emailVerified: payload.email_verified === true,
     displayName,
+    firstName,
+    lastName,
+    pictureUrl,
   };
 }

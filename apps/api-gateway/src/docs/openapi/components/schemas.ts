@@ -4061,7 +4061,20 @@ export const openApiSchemas = {
         description:
           "Optional. Apple only includes `email` in the identity token on the FIRST authorization; clients should cache it and resend on subsequent logins. Never trusted as verified — used only as a display fallback.",
       },
-      fullName: { type: "string", maxLength: 100 },
+      fullName: {
+        description:
+          "Optional. Apple returns the user's name ONLY in the first authorization response (never in the identity token). Send the structured object; the plain string is accepted for backward compatibility. Used solely to seed a brand-new profile — later logins sending null/omitted values never overwrite a stored name.",
+        oneOf: [
+          { type: "string", maxLength: 100 },
+          {
+            type: "object",
+            properties: {
+              givenName: { type: "string", maxLength: 50, nullable: true },
+              familyName: { type: "string", maxLength: 50, nullable: true },
+            },
+          },
+        ],
+      },
     },
     required: ["identityToken"],
   },

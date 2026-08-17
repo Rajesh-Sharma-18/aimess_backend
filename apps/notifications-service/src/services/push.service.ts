@@ -98,9 +98,12 @@ const INBOX_ALLOWED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_BANNED,
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
-  // Unlike CALL_INCOMING (a live ring, skipInbox:true — stale once missed), a
-  // missed call is exactly the kind of thing a user wants to find later.
-  "CALL_MISSED",
+  // Call HISTORY — one row per call per participant, written by the
+  // `call.activity` projection (consumers/call.consumer.ts) from the canonical
+  // terminal CallTimelineStatus. The live ring (CALL_INCOMING) and the
+  // missed-call push (CALL_MISSED) stay push-only: they are live events, and
+  // letting either write here too would put two cards on one call.
+  "call.activity",
 
   // ── System / account-level ──────────────────────────────────────────────
   // These map to the SYSTEM tab in the Notification Center (categoryWhere).
@@ -240,6 +243,15 @@ export interface PushInput {
    */
   allowVoip?: boolean;
   /**
+   * Inbox-only: write the Notification-Center row and send NO push.
+   *
+   * The mirror image of `skipInbox`. Used by the call-history projection,
+   * whose live counterpart (the ring, the missed-call alert) was already
+   * pushed by its own producer — pushing again here would notify twice for
+   * one call. Settings/quiet-hours gating still applies to the row.
+   */
+  skipPush?: boolean;
+  /**
    * Skip the device that originated the action. The read-dismiss push uses it so the device
    * where the conversation was read is not told to dismiss what it already cleared.
    */
@@ -281,6 +293,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     bypassSettings = false,
     showPreviewOverride,
     skipInbox = false,
+    skipPush = false,
     dataOnly = false,
     allowVoip = false,
     excludeDeviceId,
@@ -420,6 +433,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
       logger.warn(error);
     }
   }
+
+  // Inbox-only projection (call history): the row IS the deliverable and there
+  // is no device to wake — anything time-critical about the same call was
+  // already pushed by the ring / missed-call producer.
+  if (skipPush) return;
 
   // Quiet hours: the inbox row above is written and the badge bumps, but no
   // device is woken. The user finds it waiting when the window ends.

@@ -133,11 +133,13 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   const category = isCommunity ? "communityEnabled" : "chatEnabled";
 
-  // For community messages: title = community name (if known), body = "Sender: preview".
-  // For private/group: title = sender name, body = preview text.
+  // Community/group messages: title = room name (if known), body = "Sender: preview".
+  // Private: title = sender name, body = preview text.
+  const isGroup = data.conversationType === "GROUP";
   const copy = chatCopy.message({
     isCommunity,
     communityName: data.communityName,
+    ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
     senderName: data.senderName,
     preview: data.preview,
   });
@@ -166,7 +168,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   const showPreviewOverride = (locale: SupportedLocale): string =>
     chatCopy.messagePreviewHidden(
-      isCommunity ? data.communityName : undefined,
+      isCommunity ? data.communityName : isGroup ? data.groupName : undefined,
       locale
     );
 

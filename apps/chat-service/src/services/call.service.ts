@@ -32,6 +32,7 @@ import {
   publishCallMissedSafe,
   publishCallCancelSafe,
   publishCallHandledPushSafe,
+  publishCallActivitySafe,
 } from "../events/publish-call-incoming.js";
 import { CallStatus, CallType, SystemEvent } from "../types/enums.js";
 
@@ -1710,6 +1711,16 @@ export class CallService {
       );
       return;
     }
+    // Call HISTORY (Notification Center → Friends) is projected from the same
+    // terminal transition as the chat card, and from this one choke point, so
+    // every lifecycle call site is covered by construction and no live or
+    // intermediate state can leak a card. Deliberately outside the
+    // `callChatMessages` guard below: the history row does not depend on the
+    // chat timeline row having been written.
+    if (isTerminalCallStatus(outcome)) {
+      await this.projectCallActivitySafe(call, outcome, endedAt, durationSec);
+    }
+
     if (!this.callChatMessages) return;
     try {
       await this.callChatMessages.post({
@@ -1729,6 +1740,51 @@ export class CallService {
         `CallService|chat message failed callId=${call.callId} outcome=${outcome}: ${String(error)}`
       );
     }
+  }
+
+  /**
+   * Projects a settled 1:1 call into both participants' call history (the
+   * Notification Center's FRIENDS tab), over the existing call push queue.
+   *
+   * Reuses the canonical record wholesale: the terminal `CallTimelineStatus`,
+   * the call row's own `type`, and its stored `durationSec` — no second call
+   * state machine and no duration re-derivation. Direction is resolved per
+   * recipient downstream from `callerId`, never from text.
+   *
+   * PRIVATE calls only. A group/community call is group activity and belongs
+   * to the group timeline (see postGroupCallChatMessageSafe) — routing it into
+   * FRIENDS would miscategorise it.
+   *
+   * Best-effort throughout: the publish is fire-and-forget and both snapshot
+   * lookups degrade to empty strings (the read path re-resolves the peer's
+   * name/avatar from `actorId` anyway).
+   */
+  private async projectCallActivitySafe(
+    call: Call,
+    outcome: CallChatMessageOutcome,
+    endedAt: Date,
+    durationSec: number
+  ): Promise<void> {
+    if (call.groupId) return;
+    const empty = { displayName: "", avatarUrl: "" };
+    const [caller, callee] = await Promise.all([
+      this.getUserSnapshot(call.callerId).catch(() => empty),
+      this.getUserSnapshot(call.calleeId).catch(() => empty),
+    ]);
+    publishCallActivitySafe({
+      callId: call.callId,
+      callerId: call.callerId,
+      calleeId: call.calleeId,
+      callType: String(call.type ?? "").toUpperCase() || CallType.AUDIO,
+      status: outcome,
+      durationSec: Math.max(0, Math.floor(durationSec)),
+      privateRoomId: call.privateRoomId ?? "",
+      endedAt: endedAt.getTime(),
+      callerName: caller.displayName ?? "",
+      callerAvatar: caller.avatarUrl ?? "",
+      calleeName: callee.displayName ?? "",
+      calleeAvatar: callee.avatarUrl ?? "",
+    });
   }
 
   /**

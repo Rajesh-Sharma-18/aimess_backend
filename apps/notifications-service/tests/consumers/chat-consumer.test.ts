@@ -581,6 +581,109 @@ describe("startChatConsumer — private room mute suppression", () => {
 });
 
 /**
+ * Push TITLE = the room name carried by THIS event.
+ *
+ * The stale-name bug: chat-service resolved the community name from a mirror
+ * that was never updated on rename, so every later push repeated the old name.
+ * This consumer is the last hop before FCM/APNs, so the lock here is "whatever
+ * name arrives on the event is what the push says" — a renamed community/group
+ * publishes the new name and the title follows it, with no cached name of its
+ * own to go stale.
+ */
+describe("startChatConsumer — push title tracks the event's room name", () => {
+  let consume: ConsumeCallback;
+
+  type PushShape = {
+    copy: (locale: string) => { title: string; body: string };
+    data: Record<string, string>;
+    showPreviewOverride?: (locale: string) => string;
+  };
+
+  const pushFor = (recipient = "recipient-uuid"): PushShape => {
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => PushShape,
+    ];
+    return builderFn(recipient);
+  };
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    pushMany.mockClear();
+    isMutedMock.mockReset();
+    isMutedMock.mockResolvedValue(false);
+    filterActiveMock.mockReset();
+    filterActiveMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+    isGroupMutedMock.mockReset();
+    isGroupMutedMock.mockResolvedValue(false);
+  });
+
+  it("COMMUNITY renamed → title is the NEW name from the event, body is 'Sender: preview'", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+        communityName: "Mot u Patlu Community Official",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Mot u Patlu Community Official");
+    expect(push.copy("en").body).toBe("Alice: Hello!");
+    expect(push.data.communityName).toBe("Mot u Patlu Community Official");
+    // Preview-off recipients still get the CURRENT name, never the old one.
+    expect(push.showPreviewOverride?.("en")).toBe(
+      "New message in Mot u Patlu Community Official"
+    );
+  });
+
+  it("GROUP renamed → title is the NEW group name (regression: groupName was dropped on the wire)", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Family Group 2026",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Family Group 2026");
+    expect(push.copy("en").body).toBe("Alice: Hello!");
+    expect(push.data.groupName).toBe("Family Group 2026");
+    expect(push.showPreviewOverride?.("en")).toBe(
+      "New message in Family Group 2026"
+    );
+  });
+
+  it("PRIVATE → still titles on the sender (no room name involved)", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Alice");
+    expect(push.copy("en").body).toBe("Hello!");
+    expect(push.showPreviewOverride?.("en")).toBe("New message");
+  });
+
+  it("GROUP with no name on the event → falls back to the sender, never a stale name", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "GROUP" }));
+    await flush();
+
+    expect(pushFor().copy("en").title).toBe("Alice");
+  });
+});
+
+/**
  * Group-room mute must suppress push notifications ONLY — mirrors the
  * private-room mute describe block above, but the mute setting lives on the
  * per-membership GroupMember row (checked via isGroupMemberMuted) rather than

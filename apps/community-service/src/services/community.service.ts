@@ -160,6 +160,7 @@ import {
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityMemberMuteRetractedForChatSafe,
+  publishCommunityMetaSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -2628,6 +2629,21 @@ export const communityService = {
         },
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
+      });
+    }
+    // Rename / avatar change: re-sync chat-service's GeneralRoom mirror. That
+    // mirror IS the community name every future push title is built from
+    // (getRoomName → chat.message_sent.communityName → FCM/APNs title), and it
+    // was previously written only once at `community.created` — so without this
+    // every push after a rename kept the old name indefinitely. Publishes the
+    // post-write row, never the pre-write snapshot.
+    if (changedFields.includes("name") || changedFields.includes("avatar")) {
+      publishCommunityMetaSyncedForChatSafe({
+        communityId,
+        ...(changedFields.includes("name") ? { name: updated.name } : {}),
+        ...(changedFields.includes("avatar")
+          ? { avatarUrl: updated.avatarUrl ?? null }
+          : {}),
       });
     }
     // Visibility changed (PUBLIC↔PRIVATE): re-sync the cached community type in

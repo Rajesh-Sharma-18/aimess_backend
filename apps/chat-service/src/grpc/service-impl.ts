@@ -4124,7 +4124,11 @@ export function createNotificationImpl(
                 row,
                 req.userId as string
               );
-              const { excludeSessionId: _excl, ...clientData } = data;
+              const {
+                excludeSessionId: _excl,
+                markRead: _markRead,
+                ...clientData
+              } = data;
               await publishUserSocketEvent(
                 redis,
                 req.userId as string,
@@ -4281,6 +4285,15 @@ export function createNotificationImpl(
               data,
             },
             groupKey,
+            // Producer-declared read-on-arrival. Call history uses it so your
+            // OWN outgoing call, and a call you were present for, land as log
+            // entries instead of badging you — only a call you never answered
+            // arrives unread. It can only ever make a row LESS noisy, and it
+            // travels in `data` like every other publish-time directive
+            // (groupKey, resurface, excludeSessionId).
+            ...(data.markRead === "true"
+              ? { isRead: true, readAt: new Date() }
+              : {}),
           });
 
           await publishRow("notification:new", created);

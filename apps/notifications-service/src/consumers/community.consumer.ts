@@ -31,6 +31,7 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { communityClient } from "../grpc/community.client.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { communityCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
@@ -86,6 +87,38 @@ function base(
       navigation: JSON.stringify(navigation),
     },
   };
+}
+
+/**
+ * The community name the copy must show. Moderation, invite, report and
+ * lifecycle payloads never carried `communityName`, so every one of their pushes
+ * rendered the `NOTIF_UNNAMED_COMMUNITY` placeholder ("Your community") as its
+ * TITLE — read by users as a real community name. Fall back to the authoritative
+ * Community record (community-service owns it) instead of to a placeholder.
+ *
+ * Returns "" only when the community genuinely cannot be resolved (deleted, or a
+ * community-service outage); the copy layer then still renders its generic line
+ * rather than a fabricated name, and the failure is logged.
+ */
+async function communityNameFor(
+  communityId: string,
+  carried?: string | null
+): Promise<string> {
+  // Payload-carried names are captured at emit time — current by definition, and
+  // one fewer round-trip. Only the gap-filling lookup costs an RPC.
+  const fromPayload = carried?.trim();
+  if (fromPayload) return fromPayload;
+
+  const brief = await communityClient.getCommunityBrief(communityId);
+  const resolved = brief?.name?.trim();
+  if (!resolved) {
+    logger.warn("Community name unresolved for notification", {
+      communityId,
+      resolutionFailed: true,
+    });
+    return "";
+  }
+  return resolved;
 }
 
 /**
@@ -375,19 +408,23 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_ADDED: {
       const p = data as CommunityMemberAddedPayload;
+      const communityName = await communityNameFor(
+        p.communityId,
+        p.communityName
+      );
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
         await pushToUser({
           userId: p.targetUserId,
-          copy: communityCopy.memberAdded(p.communityName),
+          copy: communityCopy.memberAdded(communityName),
           ...base(
             type,
             p.communityId,
             p.actorId,
             {
               via: p.via,
-              ...(p.communityName ? { communityName: p.communityName } : {}),
+              ...(communityName ? { communityName } : {}),
               ...(p.requestId ? { requestId: p.requestId } : {}),
             },
             buildDeepLink("community", p.communityId),
@@ -404,7 +441,7 @@ async function handleCommunityEvent(
       if (mods.length > 0) {
         await pushToUsers(mods, (userId) => ({
           userId,
-          copy: communityCopy.memberAddedForModerators(p.communityName),
+          copy: communityCopy.memberAddedForModerators(communityName),
           ...base(
             type,
             p.communityId,
@@ -412,7 +449,7 @@ async function handleCommunityEvent(
             {
               via: p.via,
               joinedUserId: p.targetUserId,
-              ...(p.communityName ? { communityName: p.communityName } : {}),
+              ...(communityName ? { communityName } : {}),
             },
             buildDeepLink("community", p.communityId),
             "communityEnabled",
@@ -426,14 +463,15 @@ async function handleCommunityEvent(
 
     case CommunityEvents.ADMIN_TRANSFERRED: {
       const p = data as CommunityAdminTransferredPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.adminTransferred(),
+        copy: communityCopy.adminTransferred(communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
-          { reason: p.reason },
+          { reason: p.reason, communityName },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
           { screen: "COMMUNITY_DETAILS" },
@@ -445,9 +483,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_ROLE_CHANGED: {
       const p = data as CommunityMemberRoleChangedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.roleChanged(p.newRole),
+        copy: communityCopy.roleChanged(p.newRole, communityName),
         ...base(
           type,
           p.communityId,
@@ -455,6 +494,7 @@ async function handleCommunityEvent(
           {
             oldRole: p.oldRole,
             newRole: p.newRole,
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -467,9 +507,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_KICKED: {
       const p = data as CommunityMemberKickedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberKicked(),
+        copy: communityCopy.memberKicked(communityName),
         bypassSettings: true,
         ...base(
           type,
@@ -477,6 +518,7 @@ async function handleCommunityEvent(
           p.actorId,
           {
             reason: p.reason ?? "",
+            communityName,
           },
           buildDeepLink("communities"),
           "communityEnabled",
@@ -489,9 +531,13 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_BANNED: {
       const p = data as CommunityMemberBannedPayload;
+      const communityName = await communityNameFor(
+        p.communityId,
+        p.communityName
+      );
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberBanned(p.communityName),
+        copy: communityCopy.memberBanned(communityName),
         bypassSettings: true,
         ...base(
           type,
@@ -499,7 +545,7 @@ async function handleCommunityEvent(
           p.actorId,
           {
             reason: p.reason ?? "",
-            communityName: p.communityName ?? "",
+            communityName,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
           buildDeepLink("communities"),
@@ -513,15 +559,19 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_UNBANNED: {
       const p = data as CommunityMemberUnbannedNotifyPayload;
+      const communityName = await communityNameFor(
+        p.communityId,
+        p.communityName
+      );
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberUnbanned(p.communityName),
+        copy: communityCopy.memberUnbanned(communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
           {
-            communityName: p.communityName ?? "",
+            communityName,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
           buildDeepLink("communities"),
@@ -535,9 +585,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_MUTED: {
       const p = data as CommunityMemberMutedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberMuted(p.mutedUntil),
+        copy: communityCopy.memberMuted(p.mutedUntil, communityName),
         ...base(
           type,
           p.communityId,
@@ -545,6 +596,7 @@ async function handleCommunityEvent(
           {
             reason: p.reason ?? "",
             mutedUntil: p.mutedUntil ?? "",
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -557,14 +609,15 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_UNMUTED: {
       const p = data as CommunityMemberUnmutedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberUnmuted(),
+        copy: communityCopy.memberUnmuted(communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
-          {},
+          { communityName },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
           { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
@@ -576,14 +629,15 @@ async function handleCommunityEvent(
 
     case CommunityEvents.MEMBER_WARNED: {
       const p = data as CommunityMemberWarnedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.targetUserId,
-        copy: communityCopy.memberWarned(p.note),
+        copy: communityCopy.memberWarned(p.note, communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
-          { note: p.note },
+          { note: p.note, communityName },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
           { screen: "COMMUNITY_DETAILS", userId: p.targetUserId },
@@ -600,9 +654,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.INVITE_SENT: {
       const p = data as CommunityInviteSentPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.inviteeId,
-        copy: communityCopy.inviteSent(),
+        copy: communityCopy.inviteSent(communityName),
         ...base(
           type,
           p.communityId,
@@ -610,6 +665,7 @@ async function handleCommunityEvent(
           {
             inviteId: p.inviteId,
             inviterId: p.inviterId,
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -622,10 +678,11 @@ async function handleCommunityEvent(
 
     case CommunityEvents.INVITE_ACCEPTED: {
       const p = data as CommunityInviteAcceptedPayload;
+      const communityName = await communityNameFor(p.communityId);
       // Notify the original inviter that their invite was accepted.
       await pushToUser({
         userId: p.inviterId,
-        copy: communityCopy.inviteAccepted(),
+        copy: communityCopy.inviteAccepted(communityName),
         ...base(
           type,
           p.communityId,
@@ -633,6 +690,7 @@ async function handleCommunityEvent(
           {
             inviteId: p.inviteId,
             acceptedById: p.userId,
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -655,9 +713,13 @@ async function handleCommunityEvent(
         (id) => id !== p.reporterId
       );
       if (recipients.length === 0) break;
+      const communityName = await communityNameFor(
+        p.communityId,
+        p.communityName
+      );
       await pushToUsers(recipients, (userId) => ({
         userId,
-        copy: communityCopy.reportCreated(p.communityName),
+        copy: communityCopy.reportCreated(communityName),
         ...base(
           type,
           p.communityId,
@@ -666,7 +728,7 @@ async function handleCommunityEvent(
             reportId: p.reportId,
             reporterId: p.reporterId,
             targetUserId: p.targetUserId ?? "",
-            communityName: p.communityName ?? "",
+            communityName,
             communityAvatarUrl: p.communityAvatarUrl ?? "",
           },
           buildDeepLink("community", p.communityId),
@@ -684,9 +746,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.REPORT_ACTIONED: {
       const p = data as CommunityReportActionedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.reporterId,
-        copy: communityCopy.reportActioned(),
+        copy: communityCopy.reportActioned(communityName),
         ...base(
           type,
           p.communityId,
@@ -694,6 +757,7 @@ async function handleCommunityEvent(
           {
             reportId: p.reportId,
             targetUserId: p.targetUserId ?? "",
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -710,9 +774,10 @@ async function handleCommunityEvent(
 
     case CommunityEvents.REPORT_RESOLVED: {
       const p = data as CommunityReportResolvedPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUser({
         userId: p.reporterId,
-        copy: communityCopy.reportResolved(),
+        copy: communityCopy.reportResolved(communityName),
         ...base(
           type,
           p.communityId,
@@ -721,6 +786,7 @@ async function handleCommunityEvent(
             reportId: p.reportId,
             targetUserId: p.targetUserId ?? "",
             resolution: p.resolution,
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
@@ -737,15 +803,18 @@ async function handleCommunityEvent(
 
     case CommunityEvents.DELETED: {
       const p = data as CommunityDeletedPayload;
+      // Deletion is soft — community-service still returns the row, so the push
+      // can name what was deleted instead of "Your community was deleted".
+      const communityName = await communityNameFor(p.communityId);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        copy: communityCopy.deleted(),
+        copy: communityCopy.deleted(communityName),
         bypassSettings: true,
         ...base(
           type,
           p.communityId,
           p.actorId,
-          { reason: p.reason },
+          { reason: p.reason, communityName },
           buildDeepLink("communities"),
           "communityEnabled",
           { screen: "COMMUNITY_LIST" },
@@ -757,14 +826,15 @@ async function handleCommunityEvent(
 
     case CommunityEvents.CLOSED: {
       const p = data as CommunityClosedNotifyPayload;
+      const communityName = await communityNameFor(p.communityId);
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        copy: communityCopy.closed(),
+        copy: communityCopy.closed(communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
-          { reason: p.reason ?? "" },
+          { reason: p.reason ?? "", communityName },
           buildDeepLink("communities"),
           "communityEnabled",
           { screen: "COMMUNITY_LIST" },
@@ -778,15 +848,19 @@ async function handleCommunityEvent(
       // Members are never evicted on close, so `memberIds` is the same full
       // roster the CLOSED push reached — notify all of them, mirroring CLOSED.
       const p = data as CommunityReopenedNotifyPayload;
+      const communityName = await communityNameFor(
+        p.communityId,
+        p.communityName
+      );
       await pushToUsers(p.memberIds, (userId) => ({
         userId,
-        copy: communityCopy.reopened(p.communityName),
+        copy: communityCopy.reopened(communityName),
         ...base(
           type,
           p.communityId,
           p.actorId,
           {
-            communityName: p.communityName,
+            communityName,
           },
           buildDeepLink("community", p.communityId),
           "communityEnabled",
