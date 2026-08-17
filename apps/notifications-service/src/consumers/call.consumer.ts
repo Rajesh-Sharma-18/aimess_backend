@@ -33,14 +33,6 @@ const CALL_PUSH_QUEUE = "call.push.queue";
  */
 const CALL_ACTIVITY_TYPE = "call.activity";
 
-/**
- * Inbox type for call HISTORY. One type, not one per outcome — the outcome is
- * the canonical `CallTimelineStatus` in `data.callStatus`, so there is no second
- * call-state enum to keep in sync. The `call.` prefix is what routes it to the
- * FRIENDS tab (see chat-service lib/notification-category.ts).
- */
-const CALL_ACTIVITY_TYPE = "call.activity";
-
 interface CallIncomingPayload {
   callId: string;
   calleeId: string;
@@ -88,105 +80,6 @@ interface CallActivityPayload {
   callerAvatar: string;
   calleeName: string;
   calleeAvatar: string;
-}
-
-/**
- * Settled 1:1 call → ONE Notification-Center row per participant.
- *
- * This is the call-history projection behind Notifications → Friends. It writes
- * the inbox row ONLY (`skipPush`): the live ring and the missed-call push are
- * already delivered by `call.incoming` / `call.missed`, so pushing here would
- * double-notify the same call.
- *
- * Duplicate prevention is structural, not defensive: every row carries
- * `groupKey = call:<callId>`, so a re-delivered event — or a second terminal
- * transition racing the first — transitions the SAME card instead of stacking a
- * second one, exactly like the friendship request → accepted flow.
- *
- * Only a call the reader never answered is written unread (see
- * `isUnreadCallActivity`); an outgoing call and a call the reader was present
- * for are history, not something to badge them about.
- */
-async function handleCallActivity(data: CallActivityPayload): Promise<void> {
-  logger.info(
-    `[push:consume] call.activity callId=${data.callId} status=${data.status} ` +
-      `type=${data.callType} duration=${data.durationSec}`
-  );
-  if (!data.callId || !data.callerId || !data.calleeId) {
-    logger.warn("[push:consume] dropped — missing callId/callerId/calleeId");
-    return;
-  }
-
-  const callType =
-    String(data.callType).toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
-  const status = String(data.status).toUpperCase();
-  const durationSec = Math.max(0, Math.floor(Number(data.durationSec) || 0));
-
-  // Direction comes from the call record's own participants — never from text.
-  const sides: {
-    userId: string;
-    peerId: string;
-    peerName: string;
-    peerAvatar: string;
-    direction: CallActivityDirection;
-  }[] = [
-    {
-      userId: data.callerId,
-      peerId: data.calleeId,
-      peerName: data.calleeName ?? "",
-      peerAvatar: data.calleeAvatar ?? "",
-      direction: "OUTGOING",
-    },
-    {
-      userId: data.calleeId,
-      peerId: data.callerId,
-      peerName: data.callerName ?? "",
-      peerAvatar: data.callerAvatar ?? "",
-      direction: "INCOMING",
-    },
-  ];
-
-  for (const side of sides) {
-    await pushToUser({
-      userId: side.userId,
-      category: "callEnabled",
-      type: CALL_ACTIVITY_TYPE,
-      copy: callCopy.activity(
-        side.peerName,
-        callType,
-        status,
-        side.direction,
-        durationSec
-      ),
-      // The peer's name is the card heading; the body is the call line.
-      inboxTitle: side.peerName || null,
-      // The peer, so the read path resolves their fresh name/avatar and the
-      // click destination is their DM — same contract as a friendship row.
-      actorId: side.peerId,
-      deepLink: buildDeepLink("chat", side.peerId),
-      // History, not a live event: the inbox row is the whole point.
-      skipPush: true,
-      data: {
-        type: CALL_ACTIVITY_TYPE,
-        callId: data.callId,
-        callType,
-        callStatus: status,
-        callDirection: side.direction,
-        durationSec: String(durationSec),
-        peerId: side.peerId,
-        roomId: data.privateRoomId ?? "",
-        endedAt: String(data.endedAt ?? ""),
-        // ONE card per call, transitioned in place — never a card per state.
-        groupKey: `call:${data.callId}`,
-        // A settled call's card must not jump back to unread when a late
-        // duplicate transition rewrites it.
-        resurface: "false",
-        ...(isUnreadCallActivity(status, side.direction)
-          ? {}
-          : { markRead: "true" }),
-      },
-    });
-  }
 }
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {

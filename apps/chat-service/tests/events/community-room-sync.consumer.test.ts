@@ -60,9 +60,11 @@ jest.mock("../../src/repositories/room-member.repository.js", () => ({
     findActiveByRoom = jest.fn(async () => []);
   },
 }));
+const setCommunityMeta = jest.fn(async () => undefined);
 jest.mock("../../src/repositories/general-room.repository.js", () => ({
   GeneralRoomRepository: class {
     provisionForCommunity = jest.fn(async () => undefined);
+    setCommunityMeta = setCommunityMeta;
   },
 }));
 jest.mock("../../src/repositories/private-room.repository.js", () => ({
@@ -707,5 +709,50 @@ describe("CommunityRoomSyncConsumer — moderation mute mirror", () => {
     await fake.deliver(muteSynced({ communityId: COMMUNITY, isMuted: true }));
     expect(setMute).not.toHaveBeenCalled();
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `community.meta_synced` — the fix for stale community names in push.
+ *
+ * GeneralRoom.name is the ONLY community name chat-service holds, and every
+ * community push title is built from it (getRoomName → chat.message_sent →
+ * FCM/APNs). It used to be written once at `community.created` and never again,
+ * so a rename left every future push carrying the old name. This event keeps
+ * the mirror following the community row.
+ */
+describe("CommunityRoomSyncConsumer — community.meta_synced", () => {
+  const metaSynced = (data: Record<string, unknown>) =>
+    JSON.stringify({ type: "community.meta_synced", data });
+
+  beforeEach(() => {
+    setCommunityMeta.mockClear();
+  });
+
+  it("rename → mirrors the new name onto the room", async () => {
+    const fake = await start();
+    await fake.deliver(
+      metaSynced({ communityId: COMMUNITY, name: "New Community Name" })
+    );
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, {
+      name: "New Community Name",
+    });
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("avatar-only change → writes the logo, leaves the name untouched", async () => {
+    const fake = await start();
+    await fake.deliver(
+      metaSynced({ communityId: COMMUNITY, avatarUrl: "community/a/new.png" })
+    );
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, {
+      logo: "community/a/new.png",
+    });
+  });
+
+  it("avatar cleared (null) → writes null rather than skipping the field", async () => {
+    const fake = await start();
+    await fake.deliver(metaSynced({ communityId: COMMUNITY, avatarUrl: null }));
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, { logo: null });
   });
 });
