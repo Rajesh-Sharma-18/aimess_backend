@@ -9419,14 +9419,17 @@ export const openApiSchemas = {
     type: "string",
     description:
       "Free-form event-type string from @aimess/shared-types (no DB enum). " +
-      "Tab bucketing is by prefix, not an allowlist: `friend.*` → FRIENDS, " +
-      "`community.*` (except `community.mention`) → COMMUNITIES, " +
+      "Tab bucketing is by prefix, not an allowlist: `friend.*` and `call.*` → " +
+      "FRIENDS, `community.*` (except `community.mention`) → COMMUNITIES, " +
       "`chat.mention`/`community.mention` → MENTIONS, everything else " +
       "(auth.*, admin.*, session.*, user.registered, ...) → SYSTEM. " +
       "Only a subset of possible event types are actually written to the " +
       "inbox today: friend.requested, friend.accepted, community.member_banned, " +
-      "CALL_MISSED (see notifications-service push allowlist) — the rest are " +
-      "push-only. MENTIONS has no producer yet; reserved for chat/community mentions.",
+      "call.activity (1:1 call history — one row per call per participant, with " +
+      "the canonical call status in `data.callStatus`, `data.callType`, " +
+      "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
+      "predecessor) — the rest are push-only. MENTIONS has no producer yet; " +
+      "reserved for chat/community mentions.",
     example: "friend.requested",
   },
   NotificationCategory: {
