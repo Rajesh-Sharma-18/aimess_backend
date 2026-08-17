@@ -51,17 +51,16 @@ by `attachment-guard`). There is no server-side sticker rendering or transcoding
 
 ### Byte and count limits (existing, unchanged)
 
-| Limit                      | Value                             | Where                              |
-| -------------------------- | --------------------------------- | ---------------------------------- |
-| Images per message         | 10                                | `MEDIA_LIMITS.IMAGE.maxCount`      |
-| Image bytes                | 25 MB (`CHAT_IMAGE_MAX_BYTES`)    | both services                      |
-| GIF bytes                  | 30 MB (media-service)             | `CHAT_MAX_BYTES_BY_MIME`           |
-| Video bytes                | 100 MB (`CHAT_VIDEO_MAX_BYTES`)   | both services                      |
-| Video duration             | 180 000 ms (3 min)                | `MEDIA_LIMITS.VIDEO.maxDurationMs` |
-| Voice-note duration        | 300 000 ms (5 min)                | `MEDIA_LIMITS.VOICE.maxDurationMs` |
-| Audio bytes                | 25 MB (`CHAT_AUDIO_MAX_BYTES`)    | both services                      |
-| Document / archive bytes   | 25 MB (`CHAT_DOCUMENT_MAX_BYTES`) | both services                      |
-| Avatar / cover / thumbnail | 5 MB                              | media-service env                  |
+| Limit                      | Value                             | Where                         |
+| -------------------------- | --------------------------------- | ----------------------------- |
+| Images per message         | 10                                | `MEDIA_LIMITS.IMAGE.maxCount` |
+| Image bytes                | 25 MB (`CHAT_IMAGE_MAX_BYTES`)    | both services                 |
+| GIF bytes                  | 30 MB (media-service)             | `CHAT_MAX_BYTES_BY_MIME`      |
+| Video bytes                | 100 MB (`CHAT_VIDEO_MAX_BYTES`)   | both services                 |
+| Video / voice duration     | none (removed)                    | see §3.5                      |
+| Audio bytes                | 25 MB (`CHAT_AUDIO_MAX_BYTES`)    | both services                 |
+| Document / archive bytes   | 25 MB (`CHAT_DOCUMENT_MAX_BYTES`) | both services                 |
+| Avatar / cover / thumbnail | 5 MB                              | media-service env             |
 
 These were used as-is. No duplicate constant was created.
 
@@ -139,6 +138,27 @@ MIME-derived canonical extension, so nothing downstream changed.
 
 No backend behaviour changed here — this closed a drift between the enforcement
 table and the documented contract.
+
+### 3.5 Media duration limits removed
+
+The 3-minute video and 5-minute voice-note caps were removed at the user's
+request. Removed from `apps/chat-service/src/constants/media-limits.ts`:
+
+- `MEDIA_LIMITS.VIDEO.maxDurationMs` and `MEDIA_LIMITS.VOICE.maxDurationMs`
+- the three `durationMs` checks in `findMediaLimitViolations` (the IMAGE,
+  VIDEO and VOICE buckets)
+- the now-unreachable `CHAT_VIDEO_TOO_LONG` / `CHAT_VOICE_TOO_LONG` entries in
+  `packages/constants/src/messages/chat.messages.ts`
+
+Byte caps are untouched — video is still capped at 100 MB and voice at the
+generic ceiling, so duration remains bounded in practice by file size.
+
+`MEDIA_STRUCTURAL_LIMITS.maxVideoDurationMs` / `maxAudioDurationMs` (3 hours)
+in media-service were **deliberately kept**. Those are not the product limit:
+they are the abuse ceiling on a container's self-declared duration, read
+server-side during structural inspection, and they sit alongside the dimension
+and frame caps as a resource guard. Removing them would drop a security check,
+not a product rule.
 
 ### Frontend
 
@@ -262,18 +282,6 @@ files the server accepts.
   policy, presign expiry, or `Content-Disposition` behaviour.
 
 ### Open (reported, deliberately not changed)
-
-**A. Product duration limits are not enforced against the real container.**
-`MEDIA_LIMITS.VIDEO.maxDurationMs` (3 min) and `MEDIA_LIMITS.VOICE.maxDurationMs`
-(5 min) are checked in chat-service against the **client-supplied** `durationMs`,
-which defaults to undefined and therefore self-disables. media-service _does_ read
-the true duration out of the container, but enforces the structural ceiling
-(`MEDIA_STRUCTURAL_LIMITS.maxVideoDurationMs`/`maxAudioDurationMs` = 3 hours), not
-the product limit. A 2-hour video under 100 MB is accepted today. The docblock on
-`MEDIA_STRUCTURAL_LIMITS` claims these "mirror the caps chat-service already
-applies", which is not accurate. **Not changed**: tightening media-service to 3
-min / 5 min would start rejecting uploads that are accepted today, and per the
-brief a difference in intentional limits is reported before it is changed.
 
 **B. Byte-cap drift between the two enforcement points.** GIF is capped at 30 MB
 by media-service but 50 MB by chat-service (`GENERIC_MAX_BYTES`); voice notes at
@@ -405,13 +413,11 @@ REST request/response shape changed.
 
 ## 10. Remaining gaps
 
-1. Video/voice product duration limits are not enforced against the real
-   container duration (§5.A) — needs a product decision before changing.
-2. GIF and voice-note byte caps disagree between chat-service and media-service
+1. GIF and voice-note byte caps disagree between chat-service and media-service
    (§5.B) — needs a product decision on which value is correct.
-3. Legacy Office formats are not told apart from one another (§5.C).
-4. `.tgs` stickers unsupported (§7).
-5. `image/avif` is understood by the signature and structural layers but is not on
+2. Legacy Office formats are not told apart from one another (§5.C).
+3. `.tgs` stickers unsupported (§7).
+4. `image/avif` is understood by the signature and structural layers but is not on
    the upload allow-list. Left as-is: it was not requested, and adding it is a
    one-line change if it ever is.
 
