@@ -277,8 +277,11 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(row.content.invitation).toMatchObject({
       type: "COMMUNITY_INVITATION",
       // Presentational facts survive from the stored card (the RPC never
-      // returns them)…
-      communityAvatarUrl: "community/avatars/dj.jpg",
+      // returns them) — but the avatar is stored as an object key and signed on
+      // every read, so the client gets a URL it can actually load rather than a
+      // bare key that renders as the default avatar.
+      communityAvatarUrl:
+        "https://media.test/aimess-chat-test/community/avatars/dj.jpg",
       memberCount: 15,
       inviteCode: "code3",
       deepLink: "aimess://join?code=code3",
