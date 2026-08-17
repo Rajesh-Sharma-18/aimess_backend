@@ -2209,18 +2209,32 @@ export class GroupMessageService {
         return 0;
       });
 
-    await this.memberRepo.advanceReadPointer(
+    // `advanceReadPointer` is forward-only: it returns the row it left behind,
+    // which is the UNCHANGED member row when the request was stale (a second
+    // device catching up, a jump-to-message landing on old history). Report the
+    // ACCEPTED watermark, never the requested target — publishing the request's
+    // own seq would broadcast a regression the DB never made and hand the
+    // reader's other devices an inflated unread count.
+    const updated = await this.memberRepo.advanceReadPointer(
       params.roomId,
       params.userId,
       message.id,
       message.createdAt,
       remainingUnread
     );
+    const seq = (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
+    const acceptedId = updated?.lastReadMessageId;
+    // No stored pointer at all = this member's FIRST read, which forward-only
+    // cannot have refused, so the requested target IS the accepted watermark.
+    if (!acceptedId || acceptedId === message.id)
+      return {
+        readToSeq: seq,
+        remainingUnread: updated?.unreadCount ?? remainingUnread,
+      };
 
-    const seq = (message as { sequenceNumber?: number }).sequenceNumber;
     return {
-      readToSeq: typeof seq === "number" ? seq : 0,
-      remainingUnread,
+      readToSeq: await this.getMessageSequence(acceptedId).catch(() => 0),
+      remainingUnread: updated?.unreadCount ?? remainingUnread,
     };
   }
 
