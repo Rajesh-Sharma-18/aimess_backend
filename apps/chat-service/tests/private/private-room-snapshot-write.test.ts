@@ -48,4 +48,49 @@ describe("PrivateRoomRepository.updateRoomOnNewMessage", () => {
     });
     expect(update.$inc["unreadCountByUser.waiter-white"]).toBe(1);
   });
+
+  /**
+   * The unread paths are built by concatenation, so an unresolved recipient
+   * wrote `unreadCountByUser.""` — a bucket nothing reads, while the real peer's
+   * badge stayed put. The snapshot half must still land; only the unread half
+   * is skipped.
+   */
+  it("skips the unread write when no recipient resolved", async () => {
+    const commands: Array<Record<string, unknown>> = [];
+    const prisma = {
+      $runCommandRaw: async (cmd: Record<string, unknown>) => {
+        commands.push(cmd);
+        return { value: {} };
+      },
+    };
+    const repo = new PrivateRoomRepository(
+      prisma as unknown as ConstructorParameters<
+        typeof PrivateRoomRepository
+      >[0]
+    );
+
+    await repo.updateRoomOnNewMessage({
+      roomId: "room-1",
+      message: {
+        _id: "64b7f0c2e13b4a0012345678",
+        content: { text: "Hello" },
+        senderId: "spider-man",
+        messageType: "TEXT",
+        createdAt: new Date("2026-08-07T10:00:00.000Z"),
+      },
+      receiverId: "",
+    });
+
+    const update = commands[0]?.update as {
+      $set: Record<string, unknown>;
+      $inc?: Record<string, number>;
+    };
+    expect(update.$inc).toBeUndefined();
+    expect(
+      Object.keys(update.$set).some((k) => k.endsWith(".")) // `hasUnreadByUser.` & friends
+    ).toBe(false);
+    expect(update.$set.lastMessageId).toEqual({
+      $oid: "64b7f0c2e13b4a0012345678",
+    });
+  });
 });

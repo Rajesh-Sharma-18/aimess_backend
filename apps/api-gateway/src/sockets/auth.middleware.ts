@@ -16,7 +16,16 @@ declare module "socket.io" {
   interface SocketData {
     userId: string;
     sessionId: string;
-    /** Resolved once at handshake from `x-lang` / `Accept-Language`; drives ack copy. */
+    /**
+     * The viewer's language for everything this connection emits: ack copy,
+     * SYSTEM message text, list previews.
+     *
+     * Seeded at handshake by {@link resolveHandshakeLocale} and updated in place
+     * by the `locale:set` packet (see `locale-scope.ts`), so a Settings →
+     * Language change takes effect on the OPEN connection instead of waiting for
+     * a reconnect. Read per packet by `scopeSocketLocale` and per recipient by
+     * `emitPersonalizedSender`.
+     */
     locale: SupportedLocale;
     /** Epoch-ms when the handshake access token expires (0 = unknown). Used for session:expired warnings. */
     tokenExpiresAt: number;
@@ -35,6 +44,45 @@ declare module "socket.io" {
     /** Backoffice admin id — set only on /admin sockets, where `userId` is unused. */
     adminId?: string;
   }
+}
+
+/**
+ * The connection's starting locale.
+ *
+ * Order matters, and it is deliberately not the order the HTTP middleware uses.
+ * A browser CANNOT set request headers on a websocket upgrade — `extraHeaders`
+ * is ignored by every browser WebSocket implementation and applies only to the
+ * polling transport — so a client that has picked a language has exactly two
+ * places to put it: the `auth` payload of the connect packet, or the handshake
+ * query string. Both are read here BEFORE `x-lang`/`Accept-Language`, which for
+ * a browser client carry the OS/browser language rather than the one selected in
+ * the app.
+ *
+ * That inversion is the bug this closes: with no client-sent value the chain
+ * fell through to `Accept-Language` and then to `DEFAULT_LOCALE`, which is
+ * `"vi"` in production — so a user who had chosen English received live SYSTEM
+ * messages in Vietnamese, while the same room's REST history (which does send
+ * `x-lang`) came back in English.
+ */
+export function resolveHandshakeLocale(handshake: {
+  auth?: unknown;
+  query?: unknown;
+  headers: Record<string, string | string[] | undefined>;
+}): SupportedLocale {
+  const { auth, query, headers } = handshake;
+  const explicit =
+    firstString((auth as Record<string, unknown> | undefined)?.lang) ??
+    firstString((auth as Record<string, unknown> | undefined)?.locale) ??
+    firstString((query as Record<string, unknown> | undefined)?.lang) ??
+    firstString(headers["x-lang"]);
+  return resolveLocale(firstString(headers["accept-language"]), explicit);
+}
+
+function firstString(value: unknown): string | undefined {
+  if (Array.isArray(value)) return firstString(value[0]);
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /**
@@ -64,11 +112,7 @@ export function createGatewaySocketAuthMiddleware(
           return;
         }
 
-        const xLang = headers["x-lang"];
-        socket.data.locale = resolveLocale(
-          headers["accept-language"],
-          Array.isArray(xLang) ? xLang[0] : xLang
-        );
+        socket.data.locale = resolveHandshakeLocale(socket.handshake);
 
         const verified = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
 
@@ -125,11 +169,7 @@ export function createGatewayAdminSocketAuthMiddleware(
           return;
         }
 
-        const xLang = headers["x-lang"];
-        socket.data.locale = resolveLocale(
-          headers["accept-language"],
-          Array.isArray(xLang) ? xLang[0] : xLang
-        );
+        socket.data.locale = resolveHandshakeLocale(socket.handshake);
 
         const verified = verifyAdminAccessToken(token, env.JWT_ADMIN_SECRET);
 

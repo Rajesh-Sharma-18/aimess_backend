@@ -42,7 +42,9 @@ import { verifyAppleIdToken } from "../../src/lib/apple-id-token.js";
 import { authRepository } from "../../src/repositories/auth.repository.js";
 import { linkedAccountRepository } from "../../src/repositories/linked-account.repository.js";
 import { issueAuthTokens } from "../../src/lib/token.js";
+import { publishUserCreatedSafe } from "../../src/messaging/publish-user-created.js";
 
+const publishCreated = publishUserCreatedSafe as unknown as jest.Mock;
 const verifyGoogle = verifyGoogleIdToken as unknown as jest.Mock;
 const verifyApple = verifyAppleIdToken as unknown as jest.Mock;
 const repo = authRepository as unknown as Record<string, jest.Mock>;
@@ -73,17 +75,21 @@ function activeUser(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  publishCreated.mockClear();
   verifyGoogle.mockResolvedValue({
     sub: "google-sub-123",
     email: "john@example.com",
     emailVerified: true,
-    displayName: "John",
+    displayName: "Rajesh Sharma",
+    firstName: "Rajesh",
+    lastName: "Sharma",
+    pictureUrl: "https://lh3.googleusercontent.com/a/pic",
   });
   verifyApple.mockResolvedValue({
     sub: "apple-sub-123",
     email: "john@example.com",
     emailVerified: true,
-    displayName: "John",
+    displayName: null,
   });
   repo.mergeFcmTokens.mockResolvedValue(undefined);
   repo.recordSuccessfulLogin.mockResolvedValue(undefined);
@@ -136,6 +142,84 @@ describe("POST /api/auth/google", () => {
     expect(res.body.data.isNewUser).toBe(true);
     expect(res.body.data.isProfileCompleted).toBe(false);
     expect(repo.createUserWithLinkedAccount).toHaveBeenCalledTimes(1);
+  });
+
+  // Test 1 — new Google user gets the verified given/family names.
+  it("seeds a new profile with the verified Google given_name/family_name", async () => {
+    await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(publishCreated).toHaveBeenCalledTimes(1);
+    expect(publishCreated.mock.calls[0]?.[0]).toMatchObject({
+      firstName: "Rajesh",
+      lastName: "Sharma",
+      email: "john@example.com",
+      isGoogleLogin: true,
+    });
+  });
+
+  // Test 2 / Test 8 — an existing linked user is never re-seeded, so stored
+  // names cannot be clobbered by a token that carries none.
+  it("publishes nothing for an existing linked user (no name overwrite)", async () => {
+    linkRepo.findByProvider.mockResolvedValue({ user: activeUser() });
+    verifyGoogle.mockResolvedValue({
+      sub: "google-sub-123",
+      email: "john@example.com",
+      emailVerified: true,
+      displayName: null,
+      firstName: null,
+      lastName: null,
+      pictureUrl: null,
+    });
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(200);
+    expect(publishCreated).not.toHaveBeenCalled();
+  });
+
+  it("omits the name fields when Google returns none for a new user", async () => {
+    verifyGoogle.mockResolvedValue({
+      sub: "google-sub-123",
+      email: "john@example.com",
+      emailVerified: true,
+      displayName: null,
+      firstName: null,
+      lastName: null,
+      pictureUrl: null,
+    });
+
+    await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    const payload = publishCreated.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(payload.firstName).toBeUndefined();
+    expect(payload.lastName).toBeUndefined();
+  });
+
+  // Test 9 — profile fields in the request body are ignored; only signed token
+  // claims reach the created profile.
+  it("ignores client-supplied profile fields on the Google body", async () => {
+    await request(app).post("/api/auth/google").send({
+      idToken: "valid-google-token",
+      firstName: "Attacker",
+      lastName: "Impostor",
+      email: "victim@example.com",
+      providerId: "someone-elses-sub",
+    });
+
+    expect(publishCreated.mock.calls[0]?.[0]).toMatchObject({
+      firstName: "Rajesh",
+      lastName: "Sharma",
+      email: "john@example.com",
+    });
   });
 
   it("does NOT auto-link when the provider email is unverified (creates new instead)", async () => {
@@ -250,6 +334,75 @@ describe("POST /api/auth/apple", () => {
     expect(res.body.data.isNewUser).toBe(true);
     // Client-supplied email is NOT trusted as verified → must not auto-link.
     expect(repo.findByEmail).not.toHaveBeenCalled();
+  });
+
+  // Test 3 — Apple's name arrives ONLY in the first authorization response.
+  it("persists the structured Apple name from the first authorization", async () => {
+    await request(app)
+      .post("/api/auth/apple")
+      .send({
+        identityToken: "valid-apple-token",
+        fullName: { givenName: "Rajesh", familyName: "Sharma" },
+      });
+
+    expect(publishCreated.mock.calls[0]?.[0]).toMatchObject({
+      firstName: "Rajesh",
+      lastName: "Sharma",
+    });
+  });
+
+  it("accepts the legacy joined fullName string and splits it", async () => {
+    await request(app)
+      .post("/api/auth/apple")
+      .send({ identityToken: "valid-apple-token", fullName: "Rajesh Sharma" });
+
+    expect(publishCreated.mock.calls[0]?.[0]).toMatchObject({
+      firstName: "Rajesh",
+      lastName: "Sharma",
+    });
+  });
+
+  // Test 4 / Test 7 — a later Apple login sends nulls; the existing link short-
+  // circuits before any profile write, so nothing (name or avatar) is touched.
+  it("never re-seeds on a later Apple login that sends null name parts", async () => {
+    linkRepo.findByProvider.mockResolvedValue({ user: activeUser() });
+
+    const res = await request(app)
+      .post("/api/auth/apple")
+      .send({
+        identityToken: "valid-apple-token",
+        fullName: { givenName: null, familyName: null },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isNewUser).toBe(false);
+    expect(publishCreated).not.toHaveBeenCalled();
+  });
+
+  // Test 5 — a private-relay address is just the verified Apple email.
+  it("treats a private-relay address as the verified provider email", async () => {
+    verifyApple.mockResolvedValue({
+      sub: "apple-sub-123",
+      email: "abc123@privaterelay.appleid.com",
+      emailVerified: true,
+      displayName: null,
+    });
+    repo.findByEmail.mockResolvedValue(null);
+
+    await request(app)
+      .post("/api/auth/apple")
+      .send({ identityToken: "valid-apple-token" });
+
+    expect(repo.findByEmail).toHaveBeenCalledWith(
+      "abc123@privaterelay.appleid.com"
+    );
+    expect(repo.createUserWithLinkedAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "abc123@privaterelay.appleid.com",
+        providerEmail: "abc123@privaterelay.appleid.com",
+        emailVerified: true,
+      })
+    );
   });
 
   it.each([

@@ -18,6 +18,15 @@ export type UserCreatedPayload = {
   createdAt: string;
   /** True when the user signed up via Google. */
   isGoogleLogin?: boolean;
+  /**
+   * Given name from the VERIFIED social provider profile (Google `given_name`,
+   * Apple `givenName` from the first-authorization response). Omitted when the
+   * provider gave nothing — the consumer must then keep its own fallback, never
+   * write an empty string over a real name.
+   */
+  firstName?: string;
+  /** Family name from the verified social provider profile. Same rule as {@link firstName}. */
+  lastName?: string;
 };
 
 export type UserDeletedPayload = {

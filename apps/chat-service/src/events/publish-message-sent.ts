@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
+import { prisma } from "../config/prisma.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 
 /**
@@ -30,7 +31,11 @@ export interface MessageSentPayload {
   senderAvatar: string;
   /** Display name of the group — a GROUP push must title on the group, not the sender. */
   groupName?: string;
-  /** Group/community avatar for the notification's large icon. */
+  /**
+   * Group/community avatar for the notification's large icon, as a FULL URL.
+   * Callers may pass a raw object key OR omit it entirely — `publishMessageSentSafe`
+   * resolves it (and falls back to the room row) before it goes on the wire.
+   */
   conversationAvatar?: string;
   /** False when the room is read-only for the recipient — hides the Reply action. */
   canReply?: boolean;
@@ -67,6 +72,39 @@ async function getChannel(url: string): Promise<amqp.Channel> {
   return channelPromise;
 }
 
+/**
+ * The conversation's OWN identity (name + avatar object key) for a GROUP or
+ * COMMUNITY push, read from the authoritative room row at publish time.
+ *
+ * A group/community notification must represent the CONVERSATION, not the
+ * actor — so the title is the room name and the tray image is the room avatar.
+ * Reading it here rather than at each producer is what keeps the two halves in
+ * sync: both come from the same row, on every send, so a rename or a new avatar
+ * is picked up by the very next push and the pair can never describe two
+ * different versions of the entity.
+ *
+ * GeneralRoom (community) is the local mirror kept current by
+ * `community.meta_synced`; GroupRoom is chat-service's own authoritative row.
+ * Both store a RAW object key — never a resolved URL.
+ */
+async function conversationHeader(
+  conversationType: MessageSentPayload["conversationType"],
+  conversationId: string
+): Promise<{ name: string; avatarKey: string }> {
+  if (conversationType === "GROUP") {
+    const room = await prisma.groupRoom.findUnique({
+      where: { roomId: conversationId },
+      select: { name: true, avatar: true },
+    });
+    return { name: room?.name ?? "", avatarKey: room?.avatar ?? "" };
+  }
+  const room = await prisma.generalRoom.findUnique({
+    where: { id: conversationId },
+    select: { name: true, logo: true },
+  });
+  return { name: room?.name ?? "", avatarKey: room?.logo ?? "" };
+}
+
 type PublishMessageSentParams = Omit<MessageSentPayload, "recipientIds"> &
   (
     | { recipientIds: string[]; fetchRecipients?: never }
@@ -97,17 +135,51 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       const previewImageUrl = p.previewImageKey
         ? await resolveMediaUrl(p.previewImageKey).catch(() => "")
         : "";
+
+      // Conversation identity for GROUP/COMMUNITY. Resolved HERE, once, for
+      // every producer: the REST/socket orchestrator, the gRPC send path, the
+      // community system-message bridge, call rows and group-invite DMs all
+      // publish through this function, and only one of them used to supply a
+      // name — none supplied an avatar for community. Room row wins over
+      // whatever the caller carried (a request body can be stale; the row is
+      // the mirror the rename/avatar sync writes to).
+      const header =
+        p.conversationType === "PRIVATE"
+          ? null
+          : await conversationHeader(
+              p.conversationType,
+              p.conversationId
+            ).catch(() => null);
+      const groupName =
+        p.conversationType === "GROUP" ? header?.name || p.groupName || "" : "";
+      const communityName =
+        p.conversationType === "COMMUNITY"
+          ? header?.name || p.communityName || ""
+          : "";
+      // Idempotent: an already-resolved http(s) URL passes through unchanged,
+      // a raw object key gets presigned, anything unresolvable degrades to "".
+      const conversationAvatar = await resolveMediaUrl(
+        p.conversationAvatar || header?.avatarKey
+      ).catch(() => "");
+
       const channel = await getChannel(url);
       const data: MessageSentPayload = {
         conversationId: p.conversationId,
         conversationType: p.conversationType,
         ...(p.communityId ? { communityId: p.communityId } : {}),
-        ...(p.communityName ? { communityName: p.communityName } : {}),
+        ...(communityName ? { communityName } : {}),
         messageId: p.messageId,
         clientMessageId: p.clientMessageId,
         senderId: p.senderId,
         senderName: p.senderName,
         senderAvatar,
+        // Group/community identity: resolved fresh from the room row above on
+        // every send. These were declared on the payload but never copied onto
+        // the wire, so a GROUP push had no group name to title on at all —
+        // renamed or not — and no conversation carried an avatar for the tray.
+        ...(groupName ? { groupName } : {}),
+        ...(conversationAvatar ? { conversationAvatar } : {}),
+        ...(p.canReply !== undefined ? { canReply: p.canReply } : {}),
         preview: p.preview,
         ...(previewImageUrl ? { previewImageUrl } : {}),
         messageType: p.messageType,

@@ -132,13 +132,30 @@ export class CacheRepository {
     await this.redis.expire(key, this.deviceTtlSeconds);
   }
 
+  /**
+   * A heartbeat only ever arrives from a socket that is LIVE right now (the
+   * gateway's packet-driven keepalive and `presence:heartbeat`, both per
+   * socket), so it re-asserts `realtimeConnected` rather than only touching
+   * `lastActiveAt`.
+   *
+   * Without that, an expired session hash (a machine that slept, a Redis blip,
+   * a refresh window missed by more than the TTL) was RESURRECTED by the next
+   * heartbeat as a partial hash with no `realtimeConnected` field — which
+   * `recompute` reads as not-connected. The user then stayed OFFLINE with a
+   * freshly stamped `lastSeen` ("Last seen just now") for as long as their
+   * socket stayed open, because every subsequent heartbeat rebuilt the same
+   * broken hash. Re-asserting makes the revival self-healing.
+   */
   async heartbeat(params: {
     userId: string;
     deviceId: string;
     now: number;
   }): Promise<void> {
     const key = presenceDeviceKey(params.userId, params.deviceId);
-    await this.redis.hset(key, "lastActiveAt", String(params.now));
+    await this.redis.hmset(key, {
+      realtimeConnected: "1",
+      lastActiveAt: String(params.now),
+    });
     await this.redis.expire(key, this.deviceTtlSeconds);
   }
 
@@ -149,7 +166,10 @@ export class CacheRepository {
     now: number
   ): Promise<void> {
     const key = presenceDeviceKey(userId, deviceId);
+    // Same revival rule as `heartbeat` — this is the path the gateway actually
+    // takes (it always sends an appState), so it is the one that must heal.
     await this.redis.hmset(key, {
+      realtimeConnected: "1",
       appState: state,
       lastActiveAt: String(now),
     });

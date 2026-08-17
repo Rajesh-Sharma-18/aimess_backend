@@ -1,6 +1,10 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
-import { t } from "@aimess/constants";
+import {
+  isUnreadCallActivity,
+  t,
+  type CallActivityDirection,
+} from "@aimess/constants";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
@@ -20,6 +24,14 @@ import { pushToUser } from "../services/push.service.js";
  * Best-effort and safely duplicable: the client dedups on callId.
  */
 const CALL_PUSH_QUEUE = "call.push.queue";
+
+/**
+ * Inbox type for call HISTORY. ONE type, not one per outcome — the outcome is
+ * the canonical `CallTimelineStatus` carried in `data.callStatus`, so there is
+ * no second call-state enum to keep in sync. The `call.` prefix is what routes
+ * the row to the FRIENDS tab (chat-service lib/notification-category.ts).
+ */
+const CALL_ACTIVITY_TYPE = "call.activity";
 
 interface CallIncomingPayload {
   callId: string;
@@ -53,6 +65,22 @@ interface CallCancelPayload {
 
 // Same wire shape as the cancel payload; the meaning lives in the queue `type`.
 type CallHandledPayload = CallCancelPayload;
+
+interface CallActivityPayload {
+  callId: string;
+  callerId: string;
+  calleeId: string;
+  callType: string;
+  /** Canonical terminal CallTimelineStatus from chat-service. */
+  status: string;
+  durationSec: number;
+  privateRoomId: string;
+  endedAt: number;
+  callerName: string;
+  callerAvatar: string;
+  calleeName: string;
+  calleeAvatar: string;
+}
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   // HOP 3 of the push pipeline (RabbitMQ → notifications-service). If this
@@ -152,9 +180,12 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     collapseKey: `call:missed:${data.callId}`,
     // Not time-critical — the moment already passed. Default priority/TTL (24h)
     // is fine, unlike the ring which had to be immediate and short-lived.
-    // This DOES persist to the Notification Center (see INBOX_ALLOWED_TYPES) —
-    // unlike the live ring, a missed call is exactly the kind of thing a user
-    // wants to find later, so skipInbox is intentionally NOT set here.
+    //
+    // Push ONLY. The Notification-Center card for a missed call is written by
+    // the `call.activity` projection below, which covers every outcome (missed,
+    // declined, cancelled, completed, failed) with one consistent line and one
+    // row per call. Two writers for the same call produced two cards.
+    skipInbox: true,
     showPreviewOverride: (locale) =>
       t(
         isVideo ? "NOTIF_CALL_MISSED_VIDEO" : "NOTIF_CALL_MISSED_VOICE",
@@ -258,6 +289,107 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
   });
 }
 
+/**
+ * Settled 1:1 call → ONE Notification-Center row per participant.
+ *
+ * This is the call history behind Notifications → Friends. It writes the inbox
+ * row ONLY (`skipPush`): the live ring and the missed-call alert are already
+ * delivered by `call.incoming` / `call.missed`, so pushing here would notify
+ * twice for one call.
+ *
+ * Duplicate prevention is structural, not defensive: every row carries
+ * `groupKey = call:<callId>`, so a re-delivered event — or a second terminal
+ * transition racing the first — transitions the SAME card instead of stacking a
+ * second one, exactly like the friend request → accepted flow. `resurface:false`
+ * keeps a late duplicate from flipping a read card back to unread.
+ *
+ * Only a call the reader never answered arrives unread (isUnreadCallActivity):
+ * an outgoing call, and a call the reader was present for, are history — not
+ * something to badge them about.
+ */
+async function handleCallActivity(data: CallActivityPayload): Promise<void> {
+  logger.info(
+    `[push:consume] call.activity callId=${data.callId} status=${data.status} ` +
+      `type=${data.callType} duration=${data.durationSec}`
+  );
+  if (!data.callId || !data.callerId || !data.calleeId) {
+    logger.warn("[push:consume] dropped — missing callId/callerId/calleeId");
+    return;
+  }
+
+  const callType =
+    String(data.callType).toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
+  const status = String(data.status).toUpperCase();
+  const durationSec = Math.max(0, Math.floor(Number(data.durationSec) || 0));
+
+  // Direction comes from the call record's own participants — never from text.
+  const sides: {
+    userId: string;
+    peerId: string;
+    peerName: string;
+    peerAvatar: string;
+    direction: CallActivityDirection;
+  }[] = [
+    {
+      userId: data.callerId,
+      peerId: data.calleeId,
+      peerName: data.calleeName ?? "",
+      peerAvatar: data.calleeAvatar ?? "",
+      direction: "OUTGOING",
+    },
+    {
+      userId: data.calleeId,
+      peerId: data.callerId,
+      peerName: data.callerName ?? "",
+      peerAvatar: data.callerAvatar ?? "",
+      direction: "INCOMING",
+    },
+  ];
+
+  for (const side of sides) {
+    await pushToUser({
+      userId: side.userId,
+      category: "callEnabled",
+      type: CALL_ACTIVITY_TYPE,
+      copy: callCopy.activity(
+        side.peerName,
+        callType,
+        status,
+        side.direction,
+        durationSec
+      ),
+      // The peer's name is the card heading; the body is the call line.
+      inboxTitle: side.peerName || null,
+      // The peer — so the read path resolves their fresh name/avatar and a click
+      // opens their DM, the same contract a friendship row uses.
+      actorId: side.peerId,
+      deepLink: buildDeepLink("conversation", side.peerId),
+      // History, not a live event: the inbox row is the whole point.
+      skipPush: true,
+      data: {
+        type: CALL_ACTIVITY_TYPE,
+        callId: data.callId,
+        callType,
+        callStatus: status,
+        callDirection: side.direction,
+        durationSec: String(durationSec),
+        peerId: side.peerId,
+        peerAvatarUrl: side.peerAvatar,
+        roomId: data.privateRoomId ?? "",
+        endedAt: String(data.endedAt ?? ""),
+        // ONE card per call, transitioned in place — never a card per state.
+        groupKey: `call:${data.callId}`,
+        // A settled call must not jump back to unread when a late duplicate
+        // transition rewrites it.
+        resurface: "false",
+        ...(isUnreadCallActivity(status, side.direction)
+          ? {}
+          : { markRead: "true" }),
+      },
+    });
+  }
+}
+
 export async function startCallConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
@@ -286,6 +418,8 @@ export async function startCallConsumer(): Promise<void> {
           await handleCallCancel(parsed.data as CallCancelPayload);
         } else if (parsed.type === "call.handled") {
           await handleCallHandled(parsed.data as CallHandledPayload);
+        } else if (parsed.type === CALL_ACTIVITY_TYPE) {
+          await handleCallActivity(parsed.data as CallActivityPayload);
         } else {
           logger.warn(`Unknown call event type: ${parsed.type}`);
         }

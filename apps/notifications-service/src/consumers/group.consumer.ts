@@ -38,6 +38,10 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
           roomId: p.roomId,
           groupName: p.groupName,
           actorId: p.actorId,
+          // The GROUP's own image, not the actor's — a group notification
+          // represents the conversation. push.service promotes this to the
+          // FCM/APNs tray image; absent when the group has no avatar.
+          ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
           deepLink,
           navigation: JSON.stringify({
             screen: "GROUP_CHAT",
@@ -71,6 +75,7 @@ async function handleGroupEvent(type: string, data: unknown): Promise<void> {
           roomId: p.roomId,
           groupName: p.groupName,
           actorId: p.actorId,
+          ...(p.groupAvatarUrl ? { conversationAvatar: p.groupAvatarUrl } : {}),
           mutedUntil: p.mutedUntil ?? "",
           deepLink,
           navigation: JSON.stringify({

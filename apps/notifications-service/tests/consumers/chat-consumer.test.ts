@@ -44,7 +44,7 @@ jest.mock("../../src/services/notification-eligibility.service.js", () => ({
   isCommunityActorMuted: jest.fn(async () => false),
   // Default: pass recipients through unchanged so existing routing specs stay
   // focused. Specs that assert LEFT-member filtering re-mock this explicitly.
-  filterToActiveCommunityMembers: jest.fn(
+  filterToNotifiableCommunityMembers: jest.fn(
     async (_communityId: string, userIds: string[]) => userIds
   ),
   // Default: recipient has NOT muted the private room.
@@ -56,7 +56,7 @@ jest.mock("../../src/services/notification-eligibility.service.js", () => ({
 import { startChatConsumer } from "../../src/consumers/chat.consumer.js";
 import { pushToUsers } from "../../src/services/push.service.js";
 import {
-  filterToActiveCommunityMembers,
+  filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
   isGroupMemberMuted,
   isPrivateRoomMutedBy,
@@ -64,7 +64,7 @@ import {
 
 const pushMany = pushToUsers as jest.Mock;
 const isMutedMock = isCommunityActorMuted as jest.Mock;
-const filterActiveMock = filterToActiveCommunityMembers as jest.Mock;
+const filterNotifiableMock = filterToNotifiableCommunityMembers as jest.Mock;
 const isPrivateMutedMock = isPrivateRoomMutedBy as jest.Mock;
 const isGroupMutedMock = isGroupMemberMuted as jest.Mock;
 
@@ -114,8 +114,8 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
     isMutedMock.mockResolvedValue(false); // default: not muted
-    filterActiveMock.mockReset();
-    filterActiveMock.mockImplementation(
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
       async (_communityId: string, userIds: string[]) => userIds
     );
     isPrivateMutedMock.mockReset();
@@ -264,8 +264,8 @@ describe("startChatConsumer — community mute suppression", () => {
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
     isMutedMock.mockResolvedValue(false);
-    filterActiveMock.mockReset();
-    filterActiveMock.mockImplementation(
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
       async (_communityId: string, userIds: string[]) => userIds
     );
     isPrivateMutedMock.mockReset();
@@ -351,18 +351,35 @@ describe("startChatConsumer — community mute suppression", () => {
   });
 
   // (5b) ADVERSARIAL — if the eligibility service itself THROWS (a regression
-  // that defeats fail-open), the consumer's try/catch nacks the message with
-  // requeue=false (drop). This documents the ACTUAL behavior: a throwing gate
-  // does NOT silently fan out — but it also does NOT requeue-storm. The
-  // production code is fail-open at the gRPC client, so the gate should never
-  // throw; this guards the consumer-level contract if that ever changes.
-  it("ADVERSARIAL: gate throws → message nacked without requeue (no fan-out, no spin)", async () => {
+  // that defeats fail-open), the consumer must neither fan out nor spin. The queue
+  // has NO dead-letter exchange, so requeue=false DESTROYS the notification —
+  // hence retry exactly once via redelivery, then drop. Bounded by the broker's
+  // `redelivered` flag, so a deterministic failure still can't loop.
+  it("ADVERSARIAL: gate throws on first delivery → requeued once (no fan-out)", async () => {
     isMutedMock.mockRejectedValue(new Error("eligibility blew up"));
     const msg = makeMsg({
       ...BASE,
       conversationType: "COMMUNITY",
       communityId: "comm1",
     });
+    consume(msg);
+    await flush();
+
+    expect(pushMany).not.toHaveBeenCalled();
+    expect(channelMock.nack).toHaveBeenCalledWith(msg, false, true);
+    expect(channelMock.ack).not.toHaveBeenCalled();
+  });
+
+  it("ADVERSARIAL: gate throws on a REDELIVERED message → dropped (no spin)", async () => {
+    isMutedMock.mockRejectedValue(new Error("eligibility blew up"));
+    const msg = {
+      ...makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+      }),
+      fields: { redelivered: true },
+    };
     consume(msg);
     await flush();
 
@@ -383,9 +400,11 @@ describe("startChatConsumer — community mute suppression", () => {
       BASE.senderId,
       BASE.conversationId
     );
-    expect(filterActiveMock).toHaveBeenCalledWith(BASE.conversationId, [
-      "recipient-uuid",
-    ]);
+    expect(filterNotifiableMock).toHaveBeenCalledWith(
+      BASE.conversationId,
+      ["recipient-uuid"],
+      "chatEnabled"
+    );
     expect(pushMany).toHaveBeenCalledTimes(1);
     expect(channelMock.ack).toHaveBeenCalledWith(msg);
   });
@@ -406,7 +425,7 @@ describe("startChatConsumer — community mute suppression", () => {
   // (6c) LEFT/removed members must be stripped from FCM recipients even when
   // chat-service's stale RoomMember mirror still listed them.
   it("COMMUNITY → filters recipientIds to ACTIVE members only before FCM", async () => {
-    filterActiveMock.mockResolvedValue(["still-active"]);
+    filterNotifiableMock.mockResolvedValue(["still-active"]);
     consume(
       makeMsg({
         ...BASE,
@@ -417,18 +436,18 @@ describe("startChatConsumer — community mute suppression", () => {
     );
     await flush();
 
-    expect(filterActiveMock).toHaveBeenCalledWith("comm1", [
-      "still-active",
-      "left-user",
-      "banned-user",
-    ]);
+    expect(filterNotifiableMock).toHaveBeenCalledWith(
+      "comm1",
+      ["still-active", "left-user", "banned-user"],
+      "chatEnabled"
+    );
     expect(pushMany).toHaveBeenCalledTimes(1);
     const [recipients] = pushMany.mock.calls[0] as [string[], unknown];
     expect(recipients).toEqual(["still-active"]);
   });
 
   it("COMMUNITY → no FCM when ACTIVE-roster filter removes everyone", async () => {
-    filterActiveMock.mockResolvedValue([]);
+    filterNotifiableMock.mockResolvedValue([]);
     const msg = makeMsg({
       ...BASE,
       conversationType: "COMMUNITY",
@@ -577,6 +596,109 @@ describe("startChatConsumer — private room mute suppression", () => {
     await flush();
 
     expect(pushMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Push TITLE = the room name carried by THIS event.
+ *
+ * The stale-name bug: chat-service resolved the community name from a mirror
+ * that was never updated on rename, so every later push repeated the old name.
+ * This consumer is the last hop before FCM/APNs, so the lock here is "whatever
+ * name arrives on the event is what the push says" — a renamed community/group
+ * publishes the new name and the title follows it, with no cached name of its
+ * own to go stale.
+ */
+describe("startChatConsumer — push title tracks the event's room name", () => {
+  let consume: ConsumeCallback;
+
+  type PushShape = {
+    copy: (locale: string) => { title: string; body: string };
+    data: Record<string, string>;
+    showPreviewOverride?: (locale: string) => string;
+  };
+
+  const pushFor = (recipient = "recipient-uuid"): PushShape => {
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => PushShape,
+    ];
+    return builderFn(recipient);
+  };
+
+  beforeAll(async () => {
+    consume = await setupConsumer();
+  });
+
+  beforeEach(() => {
+    pushMany.mockClear();
+    isMutedMock.mockReset();
+    isMutedMock.mockResolvedValue(false);
+    filterNotifiableMock.mockReset();
+    filterNotifiableMock.mockImplementation(
+      async (_communityId: string, userIds: string[]) => userIds
+    );
+    isPrivateMutedMock.mockReset();
+    isPrivateMutedMock.mockResolvedValue(false);
+    isGroupMutedMock.mockReset();
+    isGroupMutedMock.mockResolvedValue(false);
+  });
+
+  it("COMMUNITY renamed → title is the NEW name from the event, body is 'Sender: preview'", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+        communityName: "Mot u Patlu Community Official",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Mot u Patlu Community Official");
+    expect(push.copy("en").body).toBe("Alice: Hello!");
+    expect(push.data.communityName).toBe("Mot u Patlu Community Official");
+    // Preview-off recipients still get the CURRENT name, never the old one.
+    expect(push.showPreviewOverride?.("en")).toBe(
+      "New message in Mot u Patlu Community Official"
+    );
+  });
+
+  it("GROUP renamed → title is the NEW group name (regression: groupName was dropped on the wire)", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Family Group 2026",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Family Group 2026");
+    expect(push.copy("en").body).toBe("Alice: Hello!");
+    expect(push.data.groupName).toBe("Family Group 2026");
+    expect(push.showPreviewOverride?.("en")).toBe(
+      "New message in Family Group 2026"
+    );
+  });
+
+  it("PRIVATE → still titles on the sender (no room name involved)", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    const push = pushFor();
+    expect(push.copy("en").title).toBe("Alice");
+    expect(push.copy("en").body).toBe("Hello!");
+    expect(push.showPreviewOverride?.("en")).toBe("New message");
+  });
+
+  it("GROUP with no name on the event → falls back to the sender, never a stale name", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "GROUP" }));
+    await flush();
+
+    expect(pushFor().copy("en").title).toBe("Alice");
   });
 });
 

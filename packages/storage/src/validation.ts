@@ -59,11 +59,39 @@ export function extensionOf(fileName: string): string {
 }
 
 /**
+ * Alternative spellings of the SAME format as the canonical extension the server
+ * derives from a MIME type (`canonical → also acceptable`).
+ *
+ * A MIME maps to exactly one extension in the upload allow-list, and the stored
+ * object key always uses that one. But a format can have more than one standard
+ * filename spelling, and the client sends the user's real filename: `image/jpeg`
+ * canonicalises to `jpg`, so an ordinary `photo.jpeg` was rejected outright with
+ * EXTENSION_MIME_MISMATCH — a 415 on a file the pipeline fully supports. Same
+ * for `.heif` under `image/heic`, and for an Ogg-Opus voice note named `.opus`
+ * declared `audio/ogg`.
+ *
+ * Only spellings of the same underlying format belong here. Anything that names
+ * a DIFFERENT format must still mismatch — that is what the check is for.
+ */
+const EXTENSION_ALIASES: Record<string, readonly string[]> = {
+  jpg: ["jpeg", "jpe"],
+  heic: ["heif"],
+  heif: ["heic"],
+  ogg: ["oga", "opus"],
+  opus: ["ogg", "oga"],
+  wav: ["wave"],
+  m4a: ["m4b"],
+  mp4: ["m4v"],
+  m4v: ["mp4"],
+};
+
+/**
  * Defense-in-depth: when a client supplies a filename that HAS an extension,
  * ensure it matches the extension the server derives from the declared MIME
- * type. The stored object key always uses the MIME-derived extension regardless,
- * so this only rejects a deceptive `originalFileName` (e.g. an `image/png`
- * upload named `invoice.html`). No-op when the filename has no extension.
+ * type (or one of that extension's {@link EXTENSION_ALIASES}). The stored object
+ * key always uses the MIME-derived extension regardless, so this only rejects a
+ * deceptive `originalFileName` (e.g. an `image/png` upload named `invoice.html`).
+ * No-op when the filename has no extension.
  */
 export function assertExtensionMatchesMime(
   fileName: string,
@@ -71,7 +99,7 @@ export function assertExtensionMatchesMime(
 ): void {
   const ext = extensionOf(fileName);
   const want = expectedExt.replace(/^\./, "").toLowerCase();
-  if (ext && ext !== want) {
-    throw new StorageValidationError("EXTENSION_MIME_MISMATCH");
-  }
+  if (!ext || ext === want) return;
+  if (EXTENSION_ALIASES[want]?.includes(ext)) return;
+  throw new StorageValidationError("EXTENSION_MIME_MISMATCH");
 }

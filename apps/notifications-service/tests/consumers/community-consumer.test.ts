@@ -46,15 +46,38 @@ jest.mock("@aimess/redis", () => ({
   publishUserSocketEvent: jest.fn(async () => 1),
 }));
 
+// Mock the community gRPC client — the authoritative community-name source for
+// every payload that does not carry `communityName` (moderation, invites,
+// reports, lifecycle). Creating the real client would open a socket.
+jest.mock("../../src/grpc/community.client.js", () => ({
+  communityClient: { getCommunityBrief: jest.fn(async () => null) },
+}));
+
 import { CommunityEvents } from "@aimess/shared-types";
 import { publishUserSocketEvent } from "@aimess/redis";
 
 import { startCommunityConsumer } from "../../src/consumers/community.consumer.js";
+import { communityClient } from "../../src/grpc/community.client.js";
 import { pushToUser, pushToUsers } from "../../src/services/push.service.js";
 
 const push = pushToUser as jest.Mock;
 const pushMany = pushToUsers as jest.Mock;
 const pubSocket = publishUserSocketEvent as jest.Mock;
+const getBrief = communityClient.getCommunityBrief as jest.Mock;
+
+/** Community-service answers with the CURRENT name for that id. */
+function communityDirectory(byId: Record<string, string>): void {
+  getBrief.mockImplementation(async (communityId: string) =>
+    byId[communityId]
+      ? { communityId, name: byId[communityId], avatarUrl: "" }
+      : null
+  );
+}
+
+beforeEach(() => {
+  getBrief.mockReset();
+  getBrief.mockResolvedValue(null);
+});
 
 const CID = "c".repeat(24);
 const RID = "r".repeat(24);
@@ -281,6 +304,96 @@ describe("MEMBER_UNBANNED branch", () => {
     expect(arg.copy("en").title).toBe("Vasundhara Community");
     expect(arg.copy("en").body).toBe("Your ban has been lifted.");
     expect(arg.data.communityAvatarUrl).toBe("https://cdn.example.com/v.png");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Community-name resolution — the "Your community" placeholder regression.
+//
+// The moderation/invite/report/lifecycle payloads never carried
+// `communityName`, so their pushes titled on the NOTIF_UNNAMED_COMMUNITY
+// placeholder ("Your community"), which reads as a real community name. The
+// consumer now resolves the name from the authoritative Community record.
+// ---------------------------------------------------------------------------
+
+describe("community name resolution", () => {
+  const CID_B = "b".repeat(24);
+
+  const roleChange = (communityId: string) => ({
+    communityId,
+    eventAt: "2026-08-17T10:00:00.000Z",
+    actorId: MOD,
+    targetUserId: REQUESTER,
+    oldRole: "MEMBER",
+    newRole: "MODERATOR",
+  });
+
+  it("MEMBER_ROLE_CHANGED — names the community instead of 'Your community'", async () => {
+    communityDirectory({ [CID]: "Vasundhara Community" });
+    await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID));
+
+    expect(getBrief).toHaveBeenCalledWith(CID);
+    const arg = push.mock.calls[0][0];
+    expect(arg.userId).toBe(REQUESTER);
+    expect(arg.copy("en").title).toBe("Vasundhara Community");
+    expect(arg.copy("en").body).toBe(
+      "You're now a moderator in Vasundhara Community"
+    );
+    // The FCM data payload + navigation object carry it too, for the tap target.
+    expect(arg.data.communityName).toBe("Vasundhara Community");
+    expect(JSON.parse(arg.data.navigation).communityName).toBe(
+      "Vasundhara Community"
+    );
+  });
+
+  it("resolves the community of the EVENT, not the user's other communities", async () => {
+    communityDirectory({
+      [CID]: "Vasundhara Community",
+      [CID_B]: "Mot u Patlu Community",
+    });
+    await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID_B));
+
+    expect(push.mock.calls[0][0].copy("en").title).toBe(
+      "Mot u Patlu Community"
+    );
+  });
+
+  it("uses the CURRENT name after a rename (resolved per event, never cached)", async () => {
+    communityDirectory({ [CID]: "Renamed Community" });
+    await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID));
+
+    expect(push.mock.calls[0][0].copy("en").body).toBe(
+      "You're now a moderator in Renamed Community"
+    );
+  });
+
+  it("falls back to the payload name when the record cannot be reached", async () => {
+    // Authoritative-FIRST: the lookup always runs (that is what makes a rename
+    // visible on the very next push). The emit-time name is the fallback, not
+    // a short-circuit.
+    communityDirectory({});
+    await deliver(CommunityEvents.MEMBER_BANNED, {
+      communityId: CID,
+      eventAt: "2026-08-17T10:00:00.000Z",
+      actorId: MOD,
+      targetUserId: REQUESTER,
+      communityName: "Vasundhara Community",
+      communityAvatarUrl: null,
+    });
+
+    expect(getBrief).toHaveBeenCalledWith(CID);
+    expect(push.mock.calls[0][0].copy("en").title).toBe("Vasundhara Community");
+  });
+
+  it("still delivers a generic push when the community cannot be resolved", async () => {
+    // Unknown id / community-service outage: fail open on the NAME only — the
+    // push must not be dropped, and no name may be fabricated.
+    communityDirectory({});
+    await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID));
+
+    expect(push).toHaveBeenCalledTimes(1);
+    // Field is OMITTED rather than "" — no empty string reaches the client.
+    expect(push.mock.calls[0][0].data.communityName).toBeUndefined();
   });
 });
 

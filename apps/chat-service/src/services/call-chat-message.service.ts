@@ -491,7 +491,10 @@ export class CallChatMessageService {
       senderName: "",
       lastMessageId: message.id,
       lastMessageAt: serverTs,
-      preview: { contentType: messageType, text },
+      // The canonical pair rides along so the gateway re-renders "Missed call" /
+      // "Call ended · 2:14" in each participant's own language rather than
+      // fanning out the write-time English (publish-conv-updated.ts BumpPreview).
+      preview: { contentType: messageType, text, systemEvent, systemData },
       countInUnread,
       getIsOnline: this.getIsOnline,
       // Same absolute-count source as the main send path (chat-message-

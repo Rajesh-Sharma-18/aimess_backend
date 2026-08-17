@@ -16,8 +16,23 @@ const MAX_PAGES = 1000; // safety backstop against a pathological cursor loop
  * event-driven path may have missed (events dropped while chat-service was down,
  * communities created pre-feature, etc.):
  *
- * - active community, no room   → provision the room + sync its members
+ * - active community, no room    → provision the room + sync its members
  * - deleted community, room live → deactivate the room + mark members left
+ * - room live, NO community at all → deactivate the room + mark members left
+ *
+ * That last case is not the same as the second. `c.deleted` only covers a
+ * community community-service still LISTS (soft-deleted, `deletedAt` set). A
+ * community whose row is gone entirely — a hard delete, a dropped collection, a
+ * restore from an older snapshot — never appears in the scan, so nothing here
+ * ever looked at it and its chat room stayed `active` forever. Members kept an
+ * `active` RoomMember row, which is what the Community nav badge sums over, so
+ * its unread counted toward the badge while `/communities/mine` (correctly)
+ * omitted the row: a badge the user cannot clear, because there is no
+ * conversation left to open.
+ *
+ * Reconciling that direction requires having seen the WHOLE community list —
+ * a truncated or failed scan would otherwise deactivate live rooms it simply
+ * had not reached yet — so it is gated on the scan completing.
  *
  * Scope is the ROOM gap (the user-facing "roomless community" problem). For
  * communities whose room already exists, steady-state member drift is left to
@@ -51,7 +66,13 @@ export async function reconcileCommunityRooms(): Promise<void> {
     let scanned = 0;
     let provisioned = 0;
     let deactivated = 0;
+    let orphaned = 0;
     let membersSynced = 0;
+    // Every community id the scan actually saw. Only meaningful as "the complete
+    // set" when the loop below finishes because the server said there was no
+    // more — see `scanComplete`.
+    const seenCommunityIds = new Set<string>();
+    let scanComplete = false;
 
     for (;;) {
       const res = await client.listCommunities({
@@ -61,6 +82,7 @@ export async function reconcileCommunityRooms(): Promise<void> {
 
       for (const c of res.communities) {
         scanned++;
+        seenCommunityIds.add(c.id);
         const roomStatus = roomStatusById.get(c.id);
 
         if (c.deleted) {
@@ -103,18 +125,45 @@ export async function reconcileCommunityRooms(): Promise<void> {
 
       pages++;
       if (!res.hasMore || !res.nextAfterId || pages >= MAX_PAGES) {
-        if (pages >= MAX_PAGES && res.hasMore) {
+        if (res.hasMore) {
+          // Truncated: either the page backstop tripped, or the server claimed
+          // more pages but handed back no cursor to reach them. Both leave
+          // `seenCommunityIds` incomplete — keyed on `hasMore` alone, because
+          // "why we stopped" does not change that.
           logger.warn(
-            `Community room reconciler hit MAX_PAGES (${MAX_PAGES}); stopping early — some communities may not have been scanned`
+            pages >= MAX_PAGES
+              ? `Community room reconciler hit MAX_PAGES (${MAX_PAGES}); stopping early — some communities were not scanned`
+              : "Community room reconciler stopped early — server reported more communities but returned no cursor"
           );
+        } else {
+          // Nothing after this page, so `seenCommunityIds` is the full community
+          // list and a live room missing from it has no community behind it.
+          scanComplete = true;
         }
         break;
       }
       afterId = res.nextAfterId;
     }
 
+    // Rooms with no community behind them at all. Deliberately skipped when the
+    // scan was truncated: a partial list would make every unscanned community's
+    // room look orphaned and deactivate live chats.
+    if (scanComplete) {
+      for (const [roomId, status] of roomStatusById) {
+        if (status === "inactive" || seenCommunityIds.has(roomId)) continue;
+        await roomRepo.deactivateForCommunity(roomId);
+        await memberRepo.markAllLeft(roomId);
+        orphaned++;
+      }
+      if (orphaned > 0) {
+        logger.warn(
+          `Community room reconciler deactivated ${orphaned} orphaned room(s) with no community record`
+        );
+      }
+    }
+
     logger.info(
-      `Community room reconciler: scanned=${scanned} provisioned=${provisioned} deactivated=${deactivated} membersSynced=${membersSynced}`
+      `Community room reconciler: scanned=${scanned} provisioned=${provisioned} deactivated=${deactivated} orphaned=${orphaned} membersSynced=${membersSynced} scanComplete=${scanComplete}`
     );
   } catch (err) {
     // Best-effort: a missing/slow community-service must not break chat-service boot.

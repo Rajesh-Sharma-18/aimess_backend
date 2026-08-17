@@ -125,6 +125,13 @@ service CommunityService {
   // Read-only, single query (select userId only) — no N+1.
   rpc GetCommunityActiveMemberIds (GetCommunityActiveMemberIdsRequest) returns (GetCommunityActiveMemberIdsResponse);
 
+  // Batched push-eligibility roster for notifications-service: the ACTIVE members
+  // of `community_id` who still want `field` notifications. One call replaces the
+  // per-recipient membership + preference oracles, which cost 4 DB queries EACH and
+  // tripped the 2s breaker on any sizeable community — and that breaker is
+  // fail-CLOSED, so a latency spike silently dropped the whole fan-out.
+  rpc GetCommunityNotifiableMemberIds (GetCommunityNotifiableMemberIdsRequest) returns (GetCommunityNotifiableMemberIdsResponse);
+
   // Moderation-mute oracle for notifications-service: lets the notification
   // eligibility gate suppress community-action notifications from a member who
   // has been muted by a moderator. Read-only, single-row lookup; never throws.
@@ -1036,5 +1043,14 @@ message GetCommunityActiveMemberIdsRequest {
   string community_id = 1;
 }
 message GetCommunityActiveMemberIdsResponse {
+  repeated string user_ids = 1;
+}
+
+message GetCommunityNotifiableMemberIdsRequest {
+  string community_id = 1;
+  // chatEnabled | streamEnabled | announcementEnabled
+  string field = 2;
+}
+message GetCommunityNotifiableMemberIdsResponse {
   repeated string user_ids = 1;
 }

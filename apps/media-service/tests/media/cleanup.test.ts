@@ -132,17 +132,6 @@ describe("rejected uploads are removed from MinIO", () => {
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ),
     ],
-    [
-      "empty object",
-      () => {
-        mockedHead.mockResolvedValue({
-          exists: true,
-          contentLength: 0,
-          contentType: "image/png",
-        });
-        mockedBytes.mockResolvedValue(Buffer.alloc(0));
-      },
-    ],
   ];
 
   it.each(cases)(
@@ -175,6 +164,24 @@ describe("rejected uploads are removed from MinIO", () => {
       expect(mockedStatusSet).toHaveBeenCalledWith(KEY, "REJECTED");
     }
   );
+
+  it("an empty object is a retriable ERROR, not a rejection", async () => {
+    // No bytes at the key means the PUT never finished — nothing was judged, so
+    // the upload must stay retriable instead of being deleted as rejected.
+    mockedHead.mockResolvedValue({
+      exists: true,
+      contentLength: 0,
+      contentType: "image/png",
+    });
+    mockedBytes.mockResolvedValue(Buffer.alloc(0));
+
+    const res = await confirm();
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.scanStatus).toBe("ERROR");
+    expect(mockedDelete).not.toHaveBeenCalled();
+    expect(mockedStatusSet).not.toHaveBeenCalledWith(KEY, "REJECTED");
+  });
 
   it("a rejected object is NOT downloadable afterwards", async () => {
     serveObject(validJpeg(), "image/png");

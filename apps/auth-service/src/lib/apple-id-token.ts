@@ -82,6 +82,10 @@ export async function verifyAppleIdToken(
     sub: payload.sub,
     email,
     emailVerified,
+    // Apple NEVER puts the user's name in the identity token — not even on the
+    // first authorization. The name arrives once, in the authorization
+    // response body (`fullName` / ASAuthorizationAppleIDCredential.fullName),
+    // and is handled by socialAuthService.loginWithApple.
     displayName: null,
   };
 }

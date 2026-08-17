@@ -4061,7 +4061,20 @@ export const openApiSchemas = {
         description:
           "Optional. Apple only includes `email` in the identity token on the FIRST authorization; clients should cache it and resend on subsequent logins. Never trusted as verified — used only as a display fallback.",
       },
-      fullName: { type: "string", maxLength: 100 },
+      fullName: {
+        description:
+          "Optional. Apple returns the user's name ONLY in the first authorization response (never in the identity token). Send the structured object; the plain string is accepted for backward compatibility. Used solely to seed a brand-new profile — later logins sending null/omitted values never overwrite a stored name.",
+        oneOf: [
+          { type: "string", maxLength: 100 },
+          {
+            type: "object",
+            properties: {
+              givenName: { type: "string", maxLength: 50, nullable: true },
+              familyName: { type: "string", maxLength: 50, nullable: true },
+            },
+          },
+        ],
+      },
     },
     required: ["identityToken"],
   },
@@ -9406,14 +9419,17 @@ export const openApiSchemas = {
     type: "string",
     description:
       "Free-form event-type string from @aimess/shared-types (no DB enum). " +
-      "Tab bucketing is by prefix, not an allowlist: `friend.*` → FRIENDS, " +
-      "`community.*` (except `community.mention`) → COMMUNITIES, " +
+      "Tab bucketing is by prefix, not an allowlist: `friend.*` and `call.*` → " +
+      "FRIENDS, `community.*` (except `community.mention`) → COMMUNITIES, " +
       "`chat.mention`/`community.mention` → MENTIONS, everything else " +
       "(auth.*, admin.*, session.*, user.registered, ...) → SYSTEM. " +
       "Only a subset of possible event types are actually written to the " +
       "inbox today: friend.requested, friend.accepted, community.member_banned, " +
-      "CALL_MISSED (see notifications-service push allowlist) — the rest are " +
-      "push-only. MENTIONS has no producer yet; reserved for chat/community mentions.",
+      "call.activity (1:1 call history — one row per call per participant, with " +
+      "the canonical call status in `data.callStatus`, `data.callType`, " +
+      "`data.callDirection` and `data.durationSec`; CALL_MISSED is its legacy " +
+      "predecessor) — the rest are push-only. MENTIONS has no producer yet; " +
+      "reserved for chat/community mentions.",
     example: "friend.requested",
   },
   NotificationCategory: {

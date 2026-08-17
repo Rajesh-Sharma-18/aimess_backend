@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
+import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 
@@ -82,7 +83,28 @@ const ACTIVE_MEMBERS_FAIL_CLOSED: GetCommunityActiveMemberIdsResult = {
   userIds: [],
 };
 
+export interface CommunityBrief {
+  communityId: string;
+  name: string;
+  /** Presigned avatar URL, "" when the community has none. */
+  avatarUrl: string;
+}
+
+/**
+ * Fail-open: an unresolved brief only costs the notification its community NAME,
+ * so it must never throw and abort (and DLQ) the push.
+ */
+const BRIEF_FAIL_OPEN: CommunityBrief | null = null;
+
+export interface GetCommunityNotifiableMemberIdsParams {
+  communityId: string;
+  field: "chatEnabled" | "streamEnabled" | "announcementEnabled";
+}
+
 export interface CommunityClient {
+  getCommunityNotifiableMemberIds(
+    p: GetCommunityNotifiableMemberIdsParams
+  ): Promise<GetCommunityActiveMemberIdsResult>;
   checkCommunityMute(
     p: CheckCommunityMuteParams
   ): Promise<CheckCommunityMuteResult>;
@@ -95,6 +117,11 @@ export interface CommunityClient {
   getCommunityActiveMemberIds(
     p: GetCommunityActiveMemberIdsParams
   ): Promise<GetCommunityActiveMemberIdsResult>;
+  /**
+   * Authoritative community identity (name + presigned avatar) for one id.
+   * `null` when the id is unknown or the lookup failed.
+   */
+  getCommunityBrief(communityId: string): Promise<CommunityBrief | null>;
 }
 
 export function createCommunityClient(): CommunityClient {
@@ -170,11 +197,47 @@ export function createCommunityClient(): CommunityClient {
   );
   activeMembersBreaker.fallback(() => ACTIVE_MEMBERS_FAIL_CLOSED);
 
+  // Reuses the existing batch enrichment RPC (backoffice livestream list) with a
+  // single id — community-service reads it straight off the Community record, so
+  // it is the authoritative name, never a cached copy captured at emit time.
+  const briefBreaker = makeBreaker(
+    "community.getCommunityBrief",
+    async (communityId: string) => {
+      const res = await makeGrpcCall<
+        unknown,
+        { communities?: CommunityBrief[] }
+      >(client, "adminGetCommunitiesByIds", { communityIds: [communityId] });
+      return res.communities?.[0] ?? null;
+    }
+  );
+  briefBreaker.fallback(() => BRIEF_FAIL_OPEN);
+  const notifiableBreaker = makeBreaker(
+    "community.getCommunityNotifiableMemberIds",
+    (p: GetCommunityNotifiableMemberIdsParams) =>
+      makeGrpcCall<unknown, GetCommunityActiveMemberIdsResult>(
+        client,
+        "getCommunityNotifiableMemberIds",
+        { communityId: p.communityId, field: p.field }
+      )
+  );
+  // Loud: this fallback suppresses an ENTIRE community fan-out, and the breaker
+  // holds open for resetTimeout (10s) — so one blip silences every community push
+  // in that window. Silent before, it was indistinguishable from "roster is
+  // legitimately empty", which is exactly how dropped pushes went undiagnosed.
+  notifiableBreaker.fallback(() => {
+    logger.warn(
+      "community.getCommunityNotifiableMemberIds fail-closed — community push fan-out SUPPRESSED"
+    );
+    return ACTIVE_MEMBERS_FAIL_CLOSED;
+  });
+
   return {
+    getCommunityNotifiableMemberIds: (p) => notifiableBreaker.fire(p),
     checkCommunityMute: (p) => muteBreaker.fire(p),
     checkCommunityNotificationPref: (p) => prefBreaker.fire(p),
     checkCommunityMembership: (p) => membershipBreaker.fire(p),
     getCommunityActiveMemberIds: (p) => activeMembersBreaker.fire(p),
+    getCommunityBrief: (communityId) => briefBreaker.fire(communityId),
   };
 }
 

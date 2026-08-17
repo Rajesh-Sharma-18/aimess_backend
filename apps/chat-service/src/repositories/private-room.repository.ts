@@ -347,7 +347,14 @@ export class PrivateRoomRepository {
     // gRPC breaker and fail sends that had already been persisted.
     const { roomId, message, receiverId } = params;
     const now = message.createdAt || new Date();
-    const unreadIncrement = params.unreadIncrement ?? 1;
+    // No resolved recipient ⇒ no unread bucket to credit. The dotted paths below
+    // are built by string concatenation, so an empty `receiverId` silently wrote
+    // `unreadCountByUser.""` (and `hasUnreadByUser.""`, …) — a bucket no viewer
+    // ever reads, while the real peer's badge never moved. Every such write is
+    // one permanently lost unread. Callers all resolve the peer from the room
+    // now (`privateRoomPeerId`, dc55e7a4), but this is the single choke point
+    // every private send passes through, so the guard belongs here.
+    const unreadIncrement = receiverId ? (params.unreadIncrement ?? 1) : 0;
 
     const lastMessage = {
       content: message.content,

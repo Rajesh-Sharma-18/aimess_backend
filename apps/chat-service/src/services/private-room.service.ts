@@ -12,6 +12,7 @@ import {
   normalizeMessageType,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
+import { localizedActivityPreview } from "../lib/localize-system-preview.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { env } from "../config/env.js";
@@ -902,8 +903,21 @@ export class PrivateRoomService {
             ? resolveDisplayName(snapshot)
             : myDisplayName
           : "",
+        // A SYSTEM snapshot's preview is the sentence baked in at write time
+        // (English); re-render it from the snapshot's own systemEvent/systemData
+        // in this reader's language, exactly as the transcript does. Non-SYSTEM
+        // previews are returned untouched.
         preview: lmRecord
-          ? convertMessageToPreview(lmMessageType, lmRecord.content)
+          ? localizedActivityPreview(
+              convertMessageToPreview(lmMessageType, lmRecord.content),
+              {
+                messageType: lmMessageType,
+                systemEvent: lmRecord.systemEvent as string | null,
+                systemData: lmRecord.systemData,
+              },
+              "PRIVATE",
+              userId
+            )
           : "",
         dateTime: lastActivityAt,
         // Identity/freshness quartet — read off the same snapshot the preview
