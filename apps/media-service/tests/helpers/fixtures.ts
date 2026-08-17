@@ -243,12 +243,25 @@ export function validMp4(
   mvhd.writeUInt32BE(timescale, 12);
   mvhd.writeUInt32BE(Math.round((durationMs / 1000) * timescale), 16);
 
+  // tkhd, version 0: an 84-byte body whose last 8 bytes are width/height as
+  // 16.16 fixed point, preceded by the 36-byte transform matrix at offset 40.
+  //
+  // This fixture used to declare an 80-byte body and write the dimensions at
+  // 72/76 — matching what the parser read rather than what the format says, so
+  // it agreed with an off-by-four bug instead of catching it. The matrix is now
+  // populated with the real identity values, which is what makes that bug
+  // visible: its last element is 0x40000000, and reading it as a 16.16 width
+  // yields 16384.
   const tkhd = Buffer.alloc(84);
-  tkhd[0] = 0; // version 0 → 80-byte body, w/h in the last 8 bytes
-  tkhd.writeUInt32BE(width * 65536, 80 - 8);
-  tkhd.writeUInt32BE(height * 65536, 80 - 4);
+  tkhd[0] = 0; // version 0
+  const MATRIX_AT = 40;
+  tkhd.writeUInt32BE(0x0001_0000, MATRIX_AT); // a = 1.0 (16.16)
+  tkhd.writeUInt32BE(0x0001_0000, MATRIX_AT + 16); // d = 1.0 (16.16)
+  tkhd.writeUInt32BE(0x4000_0000, MATRIX_AT + 32); // w = 1.0 (2.30)
+  tkhd.writeUInt32BE(width * 65536, 84 - 8);
+  tkhd.writeUInt32BE(height * 65536, 84 - 4);
 
-  const trak = box("trak", box("tkhd", tkhd.subarray(0, 80)));
+  const trak = box("trak", box("tkhd", tkhd));
   const moov = box("moov", Buffer.concat([box("mvhd", mvhd), trak]));
   return Buffer.concat([isobmffFtyp(brand, ["isom", "mp42"]), moov]);
 }

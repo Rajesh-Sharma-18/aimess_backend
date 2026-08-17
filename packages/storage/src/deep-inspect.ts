@@ -1034,8 +1034,21 @@ function readTkhd(
   out: DeepInspectResult
 ): void {
   const version = b[at]!;
-  // Trailing 8 bytes of a tkhd are width/height as 16.16 fixed point.
-  const size = version === 1 ? 92 : 80;
+  // Trailing 8 bytes of a tkhd BODY are width/height as 16.16 fixed point.
+  //
+  // The body is 84 bytes at version 0 — version+flags(4), creation(4),
+  // modification(4), track_ID(4), reserved(4), duration(4), reserved(8),
+  // layer(2), alternate_group(2), volume(2), reserved(2), matrix(36),
+  // width(4), height(4) — and 96 at version 1, where the three time/duration
+  // fields widen to 64 bits.
+  //
+  // These were 80 / 92: the BOX lengths minus a 12-byte header, applied to an
+  // offset that already points past an 8-byte header. Reading 4 bytes early
+  // lands on the last element of the transform matrix, which is a 2.30 fixed
+  // point 1.0 (0x40000000) in every ordinary file — 0x40000000 / 65536 =
+  // 16384, over the 8192px limit. So EVERY real MP4/MOV was reported as
+  // 16384 x <its true width> and rejected with DIMENSIONS_EXCEEDED.
+  const size = version === 1 ? 96 : 84;
   if (at + size > end) return;
   const w = b.readUInt32BE(at + size - 8) / 65536;
   const h = b.readUInt32BE(at + size - 4) / 65536;

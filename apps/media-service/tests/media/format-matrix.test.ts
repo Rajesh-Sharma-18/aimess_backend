@@ -143,6 +143,29 @@ describe("valid files pass magic-byte + structural validation", () => {
   });
 });
 
+describe("ISOBMFF track dimensions come from tkhd, not from its matrix", () => {
+  // `tkhd`'s width/height sit AFTER the 36-byte transform matrix. Reading four
+  // bytes early lands on the matrix's last element (0x40000000, a 2.30 fixed
+  // point 1.0), which as a 16.16 width is 16384 — over the 8192px limit, so
+  // every real MP4/MOV was rejected with DIMENSIONS_EXCEEDED.
+  it.each([
+    ["video/mp4", () => validMp4({ width: 1280, height: 720 }), 1280, 720],
+    [
+      "video/quicktime",
+      () => classicMov({ width: 1920, height: 1080 }),
+      1920,
+      1080,
+    ],
+  ])("reads real dimensions from a %s", (mime, make, width, height) => {
+    const result = inspect(make(), mime);
+    expect({
+      ok: result.ok,
+      width: result.width,
+      height: result.height,
+    }).toEqual({ ok: true, width, height });
+  });
+});
+
 describe("the required extension spellings are accepted", () => {
   const client = createStorageClient({
     endpoint: "http://localhost:9000",

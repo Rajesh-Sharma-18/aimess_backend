@@ -170,6 +170,28 @@ Types beyond the required list that were found and kept: `video/x-msvideo`,
 
 ### Fixed
 
+**0. Every real `.mp4` and `.mov` upload was rejected — `tkhd` dimensions were read four bytes early.**
+`readTkhd` treated the `tkhd` body as 80 bytes (v0) / 92 (v1). The body is
+actually 84 / 96: those constants were the BOX lengths minus a 12-byte header,
+applied to an offset that already points past the 8-byte header. Reading four
+bytes early lands on the last element of the 36-byte transform matrix, which is
+a 2.30 fixed-point 1.0 (`0x40000000`) in every ordinary file. As a 16.16 width
+that is **16384**, over the 8192px `maxVideoDimension` limit — so
+`/media/confirm` returned `REJECTED` / `DIMENSIONS_EXCEEDED` for every video
+whose true width was under the limit, reporting `16384 x <the real width>`.
+
+Confirmed against real files: a 1280x720 MP4 was reported as `16384x1280`. After
+the fix the same file reports `1280x720`, `durationMs: 10006`, `ok: true`. Five
+real MP4/MOV files (0.7 MB – 10 MB, MP4 and both faststart and classic
+QuickTime) now pass.
+
+The existing fixture did not catch this because it was built to match the
+parser: it declared an 80-byte tkhd body and wrote the dimensions where the
+buggy offsets read them, with the matrix left as zeros. `validMp4` now emits a
+spec-correct 84-byte body **with the real identity matrix populated**, which is
+what makes the off-by-four visible, plus a dedicated regression test asserting
+that a 1280x720 MP4 and a 1920x1080 MOV report exactly those dimensions.
+
 **1. Every `.avi` upload was rejected — `video/x-msvideo` had an unsatisfiable policy.**
 `MAGIC_BYTE_ACCEPT_MAP["video/x-msvideo"]` required a detected `video/x-msvideo`,
 but no rule in `SIGNATURES` ever produced that value. `matchMagicBytes` returned
@@ -310,7 +332,11 @@ as a known gap rather than half-implemented as an unvalidated blob upload.
 
 ## 8. Tests
 
-### Added — `apps/media-service/tests/media/format-matrix.test.ts` (97 assertions)
+### Added — `apps/media-service/tests/media/format-matrix.test.ts` (99 assertions)
+
+- **ISOBMFF dimensions** — a 1280x720 MP4 and a 1920x1080 classic MOV must
+  report exactly those dimensions, so the transform matrix can never be mistaken
+  for a width again (§5.0).
 
 - **Coverage guard** — asserts every MIME in `CHAT_MIME` has a fixture, so the
   allow-list and the test table cannot drift.
@@ -346,7 +372,7 @@ format are accepted; an extension naming a different format still throws
 ### Results
 
 ```
-media-service      15 suites, 295 tests   PASS
+media-service      15 suites, 297 tests   PASS
 @aimess/storage    15 suites,  59 tests   PASS
 typecheck          @aimess/storage, @aimess/media-service, @aimess/api-gateway   PASS
 ```
@@ -360,17 +386,17 @@ static OpenAPI document that neither suite imports) and were not introduced by i
 
 ## 9. Files changed
 
-| File                                                     | Change                                                               |
-| -------------------------------------------------------- | -------------------------------------------------------------------- |
-| `packages/storage/src/validation.ts`                     | extension-alias table; `assertExtensionMatchesMime` consults it      |
-| `packages/storage/src/magic-bytes.ts`                    | AVI signature (repair); `audio/opus` accept-set                      |
-| `packages/storage/src/deep-inspect.ts`                   | `audio/opus` dispatch + `OpusHead` requirement + detected-MIME alias |
-| `apps/media-service/src/config/uploads.ts`               | `audio/opus` → `.opus`, reusing the existing audio byte cap          |
-| `apps/api-gateway/src/docs/openapi/paths/media.paths.ts` | HEIC/HEIF/opus, `LIVESTREAM_THUMBNAIL`, corrected caps (docs only)   |
-| `apps/media-service/tests/helpers/fixtures.ts`           | new format fixtures                                                  |
-| `apps/media-service/tests/media/format-matrix.test.ts`   | new suite                                                            |
-| `packages/storage/src/__tests__/validation.test.ts`      | extension-alias cases                                                |
-| `MEDIA_TYPE_AUDIT.md`                                    | this report                                                          |
+| File                                                     | Change                                                                                                              |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `packages/storage/src/validation.ts`                     | extension-alias table; `assertExtensionMatchesMime` consults it                                                     |
+| `packages/storage/src/magic-bytes.ts`                    | AVI signature (repair); `audio/opus` accept-set                                                                     |
+| `packages/storage/src/deep-inspect.ts`                   | `readTkhd` body length 80/92 → 84/96 (repair); `audio/opus` dispatch + `OpusHead` requirement + detected-MIME alias |
+| `apps/media-service/src/config/uploads.ts`               | `audio/opus` → `.opus`, reusing the existing audio byte cap                                                         |
+| `apps/api-gateway/src/docs/openapi/paths/media.paths.ts` | HEIC/HEIF/opus, `LIVESTREAM_THUMBNAIL`, corrected caps (docs only)                                                  |
+| `apps/media-service/tests/helpers/fixtures.ts`           | new format fixtures; spec-correct `tkhd` (84-byte body + real matrix)                                               |
+| `apps/media-service/tests/media/format-matrix.test.ts`   | new suite                                                                                                           |
+| `packages/storage/src/__tests__/validation.test.ts`      | extension-alias cases                                                                                               |
+| `MEDIA_TYPE_AUDIT.md`                                    | this report                                                                                                         |
 
 No migration is required. No database schema, gRPC contract, socket payload or
 REST request/response shape changed.
