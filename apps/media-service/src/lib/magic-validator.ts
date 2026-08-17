@@ -132,16 +132,21 @@ export async function validateUpload(
   const { bucket, objectKey, declaredMime, maxBytes } = params;
 
   // ── 1. Verify object exists ───────────────────────────────────────────────
+  // "No bytes at the key" is a FAILED UPLOAD, not a verdict on content. Returning
+  // REJECTED here made /media/confirm report a security rejection for an object
+  // that was never fully PUT, and clients treat REJECTED as terminal (they delete
+  // the upload). ERROR keeps the object PENDING and retriable, which is what a
+  // half-finished PUT actually needs.
   const head = await headObject(storageClient, bucket, objectKey);
   if (!head.exists) {
-    return rejected(
-      "EMPTY",
-      "Object not found in storage — upload may have failed"
-    );
+    return {
+      status: "ERROR",
+      reason: "Object not found in storage — upload may have failed",
+    };
   }
   const fileSize = head.contentLength ?? 0;
   if (fileSize <= 0) {
-    return rejected("EMPTY", "Object is zero bytes", fileSize);
+    return { status: "ERROR", reason: "Object is zero bytes", fileSize };
   }
 
   // ── 1b. Enforce the REAL size against the category/MIME cap ──────────────

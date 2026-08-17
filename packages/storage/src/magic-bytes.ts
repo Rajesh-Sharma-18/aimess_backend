@@ -63,6 +63,35 @@ function isobmffMime(buf: Buffer): string {
   return "video/mp4";
 }
 
+/**
+ * Top-level atom types that begin a CLASSIC QuickTime movie.
+ *
+ * `.mov` predates the ISO base media spec and is not required to carry an `ftyp`
+ * box: QuickTime Player exports, several camera/screen recorders and older
+ * editing tools emit a file whose first atom is `moov`/`mdat`/`wide`/`free`.
+ * Those files are valid `video/quicktime` but matched no signature at all, so
+ * `assertMagicBytesMatch` rejected them as "no recognisable file signature" and
+ * `/media/confirm` reported REJECTED for a perfectly good upload.
+ */
+const QUICKTIME_TOP_LEVEL_ATOMS = new Set([
+  "moov",
+  "mdat",
+  "wide",
+  "free",
+  "skip",
+  "pnot",
+]);
+
+/** True when `buf` starts with a classic (ftyp-less) QuickTime atom. */
+export function isClassicQuickTime(buf: Buffer): boolean {
+  if (buf.length < 8) return false;
+  const size = buf.readUInt32BE(0);
+  // size 0 = "runs to end of file", 1 = 64-bit size follows; anything else must
+  // be a real atom length, which rules out a random 8-byte prefix.
+  if (size !== 0 && size !== 1 && size < 8) return false;
+  return QUICKTIME_TOP_LEVEL_ATOMS.has(buf.subarray(4, 8).toString("latin1"));
+}
+
 /** A single file-signature rule. */
 interface Signature {
   /** Raw bytes to match. `null` entries are wildcard (skip that byte position). */
@@ -192,6 +221,9 @@ export function matchMagicBytes(buf: Buffer): string | null {
     if (!matchesSignature(buf, sig)) continue;
     return sig.mime === ISOBMFF_SENTINEL ? isobmffMime(buf) : sig.mime;
   }
+  // No ftyp box — the only format that legitimately looks like this is a classic
+  // QuickTime movie. Structural inspection still has to confirm the box tree.
+  if (isClassicQuickTime(buf)) return "video/quicktime";
   return null;
 }
 

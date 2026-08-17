@@ -39,6 +39,8 @@ import {
   type MediaStructuralLimits,
 } from "@aimess/constants";
 
+import { isClassicQuickTime } from "./magic-bytes.js";
+
 // ─── Public surface ──────────────────────────────────────────────────────────
 
 export interface DeepInspectInput {
@@ -365,6 +367,8 @@ export function sniff(buf: Buffer): string | null {
   }
   if (b.length >= 12 && ascii(b, 4, 4) === "ftyp")
     return isobmffMimeForBrands(b);
+  // Classic QuickTime carries no ftyp box at all.
+  if (isClassicQuickTime(b)) return "video/quicktime";
   if (
     b.length >= 4 &&
     b[0] === 0x1a &&
@@ -876,7 +880,13 @@ function inspectIsobmff(
 ): DeepInspectResult {
   const b = input.head;
   need(b, 0, 12, "ftyp");
-  if (ascii(b, 4, 4) !== "ftyp") {
+
+  // A classic QuickTime movie has no `ftyp` box at all (see `isClassicQuickTime`
+  // in magic-bytes.ts) — its first atom is moov/mdat/wide/free. That layout is
+  // only valid for video/quicktime; everything else in this family must lead
+  // with ftyp.
+  const hasFtyp = ascii(b, 4, 4) === "ftyp";
+  if (!hasFtyp && !isClassicQuickTime(b)) {
     reject(
       "SIGNATURE_MISMATCH",
       "ISO base media file must start with an ftyp box"
@@ -885,7 +895,7 @@ function inspectIsobmff(
 
   const out: DeepInspectResult = {
     ...base,
-    detectedMime: isobmffMimeForBrands(b),
+    detectedMime: hasFtyp ? isobmffMimeForBrands(b) : "video/quicktime",
     metadata: [],
   };
 
