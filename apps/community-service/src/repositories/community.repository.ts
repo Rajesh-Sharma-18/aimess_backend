@@ -16,6 +16,8 @@ import type { CommunityMemberUnmutedSocketPayload } from "@aimess/shared-types";
 
 import { redis } from "../config/redis.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
+// Type-only (erased at compile) — no runtime cycle with the lib that imports this repo.
+import type { CommunityNotificationPrefField } from "../lib/community-notification-pref.js";
 import {
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityMemberSyncedForChatSafe,
@@ -1082,6 +1084,32 @@ export const communityRepository = {
       select: { userId: true },
     });
     return rows.map((r) => r.userId);
+  },
+
+  /**
+   * ACTIVE members who still want `field` notifications — the batched form of
+   * (checkCommunityMembership + checkCommunityNotificationPref), which
+   * notifications-service used to run once PER RECIPIENT at 4 DB queries each.
+   * Two queries total regardless of roster size. Mute semantics are identical to
+   * `resolveCommunityNotificationPrefEnabled`: a running timed mute snoozes every
+   * kind, otherwise the per-field toggle decides, absent row ⇒ enabled.
+   */
+  async findNotifiableMemberIds(
+    communityId: string,
+    field: CommunityNotificationPrefField
+  ): Promise<string[]> {
+    const [active, suppressed] = await Promise.all([
+      this.findActiveMemberIds(communityId),
+      prisma.communityMuteSetting.findMany({
+        where: {
+          communityId,
+          OR: [{ [field]: false }, { mutedUntil: { gt: new Date() } }],
+        },
+        select: { userId: true },
+      }),
+    ]);
+    const off = new Set(suppressed.map((r) => r.userId));
+    return active.filter((id) => !off.has(id));
   },
 
   async listMembers(params: {

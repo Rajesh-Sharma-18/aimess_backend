@@ -231,6 +231,14 @@ export interface PushInput {
    */
   communityPrefField?: CommunityPrefField;
   /**
+   * Set by a caller that already resolved ACTIVE membership + the per-community
+   * preference toggle for the WHOLE recipient list in one batched oracle call
+   * (see `filterToNotifiableCommunityMembers`). Skips the two per-recipient gRPC
+   * gates below — same authority, same fail-closed semantics (an empty batch
+   * result means nobody is pushed), but 1 call instead of 2 per recipient.
+   */
+  communityGatesPreResolved?: boolean;
+  /**
    * When true, a recipient's registered VOIP (iOS PushKit) token is sent an
    * APNs VoIP push instead of being skipped. MUST be true only for an actual
    * live-ringing event (incoming call / cancel-the-ring) — Apple requires
@@ -336,7 +344,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // missing members never get community FCM or inbox pushes. Preference
   // toggles are checked second. Lifecycle events that intentionally target
   // non-members skip both via COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.
-  if (!bypassSettings && !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)) {
+  if (
+    !bypassSettings &&
+    !input.communityGatesPreResolved &&
+    !COMMUNITY_MEMBERSHIP_GATE_EXEMPT_TYPES.has(type)
+  ) {
     const communityId = data?.communityId;
     if (communityId) {
       try {

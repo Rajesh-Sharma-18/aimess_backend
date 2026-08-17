@@ -13,7 +13,10 @@ import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
 import { memberAvatarService } from "../services/member-avatar.service.js";
 import { communityAccessPolicy } from "../lib/community-access-policy.js";
-import { resolveCommunityNotificationPrefEnabled } from "../lib/community-notification-pref.js";
+import {
+  resolveCommunityNotificationPrefEnabled,
+  type CommunityNotificationPrefField,
+} from "../lib/community-notification-pref.js";
 import { getChatClient } from "./chat.client.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
@@ -2245,6 +2248,43 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "getCommunityActiveMemberIds failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Batched push-eligibility roster for notifications-service (ACTIVE ∧ wants
+  // `field`). Replaces the per-recipient membership + preference oracles.
+  getCommunityNotifiableMemberIds: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as { communityId?: string; field?: string };
+      const communityId = (req.communityId ?? "").trim();
+      const validFields = new Set([
+        "chatEnabled",
+        "streamEnabled",
+        "announcementEnabled",
+      ]);
+      if (!communityId || !req.field || !validFields.has(req.field)) {
+        callback(null, { userIds: [] });
+        return;
+      }
+      try {
+        const userIds = await communityRepository.findNotifiableMemberIds(
+          communityId,
+          req.field as CommunityNotificationPrefField
+        );
+        callback(null, { userIds });
+      } catch (err) {
+        logger.error(
+          "getCommunityNotifiableMemberIds gRPC handler failed",
+          err
+        );
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "getCommunityNotifiableMemberIds failed",
         } as grpc.ServiceError);
       }
     })();
