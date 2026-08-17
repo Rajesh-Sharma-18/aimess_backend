@@ -71,6 +71,10 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     getCommunityActiveMemberIds: jest.fn(async () => ({
       userIds: [],
     })),
+    // Default = unresolved, so a spec that doesn't care about community
+    // identity exercises the fail-open path (payload-carried name/avatar).
+    // Specs asserting the authoritative name/image re-mock this.
+    getCommunityBrief: jest.fn(async () => null),
   })),
   communityClient: {
     checkCommunityMute: jest.fn(async () => ({
@@ -89,6 +93,10 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     getCommunityActiveMemberIds: jest.fn(async () => ({
       userIds: [],
     })),
+    // Default = unresolved, so a spec that doesn't care about community
+    // identity exercises the fail-open path (payload-carried name/avatar).
+    // Specs asserting the authoritative name/image re-mock this.
+    getCommunityBrief: jest.fn(async () => null),
   },
 }));
 // chat-messaging.client.js — same import.meta.url-at-load issue as

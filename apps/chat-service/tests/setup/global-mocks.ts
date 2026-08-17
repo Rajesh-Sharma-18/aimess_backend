@@ -22,7 +22,14 @@ jest.mock("nanoid", () => ({
 
 // --- Datastore: never construct a real Prisma/Mongo client at import time ----
 jest.mock("../../src/config/prisma.js", () => ({
-  prisma: {},
+  // Room-header reads used by the push publishers (publish-message-sent.ts /
+  // publish-group-member-added.ts) go straight through this client rather than
+  // a repository, so they need a model surface here. Default "no row" — suites
+  // asserting the push name/avatar re-mock with a row.
+  prisma: {
+    groupRoom: { findUnique: jest.fn(async () => null) },
+    generalRoom: { findUnique: jest.fn(async () => null) },
+  },
 }));
 
 // --- Redis (ioredis is ESM-only under CJS Jest). Stub a client surface rich

@@ -25,6 +25,19 @@ jest.mock("amqplib", () => ({
   })),
 }));
 
+// The GroupRoom row the publisher reads for the push header. `avatar` is a RAW
+// object key — resolveMediaUrl (real, driven by the global storage mock) turns
+// it into the URL the tray image is fetched from.
+const findGroupRoom = jest.fn(async () => ({
+  name: "Testing Invites",
+  avatar: "group-avatars/grp_1/current.jpg",
+}));
+jest.mock("../../src/config/prisma.js", () => ({
+  prisma: {
+    groupRoom: { findUnique: (...a: unknown[]) => findGroupRoom(...a) },
+  },
+}));
+
 import { ChatEvents } from "@aimess/shared-types";
 
 import { publishGroupMemberMuteSafe } from "../../src/events/publish-group-member-added.js";
@@ -91,5 +104,61 @@ describe("publishGroupMemberMuteSafe", () => {
       targetUserId: "target-1",
       mutedUntil: null,
     });
+  });
+});
+
+/**
+ * A group notification must represent the GROUP: the tray image is the group's
+ * own avatar, resolved from the authoritative GroupRoom row at publish time —
+ * never the acting admin's avatar, and never a stale copy captured by the
+ * producer.
+ */
+describe("publishGroupMemberMuteSafe — group avatar for the push", () => {
+  const mute = (groupName: string) =>
+    publishGroupMemberMuteSafe(ChatEvents.GROUP_MEMBER_MUTED, {
+      roomId: "grp_1",
+      groupName,
+      targetUserId: "target-1",
+      actorId: "admin-1",
+      mutedUntil: null,
+      eventAt: new Date(0).toISOString(),
+    });
+
+  it("carries the group avatar as a resolved URL, not a raw object key", async () => {
+    mute("Testing Invites");
+    await flush();
+
+    const { body } = lastQueued();
+    const data = body.data as Record<string, unknown>;
+    expect(data.groupAvatarUrl).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/current.jpg"
+    );
+  });
+
+  it("takes name AND image from the SAME row, so a rename can't desync them", async () => {
+    findGroupRoom.mockResolvedValueOnce({
+      name: "Dubai Ice Rink",
+      avatar: "group-avatars/grp_1/new.jpg",
+    });
+    // Producer still carries the pre-rename name — the row must win.
+    mute("Old Group");
+    await flush();
+
+    const data = lastQueued().body.data as Record<string, unknown>;
+    expect(data.groupName).toBe("Dubai Ice Rink");
+    expect(data.groupAvatarUrl).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/new.jpg"
+    );
+  });
+
+  it("omits the image entirely when the group has no avatar", async () => {
+    findGroupRoom.mockResolvedValueOnce({ name: "No Picture", avatar: "" });
+    mute("No Picture");
+    await flush();
+
+    const data = lastQueued().body.data as Record<string, unknown>;
+    // Absent, NOT "" — the client applies its own placeholder rather than
+    // trying to render an empty attachment.
+    expect(data).not.toHaveProperty("groupAvatarUrl");
   });
 });

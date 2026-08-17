@@ -555,6 +555,13 @@ export async function pushToUser(input: PushInput): Promise<void> {
               // neither, so it keeps its existing sender-less tray entry, and
               // an entity with no avatar simply has no key here — the OS/app
               // falls back to its own placeholder rather than a broken image.
+              // ponytail: these are presigned GET URLs (1 h, MINIO_*VIEW_EXPIRES_IN)
+              // while FCM's TTL is 24 h, so a push held for a device that stays
+              // offline past the hour lands with an expired image URL — the OS
+              // silently drops the picture, title/body/tap are unaffected. Same
+              // ceiling `senderAvatar` has always had. Fix by wiring the existing
+              // permanent view-proxy URL (`viewProxyBaseUrl` + `MEDIA_SIGN_SECRET`
+              // in createMediaUrlStrategy) if delayed pushes matter.
               imageUrl: data?.communityAvatarUrl || data?.conversationAvatar,
               collapseKey,
               apnsThreadId,

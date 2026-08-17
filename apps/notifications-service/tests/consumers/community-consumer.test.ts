@@ -367,7 +367,11 @@ describe("community name resolution", () => {
     );
   });
 
-  it("skips the lookup when the payload already carries the name", async () => {
+  it("falls back to the payload name when the record cannot be reached", async () => {
+    // Authoritative-FIRST: the lookup always runs (that is what makes a rename
+    // visible on the very next push). The emit-time name is the fallback, not
+    // a short-circuit.
+    communityDirectory({});
     await deliver(CommunityEvents.MEMBER_BANNED, {
       communityId: CID,
       eventAt: "2026-08-17T10:00:00.000Z",
@@ -377,7 +381,7 @@ describe("community name resolution", () => {
       communityAvatarUrl: null,
     });
 
-    expect(getBrief).not.toHaveBeenCalled();
+    expect(getBrief).toHaveBeenCalledWith(CID);
     expect(push.mock.calls[0][0].copy("en").title).toBe("Vasundhara Community");
   });
 
@@ -388,7 +392,8 @@ describe("community name resolution", () => {
     await deliver(CommunityEvents.MEMBER_ROLE_CHANGED, roleChange(CID));
 
     expect(push).toHaveBeenCalledTimes(1);
-    expect(push.mock.calls[0][0].data.communityName).toBe("");
+    // Field is OMITTED rather than "" — no empty string reaches the client.
+    expect(push.mock.calls[0][0].data.communityName).toBeUndefined();
   });
 });
 
