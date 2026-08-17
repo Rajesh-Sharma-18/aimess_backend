@@ -178,6 +178,30 @@ const SIGNATURES: Signature[] = [
   // FLAC
   { bytes: [0x66, 0x4c, 0x61, 0x43], mime: "audio/flac" },
 
+  // RIFF AVI (`RIFF....AVI `). MAGIC_BYTE_ACCEPT_MAP has required a detected
+  // `video/x-msvideo` since the empty accept-set was closed, but no rule ever
+  // produced that value — so `matchMagicBytes` returned null for a perfectly
+  // good AVI and every .avi upload was rejected at /media/confirm as "no
+  // recognisable file signature". The accept-set was tightened without the
+  // signature that makes it satisfiable.
+  {
+    bytes: [
+      0x52,
+      0x49,
+      0x46,
+      0x46,
+      null,
+      null,
+      null,
+      null,
+      0x41,
+      0x56,
+      0x49,
+      0x20,
+    ],
+    mime: "video/x-msvideo",
+  },
+
   // RIFF WAV
   {
     bytes: [
@@ -270,6 +294,9 @@ export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
   // Audio
   "audio/mpeg": new Set(["audio/mpeg"]),
   "audio/ogg": new Set(["audio/ogg"]),
+  // Opus is carried in an Ogg container, so it shares the `OggS` signature; the
+  // codec itself is confirmed structurally (`OpusHead`) in deep-inspect.ts.
+  "audio/opus": new Set(["audio/ogg"]),
   "audio/wav": new Set(["audio/wav"]),
   "audio/mp4": new Set(["video/mp4"]),
   "audio/x-m4a": new Set(["video/mp4"]),

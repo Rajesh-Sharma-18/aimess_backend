@@ -162,7 +162,8 @@ function dispatch(
     case "video/webm":
       return inspectMatroska(input, base, limits);
     case "audio/ogg":
-      return inspectOgg(input, base);
+    case "audio/opus":
+      return inspectOgg(input, base, mime);
     case "audio/wav":
       return inspectWav(input, base);
     case "audio/flac":
@@ -221,6 +222,7 @@ const DETECTED_MIME_ALIASES: Record<string, ReadonlySet<string>> = {
   "video/x-m4v": new Set(["video/mp4"]),
   "audio/mp4": new Set(["video/mp4", "audio/mp4"]),
   "audio/x-m4a": new Set(["video/mp4", "audio/mp4"]),
+  "audio/opus": new Set(["audio/ogg", "audio/opus"]),
   "video/webm": new Set(["video/webm", "video/x-matroska"]),
   "video/x-matroska": new Set(["video/webm", "video/x-matroska"]),
   "image/heif": new Set(["image/heic", "image/heif"]),
@@ -1206,7 +1208,8 @@ function readEbmlFloat(b: Buffer, at: number, len: number): number {
 
 function inspectOgg(
   input: DeepInspectInput,
-  base: DeepInspectResult
+  base: DeepInspectResult,
+  declaredMime = "audio/ogg"
 ): DeepInspectResult {
   const b = input.head;
   need(b, 0, 27, "Ogg page header");
@@ -1221,6 +1224,15 @@ function inspectOgg(
 
   // Codec identification lives in the first packet of the first page.
   const idx = b.indexOf(Buffer.from("OpusHead"));
+  // `audio/opus` claims a specific codec, not just the container — so the codec
+  // header has to be there. Without this the label would be the one part of the
+  // declaration nothing checked.
+  if (declaredMime === "audio/opus" && idx < 0) {
+    reject(
+      "SIGNATURE_MISMATCH",
+      "declared audio/opus but the Ogg stream carries no OpusHead header"
+    );
+  }
   let rate = 48_000;
   if (idx >= 0 && idx + 16 <= b.length) {
     rate = 48_000; // Opus granule positions are always in 48 kHz units
