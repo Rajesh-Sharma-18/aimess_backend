@@ -338,6 +338,20 @@ export class GeneralRoomRepository {
     });
   }
 
+  /**
+   * Keep the denormalized `GeneralRoom.name` mirror in sync when the parent
+   * community is renamed. Driven by the `community.name_changed` sync event.
+   * This mirror is the fallback title for community chat-message push
+   * notifications, so a stale copy shows the OLD name after a rename. Tolerates
+   * a missing room (a not-yet-provisioned community) — updateMany is a no-op then.
+   */
+  async renameForCommunity(communityId: string, name: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId },
+      data: { name },
+    });
+  }
+
   async incPinnedCount(
     roomId: string,
     inc: number,

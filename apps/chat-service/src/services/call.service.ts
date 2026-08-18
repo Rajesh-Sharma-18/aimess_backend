@@ -61,6 +61,31 @@ const CALL_LEG_TTL_SEC = 4 * 60 * 60;
 const END_REASON_FRIENDSHIP = "SYSTEM_FRIENDSHIP";
 
 /**
+ * How long after a call goes IN_PROGRESS a `declineCall` may still be read as
+ * "the callee tapped Decline in the split second after Accept" (see the
+ * accept-then-decline branch in {@link CallService.declineCall}).
+ *
+ * That branch ends a call that is already IN_PROGRESS, so it must not be
+ * reachable by a STALE decline. Mobile clients queue terminal intents while
+ * offline, and a decline replayed minutes later — after the user answered the
+ * same ring from another device, or after a lost `participant_joined` webhook
+ * left `answeredAt` null on a perfectly live call — used to tear down a
+ * conversation in progress. A genuine accept-then-decline race is sub-second;
+ * anything past this window is a replay and is answered idempotently instead.
+ */
+const ACCEPT_THEN_DECLINE_WINDOW_MS = 10_000;
+
+/**
+ * Socket-room membership marker, written when a user initiates or answers a
+ * call and read by the gateway to authorize `call:rejoin` after a transport
+ * reconnect. Written HERE (rather than only in the gateway) so the REST call
+ * actions — the fallback a backgrounded/killed mobile app uses, where there is
+ * no socket to join — leave the same membership behind as the socket path.
+ * Key/value/TTL must stay identical to the gateway's `rememberCallMember`.
+ */
+const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
+
+/**
  * Fetch caller display name + presigned avatar URL for the `call:incoming`
  * event so the callee's FE can render the ringing UI without a second lookup.
  * Returns empty strings on failure — a lookup miss must never block a call.
@@ -235,6 +260,24 @@ export class CallService {
     const won = await this.redis.set(key, legId, "EX", CALL_LEG_TTL_SEC, "NX");
     if (won === "OK") return true;
     return (await this.redis.get(key)) === legId;
+  }
+
+  /** See {@link CALL_MEMBER_TTL_SEC}. Best-effort: rejoin is a convenience, not correctness. */
+  private async rememberCallMember(
+    callId: string,
+    userId: string
+  ): Promise<void> {
+    if (!callId || !userId) return;
+    try {
+      await this.redis.set(
+        `call:member:${callId}:${userId}`,
+        "1",
+        "EX",
+        CALL_MEMBER_TTL_SEC
+      );
+    } catch (err) {
+      logger.warn(`CallService|rememberCallMember|failed: ${String(err)}`);
+    }
   }
 
   /** Token-checked release, so a retaken claim is never deleted out from under. */
@@ -432,6 +475,8 @@ export class CallService {
       );
       throw new ConflictError("CALL_USER_BUSY");
     }
+
+    await this.rememberCallMember(callId, params.callerId);
 
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
     // UI in parallel — independent I/O. The CALLEE snapshot is not refetched:
@@ -632,6 +677,8 @@ export class CallService {
       calleeIds,
     });
 
+    await this.rememberCallMember(callId, params.callerId);
+
     const callerSnapshot = await this.getUserSnapshot(params.callerId).catch(
       () => ({ displayName: "", avatarUrl: "" })
     );
@@ -781,6 +828,10 @@ export class CallService {
       params.callId,
       params.calleeId
     );
+    // Answering is what earns a seat in `call:<id>` — record it before any
+    // early return below, so a retried/duplicate answer is still allowed to
+    // rejoin the room after a reconnect.
+    await this.rememberCallMember(params.callId, params.calleeId);
     // Already answered — by THIS leg (a retry or a reconnect after the claim
     // landed), because a foreign leg could not have got past claimCallLeg.
     if (call.status === CallStatus.IN_PROGRESS) return { ...call, livekit };
@@ -807,13 +858,19 @@ export class CallService {
     );
     if (alreadyBusy) throw new ConflictError("CALL_USER_BUSY");
 
-    const answeredAt = new Date();
+    // `answeredAt` is deliberately NOT set here. It is stamped only when the
+    // callee's LiveKit `participant_joined` webhook arrives (see
+    // `markMediaJoined`), so the value always means "media was actually up".
+    // If a callee taps Accept and then End before LiveKit joins, `answeredAt`
+    // stays null and the terminal paths (`endCall`, `declineCall`,
+    // `reconcileFromLiveKitRoomFinished`) treat the call as cancelled with
+    // zero duration — matching the user's intent, not a false "answered call".
+    const transitionedAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
       CallStatus.RINGING,
       {
         status: CallStatus.IN_PROGRESS,
-        answeredAt,
       }
     );
     if (!won) {
@@ -828,8 +885,8 @@ export class CallService {
     const updated: Call = {
       ...call,
       status: CallStatus.IN_PROGRESS,
-      answeredAt,
-      updatedAt: answeredAt,
+      answeredAt: null,
+      updatedAt: transitionedAt,
     };
 
     await Promise.all([
@@ -872,7 +929,7 @@ export class CallService {
     await this.postCallChatMessageSafe(
       updated,
       "ANSWERED",
-      answeredAt,
+      transitionedAt,
       0,
       params.calleeId
     );
@@ -888,6 +945,44 @@ export class CallService {
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+
+    // Accept-then-decline race (1:1): the callee tapped Decline in the tight
+    // window after their client already emitted `call:answer` but before the
+    // callee's media actually joined LiveKit. Row is IN_PROGRESS with a null
+    // `answeredAt`. Treat this as a valid decline — the user's intent is
+    // clearly "no", and no real call happened. Delegate through `endCall`
+    // (attributed to the callee), which now takes the pre-media branch and
+    // publishes `call:cancelled` + posts a CANCELLED chat card with no
+    // duration. Group calls stay in the RINGING-only path below — a group
+    // decline mid-roster does not translate to "reject the whole call".
+    //
+    // Time-bounded on `updatedAt` (stamped by the RINGING → IN_PROGRESS claim)
+    // because this is the ONLY decline path that can end a call that is already
+    // up: a decline replayed long after the fact — a mobile client flushing a
+    // queued intent on reconnect, or a retried delivery — would otherwise hang
+    // up a live conversation. `answeredAt` cannot bound it: it is stamped by
+    // the best-effort `participant_joined` webhook, so a lost webhook leaves it
+    // null for the entire call. See ACCEPT_THEN_DECLINE_WINDOW_MS.
+    // A row with no `updatedAt` (hand-built fixtures, pre-migration rows) gives us
+    // nothing to judge staleness by — treat it as in-window so the pre-existing
+    // behaviour holds rather than silently swallowing a genuine decline.
+    const sinceAnswerMs = call.updatedAt
+      ? Date.now() - call.updatedAt.getTime()
+      : 0;
+    if (
+      call.status === CallStatus.IN_PROGRESS &&
+      call.answeredAt === null &&
+      !call.groupId &&
+      sinceAnswerMs <= ACCEPT_THEN_DECLINE_WINDOW_MS
+    ) {
+      // `endCall`'s cancel branch is a strict refinement of `Call` (durationSec
+      // narrowed to `number`), so it's assignable to `declineCall`'s Promise<Call>.
+      return this.endCall({
+        callId: params.callId,
+        userId: params.calleeId,
+      });
+    }
+
     // Idempotent / stale-UI: already left RINGING — succeed without error so
     // double-taps don't trip the gateway circuit breaker.
     if (call.status !== CallStatus.RINGING) return call;
@@ -1107,7 +1202,14 @@ export class CallService {
     }
 
     const endedAt = new Date();
+    // Fold "IN_PROGRESS but the callee's media never actually joined LiveKit"
+    // into the RINGING/pre-answer cancel branch: no duration, cancel event
+    // to the caller, CANCELLED chat card. Without this, an accept-then-end
+    // race records a real answered call with a spurious duration timer.
     const wasRinging = call.status === CallStatus.RINGING;
+    const wasPreMedia =
+      call.status === CallStatus.IN_PROGRESS && call.answeredAt === null;
+    const cancelPath = wasRinging || wasPreMedia;
     const durationSec = call.answeredAt
       ? Math.max(
           0,
@@ -1164,11 +1266,21 @@ export class CallService {
     // It goes to the CALLER's `self:` channel too — the caller's other devices
     // are showing an outgoing-mirror banner for this ring and would otherwise
     // never learn it was cancelled, leaving the banner up forever.
+    //
+    // Three outcomes, most specific first:
+    //  - the caller reporting NO_ANSWER on a still-RINGING call is the same
+    //    outcome the RINGING → MISSED sweep records, so it runs the identical
+    //    fan-out through one shared method — the two paths to that outcome can
+    //    never drift into two different behaviours.
+    //  - any other pre-answer end is a cancel. The `wasPreMedia` branch
+    //    (accept-then-quick-end race) shares this exact fan-out: the callee's
+    //    `self:<id>` gets `call:cancelled` (their mirror device needs the same
+    //    dismiss), and the caller-side sees a cancelled card rather than a fake
+    //    connected one with a duration.
+    //  - otherwise media really connected, so it ends with a duration.
     if (noAnswer) {
-      // Identical fan-out to the sweep's — one shared method, so the two paths
-      // to the same outcome can never drift into two different behaviours.
       await this.fanOutUnansweredRing(updated, endedAt);
-    } else if (wasRinging) {
+    } else if (cancelPath) {
       const targets = this.ringTargets(call);
       await this.publishToCallAndParticipants(
         updated,
@@ -1702,6 +1814,7 @@ export class CallService {
     if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
 
     const endedAt = new Date();
+    const preMedia = call.answeredAt === null;
     const durationSec = call.answeredAt
       ? Math.max(
           0,
@@ -1721,6 +1834,38 @@ export class CallService {
     );
     if (!won) return;
 
+    // Media never actually joined for the callee before the room went away
+    // (accept-then-quick-end / callee never fully connected). Same shape as
+    // the RINGING branch above: cancelled event, CANCELLED card, no duration
+    // — never surface a fake connected call.
+    if (preMedia) {
+      const cancelPayload = JSON.stringify({
+        event: "call:cancelled",
+        data: { callId },
+      });
+      await this.publishToCallAndParticipants(
+        call,
+        cancelPayload,
+        "reconcile|preMediaCancel"
+      );
+      for (const calleeId of this.ringTargets(call)) {
+        publishCallCancelSafe({
+          calleeId,
+          callId,
+          reason: "cancelled",
+          callerId: call.callerId,
+        });
+      }
+      await this.postCallChatMessageSafe(
+        call,
+        "CANCELLED",
+        endedAt,
+        0,
+        "SYSTEM_LIVEKIT"
+      );
+      return;
+    }
+
     await this.publishToCallAndParticipants(
       call,
       JSON.stringify({
@@ -1737,6 +1882,36 @@ export class CallService {
       durationSec,
       "SYSTEM_LIVEKIT"
     );
+  }
+
+  /**
+   * Stamp `answeredAt` from a LiveKit `participant_joined` webhook — the only
+   * event that proves the callee's media actually arrived. Idempotent; the
+   * caller's own join and every reconnect / duplicate-identity race no-op.
+   * The webhook is best-effort: if it never lands, `endCall` sees a null
+   * `answeredAt` and closes the row as cancelled (no duration), which is a
+   * strictly better failure than the previous "count from the answer socket
+   * event and produce a spurious duration".
+   */
+  async markMediaJoined(
+    callId: string,
+    participantIdentity: string
+  ): Promise<void> {
+    if (!callId || !participantIdentity) return;
+    const call = await this.callRepo.findByCallId(callId);
+    if (!call) return; // room name wasn't a callId — ignore
+    if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
+    if (call.answeredAt !== null) return; // already stamped
+    // The caller joined LiveKit at initiate; only the callee's join proves
+    // the media path is up on both sides. Anything else is a no-op.
+    if (!this.isCallee(call, participantIdentity)) return;
+
+    const { won } = await this.callRepo.markAnsweredIfNull(callId, new Date());
+    if (won) {
+      logger.info(
+        `CallService|markMediaJoined|answeredAt stamped call=${callId} participant=${participantIdentity}`
+      );
+    }
   }
 
   private async postCallChatMessageSafe(

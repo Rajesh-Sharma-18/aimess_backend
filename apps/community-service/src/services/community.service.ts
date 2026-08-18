@@ -2589,6 +2589,10 @@ export const communityService = {
     if (nextName && nextName !== previousName) {
       await communityCache.invalidateNameAvailability(previousName);
       await communityCache.invalidateNameAvailability(nextName);
+      // The chat-side GeneralRoom.name mirror is refreshed further down by
+      // publishCommunityMetaSyncedForChatSafe, which carries name AND avatar and
+      // supersedes the older name-only `community.name_changed` publish that
+      // used to live here — emitting both wrote the same name twice per rename.
     }
     if (nextHandle && nextHandle !== previousHandle) {
       await communityCache.invalidateHandleAvailability(previousHandle);

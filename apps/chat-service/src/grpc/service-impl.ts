@@ -1702,6 +1702,30 @@ export function createMessagingImpl(
       })();
     },
 
+    handleLiveKitParticipantJoined: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<Record<string, never>>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            roomName?: string;
+            participantIdentity?: string;
+          };
+          await deps.callService.markMediaJoined(
+            req.roomName ?? "",
+            req.participantIdentity ?? ""
+          );
+          callback(null, {});
+        } catch (err) {
+          logger.error(
+            `gRPC handleLiveKitParticipantJoined error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     /**
      * Room-independent typing fan-out roster for private/group — the exact
      * mirror of community-service's GetCommunityActiveMemberIds.

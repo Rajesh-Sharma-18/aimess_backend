@@ -19,6 +19,9 @@ function buildService() {
       claimForMissed: jest.fn(),
       // Default to "nothing stranded" so the existing sweep tests are unaffected.
       findStuckInProgress: jest.fn().mockResolvedValue([]),
+      // Default: media-join stamp wins. Individual tests override for
+      // "already stamped" / "raced by another webhook" cases.
+      markAnsweredIfNull: jest.fn().mockResolvedValue({ won: true }),
     },
     privateRoomRepo: {
       findByRoomId: jest.fn(),
@@ -605,5 +608,196 @@ describe("CallService.sweepStaleInProgressCalls", () => {
     expect(flipped).toBe(0);
     expect(stubs.redis.publish).not.toHaveBeenCalled();
     expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The core of the "accept then immediately end before LiveKit joins" fix.
+ * `answeredAt` is now stamped only by the LiveKit `participant_joined` webhook,
+ * so an IN_PROGRESS row with `answeredAt == null` means "callee accepted but
+ * media never actually got up". Every terminal path must treat that as
+ * cancelled (no duration, no fake connected call).
+ */
+describe("CallService — pre-media terminal paths (accept-then-quick-end)", () => {
+  const preMediaCall = {
+    callId: "c1",
+    status: "IN_PROGRESS",
+    answeredAt: null,
+    callerId: "u1",
+    calleeId: "u2",
+    privateRoomId: "r1",
+    type: "AUDIO",
+  };
+
+  it("endCall on IN_PROGRESS with null answeredAt → CANCELLED card, no duration, call:cancelled", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(preMediaCall);
+    // Callee's own leg ends it; leg claim owned by legA.
+    stubs.redis.get.mockResolvedValue("legA");
+
+    const result = await service.endCall({
+      callId: "c1",
+      userId: "u2",
+      legId: "legA",
+    });
+
+    expect(result.durationSec).toBe(0);
+    // Same cancel event the RINGING branch already sends — caller-web
+    // handleCancelled clears "Calling..." without any FE handler changes.
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:cancelled")
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:u2",
+      expect.stringContaining("call:cancelled")
+    );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "c1",
+        outcome: "CANCELLED",
+        durationSec: 0,
+      })
+    );
+    // Must NEVER emit call:ended — that would tell the caller a real call ended
+    // and (via ENDED chat card + non-zero duration) surface the bug we fixed.
+    expect(stubs.redis.publish).not.toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:ended")
+    );
+  });
+
+  it("declineCall during the accept-then-decline race delegates to endCall's cancel branch", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(preMediaCall);
+    stubs.redis.get.mockResolvedValue("legA");
+
+    await service.declineCall({ callId: "c1", calleeId: "u2" });
+
+    // Silent early-return would fail all three of these — the pre-fix
+    // behaviour on IN_PROGRESS. Post-fix, decline is now honoured.
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "c1",
+        outcome: "CANCELLED",
+        durationSec: 0,
+      })
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:cancelled")
+    );
+  });
+
+  it("declineCall does NOT end a live call when the decline is stale", async () => {
+    const { service, stubs } = buildService();
+    // Same pre-media shape, but the answer landed well outside the
+    // accept-then-decline window: this is a mobile client flushing a decline it
+    // queued while offline, or a redelivery — NOT a user rejecting a ring. It
+    // must not hang up a conversation that is up. `answeredAt` stays null
+    // because the `participant_joined` webhook is best-effort, so it cannot be
+    // what distinguishes the two cases — only the age of the answer can.
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...preMediaCall,
+      updatedAt: new Date(Date.now() - 60_000),
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    await service.declineCall({ callId: "c1", calleeId: "u2" });
+
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("reconcileFromLiveKitRoomFinished IN_PROGRESS+null answeredAt → CANCELLED, no duration", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(preMediaCall);
+
+    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
+
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:cancelled")
+    );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "CANCELLED", durationSec: 0 })
+    );
+    expect(stubs.redis.publish).not.toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:ended")
+    );
+  });
+});
+
+/**
+ * `markMediaJoined` is the LiveKit-webhook path that stamps `answeredAt`.
+ * It is the ONLY thing that makes a call count as a real answered call now
+ * (previously the client's `call:answer` socket event did it).
+ */
+describe("CallService.markMediaJoined", () => {
+  const inProgressCall = {
+    callId: "c1",
+    status: "IN_PROGRESS",
+    answeredAt: null,
+    callerId: "u1",
+    calleeId: "u2",
+    privateRoomId: "r1",
+    type: "AUDIO",
+  };
+
+  it("stamps answeredAt when the callee joins and the row is IN_PROGRESS + null", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(inProgressCall);
+
+    await service.markMediaJoined("c1", "u2");
+
+    expect(stubs.callRepo.markAnsweredIfNull).toHaveBeenCalledWith(
+      "c1",
+      expect.any(Date)
+    );
+  });
+
+  it("does NOT stamp when the caller joins (their join is meaningless for 'answered')", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(inProgressCall);
+
+    await service.markMediaJoined("c1", "u1");
+
+    expect(stubs.callRepo.markAnsweredIfNull).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent — a second callee join (reconnect / dup leg) does not restamp", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...inProgressCall,
+      answeredAt: new Date(),
+    });
+
+    await service.markMediaJoined("c1", "u2");
+
+    expect(stubs.callRepo.markAnsweredIfNull).not.toHaveBeenCalled();
+  });
+
+  it("skips unknown callIds and terminal / non-IN_PROGRESS rows", async () => {
+    const { service, stubs } = buildService();
+
+    stubs.callRepo.findByCallId.mockResolvedValueOnce(null);
+    await service.markMediaJoined("nope", "u2");
+
+    stubs.callRepo.findByCallId.mockResolvedValueOnce({
+      ...inProgressCall,
+      status: "RINGING",
+    });
+    await service.markMediaJoined("c1", "u2");
+
+    stubs.callRepo.findByCallId.mockResolvedValueOnce({
+      ...inProgressCall,
+      status: "ENDED",
+    });
+    await service.markMediaJoined("c1", "u2");
+
+    expect(stubs.callRepo.markAnsweredIfNull).not.toHaveBeenCalled();
   });
 });

@@ -278,6 +278,18 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.name_changed": {
+          // Refresh the denormalized GeneralRoom.name mirror on rename. This
+          // mirror is the fallback title for community chat-message push
+          // notifications, so without this the pushes keep the OLD name.
+          const name = event.data.name ?? "";
+          await this.roomRepo.renameForCommunity(communityId, name);
+          logger.debug(
+            `community.name_changed: set name="${name}" for ${communityId}`
+          );
+          break;
+        }
+
         case "community.member.synced": {
           const userId = event.data.userId;
           if (!userId) break;

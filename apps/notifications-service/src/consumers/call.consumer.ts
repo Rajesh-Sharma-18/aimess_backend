@@ -235,9 +235,21 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
     priority: "high",
     ttl: 30,
     collapseKey: `call:${data.callId}`,
-    // Dismiss a stale VoIP ring on iOS too — same live-event exception as
-    // handleCallIncoming's allowVoip.
-    allowVoip: true,
+    // allowVoip is deliberately OFF, for the same reason as handleCallHandled
+    // below: iOS 13+ terminates the process if a PushKit delivery finishes
+    // without a `reportNewIncomingCall`, so the app is FORCED to fabricate a
+    // ring for whatever arrives on that channel. Routing a dismiss over VoIP
+    // therefore produced a second, caller-less "Incoming call" screen a few
+    // seconds after every cancel/decline/hangup — the ring the user had just
+    // got rid of, coming back. The VoIP channel can only ever mean "incoming".
+    //
+    // Live devices already learn of this over the socket (`call:cancelled`);
+    // this push only backstops a backgrounded one, which the normal data push
+    // below reaches (iOS delivers it to `didReceiveRemoteNotification`, where
+    // the app dismisses the CallKit ring without fabricating one). A device
+    // suspended so deeply that even that is lost still falls back to the
+    // client-side ring timeout.
+    allowVoip: false,
     data: {
       type: "CALL_CANCELLED",
       callId: data.callId,
@@ -263,13 +275,13 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
   // still ringing dismisses. That policy lives on the client; the backend's job
   // is to make the two cases distinguishable, which the `CALL_HANDLED` type does.
   //
-  // allowVoip is deliberately OFF (unlike handleCallCancel). A PushKit/VoIP push
-  // MUST report an incoming call to CallKit or iOS penalises the app — so the
-  // VoIP channel can only ever mean "incoming", never "stop". Routing a
-  // stop-ringing hint over VoIP is precisely what turned an answered call into a
-  // cancelled one. A normal data push is correct here; live devices are already
-  // told over the socket (`call:handled`), and this only backstops backgrounded
-  // siblings.
+  // allowVoip is deliberately OFF, as it now is on handleCallCancel too. A
+  // PushKit/VoIP push MUST report an incoming call to CallKit or iOS penalises
+  // the app — so the VoIP channel can only ever mean "incoming", never "stop".
+  // Routing a stop-ringing hint over VoIP is precisely what turned an answered
+  // call into a cancelled one. A normal data push is correct here; live devices
+  // are already told over the socket (`call:handled`), and this only backstops
+  // backgrounded siblings.
   await pushToUser({
     userId: data.calleeId,
     category: "callEnabled",
