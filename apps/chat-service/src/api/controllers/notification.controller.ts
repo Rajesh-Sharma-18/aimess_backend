@@ -27,16 +27,17 @@ export class NotificationController {
     ]);
     // totalData reflects the current tab so pagination.totalPage stays
     // meaningful when the client is scoped to one category.
-    const totalForTab =
-      category === "ALL"
-        ? counts.all
-        : category === "FRIENDS"
-          ? counts.friends
-          : category === "COMMUNITIES"
-            ? counts.communities
-            : category === "MENTIONS"
-              ? counts.mentions
-              : counts.system;
+    // Keyed lookup rather than a ternary chain: a new tab that forgets a branch
+    // here silently falls through to SYSTEM's count and corrupts totalPage,
+    // whereas a missing key is a compile error.
+    const totalForTab: number = {
+      ALL: counts.all,
+      FRIENDS: counts.friends,
+      COMMUNITIES: counts.communities,
+      MENTIONS: counts.mentions,
+      CALLS: counts.calls,
+      SYSTEM: counts.system,
+    }[category];
     const paginated = buildPaginatedResponse(
       notifications as unknown as Record<string, unknown>[],
       totalForTab,

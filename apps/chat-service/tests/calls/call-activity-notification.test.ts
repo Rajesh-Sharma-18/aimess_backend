@@ -262,17 +262,40 @@ describe("isUnreadCallActivity", () => {
 });
 
 describe("notification tab routing for call rows", () => {
-  it("routes call activity to FRIENDS, including the legacy CALL_MISSED type", () => {
-    expect(categorize("call.activity")).toBe("FRIENDS");
-    expect(categorize("CALL_MISSED")).toBe("FRIENDS");
+  it("routes call activity to CALLS, including the legacy CALL_MISSED type", () => {
+    expect(categorize("call.activity")).toBe("CALLS");
+    expect(categorize("CALL_MISSED")).toBe("CALLS");
   });
 
-  it("selects call rows in the FRIENDS filter and nowhere else", () => {
-    const friends = JSON.stringify(categoryWhere("FRIENDS"));
-    expect(friends).toContain("call.");
-    expect(JSON.stringify(categoryWhere("COMMUNITIES"))).not.toContain("call.");
-    expect(JSON.stringify(categoryWhere("MENTIONS"))).not.toContain("call.");
-    expect(JSON.stringify(categoryWhere("SYSTEM"))).not.toContain("call.");
+  it("selects call rows in the CALLS filter and nowhere else", () => {
+    expect(JSON.stringify(categoryWhere("CALLS"))).toContain("call.");
+    // Calls have their own tab — a call row must no longer be listed or
+    // counted under Friends, or it would show up (and badge) in two places.
+    for (const other of [
+      "FRIENDS",
+      "COMMUNITIES",
+      "MENTIONS",
+      "SYSTEM",
+    ] as const) {
+      expect(JSON.stringify(categoryWhere(other))).not.toContain("call.");
+    }
+  });
+
+  it("keeps every tab disjoint so a row is counted exactly once", () => {
+    const types = [
+      "call.activity",
+      "CALL_MISSED",
+      "friend.requested",
+      "community.member_added",
+      "chat.mention",
+      "auth.security_new_login",
+    ];
+    for (const type of types) {
+      const tabs = (
+        ["FRIENDS", "COMMUNITIES", "MENTIONS", "CALLS", "SYSTEM"] as const
+      ).filter((tab) => categorize(type) === tab);
+      expect(tabs).toHaveLength(1);
+    }
   });
 
   it("leaves ALL unrestricted, so a call row appears there too", () => {

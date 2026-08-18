@@ -9419,8 +9419,9 @@ export const openApiSchemas = {
     type: "string",
     description:
       "Free-form event-type string from @aimess/shared-types (no DB enum). " +
-      "Tab bucketing is by prefix, not an allowlist: `friend.*` and `call.*` → " +
-      "FRIENDS, `community.*` (except `community.mention`) → COMMUNITIES, " +
+      "Tab bucketing is by prefix, not an allowlist: `call.*` (and legacy " +
+      "CALL_MISSED) → CALLS, `friend.*` → FRIENDS, `community.*` (except " +
+      "`community.mention`) → COMMUNITIES, " +
       "`chat.mention`/`community.mention` → MENTIONS, everything else " +
       "(auth.*, admin.*, session.*, user.registered, ...) → SYSTEM. " +
       "Only a subset of possible event types are actually written to the " +
@@ -9434,9 +9435,10 @@ export const openApiSchemas = {
   },
   NotificationCategory: {
     type: "string",
-    enum: ["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "SYSTEM"],
+    enum: ["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "CALLS", "SYSTEM"],
     description:
-      "Notification Center tab. ALL means no filter (also the default).",
+      "Notification Center tab. ALL means no filter (also the default). " +
+      "The non-ALL buckets are disjoint, so their unread counts sum to ALL's.",
   },
   NotificationActorBlock: {
     type: "object",
@@ -9476,9 +9478,10 @@ export const openApiSchemas = {
       friends: { type: "integer", example: 3 },
       communities: { type: "integer", example: 6 },
       mentions: { type: "integer", example: 0 },
+      calls: { type: "integer", example: 2 },
       system: { type: "integer", example: 3 },
     },
-    required: ["all", "friends", "communities", "mentions", "system"],
+    required: ["all", "friends", "communities", "mentions", "calls", "system"],
   },
   ChatNotification: {
     type: "object",
