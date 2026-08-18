@@ -1,11 +1,22 @@
 import { z } from "zod";
 
+import {
+  NOTIFICATION_CATEGORIES,
+  type NotificationCategory,
+} from "../../lib/notification-category.js";
+
+/** The tab taxonomy as a zod enum — one source, so a new tab can't be missed. */
+const categoryEnum = z.enum(
+  NOTIFICATION_CATEGORIES as unknown as [
+    NotificationCategory,
+    ...NotificationCategory[],
+  ]
+);
+
 export const getNotificationsSchema = z.object({
   cursor: z.string().nullish(),
   limit: z.coerce.number().min(1).max(100).default(20),
-  type: z
-    .enum(["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "SYSTEM"])
-    .optional(),
+  type: categoryEnum.optional(),
 });
 
 export const recordActionSchema = z.object({
@@ -24,9 +35,10 @@ export const markReadSchema = z.union([
 export const markAllReadSchema = z.preprocess(
   (v) => (v == null || typeof v !== "object" ? {} : v),
   z.object({
-    type: z
-      .enum(["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "SYSTEM"])
-      .optional(),
+    // Derived from the tab taxonomy itself, never re-typed here. The hand-written
+    // list silently missed CALLS when that tab was added, so "Mark all read" on
+    // the Calls tab 400'd and the badge could not be cleared at all.
+    type: categoryEnum.optional(),
     /**
      * Watermark (ISO-8601 or epoch-ms): only mark rows with `createdAt <= before`
      * as read. Notifications that arrive while the panel is open stay unread

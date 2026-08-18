@@ -114,6 +114,22 @@ export class NotificationService {
   }
 
   /**
+   * Total rows in one tab (read + unread). Drives `pagination.totalData` —
+   * the unread per-tab counts drive the badges and are NOT interchangeable.
+   */
+  async getTotalCount(
+    userId: string,
+    category: NotificationCategory,
+    viewerSessionId?: string | null
+  ): Promise<number> {
+    return this.notificationRepo.countByUserId(
+      userId,
+      category,
+      viewerSessionId
+    );
+  }
+
+  /**
    * Delta sync: every row whose `updatedAt` moved after `since`, oldest-first,
    * INCLUDING soft-deleted tombstones. This is what a client drains after a
    * reconnect / cold start instead of refetching the whole feed — it converges

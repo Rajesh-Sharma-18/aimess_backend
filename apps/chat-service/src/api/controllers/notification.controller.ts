@@ -16,7 +16,12 @@ export class NotificationController {
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
     const category = parseCategory(req.query.type);
-    const [notifications, counts] = await Promise.all([
+    // `counts` is UNREAD per tab (header badges); `totalForTab` is EVERY row in
+    // the tab. They are not interchangeable: feeding the unread count into
+    // pagination reported `totalData: 0` / `totalPage: 0` on any tab the user
+    // had already read through, while the same response still returned rows and
+    // `hasMore: true` — most visibly on Calls, where outgoing rows arrive read.
+    const [notifications, counts, totalForTab] = await Promise.all([
       this.service.getNotifications(userId, {
         limit,
         cursor,
@@ -24,20 +29,8 @@ export class NotificationController {
         viewerSessionId: sessionId,
       }),
       this.service.getCounts(userId, sessionId),
+      this.service.getTotalCount(userId, category, sessionId),
     ]);
-    // totalData reflects the current tab so pagination.totalPage stays
-    // meaningful when the client is scoped to one category.
-    // Keyed lookup rather than a ternary chain: a new tab that forgets a branch
-    // here silently falls through to SYSTEM's count and corrupts totalPage,
-    // whereas a missing key is a compile error.
-    const totalForTab: number = {
-      ALL: counts.all,
-      FRIENDS: counts.friends,
-      COMMUNITIES: counts.communities,
-      MENTIONS: counts.mentions,
-      CALLS: counts.calls,
-      SYSTEM: counts.system,
-    }[category];
     const paginated = buildPaginatedResponse(
       notifications as unknown as Record<string, unknown>[],
       totalForTab,

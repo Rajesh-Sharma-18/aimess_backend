@@ -52,6 +52,9 @@ describe("GET /api/chat/notifications (list)", () => {
       mentions: 0,
       system: 0,
     });
+    // Total rows in the tab — NOT the unread count, which is what drives the
+    // header badges and what `countByCategories` returns.
+    mocks.notificationRepo.countByUserId.mockResolvedValue(2);
 
     const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
 
@@ -70,6 +73,7 @@ describe("GET /api/chat/notifications (list)", () => {
 
   it("EDGE: empty list still returns 200 with empty data array", async () => {
     mocks.notificationRepo.findByUserId.mockResolvedValue([]);
+    mocks.notificationRepo.countByUserId.mockResolvedValue(0);
 
     const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
 

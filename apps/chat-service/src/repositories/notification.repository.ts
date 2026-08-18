@@ -2,6 +2,7 @@
 import {
   categoryWhere,
   LOGIN_DETECTED_TYPE,
+  type NotificationCategory,
 } from "../lib/notification-category.js";
 import { env } from "../config/env.js";
 
@@ -228,9 +229,32 @@ export class NotificationRepository {
     });
   }
 
-  async countByUserId(userId: string): Promise<number> {
+  /**
+   * TOTAL rows the user can see in one tab — read and unread alike.
+   *
+   * Distinct from `countByCategories`, which is unread-only because it drives
+   * the header badges. The list endpoint needs this one instead: feeding an
+   * unread count into `pagination.totalData` reported `totalData: 0` /
+   * `totalPage: 0` for any tab whose rows had all been read, while the same
+   * response still returned rows and `hasMore: true`.
+   *
+   * Same `(userId, type)` index and the same self-login exclusion as the list
+   * query, so the number always describes exactly the rows that query returns.
+   */
+  async countByUserId(
+    userId: string,
+    category: NotificationCategory = "ALL",
+    viewerSessionId?: string | null
+  ): Promise<number> {
     return this.prisma.notification.count({
-      where: { userId, isDeleted: false },
+      where: {
+        userId,
+        isDeleted: false,
+        ...combineWhere(
+          excludeSelfLoginWhere(viewerSessionId),
+          categoryWhere(category)
+        ),
+      },
     });
   }
 
