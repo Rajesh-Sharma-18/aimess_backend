@@ -9,7 +9,25 @@ export const createStreamSchema = z.object({
   sourceType: z
     .enum(["PHONE_CAMERA", "OBS_RTMP", "URL", "YOUTUBE"])
     .default("PHONE_CAMERA"),
-  sourceUrl: z.string().min(1).optional(),
+  // http(s) only. Every client — website, Android, iOS and the admin monitor —
+  // embeds this value in a player/iframe, so a `javascript:` or `data:` URL
+  // stored here is stored XSS against whoever opens the stream. Validated at
+  // the single point of entry rather than in each renderer.
+  sourceUrl: z
+    .string()
+    .min(1)
+    .url()
+    .refine(
+      (value) => {
+        try {
+          return /^https?:$/.test(new URL(value).protocol);
+        } catch {
+          return false;
+        }
+      },
+      { message: "sourceUrl must be an http(s) URL" }
+    )
+    .optional(),
 });
 
 /** GET /streams query — filterable, cursor-paginated list. */

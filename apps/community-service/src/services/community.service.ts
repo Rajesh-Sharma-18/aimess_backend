@@ -12,7 +12,7 @@ import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
-import { isHiddenSystemMessage } from "@aimess/constants";
+import { currentLocale, isHiddenSystemMessage, t } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
@@ -59,7 +59,11 @@ import {
   normalizeName,
   slugifyCategoryName,
 } from "../lib/community-slug.util.js";
-import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
+import {
+  CLOSE_REASON_ADMIN_BANNED,
+  COMMUNITY_MEMBER_LIMIT,
+  REMOVED_REASON_SYSTEM_BANNED,
+} from "../constants/index.js";
 import { isCommunityMuted } from "../lib/community-notification-pref.js";
 import { env } from "../config/env.js";
 import {
@@ -87,6 +91,7 @@ import type {
   CommunityAuditLogData,
   CommunityAvailability,
   CommunityCategoryData,
+  CommunityClosedBanner,
   CommunityData,
   CommunityDiscoverItem,
   CommunityJoinResult,
@@ -162,6 +167,7 @@ import {
   publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityMetaSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
+  publishCommunitySystemMessageForChatAwaited,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
@@ -856,6 +862,19 @@ async function broadcastCommunityMetaUpdated(
   }
 }
 
+// A ban-close is the one close nobody in the community can undo or explain, so
+// the sentence ships rendered with the row instead of every client inventing it.
+function buildClosedBanner(c: {
+  statusClosedReasonCode?: string | null;
+}): CommunityClosedBanner | null {
+  if (c.statusClosedReasonCode !== CLOSE_REASON_ADMIN_BANNED) return null;
+  return {
+    type: "ADMIN_BANNED",
+    messageKey: "COMMUNITY_CLOSED_ADMIN_BANNED",
+    message: t("COMMUNITY_CLOSED_ADMIN_BANNED", currentLocale()),
+  };
+}
+
 async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
@@ -917,6 +936,8 @@ async function toCommunityData(
     liveStreams,
     currentUserIsStreaming,
     status: communityAccessPolicy.deriveStatus(community),
+    closedReasonCode: community.statusClosedReasonCode ?? null,
+    banner: buildClosedBanner(community),
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
     lastActivity: buildLastActivity(community),
@@ -1801,6 +1822,8 @@ async function enrichMineCommunities(
         currentUserIsStreaming,
         moderationStatus: row.moderationStatus,
         status: communityAccessPolicy.deriveStatus(row),
+        closedReasonCode: row.statusClosedReasonCode ?? null,
+        banner: buildClosedBanner(row),
         isMemberMuted: modMuteMap.has(row.id),
         memberMutedUntil:
           modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
@@ -2330,7 +2353,11 @@ export const communityService = {
       categoryName: communityData.category.name,
       memberCount: community.memberCount,
       role: "ADMIN",
-      status: communityAccessPolicy.deriveStatus(community),
+      // community:added never announces a ban-closed community, so this stays
+      // on the event's narrower ACTIVE|CLOSED axis.
+      status: communityAccessPolicy.isOwnerClosed(community)
+        ? "CLOSED"
+        : "ACTIVE",
       via: "created",
       joinedAt: community.createdAt.getTime(),
       addedAt: createdAt,
@@ -2437,10 +2464,21 @@ export const communityService = {
     targetUserId?: string;
     reason?: string;
     metadata?: Prisma.InputJsonValue;
+    /**
+     * Suppress ONLY the admin_db mirror, never the community's own audit row.
+     * Set by backoffice-initiated actions (the Admin Community Conversation
+     * viewer), where backoffice-service writes the canonical admin AuditLog +
+     * ModerationAction itself — mirroring here too would double-count the
+     * action in the Super Admin's audit list. The community's own
+     * moderator-visible trail must still record it.
+     */
+    skipAdminMirror?: boolean;
   }): Promise<void> {
     // Single funnel for every community moderation action, so mirroring the mapped
     // ones to the admin panel's audit log happens here instead of at ~29 call sites.
-    const mirrored = ADMIN_ACTIVITY_BY_COMMUNITY_ACTION[entry.action];
+    const mirrored = entry.skipAdminMirror
+      ? undefined
+      : ADMIN_ACTIVITY_BY_COMMUNITY_ACTION[entry.action];
     if (mirrored) {
       // Not every actor here is a user: the auto-unmute sweeper and backoffice-initiated
       // close/reopen pass a non-uuid actorId ("system"). admin_db.AuditLog.actorId is a
@@ -3477,6 +3515,317 @@ export const communityService = {
   },
 
   /**
+   * Admin Community Conversation viewer — kick, trusted platform-admin
+   * variant. Same effect as {@link kickMember} (repo update, realtime
+   * eviction, RabbitMQ notify, audit) but the caller is backoffice-service
+   * itself, not a community member, so the MODERATOR/ADMIN membership gate
+   * in `_assertCanModerateMember` is skipped. Business failures are returned
+   * via `errorCode` (never thrown) so the gRPC handler can map them cleanly.
+   */
+  async adminKickMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | null,
+    actorAdminId: string
+  ): Promise<{ ok: boolean; status: string; errorCode: string }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      return { ok: false, status: "", errorCode: "COMMUNITY_NOT_FOUND" };
+    }
+
+    const target = await communityRepository.findMemberByUserId(
+      communityId,
+      targetUserId
+    );
+    if (!target) {
+      return { ok: false, status: "", errorCode: "COMMUNITY_MEMBER_NOT_FOUND" };
+    }
+
+    // Already gone (left, removed or banned): nothing to do. Reporting a
+    // failure here would only surface a confusing error in the admin panel for
+    // an action whose goal is already satisfied.
+    if (target.status !== CommunityMemberStatus.ACTIVE) {
+      return { ok: true, status: target.status, errorCode: "" };
+    }
+
+    // Deliberately NO owner/ADMIN guard, unlike the in-app moderator path: a
+    // platform super admin must be able to act against a community's own admin.
+    // `community.adminId` is left pointing at them, so the community is left
+    // without an active owner until one is reassigned.
+
+    const updated = await communityRepository.updateMemberStatus(
+      communityId,
+      targetUserId,
+      CommunityMemberStatus.LEFT,
+      undefined,
+      undefined,
+      {
+        removedAt: new Date(),
+        removedBy: actorAdminId,
+        removedReason: reason ?? null,
+      }
+    );
+
+    const count = await communityRepository.countActiveMembers(communityId);
+    await communityRepository.setMemberCount(communityId, count);
+
+    // The community's OWN moderator-visible audit trail must record this like
+    // any other removal; only the admin_db mirror is suppressed, because
+    // backoffice-service writes the canonical admin AuditLog + ModerationAction
+    // for this action itself.
+    await this.recordAudit({
+      communityId,
+      actorId: actorAdminId,
+      action: "MEMBER_KICKED",
+      targetUserId,
+      reason: reason ?? undefined,
+      skipAdminMirror: true,
+    });
+
+    logger.info(
+      `Community member kicked by platform admin: community=${communityId} by=${actorAdminId} target=${targetUserId} reason=${reason ?? "(none)"}`
+    );
+
+    publishCommunityMemberKickedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: actorAdminId,
+      targetUserId,
+      reason: reason ?? null,
+    });
+
+    try {
+      const now = Date.now();
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:member:removed",
+          {
+            communityId,
+            userId: targetUserId,
+            reason: "kicked",
+            actorId: actorAdminId,
+            updatedAt: now,
+          } satisfies CommunityMemberRemovedPayload
+        ),
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:stats:updated",
+          {
+            communityId,
+            memberCount: count,
+            updatedAt: now,
+          } satisfies CommunityStatsUpdatedPayload
+        ),
+        publishChatUserEvent(
+          redis,
+          targetUserId,
+          "community:membership:removed",
+          {
+            communityId,
+            membershipStatus: "REMOVED",
+            reason: "kicked",
+            removedAt: now,
+          }
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `community realtime broadcast failed admin-kick community=${communityId}: ${String(err)}`
+      );
+    }
+
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "MEMBER_REMOVED"
+    );
+
+    return {
+      ok: true,
+      status: (await toMemberData(updated)).status,
+      errorCode: "",
+    };
+  },
+
+  /**
+   * Admin Community Conversation viewer — ban, trusted platform-admin
+   * variant. Same effect as {@link banMember} but skips the ADMIN-membership
+   * gate, since the caller is backoffice-service, not a community member.
+   */
+  async adminBanMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | null,
+    actorAdminId: string
+  ): Promise<{
+    ok: boolean;
+    status: string;
+    // True when this ban also CLOSED the community, i.e. the target was its
+    // admin/owner. Surfaced so the panel can tell the operator what else the
+    // one action did.
+    closedCommunity: boolean;
+    errorCode: string;
+  }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      return {
+        ok: false,
+        status: "",
+        closedCommunity: false,
+        errorCode: "COMMUNITY_NOT_FOUND",
+      };
+    }
+
+    const target = await communityRepository.findMemberByUserId(
+      communityId,
+      targetUserId
+    );
+    if (!target) {
+      return {
+        ok: false,
+        status: "",
+        closedCommunity: false,
+        errorCode: "COMMUNITY_MEMBER_NOT_FOUND",
+      };
+    }
+
+    // Deliberately NO owner/ADMIN guard — see adminKickMember.
+    if (target.status === CommunityMemberStatus.BANNED) {
+      return {
+        ok: true,
+        status: "BANNED",
+        closedCommunity: false,
+        errorCode: "",
+      };
+    }
+
+    await publishCommunitySystemMessageForChatAwaited({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      metadata: { targetUserId },
+      triggeredByUserId: actorAdminId,
+      eventAt: new Date().toISOString(),
+      visibleToUserId: targetUserId,
+    });
+
+    const { updated } = await this.removeActiveMember(
+      communityId,
+      targetUserId,
+      {
+        actorId: actorAdminId,
+        status: CommunityMemberStatus.BANNED,
+        banMeta: {
+          bannedAt: new Date(),
+          bannedBy: actorAdminId,
+          banReason: reason ?? null,
+        },
+        removedReason: "banned",
+        auditAction: "MEMBER_BANNED",
+        auditMetadata: reason ? { reason } : undefined,
+        reason: reason ?? null,
+        eventAt: new Date().toISOString(),
+        emitLeftDomainEvent: false,
+        skipAdminMirror: true,
+      }
+    );
+
+    logger.info(
+      `Community member banned by platform admin: community=${communityId} by=${actorAdminId} target=${targetUserId} reason=${reason ?? "(none)"}`
+    );
+
+    const bannedCommunityAvatar =
+      await communityImageService.resolveViewUrlForClient(community.avatarUrl);
+    publishCommunityMemberBannedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: actorAdminId,
+      targetUserId,
+      reason: reason ?? null,
+      communityName: community.name,
+      communityAvatarUrl: bannedCommunityAvatar?.url ?? null,
+    });
+
+    void getStreamClient().notifyMemberBanStatus(
+      communityId,
+      targetUserId,
+      true
+    );
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "MEMBER_BANNED"
+    );
+
+    // Banning a community's OWN admin leaves it with nobody who can run it —
+    // `adminId` still points at the banned account, so nothing can be renamed,
+    // moderated, reopened or transferred, and members would be left in a room
+    // that silently rejects every write with no explanation. So the community
+    // closes, exactly as it does when the owner is system-banned: still listed
+    // for every member, still readable, read-only, with the ADMIN_BANNED banner.
+    // Same reason code because it is the same fact to a member — the admin of
+    // this community was banned.
+    let closedCommunity = false;
+    if (community.adminId === targetUserId) {
+      closedCommunity = await this.closeCommunityForSystemBan(
+        communityId,
+        targetUserId,
+        actorAdminId,
+        reason
+      ).catch((error: unknown) => {
+        // The ban itself already landed and must stand; a failed close is
+        // logged for an operator to retry, never rolled back.
+        logger.error(
+          `Failed to close community=${communityId} after banning its admin: ${String(error)}`
+        );
+        return false;
+      });
+    }
+
+    return {
+      ok: true,
+      status: (await toMemberData(updated)).status,
+      closedCommunity,
+      errorCode: "",
+    };
+  },
+
+  /**
+   * Platform-admin unban. Delegates to the in-app `unbanMember` so the panel and
+   * the app share one implementation of the BANNED -> LEFT transition and all of
+   * its side effects (audit row, notifications publish, community:member:unbanned,
+   * personal membership:restricted, stream ban lift). Only the caller gate and
+   * the admin_db mirror differ, both handled by `asPlatformAdmin`. Business
+   * failures come back as `errorCode` rather than a thrown error, matching
+   * adminKickMember / adminBanMember.
+   */
+  async adminUnbanMember(
+    communityId: string,
+    targetUserId: string,
+    actorAdminId: string
+  ): Promise<{ ok: boolean; status: string; errorCode: string }> {
+    try {
+      const member = await this.unbanMember(
+        communityId,
+        actorAdminId,
+        targetUserId,
+        { asPlatformAdmin: true }
+      );
+      logger.info(
+        `Community member unbanned by platform admin: community=${communityId} by=${actorAdminId} target=${targetUserId}`
+      );
+      return { ok: true, status: member.status, errorCode: "" };
+    } catch (err) {
+      if (err instanceof NotFoundError || err instanceof BadRequestError) {
+        return { ok: false, status: "", errorCode: err.message };
+      }
+      throw err;
+    }
+  },
+
+  /**
    * Emit a community-wide SYSTEM message for a member-moderation lifecycle event
    * (joined/left/removed/banned/unbanned/muted/unmuted, role change). Thin
    * wrapper over the chat-sync publisher so every moderation method stays a
@@ -3723,7 +4072,10 @@ export const communityService = {
         categoryName: community.category.name,
         memberCount,
         role: member.role,
-        status: communityAccessPolicy.deriveStatus(community),
+        // Same narrowing as the create path above.
+        status: communityAccessPolicy.isOwnerClosed(community)
+          ? "CLOSED"
+          : "ACTIVE",
         via,
         joinedAt: member.joinedAt.getTime(),
         addedAt,
@@ -4129,8 +4481,21 @@ export const communityService = {
         banReason: string | null;
       };
       removedReason?: "left" | "banned"; // realtime payload reason, defaults "left"
+      // Persisted removal trail (removedAt/removedBy/removedReason on the member
+      // row) — set by the system-ban cascade so a revoked membership stays
+      // distinguishable from a voluntary leave long after the events are gone.
+      removedMeta?: {
+        removedAt: Date | null;
+        removedBy: string | null;
+        removedReason: string | null;
+      };
       auditAction?: "MEMBER_LEFT" | "MEMBER_BANNED"; // defaults MEMBER_LEFT
       emitLeftDomainEvent?: boolean; // defaults true; ban passes false (publishes its own MEMBER_BANNED event)
+      // Suppress ONLY the admin_db audit mirror (see recordAudit). Set by the
+      // backoffice-initiated Admin Community Conversation viewer, which writes
+      // its own admin AuditLog + ModerationAction. The community's own audit
+      // row is still written either way. Defaults false.
+      skipAdminMirror?: boolean;
     }
   ): Promise<{
     updated: Awaited<ReturnType<typeof communityRepository.updateMemberStatus>>;
@@ -4150,12 +4515,16 @@ export const communityService = {
           targetUserId,
           status,
           opts.banMeta,
-          CommunityMemberRole.MEMBER
+          CommunityMemberRole.MEMBER,
+          opts.removedMeta
         )
       : await communityRepository.updateMemberStatus(
           communityId,
           targetUserId,
-          status
+          status,
+          undefined,
+          undefined,
+          opts.removedMeta
         );
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -4167,6 +4536,7 @@ export const communityService = {
       action: auditAction,
       targetUserId,
       metadata: opts.auditMetadata,
+      skipAdminMirror: opts.skipAdminMirror,
     });
 
     if (opts.emitLeftDomainEvent ?? true) {
@@ -4663,7 +5033,11 @@ export const communityService = {
   async unbanMember(
     communityId: string,
     callerId: string,
-    targetUserId: string
+    targetUserId: string,
+    // Set by the backoffice admin path: the caller is a platform admin, not a
+    // community member, so the role gate cannot apply and the admin_db audit
+    // mirror is suppressed (backoffice writes its own canonical rows).
+    opts?: { asPlatformAdmin?: boolean }
   ): Promise<CommunityMemberData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -4671,11 +5045,13 @@ export const communityService = {
     }
 
     // Only an ACTIVE admin may unban members.
-    const callerMembership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
+    if (!opts?.asPlatformAdmin) {
+      const callerMembership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
+    }
 
     const target = await communityRepository.findMemberByUserId(
       communityId,
@@ -4718,6 +5094,7 @@ export const communityService = {
       actorId: callerId,
       action: "MEMBER_UNBANNED",
       targetUserId,
+      skipAdminMirror: opts?.asPlatformAdmin,
     });
 
     // Cross-service event → notifications-service pushes/in-apps the unbanned
@@ -5905,6 +6282,174 @@ export const communityService = {
     );
   },
 
+  // Deliberately NOT a flag on closeCommunity: that method's whole
+  // authorization model is "the caller is this community's ACTIVE ADMIN", and
+  // here the caller is a platform admin who is not a member at all. Everything
+  // after the gate is the same lockdown, plus the statusClosedReasonCode that
+  // makes this close permanent (reopen is refused).
+  // Returns true when this call performed the close, false when the community
+  // is gone or was already closed (idempotent, same as closeCommunity).
+  async closeCommunityForSystemBan(
+    communityId: string,
+    bannedUserId: string,
+    actorAdminId: string,
+    reason: string | null
+  ): Promise<boolean> {
+    const community = await communityRepository.findById(communityId);
+    if (!community || communityAccessPolicy.isOwnerClosed(community)) {
+      return false;
+    }
+
+    const memberIds =
+      await communityRepository.findActiveMemberIds(communityId);
+    const closedAt = new Date();
+    // statusClosedBy is the OWNER, not the admin: the close belongs to the
+    // banned account on the community's own lifecycle axis, and clients resolve
+    // this id against community members.
+    await communityRepository.updateCommunity(communityId, {
+      status: CommunityStatus.CLOSED,
+      statusClosedAt: closedAt,
+      statusClosedBy: bannedUserId,
+      statusClosedReason: reason,
+      statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED,
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: actorAdminId,
+      action: "COMMUNITY_CLOSED",
+      reason: reason ?? undefined,
+      metadata: {
+        reasonCode: CLOSE_REASON_ADMIN_BANNED,
+        bannedUserId,
+      },
+      // backoffice-service writes the canonical admin audit row for the ban.
+      skipAdminMirror: true,
+    });
+
+    logger.info(
+      `Community closed by system ban: community=${communityId} owner=${bannedUserId} by=${actorAdminId} members=${String(memberIds.length)}`
+    );
+
+    // Same event as an owner close, carrying the refined status + reason code so
+    // clients can render "the admin of this community has been banned" instead
+    // of the reopenable-close copy. Not typed as CommunityClosedPayload: that
+    // shared type still models `status` as the DB-level "CLOSED".
+    const payload = {
+      communityId,
+      status: "CLOSED_BY_SYSTEM_BAN",
+      closedAt: closedAt.getTime(),
+      reason: CLOSE_REASON_ADMIN_BANNED,
+    };
+    try {
+      await publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:closed",
+        payload
+      );
+      await Promise.allSettled(
+        memberIds.map((memberId) =>
+          publishChatUserEvent(redis, memberId, "community:closed", payload)
+        )
+      );
+    } catch (error) {
+      logger.warn(
+        `community:closed (system ban) broadcast failed for community=${communityId}: ${String(error)}`
+      );
+    }
+
+    publishCommunityStatusChangedForChatSafe({
+      communityId,
+      communityStatus: "SUSPENDED",
+    });
+
+    publishCommunityClosedSafe({
+      communityId,
+      eventAt: closedAt.toISOString(),
+      actorId: bannedUserId,
+      reason,
+      memberIds,
+    });
+
+    void getStreamClient().forceEndStreamsByCommunity(
+      communityId,
+      CLOSE_REASON_ADMIN_BANNED
+    );
+
+    return true;
+  },
+
+  // Community half of a permanent Super Admin system ban (gRPC-only, called by
+  // backoffice-service): owned communities are CLOSED, every other ACTIVE
+  // membership is revoked through the ordinary removal path.
+  // Never throws for business reasons — the ban is already applied upstream, so
+  // one unreachable community must not abort the rest of the cascade.
+  async adminApplySystemBan(
+    userId: string,
+    actorAdminId: string,
+    reason: string | null
+  ): Promise<{ closedCommunityIds: string[]; removedCommunityIds: string[] }> {
+    const closedCommunityIds: string[] = [];
+    const removedCommunityIds: string[] = [];
+
+    const ownedIds =
+      await communityRepository.findCommunityIdsByAdminId(userId);
+    for (const communityId of ownedIds) {
+      try {
+        const closed = await this.closeCommunityForSystemBan(
+          communityId,
+          userId,
+          actorAdminId,
+          reason
+        );
+        if (closed) closedCommunityIds.push(communityId);
+      } catch (error) {
+        logger.error(
+          `system-ban close failed: community=${communityId} user=${userId}: ${String(error)}`
+        );
+      }
+    }
+
+    // Owned communities are skipped here (including ones already closed before
+    // this ban): their owner keeps the membership row that the CLOSED community
+    // is still built around.
+    const owned = new Set(ownedIds);
+    const memberships = await communityRepository.findUserMemberships(userId);
+    for (const membership of memberships) {
+      if (owned.has(membership.communityId)) continue;
+      try {
+        await this.removeActiveMember(membership.communityId, userId, {
+          actorId: actorAdminId,
+          status: CommunityMemberStatus.LEFT,
+          removedMeta: {
+            removedAt: new Date(),
+            removedBy: actorAdminId,
+            removedReason: REMOVED_REASON_SYSTEM_BANNED,
+          },
+          auditMetadata: {
+            reasonCode: CLOSE_REASON_ADMIN_BANNED,
+            ...(reason ? { reason } : {}),
+          },
+          reason,
+          eventAt: new Date().toISOString(),
+          skipAdminMirror: true,
+        });
+        removedCommunityIds.push(membership.communityId);
+      } catch (error) {
+        logger.error(
+          `system-ban membership removal failed: community=${membership.communityId} user=${userId}: ${String(error)}`
+        );
+      }
+    }
+
+    logger.info(
+      `System ban applied to communities: user=${userId} by=${actorAdminId} closed=${String(closedCommunityIds.length)} removed=${String(removedCommunityIds.length)}`
+    );
+
+    return { closedCommunityIds, removedCommunityIds };
+  },
+
   /**
    * REOPEN a previously CLOSED community (status → ACTIVE). Authorized by
    * community ownership (`adminId`) — membership was never touched on close, so
@@ -5925,6 +6470,12 @@ export const communityService = {
     // Ownership check (adminId) — simpler and unaffected by membership state.
     if (community.adminId !== callerId) {
       throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    // A close caused by the owner's system ban outlives the ban: lifting the ban
+    // restores login only, so reviving the community needs its own admin action.
+    if (community.statusClosedReasonCode === CLOSE_REASON_ADMIN_BANNED) {
+      throw new ForbiddenError("COMMUNITY_CLOSED_ADMIN_BANNED");
     }
 
     // Idempotent: reopening an already-open community returns its current state.
@@ -5955,6 +6506,9 @@ export const communityService = {
       statusClosedAt: null,
       statusClosedBy: null,
       statusClosedReason: null,
+      // Cleared with the rest of the close metadata so a later ordinary close
+      // can never inherit a stale "ADMIN_BANNED" cause.
+      statusClosedReasonCode: null,
     });
 
     await this.recordAudit({

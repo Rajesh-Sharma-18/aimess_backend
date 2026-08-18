@@ -222,6 +222,11 @@ channels:
       friendBlocked: { $ref: "#/components/messages/FriendBlocked" }
       friendUnblocked: { $ref: "#/components/messages/FriendUnblocked" }
       sessionExpired: { $ref: "#/components/messages/SessionExpired" }
+      # group lifecycle (server -> client)
+      groupClosed: { $ref: "#/components/messages/GroupClosed" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
   # ----------------------------------------------------------- /community
   community:
@@ -237,7 +242,7 @@ channels:
       communityJoin: { $ref: "#/components/messages/CommunityJoin" }
       communityLeave: { $ref: "#/components/messages/CommunityLeave" }
       communityMessageSend:
-        { $ref: "#/components/messages/CommunityMessageSend" }
+        { $ref: "#/compone  nts/messages/CommunityMessageSend" }
       communityMessagesFetch:
         { $ref: "#/components/messages/CommunityMessagesFetch" }
       communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }
@@ -281,6 +286,9 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
       # owner lifecycle (server -> client)
       communityClosed: { $ref: "#/components/messages/CommunityClosed" }
       communityReopened: { $ref: "#/components/messages/CommunityReopened" }
@@ -382,6 +390,9 @@ channels:
       communityJoinRequestUpdate:
         { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
       communityJoined: { $ref: "#/components/messages/CommunityJoined" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
   # --------------------------------------------------------------- /stream
   stream:
@@ -451,6 +462,9 @@ channels:
       streamMemberUnmuted: { $ref: "#/components/messages/StreamMemberUnmuted" }
       streamReactNew: { $ref: "#/components/messages/StreamReactNew" }
       streamError: { $ref: "#/components/messages/StreamError" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
 operations:
   # =================================================== /chat client -> server
@@ -1378,15 +1392,59 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  chat.onGroupClosed:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "group:closed — the group's owner was permanently banned, so the group was closed"
+    description: |
+      Delivered to `conv:<roomId>` AND to every ACTIVE member's `user:<id>` room.
+
+      NOT a disband: nobody is removed, every membership row stays ACTIVE, the
+      room stays in the inbox and stays fully readable. Only writes are refused,
+      with 403 CHAT_GROUP_CLOSED_ADMIN_BANNED. Key the read-only composer off
+      the inbox row's `isClosed`, never off membership status. There is no reopen.
+    messages: [{ $ref: "#/channels/chat/messages/groupClosed" }]
+  account.onBanned:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "user:banned — this account was permanently banned by a Super Admin"
+    description: |
+      Emitted on ALL FOUR namespaces (/chat, /community, /notify, /stream) to
+      the banned user's own sockets, immediately before every one of them is
+      force-disconnected. Declared once here to avoid four identical entries.
+
+      On receipt: stop in-flight work (including livestream publishing), clear
+      tokens and persisted auth state, close sockets with automatic reconnection
+      DISABLED, clear local caches and any offline queue, then route to login
+      showing the ACCOUNT_BANNED message.
+
+      Enforcement is server-side; this event is only so the client can explain
+      itself. A client that misses it gets 403 ACCOUNT_BANNED on its next call.
+    messages: [{ $ref: "#/channels/chat/messages/userBanned" }]
+  account.onUnbanned:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "user:unbanned — a Super Admin lifted a permanent ban"
+    description: |
+      Emitted on all four namespaces. Restores the ability to log in and nothing
+      else: revoked community/group memberships are NOT recreated, and
+      communities or groups closed because this user owned them stay closed.
+    messages: [{ $ref: "#/channels/chat/messages/userUnbanned" }]
   community.onClosed:
     action: receive
     channel: { $ref: "#/channels/community" }
-    summary: "community:closed — the owner closed the community (status → CLOSED)"
+    summary: "community:closed — the community was closed (owner, or a Super Admin ban of the owner)"
     description: |
-      Broadcast to the `community:<id>` room AND to every (now ex-)member's
-      `user:<id>` room when the community ADMIN/owner closes the community. All
-      members have been auto-removed and the community is read-only. Clients
-      should disable all community actions immediately — no refresh, no polling.
+      Broadcast to the `community:<id>` room AND to every member's `user:<id>`
+      room when the community is closed. The community becomes read-only;
+      clients disable all community actions immediately — no refresh, no polling.
+
+      `status` says which kind of close it was: CLOSED (the owner closed it,
+      reopenable) or CLOSED_BY_SYSTEM_BAN (its owner was permanently banned by a
+      Super Admin; `reason` is "ADMIN_BANNED", and it is NOT reopenable).
+
+      Members are NOT removed in either case. The community MUST stay in every
+      member's list — set the row's state, never delete the row.
     messages: [{ $ref: "#/channels/community/messages/communityClosed" }]
   community.onReopened:
     action: receive
@@ -4570,7 +4628,7 @@ components:
     CommunityClosed:
       name: "community:closed"
       title: "community:closed"
-      summary: "Broadcast to community:<id> AND each ex-member's user:<id> when the owner closes the community (status → CLOSED). All members are auto-removed; clients disable all community actions immediately."
+      summary: "Broadcast to community:<id> AND each member's user:<id> when the community is closed — by its owner (status CLOSED) or by a Super Admin ban of its owner (status CLOSED_BY_SYSTEM_BAN, reason ADMIN_BANNED). Members are NOT removed; the community stays in their list, read-only."
       payload: { $ref: "#/components/schemas/CommunityClosedPayload" }
       examples:
         - name: Owner closed the community with a reason
@@ -4584,6 +4642,39 @@ components:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             status: "CLOSED"
             closedAt: 1749983445000
+    GroupClosed:
+      name: "group:closed"
+      title: "group:closed"
+      summary: "Emitted to conv:<roomId> AND each member's user:<id> when a group's owner is permanently system-banned. The room stays visible and readable; only writes are refused."
+      payload: { $ref: "#/components/schemas/GroupClosedPayload" }
+      examples:
+        - name: Group closed because its owner was banned
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedReasonCode: "ADMIN_BANNED"
+            closedAt: 1749983445000
+    UserBanned:
+      name: "user:banned"
+      title: "user:banned"
+      summary: "Emitted on all four namespaces to a user permanently banned by a Super Admin, immediately before every one of their sockets is force-disconnected."
+      payload: { $ref: "#/components/schemas/UserBannedPayload" }
+      examples:
+        - name: Permanent system ban
+          payload:
+            type: "SYSTEM"
+            userId: "9f1c1d20-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+            reason: "Policy violation"
+    UserUnbanned:
+      name: "user:unbanned"
+      title: "user:unbanned"
+      summary: "Emitted when a Super Admin lifts a permanent ban. Restores login only \u2014 memberships are not recreated and closed spaces stay closed."
+      payload: { $ref: "#/components/schemas/UserUnbannedPayload" }
+      examples:
+        - name: Ban lifted
+          payload:
+            type: "SYSTEM"
+            userId: "9f1c1d20-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
     CommunityReopened:
       name: "community:reopened"
       title: "community:reopened"
@@ -7451,12 +7542,21 @@ components:
     CommunityClosedPayload:
       type: object
       description: |
-        Server → client. Broadcast to community:<id> AND to every (now ex-)member's
-        user:<id> room when the owner closes the community (status → CLOSED). All
-        members are auto-removed; the community is read-only until reopened.
+        Server → client. Broadcast to community:<id> AND to every member's
+        user:<id> room when the community is closed. The community becomes
+        read-only. Members are NOT removed and the community MUST stay in their
+        list — clients set the row's state, they never delete the row.
+
+        Two causes, distinguished by `status`:
+          - CLOSED — the owner closed it. Reopenable by the owner.
+          - CLOSED_BY_SYSTEM_BAN — the owner was permanently banned by a Super
+            Admin, so the platform closed it. `reason` is "ADMIN_BANNED". NOT
+            reopenable: POST /communities/:id/reopen returns 403
+            COMMUNITY_CLOSED_ADMIN_BANNED, and lifting the owner's ban does not
+            reopen it.
       properties:
         communityId: { type: string }
-        status: { type: string, enum: [CLOSED] }
+        status: { type: string, enum: [CLOSED, CLOSED_BY_SYSTEM_BAN] }
         closedAt:
           {
             type: integer,
@@ -7465,9 +7565,69 @@ components:
         reason:
           {
             type: string,
-            description: "Optional owner-supplied reason. Absent when none given.",
+            description: 'Owner-supplied free text, or the literal "ADMIN_BANNED" when the owner was system-banned. Absent when none given.',
           }
       required: [communityId, status, closedAt]
+
+    GroupClosedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `group:closed` to conv:<roomId> AND to every
+        ACTIVE member's user:<id> room when a group's owner is permanently
+        banned by a Super Admin.
+
+        NOT a disband. Nobody is removed, every membership row stays ACTIVE, the
+        room stays in the inbox (isClosed: true, closedReasonCode:
+        "ADMIN_BANNED") and stays fully readable — only writes are refused, with
+        403 CHAT_GROUP_CLOSED_ADMIN_BANNED. Clients MUST key the read-only
+        composer off isClosed, never off membership status. There is no reopen.
+      properties:
+        roomId: { type: string }
+        status: { type: string, enum: [CLOSED] }
+        closedReasonCode: { type: string, enum: [ADMIN_BANNED] }
+        closedAt:
+          { type: integer, description: "Epoch ms when the group was closed." }
+      required: [roomId, status, closedReasonCode, closedAt]
+
+    UserBannedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `user:banned` to the banned user's own
+        sockets on ALL FOUR namespaces (/chat, /community, /notify, /stream),
+        immediately before the gateway force-disconnects every one of them.
+
+        On receipt the client MUST: stop any in-flight operation including
+        livestream publishing; clear stored tokens and persisted auth state;
+        close sockets with automatic reconnection DISABLED (the disconnect is
+        server-initiated, which most clients retry by default); clear local
+        caches and any offline queue; and route to login showing the
+        ACCOUNT_BANNED message.
+
+        The event is a courtesy notice, not the enforcement. A client that
+        misses it simply receives 403 ACCOUNT_BANNED on its next request.
+      properties:
+        type: { type: string, enum: [SYSTEM] }
+        userId: { type: string }
+        reason:
+          {
+            type: [string, "null"],
+            description: "Free-text reason recorded by the Super Admin; null when none.",
+          }
+      required: [type, userId]
+
+    UserUnbannedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `user:unbanned` when a Super Admin lifts a
+        permanent ban. Emit-only — no disconnect.
+
+        Lifting a ban restores the ability to LOG IN and nothing else. Community
+        and group memberships the ban revoked are NOT recreated, and communities
+        or groups closed because the user owned them stay closed.
+      properties:
+        type: { type: string, enum: [SYSTEM] }
+        userId: { type: string }
+      required: [type, userId]
     CommunityReopenedPayload:
       type: object
       description: |

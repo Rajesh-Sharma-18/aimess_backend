@@ -19,7 +19,7 @@ import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
 import { generateRoomId } from "../lib/room-id.js";
-import { SystemEvent } from "../types/enums.js";
+import { GroupRoomStatus, SystemEvent } from "../types/enums.js";
 import {
   resolveMediaUrl,
   resolveMediaUrlMap,
@@ -33,6 +33,7 @@ import {
 import { groupVisibilitySource } from "./last-visible-adapters.js";
 import {
   assertGroupReadAccess,
+  assertGroupRoomWritable,
   groupReadCutoff,
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
@@ -793,6 +794,9 @@ export class GroupRoomService {
     // that actually changed (a client may re-send unchanged values).
     const room = await this.roomRepo.findActiveByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // The lookup returns CLOSED rooms too (they stay visible) — renaming one
+    // would post a system line into a room nobody may write to.
+    assertGroupRoomWritable(room);
 
     const updated = await this.roomRepo.updateRoom(roomId, data);
     if (!updated) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
@@ -890,6 +894,10 @@ export class GroupRoomService {
     const disbanded = await this.roomRepo.disband(roomId, userId);
     if (!disbanded) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
+    // Roster snapshot BEFORE markAllLeft: the fan-out below has to reach the
+    // people who were in the room, and markAllLeft empties the ACTIVE set.
+    const recipients = await this.memberRepo.findActiveMembers(roomId);
+
     // End every membership at the SAME instant the room recorded, so the
     // read cutoff and the room's `disbandedAt` can never disagree.
     await this.memberRepo.markAllLeft(
@@ -916,14 +924,12 @@ export class GroupRoomService {
     // Fan out on every member's own `user:<id>` channel — the gateway re-emits
     // it on /chat, so open clients flip to read-only without a reload. Members
     // are NOT evicted from `conv:<roomId>` (unlike group:removed): history
-    // stays readable, only writes are refused (CHAT_GROUP_DISBANDED). Disband
-    // leaves every membership row ACTIVE, so the roster is read after the
-    // write. Best-effort, like every other publish here — the room is already
+    // stays readable, only writes are refused (CHAT_GROUP_DISBANDED).
+    // Best-effort, like every other publish here — the room is already
     // disbanded and a socket outage must not fail the request.
     void (async () => {
       try {
-        const members = await this.memberRepo.findActiveMembers(roomId);
-        if (!members?.length) return;
+        if (!recipients?.length) return;
         const payload = {
           roomId,
           type: "GROUP" as const,
@@ -931,7 +937,7 @@ export class GroupRoomService {
           disbandedAt: Date.now(),
         };
         const pipeline = this.redis.pipeline();
-        for (const m of members) {
+        for (const m of recipients) {
           pipeline.publish(
             `user:${m.userId}`,
             JSON.stringify({ event: "group:disbanded", data: payload })
@@ -946,6 +952,51 @@ export class GroupRoomService {
     })();
 
     return disbanded;
+  }
+
+  // Super-admin system-ban close: the room is frozen (every write is refused
+  // with CHAT_GROUP_CLOSED_ADMIN_BANNED) but, unlike a disband, memberships are
+  // left ACTIVE so the group stays in every member's list and stays readable.
+  // Returns null when the room is already gone or not ACTIVE (idempotent).
+  async closeGroupForSystemBan(
+    roomId: string,
+    actorAdminId: string
+  ): Promise<GroupRoom | null> {
+    const closed = await this.roomRepo.closeForSystemBan(roomId, actorAdminId);
+    if (!closed) return null;
+
+    await this.inviteLinkRepo.revokeAllForRoom(roomId, actorAdminId);
+
+    const payload = {
+      roomId,
+      status: GroupRoomStatus.CLOSED,
+      closedReasonCode: closed.closedReasonCode ?? "ADMIN_BANNED",
+      closedAt: (closed.closedAt ?? new Date()).getTime(),
+    };
+    // `conv:<roomId>` reaches whoever has the chat open; `user:<id>` reaches
+    // every other device/list — same two legs group:removed and group:disbanded
+    // use, because neither alone covers both surfaces.
+    try {
+      const members = await this.memberRepo.findActiveMembers(roomId);
+      const pipeline = this.redis.pipeline();
+      pipeline.publish(
+        `conv:${roomId}`,
+        JSON.stringify({ event: "group:closed", data: payload })
+      );
+      for (const m of members ?? []) {
+        pipeline.publish(
+          `user:${m.userId}`,
+          JSON.stringify({ event: "group:closed", data: payload })
+        );
+      }
+      await pipeline.exec();
+    } catch (err) {
+      logger.warn(
+        `GroupRoomService|closeGroupForSystemBan|group:closed publish failed room=${roomId}: ${String(err)}`
+      );
+    }
+
+    return closed;
   }
 
   /**

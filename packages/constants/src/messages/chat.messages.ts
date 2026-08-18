@@ -262,6 +262,22 @@ export const CHAT_MESSAGES = {
     en: "Group disbanded",
     th: "ยุบกลุ่มแล้ว",
   },
+  // Banner copy + write denial for a group closed because its admin/owner was
+  // permanently system-banned. Unlike a disband the room is NOT hidden: it
+  // stays in every member's list and stays readable, but nobody can write.
+  CHAT_GROUP_CLOSED_ADMIN_BANNED: {
+    vi: "Quản trị viên của nhóm này đã bị cấm. Nhóm này không còn khả dụng",
+    en: "The admin of this group has been banned. This group is no longer available.",
+    th: "ผู้ดูแลกลุ่มนี้ถูกแบน กลุ่มนี้ไม่พร้อมใช้งานอีกต่อไป",
+  },
+  // Write denial in a 1:1 conversation where either party is system-banned.
+  // The conversation itself stays visible with its full history — only new
+  // interaction is blocked.
+  CHAT_PEER_BANNED: {
+    vi: "Người dùng này đã bị cấm và không thể tham gia hội thoại",
+    en: "This user has been banned and can no longer participate in conversations.",
+    th: "ผู้ใช้รายนี้ถูกแบนและไม่สามารถร่วมสนทนาได้อีกต่อไป",
+  },
   CHAT_GROUP_LEFT: {
     vi: "Đã rời nhóm",
     en: "Left the group",

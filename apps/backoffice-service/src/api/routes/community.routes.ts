@@ -2,13 +2,17 @@ import { Router, type IRouter } from "express";
 
 import { PERMISSIONS } from "../../constants/index.js";
 import {
+  banCommunityMember,
+  unbanCommunityMember,
   bulkCloseCommunities,
   bulkReopenCommunities,
   closeCommunity,
+  getCommunityConversationMessages,
   getCommunityDetails,
   listCommunities,
   listCommunityMembers,
   listCommunityMutedMembers,
+  removeCommunityMember,
   reopenCommunity,
 } from "../controllers/index.js";
 import {
@@ -23,9 +27,12 @@ import {
   bulkReopenSchema,
   closeCommunitySchema,
   communityIdParamSchema,
+  communityMemberParamSchema,
+  communityMessagesQuerySchema,
   listCommunitiesQuerySchema,
   listCommunityMembersQuerySchema,
   listMutedMembersQuerySchema,
+  memberModerationSchema,
   reopenCommunitySchema,
 } from "../validators/index.js";
 
@@ -92,4 +99,36 @@ communityRoutes.post(
   validateParams(communityIdParamSchema),
   validateBody(reopenCommunitySchema),
   reopenCommunity
+);
+
+// Community Conversation viewer — read-only message history + member
+// moderation (remove/ban from THIS community). Gated the same as every
+// other community-moderation route: COMMUNITIES_MODERATE.
+communityRoutes.get(
+  "/communities/:communityId/messages",
+  requirePermission(PERMISSIONS.COMMUNITIES_MODERATE),
+  validateParams(communityIdParamSchema),
+  validateQuery(communityMessagesQuerySchema),
+  getCommunityConversationMessages
+);
+communityRoutes.post(
+  "/communities/:communityId/members/:userId/remove",
+  requirePermission(PERMISSIONS.COMMUNITIES_MODERATE),
+  validateParams(communityMemberParamSchema),
+  validateBody(memberModerationSchema),
+  removeCommunityMember
+);
+communityRoutes.post(
+  "/communities/:communityId/members/:userId/ban",
+  requirePermission(PERMISSIONS.COMMUNITIES_MODERATE),
+  validateParams(communityMemberParamSchema),
+  validateBody(memberModerationSchema),
+  banCommunityMember
+);
+communityRoutes.post(
+  "/communities/:communityId/members/:userId/unban",
+  requirePermission(PERMISSIONS.COMMUNITIES_MODERATE),
+  validateParams(communityMemberParamSchema),
+  validateBody(memberModerationSchema),
+  unbanCommunityMember
 );

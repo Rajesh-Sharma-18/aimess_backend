@@ -405,11 +405,13 @@ describe("POST /v1/users/:userId/unban", () => {
       .set(auth());
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe("ACTIVE");
-    // No Content-Type/body sent → req.body is undefined; the controller
-    // defaults it to {} before calling the service.
+    // No Content-Type/body sent → req.body is undefined; the controller parses
+    // it through unbanUserSchema, which defaults the scope. A body-less unban
+    // therefore means a SYSTEM unban — which is what the panel's existing
+    // "activate" button sends.
     expect(svc.unbanUser).toHaveBeenCalledWith(
       USER_ID,
-      {},
+      { banType: "SYSTEM" },
       expect.anything(),
       expect.anything()
     );

@@ -2165,6 +2165,44 @@ export function createMessagingImpl(
       })();
     },
 
+    // Admin Group Moderation: group-side cascade of a permanent system ban —
+    // owned groups CLOSED, every other membership ended. Never throws to the
+    // caller: backoffice treats this leg as best-effort, so a partial failure
+    // returns the ids that did succeed.
+    adminApplySystemBan: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            actorAdminId?: string;
+            reason?: string;
+          };
+          const result = await deps.adminGroupService.adminApplySystemBan(
+            req.userId ?? "",
+            req.actorAdminId ?? "",
+            req.reason || undefined
+          );
+          callback(null, {
+            ok: true,
+            closedGroupIds: result.closedGroupIds,
+            removedGroupIds: result.removedGroupIds,
+            errorCode: "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminApplySystemBan error: ${String(err)}`);
+          callback(null, {
+            ok: false,
+            closedGroupIds: [],
+            removedGroupIds: [],
+            errorCode: "CHAT_SYSTEM_BAN_CASCADE_FAILED",
+          });
+        }
+      })();
+    },
+
     // Admin Group Moderation: remove one member as a platform admin.
     adminRemoveGroupMember: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
@@ -2979,6 +3017,87 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC getCommunityMessages error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Community Conversation viewer (backoffice-service only) — same
+    // wire shape as getCommunityMessages, but reads via
+    // getMessagesForModeration (no membership/PUBLIC gate).
+    adminGetCommunityMessages: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            roomId: string;
+            cursor: string;
+            limit: number;
+          };
+
+          const limit = req.limit || 30;
+          const [page, pinnedMessage] = await Promise.all([
+            deps.communityMessageService.getMessagesForModeration({
+              roomId: req.roomId,
+              cursor: req.cursor || undefined,
+              limit,
+            }),
+            deps.communityPinService.getActivePinSummary(req.roomId, ""),
+          ]);
+
+          // Both come straight from the keyset page. Deriving hasMore from
+          // `messages.length >= limit` would be wrong in both directions: a
+          // short page after DB filtering is not the end of history, and an
+          // exactly-full page is not proof there is more.
+          const messages = page.items;
+          const nextCursor = page.nextCursor ?? "";
+          const hasMore = page.hasMore;
+
+          callback(null, {
+            messages: messages.map((m) => ({
+              messageId: m.id,
+              roomId: m.roomId,
+              senderId: m.sentBy,
+              senderName: m.senderName ?? "",
+              senderAvatar:
+                ((m as unknown as Record<string, unknown>)
+                  .senderAvatar as string) ?? "",
+              message: m.message ?? "",
+              contentType: m.contentType,
+              mediaKey: (() => {
+                const att = Array.isArray(m.attachments)
+                  ? (m.attachments[0] as Record<string, unknown> | undefined)
+                  : undefined;
+                return (att?.url as string) ?? (att?.objectKey as string) ?? "";
+              })(),
+              attachmentsJson: Array.isArray(m.attachments)
+                ? JSON.stringify(m.attachments)
+                : "[]",
+              reactionsJson: JSON.stringify(m.reactions ?? []),
+              quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
+              sentAt:
+                m.createdAt instanceof Date
+                  ? m.createdAt.getTime()
+                  : Date.now(),
+              systemMessageType:
+                ((m as Record<string, unknown>).systemMessageType as string) ??
+                "",
+              systemMetadata: (() => {
+                const meta = (m as Record<string, unknown>).systemMetadata;
+                return meta ? JSON.stringify(meta) : "";
+              })(),
+              isPersonal: Boolean((m as Record<string, unknown>).isPersonal),
+            })),
+            nextCursor,
+            hasMore,
+            pinnedMessageJson: pinnedMessage
+              ? JSON.stringify(pinnedMessage)
+              : "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetCommunityMessages error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

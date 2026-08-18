@@ -20,6 +20,7 @@ import {
   normalizeEmail,
   verifyOtpCode,
 } from "../lib/otp.js";
+import { assertNotBanned } from "../lib/account-guard.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import {
   createPasswordResetToken,
@@ -169,6 +170,14 @@ export const passwordResetService = {
     );
 
     // const isSocialUser = user.linkedAccounts.length > 0;
+
+    // Reset COMPLETION is the one password-reset step where the caller has
+    // already proven ownership (a valid one-time token), so naming the ban here
+    // leaks nothing an attacker could enumerate — unlike requestOtp, which
+    // deliberately keeps its ambiguous "if this email is registered" answer.
+    if (account) {
+      assertNotBanned(account.status);
+    }
 
     if (
       !account ||

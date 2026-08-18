@@ -109,6 +109,7 @@ import {
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
+import { filterBannedUserIds } from "@aimess/redis";
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
@@ -448,10 +449,23 @@ export class PrivateMessageService {
     userId: string,
     peerId: string
   ): Promise<void> {
-    const [friends, blocked] = await Promise.all([
+    const [friends, blocked, banned] = await Promise.all([
       this.userServiceClient.checkFriendship(userId, peerId),
       this.userServiceClient.isFriendshipBlocked(userId, peerId),
+      // Read straight off the ban key, never the user snapshot: that cache has
+      // a 1h TTL and would keep answering "not banned" long after the ban.
+      // Both parties, because a banned user's DM is inert in both directions.
+      // One MGET; a Redis outage degrades to "no ban", matching the fail-OPEN
+      // policy of the shared REST guard (session revocation still holds).
+      this.redis
+        ? filterBannedUserIds(this.redis, [userId, peerId]).catch(
+            () => new Set<string>()
+          )
+        : new Set<string>(),
     ]);
+    if (banned.size > 0) {
+      throw new ForbiddenError("CHAT_PEER_BANNED");
+    }
     if (blocked) {
       throw new ForbiddenError("CHAT_BLOCKED");
     }

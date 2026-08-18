@@ -105,6 +105,12 @@ export const AUDIT_ACTION_CATEGORY: Readonly<Record<string, AuditCategory>> = {
   "community.reopen": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   "community.bulk_close": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   "community.bulk_reopen": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
+  // Cascade of a permanent system ban: the banned user owned this community /
+  // group, so it was closed (never deleted) and stays visible to its members.
+  // Separate from community.close / group.disbanded so the audit trail shows
+  // WHY it closed and an operator can find every space one ban took down.
+  "community.closed_owner_banned": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
+  "group.closed_owner_banned": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   [USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_REVOKED]:
     AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   [USER_AUDIT_ACTIONS.GROUP_DISBANDED]: AUDIT_CATEGORIES.CONTENT_MANAGEMENT,

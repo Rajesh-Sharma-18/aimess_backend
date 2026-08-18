@@ -232,6 +232,14 @@ export function buildApp(): BuiltApp {
     roomId: "prv_room",
     participants: [TEST_USER_ID, TEST_PEER_ID],
   });
+  // Default: the group is live. The group write gate (`assertGroupWritable`)
+  // loads the room on send/edit/delete/react/pin/forward, so without this every
+  // group write spec would 404 on CHAT_GROUP_NOT_FOUND. A spec exercising a
+  // DISBANDED / CLOSED group overrides this with its own status.
+  groupRoomRepo.findByRoomId.mockResolvedValue({
+    roomId: "grp_room",
+    status: "ACTIVE",
+  });
   // Every timeline page probes one row beyond each seq edge for the bidirectional
   // continuation block and reads the room's change high-water. Default both so a
   // spec only stubs them when it actually asserts on continuation/revision.

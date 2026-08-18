@@ -22,6 +22,7 @@ function toAdminStreamWire(r: AdminStreamRow): Record<string, unknown> {
     description: r.description,
     thumbnail: r.thumbnail ?? "",
     sourceType: r.sourceType,
+    sourceUrl: r.sourceUrl ?? "",
     status: r.status,
     hlsUrl: r.hlsUrl ?? "",
     flvUrl: r.flvUrl ?? "",

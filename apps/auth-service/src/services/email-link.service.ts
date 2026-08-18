@@ -22,6 +22,7 @@ import {
   normalizeEmail,
   verifyAndConsumeOtp,
 } from "../lib/otp.js";
+import { assertNotBanned } from "../lib/account-guard.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
@@ -47,6 +48,8 @@ async function loadActiveUser(userId: string) {
   if (!user || user.deletedAt) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
   }
+
+  assertNotBanned(user.status);
 
   if (user.status !== AccountStatus.ACTIVE) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");

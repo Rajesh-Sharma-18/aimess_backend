@@ -235,7 +235,7 @@ message AdminStreamRow {
   string title           = 4;
   string description     = 5;
   string thumbnail       = 6;  // raw object key; "" if none
-  string source_type     = 7;  // PHONE_CAMERA | URL | YOUTUBE
+  string source_type     = 7;  // PHONE_CAMERA | OBS_RTMP | URL | YOUTUBE
   string status          = 8;  // PENDING | LIVE | RECONNECTING | ENDED
   string hls_url         = 9;  // "" if none
   string flv_url         = 10; // "" if none
@@ -257,6 +257,11 @@ message AdminStreamRow {
   string resolution     = 20; // e.g. "1280x720"
   int64  bitrate_kbps   = 21;
   int64  fps            = 22;
+  // External playback source, set for URL and YOUTUBE modes only ("" otherwise).
+  // SRS-ingested streams (PHONE_CAMERA/OBS_RTMP) carry their playback in
+  // hls_url/flv_url instead. The admin monitor needs this to render the same
+  // embed the website does for externally-hosted broadcasts.
+  string source_url     = 23;
 }
 
 message AdminListStreamsRequest {

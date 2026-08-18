@@ -1,3 +1,8 @@
+import {
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import type { MediaObject } from "@aimess/shared-types";
 
@@ -17,6 +22,7 @@ import {
   userDirectoryRepository,
 } from "../repositories/index.js";
 import { authClient } from "../grpc/auth.client.js";
+import { chatClient } from "../grpc/chat.client.js";
 import { communityClient } from "../grpc/community.client.js";
 import { streamClient } from "../grpc/stream.client.js";
 import type { RequestAdmin } from "../types/index.js";
@@ -454,6 +460,14 @@ export const userManagementService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
+    // Community-scoped ban: a completely different operation that happens to
+    // share an endpoint. It touches ONE membership and nothing else — the
+    // account keeps working everywhere else, so none of the system-ban
+    // machinery below (auth status, sessions, cascade) may run.
+    if (input.banType === "COMMUNITY") {
+      return banFromCommunity(userId, input, actor, ctx);
+    }
+
     const ref = buildActor(actor);
     const before = await userDirectoryRepository.getById(userId);
 
@@ -472,7 +486,53 @@ export const userManagementService = {
           suspendedUntil: null,
         };
 
+    // Pre-flight the mirror's transition guard BEFORE touching auth-service.
+    //
+    // `setStatus` below is what rejects BANNED -> BANNED, and it runs AFTER the
+    // auth-service write. Without this check a re-ban of an already-banned
+    // account would genuinely ban them (sessions killed, login blocked) and
+    // THEN 409 with "user is already banned", so the admin sees an error,
+    // assumes nothing happened, and the two stores disagree. Fail first or not
+    // at all.
+    if (!timeBoxed && before?.status === "BANNED") {
+      throw new ConflictError("USER_ALREADY_BANNED");
+    }
+
+    // FIRST, and awaited: auth-service owns AuthUser.status, and until this
+    // write lands the ban does not exist — the account still logs in on every
+    // client. If it fails we abort rather than writing a mirror row that
+    // claims a ban nobody is enforcing.
+    let revokedSessions = 0;
+    if (!timeBoxed) {
+      const applied = await authClient
+        .adminSetAccountStatus({
+          userId,
+          status: "BANNED",
+          reason: input.reason,
+          actorAdminId: ref.actorId,
+        })
+        .catch((err: unknown) => {
+          logger.error("auth-service refused the permanent ban", { err });
+          throw new ServiceUnavailableError("USER_BAN_NOT_APPLIED");
+        });
+      if (!applied.ok) {
+        throw applied.errorCode === "USER_NOT_FOUND"
+          ? new NotFoundError("USER_NOT_FOUND")
+          : new ServiceUnavailableError("USER_BAN_NOT_APPLIED");
+      }
+      revokedSessions = applied.revokedSessions;
+    }
+
     const result = await userDirectoryRepository.setStatus(userId, change);
+
+    // Space cascade. Best-effort by design: the ban itself has already landed
+    // and must not be rolled back because one downstream service blipped — a
+    // banned user with a stale membership is far better than a user who is not
+    // banned at all. Every id is recorded on the audit row so an operator can
+    // see (and re-run) what the ban actually took down.
+    const cascade = timeBoxed
+      ? emptyCascade()
+      : await applySpaceCascade(userId, ref.actorId, input.reason);
 
     await moderationActionRepository.create({
       actorId: ref.actorId,
@@ -500,10 +560,19 @@ export const userManagementService = {
         suspendedUntil: result.suspendedUntil,
         forceLogout: input.forceLogout,
         notifyUser: input.notifyUser,
+        banType: timeBoxed ? "SYSTEM_TIMEBOXED" : "SYSTEM",
+        permanent: !timeBoxed,
+        revokedSessions,
+        closedCommunityIds: cascade.closedCommunityIds,
+        removedCommunityIds: cascade.removedCommunityIds,
+        closedGroupIds: cascade.closedGroupIds,
+        removedGroupIds: cascade.removedGroupIds,
       },
       ip: ctx.ip,
       userAgent: ctx.userAgent,
     });
+
+    await recordCascadeAudits(ref.actorId, userId, cascade, ctx);
 
     if (timeBoxed) {
       publishUserSuspendedSafe({
@@ -519,10 +588,15 @@ export const userManagementService = {
       publishUserBannedSafe({
         userId,
         reason: input.reason,
-        forceLogout: input.forceLogout,
+        // Not `input.forceLogout`: a permanent ban always ends every session.
+        // Sessions were already revoked synchronously above; this keeps the
+        // RabbitMQ safety net consistent if the gRPC call had been lost.
+        forceLogout: true,
         notifyUser: input.notifyUser,
         actorId: ref.actorId,
         at: toIso(ref.at),
+        banType: "SYSTEM",
+        permanent: true,
       });
     }
     // Best-effort: an account ban/suspend must not leave an existing
@@ -594,14 +668,57 @@ export const userManagementService = {
     return result;
   },
 
+  // Lifting a ban restores the ability to LOG IN and nothing else.
+  //
+  // Deliberately does not re-create the community/group memberships the ban
+  // removed, and does not reopen the communities/groups that were closed
+  // because this user owned them — reviving a space needs its own
+  // administrative action (ownership has to be reassigned first). Anything the
+  // ban tore down is recorded on the ban's audit row so an operator can see
+  // exactly what is NOT coming back.
   async unbanUser(
     userId: string,
     input: UnbanUserInput,
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<UserStatusResult> {
+    if (input.banType === "COMMUNITY") {
+      return unbanFromCommunity(userId, input, actor, ctx);
+    }
+
     const ref = buildActor(actor);
     const before = await userDirectoryRepository.getById(userId);
+
+    // Same pre-flight as the ban, for the same reason: the mirror rejects
+    // ACTIVE -> ACTIVE, and that rejection must not land after auth-service has
+    // already reinstated the account.
+    //
+    // Deliberately NOT symmetric beyond that: an account whose mirror is out of
+    // step with auth-service (a ban that half-applied before this guard existed)
+    // must still be recoverable, so anything that is not already ACTIVE is
+    // allowed through to the unban.
+    if (before?.status === "ACTIVE") {
+      throw new ConflictError("USER_NOT_BANNED");
+    }
+
+    // Same ordering rule as the ban: auth-service is the source of truth, so
+    // the mirror is only updated once the account can genuinely sign in again.
+    const lifted = await authClient
+      .adminSetAccountStatus({
+        userId,
+        status: "ACTIVE",
+        reason: null,
+        actorAdminId: ref.actorId,
+      })
+      .catch((err: unknown) => {
+        logger.error("auth-service refused the unban", { err });
+        throw new ServiceUnavailableError("USER_UNBAN_NOT_APPLIED");
+      });
+    if (!lifted.ok) {
+      throw lifted.errorCode === "USER_NOT_FOUND"
+        ? new NotFoundError("USER_NOT_FOUND")
+        : new ServiceUnavailableError("USER_UNBAN_NOT_APPLIED");
+    }
 
     const result = await userDirectoryRepository.setStatus(userId, {
       status: "ACTIVE",
@@ -625,7 +742,15 @@ export const userManagementService = {
       targetType: "user",
       targetId: userId,
       before: { status: before?.status ?? null },
-      after: { status: result.status, note: input.note ?? null },
+      after: {
+        status: result.status,
+        note: input.note ?? null,
+        banType: "SYSTEM",
+        // Recorded explicitly so the trail can never be read as "everything
+        // was put back". Nothing the ban removed is restored here.
+        membershipsRestored: false,
+        spacesReopened: false,
+      },
       ip: ctx.ip,
       userAgent: ctx.userAgent,
     });
@@ -634,6 +759,7 @@ export const userManagementService = {
       userId,
       actorId: ref.actorId,
       at: toIso(ref.at),
+      banType: "SYSTEM",
     });
 
     return result;
@@ -776,6 +902,233 @@ export const userManagementService = {
 // ---------------------------------------------------------------------------
 // Detail composition + moderation-trail persistence (admin_db).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Permanent system ban: permission gate, space cascade, community scope.
+// ---------------------------------------------------------------------------
+
+// Everything a permanent ban took down, so the audit row can name it and an
+// operator can tell what an unban will NOT restore.
+type SpaceCascade = {
+  closedCommunityIds: string[];
+  removedCommunityIds: string[];
+  closedGroupIds: string[];
+  removedGroupIds: string[];
+};
+
+function emptyCascade(): SpaceCascade {
+  return {
+    closedCommunityIds: [],
+    removedCommunityIds: [],
+    closedGroupIds: [],
+    removedGroupIds: [],
+  };
+}
+
+// Close the communities and groups the banned user OWNED, and end every other
+// membership they held.
+//
+// Closed, never deleted: the requirement is that the space stays visible in
+// every other member's list carrying an explicit closed status, so clients can
+// render it disabled instead of having it silently vanish. community-service
+// and chat-service each own their half and do their own realtime fan-out.
+//
+// Both calls are independently guarded: one service being down must not stop
+// the other's cascade, and neither can undo the ban that already landed.
+async function applySpaceCascade(
+  userId: string,
+  actorAdminId: string,
+  reason: string
+): Promise<SpaceCascade> {
+  const cascade = emptyCascade();
+
+  const [communities, groups] = await Promise.allSettled([
+    communityClient.adminApplySystemBan({ userId, actorAdminId, reason }),
+    chatClient.adminApplySystemBan({ userId, actorAdminId, reason }),
+  ]);
+
+  if (communities.status === "fulfilled") {
+    cascade.closedCommunityIds = communities.value.closedCommunityIds;
+    cascade.removedCommunityIds = communities.value.removedCommunityIds;
+  } else {
+    logger.error("Community cascade failed for a permanent ban", {
+      userId,
+      err: communities.reason,
+    });
+  }
+
+  if (groups.status === "fulfilled") {
+    cascade.closedGroupIds = groups.value.closedGroupIds;
+    cascade.removedGroupIds = groups.value.removedGroupIds;
+  } else {
+    logger.error("Group cascade failed for a permanent ban", {
+      userId,
+      err: groups.reason,
+    });
+  }
+
+  return cascade;
+}
+
+// One audit row per closed space. The ban's own row already lists the ids, but
+// a closed community is a content-management event in its own right — an
+// operator investigating "why did this community go read-only" searches by the
+// community, not by the user who happened to be banned that day.
+async function recordCascadeAudits(
+  actorId: string,
+  userId: string,
+  cascade: SpaceCascade,
+  ctx: RequestCtx
+): Promise<void> {
+  for (const communityId of cascade.closedCommunityIds) {
+    await auditService.record({
+      actorId,
+      action: AUDIT_ACTIONS.COMMUNITY_CLOSED_OWNER_BANNED,
+      targetType: "community",
+      targetId: communityId,
+      after: { status: "CLOSED", reasonCode: "ADMIN_BANNED", ownerId: userId },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+  }
+  for (const groupId of cascade.closedGroupIds) {
+    await auditService.record({
+      actorId,
+      action: AUDIT_ACTIONS.GROUP_CLOSED_OWNER_BANNED,
+      targetType: "group",
+      targetId: groupId,
+      after: { status: "CLOSED", reasonCode: "ADMIN_BANNED", ownerId: userId },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+  }
+}
+
+// Ban from ONE community. Delegates to community-service's existing
+// platform-admin path, which already performs the membership write, the roster
+// + `community:membership:restricted` realtime fan-out, the push notification
+// and the community-scoped livestream teardown. Nothing here may touch the
+// account: the user keeps logging in and keeps using every other community.
+async function banFromCommunity(
+  userId: string,
+  input: BanUserInput,
+  actor: RequestAdmin,
+  ctx: RequestCtx
+): Promise<UserStatusResult> {
+  const communityId = input.communityId as string;
+  const result = await communityClient.adminBanCommunityMember({
+    communityId,
+    targetUserId: userId,
+    reason: input.reason,
+    actorAdminId: actor.id,
+  });
+  if (!result.ok) {
+    throw mapCommunityScopeError(result.errorCode);
+  }
+
+  await moderationActionRepository.create({
+    actorId: actor.id,
+    type: "ban_community_member",
+    targetType: "user",
+    targetId: userId,
+    reason: input.reason,
+    metadata: { communityId, ...(input.note ? { note: input.note } : {}) },
+    reportId: input.reportId ?? null,
+  });
+
+  await auditService.record({
+    actorId: actor.id,
+    action: AUDIT_ACTIONS.COMMUNITY_MEMBER_BANNED,
+    targetType: "user",
+    targetId: userId,
+    after: {
+      banType: "COMMUNITY",
+      communityId,
+      status: result.status,
+      reason: input.reason,
+      note: input.note ?? null,
+      permanent: true,
+      // Banning a community's own admin closes that community as a side effect;
+      // the audit row has to name it or the blast radius is invisible.
+      closedCommunity: result.closedCommunity ?? false,
+    },
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+  });
+
+  // The ACCOUNT is untouched, so the account status the caller sees back is
+  // whatever it already was — a community ban must never render as "banned"
+  // on the user record.
+  return currentAccountStatus(userId);
+}
+
+async function unbanFromCommunity(
+  userId: string,
+  input: UnbanUserInput,
+  actor: RequestAdmin,
+  ctx: RequestCtx
+): Promise<UserStatusResult> {
+  const communityId = input.communityId as string;
+  const result = await communityClient.adminUnbanCommunityMember({
+    communityId,
+    targetUserId: userId,
+    actorAdminId: actor.id,
+  });
+  if (!result.ok) {
+    throw mapCommunityScopeError(result.errorCode);
+  }
+
+  await moderationActionRepository.create({
+    actorId: actor.id,
+    type: "unban_community_member",
+    targetType: "user",
+    targetId: userId,
+    reason: input.note ?? "Community ban lifted by admin",
+    metadata: { communityId },
+  });
+
+  await auditService.record({
+    actorId: actor.id,
+    action: AUDIT_ACTIONS.COMMUNITY_MEMBER_UNBANNED,
+    targetType: "user",
+    targetId: userId,
+    after: {
+      banType: "COMMUNITY",
+      communityId,
+      status: result.status,
+      note: input.note ?? null,
+      // Lifting a community ban leaves the row LEFT, not ACTIVE — the user has
+      // to rejoin through the normal flow. Same asymmetry as a system unban.
+      membershipRestored: false,
+    },
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+  });
+
+  return currentAccountStatus(userId);
+}
+
+// A community-scoped ban leaves the ACCOUNT untouched, so the endpoint answers
+// with the account's unchanged status rather than reporting it as banned.
+async function currentAccountStatus(userId: string): Promise<UserStatusResult> {
+  const current = await userDirectoryRepository.getById(userId);
+  return {
+    userId,
+    status: (current?.status ?? "ACTIVE") as UserStatus,
+    suspendedUntil: current?.suspendedUntil ?? null,
+    bannedAt: null,
+  };
+}
+
+function mapCommunityScopeError(errorCode: string): Error {
+  if (
+    errorCode === "COMMUNITY_NOT_FOUND" ||
+    errorCode === "COMMUNITY_MEMBER_NOT_FOUND"
+  ) {
+    return new NotFoundError(errorCode);
+  }
+  return new ConflictError(errorCode || "COMMUNITY_BAN_FAILED");
+}
 
 /**
  * Resolve an email to its owning userId via auth-service. auth-service's

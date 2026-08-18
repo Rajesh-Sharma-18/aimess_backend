@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
+import { env } from "../../config/env.js";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError } from "../ack.js";
@@ -145,6 +146,22 @@ export function registerStreamNamespace(
   const streamNs: Namespace = io.of("/stream");
   streamNs.use(createGatewaySocketAuthMiddleware(redisPub));
 
+  // `stream:viewer_count` is computed HERE from the Redis presence hash — it is
+  // the one stream event stream-service never publishes, so the admin monitor
+  // cannot pick it up off the `stream:*` channel like the others. Mirror it into
+  // the identically-named /admin room (room registries are per-namespace).
+  //
+  // `io.of` is resolved lazily, at emit time rather than setup time, so this can
+  // never create /admin before admin.ns.ts has attached its auth middleware; the
+  // env guard is the same condition index.ts registers the namespace on, so when
+  // /admin is absent nothing is created at all.
+  const broadcastViewerCount = (streamId: string, count: number): void => {
+    const payload = { streamId, viewerCount: Math.max(0, count) };
+    streamNs.to(roomKey(streamId)).emit("stream:viewer_count", payload);
+    if (!env.JWT_ADMIN_SECRET) return;
+    io.of("/admin").to(roomKey(streamId)).emit("stream:viewer_count", payload);
+  };
+
   // Handle a stream:banned event from stream-service: notify + remove the banned
   // user's live sockets from the room (channel === roomKey(streamId)). Their
   // rejoin is independently blocked by the CheckStreamAccess gate.
@@ -186,13 +203,10 @@ export function registerStreamNamespace(
         );
       // Broadcast the corrected viewer count (HLEN is unique-user count).
       try {
-        const viewerCount = Math.max(
-          0,
+        broadcastViewerCount(
+          streamId,
           await redisPub.hlen(sessionKey(streamId))
         );
-        streamNs
-          .to(room)
-          .emit("stream:viewer_count", { streamId, viewerCount });
       } catch (err) {
         logger.warn(
           `/stream ban viewer_count broadcast error for ${streamId}: ${String(err)}`
@@ -437,10 +451,7 @@ export function registerStreamNamespace(
       redisPub
         .hlen(sessionKey(streamId))
         .then((count) => {
-          const viewerCount = Math.max(0, count);
-          streamNs
-            .to(roomKey(streamId))
-            .emit("stream:viewer_count", { streamId, viewerCount });
+          broadcastViewerCount(streamId, count);
         })
         .catch((err: unknown) => {
           logger.warn(
@@ -452,9 +463,20 @@ export function registerStreamNamespace(
   };
 
   streamNs.on("connection", (socket: Socket) => {
-    const { userId, locale } = socket.data;
+    const { userId, sessionId, locale } = socket.data;
     scopeSocketLocale(socket);
     bindSocketAuditContext(socket);
+    // Session room, as /chat, /community and /notify all do. This is what the
+    // shared `session-revoke:*` listener targets, so without it a revoked
+    // session (remote sign-out, or an admin ban that force-logs-the-user-out)
+    // kicked every other namespace while the viewer kept watching the stream.
+    void socket.join(`session:${sessionId}`);
+    // User room. /stream psubscribes only `stream:*`, so joining this does not
+    // pull in /chat's `user:*` relay — it exists purely so the USER-scoped
+    // `user-ban:*` listener can reach a live broadcaster or viewer. Without it
+    // a permanent ban left the offender's stream socket connected until their
+    // access token happened to expire.
+    void socket.join(`user:${userId}`);
     logger.debug(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );
@@ -1032,13 +1054,10 @@ export function registerStreamNamespace(
           // Emit directly (the per-socket debounce map is already cleared and
           // the socket is leaving — read once and broadcast to the room).
           try {
-            const viewerCount = Math.max(
-              0,
+            broadcastViewerCount(
+              streamId,
               await redisPub.hlen(sessionKey(streamId))
             );
-            streamNs
-              .to(roomKey(streamId))
-              .emit("stream:viewer_count", { streamId, viewerCount });
           } catch {
             /* best-effort fan-out on disconnect */
           }

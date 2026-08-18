@@ -5,7 +5,7 @@ import { getRequestContext } from "../../lib/request-context.js";
 import { userManagementService } from "../../services/index.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
-import { moderationReasonEnum } from "../validators/index.js";
+import { moderationReasonEnum, unbanUserSchema } from "../validators/index.js";
 import type {
   BanUserInput,
   BulkActivateInput,
@@ -220,10 +220,11 @@ export const unbanUser: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const userId = req.params.userId as string;
-      // No `validateBody` on this route — a request with no body at all (no
-      // Content-Type) leaves `req.body` undefined, not `{}`. Default it so the
-      // service's `input.note` read is always safe.
-      const body = (req.body ?? {}) as UnbanUserInput;
+      // Still no `validateBody` on this route — a request with no body at all
+      // (no Content-Type) leaves `req.body` undefined, not `{}`, and Express
+      // would 400 before the schema ran. Parse it here instead so the optional
+      // banType/communityId are validated without breaking body-less callers.
+      const body = unbanUserSchema.parse(req.body ?? {}) as UnbanUserInput;
       const result = await userManagementService.unbanUser(
         userId,
         body,

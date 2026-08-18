@@ -1,9 +1,11 @@
 import { ForbiddenError } from "@aimess/errors";
 
+import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
 import {
   CommunityModerationStatus,
   CommunityStatus,
 } from "../generated/prisma/index.js";
+import type { CommunityWireStatus } from "../types/community.types.js";
 
 /**
  * CommunityAccessPolicy — the single source of truth for "is this community
@@ -28,6 +30,8 @@ import {
 export interface CommunityLifecycleState {
   status?: CommunityStatus | null;
   moderationStatus: CommunityModerationStatus;
+  // Read only by deriveStatus (wire refinement) — no guard branches on it.
+  statusClosedReasonCode?: string | null;
 }
 
 /** Owner-closed (status axis). Absent/null ⇒ ACTIVE (backward-compat). */
@@ -54,8 +58,14 @@ export function isEffectivelyClosed(c: CommunityLifecycleState): boolean {
  */
 export function deriveStatus(c: {
   status?: CommunityStatus | null;
-}): "ACTIVE" | "CLOSED" {
-  return isOwnerClosed(c) ? "CLOSED" : "ACTIVE";
+  statusClosedReasonCode?: string | null;
+}): CommunityWireStatus {
+  if (!isOwnerClosed(c)) return "ACTIVE";
+  // Wire-only distinction: the DB value stays CLOSED, so every guard below
+  // (and everywhere else) keeps treating a ban-close as an ordinary close.
+  return c.statusClosedReasonCode === CLOSE_REASON_ADMIN_BANNED
+    ? "CLOSED_BY_SYSTEM_BAN"
+    : "CLOSED";
 }
 
 /**

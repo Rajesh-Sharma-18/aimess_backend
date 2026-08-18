@@ -263,3 +263,28 @@ export const bulkReopenSchema = reopenCommunitySchema.extend({
   communityIds: communityIdsField,
 });
 export type BulkReopenInput = z.infer<typeof bulkReopenSchema>;
+
+// ---------------------------------------------------------------------------
+// Community Conversation viewer — message read + member moderation.
+// ---------------------------------------------------------------------------
+export const communityMemberParamSchema = z.object({
+  communityId: z.string().trim().min(1).max(64),
+  userId: z.string().trim().min(1).max(64),
+});
+export type CommunityMemberParamInput = z.infer<
+  typeof communityMemberParamSchema
+>;
+
+/** `cursor` is the opaque `nextCursor` echoed back by the previous page. */
+export const communityMessagesQuerySchema = z.object({
+  cursor: z.string().trim().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(30),
+});
+export type CommunityMessagesQueryInput = z.infer<
+  typeof communityMessagesQuerySchema
+>;
+
+export const memberModerationSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
+export type MemberModerationBodyInput = z.infer<typeof memberModerationSchema>;

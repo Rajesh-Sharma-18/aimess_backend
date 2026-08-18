@@ -20,7 +20,9 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     ...(overrides.srsService as object),
   };
   const communityClient = { validateMembership: jest.fn() };
-  const redis = {};
+  // `get` backs the system-ban gate, which is fail-CLOSED — a redis stub
+  // without it would deny every call here.
+  const redis = { get: jest.fn().mockResolvedValue(null) };
   const banRepo = {} as any;
   const viewerSessionRepo = {};
   const eventPublisher = jest.fn();

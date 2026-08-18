@@ -124,10 +124,45 @@ export type ReportsSummary = {
   lastReportedAt: number | null;
 };
 
+/**
+ * One livestream chat comment, as shown in the admin monitor. Mirrors the
+ * `stream:comment:new` socket payload so a realtime row and a historical row
+ * render through the same component. `senderAvatar` is a presigned URL (or ""),
+ * resolved by stream-service before it leaves that service.
+ */
+export type LivestreamCommentItem = {
+  id: string;
+  sentBy: string;
+  senderName: string;
+  senderAvatar: string;
+  message: string;
+  /** epoch ms. */
+  createdAt: number;
+};
+
+/**
+ * Cursor page of livestream comments. Distinct from `PaginationMeta` (offset)
+ * because stream-service pages comments by id cursor, not page number.
+ */
+export type LivestreamCommentPage = {
+  data: LivestreamCommentItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
 /** Ingest/playback technical metadata (detail view). NO raw stream key exposed. */
 export type StreamMetadata = {
   ingestProtocol: string;
   playbackUrl: string;
+  /**
+   * Playback inputs for the admin monitor. `sourceType` is the authoritative
+   * mode (`ingestProtocol` above carries the same value but defaults to "RTMP"
+   * when blank, so it cannot be branched on); `sourceUrl` is set for URL /
+   * YOUTUBE only, `flvUrl` for SRS-ingested streams only.
+   */
+  sourceType: string;
+  sourceUrl: string | null;
+  flvUrl: string | null;
   resolution: string;
   bitrateKbps: number;
   fps: number;
@@ -294,6 +329,8 @@ export type ListLivestreamReportsQuery = {
 export type LivestreamViewerType = "Host" | "Admin" | "Moderator" | "Member";
 
 export type LivestreamUserItem = {
+  /** Banned from this stream's community — the viewer list shows Unban instead of Ban. */
+  isBanned: boolean;
   userId: string;
   username: string;
   /**
@@ -334,4 +371,11 @@ export type ListLivestreamUsersQuery = {
   search?: string;
   /** Community-role filter (Admin|Moderator|Member) — the only implemented viewer role. */
   role?: string;
+};
+
+/** Normalized per-stream comments query (post-validation/coercion). */
+export type ListLivestreamCommentsQuery = {
+  limit: number;
+  /** Comment id; returns comments older than it. */
+  before?: string;
 };
