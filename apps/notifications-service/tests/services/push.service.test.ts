@@ -154,6 +154,45 @@ describe("pushToUser — the settings gate", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("rethrows a failed inbox write for an inbox-ONLY send, so the caller can redeliver", async () => {
+    // The row IS the delivery here — swallowing the failure loses that
+    // recipient's history for good, and silently: the caller's allSettled saw
+    // two fulfilled promises and acked a message that wrote one row of two.
+    chatNotificationClient.createNotification.mockRejectedValueOnce(
+      new Error("gRPC deadline exceeded")
+    );
+
+    await expect(
+      pushToUser({
+        userId: USER_ID,
+        category: "callEnabled",
+        type: "call.activity",
+        title: "Jane",
+        body: "Missed voice call",
+        skipPush: true,
+        data: { callId: "call-1", groupKey: "call:call-1" },
+      })
+    ).rejects.toThrow("gRPC deadline exceeded");
+  });
+
+  it("still swallows a failed inbox write when a push is also going out", async () => {
+    // The push is still deliverable — a lost row must not cost them that too.
+    chatNotificationClient.createNotification.mockRejectedValueOnce(
+      new Error("gRPC deadline exceeded")
+    );
+
+    await expect(
+      pushToUser({
+        userId: USER_ID,
+        category: "friendRequestEnabled",
+        type: "friend.requested",
+        title: "Jane",
+        body: "sent you a friend request",
+      })
+    ).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalled();
+  });
+
   it("category OFF still suppresses a call push that is NOT inbox-only", async () => {
     withSettings({ callEnabled: false });
 

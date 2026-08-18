@@ -337,7 +337,10 @@ function collapseSupersededVoipTokens(
  *   2. persist an inbox row via chat-service CreateNotification (best-effort),
  *   3. apply showPreview masking to the provider payload only,
  *   4. fan a push out to every (deduplicated) device token, pruning dead tokens.
- * Never throws — push delivery must not poison the consumer (which would DLQ).
+ * Never throws for a push-bearing send — push delivery must not poison the
+ * consumer. The ONE exception is an inbox-only projection (`skipPush`), where a
+ * failed inbox write means nothing was delivered at all: that error is
+ * rethrown so the caller can nack and let the queue redeliver it.
  */
 export async function pushToUser(input: PushInput): Promise<void> {
   if (NOTIFY_SUPPRESSED_TYPES.has(input.type)) {
@@ -510,6 +513,19 @@ export async function pushToUser(input: PushInput): Promise<void> {
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
       logger.warn(error);
+      // For an inbox-ONLY projection the row is not a side effect, it is the
+      // whole delivery — swallowing the failure loses that recipient's history
+      // permanently and silently. Callers wrap each recipient independently and
+      // nack for one bounded redelivery (the groupKey makes replay idempotent),
+      // but that net only works if the failure actually reaches them: with the
+      // error swallowed here, `Promise.allSettled` saw two fulfilled promises
+      // and acked a message that had written one row instead of two. Observed
+      // live — one participant's call history had the row, the other never did,
+      // while the DM's call card existed for both.
+      //
+      // Push-bearing sends keep the old behaviour: there the push is still
+      // deliverable, so a lost row must not also cost them the notification.
+      if (skipPush) throw error;
     }
   }
 
