@@ -658,6 +658,24 @@ export function createMessagingClient(): MessagingClient {
     }
   );
 
+  /**
+   * Every call transition is a NON-CANCELLABLE write against the canonical call
+   * row, exactly like `sendMessage` above — and the same 2s default breaker
+   * timeout produced the same failure here. `initiateCall` alone does two
+   * user-service gRPC gates, takes the caller lock, runs several Mongo reads and
+   * mints two LiveKit tokens; past 2s the breaker abandons the ack while
+   * chat-service goes on to create a RINGING row and ring the callee, so the
+   * caller is told "Something went wrong" for a call that is genuinely placed —
+   * and five such abandons open the circuit and fast-fail every call for
+   * `resetTimeout`. Give the transition room to finish and trip only when
+   * chat-service is actually dead.
+   */
+  const CALL_BREAKER_OPTS = {
+    timeout: 15000,
+    volumeThreshold: 20,
+    errorThresholdPercentage: 80,
+  };
+
   const initiateCallBreaker = makeBreaker(
     "messaging.initiateCall",
     (p: InitiateCallParams) =>
@@ -667,7 +685,8 @@ export function createMessagingClient(): MessagingClient {
         type: p.type ?? "AUDIO",
         privateRoomId: p.privateRoomId ?? "",
         groupId: p.groupId ?? "",
-      })
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const answerCallBreaker = makeBreaker(
@@ -677,7 +696,8 @@ export function createMessagingClient(): MessagingClient {
         callId: p.callId,
         calleeId: p.calleeId,
         legId: p.legId ?? "",
-      })
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const declineCallBreaker = makeBreaker(
@@ -686,22 +706,26 @@ export function createMessagingClient(): MessagingClient {
       call<unknown, CallStatusResult>("declineCall", {
         callId: p.callId,
         calleeId: p.calleeId,
-      })
+      }),
+    CALL_BREAKER_OPTS
   );
 
-  const endCallBreaker = makeBreaker("messaging.endCall", (p: EndCallParams) =>
-    call<unknown, EndCallResult>("endCall", {
-      callId: p.callId,
-      userId: p.userId,
-      legId: p.legId ?? "",
-      // Dropping this silently turned every ring the CALLER let run out into a
-      // CANCELLED call instead of a MISSED one — so `call.missed` never fired
-      // and the callee got no missed-call push on the path that produces almost
-      // all missed calls (the client's ring timeout beats the server sweep).
-      // The request object is untyped at the `call()` boundary, so nothing
-      // failed to compile when the field was left out.
-      reason: p.reason ?? "",
-    })
+  const endCallBreaker = makeBreaker(
+    "messaging.endCall",
+    (p: EndCallParams) =>
+      call<unknown, EndCallResult>("endCall", {
+        callId: p.callId,
+        userId: p.userId,
+        legId: p.legId ?? "",
+        // Dropping this silently turned every ring the CALLER let run out into a
+        // CANCELLED call instead of a MISSED one — so `call.missed` never fired
+        // and the callee got no missed-call push on the path that produces almost
+        // all missed calls (the client's ring timeout beats the server sweep).
+        // The request object is untyped at the `call()` boundary, so nothing
+        // failed to compile when the field was left out.
+        reason: p.reason ?? "",
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const getCallHistoryBreaker = makeBreaker(

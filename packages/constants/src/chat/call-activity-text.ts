@@ -29,7 +29,7 @@ export const CALL_CANCEL_GRACE_SEC = 5;
  * an absent value (legacy event, group row) is treated as a real missed call —
  * the pre-existing behaviour, so an old payload never silently loses its badge.
  */
-function cancelCountsAsMissed(ringDurationSec?: number | null): boolean {
+export function cancelCountsAsMissed(ringDurationSec?: number | null): boolean {
   if (ringDurationSec === undefined || ringDurationSec === null) return true;
   return Number(ringDurationSec) >= CALL_CANCEL_GRACE_SEC;
 }
@@ -37,10 +37,8 @@ function cancelCountsAsMissed(ringDurationSec?: number | null): boolean {
 type CallCopyBase =
   | "NOTIF_CALL_INCOMING"
   | "NOTIF_CALL_OUTGOING"
+  | "NOTIF_CALL_NO_ANSWER"
   | "NOTIF_CALL_MISSED"
-  | "NOTIF_CALL_DECLINED"
-  | "NOTIF_CALL_CANCELLED"
-  | "NOTIF_CALL_FAILED"
   | "NOTIF_CALL_ENDED"
   | "NOTIF_CALL_COMPLETED";
 
@@ -90,27 +88,19 @@ export function buildCallActivityText(params: {
         key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_INCOMING"),
         locale
       );
+    // EVERY call that never connected, whoever ended it. AiMess has no
+    // user-facing "cancelled" or "declined" call: the person who PLACED the
+    // call got no answer, and the person who was RUNG missed it. Which side
+    // hung up first is lifecycle bookkeeping — it is not what either of them
+    // experienced, so it must never reach the copy.
     case "MISSED":
-      return t(
-        key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_MISSED"),
-        locale
-      );
-    // The caller always reads their own hangup as a cancellation. The callee
-    // reads it as a missed call ONLY once the ring outlived the grace window —
-    // below it, nothing happened worth calling a missed call.
     case "CANCELLED":
+    case "DECLINED":
+    case "FAILED":
       return t(
-        key(
-          outgoing || !cancelCountsAsMissed(params.ringDurationSec)
-            ? "NOTIF_CALL_CANCELLED"
-            : "NOTIF_CALL_MISSED"
-        ),
+        key(outgoing ? "NOTIF_CALL_NO_ANSWER" : "NOTIF_CALL_MISSED"),
         locale
       );
-    case "DECLINED":
-      return t(key("NOTIF_CALL_DECLINED"), locale);
-    case "FAILED":
-      return t(key("NOTIF_CALL_FAILED"), locale);
     default: {
       const seconds = Math.max(0, Math.floor(Number(params.durationSec ?? 0)));
       // No duration recorded → say "Voice call", never a fabricated 00:00.

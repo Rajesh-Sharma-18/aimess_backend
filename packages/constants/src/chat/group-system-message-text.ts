@@ -366,13 +366,24 @@ export function buildGroupSystemFallbackText(
     // Group call rows are sender-less lifecycle rows, so the actor-based
     // wording above does not apply — they read exactly like their DM twin.
     case "CALL_STARTED":
-    case "CALL_ENDED":
+    case "CALL_ENDED": {
+      // `systemData.callerId` is written by CallChatMessageService, so whenever
+      // this is rendered for a known viewer the line can take their side
+      // instead of the neutral stored sentence.
+      const callerId = String(data.callerId ?? "").trim();
       return buildCallTimelineText({
         callType: data.callType as string,
         status: data.status as string,
         durationSec: data.durationSec as number,
+        direction:
+          viewer && callerId
+            ? viewer === callerId
+              ? "OUTGOING"
+              : "INCOMING"
+            : null,
         locale,
       });
+    }
 
     default:
       if (isActor) return t("SYS_GROUP_UPDATED_SELF", locale);
@@ -428,6 +439,16 @@ export function buildCallTimelineText(params: {
   callType?: string | null;
   status?: string | null;
   durationSec?: number | null;
+  /**
+   * Which end of the call the READER was on, when it is known.
+   *
+   * A call that never connected has no single honest sentence: the person who
+   * placed it got no answer, the person who was rung missed it. Pass this
+   * wherever the viewer is known and the line is rendered per reader. Omit it
+   * for the STORED text, which is written once and read by both sides — that
+   * falls back to the neutral "was not answered".
+   */
+  direction?: "INCOMING" | "OUTGOING" | null;
   locale?: SupportedLocale;
 }): string {
   const locale = params.locale ?? STORED_TEXT_LOCALE;
@@ -443,16 +464,22 @@ export function buildCallTimelineText(params: {
       return t("SYS_CALL_RINGING", locale, { label });
     case "ANSWERED":
       return t("SYS_CALL_ONGOING", locale, { label });
+    // One rule for every call that never connected, whoever ended it. AiMess
+    // has no user-facing "cancelled" or "declined" call — see
+    // `buildCallActivityText`, which resolves the same three outcomes the same
+    // way for the Notification Center. Without a direction this is the stored
+    // text both participants read, so it stays neutral rather than picking a
+    // side.
     case "DECLINED":
-      return t("SYS_CALL_DECLINED", locale, { label });
     case "CANCELLED":
-      return t("SYS_CALL_CANCELLED", locale, { label });
     case "FAILED":
-      return t("SYS_CALL_FAILED", locale, { label });
-    // Same wording as the 1:1 timeline row so a missed call reads identically
-    // in a DM and in a group.
-    case "MISSED":
+    case "MISSED": {
+      if (params.direction === "OUTGOING")
+        return t("SYS_CALL_NO_ANSWER", locale, { label });
+      if (params.direction === "INCOMING")
+        return t("SYS_CALL_MISSED_CALL", locale, { label });
       return t("SYS_CALL_MISSED", locale, { label });
+    }
     default:
       return t("SYS_CALL_ENDED", locale, {
         label,

@@ -105,7 +105,7 @@ describe("buildCallActivityText", () => {
   const voice = { callType: "AUDIO" as const };
   const video = { callType: "VIDEO" as const };
 
-  it("renders an unanswered ring as MISSED for the callee and OUTGOING for the caller", () => {
+  it("reads an unanswered ring as MISSED for the callee and NO ANSWER for the caller", () => {
     expect(
       buildCallActivityText({
         ...voice,
@@ -126,46 +126,41 @@ describe("buildCallActivityText", () => {
         status: "MISSED",
         direction: "OUTGOING",
       })
-    ).toBe("Outgoing voice call");
+    ).toBe("Voice call, no answer");
   });
 
-  it("renders a caller-abandoned ring as CANCELLED outgoing and MISSED incoming", () => {
-    expect(
-      buildCallActivityText({
-        ...voice,
-        status: "CANCELLED",
-        direction: "OUTGOING",
-      })
-    ).toBe("Cancelled voice call");
-    // Past the grace window the callee cannot tell a timeout from a caller
-    // hang-up — both are missed.
-    expect(
-      buildCallActivityText({
-        ...video,
-        status: "CANCELLED",
-        direction: "INCOMING",
-        ringDurationSec: CALL_CANCEL_GRACE_SEC,
-      })
-    ).toBe("Missed video call");
-    // No ring length (legacy event) keeps the pre-grace-window behaviour.
-    expect(
-      buildCallActivityText({
-        ...video,
-        status: "CANCELLED",
-        direction: "INCOMING",
-      })
-    ).toBe("Missed video call");
+  // AiMess has no user-facing "cancelled" or "declined" call: whoever ended an
+  // unanswered ring, the caller got no answer and the callee missed it. The
+  // ring length no longer changes the WORDS — it only decides whether the
+  // callee's row arrives badged (see isUnreadCallActivity below).
+  it("collapses every unanswered outcome onto the same caller/callee pair", () => {
+    for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
+      expect(
+        buildCallActivityText({ ...voice, status, direction: "OUTGOING" })
+      ).toBe("Voice call, no answer");
+      expect(
+        buildCallActivityText({ ...voice, status, direction: "INCOMING" })
+      ).toBe("Missed voice call");
+      expect(
+        buildCallActivityText({ ...video, status, direction: "OUTGOING" })
+      ).toBe("Video call, no answer");
+      expect(
+        buildCallActivityText({ ...video, status, direction: "INCOMING" })
+      ).toBe("Missed video call");
+    }
   });
 
-  it("reads a cancel inside the grace window as cancelled, not missed", () => {
-    expect(
-      buildCallActivityText({
-        ...voice,
-        status: "CANCELLED",
-        direction: "INCOMING",
-        ringDurationSec: CALL_CANCEL_GRACE_SEC - 1,
-      })
-    ).toBe("Cancelled voice call");
+  it("does not let the ring length change the wording of a cancel", () => {
+    for (const ringDurationSec of [0, CALL_CANCEL_GRACE_SEC - 1, 60]) {
+      expect(
+        buildCallActivityText({
+          ...voice,
+          status: "CANCELLED",
+          direction: "INCOMING",
+          ringDurationSec,
+        })
+      ).toBe("Missed voice call");
+    }
   });
 
   it("renders a live ring by direction", () => {
@@ -183,17 +178,6 @@ describe("buildCallActivityText", () => {
         direction: "OUTGOING",
       })
     ).toBe("Outgoing video call");
-  });
-
-  it("renders declined and failed the same for both sides — they describe the call", () => {
-    for (const direction of ["INCOMING", "OUTGOING"] as const) {
-      expect(
-        buildCallActivityText({ ...voice, status: "DECLINED", direction })
-      ).toBe("Declined voice call");
-      expect(
-        buildCallActivityText({ ...video, status: "FAILED", direction })
-      ).toBe("Failed video call");
-    }
   });
 
   it("shows the canonical duration for a completed call", () => {

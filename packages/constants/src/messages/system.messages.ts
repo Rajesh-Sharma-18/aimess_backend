@@ -180,6 +180,21 @@ export const SYSTEM_MESSAGES = {
     en: "{{label}} failed",
     th: "{{label}}ล้มเหลว",
   },
+  // Perspective pair for a call that never connected. AiMess has no
+  // user-facing "cancelled" or "declined" call: whoever hung up first, the
+  // person who PLACED the call got no answer and the person who was RUNG
+  // missed it. `SYS_CALL_MISSED` below stays as the neutral, direction-less
+  // fallback for the stored text, which is written once and read by both.
+  SYS_CALL_NO_ANSWER: {
+    vi: "{{label}} không trả lời",
+    en: "{{label}}, no answer",
+    th: "{{label}}ไม่มีการรับสาย",
+  },
+  SYS_CALL_MISSED_CALL: {
+    vi: "{{label}} bị bỏ lỡ",
+    en: "Missed {{label}}",
+    th: "{{label}}ที่ไม่ได้รับ",
+  },
   SYS_CALL_MISSED: {
     vi: "{{label}} không có người trả lời",
     en: "{{label}} was not answered",
