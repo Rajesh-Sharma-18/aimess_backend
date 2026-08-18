@@ -129,37 +129,81 @@ describe("buildCallActivityText", () => {
     ).toBe("Voice call, no answer");
   });
 
-  // AiMess has no user-facing "cancelled" or "declined" call: whoever ended an
-  // unanswered ring, the caller got no answer and the callee missed it. The
-  // ring length no longer changes the WORDS — it only decides whether the
-  // callee's row arrives badged (see isUnreadCallActivity below).
-  it("collapses every unanswered outcome onto the same caller/callee pair", () => {
-    for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
-      expect(
-        buildCallActivityText({ ...voice, status, direction: "OUTGOING" })
-      ).toBe("Voice call, no answer");
-      expect(
-        buildCallActivityText({ ...voice, status, direction: "INCOMING" })
-      ).toBe("Missed voice call");
-      expect(
-        buildCallActivityText({ ...video, status, direction: "OUTGOING" })
-      ).toBe("Video call, no answer");
-      expect(
-        buildCallActivityText({ ...video, status, direction: "INCOMING" })
-      ).toBe("Missed video call");
-    }
+  // The three ways a ring can end without connecting are DIFFERENT events and
+  // must never collapse onto one another — that collapse is exactly what made
+  // a declined and a cancelled call both read "no answer".
+  it("keeps timeout, cancel and decline as three distinct lines for the caller", () => {
+    const caller = { ...voice, direction: "OUTGOING" as const };
+    expect(buildCallActivityText({ ...caller, status: "MISSED" })).toBe(
+      "Voice call, no answer"
+    );
+    expect(
+      buildCallActivityText({
+        ...caller,
+        status: "CANCELLED",
+        ringDurationSec: 60,
+      })
+    ).toBe("Cancelled voice call");
+    expect(buildCallActivityText({ ...caller, status: "DECLINED" })).toBe(
+      "Declined voice call"
+    );
+    expect(buildCallActivityText({ ...caller, status: "FAILED" })).toBe(
+      "Failed voice call"
+    );
+    // …and the four lines really are four distinct strings.
+    const lines = new Set(
+      (["MISSED", "CANCELLED", "DECLINED", "FAILED"] as const).map((status) =>
+        buildCallActivityText({ ...caller, status, ringDurationSec: 60 })
+      )
+    );
+    expect(lines.size).toBe(4);
   });
 
-  it("does not let the ring length change the wording of a cancel", () => {
+  it("reads a decline as declined for BOTH sides — it describes the call", () => {
+    expect(
+      buildCallActivityText({
+        ...voice,
+        status: "DECLINED",
+        direction: "INCOMING",
+      })
+    ).toBe("Declined voice call");
+    expect(
+      buildCallActivityText({
+        ...video,
+        status: "DECLINED",
+        direction: "OUTGOING",
+      })
+    ).toBe("Declined video call");
+  });
+
+  // For the CALLEE a cancel and a timeout are the same experience, so the ring
+  // length is what separates "you missed this" from a misdial the caller caught.
+  it("lets the ring length decide how the callee reads a cancel", () => {
+    const callee = {
+      ...voice,
+      status: "CANCELLED",
+      direction: "INCOMING" as const,
+    };
+    expect(buildCallActivityText({ ...callee, ringDurationSec: 60 })).toBe(
+      "Missed voice call"
+    );
+    expect(
+      buildCallActivityText({
+        ...callee,
+        ringDurationSec: CALL_CANCEL_GRACE_SEC - 1,
+      })
+    ).toBe("Cancelled voice call");
+    // The CALLER always reads their own hangup as a cancellation, whatever the
+    // ring length.
     for (const ringDurationSec of [0, CALL_CANCEL_GRACE_SEC - 1, 60]) {
       expect(
         buildCallActivityText({
           ...voice,
           status: "CANCELLED",
-          direction: "INCOMING",
+          direction: "OUTGOING",
           ringDurationSec,
         })
-      ).toBe("Missed voice call");
+      ).toBe("Cancelled voice call");
     }
   });
 

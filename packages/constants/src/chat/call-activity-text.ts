@@ -39,6 +39,9 @@ type CallCopyBase =
   | "NOTIF_CALL_OUTGOING"
   | "NOTIF_CALL_NO_ANSWER"
   | "NOTIF_CALL_MISSED"
+  | "NOTIF_CALL_DECLINED"
+  | "NOTIF_CALL_CANCELLED"
+  | "NOTIF_CALL_FAILED"
   | "NOTIF_CALL_ENDED"
   | "NOTIF_CALL_COMPLETED";
 
@@ -51,12 +54,17 @@ type CallCopyBase =
  * one call reads consistently in the DM, in the conversation list and in the
  * Notification Center.
  *
- * Direction only changes the wording where the two ends genuinely experienced
+ * The four terminal states are NOT interchangeable — a ring that timed out, one
+ * the caller gave up on, and one the callee rejected are three different events,
+ * and the status is the only thing the row carries that says which.
+ *
+ * Direction changes the wording only where the two ends genuinely experienced
  * different things:
- *   - a call the callee never picked up is MISSED to them and OUTGOING to the
+ *   - a ring nobody picked up is MISSED to the callee and "no answer" to the
  *     caller (nothing was "missed" by the person who placed it),
  *   - a caller who hangs up mid-ring CANCELLED it, while for the callee that
- *     ring is indistinguishable from a missed call — so it reads as missed.
+ *     ring is indistinguishable from a missed one — so past the grace window it
+ *     reads as missed.
  * DECLINED / FAILED / ENDED describe the call, not a side, and read the same
  * for both.
  */
@@ -88,19 +96,38 @@ export function buildCallActivityText(params: {
         key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_INCOMING"),
         locale
       );
-    // EVERY call that never connected, whoever ended it. AiMess has no
-    // user-facing "cancelled" or "declined" call: the person who PLACED the
-    // call got no answer, and the person who was RUNG missed it. Which side
-    // hung up first is lifecycle bookkeeping — it is not what either of them
-    // experienced, so it must never reach the copy.
+    // Each terminal state reads as the thing that actually happened. These are
+    // NOT interchangeable: a ring that timed out, one the caller gave up on and
+    // one the callee rejected are three different events, and collapsing them
+    // loses the only information the row carries.
+    //
+    // Direction changes the wording only where the two ends genuinely
+    // experienced different things — nothing was "missed" by the person who
+    // placed the call, and nothing was "cancelled" by the person who was rung.
     case "MISSED":
-    case "CANCELLED":
-    case "DECLINED":
-    case "FAILED":
       return t(
         key(outgoing ? "NOTIF_CALL_NO_ANSWER" : "NOTIF_CALL_MISSED"),
         locale
       );
+    // The caller always reads their own hangup as a cancellation. For the
+    // callee a ring the caller abandoned is indistinguishable from a timeout,
+    // so past the grace window it reads as a missed call; inside it, nothing
+    // happened worth calling one.
+    case "CANCELLED":
+      return t(
+        key(
+          outgoing || !cancelCountsAsMissed(params.ringDurationSec)
+            ? "NOTIF_CALL_CANCELLED"
+            : "NOTIF_CALL_MISSED"
+        ),
+        locale
+      );
+    // DECLINED and FAILED describe the CALL, not a side: the callee rejecting
+    // it is the same event from both seats, so both read it the same way.
+    case "DECLINED":
+      return t(key("NOTIF_CALL_DECLINED"), locale);
+    case "FAILED":
+      return t(key("NOTIF_CALL_FAILED"), locale);
     default: {
       const seconds = Math.max(0, Math.floor(Number(params.durationSec ?? 0)));
       // No duration recorded → say "Voice call", never a fabricated 00:00.
