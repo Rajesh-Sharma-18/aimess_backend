@@ -6,6 +6,21 @@ import {
 import type { PrismaClient, Call } from "../generated/prisma/index.js";
 import { CallStatus } from "../types/enums.js";
 
+/**
+ * "This call never connected", as a MongoDB filter.
+ *
+ * `answeredAt: null` alone is WRONG here and silently matches nothing. A call
+ * that is never answered is written without the field at all, and Prisma's
+ * MongoDB connector treats an ABSENT field as distinct from an explicit JSON
+ * null — `{ answeredAt: null }` only matches the latter. The read path hides
+ * this (a missing field hydrates as `null` on the returned object), so the bug
+ * shows up only as an inexplicably empty result set: on live data
+ * `answeredAt: null` matched 0 rows where `isSet: false` matched 38.
+ */
+const NEVER_ANSWERED = {
+  OR: [{ answeredAt: null }, { answeredAt: { isSet: false } }],
+} as const;
+
 export class CallRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -176,9 +191,11 @@ export class CallRepository {
           ? asCallee
           : { OR: [asCaller, asCallee] };
 
+    // `AND`-wrapped, not spread: the `all` participant clause already owns the
+    // top-level `OR`, and a second one would overwrite it.
     const outcome = {
       status: { in: [...TERMINAL_CALL_STATUSES] },
-      ...(filter === "missed" ? { answeredAt: null } : {}),
+      ...(filter === "missed" ? { AND: [NEVER_ANSWERED] } : {}),
     };
 
     return this.prisma.call.findMany({

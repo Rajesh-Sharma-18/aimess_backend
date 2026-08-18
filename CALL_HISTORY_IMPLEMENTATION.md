@@ -357,7 +357,7 @@ own.
 
 ## Test Matrix
 
-Backend — `apps/chat-service/tests/calls/call-history.service.test.ts`, **18 tests, all passing**:
+Backend — `call-history.service.test.ts` + `call-history.repository.test.ts`, **24 tests, all passing** (full `tests/calls` suite: 158/158):
 
 | Area         | Covered                                                                                                                                                   |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -369,11 +369,38 @@ Backend — `apps/chat-service/tests/calls/call-history.service.test.ts`, **18 t
 | attemptCount | correct; latest/oldest call ids; `lastCallAt > firstCallAt`                                                                                               |
 | Pagination   | group never split across a boundary (3 pages verified); empty history; malformed cursor rejected                                                          |
 | Resilience   | identity-lookup outage still returns rows                                                                                                                 |
+| Query shape  | unanswered predicate matches an ABSENT field, not just JSON null; participant OR survives; group/live rows excluded; cursor is an exclusive upper bound   |
 
 Frontend — verified by `tsc --noEmit` + ESLint (both clean). Not covered by
 automated tests: the repo has no FE test harness, so tab selection, icon/colour
 rendering, responsive width, dark/light mode and the callback click path were not
 given automated coverage. See **Remaining Issues**.
+
+### Live-data probe
+
+`apps/chat-service/scripts/probe-call-history.ts` runs the real service against the
+real database (identity stubbed) and prints raw rows, all four tabs, and a
+`limit=1` vs `limit=50` paging comparison. Run it after any change to the grouping
+or the query:
+
+```bash
+pnpm --filter @aimess/chat-service exec tsx scripts/probe-call-history.ts [userId]
+```
+
+Verified on live data: 50 groups, 0 duplicates, and `limit=1` paging reproduces
+the `limit=50` list exactly — groups are neither split nor repeated across pages.
+
+### The bug this probe caught
+
+The Missed tab returned **zero rows** on real data while Incoming plainly showed
+missed calls. The query used `answeredAt: null`, but an unanswered call never
+writes the field at all, and Prisma's MongoDB connector treats an **absent** field
+as distinct from an explicit JSON null. The read path hides this — a missing field
+hydrates as `null` on the returned object — so the service-level resolver was
+correct while the DB filter matched nothing. On live data `answeredAt: null`
+matched 0 rows where `isSet: false` matched 38. Fixed with the `NEVER_ANSWERED`
+clause in `call.repository.ts`, pinned by `call-history.repository.test.ts`, which
+asserts the WHERE shape — no in-memory stub can reproduce this failure mode.
 
 ## Regression Testing
 
@@ -397,9 +424,12 @@ See the two tables under **Backend Changes** / **Frontend Changes**.
 1. **No frontend tests.** The website repo has no test runner configured;
    everything FE-side is covered only by types and lint. Spec §37's checks were
    not automated.
-2. **Not run against a live server.** No dev server or database was started during
-   this work, so the view has not been exercised end-to-end — no screenshots, and
-   dark/light and responsive rendering were not visually verified.
+2. **The web UI has not been exercised in a browser.** The backend is verified
+   against the live database (see the probe above), and `/calls` was confirmed to
+   compile and redirect through `PrivateGuard` (307, vs 404 for an unknown
+   route). But rendering the list while signed in — tab clicks, arrows, colours,
+   the call-back button, dark/light, responsive width — still needs a logged-in
+   session.
 3. **Scan-budget ceiling.** A single uninterrupted run longer than ~3000 calls is
    emitted mid-flight and may split across a page. Marked with a `ponytail:`
    comment in `call-history.service.ts`.
