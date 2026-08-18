@@ -1,3 +1,8 @@
+import {
+  TERMINAL_CALL_STATUSES,
+  type CallHistoryFilter,
+} from "@aimess/constants";
+
 import type { PrismaClient, Call } from "../generated/prisma/index.js";
 import { CallStatus } from "../types/enums.js";
 
@@ -129,6 +134,62 @@ export class CallRepository {
       },
       orderBy: { initiatedAt: "desc" },
       take: limit,
+    });
+  }
+
+  /**
+   * One page of SETTLED 1:1 call rows for the Call History list, newest first.
+   *
+   * Scope, and why each exclusion is here rather than in the service:
+   *  - `groupId: null` — group calls have no single peer to key a history row
+   *    on, and they are already excluded from every other call-history surface
+   *    (a group call is never projected into the Notification Center either).
+   *    The raw `GET /api/chat/calls` feed still returns them, unchanged.
+   *  - terminal statuses only — a RINGING / IN_PROGRESS row has no outcome yet,
+   *    and the list has no way to transition a row it already rendered.
+   *
+   * `missed` is expressed as "rung me and never connected" — `answeredAt: null`
+   * on an inbound settled row. That is ONE predicate covering all four ways a
+   * call fails to connect (timed out, caller hung up first, declined, failed),
+   * which is exactly what `resolveCallResult` collapses them to. Enumerating the
+   * statuses instead would be a second copy of that rule, free to drift from it.
+   *
+   * Served by the existing `[callerId, initiatedAt desc]` / `[calleeId,
+   * initiatedAt desc]` indexes — the participant equality picks the index and
+   * `initiatedAt` gives both the cursor bound and the sort, so no new index is
+   * required for these predicates.
+   */
+  async findHistoryPage(params: {
+    userId: string;
+    filter: CallHistoryFilter;
+    before?: Date | null;
+    take: number;
+  }): Promise<Call[]> {
+    const { userId, filter } = params;
+    const asCaller = { callerId: userId };
+    const asCallee = { calleeId: userId };
+
+    const participant =
+      filter === "outgoing"
+        ? asCaller
+        : filter === "incoming" || filter === "missed"
+          ? asCallee
+          : { OR: [asCaller, asCallee] };
+
+    const outcome = {
+      status: { in: [...TERMINAL_CALL_STATUSES] },
+      ...(filter === "missed" ? { answeredAt: null } : {}),
+    };
+
+    return this.prisma.call.findMany({
+      where: {
+        groupId: null,
+        ...participant,
+        ...outcome,
+        ...(params.before ? { initiatedAt: { lt: params.before } } : {}),
+      },
+      orderBy: { initiatedAt: "desc" },
+      take: params.take,
     });
   }
 

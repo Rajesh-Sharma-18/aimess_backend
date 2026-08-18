@@ -11188,6 +11188,95 @@ export const openApiSchemas = {
     required: ["calls", "nextCursor", "hasMore"],
   },
 
+  ChatCallHistoryContact: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: {
+        type: "string",
+        description:
+          "Already resolved — a deleted peer reads as the shared Deleted Account literal.",
+      },
+      avatarUrl: {
+        type: "string",
+        description: 'Presigned URL; "" when none.',
+      },
+      isDeleted: { type: "boolean" },
+    },
+    required: ["id", "name", "avatarUrl", "isDeleted"],
+  },
+
+  ChatCallHistoryItem: {
+    type: "object",
+    description:
+      "One row of the Calls list: a run of consecutive identical call attempts.",
+    properties: {
+      id: { type: "string", description: "Stable list key (== latestCallId)." },
+      latestCallId: {
+        type: "string",
+        description:
+          "The newest call in the run. Call back and call-details use THIS id — the row's type and outcome describe this call.",
+      },
+      oldestCallId: { type: "string" },
+      contact: { $ref: "#/components/schemas/ChatCallHistoryContact" },
+      direction: { type: "string", enum: ["INCOMING", "OUTGOING"] },
+      result: {
+        type: "string",
+        enum: ["ANSWERED", "MISSED", "NO_ANSWER"],
+        description:
+          "Viewer-relative outcome. Every call that never connected collapses to MISSED (the side that was rung) or NO_ANSWER (the side that placed it) — which end hung up first is lifecycle bookkeeping and is not exposed here. Read `callStatus` for the canonical lifecycle state.",
+      },
+      callStatus: {
+        type: "string",
+        enum: ["ENDED", "MISSED", "DECLINED", "CANCELLED", "FAILED"],
+        description:
+          "Canonical presentation status (CallTimelineStatus), same value the DM timeline row and the Notification Center line carry.",
+      },
+      callType: { type: "string", enum: ["AUDIO", "VIDEO"] },
+      attemptCount: {
+        type: "integer",
+        description:
+          "Calls collapsed into this row. Render a count only when > 1.",
+      },
+      lastCallAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms of the NEWEST call — the timestamp to display.",
+      },
+      firstCallAt: { type: "integer", format: "int64" },
+      durationSec: { type: "integer" },
+      roomId: { type: "string", nullable: true },
+    },
+    required: [
+      "id",
+      "latestCallId",
+      "oldestCallId",
+      "contact",
+      "direction",
+      "result",
+      "callStatus",
+      "callType",
+      "attemptCount",
+      "lastCallAt",
+      "firstCallAt",
+      "durationSec",
+      "roomId",
+    ],
+  },
+
+  ChatCallHistoryList: {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCallHistoryItem" },
+      },
+      nextCursor: { type: "string", format: "date-time", nullable: true },
+      hasMore: { type: "boolean" },
+    },
+    required: ["items", "nextCursor", "hasMore"],
+  },
+
   // --- Message reactions ---
   ChatReactionUser: {
     type: "object",

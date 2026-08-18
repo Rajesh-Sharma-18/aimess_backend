@@ -1033,7 +1033,7 @@ const groupAutoDelete = {
     description:
       "Sets the policy for the whole group. Every member's messages follow it regardless of who sent them, and a message expires whether or not every member has read it — an offline or never-opening member does not hold it back.\n\n" +
       "**Permissions:** `ADMIN` and `MODERATOR` only. A plain member gets `403 CHAT_INSUFFICIENT_PERMISSIONS`; a non-member gets `404`.\n\n" +
-      "**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean \"the first member to open the chat deletes it for everyone who hasn't\" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n" +
+      '**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean "the first member to open the chat deletes it for everyone who hasn\'t" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n' +
       "Restamp, no-op, turn-off and timer semantics are identical to the private endpoint.\n\n" +
       "**Errors**\n" +
       "- `CHAT_AUTO_DELETE_MODE_UNSUPPORTED` — `AFTER_VIEWING` in a group;\n" +
@@ -3864,6 +3864,48 @@ const callHistory = {
   },
 };
 
+const callHistoryGrouped = {
+  get: {
+    tags: ["Chat — Calls"],
+    operationId: "getGroupedCallHistory",
+    summary: "Get grouped call history (Calls list)",
+    description:
+      "WhatsApp-style Calls list: consecutive calls that share the same peer, " +
+      "direction, call type and outcome collapse into ONE row carrying " +
+      "`attemptCount`. Only genuinely adjacent calls group — a call from someone " +
+      "else in between starts a new row. 1:1 calls only, settled outcomes only " +
+      "(a live RINGING/IN_PROGRESS call has no outcome to show yet). " +
+      "Use `latestCallId` for call-back and for opening the call's details. " +
+      "The `filter` tab is applied server-side so paging stays correct; a group " +
+      "is never split across a page boundary.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      cursorParam(
+        "Opaque cursor — pass back `nextCursor` verbatim (ISO `initiatedAt` of the last row of the last group returned)."
+      ),
+      limitParam(20, 50),
+      {
+        name: "filter",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "string" as const,
+          enum: ["all", "incoming", "outgoing", "missed"],
+          default: "all",
+        },
+        description:
+          "Tab. `incoming`/`outgoing` are resolved from the call record's participants against the caller. " +
+          "`missed` means genuinely missed BY YOU: an inbound ring that timed out, or one the caller " +
+          "abandoned after the grace window. Outgoing no-answers, declines and short cancels are excluded.",
+      },
+    ],
+    responses: {
+      ...successResponse("Grouped call history", "ChatCallHistoryList"),
+      "401": unauthorized,
+    },
+  },
+};
+
 const callById = {
   get: {
     tags: ["Chat — Calls"],
@@ -4281,5 +4323,6 @@ export const chatPaths = {
 
   // Calls
   "/chat/calls": callHistory,
+  "/chat/calls/history": callHistoryGrouped,
   "/chat/calls/{callId}": callById,
 };
