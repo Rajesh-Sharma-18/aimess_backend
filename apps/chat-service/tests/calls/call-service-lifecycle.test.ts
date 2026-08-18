@@ -380,6 +380,66 @@ describe("CallService — call leg ownership", () => {
     expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
   });
 
+  /**
+   * Answering IS the answer. `answeredAt` used to be stamped only by LiveKit's
+   * `participant_joined` webhook, which made an inbound webhook load-bearing:
+   * when it did not arrive, every terminal path read the null and settled a
+   * call the two of them had held as an abandoned ring — "No answer" for the
+   * caller, "Missed" for the callee.
+   */
+  it("stamps answeredAt in the same transition that answers the call", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.redis.set.mockResolvedValue(null);
+    stubs.redis.get.mockResolvedValue("legA");
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "t" });
+
+    const result = await service.answerCall({
+      callId: "c1",
+      calleeId: "u2",
+      legId: "legA",
+    });
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "c1",
+      "RINGING",
+      expect.objectContaining({
+        status: "IN_PROGRESS",
+        answeredAt: expect.any(Date),
+      })
+    );
+    expect(result.answeredAt).toBeInstanceOf(Date);
+  });
+
+  it("an answered call then ended is COMPLETED with a real duration", async () => {
+    const { service, stubs } = buildService();
+    const answeredAt = new Date(Date.now() - 4_000);
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...ringingCall,
+      status: "IN_PROGRESS",
+      answeredAt,
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    const result = await service.endCall({
+      callId: "c1",
+      userId: "u2",
+      legId: "legA",
+    });
+
+    // duration = endedAt - answeredAt, not zero.
+    expect(result.durationSec).toBeGreaterThanOrEqual(3);
+    // ENDED — never the cancel path, so neither side reads "no answer"/"missed".
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "c1", outcome: "ENDED" })
+    );
+    const events = stubs.redis.publish.mock.calls.map(
+      ([, payload]) => JSON.parse(String(payload)).event
+    );
+    expect(events).toContain("call:ended");
+    expect(events).not.toContain("call:cancelled");
+  });
+
   it("the SAME leg re-answering still wins (retry / socket reconnect)", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);

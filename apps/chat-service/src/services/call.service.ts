@@ -861,19 +861,30 @@ export class CallService {
     );
     if (alreadyBusy) throw new ConflictError("CALL_USER_BUSY");
 
-    // `answeredAt` is deliberately NOT set here. It is stamped only when the
-    // callee's LiveKit `participant_joined` webhook arrives (see
-    // `markMediaJoined`), so the value always means "media was actually up".
-    // If a callee taps Accept and then End before LiveKit joins, `answeredAt`
-    // stays null and the terminal paths (`endCall`, `declineCall`,
-    // `reconcileFromLiveKitRoomFinished`) treat the call as cancelled with
-    // zero duration — matching the user's intent, not a false "answered call".
+    // `answeredAt` is stamped HERE, in the same atomic transition that answers
+    // the call — the callee picking up IS the answer, and that is the moment
+    // every terminal path measures a real call from.
+    //
+    // It used to be stamped only by LiveKit's `participant_joined` webhook, so
+    // that the value could mean "media was provably up". That made an inbound
+    // webhook load-bearing for correctness: when it did not arrive, `answeredAt`
+    // stayed null on calls the two of them had genuinely held, and the terminal
+    // paths — which all read `answeredAt` to tell an answered call from an
+    // abandoned ring — settled them as cancelled rings. The caller's history
+    // then read "no answer" and the callee's "Missed" for a call they had just
+    // been talking on.
+    //
+    // The webhook still refines this: `markMediaJoined` stamps only when the
+    // field is null, so it remains the media-up signal for any path that
+    // answers without going through here. What it no longer does is decide
+    // whether the call happened at all.
     const transitionedAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
       CallStatus.RINGING,
       {
         status: CallStatus.IN_PROGRESS,
+        answeredAt: transitionedAt,
       }
     );
     if (!won) {
@@ -888,7 +899,7 @@ export class CallService {
     const updated: Call = {
       ...call,
       status: CallStatus.IN_PROGRESS,
-      answeredAt: null,
+      answeredAt: transitionedAt,
       updatedAt: transitionedAt,
     };
 
