@@ -42,13 +42,17 @@ export class CallController {
    * call-state path to keep in sync, only a second way in.
    */
   answerCall = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    // `sessionId` is the acting device, forwarded so the "handled elsewhere" /
+    // "ring dismissed" backstop push skips it. This is the entry point that
+    // needs it most: a lock-screen action taken with no socket at all.
+    const { userId, sessionId } = req.auth;
     const callId = req.params.callId as string;
     const { legId } = req.body as { legId?: string };
     const call = await this.callService.answerCall({
       callId,
       calleeId: userId,
       legId,
+      sessionId,
     });
     // Same shape the `call:answer` ack returns, so the client parses one thing.
     res.status(HTTP_STATUS.OK).json(
@@ -62,11 +66,12 @@ export class CallController {
   });
 
   declineCall = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const callId = req.params.callId as string;
     const call = await this.callService.declineCall({
       callId,
       calleeId: userId,
+      sessionId,
     });
     res
       .status(HTTP_STATUS.OK)
@@ -74,10 +79,15 @@ export class CallController {
   });
 
   endCall = asyncHandler(async (req: Request, res: Response) => {
-    const { userId } = req.auth;
+    const { userId, sessionId } = req.auth;
     const callId = req.params.callId as string;
     const { legId } = req.body as { legId?: string };
-    const call = await this.callService.endCall({ callId, userId, legId });
+    const call = await this.callService.endCall({
+      callId,
+      userId,
+      legId,
+      sessionId,
+    });
     res.status(HTTP_STATUS.OK).json(
       new ApiResponse({
         callId: call.callId,

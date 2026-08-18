@@ -542,6 +542,14 @@ message AnswerCallRequest {
   // one leg per callee wins and the rest get ALREADY_ANSWERED — and only the
   // winning leg may later end the call. Empty falls back to session granularity.
   string leg_id    = 3;
+  // The auth session that made this request, so the "stop ringing" BACKSTOP PUSH
+  // can skip the device that already acted. `leg_id` cannot do this job: it is a
+  // per-page-load id the client mints, while device tokens are registered
+  // against a session — `session_id` is the only value present on both sides.
+  //
+  // This is the push-channel twin of the socket path's `handledByLegId`
+  // exclusion. Empty = exclude nothing (the previous behaviour).
+  string session_id = 4;
 }
 message AnswerCallResponse {
   string             call_id = 1;
@@ -551,6 +559,9 @@ message AnswerCallResponse {
 message DeclineCallRequest {
   string call_id   = 1;
   string callee_id = 2;
+  // See AnswerCallRequest.session_id — the device that declined must not be
+  // woken by the dismissal push for its own decline.
+  string session_id = 3;
 }
 message DeclineCallResponse {
   string call_id = 1;
@@ -566,6 +577,8 @@ message EndCallRequest {
   // RINGING call ended by the caller before it honours it. Empty = a
   // deliberate hangup, the historical behaviour.
   string reason  = 4;
+  // See AnswerCallRequest.session_id.
+  string session_id = 5;
 }
 message EndCallResponse {
   string call_id      = 1;

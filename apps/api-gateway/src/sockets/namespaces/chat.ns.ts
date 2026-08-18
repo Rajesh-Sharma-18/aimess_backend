@@ -1947,6 +1947,10 @@ export function registerChatNamespace(
             callId: r.data.callId,
             calleeId: userId,
             legId: socket.data.callLegId,
+            // Excludes this device from the backstop push only. `legId` already
+            // excludes it on the socket fan-out; the push queue cannot carry a
+            // leg, and device tokens are keyed by session anyway.
+            sessionId,
           })
           .then((result) => {
             // Callee joins `call:<callId>` on answer — mirrors the caller's
@@ -1985,7 +1989,12 @@ export function registerChatNamespace(
           `/chat call:decline userId=${userId} callId=${r.data.callId} socket=${socket.id}`
         );
         messagingClient
-          .declineCall({ callId: r.data.callId, calleeId: userId })
+          .declineCall({
+            callId: r.data.callId,
+            calleeId: userId,
+            // See the answerCall call above — push-exclusion for this device.
+            sessionId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_DECLINED", locale, result)
           )
@@ -2011,6 +2020,8 @@ export function registerChatNamespace(
             userId,
             legId: r.data.legId ?? socket.data.callLegId,
             reason: r.data.reason,
+            // See the answerCall call above — push-exclusion for this device.
+            sessionId,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)

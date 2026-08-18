@@ -20,6 +20,13 @@ export interface DeviceTokenRow {
   deviceId: string | null;
   /** auth-service session that registered this row; null for legacy rows. */
   sessionId: string | null;
+  /**
+   * Bumped on every re-registration and (throttled) on every accepted push, so
+   * among several rows for the SAME device the largest value is the current
+   * one. That ordering is what lets the send path collapse superseded PushKit
+   * tokens instead of ringing the phone once per stale row.
+   */
+  lastSeenAt: Date;
 }
 
 /**
@@ -93,6 +100,7 @@ export const deviceTokenRepository = {
         platform: true,
         deviceId: true,
         sessionId: true,
+        lastSeenAt: true,
       },
     });
   },

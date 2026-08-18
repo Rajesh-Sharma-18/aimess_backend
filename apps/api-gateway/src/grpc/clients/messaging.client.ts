@@ -292,10 +292,18 @@ export interface AnswerCallParams {
   calleeId: string;
   /** The leg racing to answer. Only one leg per callee wins; the rest get CONFLICT. */
   legId?: string;
+  /**
+   * Auth session of the acting device, so the backstop "stop ringing" PUSH
+   * skips it. `legId` cannot serve here — it never crosses the push queue and
+   * device tokens are keyed by session, not by leg.
+   */
+  sessionId?: string;
 }
 export interface DeclineCallParams {
   callId: string;
   calleeId: string;
+  /** See AnswerCallParams.sessionId. */
+  sessionId?: string;
 }
 export interface EndCallParams {
   callId: string;
@@ -304,6 +312,8 @@ export interface EndCallParams {
   legId?: string;
   /** "NO_ANSWER" when the caller's ring window elapsed (see EndCallRequest). */
   reason?: "NO_ANSWER";
+  /** See AnswerCallParams.sessionId. */
+  sessionId?: string;
 }
 export interface EndCallResult {
   callId: string;
@@ -681,6 +691,7 @@ export function createMessagingClient(): MessagingClient {
         callId: p.callId,
         calleeId: p.calleeId,
         legId: p.legId ?? "",
+        sessionId: p.sessionId ?? "",
       })
   );
 
@@ -690,6 +701,7 @@ export function createMessagingClient(): MessagingClient {
       call<unknown, CallStatusResult>("declineCall", {
         callId: p.callId,
         calleeId: p.calleeId,
+        sessionId: p.sessionId ?? "",
       })
   );
 
@@ -698,6 +710,15 @@ export function createMessagingClient(): MessagingClient {
       callId: p.callId,
       userId: p.userId,
       legId: p.legId ?? "",
+      // Was silently dropped here while every other layer carried it: the
+      // socket schema accepts it, the proto declares it, chat-service reads it
+      // — but it never crossed this hop, so `endCall` could not take its
+      // NO_ANSWER branch. Every ring the caller let run out was therefore
+      // recorded as CANCELLED instead of MISSED and took the cancel fan-out
+      // instead of `fanOutUnansweredRing`, so the callee got no missed-call
+      // notification and both sides' history read "cancelled".
+      reason: p.reason ?? "",
+      sessionId: p.sessionId ?? "",
     })
   );
 

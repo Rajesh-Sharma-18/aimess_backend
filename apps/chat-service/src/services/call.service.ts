@@ -768,6 +768,13 @@ export class CallService {
     callId: string;
     calleeId: string;
     legId?: string;
+    /**
+     * Auth session of the device that answered. Push-exclusion only — it is the
+     * device most likely to be mid-call, and "answered elsewhere" is the one
+     * message it must never act on. `legId` already excludes it on the SOCKET
+     * path (`handledByLegId`); this is the same guarantee for the push.
+     */
+    sessionId?: string;
   }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -820,7 +827,7 @@ export class CallService {
   }
 
   private async answerCallClaimed(
-    params: { callId: string; calleeId: string },
+    params: { callId: string; calleeId: string; sessionId?: string },
     call: Call,
     legId: string | undefined
   ): Promise<Call & { livekit: LiveKitCredentials }> {
@@ -921,6 +928,12 @@ export class CallService {
       callId: params.callId,
       reason: "answered_elsewhere",
       callerId: call.callerId,
+      // The push CAN now carry an exclusion — not the leg (which never crosses
+      // the queue), but the session behind it. The answering device is dropped
+      // at fan-out, so the comment above's "no leg exclusion" hazard no longer
+      // depends on the client ignoring its own event. Sibling devices, which
+      // are the whole point of this push, still receive it.
+      excludeSessionId: params.sessionId,
     });
 
     // "Ringing…" → "Ongoing" on the SAME card. The final duration replaces this
@@ -940,6 +953,12 @@ export class CallService {
   async declineCall(params: {
     callId: string;
     calleeId: string;
+    /**
+     * Auth session of the device that declined. Only ever used to EXCLUDE that
+     * device from the dismissal push — never for authorization, so a client
+     * that omits it loses nothing but the exclusion.
+     */
+    sessionId?: string;
   }): Promise<Call> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -980,6 +999,7 @@ export class CallService {
       return this.endCall({
         callId: params.callId,
         userId: params.calleeId,
+        sessionId: params.sessionId,
       });
     }
 
@@ -1023,6 +1043,20 @@ export class CallService {
         callId: params.callId,
         reason: "declined",
         callerId: call.callerId,
+        excludeSessionId: params.sessionId,
+      });
+
+      const grpCallerSnap = await this.getUserSnapshot(call.callerId).catch(
+        () => ({ displayName: "", avatarUrl: "" })
+      );
+      publishCallMissedSafe({
+        callId: call.callId,
+        calleeId: params.calleeId,
+        callerId: call.callerId,
+        callerName: grpCallerSnap.displayName,
+        callerAvatar: grpCallerSnap.avatarUrl,
+        callType: call.type,
+        missedAt: Date.now(),
       });
 
       if (updated.calleeIds.length > 0) return updated;
@@ -1114,6 +1148,7 @@ export class CallService {
       callId: params.callId,
       reason: "declined",
       callerId: call.callerId,
+      excludeSessionId: params.sessionId,
     });
 
     await this.postCallChatMessageSafe(
@@ -1123,6 +1158,20 @@ export class CallService {
       0,
       params.calleeId
     );
+
+    const callerSnap = await this.getUserSnapshot(call.callerId).catch(() => ({
+      displayName: "",
+      avatarUrl: "",
+    }));
+    publishCallMissedSafe({
+      callId: call.callId,
+      calleeId: params.calleeId,
+      callerId: call.callerId,
+      callerName: callerSnap.displayName,
+      callerAvatar: callerSnap.avatarUrl,
+      callType: call.type,
+      missedAt: endedAt.getTime(),
+    });
 
     return updated;
   }
@@ -1166,6 +1215,13 @@ export class CallService {
      * client cannot fabricate one.
      */
     reason?: "NO_ANSWER";
+    /**
+     * Auth session of the device that hung up. Push-exclusion only — see
+     * {@link declineCall}. Note this ends the call for the OTHER party too, so
+     * it only suppresses the dismissal aimed at the hanging-up user's own other
+     * devices when they are the callee; the peer is unaffected.
+     */
+    sessionId?: string;
   }): Promise<Call & { durationSec: number }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -1296,6 +1352,11 @@ export class CallService {
           callId: params.callId,
           reason: "ended",
           callerId: call.callerId,
+          // Passed unconditionally: a session belongs to exactly one user and
+          // this fan-out is scoped to `calleeId`'s own tokens, so it can only
+          // ever match when the callee IS the device that ended the call (the
+          // accept-then-end race). A caller-driven hangup matches nothing.
+          excludeSessionId: params.sessionId,
         });
       }
 

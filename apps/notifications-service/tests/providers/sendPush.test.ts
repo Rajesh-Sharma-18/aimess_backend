@@ -66,5 +66,61 @@ describe("sendPush — platform collapse/grouping headers", () => {
     // CALL_CANCELLED path that must replace/dismiss a still-queued ring.
     expect(arg.android.collapseKey).toBe("call:call123");
     expect(arg.webpush.headers.Topic).toBe("call:call123");
+    expect(arg.apns.headers["apns-collapse-id"]).toBe("call:call123");
+  });
+
+  // apns-collapse-id was missing entirely, which made iOS the one platform
+  // where a queued CALL_INCOMING was never replaced by its own CALL_CANCELLED
+  // — the ring came back for a call that had already been declined.
+  it("forwards collapseKey to apns-collapse-id so iOS replaces a queued notification instead of stacking", async () => {
+    await sendPush({
+      token: "tok1",
+      title: "Alice",
+      body: "hi",
+      collapseKey: "call:call123",
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.apns.headers["apns-collapse-id"]).toBe("call:call123");
+  });
+
+  it("omits apns-collapse-id when no collapseKey is given", async () => {
+    await sendPush({ token: "tok1", title: "Alice", body: "hi" });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.apns.headers["apns-collapse-id"]).toBeUndefined();
+  });
+
+  // APNs rejects the whole request with BadCollapseId past 64 bytes, which
+  // would drop the notification. Degrade to stacking rather than losing it.
+  it("omits apns-collapse-id when the key exceeds the 64-byte APNs limit, keeping the other platforms", async () => {
+    const oversized = `call:${"x".repeat(60)}`;
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(64);
+
+    await sendPush({
+      token: "tok1",
+      title: "Alice",
+      body: "hi",
+      collapseKey: oversized,
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.apns.headers["apns-collapse-id"]).toBeUndefined();
+    expect(arg.android.collapseKey).toBe(oversized);
+    expect(arg.webpush.headers.Topic).toBe(oversized);
+  });
+
+  it("keeps a key exactly at the 64-byte boundary", async () => {
+    const exact = "y".repeat(64);
+
+    await sendPush({
+      token: "tok1",
+      title: "Alice",
+      body: "hi",
+      collapseKey: exact,
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.apns.headers["apns-collapse-id"]).toBe(exact);
   });
 });

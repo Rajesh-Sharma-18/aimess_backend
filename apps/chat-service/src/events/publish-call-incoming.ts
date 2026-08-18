@@ -78,6 +78,21 @@ export interface CallCancelPayload {
   /** Included so the device can resolve caller identity from its local cache. */
   callerId?: string;
   callerName?: string;
+  /**
+   * Auth session of the device that CAUSED this dismissal — skipped when the
+   * push fans out. It already knows the call is over; the push only tells it
+   * something it did itself, and on iOS a high-priority data push WAKES that
+   * device, which is exactly the moment a stale ring gets resurfaced.
+   *
+   * The socket twin of this event (`call:handled`) already excludes the acting
+   * leg via `handledByLegId`; the push channel had no equivalent. Session, not
+   * leg: device tokens are registered against a session, so it is the only id
+   * present on both the request and the token row.
+   *
+   * Absent = exclude nothing (server-driven dismissals — the missed sweep,
+   * relationship teardown — have no acting device).
+   */
+  excludeSessionId?: string;
 }
 
 /**

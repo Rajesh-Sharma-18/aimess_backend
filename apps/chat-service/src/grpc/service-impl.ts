@@ -1569,11 +1569,13 @@ export function createMessagingImpl(
             callId?: string;
             calleeId?: string;
             legId?: string;
+            sessionId?: string;
           };
           const result = await deps.callService.answerCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
             legId: req.legId || undefined,
+            sessionId: req.sessionId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1596,10 +1598,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; calleeId?: string };
+          const req = call.request as {
+            callId?: string;
+            calleeId?: string;
+            sessionId?: string;
+          };
           const result = await deps.callService.declineCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
+            sessionId: req.sessionId || undefined,
           });
           callback(null, { callId: result.callId, status: result.status });
         } catch (err) {
@@ -1620,12 +1627,14 @@ export function createMessagingImpl(
             userId?: string;
             legId?: string;
             reason?: string;
+            sessionId?: string;
           };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
             reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
+            sessionId: req.sessionId || undefined,
           });
           callback(null, {
             callId: result.callId,

@@ -7,6 +7,7 @@ import {
 } from "@aimess/constants";
 
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
@@ -61,6 +62,8 @@ interface CallCancelPayload {
   reason: string;
   callerId?: string;
   callerName?: string;
+  /** Session of the device that caused the dismissal — never pushed to. */
+  excludeSessionId?: string;
 }
 
 // Same wire shape as the cancel payload; the meaning lives in the queue `type`.
@@ -82,6 +85,46 @@ interface CallActivityPayload {
   calleeAvatar: string;
 }
 
+/**
+ * One ring push per call, no matter how many times the event is delivered.
+ *
+ * The consumer below acks INSIDE a detached async task with `prefetch(20)`, so
+ * a restart, a channel drop or a broker reconnect mid-flight leaves the message
+ * unacked and RabbitMQ redelivers it. That is a genuine second `call.incoming`
+ * — a second VoIP push, a second PushKit delivery, and on iOS the second one
+ * lands against a callId the client may already consider settled, which is
+ * exactly the state that makes it fabricate a caller-less "Incoming call".
+ *
+ * `apns-collapse-id` only helps while APNs still HOLDS the first copy; once
+ * delivered, collapsing cannot recall it. Suppressing the duplicate here is the
+ * half that always works.
+ *
+ * Deliberately FAILS OPEN. A ring that is never sent is a missed call; a ring
+ * sent twice is noise. If Redis is unreachable we send — every time.
+ *
+ * Claimed BEFORE the push rather than after: `pushToUser` never throws (it
+ * swallows its own delivery failures), so there is no retry-after-failure path
+ * that an early claim could starve. The TTL is the ringing window — past that
+ * the callId can never ring again anyway.
+ */
+async function claimRingPush(callId: string): Promise<boolean> {
+  try {
+    const won = await redis.set(
+      `push:sent:call.incoming:${callId}`,
+      "1",
+      "EX",
+      env.CALL_RINGING_TIMEOUT_SEC,
+      "NX"
+    );
+    return won === "OK";
+  } catch (error) {
+    logger.warn(
+      `[push:consume] ring dedup unavailable for ${callId}, sending anyway: ${String(error)}`
+    );
+    return true;
+  }
+}
+
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   // HOP 3 of the push pipeline (RabbitMQ → notifications-service). If this
   // appears but [push:deliver] shows tokens=0, the callee never registered a
@@ -92,6 +135,13 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   );
   if (!data.calleeId || !data.callId) {
     logger.warn("[push:consume] dropped — missing calleeId/callId");
+    return;
+  }
+
+  if (!(await claimRingPush(data.callId))) {
+    logger.warn(
+      `[push:consume] call.incoming callId=${data.callId} suppressed — ring already pushed (redelivery)`
+    );
     return;
   }
 
@@ -227,8 +277,19 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
     skipInbox: true,
     dataOnly: true,
     priority: "high",
-    ttl: 30,
+    // MUST NOT be shorter than the ring's own TTL. A dismiss that expires while
+    // the ring it dismisses is still queued is worse than useless: APNs drops
+    // the cancel, keeps the CALL_INCOMING, and delivers the ring when the
+    // device comes back — a phone ringing for a call that ended minutes ago.
+    // This is always published AFTER the ring, so an equal TTL already outlives
+    // it; tying both to the same env value keeps that true if it is ever tuned.
+    ttl: env.CALL_RINGING_TIMEOUT_SEC,
     collapseKey: `call:${data.callId}`,
+    // Never push a dismissal back to the device that produced it. It already
+    // tore its own ring down, and this is a high-priority push that WAKES it —
+    // the wake being the trigger that resurfaced a stale ring on iOS. Every
+    // OTHER device of this user still gets the backstop.
+    excludeSessionId: data.excludeSessionId,
     // allowVoip is deliberately OFF, for the same reason as handleCallHandled
     // below: iOS 13+ terminates the process if a PushKit delivery finishes
     // without a `reportNewIncomingCall`, so the app is FORCED to fabricate a
@@ -286,10 +347,17 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
     skipInbox: true,
     dataOnly: true,
     priority: "high",
-    ttl: 30,
+    // Same reasoning as handleCallCancel: never shorter than the ring's TTL, or
+    // the stop-ringing hint expires out from under a ring APNs is still holding.
+    ttl: env.CALL_RINGING_TIMEOUT_SEC,
     // Shares the ring's collapse key so it REPLACES the ring notification on the
     // sibling device rather than stacking beside it.
     collapseKey: `call:${data.callId}`,
+    // "Handled ELSEWHERE" is meaningless to the device that handled it — and it
+    // is the device most likely to be mid-call, where an unnecessary wake is
+    // most expensive. This is the push twin of the socket path's
+    // `handledByLegId` exclusion.
+    excludeSessionId: data.excludeSessionId,
     allowVoip: false,
     data: {
       type: "CALL_HANDLED",

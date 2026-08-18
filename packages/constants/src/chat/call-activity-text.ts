@@ -99,5 +99,5 @@ export function isUnreadCallActivity(
   const s = String(status ?? "").toUpperCase();
   // A ring the callee never answered — whether it timed out (MISSED) or the
   // caller gave up first (CANCELLED) — is the missed call they need to see.
-  return s === "MISSED" || s === "CANCELLED";
+  return s === "MISSED" || s === "CANCELLED" || s === "DECLINED";
 }

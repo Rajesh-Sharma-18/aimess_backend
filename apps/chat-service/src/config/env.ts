@@ -121,7 +121,16 @@ const envSchema = z.object({
   // Ringing timeout: a Call left in RINGING for longer than this flips to
   // MISSED via a periodic sweep. Multi-node safe (atomic updateMany).
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
-  CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
+  // Sweep granularity, NOT the ring window — a row is only eligible once
+  // CALL_RINGING_TIMEOUT_SEC has already elapsed, so this is pure added latency
+  // on top of it. It is the ONLY slack available when a callee's decline never
+  // reaches the server (a backgrounded client whose socket write was lost): the
+  // caller sits on "Calling…" for the ring window plus this. At 15 s that was a
+  // 75 s worst case; at 5 s it is 65 s. The query behind it is one indexed
+  // lookup bounded by CALL_TIMEOUT_SWEEP_BATCH, so running it 3× as often is
+  // not a meaningful cost. Lowering the RING WINDOW instead would be wrong —
+  // that is how long a phone is supposed to ring.
+  CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(5),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
 
   // Presence liveness.

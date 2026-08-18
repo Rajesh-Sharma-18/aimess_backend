@@ -227,7 +227,7 @@ describe("isUnreadCallActivity", () => {
   it("badges only a call the reader never answered", () => {
     expect(isUnreadCallActivity("MISSED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("CANCELLED", "INCOMING")).toBe(true);
-    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(false);
+    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("ENDED", "INCOMING")).toBe(false);
     expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(false);
   });

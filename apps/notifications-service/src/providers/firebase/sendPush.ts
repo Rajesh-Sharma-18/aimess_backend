@@ -17,8 +17,10 @@ interface SendPushParams {
    */
   imageUrl?: string;
   /**
-   * FCM collapse key — multiple pending notifications with the same key are
-   * collapsed into one on the device. Useful for chat threads (Android).
+   * Collapse key — a pending notification is REPLACED by a later one carrying
+   * the same key rather than stacking beside it. Applied on all three
+   * platforms: `android.collapseKey`, APNs `apns-collapse-id`, Web Push
+   * `Topic`. Max 64 bytes (the APNs limit; longer keys skip the APNs header).
    */
   collapseKey?: string;
   /**
@@ -163,7 +165,6 @@ export async function sendPush({
             notification: {
               title,
               body,
-              ...(image ? { imageUrl: image } : {}),
             },
           }),
 
@@ -184,6 +185,24 @@ export async function sendPush({
           "apns-push-type": dataOnly ? "background" : "alert",
           "apns-expiration": String(Math.floor(Date.now() / 1000) + ttl),
           ...(apnsThreadId ? { "apns-thread-id": apnsThreadId } : {}),
+          // APNs' own collapse mechanism — the iOS half of `android.collapseKey`
+          // above and Web Push's `Topic` below. Without it iOS was the ONE
+          // platform where a queued notification was never replaced: a
+          // CALL_INCOMING stored by APNs for an unreachable device outlived its
+          // own CALL_CANCELLED and was delivered afterwards, ringing the phone
+          // for a call that had already been declined. Every producer that sets
+          // `collapseKey` (call.consumer, read.consumer) was already written
+          // against replace-not-stack semantics; this is what makes iOS honour
+          // them.
+          //
+          // APNs caps the id at 64 BYTES and rejects the whole request with
+          // `BadCollapseId` if it is longer — dropping the notification
+          // entirely. Every current key is a 41–48 byte `<prefix>:<uuid>`, but
+          // omitting an oversized one degrades to the previous (stacking)
+          // behaviour instead of losing the push.
+          ...(collapseKey && Buffer.byteLength(collapseKey) <= 64
+            ? { "apns-collapse-id": collapseKey }
+            : {}),
         },
         payload: {
           aps: dataOnly
