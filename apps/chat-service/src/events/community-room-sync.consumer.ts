@@ -23,6 +23,7 @@ import {
   buildCommunityInvitationAction,
   buildInvitationContent,
 } from "../lib/chat-message.serializer.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
@@ -667,6 +668,17 @@ export class CommunityRoomSyncConsumer {
       status: "ACTIVE",
     });
     const content = buildInvitationContent(previewText, invitation);
+    // The community avatar arrives (and is PERSISTED above) as a stable MinIO
+    // object key — the unified media contract: resolve on read, never store a
+    // presigned URL. Clients can't sign a key, so everything that goes on the
+    // WIRE carries a resolved copy instead (`enrichMessages` does the same on
+    // every historical read). Without this the card rendered a bare object key
+    // as its `src` and fell back to the default avatar.
+    const liveInvitation = {
+      ...invitation,
+      communityAvatarUrl: (await resolveMediaUrl(communityAvatarUrl)) || null,
+    };
+    const liveContent = buildInvitationContent(previewText, liveInvitation);
     // Event-level only: WHO shared WHAT, and the link identity needed to
     // re-resolve the card on read. Everything presentational lives on
     // `content.invitation` and is not duplicated here. `actorId`/`actorName` are
@@ -758,14 +770,14 @@ export class CommunityRoomSyncConsumer {
       senderAvatar: "",
       receiverId: recipientId,
       messageType,
-      content,
+      content: liveContent,
       sequenceNumber: seq,
       serverTs: sentAt,
       systemEvent: "COMMUNITY_INVITE",
       systemData,
       // Legacy mirror of `content.invitation` — pre-existing mobile clients
       // read the card from here. Same object, never a second computation.
-      systemAction: invitation,
+      systemAction: liveInvitation,
       countInUnread: (message as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -793,7 +805,7 @@ export class CommunityRoomSyncConsumer {
       preview: {
         contentType: messageType,
         text: previewText,
-        systemAction: invitation,
+        systemAction: liveInvitation,
       },
     });
 

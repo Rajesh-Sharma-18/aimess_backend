@@ -39,6 +39,13 @@ jest.mock("../../src/events/unread-summary-bridge.js", () => ({
   notifyUnreadChanged,
 }));
 
+// Object key → presigned download URL. Stubbed so the test asserts WHERE the
+// signing happens (wire only, never the persisted row) without needing MinIO.
+const resolveMediaUrl = jest.fn(async (key?: string | null) =>
+  key ? `https://signed.test/${key}?sig=1` : ""
+);
+jest.mock("../../src/lib/media-resolve.js", () => ({ resolveMediaUrl }));
+
 jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
@@ -545,6 +552,29 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
         communityHandle: "developers",
       },
     });
+  });
+
+  it("REGRESSION: the wire card carries a SIGNED avatar URL while the stored row keeps the raw object key", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    // Persisted: stable key (a presigned URL would expire in the DB).
+    expect(
+      createMessage.mock.calls[0][0].content.invitation.communityAvatarUrl
+    ).toBe("community/avatars/dev.jpg");
+
+    // Wire: signed — a client can't sign a key, and a bare key as an <img src>
+    // is what made the invite card render the default AIMess avatar.
+    const envelope = JSON.parse(
+      redisPublish.mock.calls.find((c) => c[0] === `conv:${ROOM.roomId}`)![1]
+    );
+    const signed = "https://signed.test/community/avatars/dev.jpg?sig=1";
+    expect(envelope.data.content.invitation.communityAvatarUrl).toBe(signed);
+    expect(envelope.data.systemAction.communityAvatarUrl).toBe(signed);
+    expect(
+      publishConvUpdatedSafe.mock.calls[0][0].preview.systemAction
+        .communityAvatarUrl
+    ).toBe(signed);
   });
 
   it("bumps the inbox for BOTH participants and pushes the recipient (offline FCM/APNs)", async () => {
