@@ -571,7 +571,17 @@ export async function pushToUser(input: PushInput): Promise<void> {
               // ceiling `senderAvatar` has always had. Fix by wiring the existing
               // permanent view-proxy URL (`viewProxyBaseUrl` + `MEDIA_SIGN_SECRET`
               // in createMediaUrlStrategy) if delayed pushes matter.
-              imageUrl: data?.communityAvatarUrl || data?.conversationAvatar,
+              // `callerAvatar` is the CALL exception, and it does not break the
+              // rule above: a 1:1 call has no conversation or community to
+              // stand for, so the person ringing IS the entity. Without it a
+              // missed-call tray entry (and the notification-carrying ring an
+              // iOS device with no VoIP token gets) showed the generic app
+              // icon, while the very same push already carried the avatar in
+              // its data map for the in-app UI to use.
+              imageUrl:
+                data?.communityAvatarUrl ||
+                data?.conversationAvatar ||
+                data?.callerAvatar,
               collapseKey,
               apnsThreadId,
               ttl,
