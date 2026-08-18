@@ -498,7 +498,8 @@ export const callCopy = {
       callType: string,
       status: string,
       direction: CallActivityDirection,
-      durationSec: number
+      durationSec: number,
+      ringDurationSec?: number | null
     ): LocalizedCopy =>
     (locale) => ({
       title: peerName || "",
@@ -507,6 +508,7 @@ export const callCopy = {
         status,
         direction,
         durationSec,
+        ringDurationSec,
         locale,
       }),
     }),

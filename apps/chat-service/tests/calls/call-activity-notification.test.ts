@@ -15,6 +15,7 @@ import {
   buildCallActivityText,
   formatCallDuration,
   isUnreadCallActivity,
+  CALL_CANCEL_GRACE_SEC,
 } from "@aimess/constants";
 
 import {
@@ -54,14 +55,12 @@ function buildService() {
     livekit: { deleteRoom: jest.fn().mockResolvedValue(undefined) },
     friendshipRepo: { findFriendship: jest.fn() },
     getCallPrivacy: jest.fn().mockResolvedValue({ whoCanCallMe: "EVERYONE" }),
-    getUserSnapshot: jest
-      .fn()
-      .mockImplementation((userId: string) =>
-        Promise.resolve({
-          displayName: `name-${userId}`,
-          avatarUrl: `a-${userId}`,
-        })
-      ),
+    getUserSnapshot: jest.fn().mockImplementation((userId: string) =>
+      Promise.resolve({
+        displayName: `name-${userId}`,
+        avatarUrl: `a-${userId}`,
+      })
+    ),
     callChatMessages: { post: jest.fn().mockResolvedValue(null) },
     callFlags: { isCallingEnabled: jest.fn().mockResolvedValue(true) },
     groupMemberRepo: {
@@ -138,7 +137,17 @@ describe("buildCallActivityText", () => {
         direction: "OUTGOING",
       })
     ).toBe("Cancelled voice call");
-    // The callee cannot tell a timeout from a caller hang-up — both are missed.
+    // Past the grace window the callee cannot tell a timeout from a caller
+    // hang-up — both are missed.
+    expect(
+      buildCallActivityText({
+        ...video,
+        status: "CANCELLED",
+        direction: "INCOMING",
+        ringDurationSec: CALL_CANCEL_GRACE_SEC,
+      })
+    ).toBe("Missed video call");
+    // No ring length (legacy event) keeps the pre-grace-window behaviour.
     expect(
       buildCallActivityText({
         ...video,
@@ -146,6 +155,17 @@ describe("buildCallActivityText", () => {
         direction: "INCOMING",
       })
     ).toBe("Missed video call");
+  });
+
+  it("reads a cancel inside the grace window as cancelled, not missed", () => {
+    expect(
+      buildCallActivityText({
+        ...voice,
+        status: "CANCELLED",
+        direction: "INCOMING",
+        ringDurationSec: CALL_CANCEL_GRACE_SEC - 1,
+      })
+    ).toBe("Cancelled voice call");
   });
 
   it("renders a live ring by direction", () => {
@@ -229,9 +249,19 @@ describe("isUnreadCallActivity", () => {
   it("badges only a call the reader never answered", () => {
     expect(isUnreadCallActivity("MISSED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("CANCELLED", "INCOMING")).toBe(true);
+    expect(
+      isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC)
+    ).toBe(true);
     expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(false);
     expect(isUnreadCallActivity("ENDED", "INCOMING")).toBe(false);
     expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(false);
+  });
+
+  it("does not badge a cancel the caller took back inside the grace window", () => {
+    expect(
+      isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC - 1)
+    ).toBe(false);
+    expect(isUnreadCallActivity("CANCELLED", "INCOMING", 0)).toBe(false);
   });
 
   it("never badges your own outgoing call", () => {

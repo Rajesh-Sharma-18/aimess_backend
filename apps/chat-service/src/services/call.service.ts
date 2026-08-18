@@ -1835,6 +1835,14 @@ export class CallService {
       callType: String(call.type ?? "").toUpperCase() || CallType.AUDIO,
       status: outcome,
       durationSec: Math.max(0, Math.floor(durationSec)),
+      // Derived from the call record, never from the client: how long this call
+      // actually rang. Only CANCELLED reads it.
+      ringDurationSec: Math.max(
+        0,
+        Math.floor(
+          (endedAt.getTime() - new Date(call.initiatedAt).getTime()) / 1000
+        )
+      ),
       privateRoomId: call.privateRoomId ?? "",
       endedAt: endedAt.getTime(),
       callerName: caller.displayName ?? "",

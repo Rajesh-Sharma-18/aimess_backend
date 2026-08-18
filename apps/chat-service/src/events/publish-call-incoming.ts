@@ -98,6 +98,13 @@ export interface CallActivityPayload {
   status: string;
   /** Answered-call duration in seconds; 0 when the call was never answered. */
   durationSec: number;
+  /**
+   * How long the call rang before it settled (`endedAt - initiatedAt`), in
+   * seconds. Consumed only for CANCELLED, where it is the sole thing that
+   * separates "caller caught a misdial" from "callee genuinely missed this"
+   * (see CALL_CANCEL_GRACE_SEC).
+   */
+  ringDurationSec: number;
   /** Private room the call belongs to. */
   privateRoomId: string;
   /** epoch ms of the terminal transition. */

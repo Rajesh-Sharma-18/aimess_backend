@@ -334,7 +334,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   if (!skipSettingsGate) {
     try {
       const settings = await getNotificationSettings(userId);
-      decision = evaluateDelivery(settings, category);
+      decision = evaluateDelivery(settings, category, type);
       showPreview = settings.showPreview !== false;
     } catch (error) {
       // getNotificationSettings already allows-on-open; defensive catch only.
@@ -346,7 +346,16 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // Category OFF means "I do not want this class of thing" — kill the push and
   // the inbox row. Quiet hours means "not right now", so it only silences the
   // push further down and the inbox row is still written to be found later.
-  if (decision === "CATEGORY_OFF") {
+  //
+  // EXCEPT an inbox-only projection (`skipPush`), which sends no push at all:
+  // it is the HISTORY of something that already happened, written for both
+  // participants from one canonical record. A category toggle silences alerts;
+  // it must not erase the log. Suppressing it here is what made call history
+  // appear for one participant and not the other — the two ends of one call are
+  // two different users with two different toggles, so the DM's call card
+  // existed while the Notification-Center row did not. The push side stays
+  // fully gated: `skipPush` returns below, before any device is touched.
+  if (decision === "CATEGORY_OFF" && !skipPush) {
     logger.info(
       `Notification suppressed by category setting: user=${userId} type=${type} category=${category}`
     );
