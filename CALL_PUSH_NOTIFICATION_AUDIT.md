@@ -133,7 +133,32 @@ distinction the brief asks for in §19:
 - **The history row** is written regardless, so the Notification Center and the
   DM call card always agree.
 
-### P6 — Duplicate re-export in the constants barrel (housekeeping)
+### P6 — `NO_ANSWER` was dropped by the gateway, so almost no missed call ever became MISSED
+
+Found by driving the live stack, not by reading code — the source looked
+correct at every layer.
+
+- **Root cause:** `apps/api-gateway/src/grpc/clients/messaging.client.ts` ·
+  `endCallBreaker` assembled the `EndCall` gRPC request from `callId`,
+  `userId` and `legId` only. `reason` was declared on `EndCallParams`,
+  accepted by the socket schema, present in `messaging.proto`, and read by
+  chat-service's handler — but never written into the wire message. The
+  request object is untyped at the `call()` boundary, so the omission
+  compiled cleanly.
+- **Impact:** the highest-severity finding in this audit. `noAnswer` in
+  `CallService.endCall` was permanently false, so a ring the caller let run
+  out settled as **CANCELLED, never MISSED**. That is the path essentially
+  every missed call takes: the client's ring timeout fires at the same 60s as
+  the server sweep and always wins the race. `fanOutUnansweredRing` therefore
+  never ran from it — **no `call.missed` event and no missed-call push** — and
+  the caller read "Cancelled" where they should have read "No answer".
+- **Verified live, both directions:** before the fix `call:end` with
+  `reason: "NO_ANSWER"` returned `status: ENDED` and wrote CANCELLED; after,
+  it returns `status: MISSED`, the caller's row reads "Outgoing voice/video
+  call" and the callee's arrives **unread** as "Missed voice call".
+- **Severity:** High
+
+### P7 — Duplicate re-export in the constants barrel (housekeeping)
 
 `packages/constants/src/index.ts` exported `./chat/call-activity-text.js`
 twice. Harmless, removed while in the file. **Severity:** Trivial
@@ -178,6 +203,7 @@ twice. Harmless, removed while in the file. **Severity:** Trivial
 | `apps/notifications-service/src/lib/notification-copy.ts`                      | `callCopy.activity` accepts and forwards `ringDurationSec`.                                                                                                                                                                                                                |
 | `apps/notifications-service/src/consumers/call.consumer.ts`                    | Reads `ringDurationSec` from the event and forwards it to both the copy builder and the unread decision; the missed-call push now deep-links to the conversation.                                                                                                          |
 | `aimess_website/src/utils/notificationRouter.ts`                               | `parseDeepLink` recognises `aimess://conversation/:id`.                                                                                                                                                                                                                    |
+| `apps/api-gateway/src/grpc/clients/messaging.client.ts`                        | `EndCall` gRPC request now carries `reason`, so NO_ANSWER reaches chat-service and a timed-out ring settles as MISSED.                                                                                                                                                     |
 | `apps/chat-service/tests/calls/call-activity-notification.test.ts`             | Grace-window cases for text and unread.                                                                                                                                                                                                                                    |
 | `apps/notifications-service/tests/services/notification-settings.gate.test.ts` | Quiet hours silence `CALL_MISSED`, never `CALL_INCOMING`.                                                                                                                                                                                                                  |
 
@@ -281,12 +307,61 @@ from `callerId` inside one shared projection, not written twice.
 | 6 / 13 | Failed / teardown                  | `call-teardown-on-unfriend`, `call-service-lifecycle`       |
 | 7 / 14 | Connected then ended               | `call-chat-message.service`, `call-content-type`            |
 
+### Live run against the running stack (2026-08-18)
+
+Driven over Socket.IO as two real users — A = Smiley Creatures
+(`7b0db132…fba2ef`), B = Krish (`d16e6e16…0a56fa`) — against the dev
+gateway, chat-service, RabbitMQ, notifications-service and Mongo. Every row
+below was read back out of `aimess_chat.calls` and
+`aimess_chat.notifications`, not inferred.
+
+| Scenario                               | Call row           | Caller sees                     | Callee sees                    |
+| -------------------------------------- | ------------------ | ------------------------------- | ------------------------------ |
+| A→B audio, cancel at 2s (inside grace) | ENDED / CANCELLED  | read "Cancelled voice call"     | **not badged**                 |
+| A→B audio, cancel at 7s (past grace)   | ENDED / CANCELLED  | read "Cancelled voice call"     | **unread** "Missed voice call" |
+| A→B video, NO_ANSWER                   | **MISSED**         | read "Outgoing video call"      | unread "Missed video call"     |
+| A→B audio, answered then ended         | ENDED, duration 1s | read "Voice call • 00:01"       | read "Voice call • 00:01"      |
+| A→B audio, declined                    | DECLINED           | read "Declined voice call"      | read "Declined voice call"     |
+| A→B, callee already in a call          | no row created     | ack `CONFLICT` (CALL_USER_BUSY) | nothing                        |
+| B→A video, declined                    | DECLINED           | read "Declined video call"      | read "Declined video call"     |
+| B→A audio, NO_ANSWER                   | **MISSED**         | read "Outgoing voice call"      | **unread** "Missed voice call" |
+| B→A audio, answered then ended         | ENDED, duration 3s | read "Voice call • 00:03"       | read "Voice call • 00:03"      |
+
+Confirmed by this run: the grace window behaves as designed at both ends of
+the threshold; NO_ANSWER settles as MISSED after P6 (it settled as CANCELLED
+before); audio and video are distinguished in every line; answered and
+declined calls never produce a missed-call state; busy creates no row and no
+false missed call; direction is resolved per reader, so A→B and B→A are
+symmetric; and exactly one row per participant per call exists, keyed
+`groupKey: call:<callId>`, with no duplicates across the whole run.
+
+### One live gap not closed
+
+User B has `callEnabled = false` in `notification_settings`. On the running
+build their call-history row was written only intermittently (2 of 7 calls),
+while User A — who has the toggle on — got a row every time. This is P5: the
+category gate dropping the inbox-only projection. The fix is committed; the
+running notifications-service predates it, and the intermittent successes are
+the settings cache failing open (`getNotificationSettings` allows on gRPC
+error and does not cache the fallback). Re-verify after a service restart.
+
+Two environment notes from the same run, neither caused by these changes:
+chat-service's gRPC listener (4004) died mid-run and had to be restarted, and
+`initiateCall` intermittently returns `SERVICE_ERROR` to the client when the
+gateway's opossum breaker opens — worth a look at the breaker timeout against
+how long `initiateCall` actually takes (two user-service gRPC gates, the
+caller lock, several Mongo reads and two LiveKit token mints).
+
 **Not executed:** the live two-device matrix in §27/§28 of the brief (real
 User A ↔ User B handsets across foreground / background / closed / offline).
-That needs two provisioned devices with valid FCM and APNs PushKit tokens plus
-a running LiveKit; it cannot be run from this environment. The instrumentation
-to run it is in place — see Observability — and the hop markers make each leg
-individually checkable on a real device.
+That needs two provisioned handsets with valid FCM and APNs PushKit tokens; it
+cannot be run from this environment. What WAS driven live is the server side of
+that matrix (see above): the state machine, the events, and the persisted rows
+for both participants. What remains unproven is only device-side delivery —
+whether the FCM/APNs payload actually wakes a backgrounded or killed app. The
+instrumentation for that is in place; the `[push:publish]` → `[push:consume]` →
+`[push:deliver]` hop markers make each leg individually checkable on a real
+device.
 
 ---
 
@@ -341,9 +416,18 @@ No token, credential, or message content is logged on any of these paths.
    tried. Product decision, not a defect.
 3. **LiveKit credentials travel in the ring push payload.** Removable
    server-side; needs a coordinated client change first.
-4. **The live two-device push matrix has not been executed** (§27/§28) — no
-   provisioned handsets in this environment.
-5. **Pre-existing, unrelated:** notification tray images are presigned URLs
+4. **Device-side push delivery has not been executed** (§27/§28) — no
+   provisioned handsets in this environment. The server side of the matrix was
+   driven live and is recorded under Test Results.
+5. **P5 not yet confirmed on the running build.** A callee with
+   `callEnabled = false` still loses their call-history row on the deployed
+   process; the fix is committed but the running notifications-service predates
+   it. Restart and re-run the matrix to close this.
+6. **`initiateCall` intermittently returns `SERVICE_ERROR`** when the gateway
+   breaker opens. Seen repeatedly during the live run. Pre-existing, unrelated
+   to these changes, but it is a user-visible "call failed" and deserves its own
+   look at the breaker timeout.
+7. **Pre-existing, unrelated:** notification tray images are presigned URLs
    with a 1h expiry against a 24h FCM TTL, so a push held for a long-offline
    device lands without its image. Documented at the `imageUrl` line in
    `push.service.ts`; unchanged here.
