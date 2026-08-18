@@ -3864,48 +3864,6 @@ const callHistory = {
   },
 };
 
-const callHistoryGrouped = {
-  get: {
-    tags: ["Chat — Calls"],
-    operationId: "getGroupedCallHistory",
-    summary: "Get grouped call history (Calls list)",
-    description:
-      "WhatsApp-style Calls list: consecutive calls that share the same peer, " +
-      "direction, call type and outcome collapse into ONE row carrying " +
-      "`attemptCount`. Only genuinely adjacent calls group — a call from someone " +
-      "else in between starts a new row. 1:1 calls only, settled outcomes only " +
-      "(a live RINGING/IN_PROGRESS call has no outcome to show yet). " +
-      "Use `latestCallId` for call-back and for opening the call's details. " +
-      "The `filter` tab is applied server-side so paging stays correct; a group " +
-      "is never split across a page boundary.",
-    security: [{ bearerAuth: [] }],
-    parameters: [
-      cursorParam(
-        "Opaque cursor — pass back `nextCursor` verbatim (ISO `initiatedAt` of the last row of the last group returned)."
-      ),
-      limitParam(20, 50),
-      {
-        name: "filter",
-        in: "query" as const,
-        required: false,
-        schema: {
-          type: "string" as const,
-          enum: ["all", "incoming", "outgoing", "missed"],
-          default: "all",
-        },
-        description:
-          "Tab. `incoming`/`outgoing` are resolved from the call record's participants against the caller. " +
-          "`missed` means genuinely missed BY YOU: an inbound ring that timed out, or one the caller " +
-          "abandoned after the grace window. Outgoing no-answers, declines and short cancels are excluded.",
-      },
-    ],
-    responses: {
-      ...successResponse("Grouped call history", "ChatCallHistoryList"),
-      "401": unauthorized,
-    },
-  },
-};
-
 const callById = {
   get: {
     tags: ["Chat — Calls"],
@@ -4323,6 +4281,5 @@ export const chatPaths = {
 
   // Calls
   "/chat/calls": callHistory,
-  "/chat/calls/history": callHistoryGrouped,
   "/chat/calls/{callId}": callById,
 };

@@ -54,13 +54,9 @@ import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
 import { CommunitySystemMessageService } from "./services/community-system-message.service.js";
 import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js";
-import {
-  UserSnapshotService,
-  resolveDisplayName,
-} from "./services/user-snapshot.service.js";
+import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
-import { CallHistoryService } from "./services/call-history.service.js";
 import { CallFlagService } from "./services/call-flag.service.js";
 import { CallAnalyticsRepository } from "./repositories/call-analytics.repository.js";
 import { SystemFlagRepository } from "./repositories/system-flag.repository.js";
@@ -68,7 +64,7 @@ import { CallChatMessageService } from "./services/call-chat-message.service.js"
 import { LiveKitService } from "./services/livekit.service.js";
 import { FriendshipRepository } from "./repositories/friendship.repository.js";
 import { userGrpcClient } from "./grpc/user-snapshot.client.js";
-import { resolveMediaUrl, resolveMediaUrlMap } from "./lib/media-resolve.js";
+import { resolveMediaUrl } from "./lib/media-resolve.js";
 import { PresenceService } from "./services/presence.service.js";
 
 // -- Controllers --
@@ -608,36 +604,6 @@ const startServer = async () => {
       // GROUP call timeline audit rows (VOICE_CALL / VIDEO_CALL).
       groupSystemMessageService
     );
-    // Calls list (grouped history). Identity comes from the SAME cached bulk
-    // snapshot path every other chat surface uses, so a deleted peer reads
-    // "Deleted Account" here without this service knowing the rule.
-    const callHistoryService = new CallHistoryService(
-      callRepo,
-      async (userIds) => {
-        const snapshots = await userSnapshotService.getUserSnapshotsMap(
-          userIds,
-          cacheRepo
-        );
-        const avatars = await resolveMediaUrlMap(
-          userIds.map((id) => String(snapshots.get(id)?.avatar ?? ""))
-        );
-        return new Map(
-          userIds.map((id) => {
-            const snapshot = snapshots.get(id) ?? null;
-            const avatarKey = String(snapshot?.avatar ?? "");
-            return [
-              id,
-              {
-                id,
-                name: resolveDisplayName(snapshot),
-                avatarUrl: avatars.get(avatarKey) ?? "",
-                isDeleted: snapshot?.isDeletedUser === true,
-              },
-            ];
-          })
-        );
-      }
-    );
     // An unfriend/block must end the pair's live calls, and the AMQP consumer
     // that hears about it has no CallService — see events/call-teardown-bridge.ts.
     registerCallTerminator((userA, userB) =>
@@ -864,7 +830,7 @@ const startServer = async () => {
         redis,
         chatMessageOrchestrator
       ),
-      callCtrl: new CallController(callService, callHistoryService),
+      callCtrl: new CallController(callService),
       presenceCtrl: new PresenceController(presenceService),
       messageContextCtrl: new MessageContextController(
         privateMessageService,
