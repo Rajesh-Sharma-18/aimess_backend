@@ -345,7 +345,8 @@ export class CallChatMessageService {
     // last message. If a real message landed mid-call, rewriting lastMessage*
     // here would rewind the inbox row to the call and reorder the list wrongly.
     const room = await this.roomRepo.findByRoomId(roomId).catch(() => null);
-    if (room?.lastMessageId === existing.id) {
+    const isRoomLastMessage = room?.lastMessageId === existing.id;
+    if (isRoomLastMessage) {
       await this.roomRepo
         .updateRoomOnNewMessage({
           roomId,
@@ -388,6 +389,9 @@ export class CallChatMessageService {
       // The row keeps its original timestamp across the whole lifecycle.
       serverTsOverride: existing.createdAt.getTime(),
       sequenceNumberOverride: existing.sequenceNumber,
+      // Exactly the condition that guarded the snapshot write above — the list
+      // bump has to obey it too, or the broadcast contradicts the database.
+      bumpList: isRoomLastMessage,
     });
 
     return message;
@@ -413,6 +417,12 @@ export class CallChatMessageService {
     params: PostCallChatMessageParams;
     serverTsOverride?: number;
     sequenceNumberOverride?: number;
+    /**
+     * Whether this call row is still the room's last message, i.e. whether the
+     * conversation-list bump is honest. Defaults to true for the INSERT, which
+     * is the last message by construction.
+     */
+    bumpList?: boolean;
   }): Promise<void> {
     const {
       event,
@@ -482,6 +492,17 @@ export class CallChatMessageService {
         )
     );
 
+    // A call card is transitioned IN PLACE, so its timestamp never advances —
+    // which means a real message sent mid-call is NEWER than every transition
+    // that follows it. The snapshot write upstream already refuses to rewind the
+    // room for exactly that reason; publishing the bump anyway made the socket
+    // contradict the database, telling every list client to replace a newer text
+    // preview with an older "Voice Call 00:04" and to re-sort on a timestamp
+    // that had gone backwards. The `message:edited` fan-out above is NOT gated:
+    // an open transcript must still swap the card in place regardless of what
+    // else has landed in the room since.
+    if (!(args.bumpList ?? true)) return;
+
     publishConvUpdatedSafe({
       redis: this.redis,
       type: "PRIVATE",
@@ -494,7 +515,20 @@ export class CallChatMessageService {
       // The canonical pair rides along so the gateway re-renders "Missed call" /
       // "Call ended · 2:14" in each participant's own language rather than
       // fanning out the write-time English (publish-conv-updated.ts BumpPreview).
-      preview: { contentType: messageType, text, systemEvent, systemData },
+      // The identity/freshness quartet every other send path supplies. Omitting
+      // it published seq 0 / revision 0 / clientMessageId null, so a client could
+      // not tie-break this bump against a same-millisecond row, and the list row
+      // it produced did not match the one REST returns for the same call.
+      preview: {
+        contentType: messageType,
+        text,
+        systemEvent,
+        systemData,
+        clientMessageId,
+        seq: sequenceNumber,
+        revision: message.revision ?? 0,
+        createdAt: serverTs,
+      },
       countInUnread,
       getIsOnline: this.getIsOnline,
       // Same absolute-count source as the main send path (chat-message-
