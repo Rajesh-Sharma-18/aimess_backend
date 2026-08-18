@@ -37,8 +37,11 @@ import {
 import {
   anonymizeSystemData,
   anonymizeWireSender,
-  collectDeletedUserIds,
+  collectSenderIdentities,
   collectRowUserIds,
+  liveAvatarKeys,
+  refreshWireSenderAvatar,
+  type SenderIdentity,
 } from "../lib/deleted-identity.js";
 import { env } from "../config/env.js";
 
@@ -1251,9 +1254,10 @@ export class CommunityMessageService {
    * the FE never receives a raw object key.
    */
   private resolveRowsMedia(
-    rows: GeneralRoomMessage[]
+    rows: GeneralRoomMessage[],
+    extraKeys: string[] = []
   ): Promise<Map<string, string>> {
-    const keys: string[] = [];
+    const keys: string[] = [...extraKeys];
     for (const m of rows) {
       if (m.senderAvatar) keys.push(m.senderAvatar);
       const attachments = m.attachments;
@@ -1284,18 +1288,27 @@ export class CommunityMessageService {
   private async resolveRowsWireContext(rows: GeneralRoomMessage[]): Promise<{
     urlMap: Map<string, string>;
     deletedUserIds: Set<string>;
+    identities: Map<string, SenderIdentity>;
   }> {
-    const [urlMap, deletedUserIds] = await Promise.all([
-      this.resolveRowsMedia(rows),
-      collectDeletedUserIds(
-        rows.flatMap((row) =>
-          collectRowUserIds(row as unknown as Record<string, unknown>)
-        ),
-        this.userSnapshotService,
-        this.cacheRepo
+    // Identities first: they contribute the CURRENT avatar keys, which must be
+    // presigned in the same batch as the keys frozen into the rows. The lookup
+    // is one Redis MGET on the common (fully cached) page, so the lost overlap
+    // with the media resolution costs less than a second presign round trip.
+    const identities = await collectSenderIdentities(
+      rows.flatMap((row) =>
+        collectRowUserIds(row as unknown as Record<string, unknown>)
       ),
-    ]);
-    return { urlMap, deletedUserIds };
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+    const deletedUserIds = new Set(
+      [...identities].filter(([, i]) => i.isDeleted).map(([id]) => id)
+    );
+    const urlMap = await this.resolveRowsMedia(
+      rows,
+      liveAvatarKeys(identities)
+    );
+    return { urlMap, deletedUserIds, identities };
   }
 
   /** Extract every unique reactor userId from a batch of message rows. */
@@ -1376,7 +1389,8 @@ export class CommunityMessageService {
       userId: string
     ) => { displayName: string; avatarUrl: string } | undefined,
     viewerUserId?: string,
-    deletedUserIds: Set<string> = new Set()
+    deletedUserIds: Set<string> = new Set(),
+    identities: Map<string, SenderIdentity> = new Map()
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
     // Normalize to the same CanonicalQuote shape the community socket
@@ -1396,6 +1410,10 @@ export class CommunityMessageService {
     // Resolve raw object keys → full download URLs on read (never persisted, so
     // CDN/presign rotation keeps working). Internal logic still reads raw rows.
     if (urlMap) {
+      // Live avatar key first, then presign — community rows freeze the key at
+      // write time, so without this a profile-picture change never reaches the
+      // sender's existing messages.
+      refreshWireSenderAvatar(wire, identities);
       if (typeof wire.senderAvatar === "string") {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }
@@ -1544,9 +1562,17 @@ export class CommunityMessageService {
       viewerIsActiveMember,
       bannedAtCutoff
     );
-    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(rows);
     return rows.map((m) =>
-      this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+      this.toWire(
+        m,
+        urlMap,
+        undefined,
+        params.userId,
+        deletedUserIds,
+        identities
+      )
     );
   }
 
@@ -1734,11 +1760,13 @@ export class CommunityMessageService {
       .map((s) => (s.avatar as string) || "")
       .filter(Boolean);
 
-    const [{ urlMap: msgUrlMap, deletedUserIds }, snapAvatarUrlMap] =
-      await Promise.all([
-        this.resolveRowsWireContext(orderedItems),
-        resolveMediaUrlMap(snapAvatarKeys),
-      ]);
+    const [
+      { urlMap: msgUrlMap, deletedUserIds, identities },
+      snapAvatarUrlMap,
+    ] = await Promise.all([
+      this.resolveRowsWireContext(orderedItems),
+      resolveMediaUrlMap(snapAvatarKeys),
+    ]);
     // Merge so toWire can resolve any avatar object-key (snap or legacy stored)
     // with a single urlMap lookup, with no separate map needed in the caller.
     const urlMap = new Map([...msgUrlMap, ...snapAvatarUrlMap]);
@@ -1755,7 +1783,14 @@ export class CommunityMessageService {
     };
 
     return orderedItems.map((m) =>
-      this.toWire(m, urlMap, resolveReactionUser, userId, deletedUserIds)
+      this.toWire(
+        m,
+        urlMap,
+        resolveReactionUser,
+        userId,
+        deletedUserIds,
+        identities
+      )
     );
   }
 
@@ -1857,19 +1892,25 @@ export class CommunityMessageService {
       .map((s) => (s.avatar as string) || "")
       .filter(Boolean);
 
-    const [urlMap, syncAvatarUrlMap, deletedUserIds] = await Promise.all([
+    // Incremental sync replays rows the client will merge into its cache, so it
+    // needs the same read-time identity refresh the history reads get —
+    // otherwise a resync re-seeds the old name (deleted account) or the old
+    // profile picture that the history read just corrected.
+    const syncIdentities = await collectSenderIdentities(
+      messages.flatMap((msg) =>
+        collectRowUserIds(msg as unknown as Record<string, unknown>)
+      ),
+      this.userSnapshotService,
+      this.cacheRepo
+    );
+    const deletedUserIds = new Set(
+      [...syncIdentities].filter(([, i]) => i.isDeleted).map(([id]) => id)
+    );
+    mediaKeys.push(...liveAvatarKeys(syncIdentities));
+
+    const [urlMap, syncAvatarUrlMap] = await Promise.all([
       resolveMediaUrlMap(mediaKeys),
       resolveMediaUrlMap(syncSnapAvatarKeys),
-      // Incremental sync replays rows the client will merge into its cache, so
-      // it needs the same deleted-account scrubbing the history reads get —
-      // otherwise a resync re-seeds the old name the history read just removed.
-      collectDeletedUserIds(
-        messages.flatMap((msg) =>
-          collectRowUserIds(msg as unknown as Record<string, unknown>)
-        ),
-        this.userSnapshotService,
-        this.cacheRepo
-      ),
     ]);
 
     const items = messages.map((msg) => {
@@ -1938,7 +1979,10 @@ export class CommunityMessageService {
         senderAvatar:
           contentType === "SYSTEM" || deletedUserIds.has(msg.sentBy)
             ? null
-            : urlFromMap(urlMap, msg.senderAvatar) || null,
+            : urlFromMap(
+                urlMap,
+                syncIdentities.get(msg.sentBy)?.avatar ?? msg.senderAvatar
+              ) || null,
         isDeletedUser:
           contentType !== "SYSTEM" && deletedUserIds.has(msg.sentBy),
         message: messageText,
@@ -2057,10 +2101,18 @@ export class CommunityMessageService {
         readCutoff: bannedAtCutoff,
       }),
     ]);
-    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(rows);
     return {
       items: rows.map((m) =>
-        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+        this.toWire(
+          m,
+          urlMap,
+          undefined,
+          params.userId,
+          deletedUserIds,
+          identities
+        )
       ),
       total,
       ...cursors,
@@ -2144,11 +2196,18 @@ export class CommunityMessageService {
         });
     }
 
-    const { urlMap, deletedUserIds } =
+    const { urlMap, deletedUserIds, identities } =
       await this.resolveRowsWireContext(messages);
     return {
       messages: messages.map((m) =>
-        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+        this.toWire(
+          m,
+          urlMap,
+          undefined,
+          params.userId,
+          deletedUserIds,
+          identities
+        )
       ),
       total,
     };
@@ -2182,12 +2241,18 @@ export class CommunityMessageService {
       cursor: params.cursor,
       readCutoff: bannedAtCutoff,
     });
-    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(
-      result.messages
-    );
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(result.messages);
     return {
       messages: result.messages.map((m) =>
-        this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+        this.toWire(
+          m,
+          urlMap,
+          undefined,
+          params.userId,
+          deletedUserIds,
+          identities
+        )
       ),
       scores: result.scores,
       hasMore: result.hasMore,
@@ -2243,9 +2308,17 @@ export class CommunityMessageService {
       limit: params.limit,
       readCutoff: bannedAtCutoff,
     });
-    const { urlMap, deletedUserIds } = await this.resolveRowsWireContext(rows);
+    const { urlMap, deletedUserIds, identities } =
+      await this.resolveRowsWireContext(rows);
     return rows.map((m) =>
-      this.toWire(m, urlMap, undefined, params.userId, deletedUserIds)
+      this.toWire(
+        m,
+        urlMap,
+        undefined,
+        params.userId,
+        deletedUserIds,
+        identities
+      )
     );
   }
 

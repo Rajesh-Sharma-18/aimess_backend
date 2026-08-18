@@ -98,6 +98,63 @@ export class UserProfileEventConsumer {
     );
   }
 
+  /**
+   * Realtime half of a plain profile change (rename / new profile picture), for
+   * viewers who have this user on screen RIGHT NOW and would otherwise keep the
+   * old name and avatar until their next fetch.
+   *
+   * Signal only — `{ userId, updatedAt }`, no identity values. Same contract as
+   * `user:account_deleted` above and for the same reasons: the server stays the
+   * source of truth for what a profile looks like, a client can never write a
+   * half-profile from the wire, and no field the recipient is not already
+   * authorized to see can leak. Recipients answer with the refetch they were
+   * always going to do — which resolves a fresh presigned avatar URL, so there
+   * is nothing to cache-bust.
+   *
+   * Two fan-outs, matching the two places a peer sees this user:
+   *
+   *  - `user:<userId>` on /chat. Reaches the user's OWN devices (their avatar on
+   *    their own messages), and the api-gateway mirrors it to
+   *    `presence:<userId>` — the room every peer with this user's DM row or
+   *    chat header open already joined via `presence:subscribe`.
+   *  - `conv:<roomId>` for each ACTIVE group room, which is where group member
+   *    lists, headers and message avatars are rendered.
+   *
+   * Communities are deliberately absent: community-service consumes this same
+   * `user.profile_updated` message and already broadcasts
+   * `community:member:updated` into every community the user belongs to.
+   *
+   * Entirely best-effort — the cache invalidation is what makes the state
+   * correct; this only makes it correct SOONER, so a failure must never nack
+   * the message and replay the invalidation.
+   */
+  private async broadcastProfileUpdated(
+    userId: string,
+    updatedAt: string
+  ): Promise<void> {
+    const payload = { userId, updatedAt };
+    await publishChatUserEvent(
+      redis,
+      userId,
+      "user:profile_updated",
+      payload
+    ).catch(() => undefined);
+
+    const roomIds = await this.groupMemberRepo
+      .getActiveRoomIds(userId)
+      .catch(() => [] as string[]);
+    await Promise.all(
+      roomIds.map((roomId) =>
+        redis
+          .publish(
+            `conv:${roomId}`,
+            JSON.stringify({ event: "user:profile_updated", data: payload })
+          )
+          .catch(() => undefined)
+      )
+    );
+  }
+
   async start(connection: ChannelModel): Promise<void> {
     try {
       this.channel = await connection.createChannel();
@@ -138,12 +195,17 @@ export class UserProfileEventConsumer {
           `Invalidated user snapshot cache for ${event.data.userId}`
         );
 
-        // Only deletion gets a client-facing signal. A plain rename must NOT
-        // produce one here: it would tell every peer watching this user's
-        // presence that something happened, on a channel whose only sanctioned
-        // peer-visible payload is presence.
+        // Both branches emit a client-facing signal, and both carry identity
+        // values of exactly zero — the recipient refetches. Deletion keeps its
+        // own event because its consumers do more than re-read a name (drop
+        // presence, gate profile navigation, freeze member actions).
         if (event.data.isDeleted === true) {
           await this.broadcastAccountDeleted(
+            event.data.userId,
+            event.data.updatedAt
+          );
+        } else {
+          await this.broadcastProfileUpdated(
             event.data.userId,
             event.data.updatedAt
           );

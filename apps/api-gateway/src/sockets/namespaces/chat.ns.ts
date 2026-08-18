@@ -569,10 +569,18 @@ export function registerChatNamespace(
         // signal that stops those peers rendering the old identity until their
         // next fetch. Nothing else is ever mirrored; adding to this list means
         // handing peer watchers data they did not subscribe to.
+        // `user:profile_updated` is mirrored on exactly the same footing as
+        // `user:account_deleted`: same audience (the peers rendering this
+        // user's row or chat header), same signal-only payload
+        // (`{ userId, updatedAt }` — no name, no avatar, no online state), and
+        // it discloses strictly LESS than the presence they already subscribed
+        // to. It is what stops those peers rendering the old profile picture
+        // until their next fetch.
         if (
           pattern === "user:*" &&
           (parsed.event === "presence:status" ||
-            parsed.event === "user:account_deleted")
+            parsed.event === "user:account_deleted" ||
+            parsed.event === "user:profile_updated")
         ) {
           chat
             .to(`presence:${channel.slice("user:".length)}`)

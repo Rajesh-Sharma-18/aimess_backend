@@ -97,10 +97,13 @@ describe("UserProfileEventConsumer", () => {
     expect(fake.channel.nack).not.toHaveBeenCalled();
   });
 
-  it("emits NO client-facing signal for an ordinary rename", async () => {
+  it("broadcasts a signal-only user:profile_updated for an ordinary rename", async () => {
     // `user:<id>` on /chat is mirrored to that user's presence WATCHERS by the
-    // gateway. A rename must not reach them on this channel — only deletion is
-    // sanctioned there.
+    // gateway — exactly the peers rendering this user's row or chat header —
+    // and `conv:<roomId>` reaches their group rooms. The payload must stay
+    // identity-free: it tells a client to re-read, it is never the source of
+    // truth for what the profile now says.
+    getActiveRoomIds.mockResolvedValue(["grp_a", "grp_b"]);
     const fake = makeFakeConnection();
     const consumer = new UserProfileEventConsumer();
     await consumer.start(fake.connection as never);
@@ -110,14 +113,33 @@ describe("UserProfileEventConsumer", () => {
         userId: USER,
         username: "himanshu",
         displayName: "Himanshu Vasu",
-        avatarObjectKey: null,
+        avatarObjectKey: "avatars/new.png",
         isProfileCompleted: true,
         updatedAt: "2026-06-19T00:00:00.000Z",
       })
     );
 
-    expect(publish).not.toHaveBeenCalled();
-    expect(getActiveRoomIds).not.toHaveBeenCalled();
+    const channels = publish.mock.calls.map((c) => c[0] as string);
+    expect(channels).toEqual(
+      expect.arrayContaining([`user:${USER}`, "conv:grp_a", "conv:grp_b"])
+    );
+
+    for (const call of publish.mock.calls) {
+      const payload = JSON.parse(call[1] as string) as {
+        event: string;
+        data: Record<string, unknown>;
+      };
+      expect(payload.event).toBe("user:profile_updated");
+      expect(payload.data.userId).toBe(USER);
+      expect(payload.data).not.toHaveProperty("displayName");
+      expect(payload.data).not.toHaveProperty("username");
+      expect(payload.data).not.toHaveProperty("avatarObjectKey");
+      expect(payload.data).not.toHaveProperty("avatarUrl");
+    }
+
+    // A rename must never look like a deletion to a client.
+    expect(channels).not.toContain("user:account_deleted");
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
   });
 
   it("broadcasts user:account_deleted and a roster bump for every group when isDeleted", async () => {

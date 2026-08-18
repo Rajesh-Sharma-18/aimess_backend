@@ -26,8 +26,10 @@ import {
 import {
   anonymizeSystemData,
   anonymizeWireSender,
-  collectDeletedUserIds,
+  collectSenderIdentities,
   collectRowUserIds,
+  liveAvatarKeys,
+  refreshWireSenderAvatar,
 } from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
@@ -2439,16 +2441,23 @@ export class GroupMessageService {
     }
     // Group rows freeze `senderName`/`senderAvatar` at send time, so a sender
     // who later deleted their account would keep their old name on every
-    // historical message. Resolve which of the page's participants are deleted
-    // (one batched, Redis-cached snapshot lookup) and scrub them below —
-    // stored rows are never rewritten.
-    const deletedUserIds = await collectDeletedUserIds(
+    // historical message — and a sender who merely changed their profile
+    // picture would keep the OLD picture there just as permanently. One
+    // batched, Redis-cached snapshot lookup answers both: deleted accounts are
+    // scrubbed below, and every live sender's avatar key is refreshed to the
+    // current one. Stored rows are never rewritten.
+    const identities = await collectSenderIdentities(
       messages.flatMap((m) =>
         collectRowUserIds(m as unknown as Record<string, unknown>)
       ),
       this.userSnapshotService,
       this.cacheRepo
     );
+    const deletedUserIds = new Set(
+      [...identities].filter(([, i]) => i.isDeleted).map(([id]) => id)
+    );
+    // Presign the refreshed keys in the SAME batch as the stored ones.
+    mediaKeys.push(...liveAvatarKeys(identities));
 
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
@@ -2465,6 +2474,9 @@ export class GroupMessageService {
           .countInUnread,
       });
 
+      // Live avatar key first, then presign — so history renders the sender's
+      // CURRENT profile picture instead of the one frozen at send time.
+      refreshWireSenderAvatar(wire, identities);
       if (typeof wire.senderAvatar === "string") {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }
