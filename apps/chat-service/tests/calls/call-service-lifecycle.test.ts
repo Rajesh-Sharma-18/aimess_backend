@@ -667,6 +667,42 @@ describe("CallService — pre-media terminal paths (accept-then-quick-end)", () 
     );
   });
 
+  /**
+   * The failure this guards: `answeredAt` is stamped ONLY by LiveKit's
+   * `participant_joined` webhook, so a dropped webhook leaves it null on a call
+   * the two of them genuinely held. Unbounded, the pre-media branch turned that
+   * into a cancelled ring — and the callee's history then read "Missed" for a
+   * call they had just been on.
+   */
+  it("endCall on a call held past the accept-then-end window is ANSWERED, webhook or not", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      ...preMediaCall,
+      // Answered 90s ago and still no `participant_joined` — the webhook was
+      // lost, not the media.
+      updatedAt: new Date(Date.now() - 90_000),
+    });
+    stubs.redis.get.mockResolvedValue("legA");
+
+    const result = await service.endCall({
+      callId: "c1",
+      userId: "u2",
+      legId: "legA",
+    });
+
+    // Timed from the answer transition rather than reported as zero.
+    expect(result.durationSec).toBeGreaterThan(0);
+    // ENDED, never CANCELLED — a connected call must not regress to missed.
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "c1", outcome: "ENDED" })
+    );
+    const events = stubs.redis.publish.mock.calls.map(
+      ([, payload]) => JSON.parse(String(payload)).event
+    );
+    expect(events).toContain("call:ended");
+    expect(events).not.toContain("call:cancelled");
+  });
+
   it("declineCall during the accept-then-decline race delegates to endCall's cancel branch", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue(preMediaCall);
