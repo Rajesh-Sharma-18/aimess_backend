@@ -694,6 +694,13 @@ export function createMessagingClient(): MessagingClient {
       callId: p.callId,
       userId: p.userId,
       legId: p.legId ?? "",
+      // Dropping this silently turned every ring the CALLER let run out into a
+      // CANCELLED call instead of a MISSED one — so `call.missed` never fired
+      // and the callee got no missed-call push on the path that produces almost
+      // all missed calls (the client's ring timeout beats the server sweep).
+      // The request object is untyped at the `call()` boundary, so nothing
+      // failed to compile when the field was left out.
+      reason: p.reason ?? "",
     })
   );
 
