@@ -489,6 +489,10 @@ message AdminGetMemberRolesRequest {
 message AdminMemberRoleRow {
   string user_id = 1;
   string role    = 2; // ADMIN|MODERATOR|MEMBER
+  // Membership state: ACTIVE|PENDING|BANNED|LEFT. Lets a caller that already
+  // batches roles (the admin livestream viewer list) tell a banned member apart
+  // without a second round trip per page.
+  string status  = 3;
 }
 message AdminGetMemberRolesResponse {
   repeated AdminMemberRoleRow roles = 1;

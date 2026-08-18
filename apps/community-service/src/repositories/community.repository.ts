@@ -2340,13 +2340,19 @@ export const communityRepository = {
   async getMemberRolesByUserIds(
     communityId: string,
     userIds: string[]
-  ): Promise<Array<{ userId: string; role: CommunityMemberRole }>> {
+  ): Promise<
+    Array<{
+      userId: string;
+      role: CommunityMemberRole;
+      status: CommunityMemberStatus;
+    }>
+  > {
     if (userIds.length === 0 || !/^[a-fA-F0-9]{24}$/.test(communityId)) {
       return [];
     }
     return prisma.communityMember.findMany({
       where: { communityId, userId: { in: userIds } },
-      select: { userId: true, role: true },
+      select: { userId: true, role: true, status: true },
     });
   },
 

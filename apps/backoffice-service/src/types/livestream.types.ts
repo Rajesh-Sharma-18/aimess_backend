@@ -329,6 +329,8 @@ export type ListLivestreamReportsQuery = {
 export type LivestreamViewerType = "Host" | "Admin" | "Moderator" | "Member";
 
 export type LivestreamUserItem = {
+  /** Banned from this stream's community — the viewer list shows Unban instead of Ban. */
+  isBanned: boolean;
   userId: string;
   username: string;
   /**

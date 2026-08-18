@@ -91,8 +91,8 @@ describe("admin livestream viewer list — sequence + role enrichment", () => {
     ]);
     adminGetMemberRoles.mockResolvedValueOnce(
       new Map([
-        ["u-admin", "ADMIN"],
-        ["u-mod", "MODERATOR"],
+        ["u-admin", { role: "ADMIN", status: "ACTIVE" }],
+        ["u-mod", { role: "MODERATOR", status: "ACTIVE" }],
         // u-ex-member intentionally absent — no longer a member.
       ])
     );
@@ -112,6 +112,56 @@ describe("admin livestream viewer list — sequence + role enrichment", () => {
     expect(page.data.find((v) => v.userId === "u-ex-member")?.type).toBe(
       "Member"
     );
+  });
+
+  // Drives the viewer row's Ban/Unban swap. Before this the row had no ban
+  // state at all and the table offered "Ban" for someone already banned.
+  it("flags a viewer whose community membership is BANNED", async () => {
+    adminListViewerSessions.mockResolvedValueOnce({
+      sessions: [
+        {
+          userId: "u-banned",
+          joinedAt: 1000,
+          leftAt: 0,
+          watchDurationSeconds: 10,
+        },
+        {
+          userId: "u-active",
+          joinedAt: 1000,
+          leftAt: 0,
+          watchDurationSeconds: 10,
+        },
+        {
+          userId: "u-gone",
+          joinedAt: 1000,
+          leftAt: 0,
+          watchDurationSeconds: 10,
+        },
+      ],
+      total: 3,
+    });
+    adminGetProfilesByIds.mockResolvedValueOnce([
+      { userId: "u-banned", username: "ann", avatarUrl: "" },
+      { userId: "u-active", username: "bob", avatarUrl: "" },
+      { userId: "u-gone", username: "cat", avatarUrl: "" },
+    ]);
+    adminGetMemberRoles.mockResolvedValueOnce(
+      new Map([
+        ["u-banned", { role: "MEMBER", status: "BANNED" }],
+        ["u-active", { role: "MEMBER", status: "ACTIVE" }],
+        // u-gone absent — not a member at all, which is not the same as banned.
+      ])
+    );
+
+    const page = await livestreamRepository.listUsers("LS-1", {
+      page: 1,
+      limit: 10,
+    });
+
+    const byId = new Map(page.data.map((v) => [v.userId, v]));
+    expect(byId.get("u-banned")?.isBanned).toBe(true);
+    expect(byId.get("u-active")?.isBanned).toBe(false);
+    expect(byId.get("u-gone")?.isBanned).toBe(false);
   });
 
   it("populates `fullName` with the same rule as the detail's `creator.displayName` (first+last, username fallback)", async () => {
@@ -190,8 +240,8 @@ describe("admin livestream viewer list — sequence + role enrichment", () => {
     // still win over the community role.
     adminGetMemberRoles.mockResolvedValueOnce(
       new Map([
-        ["U-1", "ADMIN"],
-        ["u-viewer", "MEMBER"],
+        ["U-1", { role: "ADMIN", status: "ACTIVE" }],
+        ["u-viewer", { role: "MEMBER", status: "ACTIVE" }],
       ])
     );
 
@@ -217,7 +267,9 @@ describe("admin livestream viewer list — sequence + role enrichment", () => {
     adminGetProfilesByIds.mockResolvedValueOnce([
       { userId: "U-1", username: "hostname", avatarUrl: "" },
     ]);
-    adminGetMemberRoles.mockResolvedValueOnce(new Map([["U-1", "MEMBER"]]));
+    adminGetMemberRoles.mockResolvedValueOnce(
+      new Map([["U-1", { role: "MEMBER", status: "ACTIVE" }]])
+    );
 
     const page = await livestreamRepository.listUsers("LS-1", {
       page: 1,
@@ -280,9 +332,9 @@ describe("admin livestream viewer list — candidate-set search/filter/sort", ()
     },
   ];
   const ROLES = new Map([
-    ["u-a", "ADMIN"],
-    ["u-b", "MEMBER"],
-    ["u-c", "MODERATOR"],
+    ["u-a", { role: "ADMIN", status: "ACTIVE" }],
+    ["u-b", { role: "MEMBER", status: "ACTIVE" }],
+    ["u-c", { role: "MODERATOR", status: "ACTIVE" }],
   ]);
 
   beforeEach(() => {

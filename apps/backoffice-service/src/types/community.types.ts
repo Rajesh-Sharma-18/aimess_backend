@@ -70,6 +70,12 @@ export type CommunityListItem = {
   type: CommunityType;
   category: CategoryRef;
   status: CommunityModerationStatus;
+  /**
+   * "ADMIN_BANNED" when this community was closed because its owner was banned.
+   * `status` above is the platform-moderation axis and stays ACTIVE for that
+   * kind of close, so the list needs this to render it as closed at all.
+   */
+  closedReasonCode: string | null;
   memberCount: number;
   livestreamCount: LivestreamCounter;
   createdAt: number;

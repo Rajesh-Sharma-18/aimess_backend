@@ -404,7 +404,40 @@ const adminGetLivestreamReportCountsBreaker = makeBreaker(
 // whole admin list. `reportCount` degrades to 0, matching prior behavior.
 adminGetLivestreamReportCountsBreaker.fallback(() => ({ counts: [] }));
 
+interface RawCommunityStreamCount {
+  communityId: string;
+  count: number;
+}
+interface RawActiveStreamCountsRes {
+  counts?: RawCommunityStreamCount[];
+}
+
+// Only communities with count > 0 come back, so an absent id means 0 LIVE.
+// Fail-OPEN: a stream-service blip must not blank the whole community list.
+const activeStreamCountsBreaker = makeBreaker(
+  "stream.getActiveStreamCountsByCommunityIds",
+  (args: { communityIds: string[] }) =>
+    call<{ communityIds: string[] }, RawActiveStreamCountsRes>(
+      "getActiveStreamCountsByCommunityIds",
+      args
+    )
+);
+// Fail-open, same as the report-count enrichment above: a stream-service blip
+// degrades the column to 0 rather than failing the whole community list.
+activeStreamCountsBreaker.fallback(() => ({ counts: [] }));
+
 export const streamClient = {
+  async getActiveStreamCountsByCommunityIds(
+    communityIds: string[]
+  ): Promise<Map<string, number>> {
+    if (communityIds.length === 0) return new Map();
+    try {
+      const r = await activeStreamCountsBreaker.fire({ communityIds });
+      return new Map((r.counts ?? []).map((c) => [c.communityId, c.count]));
+    } catch {
+      return new Map();
+    }
+  },
   /** Backoffice admin list — fail-closed (propagates on outage). */
   async adminListStreams(
     args: AdminListStreamsArgs

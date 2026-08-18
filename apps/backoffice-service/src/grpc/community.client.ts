@@ -204,6 +204,8 @@ interface RawAdminGetCommunitiesByIdsRes {
 export interface AdminMemberRoleRow {
   userId: string;
   role: string;
+  /** ACTIVE|PENDING|BANNED|LEFT; "" from a callee build that predates it. */
+  status?: string;
 }
 interface RawAdminGetMemberRolesRes {
   roles: AdminMemberRoleRow[];
@@ -605,10 +607,17 @@ export const communityClient = {
   async adminGetMemberRoles(
     communityId: string,
     userIds: string[]
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, { role: string; status: string }>> {
     if (userIds.length === 0) return new Map();
     const r = await adminGetMemberRolesBreaker.fire({ communityId, userIds });
-    return new Map((r.roles ?? []).map((row) => [row.userId, row.role]));
+    return new Map(
+      (r.roles ?? []).map((row) => [
+        row.userId,
+        // `status` is absent from a callee build that predates it; treat an
+        // unknown membership state as not-banned rather than guessing.
+        { role: row.role, status: row.status ?? "" },
+      ])
+    );
   },
   async adminListCategories(
     req: AdminListCategoriesReq

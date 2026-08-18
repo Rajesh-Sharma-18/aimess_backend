@@ -644,6 +644,11 @@ type EnrichedViewer = {
   fullName: string;
   avatarUrl: string | undefined;
   type: LivestreamViewerType;
+  /**
+   * Banned from THIS stream's community. Drives the viewer list's Ban/Unban
+   * swap — without it the table offered "Ban" for someone already banned.
+   */
+  isBanned: boolean;
   /** epoch ms. */
   joinedAt: number;
   /** epoch ms; 0 = still watching. */
@@ -663,6 +668,7 @@ async function toViewerItem(e: EnrichedViewer): Promise<LivestreamUserItem> {
     leftAt: e.leftAt > 0 ? e.leftAt : null,
     watchDurationSeconds: e.watchDurationSeconds,
     type: e.type,
+    isBanned: e.isBanned,
   };
 }
 
@@ -1558,7 +1564,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       userIds.length ? userClient.adminGetProfilesByIds(userIds) : [],
       userIds.length
         ? communityClient.adminGetMemberRoles(communityId, userIds)
-        : new Map<string, string>(),
+        : new Map<string, { role: string; status: string }>(),
     ]);
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
     return sessions.map((v) => {
@@ -1576,7 +1582,10 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         // Moderator, or Member of the community — but on THIS stream they are
         // the host, and that's what the admin viewer list surfaces).
         type:
-          v.userId === creatorId ? "Host" : toViewerType(roleMap.get(v.userId)),
+          v.userId === creatorId
+            ? "Host"
+            : toViewerType(roleMap.get(v.userId)?.role),
+        isBanned: roleMap.get(v.userId)?.status === "BANNED",
         joinedAt: v.joinedAt,
         leftAt: v.leftAt,
         watchDurationSeconds: v.watchDurationSeconds,

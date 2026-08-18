@@ -1266,6 +1266,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           roles: rows.map((r) => ({
             userId: r.userId,
             role: String(r.role),
+            status: String(r.status),
           })),
         });
       } catch (err) {

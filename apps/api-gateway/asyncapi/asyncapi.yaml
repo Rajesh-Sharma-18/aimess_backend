@@ -242,7 +242,7 @@ channels:
       communityJoin: { $ref: "#/components/messages/CommunityJoin" }
       communityLeave: { $ref: "#/components/messages/CommunityLeave" }
       communityMessageSend:
-        { $ref: "#/components/messages/CommunityMessageSend" }
+        { $ref: "#/compone  nts/messages/CommunityMessageSend" }
       communityMessagesFetch:
         { $ref: "#/components/messages/CommunityMessagesFetch" }
       communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }

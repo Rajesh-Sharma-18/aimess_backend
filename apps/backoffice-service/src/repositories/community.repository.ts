@@ -167,6 +167,7 @@ function parseSort(sort: string): { field: SortField; dir: 1 | -1 } {
 function toListItem(c: CommunityDetail): CommunityListItem {
   const status = c.community.status;
   return {
+    closedReasonCode: c.community.closedReasonCode,
     communityId: c.community.communityId,
     communityName: c.community.name,
     avatar: c.community.avatar,

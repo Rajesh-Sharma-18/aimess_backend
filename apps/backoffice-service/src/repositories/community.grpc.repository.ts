@@ -48,6 +48,11 @@ async function fetchLiveStreamCount(communityId: string): Promise<number> {
   try {
     const { total } = await streamClient.adminListStreams({
       communityId,
+      // LIVE only. Without this the detail counted every stream the community
+      // had ever hosted, so a community whose broadcasts had all ended still
+      // reported them as livestreams — and disagreed with the list column,
+      // which is explicitly "active livestreams / max".
+      status: "LIVE",
       page: 1,
       limit: 1,
     });
@@ -67,7 +72,9 @@ async function fetchLiveStreamCount(communityId: string): Promise<number> {
 
 /** Map an AdminCommunityRow → the list-table view model. */
 async function rowToListItem(
-  r: RawAdminCommunityRow
+  r: RawAdminCommunityRow,
+  /** LIVE stream count from stream-service; the gRPC row's own field is a stub. */
+  liveStreamCount: number
 ): Promise<CommunityListItem> {
   const status = r.status as CommunityModerationStatus;
   const [adminAvatar, avatar] = await Promise.all([
@@ -89,11 +96,12 @@ async function rowToListItem(
     type: r.type as CommunityType,
     category: { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
     status,
+    closedReasonCode: r.statusClosedReasonCode || null,
     memberCount: r.memberCount,
     livestreamCount: {
-      value: Number(r.livestreamCount),
+      value: liveStreamCount,
       max: 5,
-      stale: true,
+      stale: false,
     },
     createdAt: msToEpoch(r.createdAt),
     actions: {
@@ -147,8 +155,19 @@ export class GrpcCommunityRepository implements CommunityRepository {
       nextCursor: null,
     };
 
+    // ONE call for the whole page: community-service still reports
+    // livestream_count as a hardcoded 0 (the field is documented as a stub), so
+    // the column showed 0/5 for every community. stream-service owns the real
+    // number and already has a batched RPC for exactly this.
+    const rows = res.communities ?? [];
+    const liveCounts = await streamClient.getActiveStreamCountsByCommunityIds(
+      rows.map((r) => r.communityId)
+    );
+
     return {
-      data: await Promise.all((res.communities ?? []).map(rowToListItem)),
+      data: await Promise.all(
+        rows.map((r) => rowToListItem(r, liveCounts.get(r.communityId) ?? 0))
+      ),
       pagination,
     };
   }
