@@ -154,7 +154,7 @@ describe("publishConvUpdated — isOffline", () => {
       // Call rows are VOICE_CALL/VIDEO_CALL, not SYSTEM — so the sender-less +
       // no-badge behaviour must come from the explicit countInUnread/senderId,
       // NOT from publishConvUpdated's contentType==="SYSTEM" shortcut.
-      preview: { contentType: "VOICE_CALL", text: "Voice call lasted 02:05" },
+      preview: { contentType: "VOICE_CALL", text: "Voice Call 02:05" },
       countInUnread: false,
     });
 

@@ -481,8 +481,16 @@ export function buildCallTimelineText(params: {
       return t("SYS_CALL_MISSED", locale, { label });
     }
     default:
+      // Title-cased label here only: this line stands alone as the chat-list
+      // preview and must read exactly like the card's heading, unlike every
+      // branch above where the label sits inside a sentence.
       return t("SYS_CALL_ENDED", locale, {
-        label,
+        label: t(
+          String(params.callType ?? "").toUpperCase() === "VIDEO"
+            ? "SYS_CALL_TITLE_VIDEO"
+            : "SYS_CALL_TITLE_VOICE",
+          locale
+        ),
         duration: formatCallDuration(Number(params.durationSec ?? 0)),
       });
   }

@@ -25,6 +25,9 @@ const IDENTICAL_ALLOWED = new Set([
   // Pure structure — every token is a parameter.
   "SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION",
   "NOTIF_CHAT_COMMUNITY_BODY",
+  // "{{label}} {{duration}}" — the completed-call preview. The label is itself
+  // a translated string, so there is no prose here to translate.
+  "SYS_CALL_ENDED",
 ]);
 
 const placeholders = (text) =>

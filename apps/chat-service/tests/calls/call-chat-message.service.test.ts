@@ -166,7 +166,7 @@ describe("CallChatMessageService — in-place transitions", () => {
         systemEvent: "CALL_ENDED",
         countInUnread: false,
         content: expect.objectContaining({
-          text: "Voice call lasted 02:05",
+          text: "Voice Call 02:05",
           call: expect.objectContaining({
             callStatus: "ENDED",
             durationSec: 125,
