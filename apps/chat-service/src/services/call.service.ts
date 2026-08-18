@@ -1060,19 +1060,6 @@ export class CallService {
         excludeSessionId: params.sessionId,
       });
 
-      const grpCallerSnap = await this.getUserSnapshot(call.callerId).catch(
-        () => ({ displayName: "", avatarUrl: "" })
-      );
-      publishCallMissedSafe({
-        callId: call.callId,
-        calleeId: params.calleeId,
-        callerId: call.callerId,
-        callerName: grpCallerSnap.displayName,
-        callerAvatar: grpCallerSnap.avatarUrl,
-        callType: call.type,
-        missedAt: Date.now(),
-      });
-
       if (updated.calleeIds.length > 0) return updated;
 
       // Last rung member declined — end the call for the caller too, same
@@ -1173,19 +1160,14 @@ export class CallService {
       params.calleeId
     );
 
-    const callerSnap = await this.getUserSnapshot(call.callerId).catch(() => ({
-      displayName: "",
-      avatarUrl: "",
-    }));
-    publishCallMissedSafe({
-      callId: call.callId,
-      calleeId: params.calleeId,
-      callerId: call.callerId,
-      callerName: callerSnap.displayName,
-      callerAvatar: callerSnap.avatarUrl,
-      callType: call.type,
-      missedAt: endedAt.getTime(),
-    });
+    // NO missed-call push here, on either decline path. A decline is the
+    // callee ACTING on the ring, not missing it: the dismissal published just
+    // above (reason "declined") is what clears it from their other devices, and
+    // the Notification-Center row comes from the DECLINED card projection —
+    // which `isUnreadCallActivity` already badges. Pushing "Missed call from X"
+    // on top buzzed the very device that had just tapped Decline (the missed
+    // producer takes no session exclusion), immediately after telling it the
+    // ring was handled.
 
     return updated;
   }
