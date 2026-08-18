@@ -18,6 +18,7 @@ import {
   buildSocialAccountBase,
   generateUniqueAccount,
 } from "../lib/social-account.util.js";
+import { resolveSocialProfileName } from "../lib/social-profile-name.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
@@ -105,6 +106,10 @@ async function signInWithProvider(
     email: string | null;
     emailVerified: boolean;
     displayName: string | null;
+    /** Verified provider given name; null when the provider sent none. */
+    firstName: string | null;
+    /** Verified provider family name; null when the provider sent none. */
+    lastName: string | null;
   },
   fcmTokens: string[] = []
 ): Promise<SocialLoginResult> {
@@ -183,12 +188,17 @@ async function signInWithProvider(
     providerEmail: profile.email,
   });
 
+  // Provider names ride the creation event so user-service seeds the profile
+  // with them instead of the placeholder "<account> User". Undefined (not "")
+  // when the provider gave nothing — the consumer keeps its own fallback.
   publishUserCreatedSafe({
     userId: user.id,
     account: user.account,
     email: user.email ?? profile.email,
     createdAt: user.createdAt.toISOString(),
     isGoogleLogin: authProvider === AuthProvider.GOOGLE,
+    firstName: profile.firstName ?? undefined,
+    lastName: profile.lastName ?? undefined,
   });
 
   const session = buildSessionContext(req);
@@ -229,6 +239,11 @@ export const socialAuthService = {
   ): Promise<SocialLoginResult> {
     const profile = await verifyGoogleIdToken(input.idToken);
 
+    // `picture` is deliberately not persisted: user_profiles.avatarUrl stores a
+    // MinIO object key in the private avatars bucket, so a Google CDN URL there
+    // resolves to nothing. Importing it would need a server-side fetch + upload.
+    // ponytail: no social-avatar import; add an ingest step in avatar.service if
+    // product wants Google pictures pulled in.
     return signInWithProvider(
       req,
       "GOOGLE",
@@ -237,6 +252,8 @@ export const socialAuthService = {
         email: profile.email,
         emailVerified: profile.emailVerified,
         displayName: profile.displayName,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
       },
       input.fcmTokens
     );
@@ -257,6 +274,20 @@ export const socialAuthService = {
       ? tokenProfile.emailVerified
       : false;
 
+    // Apple hands the name over ONCE — in the first authorization response, not
+    // in the identity token, and never again on later sign-ins. It is only ever
+    // used to seed a brand-new profile below (signInWithProvider publishes it on
+    // creation only), so a later login sending nulls cannot erase what was
+    // stored on day one.
+    const { firstName, lastName, displayName } = resolveSocialProfileName(
+      typeof input.fullName === "string"
+        ? { fullName: input.fullName }
+        : {
+            givenName: input.fullName?.givenName,
+            familyName: input.fullName?.familyName,
+          }
+    );
+
     return signInWithProvider(
       req,
       "APPLE",
@@ -264,7 +295,9 @@ export const socialAuthService = {
         sub: tokenProfile.sub,
         email,
         emailVerified,
-        displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
+        displayName: tokenProfile.displayName ?? displayName,
+        firstName,
+        lastName,
       },
       input.fcmTokens
     );

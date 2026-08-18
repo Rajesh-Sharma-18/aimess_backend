@@ -147,6 +147,33 @@ export function publishCommunityMemberMuteSyncedForChatSafe(
   );
 }
 
+export interface CommunityMetaSyncedForChat {
+  communityId: string;
+  /** New display name; omit when the rename wasn't part of this edit. */
+  name?: string;
+  /** New avatar object key (or null to clear); omit when unchanged. */
+  avatarUrl?: string | null;
+}
+
+/**
+ * Mirrors a community rename / avatar change onto chat-service's GeneralRoom.
+ *
+ * chat-service holds no other copy of the community name, and it is what every
+ * community push title is built from (GeneralRoom.name → getRoomName →
+ * chat.message_sent.communityName). Without this event the mirror was written
+ * once at `community.created` and never again, so every push after a rename
+ * carried the old name forever.
+ */
+export function publishCommunityMetaSyncedForChatSafe(
+  data: CommunityMetaSyncedForChat
+): void {
+  publishSafe(
+    "community.meta_synced",
+    data,
+    "community.meta_synced (chat-sync)"
+  );
+}
+
 export interface CommunityStatusChangedForChat {
   communityId: string;
   /** "SUSPENDED" = admin closed; "ACTIVE" = admin reopened. */

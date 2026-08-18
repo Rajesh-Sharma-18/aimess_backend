@@ -9,7 +9,7 @@ import { chatCopy } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
-  filterToActiveCommunityMembers,
+  filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
   isGroupMemberMuted,
   isPrivateRoomMutedBy,
@@ -116,16 +116,21 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
-  // Authoritative ACTIVE-roster filter: chat-service's RoomMember mirror can
-  // lag behind leave/kick/ban, so a LEFT user may still appear in recipientIds.
-  // Intersect with community-service's live ACTIVE ids before any FCM send.
-  // Fail-closed (empty list) on oracle outage — never push to former members.
+  // Authoritative ACTIVE-roster + per-recipient "chat notifications on" filter in
+  // ONE call: chat-service's RoomMember mirror can lag behind leave/kick/ban, so a
+  // LEFT user may still appear in recipientIds. Fail-closed (empty list) on oracle
+  // outage — never push to former members. Resolving both gates for the whole
+  // fan-out here is what lets pushToUser skip its per-recipient community oracles.
   if (isCommunity && communityId) {
     const before = recipients.length;
-    recipients = await filterToActiveCommunityMembers(communityId, recipients);
+    recipients = await filterToNotifiableCommunityMembers(
+      communityId,
+      recipients,
+      "chatEnabled"
+    );
     if (recipients.length < before) {
       logger.info(
-        `Filtered ${before - recipients.length} non-ACTIVE recipient(s) from community FCM fan-out community=${communityId} message=${data.messageId}`
+        `Filtered ${before - recipients.length} non-ACTIVE/opted-out recipient(s) from community FCM fan-out community=${communityId} message=${data.messageId}`
       );
     }
     if (recipients.length === 0) return;
@@ -133,11 +138,13 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   const category = isCommunity ? "communityEnabled" : "chatEnabled";
 
-  // For community messages: title = community name (if known), body = "Sender: preview".
-  // For private/group: title = sender name, body = preview text.
+  // Community/group messages: title = room name (if known), body = "Sender: preview".
+  // Private: title = sender name, body = preview text.
+  const isGroup = data.conversationType === "GROUP";
   const copy = chatCopy.message({
     isCommunity,
     communityName: data.communityName,
+    ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
     senderName: data.senderName,
     preview: data.preview,
   });
@@ -166,7 +173,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   const showPreviewOverride = (locale: SupportedLocale): string =>
     chatCopy.messagePreviewHidden(
-      isCommunity ? data.communityName : undefined,
+      isCommunity ? data.communityName : isGroup ? data.groupName : undefined,
       locale
     );
 
@@ -185,12 +192,18 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     // Community chat messages share the `communityEnabled` global category
     // with generic community events but must gate on the community's own
     // `chatEnabled` preference (the "Chat" toggle), not `announcementEnabled`.
-    ...(isCommunity ? { communityPrefField: "chatEnabled" as const } : {}),
+    ...(isCommunity ? { communityGatesPreResolved: true as const } : {}),
     type: "MESSAGE",
     copy,
     actorId: data.senderId,
     deepLink,
-    collapseKey: `conv:${data.conversationId}`,
+    // NO collapseKey. FCM keeps only the NEWEST message per collapse key while a
+    // device is unreachable (dozing/offline), so `conv:<id>` silently discarded
+    // every earlier message in a conversation — the single biggest source of
+    // "I never got that notification". Telegram/WhatsApp never collapse chat
+    // messages; only the call ring/cancel pair does (where replacing IS correct).
+    // Beyond FCM's ~100 pending-per-device cap the client's catch-up sync covers
+    // the gap, which is the same trade those apps make.
     apnsThreadId: threadId,
     chatType: chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
     showPreviewOverride,
@@ -259,9 +272,17 @@ export async function startChatConsumer(): Promise<void> {
         }
         channel.ack(message);
       } catch (error) {
-        // Deterministic/parse error → drop (no requeue) so it doesn't spin.
-        logger.error("Chat push consumer failed to process message", error);
-        channel.nack(message, false, false);
+        // The queue has no dead-letter exchange, so `nack(requeue=false)` DESTROYS
+        // the message — a single transient blip (gRPC timeout, DB hiccup) used to
+        // lose that notification permanently. Retry exactly once via redelivery,
+        // then drop: a deterministic failure (malformed payload) still can't spin,
+        // but a transient one gets a second chance.
+        const retry = message.fields?.redelivered !== true;
+        logger.error(
+          `Chat push consumer failed to process message — ${retry ? "requeueing once" : "dropping after retry"}`,
+          error
+        );
+        channel.nack(message, false, retry);
       }
     })();
   });

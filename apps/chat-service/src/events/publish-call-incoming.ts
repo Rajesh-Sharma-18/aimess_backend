@@ -28,6 +28,18 @@ export const CALL_CANCELLED_EVENT = "call.cancelled";
  * against one who is mid-call, so it must be a separate, non-destructive signal.
  */
 export const CALL_HANDLED_EVENT = "call.handled";
+/**
+ * "This call has settled — record it in both participants' call history."
+ * Published once per TERMINAL transition of a 1:1 call, carrying the canonical
+ * `CallTimelineStatus` the chat timeline row already stores.
+ * notifications-service projects it into ONE Notification-Center row per
+ * participant (groupKey `call:<callId>`), which is why a re-publish is safe:
+ * the second write transitions that same row instead of stacking a card.
+ *
+ * Unlike the events above this one is NOT a push trigger — the ring and the
+ * missed-call push are already owned by `call.incoming` / `call.missed`.
+ */
+export const CALL_ACTIVITY_EVENT = "call.activity";
 
 export interface CallIncomingPayload {
   callId: string;
@@ -75,6 +87,26 @@ export interface CallCancelPayload {
  * is over".
  */
 export type CallHandledPayload = CallCancelPayload;
+
+export interface CallActivityPayload {
+  callId: string;
+  callerId: string;
+  calleeId: string;
+  /** "AUDIO" | "VIDEO" — the call row's own `type`, never inferred from text. */
+  callType: string;
+  /** Canonical terminal CallTimelineStatus (ENDED / MISSED / DECLINED / …). */
+  status: string;
+  /** Answered-call duration in seconds; 0 when the call was never answered. */
+  durationSec: number;
+  /** Private room the call belongs to. */
+  privateRoomId: string;
+  /** epoch ms of the terminal transition. */
+  endedAt: number;
+  callerName: string;
+  callerAvatar: string;
+  calleeName: string;
+  calleeAvatar: string;
+}
 
 let channelPromise: Promise<amqp.Channel> | null = null;
 
@@ -180,6 +212,35 @@ export function publishCallCancelSafe(p: CallCancelPayload): void {
       channelPromise = null;
       logger.warn(
         `Failed to publish call.cancelled for ${p.callId}: ${String(error)}`
+      );
+    }
+  })();
+}
+
+/**
+ * Fire-and-forget call-history projection for a settled 1:1 call. No
+ * expiration (the row is history — it must arrive even after a broker
+ * backlog) and no push. Best-effort: a failure is logged, never thrown, so the
+ * authoritative call transition never fails on its notification projection.
+ */
+export function publishCallActivitySafe(p: CallActivityPayload): void {
+  const url = env.RABBITMQ_URL;
+  if (!url) return; // RabbitMQ not configured — skip (inbox row is best-effort)
+  void (async () => {
+    try {
+      const channel = await getChannel(url);
+      const payload = JSON.stringify({ type: CALL_ACTIVITY_EVENT, data: p });
+      channel.sendToQueue(CALL_PUSH_QUEUE, Buffer.from(payload), {
+        persistent: true,
+      });
+      logger.info(
+        `[push:publish] call.activity callId=${p.callId} status=${p.status} ` +
+          `type=${p.callType} duration=${p.durationSec}`
+      );
+    } catch (error) {
+      channelPromise = null;
+      logger.warn(
+        `Failed to publish call.activity for ${p.callId}: ${String(error)}`
       );
     }
   })();

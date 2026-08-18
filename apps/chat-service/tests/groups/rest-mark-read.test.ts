@@ -39,6 +39,7 @@ describe("POST /groups/rooms/:roomId/read (mark-read → orchestrator)", () => {
     mocks.groupMemberRepo.advanceReadPointer.mockResolvedValue({
       roomId: ROOM,
       userId: TEST_USER_ID,
+      lastReadMessageId: "507f1f77bcf86cd799439011",
       unreadCount: 0,
     });
 
@@ -66,6 +67,65 @@ describe("POST /groups/rooms/:roomId/read (mark-read → orchestrator)", () => {
       `user:${TEST_USER_ID}`,
       expect.stringContaining("read_sync")
     );
+  });
+
+  it("NEGATIVE: a STALE read reports the PERSISTED watermark, never the requested target", async () => {
+    // The repo is forward-only: it refuses the older target and hands back the
+    // untouched row. Reporting the request's own seq here would broadcast a
+    // read_to_seq REGRESSION the database never made — the sender's blue tick
+    // would drop back to grey and the reader's other devices would re-inflate
+    // their badge, until a refresh re-read the (still correct) DB.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      status: "ACTIVE",
+    });
+    mocks.groupMessageRepo.findById.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "507f1f77bcf86cd799439011"
+          ? {
+              id: "507f1f77bcf86cd799439011",
+              roomId: ROOM,
+              sequenceNumber: 3,
+              createdAt: new Date(1000),
+            }
+          : {
+              id: "507f1f77bcf86cd799439099",
+              roomId: ROOM,
+              sequenceNumber: 42,
+              createdAt: new Date(9000),
+            }
+      )
+    );
+    mocks.groupMessageRepo.countUnreadAfter.mockResolvedValue(7);
+    // Refused: pointer already at seq 42, unread already 0.
+    mocks.groupMemberRepo.advanceReadPointer.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      lastReadMessageId: "507f1f77bcf86cd799439099",
+      unreadCount: 0,
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/groups/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "507f1f77bcf86cd799439011" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.readToSeq).toBe(42);
+    const readSync = mocks.redis.publish.mock.calls.find(
+      (c: unknown[]) =>
+        c[0] === `user:${TEST_USER_ID}` && String(c[1]).includes("read_sync")
+    );
+    expect(readSync).toBeDefined();
+    const synced = JSON.parse(String(readSync?.[1])).data as {
+      read_to_seq: number;
+      unreadCount: number;
+    };
+    expect(synced.read_to_seq).toBe(42);
+    // …and the reader's own badge stays at the persisted 0, not the 7 the
+    // stale request's boundary would have implied.
+    expect(synced.unreadCount).toBe(0);
   });
 
   it("NEGATIVE: an optimistic client id ('tmp-…') no-ops instead of throwing a malformed-ObjectId error", async () => {

@@ -160,7 +160,7 @@ import {
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityMemberMuteRetractedForChatSafe,
-  publishCommunityNameChangedForChatSafe,
+  publishCommunityMetaSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -2589,10 +2589,10 @@ export const communityService = {
     if (nextName && nextName !== previousName) {
       await communityCache.invalidateNameAvailability(previousName);
       await communityCache.invalidateNameAvailability(nextName);
-      // Sync chat-service's denormalized GeneralRoom.name mirror, which titles
-      // community chat-message push notifications — otherwise pushes keep the
-      // OLD name after a rename.
-      publishCommunityNameChangedForChatSafe({ communityId, name: nextName });
+      // The chat-side GeneralRoom.name mirror is refreshed further down by
+      // publishCommunityMetaSyncedForChatSafe, which carries name AND avatar and
+      // supersedes the older name-only `community.name_changed` publish that
+      // used to live here — emitting both wrote the same name twice per rename.
     }
     if (nextHandle && nextHandle !== previousHandle) {
       await communityCache.invalidateHandleAvailability(previousHandle);
@@ -2633,6 +2633,21 @@ export const communityService = {
         },
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
+      });
+    }
+    // Rename / avatar change: re-sync chat-service's GeneralRoom mirror. That
+    // mirror IS the community name every future push title is built from
+    // (getRoomName → chat.message_sent.communityName → FCM/APNs title), and it
+    // was previously written only once at `community.created` — so without this
+    // every push after a rename kept the old name indefinitely. Publishes the
+    // post-write row, never the pre-write snapshot.
+    if (changedFields.includes("name") || changedFields.includes("avatar")) {
+      publishCommunityMetaSyncedForChatSafe({
+        communityId,
+        ...(changedFields.includes("name") ? { name: updated.name } : {}),
+        ...(changedFields.includes("avatar")
+          ? { avatarUrl: updated.avatarUrl ?? null }
+          : {}),
       });
     }
     // Visibility changed (PUBLIC↔PRIVATE): re-sync the cached community type in

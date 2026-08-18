@@ -289,6 +289,73 @@ export const NOTIFICATION_MESSAGES = {
     en: "Missed video call",
     th: "สายวิดีโอที่ไม่ได้รับ",
   },
+  // Call ACTIVITY copy — the Notification Center's call-history line. One row
+  // per call (see buildCallActivityText), rendered from the canonical
+  // CallTimelineStatus plus the reader's own direction, so the caller reads
+  // "Outgoing voice call" where the callee reads "Missed voice call".
+  NOTIF_CALL_OUTGOING_VOICE: {
+    vi: "Cuộc gọi thoại đi",
+    en: "Outgoing voice call",
+    th: "สายสนทนาออก",
+  },
+  NOTIF_CALL_OUTGOING_VIDEO: {
+    vi: "Cuộc gọi video đi",
+    en: "Outgoing video call",
+    th: "สายวิดีโอออก",
+  },
+  NOTIF_CALL_DECLINED_VOICE: {
+    vi: "Cuộc gọi thoại bị từ chối",
+    en: "Declined voice call",
+    th: "สายสนทนาที่ถูกปฏิเสธ",
+  },
+  NOTIF_CALL_DECLINED_VIDEO: {
+    vi: "Cuộc gọi video bị từ chối",
+    en: "Declined video call",
+    th: "สายวิดีโอที่ถูกปฏิเสธ",
+  },
+  NOTIF_CALL_CANCELLED_VOICE: {
+    vi: "Cuộc gọi thoại đã hủy",
+    en: "Cancelled voice call",
+    th: "สายสนทนาที่ถูกยกเลิก",
+  },
+  NOTIF_CALL_CANCELLED_VIDEO: {
+    vi: "Cuộc gọi video đã hủy",
+    en: "Cancelled video call",
+    th: "สายวิดีโอที่ถูกยกเลิก",
+  },
+  NOTIF_CALL_FAILED_VOICE: {
+    vi: "Cuộc gọi thoại thất bại",
+    en: "Failed voice call",
+    th: "สายสนทนาที่ล้มเหลว",
+  },
+  NOTIF_CALL_FAILED_VIDEO: {
+    vi: "Cuộc gọi video thất bại",
+    en: "Failed video call",
+    th: "สายวิดีโอที่ล้มเหลว",
+  },
+  // Completed call WITH a known duration. `duration` is always the canonical
+  // mm:ss / hh:mm:ss from formatCallDuration — never a re-derived number.
+  NOTIF_CALL_ENDED_VOICE: {
+    vi: "Cuộc gọi thoại • {{duration}}",
+    en: "Voice call • {{duration}}",
+    th: "สายสนทนา • {{duration}}",
+  },
+  NOTIF_CALL_ENDED_VIDEO: {
+    vi: "Cuộc gọi video • {{duration}}",
+    en: "Video call • {{duration}}",
+    th: "สายวิดีโอ • {{duration}}",
+  },
+  // Completed call with NO duration recorded — never invent one.
+  NOTIF_CALL_COMPLETED_VOICE: {
+    vi: "Cuộc gọi thoại",
+    en: "Voice call",
+    th: "สายสนทนา",
+  },
+  NOTIF_CALL_COMPLETED_VIDEO: {
+    vi: "Cuộc gọi video",
+    en: "Video call",
+    th: "สายวิดีโอ",
+  },
 
   // ── Account / security ──────────────────────────────────────────────────
   NOTIF_AUTH_LOGIN_DETECTED_TITLE: {

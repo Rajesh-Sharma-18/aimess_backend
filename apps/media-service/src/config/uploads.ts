@@ -48,6 +48,11 @@ const CHAT_MIME = {
   // Audio + voice notes (ogg-opus / m4a / aac / flac)
   "audio/mpeg": "mp3",
   "audio/ogg": "ogg",
+  // Standalone Ogg-Opus. `audio/ogg` already carried Opus-in-Ogg, but a
+  // recorder that labels its output `audio/opus` (and names the file `.opus`)
+  // was rejected as an unsupported content type — the bytes are the same
+  // container, only the label differed.
+  "audio/opus": "opus",
   "audio/wav": "wav",
   "audio/mp4": "m4a",
   "audio/x-m4a": "m4a",
@@ -99,6 +104,7 @@ const CHAT_MAX_BYTES_BY_MIME: Record<string, number> = {
   // Audio + voice notes
   "audio/mpeg": env.CHAT_AUDIO_MAX_BYTES,
   "audio/ogg": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/opus": env.CHAT_AUDIO_MAX_BYTES,
   "audio/wav": env.CHAT_AUDIO_MAX_BYTES,
   "audio/mp4": env.CHAT_AUDIO_MAX_BYTES,
   "audio/x-m4a": env.CHAT_AUDIO_MAX_BYTES,

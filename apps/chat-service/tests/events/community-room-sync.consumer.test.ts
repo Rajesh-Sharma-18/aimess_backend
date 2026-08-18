@@ -34,6 +34,18 @@ jest.mock("../../src/events/publish-message-sent.js", () => ({
   publishMessageSentSafe,
 }));
 
+const notifyUnreadChanged = jest.fn();
+jest.mock("../../src/events/unread-summary-bridge.js", () => ({
+  notifyUnreadChanged,
+}));
+
+// Object key → presigned download URL. Stubbed so the test asserts WHERE the
+// signing happens (wire only, never the persisted row) without needing MinIO.
+const resolveMediaUrl = jest.fn(async (key?: string | null) =>
+  key ? `https://signed.test/${key}?sig=1` : ""
+);
+jest.mock("../../src/lib/media-resolve.js", () => ({ resolveMediaUrl }));
+
 jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
@@ -55,9 +67,11 @@ jest.mock("../../src/repositories/room-member.repository.js", () => ({
     findActiveByRoom = jest.fn(async () => []);
   },
 }));
+const setCommunityMeta = jest.fn(async () => undefined);
 jest.mock("../../src/repositories/general-room.repository.js", () => ({
   GeneralRoomRepository: class {
     provisionForCommunity = jest.fn(async () => undefined);
+    setCommunityMeta = setCommunityMeta;
   },
 }));
 jest.mock("../../src/repositories/private-room.repository.js", () => ({
@@ -139,6 +153,36 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
     deletePersonalJoinMessages.mockResolvedValue([]);
     upsert.mockClear();
     redisPublish.mockClear();
+    notifyUnreadChanged.mockClear();
+  });
+
+  // The Community nav badge is summed from ACTIVE membership rows only
+  // (RoomMemberRepository.findActiveByUser), so any status flip silently changes
+  // the total: a ban/leave subtracts that room's unread, a rejoin adds it back.
+  // Nothing else recomputes it, so without this the badge kept its pre-ban value
+  // until the user's next mark-read or reconnect.
+  it.each(["BANNED", "LEFT", "ACTIVE"])(
+    "%s sync recomputes the user's unread summary",
+    async (status) => {
+      const fake = await start();
+      await fake.deliver(
+        memberSynced({
+          communityId: COMMUNITY,
+          userId: USER,
+          status,
+          eventAt: EVENT_AT,
+        })
+      );
+      expect(notifyUnreadChanged).toHaveBeenCalledWith(USER);
+    }
+  );
+
+  it("role-only sync does NOT recompute the badge (membership is unchanged)", async () => {
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({ communityId: COMMUNITY, userId: USER, role: "MODERATOR" })
+    );
+    expect(notifyUnreadChanged).not.toHaveBeenCalled();
   });
 
   it("LEFT purges the user's join lines bounded by eventAt, and acks", async () => {
@@ -510,6 +554,29 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
     });
   });
 
+  it("REGRESSION: the wire card carries a SIGNED avatar URL while the stored row keeps the raw object key", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    // Persisted: stable key (a presigned URL would expire in the DB).
+    expect(
+      createMessage.mock.calls[0][0].content.invitation.communityAvatarUrl
+    ).toBe("community/avatars/dev.jpg");
+
+    // Wire: signed — a client can't sign a key, and a bare key as an <img src>
+    // is what made the invite card render the default AIMess avatar.
+    const envelope = JSON.parse(
+      redisPublish.mock.calls.find((c) => c[0] === `conv:${ROOM.roomId}`)![1]
+    );
+    const signed = "https://signed.test/community/avatars/dev.jpg?sig=1";
+    expect(envelope.data.content.invitation.communityAvatarUrl).toBe(signed);
+    expect(envelope.data.systemAction.communityAvatarUrl).toBe(signed);
+    expect(
+      publishConvUpdatedSafe.mock.calls[0][0].preview.systemAction
+        .communityAvatarUrl
+    ).toBe(signed);
+  });
+
   it("bumps the inbox for BOTH participants and pushes the recipient (offline FCM/APNs)", async () => {
     const fake = await start();
     await fake.deliver(inviteShared());
@@ -672,5 +739,50 @@ describe("CommunityRoomSyncConsumer — moderation mute mirror", () => {
     await fake.deliver(muteSynced({ communityId: COMMUNITY, isMuted: true }));
     expect(setMute).not.toHaveBeenCalled();
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `community.meta_synced` — the fix for stale community names in push.
+ *
+ * GeneralRoom.name is the ONLY community name chat-service holds, and every
+ * community push title is built from it (getRoomName → chat.message_sent →
+ * FCM/APNs). It used to be written once at `community.created` and never again,
+ * so a rename left every future push carrying the old name. This event keeps
+ * the mirror following the community row.
+ */
+describe("CommunityRoomSyncConsumer — community.meta_synced", () => {
+  const metaSynced = (data: Record<string, unknown>) =>
+    JSON.stringify({ type: "community.meta_synced", data });
+
+  beforeEach(() => {
+    setCommunityMeta.mockClear();
+  });
+
+  it("rename → mirrors the new name onto the room", async () => {
+    const fake = await start();
+    await fake.deliver(
+      metaSynced({ communityId: COMMUNITY, name: "New Community Name" })
+    );
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, {
+      name: "New Community Name",
+    });
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("avatar-only change → writes the logo, leaves the name untouched", async () => {
+    const fake = await start();
+    await fake.deliver(
+      metaSynced({ communityId: COMMUNITY, avatarUrl: "community/a/new.png" })
+    );
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, {
+      logo: "community/a/new.png",
+    });
+  });
+
+  it("avatar cleared (null) → writes null rather than skipping the field", async () => {
+    const fake = await start();
+    await fake.deliver(metaSynced({ communityId: COMMUNITY, avatarUrl: null }));
+    expect(setCommunityMeta).toHaveBeenCalledWith(COMMUNITY, { logo: null });
   });
 });

@@ -11,7 +11,12 @@
  * fanned out to an English, a Vietnamese and a Thai user produces three
  * different strings. See `push.service.ts`.
  */
-import { t, type SupportedLocale } from "@aimess/constants";
+import {
+  buildCallActivityText,
+  t,
+  type CallActivityDirection,
+  type SupportedLocale,
+} from "@aimess/constants";
 
 export interface NotificationCopy {
   /** Tray/FCM heading — always present, the OS requires one. */
@@ -381,16 +386,22 @@ export const chatCopy = {
     (params: {
       isCommunity: boolean;
       communityName?: string;
+      /** GROUP rooms only — titles the push on the group, like a community. */
+      groupName?: string;
       senderName?: string;
       preview?: string;
     }): LocalizedCopy =>
-    (locale) =>
-      params.isCommunity
+    (locale) => {
+      // A message in a NAMED room (community or group) titles on the room and
+      // puts the sender in the body ("Family Group 2026" / "Ana: hey"); a 1:1
+      // titles on the sender. Same shape for both room kinds — the only
+      // difference is which name the producer resolved.
+      const roomName = params.isCommunity
+        ? params.communityName
+        : params.groupName;
+      return roomName
         ? {
-            title:
-              params.communityName ||
-              params.senderName ||
-              t("NOTIF_CHAT_NEW_MESSAGE", locale),
+            title: roomName,
             body: t("NOTIF_CHAT_COMMUNITY_BODY", locale, {
               name: person(params.senderName, locale),
               preview: params.preview || t("NOTIF_CHAT_SENT_A_MESSAGE", locale),
@@ -398,15 +409,23 @@ export const chatCopy = {
           }
         : {
             title: params.senderName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
-            body: params.preview || t("NOTIF_CHAT_SENT_YOU_A_MESSAGE", locale),
-          },
+            body:
+              params.preview ||
+              t(
+                params.isCommunity
+                  ? "NOTIF_CHAT_SENT_A_MESSAGE"
+                  : "NOTIF_CHAT_SENT_YOU_A_MESSAGE",
+                locale
+              ),
+          };
+    },
   /** Privacy-masked body used when the recipient turned previews off. */
   messagePreviewHidden: (
-    communityName: string | undefined,
+    roomName: string | undefined,
     locale: SupportedLocale
   ): string =>
-    communityName
-      ? t("NOTIF_CHAT_NEW_MESSAGE_IN", locale, { community: communityName })
+    roomName
+      ? t("NOTIF_CHAT_NEW_MESSAGE_IN", locale, { community: roomName })
       : t("NOTIF_CHAT_NEW_MESSAGE", locale),
 };
 
@@ -467,6 +486,30 @@ export const callCopy = {
     }),
   /** Data-only dismissal push — deliberately silent. */
   cancelled: (): LocalizedCopy => () => ({ title: "", body: "" }),
+  /**
+   * Notification-Center call-history line. The sentence is built by the shared
+   * `buildCallActivityText` mapper so the Notification Center, the DM timeline
+   * card and the conversation-list preview all describe one call the same way.
+   * `peerName` is data (a person's name), so it is the title, not copy.
+   */
+  activity:
+    (
+      peerName: string,
+      callType: string,
+      status: string,
+      direction: CallActivityDirection,
+      durationSec: number
+    ): LocalizedCopy =>
+    (locale) => ({
+      title: peerName || "",
+      body: buildCallActivityText({
+        callType,
+        status,
+        direction,
+        durationSec,
+        locale,
+      }),
+    }),
 };
 
 export const authCopy = {

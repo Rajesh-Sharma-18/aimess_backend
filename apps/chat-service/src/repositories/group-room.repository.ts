@@ -298,6 +298,16 @@ export class GroupRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
+      /**
+       * SYSTEM rows only — the canonical event behind `content.text`, persisted
+       * alongside the baked English sentence so the inbox can re-render the
+       * preview in the reader's own language (see inbox.service.ts). The private
+       * room snapshot has always carried these; the group one had only the text,
+       * which is why group list rows stayed English for a Thai reader while the
+       * room itself translated.
+       */
+      systemEvent?: string | null;
+      systemData?: unknown;
     }
   ): Promise<number> {
     // Bursty concurrent sends/system-messages all write this same document;
@@ -328,6 +338,8 @@ export class GroupRoomRepository {
             senderName: message.senderName,
             messageType: message.messageType,
             createdAt: message.createdAt,
+            systemEvent: message.systemEvent ?? null,
+            systemData: (message.systemData ?? null) as Prisma.InputJsonValue,
             ...listRowIdentity({ ...message, id: String(message._id) }),
           },
         },

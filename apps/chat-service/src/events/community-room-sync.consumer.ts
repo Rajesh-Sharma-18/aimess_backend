@@ -23,8 +23,10 @@ import {
   buildCommunityInvitationAction,
   buildInvitationContent,
 } from "../lib/chat-message.serializer.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 
 /** community member status → chat RoomMember status. */
 export function mapMemberStatus(status: string | undefined): string | null {
@@ -241,6 +243,23 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.meta_synced": {
+          // Rename / avatar change. GeneralRoom.name + .logo are the source
+          // every community PUSH title and tray image read (see
+          // `conversationHeader` in publish-message-sent.ts), so they must
+          // follow the community row or every future push keeps the old pair.
+          await this.roomRepo.setCommunityMeta(communityId, {
+            ...(event.data.name !== undefined ? { name: event.data.name } : {}),
+            ...(event.data.avatarUrl !== undefined
+              ? { logo: event.data.avatarUrl }
+              : {}),
+          });
+          logger.debug(
+            `community.meta_synced: room metadata refreshed for ${communityId}`
+          );
+          break;
+        }
+
         case "community.visibility_changed": {
           const communityType = event.data.communityType;
           if (communityType === "PUBLIC" || communityType === "PRIVATE") {
@@ -285,6 +304,14 @@ export class CommunityRoomSyncConsumer {
           logger.debug(
             `Synced RoomMember community=${communityId} user=${userId} status=${String(data.status ?? "-")} role=${String(data.role ?? "-")}`
           );
+
+          // A status flip changes what the Community nav badge sums: the total
+          // comes from findActiveByUser, which counts ACTIVE rows only, so a ban /
+          // leave / removal silently subtracts that room's unread and a rejoin
+          // adds it back. Nothing else recomputes the badge, so without this it
+          // kept the pre-transition total until the user's next mark-read or
+          // reconnect. Coalesced per user downstream; fire-and-forget.
+          if (data.status) notifyUnreadChanged(userId);
 
           // Membership-lifecycle cleanup (Telegram parity): when a membership
           // goes INACTIVE (left / removed / banned), hard-delete the user's
@@ -641,6 +668,17 @@ export class CommunityRoomSyncConsumer {
       status: "ACTIVE",
     });
     const content = buildInvitationContent(previewText, invitation);
+    // The community avatar arrives (and is PERSISTED above) as a stable MinIO
+    // object key — the unified media contract: resolve on read, never store a
+    // presigned URL. Clients can't sign a key, so everything that goes on the
+    // WIRE carries a resolved copy instead (`enrichMessages` does the same on
+    // every historical read). Without this the card rendered a bare object key
+    // as its `src` and fell back to the default avatar.
+    const liveInvitation = {
+      ...invitation,
+      communityAvatarUrl: (await resolveMediaUrl(communityAvatarUrl)) || null,
+    };
+    const liveContent = buildInvitationContent(previewText, liveInvitation);
     // Event-level only: WHO shared WHAT, and the link identity needed to
     // re-resolve the card on read. Everything presentational lives on
     // `content.invitation` and is not duplicated here. `actorId`/`actorName` are
@@ -732,14 +770,14 @@ export class CommunityRoomSyncConsumer {
       senderAvatar: "",
       receiverId: recipientId,
       messageType,
-      content,
+      content: liveContent,
       sequenceNumber: seq,
       serverTs: sentAt,
       systemEvent: "COMMUNITY_INVITE",
       systemData,
       // Legacy mirror of `content.invitation` — pre-existing mobile clients
       // read the card from here. Same object, never a second computation.
-      systemAction: invitation,
+      systemAction: liveInvitation,
       countInUnread: (message as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -767,7 +805,7 @@ export class CommunityRoomSyncConsumer {
       preview: {
         contentType: messageType,
         text: previewText,
-        systemAction: invitation,
+        systemAction: liveInvitation,
       },
     });
 

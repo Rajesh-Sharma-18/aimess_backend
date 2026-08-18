@@ -369,7 +369,16 @@ export class GroupMemberRepository {
     if (!existing) return null;
 
     // Forward-only: skip if the stored pointer is already at/after this message.
-    if (existing.lastReadAt && existing.lastReadAt >= messageCreatedAt) {
+    // `lastReadAt` has millisecond resolution and a rapid burst can put two
+    // messages on the SAME timestamp (see PrivateRoom.lastMessageSeq), so a tie
+    // only refuses when it is literally the same message — otherwise the second
+    // of such a pair could never be marked read and the member's badge stuck.
+    if (
+      existing.lastReadAt &&
+      (existing.lastReadAt > messageCreatedAt ||
+        (existing.lastReadAt.getTime() === messageCreatedAt.getTime() &&
+          existing.lastReadMessageId === messageId))
+    ) {
       return existing;
     }
 

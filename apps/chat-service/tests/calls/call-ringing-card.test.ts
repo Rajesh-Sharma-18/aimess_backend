@@ -21,6 +21,7 @@ jest.mock("../../src/events/publish-call-incoming.js", () => ({
   publishCallMissedSafe: jest.fn(),
   publishCallCancelSafe: jest.fn(),
   publishCallHandledPushSafe: jest.fn(),
+  publishCallActivitySafe: jest.fn(),
 }));
 
 const ROOM = { roomId: "room-1", participants: ["caller", "callee"] };

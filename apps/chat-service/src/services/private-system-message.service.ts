@@ -160,7 +160,10 @@ export class PrivateSystemMessageService {
           senderName: actorName,
           lastMessageId: message.id,
           lastMessageAt: serverTs,
-          preview: { contentType: "SYSTEM", text },
+          // The canonical pair rides along so the gateway re-renders this row in
+          // each recipient's language instead of fanning out the write-time
+          // English (see publish-conv-updated.ts BumpPreview).
+          preview: { contentType: "SYSTEM", text, systemEvent, systemData },
           countInUnread: false,
         });
       }

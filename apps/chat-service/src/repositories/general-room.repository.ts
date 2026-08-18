@@ -304,6 +304,30 @@ export class GeneralRoomRepository {
    * `community.visibility_changed` event and the boot reconciler. Tolerates a
    * missing room (a not-yet-provisioned community) — updateMany is a no-op then.
    */
+  /**
+   * Mirror a community metadata edit (rename / avatar change) onto the room.
+   *
+   * The room's `name`/`logo` are the ONLY community identity chat-service holds,
+   * and every community push reads them for its title and tray image (see
+   * `conversationHeader` in publishMessageSentSafe), so without this a rename or
+   * a new avatar left every future push showing the old one.
+   * `updateMany` (not `update`) so a not-yet-provisioned room is a no-op rather
+   * than a throw — `community.created` provisions it.
+   */
+  async setCommunityMeta(
+    communityId: string,
+    data: { name?: string; logo?: string | null }
+  ): Promise<void> {
+    if (data.name === undefined && data.logo === undefined) return;
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId },
+      data: {
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(data.logo !== undefined ? { logo: data.logo } : {}),
+      },
+    });
+  }
+
   async setCommunityType(
     communityId: string,
     communityType: "PUBLIC" | "PRIVATE"

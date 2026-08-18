@@ -302,10 +302,13 @@ export const userProfileRepository = {
     userId: string;
     account: string;
     username: string;
-    displayName: string;
+    /** Already-resolved seed name — caller applies the placeholder fallback. */
+    firstName: string;
+    lastName: string;
     isGoogleLogin?: boolean;
   }) {
-    const { userId, account, username, displayName, isGoogleLogin } = params;
+    const { userId, account, username, firstName, lastName, isGoogleLogin } =
+      params;
 
     return prisma.$transaction(async (tx) => {
       const profile = await tx.userProfile.create({
@@ -314,11 +317,11 @@ export const userProfileRepository = {
           account,
           username,
           normalizedUsername: normalizeForSearch(username),
-          firstName: displayName,
-          normalizedFirstName: normalizeForSearch(displayName),
-          lastName: "User",
-          normalizedLastName: normalizeForSearch("User"),
-          normalizedFullName: buildNormalizedFullName(displayName, "User"),
+          firstName,
+          normalizedFirstName: normalizeForSearch(firstName),
+          lastName,
+          normalizedLastName: normalizeForSearch(lastName),
+          normalizedFullName: buildNormalizedFullName(firstName, lastName),
           dateOfBirth: PLACEHOLDER_DATE_OF_BIRTH,
           isGoogleLogin,
         },

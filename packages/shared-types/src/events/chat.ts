@@ -18,7 +18,15 @@ export const ChatEvents = {
 
 export type ChatEventType = (typeof ChatEvents)[keyof typeof ChatEvents];
 
-export type ChatGroupMemberAddedPayload = {
+/**
+ * Fully-qualified group avatar URL for the push's tray image. Set by the
+ * PUBLISHER from the authoritative GroupRoom row (never by the producer), and
+ * absent when the group has no avatar — so the client applies its own
+ * placeholder rather than rendering a broken attachment.
+ */
+type GroupPushImage = { groupAvatarUrl?: string };
+
+export type ChatGroupMemberAddedPayload = GroupPushImage & {
   roomId: string;
   groupName: string;
   /** The user that was added to the group. */
@@ -29,7 +37,7 @@ export type ChatGroupMemberAddedPayload = {
   eventAt: string;
 };
 
-export type ChatGroupMemberMutedPayload = {
+export type ChatGroupMemberMutedPayload = GroupPushImage & {
   roomId: string;
   groupName: string;
   /** The member who was muted/unmuted — the only recipient of this event. */

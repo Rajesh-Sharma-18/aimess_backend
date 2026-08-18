@@ -243,12 +243,25 @@ export function validMp4(
   mvhd.writeUInt32BE(timescale, 12);
   mvhd.writeUInt32BE(Math.round((durationMs / 1000) * timescale), 16);
 
+  // tkhd, version 0: an 84-byte body whose last 8 bytes are width/height as
+  // 16.16 fixed point, preceded by the 36-byte transform matrix at offset 40.
+  //
+  // This fixture used to declare an 80-byte body and write the dimensions at
+  // 72/76 — matching what the parser read rather than what the format says, so
+  // it agreed with an off-by-four bug instead of catching it. The matrix is now
+  // populated with the real identity values, which is what makes that bug
+  // visible: its last element is 0x40000000, and reading it as a 16.16 width
+  // yields 16384.
   const tkhd = Buffer.alloc(84);
-  tkhd[0] = 0; // version 0 → 80-byte body, w/h in the last 8 bytes
-  tkhd.writeUInt32BE(width * 65536, 80 - 8);
-  tkhd.writeUInt32BE(height * 65536, 80 - 4);
+  tkhd[0] = 0; // version 0
+  const MATRIX_AT = 40;
+  tkhd.writeUInt32BE(0x0001_0000, MATRIX_AT); // a = 1.0 (16.16)
+  tkhd.writeUInt32BE(0x0001_0000, MATRIX_AT + 16); // d = 1.0 (16.16)
+  tkhd.writeUInt32BE(0x4000_0000, MATRIX_AT + 32); // w = 1.0 (2.30)
+  tkhd.writeUInt32BE(width * 65536, 84 - 8);
+  tkhd.writeUInt32BE(height * 65536, 84 - 4);
 
-  const trak = box("trak", box("tkhd", tkhd.subarray(0, 80)));
+  const trak = box("trak", box("tkhd", tkhd));
   const moov = box("moov", Buffer.concat([box("mvhd", mvhd), trak]));
   return Buffer.concat([isobmffFtyp(brand, ["isom", "mp42"]), moov]);
 }
@@ -264,6 +277,287 @@ export function validHeic(width = 4032, height = 3024): Buffer {
   // `meta` is a FullBox — 4 bytes of version+flags before its children.
   const meta = box("meta", Buffer.concat([Buffer.alloc(4), iprp]));
   return Buffer.concat([isobmffFtyp("heic", ["mif1", "heic"]), meta]);
+}
+
+/** `.m4a` audio: same ISOBMFF container, `M4A ` brand, no visual track. */
+export function validM4a(durationMs = 4_000): Buffer {
+  const timescale = 1000;
+  const mvhd = Buffer.alloc(100);
+  mvhd[0] = 0; // version 0
+  mvhd.writeUInt32BE(timescale, 12);
+  mvhd.writeUInt32BE(Math.round((durationMs / 1000) * timescale), 16);
+  const moov = box("moov", box("mvhd", mvhd));
+  return Buffer.concat([isobmffFtyp("M4A ", ["mp42", "isom"]), moov]);
+}
+
+/**
+ * A `.mov` as QuickTime Player and several screen recorders emit it: NO `ftyp`
+ * box at all, the first atom is `wide`/`moov`/`mdat`. Valid `video/quicktime`
+ * that matched no signature before `isClassicQuickTime` existed.
+ */
+export function classicMov(
+  opts: { durationMs?: number; width?: number; height?: number } = {}
+): Buffer {
+  const withFtyp = validMp4({ ...opts, brand: "qt  " });
+  const ftypLen = withFtyp.readUInt32BE(0);
+  const wide = Buffer.alloc(8);
+  wide.writeUInt32BE(8, 0);
+  wide.write("wide", 4, "latin1");
+  return Buffer.concat([wide, withFtyp.subarray(ftypLen)]);
+}
+
+// ─── Matroska / WebM ─────────────────────────────────────────────────────────
+
+/** EBML element: id bytes (already marker-encoded) + a 1-byte size vint + body. */
+function ebml(id: number[], body: Buffer): Buffer {
+  if (body.length > 126) throw new Error("fixture EBML body too large");
+  return Buffer.concat([
+    Buffer.from(id),
+    Buffer.from([0x80 | body.length]),
+    body,
+  ]);
+}
+
+const f64 = (value: number): Buffer => {
+  const b = Buffer.alloc(8);
+  b.writeDoubleBE(value, 0);
+  return b;
+};
+
+export function validMatroska(
+  opts: {
+    docType?: "matroska" | "webm";
+    width?: number;
+    height?: number;
+    /** Duration in TimecodeScale ticks; with the default scale these are ms. */
+    durationMs?: number;
+  } = {}
+): Buffer {
+  const {
+    docType = "matroska",
+    width = 640,
+    height = 480,
+    durationMs = 8_000,
+  } = opts;
+
+  const header = ebml(
+    [0x1a, 0x45, 0xdf, 0xa3],
+    ebml([0x42, 0x82], Buffer.from(docType, "latin1"))
+  );
+  const info = ebml(
+    [0x15, 0x49, 0xa9, 0x66],
+    Buffer.concat([
+      ebml([0x2a, 0xd7, 0xb1], Buffer.from([0x0f, 0x42, 0x40])), // 1_000_000
+      ebml([0x44, 0x89], f64(durationMs)),
+    ])
+  );
+  const video = ebml(
+    [0xe0],
+    Buffer.concat([ebml([0xb0], uintBE(width)), ebml([0xba], uintBE(height))])
+  );
+  const tracks = ebml([0x16, 0x54, 0xae, 0x6b], ebml([0xae], video));
+  const segment = ebml([0x18, 0x53, 0x80, 0x67], Buffer.concat([info, tracks]));
+  return Buffer.concat([header, segment]);
+}
+
+/** Big-endian unsigned int in the fewest bytes EBML needs. */
+function uintBE(value: number): Buffer {
+  const bytes: number[] = [];
+  let v = value;
+  do {
+    bytes.unshift(v & 0xff);
+    v = Math.floor(v / 256);
+  } while (v > 0);
+  return Buffer.from(bytes);
+}
+
+// ─── WAV / MP3 / AAC / Ogg / FLAC ────────────────────────────────────────────
+
+function riffChunk(id: string, body: Buffer): Buffer {
+  const head = Buffer.alloc(8);
+  head.write(id, 0, "latin1");
+  head.writeUInt32LE(body.length, 4);
+  return Buffer.concat([
+    head,
+    body,
+    body.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0),
+  ]);
+}
+
+export function validWav(durationMs = 2_000): Buffer {
+  const byteRate = 44_100 * 2 * 2; // 44.1 kHz, stereo, 16-bit
+  const fmt = Buffer.alloc(16);
+  fmt.writeUInt16LE(1, 0); // PCM
+  fmt.writeUInt16LE(2, 2); // channels
+  fmt.writeUInt32LE(44_100, 4);
+  fmt.writeUInt32LE(byteRate, 8);
+  fmt.writeUInt16LE(4, 12);
+  fmt.writeUInt16LE(16, 14);
+  // The `data` chunk declares its own size; the inspector derives duration from
+  // that declaration, so the fixture need not carry the actual samples.
+  const dataSize = Math.round((durationMs / 1000) * byteRate);
+  const data = Buffer.alloc(8);
+  data.write("data", 0, "latin1");
+  data.writeUInt32LE(dataSize, 4);
+
+  const body = Buffer.concat([
+    Buffer.from("WAVE", "latin1"),
+    riffChunk("fmt ", fmt),
+    data,
+  ]);
+  const riff = Buffer.alloc(8);
+  riff.write("RIFF", 0, "latin1");
+  riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
+/** MPEG-1 Layer III, 128 kbps, 44.1 kHz — optionally behind an ID3v2 tag. */
+export function validMp3(
+  opts: { id3?: boolean; frames?: number } = {}
+): Buffer {
+  const parts: Buffer[] = [];
+  if (opts.id3) {
+    const tag = Buffer.alloc(10 + 16);
+    tag.write("ID3", 0, "latin1");
+    tag[3] = 3; // version
+    tag[9] = 16; // syncsafe size of the (empty) tag body
+    parts.push(tag);
+  }
+  const frame = Buffer.alloc(417); // 128 kbps @ 44.1 kHz frame size
+  frame[0] = 0xff;
+  frame[1] = 0xfb; // MPEG1 Layer III, no CRC
+  frame[2] = 0x90; // bitrate index 9 (128k), sample-rate index 0 (44.1k)
+  frame[3] = 0xc4;
+  for (let i = 0; i < (opts.frames ?? 2); i++) parts.push(frame);
+  return Buffer.concat(parts);
+}
+
+/** Raw AAC: two CHAINED ADTS frames — the second sync word must land exactly
+ *  where the first frame's declared length says it will. */
+export function validAac(frameLen = 64): Buffer {
+  const frame = (): Buffer => {
+    const b = Buffer.alloc(frameLen);
+    b[0] = 0xff;
+    b[1] = 0xf1; // MPEG-4, no CRC
+    b[2] = 0x50;
+    b[3] = 0x80 | ((frameLen >> 11) & 0x03);
+    b[4] = (frameLen >> 3) & 0xff;
+    b[5] = ((frameLen & 0x07) << 5) | 0x1f;
+    b[6] = 0xfc;
+    return b;
+  };
+  return Buffer.concat([frame(), frame(), frame()]);
+}
+
+/** One Ogg page: 27-byte header + a single segment carrying `payload`. */
+function oggPage(payload: Buffer, granule: number, seq: number): Buffer {
+  const segments = Math.ceil(payload.length / 255) || 1;
+  const header = Buffer.alloc(27 + segments);
+  header.write("OggS", 0, "latin1");
+  header[4] = 0; // stream structure version
+  header[5] = seq === 0 ? 0x02 : 0x00; // BOS on the first page
+  header.writeUInt32LE(granule >>> 0, 6);
+  header.writeUInt32LE(Math.floor(granule / 0x1_0000_0000), 10);
+  header.writeUInt32LE(0xdeadbeef, 14); // stream serial
+  header.writeUInt32LE(seq, 18);
+  header.writeUInt32LE(0, 22); // CRC — not verified by the inspector
+  header[26] = segments;
+  let left = payload.length;
+  for (let i = 0; i < segments; i++) {
+    header[27 + i] = Math.min(255, left);
+    left -= 255;
+  }
+  return Buffer.concat([header, payload]);
+}
+
+/**
+ * Ogg stream. `opus: true` puts an `OpusHead` identification packet in the first
+ * page — which is what makes an `audio/opus` declaration verifiable rather than
+ * merely container-shaped.
+ */
+export function validOgg(
+  opts: { opus?: boolean; durationMs?: number } = {}
+): Buffer {
+  const { opus = true, durationMs = 3_000 } = opts;
+  const idPacket = opus
+    ? Buffer.concat([
+        Buffer.from("OpusHead", "latin1"),
+        Buffer.from([1, 2, 0x38, 0x01, 0x80, 0xbb, 0x00, 0x00, 0, 0, 0]),
+      ])
+    : Buffer.concat([
+        Buffer.from([0x01]),
+        Buffer.from("vorbis", "latin1"),
+        (() => {
+          const b = Buffer.alloc(23);
+          b.writeUInt32LE(44_100, 5); // sample rate at offset 12 of the packet
+          return b;
+        })(),
+      ]);
+  // Opus granule positions are always counted in 48 kHz units.
+  const granule = Math.round((durationMs / 1000) * 48_000);
+  return Buffer.concat([
+    oggPage(idPacket, 0, 0),
+    oggPage(Buffer.alloc(32), granule, 1),
+  ]);
+}
+
+export function validFlac(durationMs = 2_000): Buffer {
+  const sampleRate = 44_100;
+  const totalSamples = Math.round((durationMs / 1000) * sampleRate);
+  const streaminfo = Buffer.alloc(34);
+  // sample rate: 20 bits starting at byte 10; channels/bps share byte 12.
+  streaminfo[10] = (sampleRate >> 12) & 0xff;
+  streaminfo[11] = (sampleRate >> 4) & 0xff;
+  streaminfo[12] =
+    ((sampleRate & 0x0f) << 4) | ((totalSamples / 0x1_0000_0000) & 0x0f);
+  streaminfo[13] = (totalSamples >>> 24) & 0xff;
+  streaminfo[14] = (totalSamples >>> 16) & 0xff;
+  streaminfo[15] = (totalSamples >>> 8) & 0xff;
+  streaminfo[16] = totalSamples & 0xff;
+
+  const blockHeader = Buffer.alloc(4);
+  blockHeader[0] = 0x80; // last-metadata-block flag, type 0 = STREAMINFO
+  blockHeader.writeUIntBE(streaminfo.length, 1, 3);
+  return Buffer.concat([
+    Buffer.from("fLaC", "latin1"),
+    blockHeader,
+    streaminfo,
+  ]);
+}
+
+// ─── Documents ───────────────────────────────────────────────────────────────
+
+/** Minimal well-formed PDF. `body` can smuggle in active-content markers. */
+export function validPdf(body = "1 0 obj<</Type/Catalog>>endobj"): Buffer {
+  return Buffer.from(`%PDF-1.7\n${body}\n%%EOF`);
+}
+
+/**
+ * Legacy Office (DOC / XLS / PPT) — Compound File Binary. All three share one
+ * signature, which is exactly why the pipeline treats them as a single family.
+ */
+export function validCompoundOffice(): Buffer {
+  const b = Buffer.alloc(512);
+  Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).copy(b, 0);
+  return b;
+}
+
+/** An XLSX-shaped OOXML package (identified by `xl/workbook.xml`). */
+export function buildXlsx(extraEntries: ZipEntrySpec[] = []): Buffer {
+  return buildZip([
+    { name: "[Content_Types].xml", content: Buffer.from("<Types/>") },
+    { name: "xl/workbook.xml", content: Buffer.from("<workbook/>") },
+    ...extraEntries,
+  ]);
+}
+
+/** A PPTX-shaped OOXML package (identified by `ppt/presentation.xml`). */
+export function buildPptx(extraEntries: ZipEntrySpec[] = []): Buffer {
+  return buildZip([
+    { name: "[Content_Types].xml", content: Buffer.from("<Types/>") },
+    { name: "ppt/presentation.xml", content: Buffer.from("<presentation/>") },
+    ...extraEntries,
+  ]);
 }
 
 // ─── ZIP ─────────────────────────────────────────────────────────────────────

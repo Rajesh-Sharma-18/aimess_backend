@@ -2354,10 +2354,15 @@ export class PrivateMessageService {
           stored?.communityHandle ??
           (sd.communityHandle ? String(sd.communityHandle) : null);
         // Presentational, never returned by the invite-context RPC — carried
-        // forward from whatever the row itself stored.
+        // forward from whatever the row itself stored. Stored as a stable MinIO
+        // object key (unified media contract), so it is signed HERE, on every
+        // read — a client cannot sign a key, and a raw key as an <img src> is
+        // exactly what made the card fall back to the default avatar.
         const communityAvatarUrl =
-          stored?.communityAvatarUrl ??
-          (sd.communityAvatarUrl ? String(sd.communityAvatarUrl) : null);
+          (await resolveMediaUrl(
+            stored?.communityAvatarUrl ??
+              (sd.communityAvatarUrl ? String(sd.communityAvatarUrl) : null)
+          )) || null;
         const memberCount = Number(stored?.memberCount ?? sd.memberCount ?? 0);
         const inviteCode =
           stored?.inviteCode ?? (sd.linkCode ? String(sd.linkCode) : null);

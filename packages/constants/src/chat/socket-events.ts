@@ -17,6 +17,17 @@ export const SOCKET_IN = {
   ROOM_JOIN: "room:join",
   ROOM_LEAVE: "room:leave",
 
+  /**
+   * Retarget this connection's display language: `{ lang: "th" }`.
+   *
+   * The handshake seeds the locale, but a connection outlives a Settings →
+   * Language change and a browser cannot rewrite handshake headers on a live
+   * websocket. Without this the user had to reconnect before live SYSTEM
+   * messages followed the language they had just picked. Accepted on every
+   * namespace (see `scopeSocketLocale`); unsupported values are ignored.
+   */
+  LOCALE_SET: "locale:set",
+
   MESSAGE_SEND: "message:send",
   MESSAGE_EDIT: "message:edit",
   MESSAGE_DELETE: "message:delete",

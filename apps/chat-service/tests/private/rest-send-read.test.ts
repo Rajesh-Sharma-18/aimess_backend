@@ -185,6 +185,54 @@ describe("POST /rooms/:roomId/read (mark-read → orchestrator)", () => {
     );
   });
 
+  it("NEGATIVE: a STALE read publishes the PERSISTED watermark, not the requested target", async () => {
+    // `markReadUpTo` is forward-only and hands back the untouched room when the
+    // request is behind the pointer (a second device catching up, a
+    // jump-to-message re-anchoring the window on old history). Publishing the
+    // request's own seq would broadcast a read_to_seq REGRESSION the database
+    // never made: the peer's blue tick drops back to grey and this reader's
+    // other devices re-inflate their badge until a refresh.
+    mocks.privateMessageRepo.findById.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "msg_old"
+          ? { id: "msg_old", roomId: ROOM, sequenceNumber: 3 }
+          : { id, roomId: ROOM, sequenceNumber: 42 }
+      )
+    );
+    mocks.privateRoomRepo.markReadUpTo.mockResolvedValue({
+      participants: [TEST_USER_ID, PEER],
+      unreadCountByUser: { [TEST_USER_ID]: 0 },
+      lastMessageId: "msg_hw_1",
+      // Refused — the stored pointer is already past the request.
+      lastReadMessageIdByUser: { [TEST_USER_ID]: "msg_hw_1" },
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/private/rooms/${ROOM}/read`)
+      .set(bearer(makeAccessToken()))
+      .send({ upToMessageId: "msg_old" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.readToSeq).toBe(42);
+
+    const receipt = (mocks.redis.publish.mock.calls as Array<[string, string]>)
+      .map(([, raw]) => {
+        try {
+          return JSON.parse(raw) as { event?: string; data?: unknown };
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p?.event === "message:read");
+    expect(receipt).toBeTruthy();
+    const data = receipt?.data as {
+      read_to_seq: number;
+      readsLastMessage: boolean;
+    };
+    expect(data.read_to_seq).toBe(42);
+    expect(data.readsLastMessage).toBe(true);
+  });
+
   it("NEGATIVE: 400 when upToMessageId is missing", async () => {
     const res = await request(app)
       .post(`/api/chat/private/rooms/${ROOM}/read`)
