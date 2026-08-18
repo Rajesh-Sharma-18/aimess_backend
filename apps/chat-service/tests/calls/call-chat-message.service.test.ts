@@ -166,7 +166,7 @@ describe("CallChatMessageService — in-place transitions", () => {
         systemEvent: "CALL_ENDED",
         countInUnread: false,
         content: expect.objectContaining({
-          text: "Voice call lasted 02:05",
+          text: "Voice Call 02:05",
           call: expect.objectContaining({
             callStatus: "ENDED",
             durationSec: 125,
@@ -202,7 +202,7 @@ describe("CallChatMessageService — in-place transitions", () => {
         systemEvent: "CALL_ENDED",
         countInUnread: false,
         content: expect.objectContaining({
-          text: "Voice call declined",
+          text: "Voice call was not answered",
           call: expect.objectContaining({ callStatus: "DECLINED" }),
         }),
       })
@@ -225,7 +225,7 @@ describe("CallChatMessageService — in-place transitions", () => {
       expect.objectContaining({
         messageType: "VIDEO_CALL",
         content: expect.objectContaining({
-          text: "Video call cancelled",
+          text: "Video call was not answered",
           call: expect.objectContaining({ callStatus: "CANCELLED" }),
         }),
       })

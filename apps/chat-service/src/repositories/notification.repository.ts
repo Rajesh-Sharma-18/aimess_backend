@@ -235,11 +235,14 @@ export class NotificationRepository {
   }
 
   /**
-   * Per-tab UNREAD counts for the Notification Center header badges. Five
+   * Per-tab UNREAD counts for the Notification Center header badges. Six
    * parallel counts (one per tab) — cheaper than a groupBy round-trip on
    * Mongo, and each predicate hits the `(userId, type)` index. Unread-only
    * so the badge decrements live as the user reads rows; the list-page
    * invalidation on `markRead` / `markAllRead` triggers the refetch.
+   *
+   * The per-tab buckets are disjoint (see `categorize`), so they sum to `all`
+   * — a row can never be counted under two tabs.
    */
   async countByCategories(
     userId: string,
@@ -249,6 +252,7 @@ export class NotificationRepository {
     friends: number;
     communities: number;
     mentions: number;
+    calls: number;
     system: number;
   }> {
     const selfExclusion = excludeSelfLoginWhere(viewerSessionId);
@@ -260,14 +264,16 @@ export class NotificationRepository {
           ...combineWhere(selfExclusion, categoryWhere(cat)),
         },
       });
-    const [all, friends, communities, mentions, system] = await Promise.all([
-      countFor("ALL"),
-      countFor("FRIENDS"),
-      countFor("COMMUNITIES"),
-      countFor("MENTIONS"),
-      countFor("SYSTEM"),
-    ]);
-    return { all, friends, communities, mentions, system };
+    const [all, friends, communities, mentions, calls, system] =
+      await Promise.all([
+        countFor("ALL"),
+        countFor("FRIENDS"),
+        countFor("COMMUNITIES"),
+        countFor("MENTIONS"),
+        countFor("CALLS"),
+        countFor("SYSTEM"),
+      ]);
+    return { all, friends, communities, mentions, calls, system };
   }
 
   async deleteById(

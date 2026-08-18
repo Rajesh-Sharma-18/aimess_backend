@@ -10,6 +10,7 @@ const takeQrLinkResultMock = jest.fn();
 const getLinkSessionMock = jest.fn();
 
 jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
   publishQrLinkEvent: jest.fn(async () => 1),
   publishQrLinkSuccess: jest.fn(async () => undefined),
   takeQrLinkResult: takeQrLinkResultMock,

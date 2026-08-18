@@ -21,6 +21,7 @@ import {
   anonymizeSystemData,
   anonymizeWireSender,
   collectDeletedUserIds,
+  refreshWireSenderAvatar,
   collectRowUserIds,
 } from "../../src/lib/deleted-identity.js";
 import { resolveDisplayName } from "../../src/services/user-snapshot.service.js";
@@ -77,7 +78,9 @@ describe("collectRowUserIds", () => {
         targetUserIds: ["g1", "g2"],
       },
     });
-    expect(ids).toEqual(expect.arrayContaining(["s", "q", "a", "t", "g1", "g2"]));
+    expect(ids).toEqual(
+      expect.arrayContaining(["s", "q", "a", "t", "g1", "g2"])
+    );
   });
 });
 
@@ -86,11 +89,12 @@ describe("collectDeletedUserIds", () => {
 
   it("returns only the ids whose snapshot reports the account deleted", async () => {
     const service = {
-      getUserSnapshotsMap: jest.fn(async () =>
-        new Map<string, Record<string, unknown>>([
-          [DELETED, { isDeletedUser: true }],
-          [ALIVE, { isDeletedUser: false }],
-        ])
+      getUserSnapshotsMap: jest.fn(
+        async () =>
+          new Map<string, Record<string, unknown>>([
+            [DELETED, { isDeletedUser: true }],
+            [ALIVE, { isDeletedUser: false }],
+          ])
       ),
     } as never as Parameters<typeof collectDeletedUserIds>[1];
 
@@ -238,5 +242,78 @@ describe("anonymizeSystemData", () => {
       DELETED_ACCOUNT_DISPLAY_NAME,
       "Nguyen Van A",
     ]);
+  });
+});
+
+describe("refreshWireSenderAvatar", () => {
+  const LIVE = new Map([
+    ["u1", { isDeleted: false, avatar: "avatars/new.png" }],
+    ["u2", { isDeleted: false, avatar: "" }],
+    ["gone", { isDeleted: true, avatar: "" }],
+  ]);
+
+  it("swaps the frozen sender avatar key for the sender's current one", () => {
+    const wire: Record<string, unknown> = {
+      senderId: "u1",
+      contentType: "TEXT",
+      senderAvatar: "avatars/old.png",
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    expect(wire.senderAvatar).toBe("avatars/new.png");
+  });
+
+  it("clears the frozen key when the sender removed their picture", () => {
+    const wire: Record<string, unknown> = {
+      sentBy: "u2",
+      contentType: "IMAGE",
+      senderAvatar: "avatars/old.png",
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    expect(wire.senderAvatar).toBe("");
+  });
+
+  it("leaves SYSTEM rows and unknown senders alone", () => {
+    const system: Record<string, unknown> = {
+      senderId: "u1",
+      contentType: "SYSTEM",
+      senderAvatar: "",
+    };
+    refreshWireSenderAvatar(system, LIVE);
+    expect(system.senderAvatar).toBe("");
+
+    // Snapshot lookup degraded for this sender — stale beats blank.
+    const unknown: Record<string, unknown> = {
+      senderId: "nobody",
+      contentType: "TEXT",
+      senderAvatar: "avatars/old.png",
+    };
+    refreshWireSenderAvatar(unknown, LIVE);
+    expect(unknown.senderAvatar).toBe("avatars/old.png");
+  });
+
+  it("does not resurrect a deleted account's avatar", () => {
+    const wire: Record<string, unknown> = {
+      senderId: "gone",
+      contentType: "TEXT",
+      senderAvatar: "avatars/old.png",
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    // Untouched here; anonymizeWireSender is what blanks it.
+    expect(wire.senderAvatar).toBe("avatars/old.png");
+    anonymizeWireSender(wire, new Set(["gone"]));
+    expect(wire.senderAvatar).toBe("");
+  });
+
+  it("refreshes the quoted sender's avatar too", () => {
+    const wire: Record<string, unknown> = {
+      senderId: "u2",
+      contentType: "TEXT",
+      senderAvatar: "",
+      quoteData: { senderId: "u1", senderAvatar: "avatars/old.png" },
+    };
+    refreshWireSenderAvatar(wire, LIVE);
+    expect((wire.quoteData as Record<string, unknown>).senderAvatar).toBe(
+      "avatars/new.png"
+    );
   });
 });

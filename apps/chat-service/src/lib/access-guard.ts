@@ -90,23 +90,39 @@ export async function assertGroupMember(
 }
 
 /**
- * Group WRITE lifecycle gate: a DISBANDED room is frozen — history stays fully
- * readable up to the disband, but no new message can be added. Membership rows
- * are deliberately left ACTIVE on disband (that is what keeps history visible),
- * so {@link assertGroupMember} alone cannot tell a live group from a dead one.
+ * Group WRITE lifecycle gate. Two frozen states, one rule — every write is
+ * refused while history stays fully readable:
+ *   - DISBANDED: the room is gone for everyone (`CHAT_GROUP_DISBANDED`).
+ *   - CLOSED:    the owner was permanently banned by a super admin; the room
+ *                stays in every member's list, read-only
+ *                (`CHAT_GROUP_CLOSED_ADMIN_BANNED`).
  *
- * @throws ForbiddenError `CHAT_GROUP_DISBANDED` when the group is disbanded.
- * @throws NotFoundError   `CHAT_GROUP_NOT_FOUND` when the room is gone.
+ * Membership status cannot express either state — a CLOSED room keeps every row
+ * ACTIVE, and a disband marks them all LEFT while `assertGroupReadAccess` still
+ * lets them read — so {@link assertGroupMember} alone can never tell a live
+ * group from a frozen one. The room's own status is the only authority.
+ *
+ * @throws ForbiddenError `CHAT_GROUP_DISBANDED` / `CHAT_GROUP_CLOSED_ADMIN_BANNED`.
+ * @throws NotFoundError  `CHAT_GROUP_NOT_FOUND` when the room is gone.
  */
-export async function assertGroupNotDisbanded(
-  roomRepo: Pick<GroupRoomRepository, "findByRoomId">,
-  roomId: string
-): Promise<void> {
-  const room = await roomRepo.findByRoomId(roomId);
+export function assertGroupRoomWritable(
+  room: { status: string } | null | undefined
+): void {
   if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
   if (room.status === "DISBANDED") {
     throw new ForbiddenError("CHAT_GROUP_DISBANDED");
   }
+  if (room.status === "CLOSED") {
+    throw new ForbiddenError("CHAT_GROUP_CLOSED_ADMIN_BANNED");
+  }
+}
+
+/** {@link assertGroupRoomWritable} for callers that hold only a roomId. */
+export async function assertGroupWritable(
+  roomRepo: Pick<GroupRoomRepository, "findByRoomId">,
+  roomId: string
+): Promise<void> {
+  assertGroupRoomWritable(await roomRepo.findByRoomId(roomId));
 }
 
 /**

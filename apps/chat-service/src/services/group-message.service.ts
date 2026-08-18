@@ -26,8 +26,10 @@ import {
 import {
   anonymizeSystemData,
   anonymizeWireSender,
-  collectDeletedUserIds,
+  collectSenderIdentities,
   collectRowUserIds,
+  liveAvatarKeys,
+  refreshWireSenderAvatar,
 } from "../lib/deleted-identity.js";
 import {
   buildMessagePreview,
@@ -49,7 +51,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import {
   assertGroupMember,
-  assertGroupNotDisbanded,
+  assertGroupWritable,
   assertGroupReadAccess,
   assertGroupMemberNotMuted,
   isGroupMemberMuted,
@@ -173,8 +175,8 @@ export class GroupMessageService {
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
     assertGroupMemberNotMuted(member);
-    // Disband leaves every membership row ACTIVE so history stays readable, so the membership check above cannot catch a dead group — the room's own status must.
-    await assertGroupNotDisbanded(this.roomRepo, params.roomId);
+    // A frozen room (disbanded / closed by a system ban) keeps history readable, so the membership check above cannot catch it — the room's own status must.
+    await assertGroupWritable(this.roomRepo, params.roomId);
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.
@@ -1094,6 +1096,7 @@ export class GroupMessageService {
     // Parity with CommunityMessageService.deleteForMe — a muted member cannot
     // mutate their own view of room content either.
     assertGroupMemberNotMuted(member);
+    await assertGroupWritable(this.roomRepo, roomId);
 
     const hidden = await this.messageRepo.deleteForMe(messageId, userId);
     // Mirror of PrivateMessageService.deleteForMe: hiding a still-unread message
@@ -1230,6 +1233,9 @@ export class GroupMessageService {
         userId
       );
       if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+      // Only the human paths are gated — the auto-delete sweeper (bySystem)
+      // must keep purging a frozen room's expired messages.
+      await assertGroupWritable(this.roomRepo, roomId);
 
       // Same sender-less problem the private path has: a group call row carries
       // `senderId: ""`, so its owner is `content.call.callerId`. Without this a
@@ -1336,6 +1342,7 @@ export class GroupMessageService {
     // A muted member cannot mutate room content (Telegram: editing needs send).
     // Mirrors CommunityMessageService.editMessage.
     assertGroupMemberNotMuted(editor);
+    await assertGroupWritable(this.roomRepo, message.roomId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -1577,6 +1584,7 @@ export class GroupMessageService {
   async assertCanWrite(roomId: string, userId: string): Promise<void> {
     const member = await assertGroupMember(this.memberRepo, roomId, userId);
     assertGroupMemberNotMuted(member);
+    await assertGroupWritable(this.roomRepo, roomId);
   }
 
   /**
@@ -1800,6 +1808,7 @@ export class GroupMessageService {
     // A forward CREATES a message in the target room, so it is a send: a muted
     // member must not be able to route around the mute by forwarding.
     assertGroupMemberNotMuted(member);
+    await assertGroupWritable(this.roomRepo, params.targetRoomId);
 
     // §2.2: stamp the forwarder's group role (transient) for parity with send.
     const senderRole = (member as { role?: string }).role ?? "MEMBER";
@@ -2439,16 +2448,23 @@ export class GroupMessageService {
     }
     // Group rows freeze `senderName`/`senderAvatar` at send time, so a sender
     // who later deleted their account would keep their old name on every
-    // historical message. Resolve which of the page's participants are deleted
-    // (one batched, Redis-cached snapshot lookup) and scrub them below —
-    // stored rows are never rewritten.
-    const deletedUserIds = await collectDeletedUserIds(
+    // historical message — and a sender who merely changed their profile
+    // picture would keep the OLD picture there just as permanently. One
+    // batched, Redis-cached snapshot lookup answers both: deleted accounts are
+    // scrubbed below, and every live sender's avatar key is refreshed to the
+    // current one. Stored rows are never rewritten.
+    const identities = await collectSenderIdentities(
       messages.flatMap((m) =>
         collectRowUserIds(m as unknown as Record<string, unknown>)
       ),
       this.userSnapshotService,
       this.cacheRepo
     );
+    const deletedUserIds = new Set(
+      [...identities].filter(([, i]) => i.isDeleted).map(([id]) => id)
+    );
+    // Presign the refreshed keys in the SAME batch as the stored ones.
+    mediaKeys.push(...liveAvatarKeys(identities));
 
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
@@ -2465,6 +2481,9 @@ export class GroupMessageService {
           .countInUnread,
       });
 
+      // Live avatar key first, then presign — so history renders the sender's
+      // CURRENT profile picture instead of the one frozen at send time.
+      refreshWireSenderAvatar(wire, identities);
       if (typeof wire.senderAvatar === "string") {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
       }

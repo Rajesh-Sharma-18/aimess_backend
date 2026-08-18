@@ -71,6 +71,17 @@ export const AUDIT_ACTIONS = {
   COMMUNITY_REOPENED: "community.reopen",
   COMMUNITY_BULK_CLOSED: "community.bulk_close",
   COMMUNITY_BULK_REOPENED: "community.bulk_reopen",
+  // Same string values as @aimess/messaging USER_AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED/
+  // BANNED/UNBANNED — mandatory USER_MANAGEMENT category, so these actions land in
+  // the same audit bucket whether triggered here or mirrored from community-service.
+  COMMUNITY_MEMBER_REMOVED: "community.member_removed",
+  COMMUNITY_MEMBER_BANNED: "community.member_banned",
+  COMMUNITY_MEMBER_UNBANNED: "community.member_unbanned",
+  // Cascade rows written when a permanent system ban closes a space its target
+  // owned. One row per closed community/group, so the blast radius of a single
+  // ban is auditable.
+  COMMUNITY_CLOSED_OWNER_BANNED: "community.closed_owner_banned",
+  GROUP_CLOSED_OWNER_BANNED: "group.closed_owner_banned",
   GROUP_LIST_VIEWED: "group.list_viewed",
   GROUP_VIEWED: "group.viewed",
   GROUP_MEMBERS_VIEWED: "group.members_viewed",

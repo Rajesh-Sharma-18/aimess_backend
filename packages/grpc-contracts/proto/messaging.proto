@@ -68,6 +68,12 @@ service MessagingService {
   // roster fan-out) — never a bare repository write.
   rpc AdminDisbandGroup       (AdminDisbandGroupRequest)       returns (AdminGroupMutationResult);
   rpc AdminRemoveGroupMember  (AdminRemoveGroupMemberRequest)  returns (AdminGroupMutationResult);
+  // Group-side cascade of a PERMANENT system ban. Mirrors community-service's
+  // AdminApplySystemBan: groups the banned user OWNS are CLOSED (not
+  // disbanded — a disband hides the room from everyone, a close leaves it in
+  // every member's list, readable, with a red banner), and their memberships
+  // in every other group are ended. Idempotent.
+  rpc AdminApplySystemBan     (AdminApplySystemBanRequest)     returns (AdminApplySystemBanResponse);
 
   // Admin Calling: analytics, the global kill-switch, and a lightweight health
   // ping. Calls are owned by chat-service, so the Call collection is only ever
@@ -188,7 +194,9 @@ message AdminGroupRow {
   int32           member_count = 5;
   int64           created_at    = 6;
   AdminGroupAdmin admin        = 7;
-  // Raw lifecycle status: "ACTIVE" | "DISBANDED".
+  // Raw lifecycle status: "ACTIVE" | "CLOSED" | "DISBANDED".
+  // CLOSED = the owner was permanently system-banned; the room stays visible
+  // and readable to its members but nobody can write.
   string          status       = 8;
   // Epoch ms; 0 when the group was never disbanded.
   int64           disbanded_at = 9;
@@ -251,6 +259,18 @@ message AdminDisbandGroupRequest {
   // backoffice AdminUser.id — stored as GroupRoom.disbandedBy (DB-only).
   string actor_admin_id = 2;
 }
+message AdminApplySystemBanRequest {
+  string user_id        = 1;
+  string actor_admin_id = 2; // backoffice AdminUser.id
+  string reason         = 3;
+}
+message AdminApplySystemBanResponse {
+  bool            ok                = 1;
+  repeated string closed_group_ids  = 2; // owned, now CLOSED (still visible)
+  repeated string removed_group_ids = 3; // memberships ended
+  string          error_code        = 4; // "" on success
+}
+
 message AdminRemoveGroupMemberRequest {
   string group_id       = 1;
   string user_id        = 2;

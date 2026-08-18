@@ -19,6 +19,7 @@ import {
   generateUniqueAccount,
 } from "../lib/social-account.util.js";
 import { resolveSocialProfileName } from "../lib/social-profile-name.js";
+import { assertNotBanned } from "../lib/account-guard.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
@@ -56,6 +57,10 @@ function assertUserCanLogin(user: AuthUserRow): void {
   if (user.lockedUntil && user.lockedUntil > new Date()) {
     throw new UnauthorizedError("AUTH_ACCOUNT_LOCKED");
   }
+
+  // Google and Apple sign-in both funnel through here, so a banned account is
+  // rejected on the social paths exactly as on password login.
+  assertNotBanned(user.status);
 
   if (user.status !== AccountStatus.ACTIVE) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");

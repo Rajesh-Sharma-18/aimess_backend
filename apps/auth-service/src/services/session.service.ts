@@ -20,6 +20,7 @@ import {
   markSessionRevoked,
   markSessionsRevoked,
 } from "../lib/session-active-cache.js";
+import { assertNotBanned } from "../lib/account-guard.js";
 import { toActiveSessionItem } from "../lib/session-serializer.js";
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -110,7 +111,17 @@ export const sessionService = {
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
-    if (stored.user.deletedAt || stored.user.status !== AccountStatus.ACTIVE) {
+    if (stored.user.deletedAt) {
+      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
+    }
+
+    // Refresh is the bypass a ban has to close: a still-valid refresh token
+    // would otherwise mint a fresh 15-minute access token every time, and the
+    // gateway's socket keep-alive re-arms a live connection off exactly this
+    // endpoint.
+    assertNotBanned(stored.user.status);
+
+    if (stored.user.status !== AccountStatus.ACTIVE) {
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 
@@ -188,7 +199,17 @@ export const sessionService = {
       throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
     }
 
-    if (stored.user.deletedAt || stored.user.status !== AccountStatus.ACTIVE) {
+    if (stored.user.deletedAt) {
+      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
+    }
+
+    // Refresh is the bypass a ban has to close: a still-valid refresh token
+    // would otherwise mint a fresh 15-minute access token every time, and the
+    // gateway's socket keep-alive re-arms a live connection off exactly this
+    // endpoint.
+    assertNotBanned(stored.user.status);
+
+    if (stored.user.status !== AccountStatus.ACTIVE) {
       throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
     }
 

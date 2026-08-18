@@ -133,6 +133,43 @@ describe("pushToUser — the settings gate", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("category OFF still writes an inbox-only history row (skipPush)", async () => {
+    // Call history is the LOG of a call that already happened, written for both
+    // participants from one canonical record. The `callEnabled` toggle silences
+    // alerts; erasing the row made history appear for one side of a call and
+    // not the other, purely because the two ends are two different accounts.
+    withSettings({ callEnabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "callEnabled",
+      type: "call.activity",
+      title: "Jane",
+      body: "Missed voice call",
+      skipPush: true,
+      data: { callId: "call-1", groupKey: "call:call-1" },
+    });
+
+    expect(chatNotificationClient.createNotification).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("category OFF still suppresses a call push that is NOT inbox-only", async () => {
+    withSettings({ callEnabled: false });
+
+    await pushToUser({
+      userId: USER_ID,
+      category: "callEnabled",
+      type: "CALL_INCOMING",
+      title: "Jane",
+      body: "Incoming call",
+      skipInbox: true,
+    });
+
+    expect(chatNotificationClient.createNotification).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("quiet hours suppresses the push but KEEPS the inbox row", async () => {
     // A window covering the whole day, so the test never depends on the clock.
     withSettings({

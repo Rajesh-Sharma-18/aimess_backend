@@ -1033,7 +1033,7 @@ const groupAutoDelete = {
     description:
       "Sets the policy for the whole group. Every member's messages follow it regardless of who sent them, and a message expires whether or not every member has read it — an offline or never-opening member does not hold it back.\n\n" +
       "**Permissions:** `ADMIN` and `MODERATOR` only. A plain member gets `403 CHAT_INSUFFICIENT_PERMISSIONS`; a non-member gets `404`.\n\n" +
-      "**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean \"the first member to open the chat deletes it for everyone who hasn't\" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n" +
+      '**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean "the first member to open the chat deletes it for everyone who hasn\'t" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n' +
       "Restamp, no-op, turn-off and timer semantics are identical to the private endpoint.\n\n" +
       "**Errors**\n" +
       "- `CHAT_AUTO_DELETE_MODE_UNSUPPORTED` — `AFTER_VIEWING` in a group;\n" +

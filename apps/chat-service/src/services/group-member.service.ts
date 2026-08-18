@@ -13,6 +13,7 @@ import { SystemEvent } from "../types/enums.js";
 import {
   assertGroupMember,
   assertGroupReadAccess,
+  assertGroupRoomWritable,
   isGroupMemberMuted,
 } from "../lib/access-guard.js";
 import {
@@ -101,6 +102,9 @@ export class GroupMemberService {
   ): Promise<GroupMember> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // The lookup above returns CLOSED rooms too (they stay visible), so growing
+    // the roster of a frozen group needs its own gate.
+    assertGroupRoomWritable(room);
 
     // Authorize the actor: only active staff may add members. Without this, any
     // authenticated user could inject themselves or others into a private group
@@ -132,8 +136,12 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // Groups have no ban feature. Legacy BANNED rows are treated as removed, so
-    // the upsert below re-admits them (it already clears bannedAt/bannedBy).
+    // A ban must survive a re-invite: re-adding a BANNED row is refused, and
+    // the upsert below no longer clears bannedAt/bannedBy. Lifting a ban is
+    // `unban()`'s job, which is role-gated — an add is not.
+    if (existing && existing.status === "BANNED") {
+      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
+    }
 
     if (room.memberCount >= room.memberLimit) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");
@@ -164,8 +172,6 @@ export class GroupMemberService {
       kickedAt: null,
       kickedBy: null,
       kickReason: null,
-      bannedAt: null,
-      bannedBy: null,
     });
 
     await this.roomRepo.incMemberCount(params.roomId, 1);
@@ -246,6 +252,7 @@ export class GroupMemberService {
   }> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    assertGroupRoomWritable(room);
     // Fail the whole request (not each member) when the caller may not add.
     await assertGroupMember(this.memberRepo, params.roomId, params.invitedBy, {
       roles: ["ADMIN", "MODERATOR"],

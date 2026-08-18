@@ -38,6 +38,24 @@ describe("deriveStatus (serialization helper)", () => {
     expect(deriveStatus({})).toBe("ACTIVE");
     expect(deriveStatus({ status: null })).toBe("ACTIVE");
   });
+
+  it("refines a CLOSED community to CLOSED_BY_SYSTEM_BAN when the owner was banned", () => {
+    expect(
+      deriveStatus({
+        status: CommunityStatus.CLOSED,
+        statusClosedReasonCode: "ADMIN_BANNED",
+      })
+    ).toBe("CLOSED_BY_SYSTEM_BAN");
+  });
+
+  it("ignores the reason code when the community is not closed", () => {
+    expect(
+      deriveStatus({
+        status: CommunityStatus.ACTIVE,
+        statusClosedReasonCode: "ADMIN_BANNED",
+      })
+    ).toBe("ACTIVE");
+  });
 });
 
 describe("isOwnerClosed", () => {
@@ -79,6 +97,21 @@ describe("assertWritable", () => {
     } catch (e) {
       expect(e).toBeInstanceOf(ForbiddenError);
       expect((e as ForbiddenError).message).toBe("COMMUNITY_SUSPENDED");
+    }
+  });
+
+  // The whole point of keeping the DB value at CLOSED: a ban-close must hit
+  // every existing guard identically, only the wire status differs.
+  it("throws the same COMMUNITY_IS_CLOSED for a ban-closed community", () => {
+    try {
+      assertWritable({
+        status: CommunityStatus.CLOSED,
+        statusClosedReasonCode: "ADMIN_BANNED",
+        ...ACTIVE_MOD,
+      });
+      throw new Error("expected to throw");
+    } catch (e) {
+      expect((e as ForbiddenError).message).toBe("COMMUNITY_IS_CLOSED");
     }
   });
 

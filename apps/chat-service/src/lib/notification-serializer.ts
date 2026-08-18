@@ -2,7 +2,11 @@ import { DELETED_ACCOUNT_DISPLAY_NAME, t } from "@aimess/constants";
 
 import type { Notification } from "../generated/prisma/index.js";
 
-import { categorize, LOGIN_DETECTED_TYPE } from "./notification-category.js";
+import {
+  categorize,
+  LOGIN_DETECTED_TYPE,
+  type NotificationCategory,
+} from "./notification-category.js";
 import {
   resolveNotificationFriendship,
   type NotificationFriendshipDTO,
@@ -21,7 +25,11 @@ import {
 export interface NotificationDTO {
   id: string;
   type: string;
-  category: "FRIENDS" | "COMMUNITIES" | "MENTIONS" | "SYSTEM";
+  /**
+   * Derived from `type` by `categorize()` — never stored. Typed off that
+   * function so a new tab cannot be added without this DTO following it.
+   */
+  category: Exclude<NotificationCategory, "ALL">;
   /** Null when the body already carries the subject — the client renders no heading. */
   title: string | null;
   body: string;

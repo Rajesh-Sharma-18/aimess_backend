@@ -70,6 +70,12 @@ export type CommunityListItem = {
   type: CommunityType;
   category: CategoryRef;
   status: CommunityModerationStatus;
+  /**
+   * "ADMIN_BANNED" when this community was closed because its owner was banned.
+   * `status` above is the platform-moderation axis and stays ACTIVE for that
+   * kind of close, so the list needs this to render it as closed at all.
+   */
+  closedReasonCode: string | null;
   memberCount: number;
   livestreamCount: LivestreamCounter;
   createdAt: number;
@@ -149,6 +155,11 @@ export type CommunityCore = {
   coverUrl: string | null;
   createdAt: number;
   lastActivityAt: number;
+  // "ADMIN_BANNED" when the community was closed because its owner was
+  // permanently system-banned; null otherwise. Never derive this from the
+  // owner's CURRENT account status — an unban flips that back to ACTIVE while
+  // the community stays closed forever.
+  closedReasonCode: string | null;
 };
 
 /**
@@ -195,6 +206,8 @@ export type CommunityDetailResponse = {
   ownerAvatar: MediaObject | null;
   ownerEmail: string | null;
   ownerAccountStatus: AccountStatus;
+  /** "ADMIN_BANNED" when closed because the owner was system-banned. */
+  closedReasonCode: string | null;
   /** Current total community members (`memberStats.total`). */
   membersCount: number;
   /** Currently-active (LIVE) livestreams for this community. */
@@ -233,6 +246,49 @@ export type ReopenResult = {
   communityId: string;
   status: CommunityModerationStatus;
   reopenedAt: number;
+  moderationActionId: string;
+  auditLogId: string;
+};
+
+/** Kick/ban-member payload the service forwards from the validated body. */
+export type MemberModerationInput = {
+  reason?: string;
+};
+
+/** Community Conversation viewer — paginated message read query. */
+export type ConversationMessagesQuery = {
+  cursor?: string;
+  limit: number;
+};
+
+/** One message row in the Community Conversation viewer. */
+export type ConversationMessageItem = {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string | null;
+  message: string;
+  contentType: string;
+  attachments: unknown[];
+  reactions: unknown[];
+  quoteData: unknown | null;
+  sentAt: number;
+  systemMessageType: string | null;
+};
+
+/** Community Conversation viewer — paginated message read result. */
+export type ConversationMessagesResult = {
+  messages: ConversationMessageItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  pinnedMessage: unknown | null;
+};
+
+/** Result of a kick/ban-member action (audit/moderation ids attached by the service). */
+export type MemberModerationResult = {
+  communityId: string;
+  targetUserId: string;
+  status: string;
   moderationActionId: string;
   auditLogId: string;
 };

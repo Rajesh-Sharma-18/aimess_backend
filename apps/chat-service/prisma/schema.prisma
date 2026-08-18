@@ -254,6 +254,12 @@ model GroupRoom {
   archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
+  // status "CLOSED" — frozen like DISBANDED but still listed and readable for
+  // every member (a disband hides the room everywhere). Written only by the
+  // super-admin system-ban cascade; closedReasonCode is "ADMIN_BANNED".
+  closedAt           DateTime?
+  closedBy           String?
+  closedReasonCode   String?
   // Reaction OVERLAY — see PrivateRoom.reactionActivity* for the full rationale
   // (same fields, same read-time gate, same identity-matched clear).
   reactionActivityAt            DateTime?

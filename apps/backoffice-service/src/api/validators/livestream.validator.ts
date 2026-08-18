@@ -187,6 +187,19 @@ export type ListLivestreamUsersQueryInput = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// Per-stream chat comments (admin monitor). Cursor-paged by comment id, not by
+// page number — stream-service has no offset mode for comments.
+// ---------------------------------------------------------------------------
+export const listLivestreamCommentsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  /** Comment id; returns comments older than it. */
+  before: z.string().trim().min(1).optional(),
+});
+export type ListLivestreamCommentsQueryInput = z.infer<
+  typeof listLivestreamCommentsQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
 // Review reports.
 // ---------------------------------------------------------------------------
 export const reviewReportsSchema = z.object({

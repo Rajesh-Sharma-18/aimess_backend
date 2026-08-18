@@ -130,7 +130,7 @@ describe("GroupSystemMessageService.postOrUpdateCall", () => {
         sequenceNumber: 4,
       },
     });
-    expect(payload.data.content.text).toBe("Voice call lasted 02:05");
+    expect(payload.data.content.text).toBe("Voice Call 02:05");
   });
 
   it("refuses to rewrite a terminal row (late racing webhook)", async () => {

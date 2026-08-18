@@ -156,6 +156,7 @@ export class NotificationService {
     friends: number;
     communities: number;
     mentions: number;
+    calls: number;
     system: number;
   }> {
     return this.notificationRepo.countByCategories(userId, viewerSessionId);

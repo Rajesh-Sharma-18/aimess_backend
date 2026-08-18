@@ -94,3 +94,75 @@ export function registerSessionRevokeListener(
 
   void sessionRevokeSub.psubscribe("session-revoke:*");
 }
+
+/**
+ * Delivers a permanent Super Admin ban to every device of the banned user, and
+ * then hangs them all up.
+ *
+ * Distinct from `registerSessionRevokeListener` above because a ban is
+ * USER-scoped, not session-scoped: the revoke path can only address the one
+ * `session:<sessionId>` room named in its payload, so telling every device
+ * would mean publishing N messages and would still say nothing about WHY. Here
+ * the target room is `user:<userId>`, which every namespace's socket joins at
+ * connect, so one message reaches every device on every namespace.
+ *
+ * The two run in tandem on a ban: auth-service publishes here AND revokes each
+ * session, so a client that misses one signal still gets the other. Emitting
+ * `user:banned` before disconnecting is what lets the client tell a ban apart
+ * from an ordinary session termination and stop trying to reconnect or refresh.
+ *
+ * `user:unbanned` is emit-only — there is nothing to disconnect, and the user
+ * has no live socket anyway (their sessions were revoked when they were banned).
+ * It exists so an admin panel or a second device can react without polling.
+ */
+export function registerUserBanListener(
+  io: SocketIOServer,
+  sessionRevokeSub: Redis
+): void {
+  sessionRevokeSub.on(
+    "pmessage",
+    (_pattern: string, channel: string, message: string) => {
+      if (!channel.startsWith("user-ban:")) return;
+      const userId = channel.replace("user-ban:", "");
+
+      let event: string | undefined;
+      let data: unknown;
+      try {
+        ({ event, data } = JSON.parse(message) as {
+          event?: string;
+          data?: unknown;
+        });
+      } catch (err) {
+        logger.warn(`user-ban message parse error: ${String(err)}`);
+        return;
+      }
+      if (event !== "user:banned" && event !== "user:unbanned") return;
+
+      const userRoom = `user:${userId}`;
+
+      for (const nsName of LIVE_NAMESPACES) {
+        const ns = io.of(nsName);
+        ns.to(userRoom).emit(event, data);
+
+        if (event !== "user:banned") continue;
+
+        // Disconnect AFTER the emit so the notice is on the wire first.
+        // `fetchSockets()` is cross-node via the Redis adapter, so this reaches
+        // the user's sockets on every gateway replica, not just this one.
+        void ns
+          .in(userRoom)
+          .fetchSockets()
+          .then((sockets) => {
+            for (const socket of sockets) socket.disconnect(true);
+          })
+          .catch((err: unknown) =>
+            logger.warn(
+              `user-ban disconnect lookup failed on ${nsName}: ${String(err)}`
+            )
+          );
+      }
+    }
+  );
+
+  void sessionRevokeSub.psubscribe("user-ban:*");
+}

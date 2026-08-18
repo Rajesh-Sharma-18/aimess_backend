@@ -9,6 +9,14 @@ service AuthService {
   rpc AdminGetUser (AdminGetUserRequest) returns (AdminUserRecord);
   rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
   rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
+  // The ONLY mutation on this service. backoffice-service calls it
+  // synchronously so a Super Admin ban is durable before the HTTP response
+  // returns: auth-service is the sole owner of AuthUser.status, and every
+  // login / social-login / refresh / password-reset path already rejects a
+  // non-ACTIVE account. Also sets the Redis user-ban flag and revokes every
+  // session in the same call. The admin.user.queue RabbitMQ event stays as an
+  // idempotent safety net, not the primary path.
+  rpc AdminSetAccountStatus (AdminSetAccountStatusRequest) returns (AdminSetAccountStatusResponse);
 }
 
 message GetUserCountsRequest {}
@@ -72,6 +80,21 @@ message AdminListUsersResponse {
   int64 total = 2;              // total matching the filter (for pagination)
 }
 message AdminGetUserRequest { string user_id = 1; }
+
+// Permanent ban / reinstatement. There is deliberately no duration field:
+// a ban lasts until a Super Admin explicitly sets the status back to ACTIVE.
+message AdminSetAccountStatusRequest {
+  string user_id        = 1;
+  string status         = 2; // "BANNED" | "ACTIVE"
+  string reason         = 3; // free text, persisted on the account; "" allowed
+  string actor_admin_id = 4; // backoffice AdminUser.id (NOT an AuthUser.id)
+}
+message AdminSetAccountStatusResponse {
+  bool   ok               = 1;
+  string status           = 2; // status after the write ("" when ok=false)
+  int32  revoked_sessions = 3; // sessions killed by this call (0 on unban)
+  string error_code       = 4; // "USER_NOT_FOUND" | "INVALID_STATUS" | ""
+}
 
 // Internal: user-service fetches full account summary by userId (replaces HTTP GET /api/auth/internal/account)
 message GetAccountSummaryRequest {

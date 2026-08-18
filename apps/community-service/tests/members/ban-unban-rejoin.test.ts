@@ -106,7 +106,8 @@ describe("banMember — reuses the leave removal core (architecture requirement)
       TARGET,
       "BANNED",
       expect.objectContaining({ bannedBy: ADMIN, banReason: "spam" }),
-      "MEMBER"
+      "MEMBER",
+      undefined
     );
   });
 
@@ -200,7 +201,8 @@ describe("banMember — reuses the leave removal core (architecture requirement)
       TARGET,
       "BANNED",
       expect.objectContaining({ bannedBy: ADMIN, banReason: "spam" }),
-      "MEMBER"
+      "MEMBER",
+      undefined
     );
   });
 });

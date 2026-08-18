@@ -16,6 +16,7 @@
  */
 import { CallStatus } from "../../src/types/enums.js";
 import { CallService } from "../../src/services/call.service.js";
+import { CallRepository } from "../../src/repositories/call.repository.js";
 import {
   publishCallMissedSafe,
   publishCallActivitySafe,
@@ -285,6 +286,23 @@ describe("idempotency", () => {
     expect(missedPush).toHaveBeenCalledTimes(1);
     expect(activityPush).toHaveBeenCalledTimes(1);
     expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The guard that makes the whole thing safe lives in the QUERY, not in the
+   * service: a timeout arriving after the callee declined (or the caller
+   * cancelled) must not be able to rewrite that terminal state as MISSED.
+   */
+  it("only ever claims a row that is still RINGING, so a settled call is untouchable", async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const repo = new CallRepository({ call: { updateMany } } as never);
+
+    const { won } = await repo.claimForMissed("c-1", new Date());
+
+    const where = (updateMany.mock.calls[0]![0] as { where: unknown }).where;
+    expect(where).toEqual({ callId: "c-1", status: CallStatus.RINGING });
+    // No row matched → this writer lost, and the caller must not fan out.
+    expect(won).toBe(false);
   });
 
   it("the sweep cannot double-fan-out a call the caller already settled", async () => {

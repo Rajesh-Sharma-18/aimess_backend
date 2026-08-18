@@ -279,6 +279,19 @@ export const NOTIFICATION_MESSAGES = {
     en: "Incoming video call",
     th: "สายวิดีโอเข้า",
   },
+  // The CALLER's side of any call that never connected. There is no
+  // user-facing "cancelled"/"declined" call in AiMess — see
+  // buildCallActivityText for the single rule that produces this.
+  NOTIF_CALL_NO_ANSWER_VOICE: {
+    vi: "Cuộc gọi thoại không trả lời",
+    en: "Voice call, no answer",
+    th: "สายสนทนา ไม่มีการรับสาย",
+  },
+  NOTIF_CALL_NO_ANSWER_VIDEO: {
+    vi: "Cuộc gọi video không trả lời",
+    en: "Video call, no answer",
+    th: "สายวิดีโอ ไม่มีการรับสาย",
+  },
   NOTIF_CALL_MISSED_VOICE: {
     vi: "Cuộc gọi thoại nhỡ",
     en: "Missed voice call",

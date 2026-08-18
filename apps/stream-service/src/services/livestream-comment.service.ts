@@ -16,6 +16,7 @@ import {
   resolveAvatarUrlMap,
   avatarUrlFromMap,
 } from "../lib/avatar-resolve.js";
+import { isSystemBanned } from "../lib/system-ban.js";
 
 export const COMMENT_REPORT_REASONS = [
   "OFFENSIVE_LANGUAGE",
@@ -231,6 +232,15 @@ export class LivestreamCommentService {
     message: string;
     clientCommentId?: string | null;
   }): Promise<CommentDto> {
+    // User-scoped and stream-independent, so it runs before the idempotency
+    // replay too — a banned account gets nothing back, not even its own row.
+    // Fail-open, matching the ban/mute checks below.
+    if (
+      await isSystemBanned(this.redis, params.userId, { denyOnError: false })
+    ) {
+      throw new ForbiddenError("ACCOUNT_BANNED");
+    }
+
     // Idempotency: replay of the same client comment returns the original row.
     if (params.clientCommentId) {
       const existing = await this.commentRepo.findByClientCommentId(

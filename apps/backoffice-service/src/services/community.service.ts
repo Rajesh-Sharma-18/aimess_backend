@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
+import { chatClient } from "../grpc/chat.client.js";
 import {
   communityMembersRepository,
   communityMutesRepository,
@@ -17,9 +18,13 @@ import type {
   CommunityListItem,
   CommunityMemberRow,
   CommunityMutedMemberRow,
+  ConversationMessagesQuery,
+  ConversationMessagesResult,
   ListCommunitiesQuery,
   ListCommunityMembersQuery,
   ListMutedMembersQuery,
+  MemberModerationInput,
+  MemberModerationResult,
   ModerationActor,
   Paginated,
   PaginationMeta,
@@ -106,6 +111,48 @@ export const communityService = {
     query: ListMutedMembersQuery
   ): Promise<Paginated<CommunityMutedMemberRow>> {
     return communityMutesRepository.listMutedMembers(communityId, query);
+  },
+
+  /**
+   * Community Conversation viewer — paginated, read-only message history.
+   * Thin passthrough to chat-service's AdminGetCommunityMessages (trusted
+   * platform-admin read, no membership gate — works on PRIVATE communities
+   * too), normalized into the shape the admin panel renders. Reuses the same
+   * `cursor`/`limit` pagination chat-service already uses for the
+   * website/mobile community chat — no separate pagination scheme.
+   */
+  async getConversationMessages(
+    communityId: string,
+    query: ConversationMessagesQuery
+  ): Promise<ConversationMessagesResult> {
+    const res = await chatClient.adminGetCommunityMessages({
+      roomId: communityId,
+      cursor: query.cursor ?? "",
+      limit: query.limit,
+    });
+
+    const messages = (res.messages ?? []).map((m) => ({
+      messageId: m.messageId,
+      senderId: m.senderId,
+      senderName: m.senderName || "Unknown",
+      senderAvatar: m.senderAvatar || null,
+      message: m.message,
+      contentType: m.contentType,
+      attachments: m.attachmentsJson ? JSON.parse(m.attachmentsJson) : [],
+      reactions: m.reactionsJson ? JSON.parse(m.reactionsJson) : [],
+      quoteData: m.quoteDataJson ? JSON.parse(m.quoteDataJson) : null,
+      sentAt: Number(m.sentAt) || 0,
+      systemMessageType: m.systemMessageType || null,
+    }));
+
+    return {
+      messages,
+      nextCursor: res.nextCursor || null,
+      hasMore: Boolean(res.hasMore),
+      pinnedMessage: res.pinnedMessageJson
+        ? JSON.parse(res.pinnedMessageJson)
+        : null,
+    };
   },
 
   async closeCommunity(
@@ -287,6 +334,154 @@ export const communityService = {
     }
 
     return result;
+  },
+
+  /**
+   * Admin Community Conversation viewer — remove a member from THIS community
+   * only (they remain active elsewhere). community-service's adminKickMember
+   * performs the mutation + realtime broadcast (community:member:removed,
+   * reflected live to website/Android/iOS via the existing gateway
+   * subscription) but skips its own audit write — this is a
+   * backoffice-initiated action, so backoffice-service writes the canonical
+   * ModerationAction + AuditLog itself, same convention as closeCommunity.
+   */
+  async kickCommunityMember(
+    communityId: string,
+    targetUserId: string,
+    input: MemberModerationInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<MemberModerationResult> {
+    const ref = buildActor(actor);
+    const result = await communityRepository.kickMember(
+      communityId,
+      targetUserId,
+      input.reason,
+      ref
+    );
+
+    const moderationAction = await moderationActionRepository.create({
+      actorId: actor.id,
+      type: "remove_community_member",
+      targetType: "user",
+      targetId: targetUserId,
+      // Same default-when-omitted precedent as reopenCommunity's reasonNote.
+      reason: input.reason ?? "Removed from community by admin",
+      metadata: { communityId },
+    });
+
+    const auditLog = await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.COMMUNITY_MEMBER_REMOVED,
+      targetType: "user",
+      targetId: targetUserId,
+      after: {
+        communityId,
+        status: result.status,
+        reason: input.reason ?? null,
+      },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return {
+      ...result,
+      moderationActionId: moderationAction.id,
+      auditLogId: auditLog.id,
+    };
+  },
+
+  /**
+   * Admin Community Conversation viewer — ban a member from THIS community
+   * only. Same reuse/audit split as {@link kickCommunityMember}.
+   */
+  async banCommunityMember(
+    communityId: string,
+    targetUserId: string,
+    input: MemberModerationInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<MemberModerationResult> {
+    const ref = buildActor(actor);
+    const result = await communityRepository.banMember(
+      communityId,
+      targetUserId,
+      input.reason,
+      ref
+    );
+
+    const moderationAction = await moderationActionRepository.create({
+      actorId: actor.id,
+      type: "ban_community_member",
+      targetType: "user",
+      targetId: targetUserId,
+      reason: input.reason ?? "Banned from community by admin",
+      metadata: { communityId },
+    });
+
+    const auditLog = await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.COMMUNITY_MEMBER_BANNED,
+      targetType: "user",
+      targetId: targetUserId,
+      after: {
+        communityId,
+        status: result.status,
+        reason: input.reason ?? null,
+      },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return {
+      ...result,
+      moderationActionId: moderationAction.id,
+      auditLogId: auditLog.id,
+    };
+  },
+
+  async unbanCommunityMember(
+    communityId: string,
+    targetUserId: string,
+    input: MemberModerationInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<MemberModerationResult> {
+    const ref = buildActor(actor);
+    const result = await communityRepository.unbanMember(
+      communityId,
+      targetUserId,
+      ref
+    );
+
+    const moderationAction = await moderationActionRepository.create({
+      actorId: actor.id,
+      type: "unban_community_member",
+      targetType: "user",
+      targetId: targetUserId,
+      reason: input.reason ?? "Community ban lifted by admin",
+      metadata: { communityId },
+    });
+
+    const auditLog = await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.COMMUNITY_MEMBER_UNBANNED,
+      targetType: "user",
+      targetId: targetUserId,
+      after: {
+        communityId,
+        status: result.status,
+        reason: input.reason ?? null,
+      },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    return {
+      ...result,
+      moderationActionId: moderationAction.id,
+      auditLogId: auditLog.id,
+    };
   },
 };
 

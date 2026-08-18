@@ -555,6 +555,9 @@ function build(seed: Seed, i: number): LivestreamDetail {
       ingestProtocol: i % 2 === 0 ? "RTMP" : "SRT",
       // Stream KEY intentionally omitted/redacted — never expose ingest secrets.
       playbackUrl: `https://live.aimess.app/hls/${livestreamId}/index.m3u8`,
+      sourceType: i % 2 === 0 ? "PHONE_CAMERA" : "OBS_RTMP",
+      sourceUrl: null,
+      flvUrl: `https://live.aimess.app/live/${livestreamId}.flv`,
       resolution: RESOLUTIONS[i % RESOLUTIONS.length]!,
       bitrateKbps: 3_500 + (i % 3) * 1_500,
       fps: i % 2 === 0 ? 60 : 30,

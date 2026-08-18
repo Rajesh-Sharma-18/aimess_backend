@@ -77,6 +77,8 @@ interface CallActivityPayload {
   /** Canonical terminal CallTimelineStatus from chat-service. */
   status: string;
   durationSec: number;
+  /** Ring length in seconds; disambiguates a cancelled ring (see grace window). */
+  ringDurationSec?: number;
   privateRoomId: string;
   endedAt: number;
   callerName: string;
@@ -216,7 +218,11 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
 
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
   const caller = data.callerName || "Someone";
-  const deepLink = buildDeepLink("call", data.callId);
+  // The DM, not the call. A missed call is over — there is nothing to open on
+  // `aimess://call/<callId>`, and the matching Notification-Center row already
+  // deep-links to the conversation. Tapping either now lands in the same place,
+  // where the call card and the call-back button live.
+  const deepLink = buildDeepLink("conversation", data.callerId);
 
   await pushToUser({
     userId: data.calleeId,
@@ -387,7 +393,9 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
  * an outgoing call, and a call the reader was present for, are history — not
  * something to badge them about.
  */
-async function handleCallActivity(data: CallActivityPayload): Promise<void> {
+export async function handleCallActivity(
+  data: CallActivityPayload
+): Promise<void> {
   logger.info(
     `[push:consume] call.activity callId=${data.callId} status=${data.status} ` +
       `type=${data.callType} duration=${data.durationSec}`
@@ -401,6 +409,13 @@ async function handleCallActivity(data: CallActivityPayload): Promise<void> {
     String(data.callType).toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
   const status = String(data.status).toUpperCase();
   const durationSec = Math.max(0, Math.floor(Number(data.durationSec) || 0));
+  // Absent on a legacy/in-flight event — left undefined so the shared mapper
+  // falls back to the previous "a cancelled ring is a missed call" behaviour
+  // rather than silently un-badging it.
+  const ringDurationSec =
+    data.ringDurationSec === undefined || data.ringDurationSec === null
+      ? undefined
+      : Math.max(0, Math.floor(Number(data.ringDurationSec) || 0));
 
   // Direction comes from the call record's own participants — never from text.
   const sides: {
@@ -426,47 +441,76 @@ async function handleCallActivity(data: CallActivityPayload): Promise<void> {
     },
   ];
 
-  for (const side of sides) {
-    await pushToUser({
-      userId: side.userId,
-      category: "callEnabled",
-      type: CALL_ACTIVITY_TYPE,
-      copy: callCopy.activity(
-        side.peerName,
-        callType,
-        status,
-        side.direction,
-        durationSec
-      ),
-      // The peer's name is the card heading; the body is the call line.
-      inboxTitle: side.peerName || null,
-      // The peer — so the read path resolves their fresh name/avatar and a click
-      // opens their DM, the same contract a friendship row uses.
-      actorId: side.peerId,
-      deepLink: buildDeepLink("conversation", side.peerId),
-      // History, not a live event: the inbox row is the whole point.
-      skipPush: true,
-      data: {
+  // Each participant's row is written INDEPENDENTLY. Sequentially awaiting one
+  // side meant a failure on the first (the caller) threw out of this handler
+  // before the second was ever attempted, so one flaky recipient silently cost
+  // the OTHER participant their call history too. Both are derived from the
+  // same canonical call record; neither depends on the other succeeding.
+  const results = await Promise.allSettled(
+    sides.map((side) =>
+      pushToUser({
+        userId: side.userId,
+        category: "callEnabled",
         type: CALL_ACTIVITY_TYPE,
-        callId: data.callId,
-        callType,
-        callStatus: status,
-        callDirection: side.direction,
-        durationSec: String(durationSec),
-        peerId: side.peerId,
-        peerAvatarUrl: side.peerAvatar,
-        roomId: data.privateRoomId ?? "",
-        endedAt: String(data.endedAt ?? ""),
-        // ONE card per call, transitioned in place — never a card per state.
-        groupKey: `call:${data.callId}`,
-        // A settled call must not jump back to unread when a late duplicate
-        // transition rewrites it.
-        resurface: "false",
-        ...(isUnreadCallActivity(status, side.direction)
-          ? {}
-          : { markRead: "true" }),
-      },
-    });
+        copy: callCopy.activity(
+          side.peerName,
+          callType,
+          status,
+          side.direction,
+          durationSec,
+          ringDurationSec
+        ),
+        // The peer's name is the card heading; the body is the call line.
+        inboxTitle: side.peerName || null,
+        // The peer — so the read path resolves their fresh name/avatar and a
+        // click opens their DM, the same contract a friendship row uses.
+        actorId: side.peerId,
+        deepLink: buildDeepLink("conversation", side.peerId),
+        // History, not a live event: the inbox row is the whole point.
+        skipPush: true,
+        data: {
+          type: CALL_ACTIVITY_TYPE,
+          callId: data.callId,
+          callType,
+          callStatus: status,
+          callDirection: side.direction,
+          durationSec: String(durationSec),
+          peerId: side.peerId,
+          peerAvatarUrl: side.peerAvatar,
+          roomId: data.privateRoomId ?? "",
+          endedAt: String(data.endedAt ?? ""),
+          // ONE card per call, transitioned in place — never a card per state.
+          groupKey: `call:${data.callId}`,
+          // A settled call must not jump back to unread when a late duplicate
+          // transition rewrites it.
+          resurface: "false",
+          ...(isUnreadCallActivity(status, side.direction, ringDurationSec)
+            ? {}
+            : { markRead: "true" }),
+        },
+      })
+    )
+  );
+
+  // A row that never got written is a hole in someone's call history, and
+  // pushToUser swallows its own failures — so name the recipient here or it is
+  // invisible. Throwing keeps the message unacked so the consumer can redeliver
+  // it (the groupKey makes a replay idempotent).
+  const failed = results
+    .map((result, index) => ({ result, side: sides[index]! }))
+    .filter((entry) => entry.result.status === "rejected");
+  if (failed.length > 0) {
+    for (const { result, side } of failed) {
+      logger.error(
+        `[call.activity] inbox row FAILED callId=${data.callId} ` +
+          `recipient=${side.userId} peer=${side.peerId} direction=${side.direction} ` +
+          `callType=${callType} callStatus=${status} type=${CALL_ACTIVITY_TYPE}: ` +
+          String((result as PromiseRejectedResult).reason)
+      );
+    }
+    throw new Error(
+      `call.activity projection failed for ${failed.length} of ${sides.length} participants (callId=${data.callId})`
+    );
   }
 }
 
@@ -505,9 +549,19 @@ export async function startCallConsumer(): Promise<void> {
         }
         channel.ack(message);
       } catch (error) {
-        // Deterministic/parse error → drop (no requeue) so it doesn't spin.
-        logger.error("Call push consumer failed to process message", error);
-        channel.nack(message, false, false);
+        // Retry ONCE, then drop. Dropping on the first failure treated every
+        // error as deterministic, so one transient blip (chat-service
+        // restarting, a gRPC deadline) permanently erased that call from both
+        // participants' history with no way to notice. `redelivered` bounds the
+        // retry to a single extra attempt, so a genuinely poisonous message
+        // still cannot spin the queue. Replay is safe: every projection is
+        // keyed on `groupKey = call:<callId>` and transitions one row.
+        const retry = !message.fields.redelivered;
+        logger.error(
+          `Call push consumer failed to process message (retry=${String(retry)})`,
+          error
+        );
+        channel.nack(message, false, retry);
       }
     })();
   });

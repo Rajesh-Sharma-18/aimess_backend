@@ -9,6 +9,7 @@ import { adminStatsRepository } from "../repositories/admin-stats.repository.js"
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
 import type { AuthUser } from "../generated/prisma/client.js";
 import { accountService } from "../services/account.service.js";
+import { accountBanService } from "../services/account-ban.service.js";
 import { prisma } from "../config/prisma.js";
 
 // Map an AuthUser row to the wire AdminUserRecord. Status is normalized for the
@@ -265,6 +266,78 @@ const authImpl: grpc.UntypedServiceImplementation = {
         });
       } catch (err) {
         logger.error(`gRPC bulkGetAccounts error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Admin Panel: permanently ban / reinstate an account. The only mutation on
+  // this service, and the reason a ban now actually blocks re-login.
+  //
+  // Business failures come back as `error_code` with ok=false rather than a
+  // gRPC error, so backoffice can map them to a clean 404/400; only genuine
+  // infrastructure faults throw, because backoffice treats those as fatal and
+  // aborts the ban rather than writing a mirror row for a ban that did not land.
+  adminSetAccountStatus: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        userId?: string;
+        status?: string;
+        reason?: string;
+        actorAdminId?: string;
+      };
+      const userId = req.userId ?? "";
+      const status = (req.status ?? "").toUpperCase();
+
+      if (!userId) {
+        callback(null, {
+          ok: false,
+          status: "",
+          revokedSessions: 0,
+          errorCode: "USER_NOT_FOUND",
+        });
+        return;
+      }
+      if (status !== "BANNED" && status !== "ACTIVE") {
+        callback(null, {
+          ok: false,
+          status: "",
+          revokedSessions: 0,
+          errorCode: "INVALID_STATUS",
+        });
+        return;
+      }
+
+      try {
+        const input = {
+          userId,
+          reason: req.reason ? req.reason : null,
+          actorAdminId: req.actorAdminId ? req.actorAdminId : null,
+        };
+        const result =
+          status === "BANNED"
+            ? await accountBanService.apply(input)
+            : await accountBanService.lift(input);
+        callback(null, {
+          ok: true,
+          status: result.status,
+          revokedSessions: result.revokedSessions,
+          errorCode: "",
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message === "USER_NOT_FOUND") {
+          callback(null, {
+            ok: false,
+            status: "",
+            revokedSessions: 0,
+            errorCode: "USER_NOT_FOUND",
+          });
+          return;
+        }
+        logger.error(`gRPC adminSetAccountStatus error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

@@ -117,16 +117,45 @@ describe("POST /api/auth/refresh", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 when the account is deleted / not ACTIVE", async () => {
+  it("returns 401 when the account is deleted", async () => {
+    repo.findByTokenHash.mockResolvedValue(
+      storedToken({ user: { deletedAt: new Date(), status: "ACTIVE" } })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: "deleted-account-token" });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when the account is suspended", async () => {
+    repo.findByTokenHash.mockResolvedValue(
+      storedToken({ user: { deletedAt: null, status: "SUSPENDED" } })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: "suspended-account-token" });
+
+    expect(res.status).toBe(401);
+  });
+
+  // Refresh is the bypass a permanent ban has to close: a still-valid refresh
+  // token would otherwise mint a fresh access token every 15 minutes forever.
+  // 403 + ACCOUNT_BANNED (not 401) so the client stops retrying instead of
+  // reading it as "sign in again".
+  it("returns 403 ACCOUNT_BANNED when the account is permanently banned", async () => {
     repo.findByTokenHash.mockResolvedValue(
       storedToken({ user: { deletedAt: null, status: "BANNED" } })
     );
 
     const res = await request(app)
       .post("/api/auth/refresh")
-      .send({ refreshToken: "inactive-account-token" });
+      .send({ refreshToken: "banned-account-token" });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_BANNED");
   });
 
   it.each([

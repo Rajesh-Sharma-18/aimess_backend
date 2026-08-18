@@ -54,6 +54,29 @@ export interface CommunityRepository {
     input: ReopenInput,
     actor: ActorRef
   ): Promise<BulkResult>;
+  kickMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | undefined,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult>;
+  banMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | undefined,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult>;
+  unbanMember(
+    communityId: string,
+    targetUserId: string,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult>;
+}
+
+export interface RepoMemberModerationResult {
+  communityId: string;
+  targetUserId: string;
+  status: string;
 }
 
 /** The acting admin (subset of req.admin) + a precomputed timestamp. */
@@ -144,6 +167,7 @@ function parseSort(sort: string): { field: SortField; dir: 1 | -1 } {
 function toListItem(c: CommunityDetail): CommunityListItem {
   const status = c.community.status;
   return {
+    closedReasonCode: c.community.closedReasonCode,
     communityId: c.community.communityId,
     communityName: c.community.name,
     avatar: c.community.avatar,
@@ -263,9 +287,47 @@ export class MockCommunityRepository implements CommunityRepository {
     return runBulk(ids, (id) => this.reopen(id, input, actor));
   }
 
+  // Member moderation has no fixture-backed member list to mutate (the mock
+  // seeds communities only), so these just assert the community exists and
+  // echo the resulting status — enough for the mock-mode request to succeed.
+  kickMember(
+    communityId: string,
+    targetUserId: string,
+    _reason: string | undefined,
+    _actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    this.requireExisting(communityId);
+    return Promise.resolve({ communityId, targetUserId, status: "LEFT" });
+  }
+
+  banMember(
+    communityId: string,
+    targetUserId: string,
+    _reason: string | undefined,
+    _actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    this.requireExisting(communityId);
+    return Promise.resolve({ communityId, targetUserId, status: "BANNED" });
+  }
+
+  unbanMember(
+    communityId: string,
+    targetUserId: string,
+    _actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    this.requireExisting(communityId);
+    return Promise.resolve({ communityId, targetUserId, status: "LEFT" });
+  }
+
   // -------------------------------------------------------------------------
   // Internals.
   // -------------------------------------------------------------------------
+  private requireExisting(id: string): CommunityDetail {
+    const row = this.rows.find((c) => c.community.communityId === id);
+    if (!row) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    return row;
+  }
+
   private requireActive(id: string): CommunityDetail {
     const row = this.rows.find((c) => c.community.communityId === id);
     if (!row) throw new NotFoundError("COMMUNITY_NOT_FOUND");

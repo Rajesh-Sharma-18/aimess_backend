@@ -28,6 +28,7 @@ import {
   finalizeLoginAtomic,
   getLinkSession,
 } from "../lib/device-link-store.js";
+import { assertNotBanned } from "../lib/account-guard.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import type { SessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
@@ -260,6 +261,15 @@ export const deviceLinkService = {
     // The scanning user is linking a NEW device to their OWN account, so the
     // new session must carry their real platform role.
     const scanner = await authRepository.findRoleByUserId(userId);
+
+    // QR device-link is the one login path that never re-reads account status:
+    // it trusts the scanner's access token, which stays cryptographically
+    // valid for its full lifetime after a ban. Without this a banned user
+    // could keep minting fresh browser sessions until that token expired.
+    if (scanner) {
+      assertNotBanned(scanner.status);
+    }
+
     const role = scanner?.role === "ADMIN" ? "ADMIN" : "USER";
 
     // QR linking is self-initiated from an already-authenticated device of the

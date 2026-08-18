@@ -111,7 +111,9 @@ describe("POST /api/auth/link-email/request", () => {
   });
 
   it("returns 401 when the account is not active (guard throws)", async () => {
-    repo.findByIdForEmailLink.mockResolvedValue(linkUser({ status: "BANNED" }));
+    repo.findByIdForEmailLink.mockResolvedValue(
+      linkUser({ status: "SUSPENDED" })
+    );
 
     const res = await request(app)
       .post("/api/auth/link-email/request")
@@ -119,6 +121,20 @@ describe("POST /api/auth/link-email/request", () => {
       .send({ email: EMAIL });
 
     expect(res.status).toBe(401);
+  });
+
+  // A permanent ban is a distinct, terminal verdict — 403, not the generic
+  // "account not active" 401 that tells the client to re-authenticate.
+  it("returns 403 ACCOUNT_BANNED when the account is permanently banned", async () => {
+    repo.findByIdForEmailLink.mockResolvedValue(linkUser({ status: "BANNED" }));
+
+    const res = await request(app)
+      .post("/api/auth/link-email/request")
+      .set(bearer(makeAccessToken()))
+      .send({ email: EMAIL });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_BANNED");
   });
 
   it("returns 401 without a token", async () => {

@@ -12,3 +12,12 @@ export const SERVICE_TITLE = "Community Service" as const;
  * per-row; the API field name stays the same, so clients won't change.
  */
 export const COMMUNITY_MEMBER_LIMIT = 256 as const;
+
+// Community.statusClosedReasonCode written when the owner was permanently
+// system-banned. Read by the access policy (wire status), the DTO banner and
+// reopenCommunity — one literal, three interpreters.
+export const CLOSE_REASON_ADMIN_BANNED = "ADMIN_BANNED" as const;
+
+// CommunityMember.removedReason written for a membership revoked by that
+// system ban — keeps the forensic trail distinguishable from a kick/leave.
+export const REMOVED_REASON_SYSTEM_BANNED = "system_banned" as const;

@@ -154,6 +154,10 @@ model Community {
   statusClosedAt    DateTime? // when the owner CLOSED it (status axis)
   statusClosedBy    String? // community AuthUser.id (admin/owner) who closed it
   statusClosedReason String? // optional free-text reason supplied by the owner
+  // Machine-readable cause of the close. "ADMIN_BANNED" = the owner was
+  // permanently system-banned; such a close outlives the ban (reopenCommunity
+  // refuses it) and is surfaced to clients as status CLOSED_BY_SYSTEM_BAN.
+  statusClosedReasonCode String?
   deletedAt   DateTime?
   // Permanent invitation code for PRIVATE communities — generated once, never
   // rotated unless an admin explicitly requests regeneration (future feature).
@@ -168,6 +172,8 @@ model Community {
 
   @@index([categoryId])
   @@index([creatorId])
+  // Backs the owner lookup used by the system-ban cascade (findCommunityIdsByAdminId).
+  @@index([adminId])
   @@index([lastActivityAt])
   @@index([moderationStatus, createdAt])
   @@index([status, createdAt])
