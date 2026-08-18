@@ -12,6 +12,7 @@ jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),
 }));
 jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
   publishQrLinkEvent: jest.fn(async () => 1),
 }));
 

@@ -57,6 +57,9 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
   // Presence is a HASH of userId -> open-socket refcount (HLEN = unique
   // viewers), not the old SET of userIds — see stream.ns.ts's sessionKey.
   const redis = {
+    // GET backs the fail-CLOSED system-ban gate on the go-live paths; without
+    // it every publish/markLive here would be denied.
+    get: jest.fn().mockResolvedValue(null),
     hlen: jest.fn().mockResolvedValue(0),
     hkeys: jest.fn().mockResolvedValue([]),
     hincrby: jest.fn(),

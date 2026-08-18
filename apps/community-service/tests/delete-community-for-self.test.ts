@@ -82,7 +82,10 @@ describe("deleteCommunityForSelf — active member", () => {
     expect(repo.updateMemberStatus).toHaveBeenCalledWith(
       COMMUNITY_ID,
       CALLER_ID,
-      "LEFT"
+      "LEFT",
+      undefined,
+      undefined,
+      undefined
     );
   });
 

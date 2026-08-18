@@ -64,6 +64,8 @@ export type GroupRoomType = (typeof GroupRoomType)[keyof typeof GroupRoomType];
 export const GroupRoomStatus = {
   ACTIVE: "ACTIVE",
   DISBANDED: "DISBANDED",
+  // Owner permanently banned by a super admin: read-only, but still listed.
+  CLOSED: "CLOSED",
 } as const;
 export type GroupRoomStatus =
   (typeof GroupRoomStatus)[keyof typeof GroupRoomStatus];

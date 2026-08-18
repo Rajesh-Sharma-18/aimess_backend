@@ -7,11 +7,9 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
-import { SessionRevokeReason } from "../generated/prisma/client.js";
-import { markSessionsRevoked } from "../lib/session-active-cache.js";
-import { sessionRepository } from "../repositories/session.repository.js";
+import { prisma } from "../config/prisma.js";
+import { accountBanService } from "../services/account-ban.service.js";
 import { publishAdminUserNotifySafe } from "./publish-admin-user-notify.js";
-import { publishAllSessionsRevokedSafe } from "./publish-session-revoked.js";
 
 /**
  * admin.user.queue carries backoffice ban/suspend/unban events. auth-service is
@@ -75,20 +73,35 @@ async function connectWithRetry(
 /**
  * Revoke every active session for a user (admin force-logout). Naturally
  * idempotent: revokeAllForUser filters on revokedAt:null, so a replay is a no-op.
- * Mirrors the revokeAllSessions flow in session.service.ts (list ids → revoke in
- * DB → bust the Redis active-session cache so live access tokens stop validating).
+ * Shared with the AdminSetAccountStatus gRPC path so both behave identically.
  */
 async function forceLogout(userId: string): Promise<void> {
-  const active = await sessionRepository.listActiveSessionIds(userId);
-  await sessionRepository.revokeAllForUser(
-    userId,
-    SessionRevokeReason.ADMIN_REVOKED
-  );
-  await markSessionsRevoked(active.map((row) => row.id));
-  // Drop every push token too — a banned/suspended user cannot sign back in,
-  // so any token left behind keeps delivering notifications to a dead account.
-  // Same signal "sign out from all devices" and account deletion use.
-  publishAllSessionsRevokedSafe({ userId });
+  await accountBanService.revokeEverySession(userId, "terminated");
+}
+
+/**
+ * Has a LATER admin action already superseded this message?
+ *
+ * `admin.user.queue` is at-least-once and RabbitMQ gives no ordering guarantee
+ * across redeliveries, so without this a stale `admin.user_banned` replayed
+ * after an unban would silently re-ban a reinstated account. Every status write
+ * touches AuthUser.updatedAt, so an account modified after the event was
+ * published means something newer won — skip the state change (the notify and
+ * force-logout halves are harmless and still run).
+ */
+async function isSuperseded(
+  userId: string,
+  eventAt: string | undefined
+): Promise<boolean> {
+  if (!eventAt) return false;
+  const publishedAt = new Date(eventAt).getTime();
+  if (!Number.isFinite(publishedAt)) return false;
+  const row = await prisma.authUser.findUnique({
+    where: { id: userId },
+    select: { updatedAt: true },
+  });
+  if (!row) return true;
+  return row.updatedAt.getTime() > publishedAt;
 }
 
 /** Re-publish a notify-ready message for notifications-service (best-effort). */
@@ -113,7 +126,30 @@ async function handleAdminUserEvent(
   data: AdminUserEventPayload
 ): Promise<void> {
   switch (type) {
-    case AdminUserEvents.USER_BANNED:
+    // Permanent system ban. backoffice applies this synchronously over gRPC
+    // BEFORE publishing, so by the time this runs the account is normally
+    // already BANNED — re-applying is an idempotent no-op. This branch exists
+    // as the safety net for the case where the gRPC call was lost.
+    case AdminUserEvents.USER_BANNED: {
+      if (await isSuperseded(data.userId, data.at)) {
+        logger.warn(
+          `Skipping superseded admin.user_banned for user=${data.userId}`
+        );
+      } else {
+        await accountBanService.apply({
+          userId: data.userId,
+          reason: data.reason ?? null,
+          actorAdminId: data.actorId,
+        });
+      }
+      if (data.notifyUser) {
+        notify(type, data);
+      }
+      break;
+    }
+
+    // Time-boxed suspend keeps its original behaviour: sessions only. It must
+    // NOT write BANNED — that status is permanent and nothing expires it.
     case AdminUserEvents.USER_SUSPENDED: {
       if (data.forceLogout) {
         await forceLogout(data.userId);
@@ -125,7 +161,22 @@ async function handleAdminUserEvent(
     }
 
     case AdminUserEvents.USER_UNBANNED: {
-      // Cannot un-revoke sessions; only notify if requested.
+      // Sessions cannot be un-revoked; the user signs in fresh. Lifting the
+      // status + ban flag is what makes that sign-in possible again.
+      if (await isSuperseded(data.userId, data.at)) {
+        logger.warn(
+          `Skipping superseded admin.user_unbanned for user=${data.userId}`
+        );
+      } else {
+        await accountBanService
+          .lift({ userId: data.userId, actorAdminId: data.actorId })
+          .catch((err: unknown) => {
+            // A deleted/missing account is not an error worth dead-lettering.
+            logger.warn(
+              `admin.user_unbanned lift skipped for user=${data.userId}: ${String(err)}`
+            );
+          });
+      }
       if (data.notifyUser) {
         notify(type, data);
       }

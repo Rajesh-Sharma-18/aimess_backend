@@ -23,11 +23,13 @@ import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
   EndLivestreamResult,
+  LivestreamCommentPage,
   LivestreamDetail,
   LivestreamListItem,
   LivestreamReportItem,
   LivestreamUserItem,
   ListLivestreamsQuery,
+  ListLivestreamCommentsQuery,
   ListLivestreamReportsQuery,
   ListLivestreamUsersQuery,
   PaginationMeta,
@@ -114,6 +116,37 @@ export const livestreamService = {
     return {
       data: page.data,
       pagination: page.pagination,
+    };
+  },
+
+  /**
+   * Livestream chat history for the admin monitor (newest-first, id cursor).
+   *
+   * Goes straight to stream-service rather than through livestreamRepository:
+   * comments have no backoffice-side enrichment to do (stream-service already
+   * resolves sender name + avatar), so a repository hop would only add a method
+   * every implementation has to carry.
+   *
+   * The stream is verified first — the underlying RPC returns an empty page for
+   * an unknown id rather than an error, which would render as "no comments" on
+   * a livestream that does not exist.
+   */
+  async listLivestreamComments(
+    livestreamId: string,
+    query: ListLivestreamCommentsQuery
+  ): Promise<LivestreamCommentPage> {
+    const detail = await livestreamRepository.getById(livestreamId);
+    if (!detail) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+
+    const page = await streamClient.getComments({
+      livestreamId,
+      limit: query.limit,
+      before: query.before,
+    });
+    return {
+      data: page.comments,
+      nextCursor: page.nextCursor || null,
+      hasMore: page.hasMore,
     };
   },
 

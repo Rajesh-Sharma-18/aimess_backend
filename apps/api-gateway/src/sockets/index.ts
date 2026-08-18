@@ -5,7 +5,10 @@ import { logger } from "@aimess/logger";
 import { env, isCorsOriginAllowed } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
 import { registerAuthNamespace } from "./namespaces/auth.ns.js";
-import { registerSessionRevokeListener } from "./session-revoke.js";
+import {
+  registerSessionRevokeListener,
+  registerUserBanListener,
+} from "./session-revoke.js";
 import { registerSessionCreatedListener } from "./session-created-listener.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
@@ -105,6 +108,7 @@ export async function setupSockets(
   registerSessionRevokeListener(io, sessionRevokeSub);
   // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
   registerSessionCreatedListener(io, sessionRevokeSub);
+  registerUserBanListener(io, sessionRevokeSub);
 
   io.engine.on(
     "connection_error",

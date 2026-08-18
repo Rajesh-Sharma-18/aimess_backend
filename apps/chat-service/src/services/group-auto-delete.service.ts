@@ -14,6 +14,7 @@ import {
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
 import { AUTO_DELETE_STUCK_ATTEMPTS } from "../lib/auto-delete-claim.js";
+import { assertGroupRoomWritable } from "../lib/access-guard.js";
 import type { SweepResult } from "./auto-delete.service.js";
 import { SystemEvent } from "../types/enums.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -123,6 +124,9 @@ export class GroupAutoDeleteService {
     const { room, member } = await this.loadRoomForMember(roomId, userId);
     if (!AUTO_DELETE_ROLES.includes(member.role))
       throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+    // Changing the timer posts a system line, so it is a room write — a frozen
+    // room (disbanded / closed by a system ban) refuses it.
+    assertGroupRoomWritable(room);
 
     const before = readRoomAutoDelete(room);
     // No-op guard: a repeated tap on the same option must not spam the chat

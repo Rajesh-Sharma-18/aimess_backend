@@ -116,6 +116,7 @@ function mineActivitySelect(userId: string) {
     createdAt: true,
     moderationStatus: true,
     status: true,
+    statusClosedReasonCode: true,
     members: {
       where: { userId },
       select: {
@@ -434,6 +435,16 @@ export const communityRepository = {
       where: { id: { in: ids } },
       include: { category: { select: { id: true, name: true } } },
     });
+  },
+
+  // Communities this user owns — the input to the system-ban cascade. Indexed
+  // on adminId; deleted rows are skipped since there is nothing left to close.
+  async findCommunityIdsByAdminId(userId: string): Promise<string[]> {
+    const rows = await prisma.community.findMany({
+      where: { adminId: userId, deletedAt: { isSet: false } },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
   },
 
   /** Case-insensitive display-name lookup (uniqueness check). */
@@ -2092,6 +2103,10 @@ export const communityRepository = {
           createdAt: true,
           adminId: true,
           moderationStatus: true,
+          // Owner-close axis. The admin list reports `status` from
+          // moderationStatus, so this is the only field that can tell the panel
+          // a community went read-only because its owner was system-banned.
+          statusClosedReasonCode: true,
           avatarUrl: true,
           coverUrl: true,
           category: { select: { id: true, name: true, slug: true } },

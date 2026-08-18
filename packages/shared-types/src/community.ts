@@ -300,9 +300,33 @@ export interface CommunityMetaUpdatedPayload {
  */
 export interface CommunityClosedPayload {
   communityId: string;
-  status: "CLOSED";
+  // "CLOSED_BY_SYSTEM_BAN" is the same close on the same DB status, reported
+  // distinctly so clients can render "the admin of this community has been
+  // banned" instead of the owner-closed copy. Members are NOT removed in
+  // either case: the community stays in their list, read-only.
+  status: "CLOSED" | "CLOSED_BY_SYSTEM_BAN";
   closedAt: number; // epoch ms
+  // "ADMIN_BANNED" when the owner was permanently system-banned; otherwise the
+  // owner's free-text close reason, or absent.
   reason?: string;
+}
+
+/**
+ * `group:closed` — the group's owner was permanently system-banned, so the
+ * group was CLOSED. Delivered to the `conv:<roomId>` room AND to every ACTIVE
+ * member's `user:<id>` channel.
+ *
+ * NOT a disband: no member is removed, the room stays in every member's inbox
+ * (`isClosed: true`, `closedReasonCode: "ADMIN_BANNED"`) and stays fully
+ * readable — only writes are refused, with CHAT_GROUP_CLOSED_ADMIN_BANNED.
+ * Because every membership row stays ACTIVE, clients must key their read-only
+ * composer off `isClosed`, never off membership status. There is no reopen.
+ */
+export interface GroupClosedPayload {
+  roomId: string;
+  status: "CLOSED";
+  closedReasonCode: "ADMIN_BANNED";
+  closedAt: number; // epoch ms
 }
 
 /**

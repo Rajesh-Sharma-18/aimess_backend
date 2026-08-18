@@ -1,4 +1,4 @@
-import { UnauthorizedError } from "@aimess/errors";
+import { ForbiddenError, UnauthorizedError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import {
@@ -32,6 +32,19 @@ export type AuthenticateAccessTokenOptions = {
   adminTokenSecret?: string;
   /** When set, revoked sessions are rejected immediately (force remote logout). */
   assertSessionActive?: (sessionId: string) => Promise<boolean>;
+  // When set, a permanently system-banned user is rejected with 403
+  // ACCOUNT_BANNED on EVERY authenticated route of the mounting service.
+  //
+  // Second, independent layer next to `assertSessionActive`: a ban revokes all
+  // sessions too, but community-service and stream-service do not wire the
+  // session check, and a session issued in the same instant as the ban would
+  // race past it. Resolve `true` when the user is positively known to be
+  // banned; implementations fail OPEN on infrastructure errors so a Redis blip
+  // cannot sign the platform out (session revocation still holds the ban).
+  //
+  // Never consulted on the admin-token fallback below — `req.auth.userId` is an
+  // AdminUser.id there, which shares no id space with AuthUser.
+  assertUserBanned?: (userId: string) => Promise<boolean>;
 };
 
 /**
@@ -57,6 +70,16 @@ export function createAuthenticateAccessToken(
           const active = await options.assertSessionActive(auth.sessionId);
           if (!active) {
             throw new UnauthorizedError("AUTH_SESSION_ENDED");
+          }
+        }
+
+        // 403, not 401: the token is valid and refreshing it will not help.
+        // A distinct code lets every client tell "sign in again" apart from
+        // "this account is permanently banned" and stop retrying.
+        if (options.assertUserBanned) {
+          const banned = await options.assertUserBanned(auth.userId);
+          if (banned) {
+            throw new ForbiddenError("ACCOUNT_BANNED");
           }
         }
 

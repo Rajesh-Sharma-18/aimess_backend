@@ -417,6 +417,8 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
       createdAt: Date.parse(seed.createdAt),
       // Deterministic "last activity" 2 days after creation.
       lastActivityAt: Date.parse(seed.createdAt) + 2 * 86_400_000,
+      // No seeded community is closed by an owner ban.
+      closedReasonCode: null,
     },
     owner: {
       userId: seed.ownerUserId,

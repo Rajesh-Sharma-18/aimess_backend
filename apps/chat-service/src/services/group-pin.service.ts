@@ -1,7 +1,10 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import { assertGroupMemberNotMuted } from "../lib/access-guard.js";
+import {
+  assertGroupMemberNotMuted,
+  assertGroupWritable,
+} from "../lib/access-guard.js";
 import { resolvePinsMedia, type MediaFileLike } from "../lib/media-resolve.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
@@ -63,6 +66,7 @@ export class GroupPinService {
     // A muted moderator/admin cannot pin — pinning writes into the room
     // (it posts a MESSAGE_PINNED system line). Mirrors CommunityPinService.
     assertGroupMemberNotMuted(member);
+    await assertGroupWritable(this.roomRepo, roomId);
 
     const msg = await this.messageRepo.findById(messageId);
     if (!msg || msg.roomId !== roomId)
@@ -206,6 +210,7 @@ export class GroupPinService {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
     assertGroupMemberNotMuted(member);
+    await assertGroupWritable(this.roomRepo, roomId);
 
     const activePinForMessage =
       await this.pinRepo.findActivePinByMessageId(messageId);

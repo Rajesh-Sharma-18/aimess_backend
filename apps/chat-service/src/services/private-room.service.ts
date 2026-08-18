@@ -26,6 +26,7 @@ import {
   isHiddenByCutoff,
 } from "../lib/deletion-cutoff.js";
 import { publishUserReport } from "../lib/report-user.js";
+import { filterBannedUserIds } from "@aimess/redis";
 import {
   AUTO_DELETE_OFF,
   buildAutoDeleteWire,
@@ -236,6 +237,13 @@ export interface PrivateRoomPeer {
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   isDeletedUser: boolean;
+  /**
+   * The peer was permanently banned from the platform by a super admin. The DM
+   * keeps its history and stays in the list, but every write is refused with
+   * `CHAT_PEER_BANNED` — the client renders a banner + disabled composer.
+   * Treated exactly like `isDeletedUser` for presence and friendship actions.
+   */
+  isBanned: boolean;
   isOnline: boolean;
   /** Server-generated epoch ms. Meaningful only while `isOnline` is false. */
   lastSeen: number | null;
@@ -311,6 +319,8 @@ export interface PrivateConversationListItem extends PeerFriendshipRelationship 
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   isDeletedUser: boolean;
+  /** Peer permanently banned by a super admin — see `PrivateRoomPeer.isBanned`. */
+  isBanned: boolean;
   isOnline: boolean;
   /** True when the peer is offline — negation of isOnline, from the existing presence pipeline. */
   isOffline: boolean;
@@ -337,6 +347,7 @@ function toConversationListItem(
     avatarUrl: room.peer.avatarUrl,
     avatarUrlExpiresIn: room.peer.avatarUrlExpiresIn,
     isDeletedUser: room.peer.isDeletedUser,
+    isBanned: room.peer.isBanned,
     isOnline: room.peer.isOnline,
     isOffline: !room.peer.isOnline,
     lastSeen: room.peer.lastSeen,
@@ -367,6 +378,8 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
     displayName: string;
     memberId: string;
     isDeletedUser: boolean;
+    /** Peer permanently banned by a super admin — see `PrivateRoomPeer.isBanned`. */
+    isBanned: boolean;
   };
   avatar: MediaObject;
   avatarUrl: string | null;
@@ -541,6 +554,7 @@ export class PrivateRoomService {
         displayName: enriched.peer.displayName,
         memberId: enriched.peer.memberId,
         isDeletedUser: enriched.peer.isDeletedUser,
+        isBanned: enriched.peer.isBanned,
       },
       avatar: enriched.peer.avatar,
       avatarUrl: enriched.peer.avatarUrl,
@@ -674,6 +688,13 @@ export class PrivateRoomService {
     const presenceByPeer = this.presenceService
       ? await this.presenceService.getPresenceViewsFor(userId, peerIds)
       : new Map<string, PresenceView>();
+
+    // One MGET for the whole page — the snapshot's `isDeletedUser` has a 1h
+    // cache and cannot carry this. Fails OPEN (no banner) on a Redis error, the
+    // same policy the write-side guard uses.
+    const bannedPeers = await filterBannedUserIds(this.redis, peerIds).catch(
+      () => new Set<string>()
+    );
 
     // Resolve peer avatar object keys → full download URLs (resolve on read).
     const avatarUrls = await resolveMediaUrlMap(
@@ -986,6 +1007,10 @@ export class PrivateRoomService {
       // One peer object feeds BOTH the conversation list and the room-details
       // header, so the deleted-account rules only have to be applied here.
       const isDeletedPeer = snapshot.isDeletedUser === true;
+      // A system-banned peer is inert in exactly the same ways as a deleted
+      // one: no presence to report, no friendship action that can succeed.
+      const isBannedPeer = bannedPeers.has(peerId);
+      const isInertPeer = isDeletedPeer || isBannedPeer;
 
       return {
         ...room,
@@ -1001,14 +1026,15 @@ export class PrivateRoomService {
             urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
           isDeletedUser: isDeletedPeer,
+          isBanned: isBannedPeer,
           // A deleted account has no presence to report. Its sockets were
           // force-dropped at deletion so `isOnline` is already false in
           // practice, but `lastSeen` outlives that in Redis and would keep
           // rendering "Last seen 3 minutes ago" under a Deleted Account header.
-          isOnline: isDeletedPeer
+          isOnline: isInertPeer
             ? false
             : (presenceByPeer.get(peerId)?.isOnline ?? false),
-          lastSeen: isDeletedPeer
+          lastSeen: isInertPeer
             ? null
             : (presenceByPeer.get(peerId)?.lastSeen ?? null),
         },
@@ -1019,7 +1045,7 @@ export class PrivateRoomService {
         // record, and unfriend cleanup depends on that), but nothing about the
         // relationship is actionable any more — every one of these buttons
         // posts to an endpoint that can only fail against a deleted account.
-        friendship: isDeletedPeer
+        friendship: isInertPeer
           ? {
               ...(friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
               canAccept: false,

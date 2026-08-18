@@ -25,6 +25,7 @@ import {
   type ActorRef,
   type CommunityRepository,
   type RepoCloseResult,
+  type RepoMemberModerationResult,
   type RepoReopenResult,
 } from "./community.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
@@ -217,6 +218,52 @@ export class GrpcCommunityRepository implements CommunityRepository {
     return runBulk(ids, (id) => this.reopen(id, input, actor));
   }
 
+  async kickMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | undefined,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    const res = await communityClient.adminKickCommunityMember({
+      communityId,
+      targetUserId,
+      reason: reason ?? "",
+      actorAdminId: actor.moderator.adminId,
+    });
+    if (res.errorCode) throw mapMemberModerationError(res.errorCode);
+    return { communityId, targetUserId, status: res.status };
+  }
+
+  async banMember(
+    communityId: string,
+    targetUserId: string,
+    reason: string | undefined,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    const res = await communityClient.adminBanCommunityMember({
+      communityId,
+      targetUserId,
+      reason: reason ?? "",
+      actorAdminId: actor.moderator.adminId,
+    });
+    if (res.errorCode) throw mapMemberModerationError(res.errorCode);
+    return { communityId, targetUserId, status: res.status };
+  }
+
+  async unbanMember(
+    communityId: string,
+    targetUserId: string,
+    actor: ActorRef
+  ): Promise<RepoMemberModerationResult> {
+    const res = await communityClient.adminUnbanCommunityMember({
+      communityId,
+      targetUserId,
+      actorAdminId: actor.moderator.adminId,
+    });
+    if (res.errorCode) throw mapMemberModerationError(res.errorCode);
+    return { communityId, targetUserId, status: res.status };
+  }
+
   // -------------------------------------------------------------------------
   // Internals.
   // -------------------------------------------------------------------------
@@ -291,6 +338,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
           Number(res.lastActivityAt) > 0
             ? msToEpoch(res.lastActivityAt)
             : createdAt,
+        closedReasonCode: row.statusClosedReasonCode || null,
       },
       owner: {
         userId: row.adminId,
@@ -338,6 +386,21 @@ export class GrpcCommunityRepository implements CommunityRepository {
 function mapModerationError(errorCode: string): Error {
   if (errorCode === "COMMUNITY_NOT_FOUND") {
     return new NotFoundError("COMMUNITY_NOT_FOUND");
+  }
+  return new ConflictError(errorCode);
+}
+
+/**
+ * Same shape as {@link mapModerationError}, plus the member-not-found case.
+ * COMMUNITY_MEMBER_NOT_BANNED (unban of a member who is not banned) falls
+ * through to ConflictError, like the already-closed/not-closed cases.
+ */
+function mapMemberModerationError(errorCode: string): Error {
+  if (
+    errorCode === "COMMUNITY_NOT_FOUND" ||
+    errorCode === "COMMUNITY_MEMBER_NOT_FOUND"
+  ) {
+    return new NotFoundError(errorCode);
   }
   return new ConflictError(errorCode);
 }

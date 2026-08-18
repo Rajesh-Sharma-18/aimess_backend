@@ -123,6 +123,19 @@ export interface AdminGroupMutationRes {
   errorCode: string;
 }
 
+// Group-side cascade of a permanent system ban.
+export interface AdminApplySystemBanReq {
+  userId: string;
+  actorAdminId: string;
+  reason: string;
+}
+export interface AdminApplySystemBanRes {
+  ok: boolean;
+  closedGroupIds: string[];
+  removedGroupIds: string[];
+  errorCode: string;
+}
+
 // ---- Admin Calling raw shapes --------------------------------------------
 // int64 fields arrive as STRINGS (longs: String) — coerce on read.
 
@@ -211,6 +224,75 @@ const client = new ServiceCtor(
 const call = <TReq, TRes>(method: string, req: TReq) =>
   makeGrpcCall<TReq, TRes>(client, method, req);
 
+// ---- Community message read (chat-service also hosts community.CommunityService
+// on this same port — see apps/chat-service/src/grpc/server.ts) --------------
+const COMMUNITY_PROTO_PATH = path.resolve(
+  __dirname,
+  "../../../../packages/grpc-contracts/proto/community.proto"
+);
+const communityPkgDef = protoLoader.loadSync(COMMUNITY_PROTO_PATH, {
+  keepCase: false,
+  longs: String,
+  enums: String,
+  defaults: true,
+  oneofs: true,
+});
+const communityProto = grpc.loadPackageDefinition(
+  communityPkgDef
+) as grpc.GrpcObject;
+const CommunityServiceCtor = (communityProto["community"] as grpc.GrpcObject)[
+  "CommunityService"
+] as grpc.ServiceClientConstructor;
+const communityMessagesClient = new CommunityServiceCtor(
+  env.CHAT_GRPC_URL,
+  grpc.credentials.createInsecure()
+);
+const callCommunityMessages = <TReq, TRes>(method: string, req: TReq) =>
+  makeGrpcCall<TReq, TRes>(communityMessagesClient, method, req);
+
+export interface RawCommunityMessageDto {
+  messageId: string;
+  roomId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  message: string;
+  contentType: string;
+  mediaKey: string;
+  attachmentsJson: string;
+  reactionsJson: string;
+  quoteDataJson: string;
+  sentAt: string | number;
+  systemMessageType: string;
+  systemMetadata: string;
+  isPersonal: boolean;
+}
+
+export interface AdminGetCommunityMessagesReq {
+  roomId: string;
+  cursor: string;
+  limit: number;
+}
+
+export interface AdminGetCommunityMessagesRes {
+  messages: RawCommunityMessageDto[];
+  nextCursor: string;
+  hasMore: boolean;
+  pinnedMessageJson: string;
+}
+
+export const adminGetCommunityMessagesBreaker: Breaker<
+  AdminGetCommunityMessagesReq,
+  AdminGetCommunityMessagesRes
+> = makeBreaker(
+  "chat.adminGetCommunityMessages",
+  (req: AdminGetCommunityMessagesReq) =>
+    callCommunityMessages<
+      AdminGetCommunityMessagesReq,
+      AdminGetCommunityMessagesRes
+    >("adminGetCommunityMessages", req)
+);
+
 export const getGroupCountBreaker: NoArgBreaker<RawGroupCount> =
   makeBreakerNoArgs("chat.getGroupCount", () =>
     call<unknown, RawGroupCount>("getGroupCount", {})
@@ -236,6 +318,16 @@ export const adminListGroupMembersBreaker: Breaker<
 > = makeBreaker("chat.adminListGroupMembers", (req: AdminListGroupMembersReq) =>
   call<AdminListGroupMembersReq, AdminListGroupMembersRes>(
     "adminListGroupMembers",
+    req
+  )
+);
+
+export const adminApplySystemBanBreaker: Breaker<
+  AdminApplySystemBanReq,
+  AdminApplySystemBanRes
+> = makeBreaker("chat.adminApplySystemBan", (req: AdminApplySystemBanReq) =>
+  call<AdminApplySystemBanReq, AdminApplySystemBanRes>(
+    "adminApplySystemBan",
     req
   )
 );
@@ -320,6 +412,19 @@ export const chatClient = {
   ): Promise<AdminListGroupMembersRes> {
     return adminListGroupMembersBreaker.fire(req);
   },
+  // repeated fields arrive as [] when empty, but undefined from a callee build
+  // that predates this RPC — normalize both.
+  async adminApplySystemBan(
+    req: AdminApplySystemBanReq
+  ): Promise<AdminApplySystemBanRes> {
+    const r = await adminApplySystemBanBreaker.fire(req);
+    return {
+      ok: r.ok,
+      closedGroupIds: r.closedGroupIds ?? [],
+      removedGroupIds: r.removedGroupIds ?? [],
+      errorCode: r.errorCode ?? "",
+    };
+  },
   adminDisbandGroup(req: AdminDisbandGroupReq): Promise<AdminGroupMutationRes> {
     return adminDisbandGroupBreaker.fire(req);
   },
@@ -372,5 +477,11 @@ export const chatClient = {
     return toCallingEnabled(
       await adminSetCallingEnabledBreaker.fire({ enabled, actorId })
     );
+  },
+
+  adminGetCommunityMessages(
+    req: AdminGetCommunityMessagesReq
+  ): Promise<AdminGetCommunityMessagesRes> {
+    return adminGetCommunityMessagesBreaker.fire(req);
   },
 };

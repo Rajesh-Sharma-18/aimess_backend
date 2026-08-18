@@ -14,9 +14,11 @@ import type {
   BulkCloseInput,
   BulkReopenInput,
   CloseCommunityInput,
+  CommunityMessagesQueryInput,
   ListCommunitiesQueryInput,
   ListCommunityMembersQueryInput,
   ListMutedMembersQueryInput,
+  MemberModerationBodyInput,
   ReopenCommunityInput,
 } from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
@@ -72,6 +74,7 @@ function toCommunityDetailResponse(
     ownerAvatar: owner.avatar,
     ownerEmail: owner.email,
     ownerAccountStatus: owner.accountStatus,
+    closedReasonCode: core.closedReasonCode,
     membersCount: community.memberStats.total,
     liveStreamsCount: community.livestreamStats?.total ?? 0,
   };
@@ -197,6 +200,106 @@ export const bulkCloseCommunities: RequestHandler = (req, res, next) => {
         getRequestContext(req)
       );
       res.status(207).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/communities/:communityId/messages — Community Conversation viewer, paginated. */
+export const getCommunityConversationMessages: RequestHandler = (
+  req,
+  res,
+  next
+) => {
+  void (async () => {
+    try {
+      // Narrowed by communityIdParamSchema + communityMessagesQuerySchema on the route.
+      const communityId = req.params.communityId as string;
+      const query = req.query as unknown as CommunityMessagesQueryInput;
+      const result = await communityService.getConversationMessages(
+        communityId,
+        query
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** POST /v1/communities/:communityId/members/:userId/remove — this-community-only removal. */
+export const removeCommunityMember: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by communityMemberParamSchema on the route.
+      const communityId = req.params.communityId as string;
+      const userId = req.params.userId as string;
+      const body = req.body as MemberModerationBodyInput;
+      const result = await communityService.kickCommunityMember(
+        communityId,
+        userId,
+        body,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** POST /v1/communities/:communityId/members/:userId/ban — this-community-only ban. */
+export const banCommunityMember: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by communityMemberParamSchema on the route.
+      const communityId = req.params.communityId as string;
+      const userId = req.params.userId as string;
+      const body = req.body as MemberModerationBodyInput;
+      const result = await communityService.banCommunityMember(
+        communityId,
+        userId,
+        body,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** POST /v1/communities/:communityId/members/:userId/unban — lifts a community ban. */
+export const unbanCommunityMember: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by communityMemberParamSchema on the route.
+      const communityId = req.params.communityId as string;
+      const userId = req.params.userId as string;
+      const body = req.body as MemberModerationBodyInput;
+      const result = await communityService.unbanCommunityMember(
+        communityId,
+        userId,
+        body,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
       });

@@ -1551,6 +1551,71 @@ export class CommunityMessageService {
   }
 
   /**
+   * Admin Community Conversation viewer (backoffice-service). Same paginated
+   * read as {@link getMessages} but for a trusted platform-admin caller who
+   * is not (and never becomes) a room member — skips
+   * `assertCommunityReadAccess` entirely (mirrors the no-membership-check
+   * precedent already established by `getModerationSnapshot`) and always
+   * reads with `viewerIsActiveMember=true` so the admin sees the same
+   * message set an active member would, including PRIVATE communities.
+   */
+  async getMessagesForModeration(params: {
+    roomId: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    // Same compound `"<createdAtMs>_<id>"` keyset the member-facing timeline
+    // uses. It MUST NOT be the legacy findByRoomIdWithTime path: that one
+    // over-fetches only `limit + 10` and then drops hidden/personal rows in
+    // memory, so a burst of join/leave lines shrinks the page below `limit` and
+    // the caller reads that as "end of history" — truncating the transcript
+    // mid-conversation. getTimelinePageShared filters in Mongo and returns an
+    // exact hasMore, and the `_id` tiebreaker keeps messages that share a
+    // millisecond reachable across a page boundary.
+    const raw = params.cursor?.trim();
+    const separator = raw ? raw.indexOf("_") : -1;
+    const msPart = raw
+      ? separator === -1
+        ? raw
+        : raw.slice(0, separator)
+      : "";
+    const idPart =
+      raw && separator !== -1 ? raw.slice(separator + 1) || null : null;
+    const parsedMs = msPart ? Number(msPart) : Number.NaN;
+    const hasCursor = Number.isFinite(parsedMs);
+
+    const page = await this.getMessagesTimeline({
+      roomId: params.roomId,
+      // No viewer: the admin is never a room member. Personal rows
+      // (visibleToUserId set) therefore never match and are excluded in the DB,
+      // which is what the moderation view wants — "You joined" lines addressed
+      // to individual members are not part of the conversation.
+      userId: "",
+      direction: "before",
+      ts: new Date(hasCursor ? parsedMs : Date.now()),
+      boundaryId: idPart,
+      // First page includes the newest message; a cursor is exclusive so it
+      // never re-returns its own boundary row.
+      inclusive: !hasCursor,
+      limit: params.limit,
+      // The admin is never a room member, so the membership/PUBLIC gate must be
+      // bypassed or every PRIVATE community returns CHAT_NOT_A_MEMBER.
+      // Authorization for this read happens at the admin API boundary.
+      trustedAdmin: true,
+    });
+
+    return {
+      items: page.items,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  /**
    * Keyset history page (before_ts scroll). The repo filters hidden/personal/
    * deleted rows in the DB and returns exactly `limit` visible rows plus an exact
    * `hasMore`, so a hidden row in the window can no longer make pagination
@@ -1569,6 +1634,8 @@ export class CommunityMessageService {
     /** True for the first page (no cursor) so the newest message is included. */
     inclusive?: boolean;
     limit: number;
+    /** Trusted platform-admin read — see getTimelinePageShared. */
+    trustedAdmin?: boolean;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
@@ -1588,6 +1655,7 @@ export class CommunityMessageService {
         boundaryId: params.boundaryId ?? null,
         inclusive: params.inclusive ?? false,
       },
+      trustedAdmin: params.trustedAdmin,
     });
   }
 
@@ -1640,6 +1708,14 @@ export class CommunityMessageService {
     direction: "before" | "after";
     limit: number;
     cursor: PaginationCursor;
+    /**
+     * Trusted platform-admin read (backoffice Community Conversation viewer).
+     * Skips the membership/PUBLIC gate entirely — the caller is authorized at
+     * the admin API boundary by `requirePermission(communities.moderate)` and is
+     * never a room member, so `assertCommunityReadAccess` would reject every
+     * PRIVATE community with CHAT_NOT_A_MEMBER. Never set on a user-facing path.
+     */
+    trustedAdmin?: boolean;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
@@ -1653,14 +1729,19 @@ export class CommunityMessageService {
     // 2. The community is PUBLIC (non-members can read history), OR
     // 3. The caller is banned — capped to messages created at/before their ban
     //    (read cutoff, not a hard block; see `assertCommunityReadAccess`).
-    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
-      this.roomRepo,
-      this.memberRepo,
-      params.roomId,
-      params.userId,
-      { allowBannedReadCutoff: true }
-    );
-    const viewerIsActiveMember = isActiveMember(member);
+    // A trusted admin reads with full member visibility and no ban cutoff.
+    const { member, bannedAtCutoff } = params.trustedAdmin
+      ? { member: null, bannedAtCutoff: undefined }
+      : await assertCommunityReadAccess(
+          this.roomRepo,
+          this.memberRepo,
+          params.roomId,
+          params.userId,
+          { allowBannedReadCutoff: true }
+        );
+    const viewerIsActiveMember = params.trustedAdmin
+      ? true
+      : isActiveMember(member);
     const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
     const [{ messages: pageRows, hasMore }, total, roomRevision] =
       await Promise.all([

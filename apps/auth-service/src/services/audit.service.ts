@@ -22,7 +22,12 @@ export type AuthAuditEvent =
   | "BROWSER_LOGGED_IN"
   | "LINKED_DEVICE_CREATED"
   | "LINKED_DEVICE_REVOKED"
-  | "ACCOUNT_DELETED";
+  | "ACCOUNT_DELETED"
+  // Permanent Super Admin ban. auth-service's own trail — backoffice's AuditLog
+  // is the canonical admin-facing record, but its actorId is an FK to AdminUser
+  // so it cannot express what happened to the end-user account itself.
+  | "ACCOUNT_BANNED"
+  | "ACCOUNT_UNBANNED";
 
 export interface RecordAuditEventInput {
   event: AuthAuditEvent;

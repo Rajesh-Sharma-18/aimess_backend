@@ -6,6 +6,7 @@ import {
   bulkReviewLivestreamReports,
   endLivestream,
   getLivestreamDetails,
+  listLivestreamComments,
   listLivestreamReports,
   listLivestreamUsers,
   listLivestreams,
@@ -23,6 +24,7 @@ import {
   bulkEndSchema,
   bulkReviewReportsSchema,
   endLivestreamSchema,
+  listLivestreamCommentsQuerySchema,
   listLivestreamReportsQuerySchema,
   listLivestreamUsersQuerySchema,
   listLivestreamsQuerySchema,
@@ -80,6 +82,13 @@ livestreamRoutes.get(
   validateParams(livestreamIdParamSchema),
   validateQuery(listLivestreamUsersQuerySchema),
   listLivestreamUsers
+);
+livestreamRoutes.get(
+  "/livestreams/:livestreamId/comments",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateParams(livestreamIdParamSchema),
+  validateQuery(listLivestreamCommentsQuerySchema),
+  listLivestreamComments
 );
 livestreamRoutes.post(
   "/livestreams/:livestreamId/end",

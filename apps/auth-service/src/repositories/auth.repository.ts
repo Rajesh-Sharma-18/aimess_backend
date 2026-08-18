@@ -392,7 +392,9 @@ export const authRepository = {
   findRoleByUserId(userId: string) {
     return prisma.authUser.findUnique({
       where: { id: userId },
-      select: { role: true },
+      // `status` rides along so QR device-link can refuse to mint a brand-new
+      // browser session for a banned account (one query, not two).
+      select: { role: true, status: true },
     });
   },
 

@@ -18,6 +18,7 @@ jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),
 }));
 jest.mock("@aimess/redis", () => ({
+  ...jest.requireActual("@aimess/redis"),
   publishSessionRevokedEvent: jest.fn(async () => 0),
 }));
 

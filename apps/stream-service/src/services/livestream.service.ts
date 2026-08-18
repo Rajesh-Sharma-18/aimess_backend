@@ -27,6 +27,7 @@ import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
+import { assertNotSystemBanned, isSystemBanned } from "../lib/system-ban.js";
 
 /** A single watching user, enriched for the owner-only viewers list. */
 export interface StreamViewerView {
@@ -148,6 +149,8 @@ export interface AdminStreamRow {
   description: string;
   thumbnail: string | null;
   sourceType: string;
+  /** External source (URL / YOUTUBE modes only) — null for SRS-ingested streams. */
+  sourceUrl: string | null;
   status: string;
   hlsUrl: string | null;
   flvUrl: string | null;
@@ -195,6 +198,7 @@ function toAdminRow(s: Livestream): AdminStreamRow {
     description: s.description,
     thumbnail: s.thumbnail,
     sourceType: s.sourceType,
+    sourceUrl: s.sourceUrl,
     status: s.status,
     hlsUrl: s.hlsUrl,
     flvUrl: s.flvUrl,
@@ -317,6 +321,10 @@ export class LivestreamService {
     sourceType: string;
     sourceUrl?: string;
   }): Promise<CreateStreamResult> {
+    // Before anything else: force-ending a banned host's stream is pointless if
+    // they can immediately mint another key here.
+    await assertNotSystemBanned(this.redis, params.creatorId);
+
     if (env.STREAM_REQUIRE_MEMBERSHIP) {
       let membership;
       try {
@@ -458,6 +466,17 @@ export class LivestreamService {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
       logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
+      return false;
+    }
+    // The webhook carries no JWT — it authenticates by streamKey alone, so a
+    // banned host still holding a key would otherwise re-publish from OBS.
+    // Checked before the already-LIVE short-circuit, which returns allow.
+    if (
+      await isSystemBanned(this.redis, stream.creatorId, { denyOnError: true })
+    ) {
+      logger.warn(
+        `on_publish denied for stream id=${stream.id}: creator=${stream.creatorId} is system-banned`
+      );
       return false;
     }
     if (stream.status === "ENDED") {
@@ -756,6 +775,8 @@ export class LivestreamService {
     id: string,
     requesterId: string
   ): Promise<PublishCredentialsResult> {
+    await assertNotSystemBanned(this.redis, requesterId);
+
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.creatorId !== requesterId) {
@@ -800,6 +821,8 @@ export class LivestreamService {
    * webhook/manual environment resuming the same session, not a fresh go-live.
    */
   async markLive(id: string, requesterId: string): Promise<StreamView> {
+    await assertNotSystemBanned(this.redis, requesterId);
+
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.creatorId !== requesterId) {
@@ -1843,13 +1866,20 @@ export class LivestreamService {
       };
     }
 
-    // Bans always win, even for would-be members.
-    if (await this.banRepo.isBanned(streamId, userId)) {
+    // Bans always win, even for would-be members. A permanent system ban is
+    // one of them, read in parallel so the join gate costs no extra round-trip.
+    // Fail-open on a Redis error like every other read here: the gateway
+    // handshake rejects a banned user's socket before it ever gets this far.
+    const [streamBanned, systemBanned] = await Promise.all([
+      this.banRepo.isBanned(streamId, userId),
+      isSystemBanned(this.redis, userId, { denyOnError: false }),
+    ]);
+    if (streamBanned || systemBanned) {
       return {
         allowed: false,
         isBanned: true,
         status: "",
-        reason: "BANNED",
+        reason: systemBanned ? "ACCOUNT_BANNED" : "BANNED",
         canComment: false,
         streamStatus: "",
         title: "",

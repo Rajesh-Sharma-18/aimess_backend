@@ -4,6 +4,11 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Admin Community Conversation viewer (backoffice-service only). Same
+  // shape as GetCommunityMessages but for a trusted platform-admin caller
+  // who is never a room member — no membership/PUBLIC gate, works on
+  // PRIVATE communities too. Implemented by chat-service.
+  rpc AdminGetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
   // Fetch a single community message by id for moderation snapshotting (report
   // cards). Scoped by room_id (=== communityId) as an IDOR guard. Returns RAW
   // object keys — the caller resolves them to presigned URLs on read.
@@ -82,6 +87,23 @@ service CommunityService {
   // Admin Reports search: community name lookup, returns matching communityIds
   // only (capped) for the caller to combine into an id-set filter.
   rpc AdminSearchCommunityIds (AdminSearchCommunityIdsRequest) returns (AdminSearchCommunityIdsResponse);
+  // Member-level moderation from the admin Community Conversation viewer.
+  // Trusted platform-admin bypass: unlike the user-facing kick/ban REST
+  // endpoints, the caller is NOT required to be a member (let alone
+  // MODERATOR/ADMIN) of the community — community-service trusts the caller
+  // identity because only backoffice-service calls this RPC.
+  rpc AdminKickCommunityMember (AdminKickCommunityMemberRequest) returns (AdminMemberModerationResponse);
+  rpc AdminBanCommunityMember (AdminBanCommunityMemberRequest) returns (AdminMemberModerationResponse);
+  rpc AdminUnbanCommunityMember (AdminUnbanCommunityMemberRequest) returns (AdminMemberModerationResponse);
+  // Community-side cascade of a PERMANENT system ban. One call, two effects:
+  //   1. every community the banned user OWNS (adminId) is CLOSED — never
+  //      deleted, never hidden: it stays in every other member's list, in a
+  //      read-only state carrying a closedReasonCode of ADMIN_BANNED so
+  //      clients can render the red banner; and
+  //   2. every OTHER community they are an ACTIVE member of loses that
+  //      membership, exactly as an admin kick would.
+  // Idempotent — re-running finds nothing left to close or remove.
+  rpc AdminApplySystemBan (AdminApplySystemBanRequest) returns (AdminApplySystemBanResponse);
 
   // ---- Backoffice (admin panel) Category Management ----
   // Categories are owned by community-service (CommunityCategory); the
@@ -334,6 +356,12 @@ message AdminCommunityRow {
   int64  created_at       = 15; // epoch ms
   string community_avatar_url = 16; // presigned community avatar/profile image URL (community bucket); "" if none
   string community_cover_url  = 17; // presigned community cover/banner image URL (community bucket); "" if none
+  // WHY the community is closed. "ADMIN_BANNED" when its owner was permanently
+  // system-banned, "" otherwise. The `status` field above stays "CLOSED" for
+  // both close kinds, so this is the only way the panel can tell them apart —
+  // and it must not be inferred from the owner's CURRENT account status, which
+  // flips back to ACTIVE on an unban while the community stays closed forever.
+  string status_closed_reason_code = 18;
 }
 
 message AdminListCommunitiesResponse {
@@ -501,6 +529,50 @@ message AdminSetModerationStatusRequest {
   string status         = 2; // "ACTIVE" (reopen) | "SUSPENDED" (close)
   string reason_code    = 3; // close reason code; "" for reopen
   string actor_admin_id = 4; // backoffice AdminUser.id (stored on close)
+}
+
+message AdminKickCommunityMemberRequest {
+  string community_id   = 1;
+  string target_user_id = 2;
+  string reason         = 3;
+  string actor_admin_id = 4;
+}
+
+message AdminBanCommunityMemberRequest {
+  string community_id   = 1;
+  string target_user_id = 2;
+  string reason         = 3;
+  string actor_admin_id = 4;
+}
+
+// Unban takes no reason: it lifts a restriction rather than imposing one.
+message AdminUnbanCommunityMemberRequest {
+  string community_id   = 1;
+  string target_user_id = 2;
+  string actor_admin_id = 3;
+}
+
+message AdminMemberModerationResponse {
+  bool   ok         = 1;
+  string status      = 2; // resulting member status: LEFT | BANNED
+  // "" on success, else COMMUNITY_NOT_FOUND | COMMUNITY_MEMBER_NOT_FOUND | COMMUNITY_MEMBER_NOT_BANNED
+  string error_code = 3;
+  // Ban only: true when the target was this community's own admin/owner, so the
+  // ban ALSO closed the community (read-only, still visible to every member,
+  // closedReasonCode ADMIN_BANNED, not reopenable). Always false for kick/unban.
+  bool   closed_community = 4;
+}
+
+message AdminApplySystemBanRequest {
+  string user_id        = 1;
+  string actor_admin_id = 2; // backoffice AdminUser.id
+  string reason         = 3; // free text; recorded on the close + removal rows
+}
+message AdminApplySystemBanResponse {
+  bool            ok                    = 1;
+  repeated string closed_community_ids  = 2; // owned, now CLOSED (still visible)
+  repeated string removed_community_ids = 3; // memberships revoked
+  string          error_code            = 4; // "" on success
 }
 
 message AdminSetModerationStatusResponse {

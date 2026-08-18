@@ -1,3 +1,5 @@
+import { logger } from "@aimess/logger";
+
 import { userGrpcClient } from "../grpc/user-snapshot.client.js";
 import { isGroupMemberMuted } from "../lib/access-guard.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
@@ -29,7 +31,7 @@ export interface AdminGroupRowResult {
   memberCount: number;
   createdAt: number;
   admin: AdminGroupAdminResult;
-  /** Raw lifecycle status: "ACTIVE" | "DISBANDED". */
+  /** Raw lifecycle status: "ACTIVE" | "DISBANDED" | "CLOSED" (owner system-banned). */
   status: string;
   /** Epoch ms; 0 when never disbanded. */
   disbandedAt: number;
@@ -264,6 +266,77 @@ export class AdminGroupService {
       asPlatformAdmin: true,
     });
     return { ok: true, found: true, errorCode: "" };
+  }
+
+  /**
+   * Group-side cascade of a PERMANENT super-admin system ban.
+   *
+   * Groups the user OWNS are CLOSED, not disbanded: a disband ends every
+   * membership and hides the room, punishing the members for the owner's ban —
+   * a close leaves the roster intact so the group stays in everyone's list,
+   * readable, write-refused, with a banner. Every OTHER membership is ended
+   * through the normal kick path so the user is evicted from those rooms and
+   * their rosters update live.
+   *
+   * Ownership is the `role: "ADMIN"` membership row, never `GroupRoom.createdBy`
+   * — the creator can have transferred ownership or left long ago.
+   *
+   * Log-and-continue per room: one bad room must not strand the rest of the
+   * ban, which the caller has already applied to the account itself.
+   */
+  async adminApplySystemBan(
+    userId: string,
+    actorAdminId: string,
+    _reason?: string
+  ): Promise<{ closedGroupIds: string[]; removedGroupIds: string[] }> {
+    const closedGroupIds: string[] = [];
+    const removedGroupIds: string[] = [];
+    if (!userId) return { closedGroupIds, removedGroupIds };
+
+    const ownedRoomIds = await this.groupMemberRepo.findRoomIdsByOwnerUserIds([
+      userId,
+    ]);
+    const owned = new Set(ownedRoomIds);
+
+    for (const roomId of ownedRoomIds) {
+      try {
+        // Returns null when the room is not ACTIVE — already closed by a
+        // previous run, or disbanded. Both are a no-op, so this is idempotent.
+        const closed = await this.groupRoomService.closeGroupForSystemBan(
+          roomId,
+          actorAdminId
+        );
+        if (closed) closedGroupIds.push(roomId);
+      } catch (err) {
+        logger.error(
+          `AdminGroupService|adminApplySystemBan|close failed room=${roomId} user=${userId}: ${String(err)}`
+        );
+      }
+    }
+
+    const memberships = await this.groupMemberRepo.getActiveRoomIds(userId);
+    for (const roomId of memberships) {
+      if (owned.has(roomId)) continue;
+      try {
+        await this.groupMemberService.kick({
+          roomId,
+          targetUserId: userId,
+          kickedBy: actorAdminId,
+          reason: "ACCOUNT_BANNED",
+          asPlatformAdmin: true,
+        });
+        removedGroupIds.push(roomId);
+      } catch (err) {
+        logger.error(
+          `AdminGroupService|adminApplySystemBan|remove failed room=${roomId} user=${userId}: ${String(err)}`
+        );
+      }
+    }
+
+    logger.info(
+      `AdminGroupService|adminApplySystemBan|user=${userId} closed=${closedGroupIds.length} removed=${removedGroupIds.length}`
+    );
+    return { closedGroupIds, removedGroupIds };
   }
 
   // -------------------------------------------------------------------------

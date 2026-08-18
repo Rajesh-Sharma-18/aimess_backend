@@ -62,6 +62,10 @@ interface RawAdminCommunityRow {
   communityAvatarUrl: string;
   /** Presigned community cover/banner image URL (community bucket); "" if none. */
   communityCoverUrl: string;
+  // "ADMIN_BANNED" when the community closed because its owner was permanently
+  // system-banned; "" otherwise. `status` above is the platform-moderation
+  // axis and stays ACTIVE for a ban-close, so this is the only signal.
+  statusClosedReasonCode?: string;
 }
 
 export interface AdminListCommunitiesRes {
@@ -219,6 +223,34 @@ export interface AdminSetModerationStatusRes {
   errorCode: string;
 }
 
+export interface AdminMemberModerationReq {
+  communityId: string;
+  targetUserId: string;
+  reason: string;
+  actorAdminId: string;
+}
+
+export interface AdminMemberModerationRes {
+  ok: boolean;
+  status: string;
+  errorCode: string;
+  // Ban only: the target was the community's admin, so the ban also CLOSED it.
+  closedCommunity?: boolean;
+}
+
+// Community-side cascade of a permanent system ban.
+export interface AdminApplySystemBanReq {
+  userId: string;
+  actorAdminId: string;
+  reason: string;
+}
+export interface AdminApplySystemBanRes {
+  ok: boolean;
+  closedCommunityIds: string[];
+  removedCommunityIds: string[];
+  errorCode: string;
+}
+
 // ---- Category Management (backoffice admin panel) -------------------------
 
 /** AdminCategoryRow — int64 timestamps arrive as strings (longs: String). */
@@ -367,6 +399,55 @@ export const adminSetModerationStatusBreaker: Breaker<
   (req: AdminSetModerationStatusReq) =>
     call<AdminSetModerationStatusReq, AdminSetModerationStatusRes>(
       "adminSetModerationStatus",
+      req
+    )
+);
+
+export const adminApplySystemBanBreaker: Breaker<
+  AdminApplySystemBanReq,
+  AdminApplySystemBanRes
+> = makeBreaker(
+  "community.adminApplySystemBan",
+  (req: AdminApplySystemBanReq) =>
+    call<AdminApplySystemBanReq, AdminApplySystemBanRes>(
+      "adminApplySystemBan",
+      req
+    )
+);
+
+export const adminKickCommunityMemberBreaker: Breaker<
+  AdminMemberModerationReq,
+  AdminMemberModerationRes
+> = makeBreaker(
+  "community.adminKickCommunityMember",
+  (req: AdminMemberModerationReq) =>
+    call<AdminMemberModerationReq, AdminMemberModerationRes>(
+      "adminKickCommunityMember",
+      req
+    )
+);
+
+export const adminBanCommunityMemberBreaker: Breaker<
+  AdminMemberModerationReq,
+  AdminMemberModerationRes
+> = makeBreaker(
+  "community.adminBanCommunityMember",
+  (req: AdminMemberModerationReq) =>
+    call<AdminMemberModerationReq, AdminMemberModerationRes>(
+      "adminBanCommunityMember",
+      req
+    )
+);
+
+// Unban carries no `reason` — it lifts a restriction rather than imposing one.
+export const adminUnbanCommunityMemberBreaker: Breaker<
+  Omit<AdminMemberModerationReq, "reason">,
+  AdminMemberModerationRes
+> = makeBreaker(
+  "community.adminUnbanCommunityMember",
+  (req: Omit<AdminMemberModerationReq, "reason">) =>
+    call<Omit<AdminMemberModerationReq, "reason">, AdminMemberModerationRes>(
+      "adminUnbanCommunityMember",
       req
     )
 );
@@ -553,5 +634,33 @@ export const communityClient = {
   },
   adminDeleteCategory(categoryId: string): Promise<AdminDeleteCategoryRes> {
     return adminDeleteCategoryBreaker.fire({ categoryId });
+  },
+  adminKickCommunityMember(
+    req: AdminMemberModerationReq
+  ): Promise<AdminMemberModerationRes> {
+    return adminKickCommunityMemberBreaker.fire(req);
+  },
+  // repeated fields arrive as [] when empty, but default to undefined if the
+  // callee is an older build that predates this RPC — normalize both.
+  async adminApplySystemBan(
+    req: AdminApplySystemBanReq
+  ): Promise<AdminApplySystemBanRes> {
+    const r = await adminApplySystemBanBreaker.fire(req);
+    return {
+      ok: r.ok,
+      closedCommunityIds: r.closedCommunityIds ?? [],
+      removedCommunityIds: r.removedCommunityIds ?? [],
+      errorCode: r.errorCode ?? "",
+    };
+  },
+  adminBanCommunityMember(
+    req: AdminMemberModerationReq
+  ): Promise<AdminMemberModerationRes> {
+    return adminBanCommunityMemberBreaker.fire(req);
+  },
+  adminUnbanCommunityMember(
+    req: Omit<AdminMemberModerationReq, "reason">
+  ): Promise<AdminMemberModerationRes> {
+    return adminUnbanCommunityMemberBreaker.fire(req);
   },
 };
