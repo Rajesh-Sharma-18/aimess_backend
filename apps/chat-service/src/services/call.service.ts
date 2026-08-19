@@ -1091,6 +1091,8 @@ export class CallService {
         excludeSessionId: params.sessionId,
       });
 
+      // Deliberately NO missed-call push here — see the 1:1 branch below.
+
       if (updated.calleeIds.length > 0) return updated;
 
       // Last rung member declined — end the call for the caller too, same
@@ -1199,6 +1201,23 @@ export class CallService {
     // on top buzzed the very device that had just tapped Decline (the missed
     // producer takes no session exclusion), immediately after telling it the
     // ring was handled.
+    // NO missed-call push on a decline. A declined call is not a missed one,
+    // and `call.missed` is a plain banner-with-sound addressed to the CALLEE —
+    // the person who just declined. It carries no acting-device exclusion (only
+    // `CallCancelPayload` has one), and its `call:missed:<id>` collapse key
+    // differs from the ring's `call:<id>`, so it does not replace the ring: it
+    // stacks a fresh "Missed call from X" alert seconds after the user
+    // deliberately dismissed the call. With no TTL it inherits the 24 h
+    // default, so a device offline at decline time can surface it hours later.
+    //
+    // Nothing is lost by omitting it. The push writes no history (`skipInbox`);
+    // the ONE call-history row comes from the `call.activity` projection, which
+    // fires on every terminal transition and already marks a DECLINED call
+    // unread for the callee — so the decliner's other devices still get the row
+    // surfaced. Their ring is dismissed by the `call.cancelled` push above.
+    //
+    // The genuine missed-call push stays where it belongs: `fanOutUnansweredRing`,
+    // the ring that really was never answered.
 
     return updated;
   }
