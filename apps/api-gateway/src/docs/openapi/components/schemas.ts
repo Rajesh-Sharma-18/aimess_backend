@@ -11164,10 +11164,22 @@ export const openApiSchemas = {
         ],
       },
       privateRoomId: { type: "string", nullable: true },
+      groupId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Set only for a GROUP call — the room it was started from. `null` for 1:1, where `calleeId` is authoritative.",
+      },
+      calleeIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "GROUP calls only: every rung member (excludes the caller). Empty for 1:1.",
+      },
       initiatedAt: {
         type: "integer",
         format: "int64",
-        description: "Epoch ms.",
+        description: "Ring start. Epoch ms.",
       },
       answeredAt: {
         type: "integer",

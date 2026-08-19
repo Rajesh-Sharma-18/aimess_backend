@@ -64,14 +64,14 @@ async function setupConsumer(): Promise<ConsumeCallback> {
   return calls[calls.length - 1][1];
 }
 
-function ringMessage(callId = "call-1") {
+function ringMessage(callId = "call-1", calleeId = "callee-1") {
   return {
     content: Buffer.from(
       JSON.stringify({
         type: "call.incoming",
         data: {
           callId,
-          calleeId: "callee-1",
+          calleeId,
           callerId: "caller-1",
           callerName: "Alice",
           callerAvatar: "",
@@ -104,7 +104,7 @@ describe("call.consumer — ring push de-duplication", () => {
     expect(push.mock.calls[0][0].type).toBe("CALL_INCOMING");
 
     const [key, value, exFlag, ttl, nxFlag] = redisMock.set.mock.calls[0];
-    expect(key).toBe("push:sent:call.incoming:call-1");
+    expect(key).toBe("push:sent:call.incoming:call-1:callee-1");
     expect(value).toBe("1");
     expect(exFlag).toBe("EX");
     expect(typeof ttl).toBe("number");
@@ -139,10 +139,10 @@ describe("call.consumer — ring push de-duplication", () => {
 
     expect(push).toHaveBeenCalledTimes(2);
     expect(redisMock.set.mock.calls[0][0]).toBe(
-      "push:sent:call.incoming:call-1"
+      "push:sent:call.incoming:call-1:callee-1"
     );
     expect(redisMock.set.mock.calls[1][0]).toBe(
-      "push:sent:call.incoming:call-2"
+      "push:sent:call.incoming:call-2:callee-1"
     );
   });
 
@@ -180,5 +180,114 @@ describe("call.consumer — ring push de-duplication", () => {
     expect(push.mock.calls[1][0].type).toBe("CALL_CANCELLED");
     // The dismissal takes no claim at all.
     expect(redisMock.set).not.toHaveBeenCalled();
+  });
+});
+
+function missedMessage(callId = "call-1", calleeId = "callee-1") {
+  return {
+    content: Buffer.from(
+      JSON.stringify({
+        type: "call.missed",
+        data: {
+          callId,
+          calleeId,
+          callerId: "caller-1",
+          callerName: "Alice",
+          callerAvatar: "",
+          callType: "AUDIO",
+          missedAt: 1_700_000_060_000,
+        },
+      })
+    ),
+  };
+}
+
+describe("call.consumer — missed-call push", () => {
+  it("pushes the missed-call alert and claims (callId, callee) with SET NX", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(missedMessage());
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0].type).toBe("CALL_MISSED");
+    expect(push.mock.calls[0][0].userId).toBe("callee-1");
+    // Structured metadata, not just a sentence — mobile navigates from this.
+    expect(push.mock.calls[0][0].data).toMatchObject({
+      type: "CALL_MISSED",
+      callId: "call-1",
+      callerId: "caller-1",
+      callType: "AUDIO",
+    });
+
+    const [key, value, exFlag, ttl, nxFlag] = redisMock.set.mock.calls[0];
+    expect(key).toBe("push:sent:call.missed:call-1:callee-1");
+    expect(value).toBe("1");
+    expect(exFlag).toBe("EX");
+    expect(typeof ttl).toBe("number");
+    expect(nxFlag).toBe("NX");
+  });
+
+  it("suppresses a redelivered call.missed — one buzz per missed call", async () => {
+    const onMessage = await setupConsumer();
+    redisMock.set.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
+
+    onMessage(missedMessage());
+    await flush();
+    onMessage(missedMessage());
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(channelMock.ack).toHaveBeenCalledTimes(2);
+    expect(channelMock.nack).not.toHaveBeenCalled();
+  });
+
+  it("NEVER groups: three separate missed calls push three separate times", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(missedMessage("call-1"));
+    await flush();
+    onMessage(missedMessage("call-2"));
+    await flush();
+    onMessage(missedMessage("call-3"));
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(3);
+    expect(push.mock.calls.map((c) => c[0].data.callId)).toEqual([
+      "call-1",
+      "call-2",
+      "call-3",
+    ]);
+    // Distinct collapse keys, so the device stacks them instead of replacing.
+    expect(new Set(push.mock.calls.map((c) => c[0].collapseKey)).size).toBe(3);
+  });
+
+  // The claim is keyed on the RECIPIENT too. A group call fans one callId out
+  // to every rung member; keyed on the callId alone this silenced all but one.
+  it("does not let one member's claim suppress another member's ring", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(ringMessage("group-call", "member-a"));
+    await flush();
+    onMessage(ringMessage("group-call", "member-b"));
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(redisMock.set.mock.calls[0][0]).toBe(
+      "push:sent:call.incoming:group-call:member-a"
+    );
+    expect(redisMock.set.mock.calls[1][0]).toBe(
+      "push:sent:call.incoming:group-call:member-b"
+    );
+  });
+
+  it("still pushes the missed alert when Redis is unreachable", async () => {
+    const onMessage = await setupConsumer();
+    redisMock.set.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    onMessage(missedMessage());
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(1);
   });
 });

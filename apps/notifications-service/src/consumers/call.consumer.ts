@@ -117,7 +117,13 @@ interface CallActivityPayload {
 }
 
 /**
- * One ring push per call, no matter how many times the event is delivered.
+ * One push per (call, recipient), no matter how many times the event is
+ * delivered.
+ *
+ * The recipient is part of the key, not an afterthought: a GROUP call publishes
+ * one `call.incoming` per rung member, all carrying the same callId. Keyed on
+ * the callId alone, this suppressed every member's ring but the first — the
+ * dedup silencing the very phones it exists to protect.
  *
  * The consumer below acks INSIDE a detached async task with `prefetch(20)`, so
  * a restart, a channel drop or a broker reconnect mid-flight leaves the message
@@ -138,23 +144,46 @@ interface CallActivityPayload {
  * that an early claim could starve. The TTL is the ringing window — past that
  * the callId can never ring again anyway.
  */
-async function claimRingPush(callId: string): Promise<boolean> {
+async function claimPushOnce(
+  kind: string,
+  callId: string,
+  calleeId: string,
+  ttlSec: number
+): Promise<boolean> {
   try {
     const won = await redis.set(
-      `push:sent:call.incoming:${callId}`,
+      `push:sent:${kind}:${callId}:${calleeId}`,
       "1",
       "EX",
-      env.CALL_RINGING_TIMEOUT_SEC,
+      ttlSec,
       "NX"
     );
     return won === "OK";
   } catch (error) {
     logger.warn(
-      `[push:consume] ring dedup unavailable for ${callId}, sending anyway: ${String(error)}`
+      `[push:consume] ${kind} dedup unavailable for ${callId}/${calleeId}, sending anyway: ${String(error)}`
     );
     return true;
   }
 }
+
+/**
+ * The missed-call alert gets the same one-per-call claim as the ring, for the
+ * same reason and with the same fail-open bias.
+ *
+ * The PRODUCER side is already exactly-once: every path that resolves an
+ * unanswered ring calls `fanOutUnansweredRing` only after winning the atomic
+ * status claim on the call row, so there is one publish per call. What this
+ * covers is the transport — the consumer acks inside a detached task, so a
+ * broker reconnect or a mid-flight restart redelivers a genuine second
+ * `call.missed`, and the collapse key cannot recall a copy APNs already
+ * delivered. Buzzing someone twice for one missed call is the visible symptom.
+ *
+ * A callId reaches MISSED at most once (it is a terminal state on a unique
+ * row), so there is no legitimate second alert this can suppress — which is
+ * what makes the long TTL safe. It matches the push's own 24h expiry.
+ */
+const MISSED_PUSH_DEDUP_TTL_SEC = 24 * 60 * 60;
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   // HOP 3 of the push pipeline (RabbitMQ → notifications-service). If this
@@ -169,7 +198,14 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     return;
   }
 
-  if (!(await claimRingPush(data.callId))) {
+  if (
+    !(await claimPushOnce(
+      "call.incoming",
+      data.callId,
+      data.calleeId,
+      env.CALL_RINGING_TIMEOUT_SEC
+    ))
+  ) {
     logger.warn(
       `[push:consume] call.incoming callId=${data.callId} suppressed — ring already pushed (redelivery)`
     );
@@ -242,6 +278,20 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
   );
   if (!data.calleeId || !data.callId) {
     logger.warn("[push:consume] dropped — missing calleeId/callId");
+    return;
+  }
+
+  if (
+    !(await claimPushOnce(
+      "call.missed",
+      data.callId,
+      data.calleeId,
+      MISSED_PUSH_DEDUP_TTL_SEC
+    ))
+  ) {
+    logger.warn(
+      `[push:consume] call.missed callId=${data.callId} suppressed — already pushed (redelivery)`
+    );
     return;
   }
 

@@ -383,12 +383,39 @@ export class CallService {
         now
       );
       for (const stale of ownRinging) {
+        // Redialling is a hangup like any other, so it asks the SAME question:
+        // from the old callee's seat, did that ring last long enough to be a
+        // call they missed? It is the commonest shape of a missed call there
+        // is — nobody picks up, the caller immediately tries again — and it
+        // used to settle CANCELLED unconditionally, which is the one ending
+        // that produces no missed-call push and no MISSED history row. Every
+        // other path to an abandoned ring already routes through this one
+        // decision; this was the last that did not.
+        const missed = this.ringResolvesAsMissed({
+          call: stale,
+          endedAt: now,
+          endedByUserId: params.callerId,
+        });
         const { won } = await this.callRepo.claimStatusTransition(
           stale.callId,
           CallStatus.RINGING,
-          { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
+          {
+            status: missed ? CallStatus.MISSED : CallStatus.ENDED,
+            endedAt: now,
+            endedBy: params.callerId,
+          }
         );
         if (!won) continue;
+        if (missed) {
+          // The shared fan-out: `call:missed`, the ring dismissal, the MISSED
+          // card and the tray push — identical to a swept timeout, so the two
+          // ways of reaching this outcome cannot drift.
+          await this.fanOutUnansweredRing(
+            { ...stale, status: CallStatus.MISSED, endedAt: now },
+            now
+          );
+          continue;
+        }
         // Fans out to the caller's own `self:` channel too, not just the
         // callee's: the caller's OTHER devices are showing an outgoing-mirror
         // banner for this abandoned ring and have no other way to learn it died.

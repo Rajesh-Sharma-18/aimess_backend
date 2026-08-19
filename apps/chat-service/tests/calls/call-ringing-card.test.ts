@@ -9,6 +9,7 @@ import { CallService } from "../../src/services/call.service.js";
 import {
   publishCallCancelSafe,
   publishCallHandledPushSafe,
+  publishCallMissedSafe,
 } from "../../src/events/publish-call-incoming.js";
 
 // Stub the fire-and-forget push publishers so we can assert WHICH one the answer
@@ -231,5 +232,102 @@ describe("CallService — the card appears while ringing", () => {
     expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
       expect.objectContaining({ callId: "stale-1", outcome: "CANCELLED" })
     );
+  });
+});
+
+/**
+ * Redialling is the commonest shape of a missed call there is: nobody picks
+ * up, so the caller hangs up and tries again. `initiateCall`'s self-cleanup
+ * settles the abandoned ring, and it used to settle it CANCELLED
+ * unconditionally — the one ending that produces no missed-call push and no
+ * MISSED row, for a ring the callee genuinely missed. It now asks the same
+ * `ringResolvesAsMissed` question every other abandoned-ring path asks.
+ */
+describe("CallService — redialling settles the abandoned ring honestly", () => {
+  const staleRing = (ringSec: number | null) => ({
+    callId: "stale-1",
+    callerId: "caller",
+    calleeId: "old-callee",
+    calleeIds: [],
+    groupId: null,
+    privateRoomId: "room-0",
+    type: "AUDIO",
+    status: "RINGING",
+    answeredAt: null,
+    ...(ringSec === null
+      ? {}
+      : { initiatedAt: new Date(Date.now() - ringSec * 1000) }),
+  });
+
+  const redial = (service: CallService) =>
+    service.initiateCall({
+      callerId: "caller",
+      calleeId: "callee",
+      type: "AUDIO",
+      privateRoomId: "room-1",
+    });
+
+  beforeEach(() => {
+    (publishCallMissedSafe as jest.Mock).mockClear();
+  });
+
+  it("a long unanswered ring becomes MISSED, with the push the callee needs", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findCallerRinging.mockResolvedValue([staleRing(30)]);
+
+    await redial(service);
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "stale-1",
+      "RINGING",
+      expect.objectContaining({ status: "MISSED" })
+    );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "stale-1", outcome: "MISSED" })
+    );
+    expect(publishCallMissedSafe as jest.Mock).toHaveBeenCalledTimes(1);
+    expect((publishCallMissedSafe as jest.Mock).mock.calls[0][0]).toMatchObject(
+      {
+        callId: "stale-1",
+        calleeId: "old-callee",
+        callerId: "caller",
+      }
+    );
+    // The redial itself still goes out — cleanup must never cost the new call.
+    expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("a ring abandoned INSIDE the grace window stays a cancel, with no push", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findCallerRinging.mockResolvedValue([staleRing(1)]);
+
+    await redial(service);
+
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
+      "stale-1",
+      "RINGING",
+      expect.objectContaining({ status: "ENDED" })
+    );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "stale-1", outcome: "CANCELLED" })
+    );
+    expect(publishCallMissedSafe as jest.Mock).not.toHaveBeenCalled();
+  });
+
+  it("NO GROUPING: two redials leave two separate call rows, each settled on its own", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findCallerRinging.mockResolvedValue([
+      { ...staleRing(30), callId: "stale-1" },
+      { ...staleRing(40), callId: "stale-2", privateRoomId: "room-0" },
+    ]);
+
+    await redial(service);
+
+    const missedCards = stubs.callChatMessages.post.mock.calls
+      .filter((c: [{ outcome: string }]) => c[0].outcome === "MISSED")
+      .map((c: [{ callId: string }]) => c[0].callId);
+    expect(missedCards).toEqual(["stale-1", "stale-2"]);
+    // One push per call session — never one "2 missed calls".
+    expect(publishCallMissedSafe as jest.Mock).toHaveBeenCalledTimes(2);
   });
 });
