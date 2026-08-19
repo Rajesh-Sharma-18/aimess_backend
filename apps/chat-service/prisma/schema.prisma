@@ -161,8 +161,15 @@ model PrivateMessage {
   autoDeleteLastError     String?
 
   @@index([roomId, createdAt(sort: Desc)])
-  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
-  // get a deterministic, index-backed total order with early-termination preserved.
+  // sequenceNumber trails createdAt so a timestamp-paginated read can get an
+  // index-backed total order. NOTE: findByRoomIdTimeline currently tie-breaks on
+  // `_id`, not on this key, so for that query the third column is unused — the
+  // page is still deterministic (ObjectId is unique) but its order is the _id
+  // order, not the sequence order. The two differ whenever createdAt disagrees
+  // with sequenceNumber, which it can: the sequence is allocated a round trip
+  // before createdAt is stamped (see PrivateMessageRepository.createMessage).
+  // findByRoomIdSeq is the sequence-ordered read, and it is what the web client
+  // paginates with.
   @@index([roomId, isDeleted, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])

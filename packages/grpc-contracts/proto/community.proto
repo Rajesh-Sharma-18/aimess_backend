@@ -709,6 +709,13 @@ message SendCommunityMessageResponse {
   string message_id = 1;
   string room_id    = 2;
   int64  sent_at    = 3;
+  // Per-room ordering key, same value the `community:message:new` broadcast
+  // carries. `sent_at` is the row's createdAt, which is stamped after the
+  // sequence is allocated and therefore does NOT always agree with it — a
+  // client that promotes its optimistic row from this ack has to receive the
+  // sequence here or it has no server position until the echo arrives.
+  // Added after the private/group acks, which have carried it from the start.
+  int64  sequence_number = 4;
 }
 message GetCommunityMessagesRequest {
   string room_id      = 1;

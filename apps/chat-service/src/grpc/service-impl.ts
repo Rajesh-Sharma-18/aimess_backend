@@ -2936,6 +2936,7 @@ export function createCommunityImpl(
             messageId: saved.id,
             roomId: saved.roomId,
             sentAt,
+            sequenceNumber: saved.sequenceNumber ?? 0,
           });
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);

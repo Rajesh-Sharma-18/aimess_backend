@@ -107,6 +107,16 @@ export class PrivateMessageRepository {
         isDeleted: data.isDeleted ?? false,
         autoDeleteAt: data.autoDeleteAt ?? null,
         autoDeleteAfterView: data.autoDeleteAfterView ?? false,
+        // NOT the ordering key, and it cannot be made into one. `sequenceNumber`
+        // is handed out by an atomic `$inc` a round trip earlier, so any await in
+        // between (the `allocateRevision` above, on every non-user-send path) is a
+        // window in which the message that won the sequence loses the insert and
+        // ends up with the LATER createdAt. Across replicas the pods' clocks skew
+        // independently while the sequence stays correct, and call rows are
+        // deliberately backdated (CallChatMessageService) while holding the room's
+        // newest sequence. Clients must order on `sequenceNumber`; this is the
+        // display timestamp and the legacy fallback for pre-backfill rows.
+        // See docs/chat/MESSAGE_REALTIME_ORDERING_FIX.md.
         createdAt: (data.createdAt as Date) ?? new Date(),
       },
     });
