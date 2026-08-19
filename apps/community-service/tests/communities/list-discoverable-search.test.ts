@@ -212,4 +212,26 @@ describe("communityRepository.listDiscoverable — search token building", () =>
       expect.objectContaining({ where: expect.any(Object) })
     );
   });
+
+  // A CLOSED community keeps every member, so mine-search must still return it.
+  it("keeps CLOSED communities the caller belongs to in mine-search", async () => {
+    await communityRepository.listDiscoverable(
+      baseParams({ q: "text", includeMemberCommunityIds: ["m1"] })
+    );
+
+    expect(lastFindManyAnd()).toContainEqual({
+      OR: [{ status: { not: "CLOSED" } }, { id: { in: ["m1"] } }],
+    });
+  });
+
+  // Public discover has no membership widening, so CLOSED stays hidden there.
+  it("excludes CLOSED communities from public discover", async () => {
+    await communityRepository.listDiscoverable(
+      baseParams({ q: "text", excludeCommunityIds: ["e1"] })
+    );
+
+    expect(lastFindManyAnd()).toContainEqual({
+      OR: [{ status: { not: "CLOSED" } }],
+    });
+  });
 });

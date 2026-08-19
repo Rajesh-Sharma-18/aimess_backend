@@ -121,37 +121,64 @@ export function createUserClient(): UserClient {
   );
 
   const chatFlags = new Map<string, { value: ChatFlags; expiresAt: number }>();
+  // In-flight lookups, keyed by user. A `message:read` receipt reaches this
+  // gateway TWICE (chat-service publishes it on `conv:<roomId>` AND on every
+  // other participant's `user:<id>`), and both relays await the same viewer's
+  // flags concurrently — with no single-flight that was two identical gRPC
+  // calls per receipt, and on a cold cache the second one paid the full round
+  // trip too. Share the promise instead.
+  const chatFlagsInFlight = new Map<string, Promise<ChatFlags>>();
+  // A lookup that failed or timed out (the breaker's 2s ceiling) must not be
+  // re-paid by the very next receipt: while user-service is slow, that turned
+  // EVERY read receipt into a flat 2s stall with nothing ever warming up. Fail
+  // open for a short window instead. Deliberately much shorter than the real
+  // TTL: a user's disabled switch acts as ON for a few seconds past recovery,
+  // not a minute.
+  const CHAT_FLAGS_FAIL_OPEN_MS = 5_000;
+
+  const fetchChatFlags = async (userId: string): Promise<ChatFlags> => {
+    const res = await chatSettingsBreaker
+      .fire({ userId })
+      .catch(() => null as ChatFlags | null);
+    // Map preserves insertion order — drop the oldest rather than grow unbounded.
+    if (chatFlags.size >= CHAT_FLAGS_MAX_ENTRIES) {
+      const oldest = chatFlags.keys().next().value;
+      if (oldest !== undefined) chatFlags.delete(oldest);
+    }
+    if (res === null) {
+      chatFlags.set(userId, {
+        value: CHAT_FLAGS_OPEN,
+        expiresAt: Date.now() + CHAT_FLAGS_FAIL_OPEN_MS,
+      });
+      return CHAT_FLAGS_OPEN;
+    }
+    const value: ChatFlags = {
+      typingIndicators: res.typingIndicators !== false,
+      readReceipts: res.readReceipts !== false,
+    };
+    chatFlags.set(userId, {
+      value,
+      expiresAt: Date.now() + CHAT_FLAGS_TTL_MS,
+    });
+    return value;
+  };
 
   return {
     bulkGetUserSnapshots: (userIds) =>
       bulkBreaker.fire({ userIds }).catch(() => null),
-    getChatFlags: async (userId) => {
-      if (!UUID_RE.test(userId)) return CHAT_FLAGS_OPEN;
+    getChatFlags: (userId) => {
+      if (!UUID_RE.test(userId)) return Promise.resolve(CHAT_FLAGS_OPEN);
 
       const hit = chatFlags.get(userId);
-      if (hit && hit.expiresAt > Date.now()) return hit.value;
+      if (hit && hit.expiresAt > Date.now()) return Promise.resolve(hit.value);
 
-      const res = await chatSettingsBreaker
-        .fire({ userId })
-        .catch(() => null as ChatFlags | null);
-      // Only a real answer is cached — caching the fail-open default would keep
-      // a user's disabled switch acting as ON for a minute past recovery.
-      if (res === null) return CHAT_FLAGS_OPEN;
-
-      // Map preserves insertion order — drop the oldest rather than grow unbounded.
-      if (chatFlags.size >= CHAT_FLAGS_MAX_ENTRIES) {
-        const oldest = chatFlags.keys().next().value;
-        if (oldest !== undefined) chatFlags.delete(oldest);
-      }
-      const value: ChatFlags = {
-        typingIndicators: res.typingIndicators !== false,
-        readReceipts: res.readReceipts !== false,
-      };
-      chatFlags.set(userId, {
-        value,
-        expiresAt: Date.now() + CHAT_FLAGS_TTL_MS,
+      const pending = chatFlagsInFlight.get(userId);
+      if (pending) return pending;
+      const p = fetchChatFlags(userId).finally(() => {
+        chatFlagsInFlight.delete(userId);
       });
-      return value;
+      chatFlagsInFlight.set(userId, p);
+      return p;
     },
     invalidateChatFlags: (userId) => {
       chatFlags.delete(userId);

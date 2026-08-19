@@ -1134,17 +1134,12 @@ export function createMessagingImpl(
             );
           }
 
-          callback(null, {
-            messageId: req.messageId,
-            reactions: reactions.map((r) => ({
-              userId: r.userId,
-              emoji: r.emoji,
-            })),
-          });
-
-          // WhatsApp-style lastActivity bump/revert — fire-and-forget, never
-          // blocks the ack (mirrors the REST reactDirect wrapper's identical call).
-          void deps.chatMessageOrchestrator
+          // WhatsApp-style lastActivity bump/revert, AWAITED BEFORE the ack —
+          // same rule the community react handlers already follow: a client that
+          // re-reads its list row on this ack must never land before the overlay
+          // write. The live bump inside is still fire-and-forget, and a failure
+          // here only warns (the reaction itself is already persisted).
+          await deps.chatMessageOrchestrator
             .bumpReactionActivity({
               conversationType:
                 reactConversationType === "GROUP" ? "GROUP" : "PRIVATE",
@@ -1159,6 +1154,14 @@ export function createMessagingImpl(
             .catch((err: unknown) =>
               logger.warn(`sendReaction activity bump failed: ${String(err)}`)
             );
+
+          callback(null, {
+            messageId: req.messageId,
+            reactions: reactions.map((r) => ({
+              userId: r.userId,
+              emoji: r.emoji,
+            })),
+          });
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
