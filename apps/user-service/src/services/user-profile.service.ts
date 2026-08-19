@@ -381,10 +381,9 @@ export const userProfileService = {
     }
 
     // Seed the profile from the verified social provider name when the event
-    // carried one; otherwise keep the historical placeholder pair
-    // (firstName = account, lastName = "User"). A blank/whitespace value is
-    // treated as "not provided" so it can never replace the fallback.
-    const displayName = data.account.slice(0, 50);
+    // carried one; otherwise leave the fields empty so the user fills them in
+    // on the profile-details step. A blank/whitespace value is treated as
+    // "not provided".
     const firstName = data.firstName?.trim().slice(0, 50) ?? "";
     const lastName = data.lastName?.trim().slice(0, 50) ?? "";
 
@@ -402,8 +401,8 @@ export const userProfileService = {
           userId: data.userId,
           account: data.account,
           username,
-          firstName: firstName || displayName,
-          lastName: lastName || "User",
+          firstName,
+          lastName,
           isGoogleLogin: data.isGoogleLogin ?? false,
         });
 
