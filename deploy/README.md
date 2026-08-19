@@ -167,7 +167,7 @@ Handled in `deploy/*/.env.*.example` and the compose files, but worth knowing:
 | `GRPC_SERVICE_TOKEN=dev-grpc-service-token-change-me`                                   | Must be regenerated. With `NODE_ENV=production` services **refuse to start** if unset — deliberate                  |
 | `MINIO_ENDPOINT=http://10.0.127.227:9000`, `SRS_CANDIDATE=10.0.127.227`                 | Dev LAN addresses, replaced                                                                                         |
 | `MONGO_DATABASE` empty in `chat-service/.env.example`                                   | It is the **authSource**; empty produces `authSource=` and auth fails. Set to `admin`                               |
-| `LINK_HOSTS=aimess.me`, `WEB_APP_URL=https://aimess.com`                                | ⚠ **Not `ai5dev.tech` domains.** Confirm you own them or invite/deep links break — see step 7                       |
+| `LINK_HOSTS` / `WEB_APP_URL` / `INVITE_LINK_BASE_URL`                                   | All default to `ai5dev.tech` now. `aimess.me` does **not** resolve — never point them at it                         |
 | `OTP_DEV_FIXED_CODE=123456`                                                             | ⚠ Must be **empty** in production. Any value is accepted as a valid OTP for every account                           |
 
 ---
@@ -376,10 +376,24 @@ redirect to HTTPS.
 
 1. **Sudo credentials** — the password in `server_info.txt` does not work. Every
    step above needs working `sudo`.
-2. **`LINK_HOSTS` / `WEB_APP_URL` / `INVITE_LINK_BASE_URL`** currently reference
-   `aimess.me` and `aimess.com`, which are not part of this deployment. Confirm
-   ownership, or point them at `ai5dev.tech` (the templates default to
-   the latter).
+2. **Live `.env.dev02` deep-link block is still stale.** The git template
+   (`deploy/dev02/.env.dev02.example`) is correct, but the live file on the
+   server is a separate copy. Set by hand, then restart chat-service **and**
+   community-service (they share one `env_file`, so one edit fixes both):
+
+   ```
+   ANDROID_PACKAGE_NAME=com.aifivetech.aimess.app
+   ANDROID_SHA256_CERT_FINGERPRINTS=<Play cert>,<upload cert>   # see the template
+   ANDROID_STORE_APP_ID=com.aifivetech.aimess.app
+   INVITE_LINK_BASE_URL=https://ai5dev.tech
+   ```
+
+   Confirm afterwards that a freshly created group invite comes back as
+   `https://ai5dev.tech/g/<token>` and not the dead `aimess.me` domain.
+   Cloudflare must also NOT challenge `https://ai5dev.tech/.well-known/*`, or
+   Android App Link verification fails with no visible error. See
+   `docs/deep-linking/IMPLEMENTATION.md`.
+
 3. **Two DNS records to create** — `livekit.ai5dev.tech` (grey-cloud, required)
    and `minio-console.ai5dev.tech` (optional). Repurpose two of the four spare
    names.

@@ -45,7 +45,7 @@ const envSchema = z.object({
    * equivalent). Private invite links render as `<base>/+<code>`. Defaults to
    * the production link domain; override per-env (e.g. a staging host).
    */
-  INVITE_LINK_BASE_URL: z.string().url().default("https://aimess.me"),
+  INVITE_LINK_BASE_URL: z.string().url().default("https://ai5dev.tech"),
 
   USER_GRPC_URL: z.string().default("0.0.0.0:4002"),
 

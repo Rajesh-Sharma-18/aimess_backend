@@ -107,13 +107,13 @@ const envSchema = z.object({
    * "open in app" preview/interstitial instead of the API. Other hosts pass
    * straight through to the normal API routing.
    */
-  LINK_HOSTS: z.string().default("aimess.me"),
+  LINK_HOSTS: z.string().default("ai5dev.tech"),
   /** App custom scheme used in deep links (`<scheme>://join?code=…`). */
   APP_SCHEME: z.string().default("aimess"),
   /** Web app origin for "Continue on web" + logged-out `returnTo` redirects. */
-  WEB_APP_URL: z.string().url().default("https://aimess.com"),
+  WEB_APP_URL: z.string().url().default("https://ai5dev.tech"),
   /** Android package name (assetlinks.json + intent:// fallback). */
-  ANDROID_PACKAGE_NAME: z.string().default("com.aimess.app"),
+  ANDROID_PACKAGE_NAME: z.string().default("com.aifivetech.aimess.app"),
   /**
    * Comma-separated SHA-256 signing-cert fingerprints for assetlinks.json.
    * MUST list BOTH the upload cert and Google's Play App Signing cert, or
