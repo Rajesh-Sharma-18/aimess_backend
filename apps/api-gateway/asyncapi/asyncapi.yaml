@@ -73,8 +73,8 @@ info:
       and `community:catchup` boundaries are **exclusive** (the cursor item is not
       re-returned). REST timestamp cursors are epoch-ms; socket `messages:fetch`
       cursors are ISO-8601 strings.
-    - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`,
-      `call:ice`) carry client-side throttle expectations — see SOCKET_EVENTS.md
+    - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`)
+      carry client-side throttle expectations — see SOCKET_EVENTS.md
       "Rate limiting & throttling".
     - **Media:** attachments reference an `objectKey` / `url`; file bytes never
       cross the socket — see `docs/MEDIA_UPLOAD.md`.
@@ -174,7 +174,7 @@ channels:
       callAnswer: { $ref: "#/components/messages/CallAnswer" }
       callDecline: { $ref: "#/components/messages/CallDecline" }
       callEnd: { $ref: "#/components/messages/CallEnd" }
-      callIceSend: { $ref: "#/components/messages/CallIceSend" }
+      callRejoin: { $ref: "#/components/messages/CallRejoin" }
       # server -> client
       messageNew: { $ref: "#/components/messages/MessageNew" }
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
@@ -202,7 +202,11 @@ channels:
       callAnswered: { $ref: "#/components/messages/CallAnswered" }
       callDeclined: { $ref: "#/components/messages/CallDeclined" }
       callEnded: { $ref: "#/components/messages/CallEnded" }
-      callIceRecv: { $ref: "#/components/messages/CallIceRecv" }
+      callCancelled: { $ref: "#/components/messages/CallCancelled" }
+      callMissed: { $ref: "#/components/messages/CallMissed" }
+      callOutgoingMirror: { $ref: "#/components/messages/CallOutgoingMirror" }
+      callHandled: { $ref: "#/components/messages/CallHandled" }
+      callMemberDeclined: { $ref: "#/components/messages/CallMemberDeclined" }
       # friend management (client -> server)
       friendRequest: { $ref: "#/components/messages/FriendRequest" }
       friendAccept: { $ref: "#/components/messages/FriendAccept" }
@@ -385,6 +389,7 @@ channels:
       notificationAllRead: { $ref: "#/components/messages/NotificationAllRead" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
+      notificationUpdated: { $ref: "#/components/messages/NotificationUpdated" }
       notificationDeleted: { $ref: "#/components/messages/NotificationDeleted" }
       mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
       communityJoinRequestUpdate:
@@ -755,11 +760,6 @@ operations:
     reply:
       channel: { $ref: "#/channels/chat" }
       messages: [{ $ref: "#/components/messages/Ack" }]
-  chat.callIce:
-    action: send
-    channel: { $ref: "#/channels/chat" }
-    summary: "call:ice — relay ICE candidate (Redis-only, fire-and-forget)"
-    messages: [{ $ref: "#/channels/chat/messages/callIceSend" }]
 
   # =================================================== /chat server -> client
   chat.onMessageNew:
@@ -895,6 +895,15 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "presence:status — a watched peer's online status changed"
     messages: [{ $ref: "#/channels/chat/messages/presenceStatus" }]
+  chat.callRejoin:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:rejoin — re-enter the call room after a transport reconnect"
+    messages: [{ $ref: "#/channels/chat/messages/callRejoin" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+
   chat.onCallIncoming:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -915,11 +924,31 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "call:ended"
     messages: [{ $ref: "#/channels/chat/messages/callEnded" }]
-  chat.onCallIce:
+  chat.onCallCancelled:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "call:ice — peer ICE candidate"
-    messages: [{ $ref: "#/channels/chat/messages/callIceRecv" }]
+    summary: "call:cancelled — the caller hung up before it was answered, or the server tore the ring down"
+    messages: [{ $ref: "#/channels/chat/messages/callCancelled" }]
+  chat.onCallMissed:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:missed — the ring elapsed without being answered"
+    messages: [{ $ref: "#/channels/chat/messages/callMissed" }]
+  chat.onCallOutgoingMirror:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:outgoing_mirror — one of YOUR other devices placed this call"
+    messages: [{ $ref: "#/channels/chat/messages/callOutgoingMirror" }]
+  chat.onCallHandled:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:handled — another of your devices answered/declined this ring. NON-TERMINAL"
+    messages: [{ $ref: "#/channels/chat/messages/callHandled" }]
+  chat.onCallMemberDeclined:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:member_declined — GROUP calls only: one member declined, the ring continues"
+    messages: [{ $ref: "#/channels/chat/messages/callMemberDeclined" }]
 
   # =============================================== /chat friend management
   chat.friendRequest:
@@ -1865,6 +1894,17 @@ operations:
     channel: { $ref: "#/channels/notify" }
     summary: "notification:new — in-app notification (+ any event forwarded verbatim from notify:<userId>)"
     messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
+  notify.onUpdated:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:updated — an existing row changed in place"
+    description: |
+      Emitted instead of `notification:new` when a row with the same `groupKey`
+      already exists — a call transitioning to its final outcome, a friend
+      request being accepted, an action being recorded. The row keeps its `id`
+      and its `createdAt` (so its position in the list does not move) and its
+      `version` increments. Apply only when `version >= the version held`.
+    messages: [{ $ref: "#/channels/notify/messages/notificationUpdated" }]
   notify.onDeleted:
     action: receive
     channel: { $ref: "#/channels/notify" }
@@ -2531,18 +2571,6 @@ components:
         - name: Hang up
           payload:
             callId: "call_6843e1a2b5c3d4e5"
-    CallIceSend:
-      name: "call:ice"
-      title: "call:ice (send)"
-      payload: { $ref: "#/components/schemas/CallIceSendPayload" }
-      examples:
-        - name: Relay an ICE candidate
-          payload:
-            callId: "call_6843e1a2b5c3d4e5"
-            candidate:
-              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
-              sdpMid: "0"
-              sdpMLineIndex: 0
 
     # -------- /chat server -> client --------
     MessageNew:
@@ -3121,19 +3149,86 @@ components:
             callId: "call_6843e1a2b5c3d4e5"
             endedBy: "user_abc123"
             durationSec: 0
-    CallIceRecv:
-      name: "call:ice"
-      title: "call:ice (receive)"
-      payload: { $ref: "#/components/schemas/CallIceRecvPayload" }
+    CallCancelled:
+      name: "call:cancelled"
+      title: "call:cancelled"
+      summary: |
+        Terminal. The ring is over and was never answered — the caller hung up
+        pre-answer, or the server tore it down (LiveKit room closed, unfriend,
+        the caller starting a new call). A ring that outlived
+        `CALL_CANCEL_GRACE_SEC` resolves as MISSED instead and arrives as
+        `call:missed`.
+      payload: { $ref: "#/components/schemas/CallRef" }
       examples:
-        - name: ICE candidate from peer
+        - name: Caller hung up before it was answered
           payload:
             callId: "call_6843e1a2b5c3d4e5"
-            from: "user_abc123"
-            candidate:
-              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
-              sdpMid: "0"
-              sdpMLineIndex: 0
+    CallMissed:
+      name: "call:missed"
+      title: "call:missed"
+      summary: |
+        Terminal. Nobody answered: the server's ring sweep flipped it, the
+        caller's client reported `reason: "NO_ANSWER"`, or the caller hung up on
+        a ring that had already run long enough to be a call the callee missed.
+        The callee also receives a user-visible missed-call push.
+      payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Ring elapsed
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+    CallOutgoingMirror:
+      name: "call:outgoing_mirror"
+      title: "call:outgoing_mirror"
+      summary: |
+        One of the RECIPIENT'S OWN other devices placed this call. Delivered on
+        `self:<callerId>` so sibling devices can show an outgoing banner; the
+        gateway also joins those sockets to the call room.
+      payload: { $ref: "#/components/schemas/CallOutgoingMirrorPayload" }
+      examples:
+        - name: Placed from another device
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            calleeId: "user_def456"
+            calleeName: "Krish"
+            calleeAvatarUrl: "https://cdn.example.com/a.jpg"
+            callType: "AUDIO"
+    CallHandled:
+      name: "call:handled"
+      title: "call:handled"
+      summary: |
+        **NON-TERMINAL.** Another of the recipient's devices answered or
+        declined this ring. A device that is itself mid-call on this `callId`
+        must IGNORE it; a device still ringing dismisses. Never delivered to the
+        device that acted.
+      payload: { $ref: "#/components/schemas/CallHandledPayload" }
+      examples:
+        - name: Answered on another device
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            reason: "answered_elsewhere"
+    CallMemberDeclined:
+      name: "call:member_declined"
+      title: "call:member_declined"
+      summary: "GROUP calls only. One rung member declined; the call keeps ringing for the rest of the roster."
+      payload: { $ref: "#/components/schemas/CallMemberDeclinedPayload" }
+      examples:
+        - name: A member declined
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            userId: "user_def456"
+    CallRejoin:
+      name: "call:rejoin"
+      title: "call:rejoin"
+      summary: |
+        Re-enter `call:<callId>` after a transport reconnect mid-call.
+        Authorized against a server-side membership marker written when this
+        user initiated or answered THAT call, so no new call is minted and a
+        peer cannot join a call they were never in. Ack data is `{ callId }`.
+      payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Rejoin after reconnect
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
 
     # -------- /chat friend management + session (client -> server) --------
     FriendRequest:
@@ -5015,6 +5110,17 @@ components:
         - name: New notification bumps count to 7
           payload:
             count: 7
+    NotificationUpdated:
+      name: "notification:updated"
+      title: "notification:updated (in-place row transition)"
+      summary: |
+        Same payload as `notification:new`. A row is UPDATED rather than created
+        whenever its `groupKey` already exists for this user — one call is one
+        row that transitions through its outcomes, never a card per state.
+        `createdAt` is frozen at first insert; `version` increments on every
+        change and is the conflict-resolution key.
+      payload: { $ref: "#/components/schemas/NotificationItem" }
+
     NotificationForwarded:
       name: "notification:new"
       title: "notification:new (forwarded in-app notification)"
@@ -5876,28 +5982,6 @@ components:
         callType: { type: string, enum: [AUDIO, VIDEO], default: AUDIO }
         privateRoomId: { type: string, maxLength: 200 }
       required: [calleeId]
-    IceCandidate:
-      type: object
-      description: |
-        A WebRTC ICE candidate (RTCIceCandidateInit). The backend relays it
-        opaquely — it is never parsed or persisted. An empty `candidate` string
-        signals end-of-candidates.
-      properties:
-        candidate: { type: string, maxLength: 1000 }
-        sdpMid: { type: string, maxLength: 100 }
-        sdpMLineIndex: { type: integer, minimum: 0 }
-        usernameFragment: { type: string, maxLength: 256 }
-    CallIceSendPayload:
-      type: object
-      description: "Trickle a single WebRTC ICE candidate to the peer. Fire-and-forget: no ack, no retry. On weak networks candidates can drop and call setup may fail — re-send the latest candidate on a short timer."
-      properties:
-        callId: { type: string, minLength: 1, maxLength: 200 }
-        candidate:
-          description: WebRTC ICE candidate (opaque to the backend).
-          oneOf:
-            - { $ref: "#/components/schemas/IceCandidate" }
-            - { type: string, maxLength: 1000 }
-      required: [callId, candidate]
 
     # -------- chat receive payloads --------
     QuoteData:
@@ -6527,15 +6611,26 @@ components:
         callId: { type: string }
         endedBy: { type: string }
         durationSec: { type: integer }
-    CallIceRecvPayload:
+    CallOutgoingMirrorPayload:
       type: object
       properties:
         callId: { type: string }
-        candidate:
-          oneOf:
-            - { $ref: "#/components/schemas/IceCandidate" }
-            - { type: string, maxLength: 1000 }
-        from: { type: string }
+        calleeId: { type: string }
+        calleeName: { type: string }
+        calleeAvatarUrl: { type: string }
+        callType: { type: string, enum: [AUDIO, VIDEO] }
+    CallHandledPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        reason:
+          type: string
+          enum: [answered_elsewhere, declined_elsewhere]
+    CallMemberDeclinedPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        userId: { type: string }
 
     # -------- community payloads --------
     # NOTE: community messages use the SAME `ContentType` enum as /chat (UPPER-CASE).
