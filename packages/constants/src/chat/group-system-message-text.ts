@@ -229,9 +229,13 @@ export function buildGroupSystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = (data.actorName as string) || t("SYS_NAME_SOMEONE", locale);
+  // Same legacy invite aliasing as buildPrivateSystemFallbackText below.
+  const actor =
+    (data.actorName as string) ||
+    (data.inviterName as string) ||
+    t("SYS_NAME_SOMEONE", locale);
   const target = (data.targetName as string) || t("SYS_NAME_A_MEMBER", locale);
-  const actorId = String(data.actorId ?? "").trim();
+  const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
   const targetId = String(data.targetUserId ?? "").trim();
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);
@@ -503,10 +507,19 @@ export function buildPrivateSystemFallbackText(
   viewerUserId?: string | null,
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
-  const actor = (data.actorName as string) || t("SYS_NAME_SOMEONE", locale);
+  // `inviterId`/`inviterName` is the SAME person under the older field names the
+  // two invite writers used before they also wrote `actorId`/`actorName`. Rows
+  // persisted then carry only the invite pair, so without this every one of them
+  // re-renders as "Someone shared a group invite" forever - in the transcript and
+  // in the list preview built from the same snapshot. Read-time projection, so no
+  // migration; new rows carry both and never reach the fallback.
+  const actor =
+    (data.actorName as string) ||
+    (data.inviterName as string) ||
+    t("SYS_NAME_SOMEONE", locale);
   const target =
     (data.targetName as string) || t("SYS_NAME_SOMEONE_LOWER", locale);
-  const actorId = String(data.actorId ?? "").trim();
+  const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
   const targetId = String(data.targetUserId ?? data.peerId ?? "").trim();
   const viewer = viewerUserId?.trim() ?? "";
   const isActor = Boolean(viewer && actorId && viewer === actorId);

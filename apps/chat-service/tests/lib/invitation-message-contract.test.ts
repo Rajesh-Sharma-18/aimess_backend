@@ -262,4 +262,21 @@ describe("private system line for a shared invitation", () => {
       "Someone shared a community invite"
     );
   });
+
+  // Rows written before the writers also stamped actorId/actorName carry the
+  // inviter under its own field names only. They used to render "Someone shared
+  // a group invite" for both parties, forever - most visibly as the list preview
+  // of a conversation whose last message is that invite.
+  it("REGRESSION: a legacy invite row names the inviter from inviterId/inviterName", () => {
+    const legacy = { inviterId: INVITER, inviterName: "Peter Parker" };
+    expect(
+      buildPrivateSystemFallbackText("GROUP_INVITE", legacy, "someone-else")
+    ).toBe("Peter Parker shared a group invite");
+    expect(
+      buildPrivateSystemFallbackText("GROUP_INVITE", legacy, INVITER)
+    ).toBe("You shared a group invite");
+    expect(
+      buildPrivateSystemFallbackText("COMMUNITY_INVITE", legacy, "someone-else")
+    ).toBe("Peter Parker shared a community invite");
+  });
 });
