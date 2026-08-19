@@ -320,11 +320,54 @@ export async function serializeNotification(
         data.requesterDisplayName ?? "",
       ])
     : null;
+
+  // Stale actor name refresh: the actor snapshot at publish time may have been
+  // a fallback ("Someone") because the profile wasn't ready yet. The fresh
+  // gRPC snapshot now has the real name, but the prose fields (resolution,
+  // title, body) still carry the old literal. Replace it so every surface
+  // agrees with the structured `actor.displayName` above.
+  const knownStaleNames =
+    !scrubbed && freshActor?.displayName
+      ? [
+          actorSnapshot?.displayName ?? "",
+          data.actorDisplayName ?? "",
+          data.requesterDisplayName ?? "",
+        ]
+          .map((n) => n.trim())
+          .filter((n) => n.length > 0 && n !== freshActor.displayName)
+      : [];
+  // When every stored name field is empty the producer used a localized
+  // "Someone" fallback — add all locale variants so the replacement catches
+  // whichever was interpolated into the resolution/body/title.
+  if (
+    !scrubbed &&
+    freshActor?.displayName &&
+    knownStaleNames.length === 0 &&
+    !(
+      actorSnapshot?.displayName ||
+      data.actorDisplayName ||
+      data.requesterDisplayName
+    )
+  ) {
+    for (const locale of ["en", "vi", "th"] as const) {
+      const fallback = t("SYS_NAME_SOMEONE", locale);
+      if (fallback !== freshActor.displayName) knownStaleNames.push(fallback);
+    }
+  }
+  const staleActorNames = knownStaleNames;
+  const refreshName = (text: string | undefined): string | undefined => {
+    if (!text || staleActorNames.length === 0) return text;
+    let out = text;
+    for (const stale of staleActorNames)
+      out = out.split(stale).join(freshActor!.displayName);
+    return out;
+  };
+
   const effectivePayload = stripInternalDirectives(
     scrubbed?.payload ?? payloadObj
   );
 
-  const storedBody = scrubbed?.body ?? payloadObj.body ?? "";
+  const storedBody = scrubbed?.body ?? refreshName(payloadObj.body) ?? "";
   const body =
     row.type === LOGIN_DETECTED_TYPE && CLOBBERED_LOGIN_BODIES.has(storedBody)
       ? repairLoginBody(data)
@@ -332,13 +375,15 @@ export async function serializeNotification(
   const rawTitle =
     nonEmpty(
       (effectivePayload as { data?: Record<string, string> }).data?.inboxTitle
-    ) ?? nonEmpty(scrubbed?.title ?? payloadObj.title);
+    ) ?? nonEmpty(scrubbed?.title ?? refreshName(payloadObj.title));
   const title =
     data.suppressTitle === "true" ||
     !rawTitle ||
     (body.length > 0 && body.includes(rawTitle))
       ? null
       : rawTitle;
+
+  const resolution = nonEmpty(refreshName(data.resolution));
 
   return {
     id: row.id,
@@ -352,7 +397,7 @@ export async function serializeNotification(
     version: row.version ?? 1,
     groupKey: row.groupKey ?? null,
     isDeleted: row.isDeleted,
-    ...(nonEmpty(data.resolution) ? { resolution: data.resolution } : {}),
+    ...(resolution ? { resolution } : {}),
     ...(nonEmpty(data.resolutionTone)
       ? { resolutionTone: data.resolutionTone }
       : {}),
