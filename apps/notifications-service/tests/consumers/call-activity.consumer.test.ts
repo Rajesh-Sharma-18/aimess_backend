@@ -59,6 +59,65 @@ describe("handleCallActivity", () => {
     expect(callee.skipPush).toBe(true);
   });
 
+  it("gives each side a navigation target instead of making the client infer one", async () => {
+    await handleCallActivity(payload);
+
+    const calls = pushToUser.mock.calls.map(([input]) => input);
+    const caller = calls.find((c) => c.userId === CALLER);
+    const callee = calls.find((c) => c.userId === CALLEE);
+
+    // The PEER's conversation on each side — the same destination the
+    // missed-call push already deep-links to, and where the call card and the
+    // call-back button live.
+    expect(JSON.parse(caller.data.navigation)).toEqual({
+      type: "conversation",
+      id: CALLEE,
+      roomId: "prv_1",
+    });
+    expect(JSON.parse(callee.data.navigation)).toEqual({
+      type: "conversation",
+      id: CALLER,
+      roomId: "prv_1",
+    });
+  });
+
+  it("emits every data value as a string — the FCM data map takes nothing else", async () => {
+    // `durationSec` and `endedAt` are the ones that arrive as numbers from the
+    // AMQP payload, so they are the ones that would slip through.
+    await handleCallActivity({
+      ...payload,
+      durationSec: 35,
+      endedAt: 1_700_000_000_123,
+    });
+
+    for (const [input] of pushToUser.mock.calls) {
+      for (const [key, value] of Object.entries(input.data)) {
+        expect(typeof value).toBe(`string` as const);
+        expect(key).toBeTruthy();
+      }
+      expect(input.data.durationSec).toBe("35");
+      expect(input.data.endedAt).toBe("1700000000123");
+    }
+  });
+
+  it("is replay-safe: a redelivered event carries the same identity, never a second card", async () => {
+    await handleCallActivity(payload);
+    const first = pushToUser.mock.calls.map(([input]) => input);
+    pushToUser.mockClear();
+    await handleCallActivity(payload);
+    const second = pushToUser.mock.calls.map(([input]) => input);
+
+    // Dedupe is STRUCTURAL, not a guard here: the same groupKey plus
+    // `resurface: "false"` makes the downstream write transition the same row
+    // rather than stack a second one, and keeps a settled row from flipping
+    // back to unread.
+    for (const side of [...first, ...second]) {
+      expect(side.data.groupKey).toBe("call:call-1");
+      expect(side.data.resurface).toBe("false");
+    }
+    expect(second.map((s) => s.userId)).toEqual(first.map((s) => s.userId));
+  });
+
   it("still writes the callee's row when the caller's write fails", async () => {
     pushToUser.mockImplementation(async (input: { userId: string }) => {
       if (input.userId === CALLER) throw new Error("boom");

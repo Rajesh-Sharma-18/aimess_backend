@@ -27,6 +27,35 @@ import { pushToUser } from "../services/push.service.js";
 const CALL_PUSH_QUEUE = "call.push.queue";
 
 /**
+ * Where a call event goes after its retries are exhausted, so it is parked for
+ * inspection/replay instead of destroyed.
+ *
+ * Deliberately NOT wired as an `x-dead-letter-exchange` on `call.push.queue`:
+ * queue arguments are immutable once declared, chat-service asserts that queue
+ * with `{durable:true}` and nothing else, and a mismatched redeclare fails the
+ * channel — which would take the consumer down on deploy. Publishing here
+ * explicitly needs no argument change on either side and is the same amqplib
+ * the rest of this file already uses.
+ */
+const CALL_PUSH_DLQ = "call.push.dlq";
+
+/**
+ * Attempts before a message is parked. The projection is idempotent by
+ * construction (`groupKey = call:<callId>` transitions one row, never stacks
+ * one), so a replay is free and the only cost of another attempt is latency.
+ * One retry was not enough to outlive an ordinary rolling restart of
+ * chat-service, and the message it dropped was somebody's call history.
+ */
+const MAX_DELIVERY_ATTEMPTS = 3;
+
+/** 1-based attempt number for this delivery, carried on the message itself. */
+function attemptOf(message: amqp.ConsumeMessage): number {
+  const raw = message.properties.headers?.["x-delivery-attempt"];
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+/**
  * Inbox type for call HISTORY. ONE type, not one per outcome — the outcome is
  * the canonical `CallTimelineStatus` carried in `data.callStatus`, so there is
  * no second call-state enum to keep in sync. The `call.` prefix is what routes
@@ -481,6 +510,17 @@ export async function handleCallActivity(
           endedAt: String(data.endedAt ?? ""),
           // ONE card per call, transitioned in place — never a card per state.
           groupKey: `call:${data.callId}`,
+          // Where a tap on this row goes. Every other navigable notification
+          // type carries this; call rows did not, so a client had to special-
+          // case them and infer the destination from `peerId`/`roomId`.
+          // `serializeNotification` already parses `data.navigation` into a
+          // top-level `navigation` field, so this is purely additive — and it
+          // is the same destination the missed-call push already deep-links to.
+          navigation: JSON.stringify({
+            type: "conversation",
+            id: side.peerId,
+            roomId: data.privateRoomId ?? "",
+          }),
           // A settled call must not jump back to unread when a late duplicate
           // transition rewrites it.
           resurface: "false",
@@ -521,6 +561,9 @@ export async function startCallConsumer(): Promise<void> {
   // chat-service publishes to a plain durable queue (NOT an exchange). Args MUST
   // match the publisher (apps/chat-service/src/events/publish-call-incoming.ts).
   await channel.assertQueue(CALL_PUSH_QUEUE, { durable: true });
+  // Plain durable queue, no arguments — nothing here changes the args of
+  // CALL_PUSH_QUEUE, so the redeclare stays compatible with chat-service's.
+  await channel.assertQueue(CALL_PUSH_DLQ, { durable: true });
   await channel.prefetch(20);
 
   logger.info("Call push consumer started");
@@ -549,19 +592,49 @@ export async function startCallConsumer(): Promise<void> {
         }
         channel.ack(message);
       } catch (error) {
-        // Retry ONCE, then drop. Dropping on the first failure treated every
-        // error as deterministic, so one transient blip (chat-service
-        // restarting, a gRPC deadline) permanently erased that call from both
-        // participants' history with no way to notice. `redelivered` bounds the
-        // retry to a single extra attempt, so a genuinely poisonous message
-        // still cannot spin the queue. Replay is safe: every projection is
-        // keyed on `groupKey = call:<callId>` and transitions one row.
-        const retry = !message.fields.redelivered;
+        // Bounded retry, then PARK — never destroy. Dropping on the first
+        // failure treated every error as deterministic, so one transient blip
+        // (chat-service restarting, a gRPC deadline) permanently erased that
+        // call from both participants' history. One retry was better but still
+        // did not outlive an ordinary rolling restart.
+        //
+        // Replay is safe by construction: every projection is keyed on
+        // `groupKey = call:<callId>` and transitions the same row, so a
+        // redelivery can only ever rewrite what is already there.
+        //
+        // The attempt count rides on the message because `fields.redelivered`
+        // is a boolean and cannot count past one. Requeue-with-header is a
+        // republish, so the message goes to the BACK of the queue rather than
+        // spinning at the head — a poisonous message cannot starve the others.
+        const attempt = attemptOf(message);
+        if (attempt < MAX_DELIVERY_ATTEMPTS) {
+          logger.error(
+            `Call push consumer failed (attempt ${attempt}/${MAX_DELIVERY_ATTEMPTS}), retrying`,
+            error
+          );
+          channel.sendToQueue(CALL_PUSH_QUEUE, message.content, {
+            persistent: true,
+            headers: {
+              ...(message.properties.headers ?? {}),
+              "x-delivery-attempt": attempt + 1,
+            },
+          });
+          channel.ack(message);
+          return;
+        }
         logger.error(
-          `Call push consumer failed to process message (retry=${String(retry)})`,
+          `Call push consumer exhausted ${MAX_DELIVERY_ATTEMPTS} attempts — parking in ${CALL_PUSH_DLQ}`,
           error
         );
-        channel.nack(message, false, retry);
+        channel.sendToQueue(CALL_PUSH_DLQ, message.content, {
+          persistent: true,
+          headers: {
+            ...(message.properties.headers ?? {}),
+            "x-delivery-attempt": attempt,
+            "x-death-reason": String(error).slice(0, 500),
+          },
+        });
+        channel.ack(message);
       }
     })();
   });
