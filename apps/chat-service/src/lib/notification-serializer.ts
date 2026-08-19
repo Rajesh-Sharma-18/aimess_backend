@@ -75,6 +75,28 @@ export interface NotificationDTO {
   friendship?: NotificationFriendshipDTO;
 }
 
+/**
+ * Producer→persistence directives that must not reach a client.
+ *
+ * `markRead` tells `createNotificationImpl` to insert the row already read;
+ * `excludeSessionId` tells the relay which device to skip. Both are consumed
+ * server-side at write time and are meaningless — and misleading — afterwards:
+ * `markRead: "true"` on a row a user has since marked UNREAD reads like a
+ * contradiction of `isRead`, which is the actual answer. The `/notify` relay
+ * already strips them from its copy of `data`; this makes REST agree.
+ */
+const INTERNAL_DATA_DIRECTIVES = ["markRead", "excludeSessionId"] as const;
+
+function stripInternalDirectives<T extends { data?: Record<string, string> }>(
+  payload: T
+): T {
+  const data = payload.data;
+  if (!data || !INTERNAL_DATA_DIRECTIVES.some((k) => k in data)) return payload;
+  const cleaned = { ...data };
+  for (const key of INTERNAL_DATA_DIRECTIVES) delete cleaned[key];
+  return { ...payload, data: cleaned };
+}
+
 function parseJson(raw: unknown): unknown {
   if (typeof raw !== "string" || !raw) return undefined;
   try {
@@ -298,7 +320,9 @@ export async function serializeNotification(
         data.requesterDisplayName ?? "",
       ])
     : null;
-  const effectivePayload = scrubbed?.payload ?? payloadObj;
+  const effectivePayload = stripInternalDirectives(
+    scrubbed?.payload ?? payloadObj
+  );
 
   const storedBody = scrubbed?.body ?? payloadObj.body ?? "";
   const body =

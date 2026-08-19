@@ -25,7 +25,7 @@ import { getCommunityReconcileClient } from "../grpc/community.client.js";
  * services that own the media (user-service, community-service) is the
  * resolve-on-read pattern the rest of the app already follows.
  */
-async function resolveAvatarRefresh(
+export async function resolveAvatarRefresh(
   rows: Notification[]
 ): Promise<AvatarRefreshMaps> {
   const actorIds = new Set<string>();

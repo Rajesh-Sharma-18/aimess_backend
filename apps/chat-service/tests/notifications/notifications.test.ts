@@ -285,6 +285,103 @@ describe("DELETE /api/chat/notifications/:id", () => {
   });
 });
 
+describe("GET /api/chat/notifications — the cursor contract", () => {
+  const callRow = (id: string, createdAt: number) => ({
+    id,
+    userId: TEST_USER_ID,
+    // No actorId: the read-time avatar refresh reaches out over gRPC for one,
+    // which is not what these two tests are about.
+    actorId: "",
+    type: "call.activity",
+    entity: {},
+    isRead: false,
+    isDeleted: false,
+    version: 1,
+    groupKey: `call:${id}`,
+    createdAt: new Date(createdAt),
+    updatedAt: new Date(createdAt),
+    payload: {
+      title: "Peer",
+      body: "Missed voice call",
+      data: {
+        type: "call.activity",
+        callId: id,
+        callStatus: "MISSED",
+        callDirection: "INCOMING",
+        durationSec: "0",
+        // Write-time directives — see below.
+        markRead: "true",
+        excludeSessionId: "sess-1",
+      },
+    },
+  });
+
+  it("hands back an ISO cursor that pages forward when echoed verbatim", async () => {
+    // The row timestamps in the same response are epoch ms, so a client that
+    // rebuilds the cursor from `createdAt` sends a number the repository parses
+    // as an Invalid Date. `nextCursor` is deliberately a different format and
+    // must be round-tripped as-is.
+    mocks.notificationRepo.findByUserId.mockResolvedValue([
+      callRow("c1", 3000),
+      callRow("c2", 2000),
+    ]);
+    mocks.notificationRepo.countByUserId.mockResolvedValue(5);
+
+    const page1 = await request(app)
+      .get(`${BASE}?type=CALLS&limit=2`)
+      .set(bearer(makeAccessToken()));
+
+    expect(page1.status).toBe(200);
+    const cursor = page1.body.data.pagination.nextCursor;
+    expect(typeof cursor).toBe("string");
+    expect(cursor).toBe(new Date(2000).toISOString());
+    expect(page1.body.data.data[0].createdAt).toBe(3000);
+
+    mocks.notificationRepo.findByUserId.mockClear();
+    mocks.notificationRepo.findByUserId.mockResolvedValue([
+      callRow("c3", 1000),
+    ]);
+
+    const page2 = await request(app)
+      .get(`${BASE}?type=CALLS&limit=2&cursor=${encodeURIComponent(cursor)}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(page2.status).toBe(200);
+    // The cursor reached the repository unchanged — this is what stops the list
+    // serving page 1 forever.
+    expect(mocks.notificationRepo.findByUserId).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      expect.objectContaining({ cursor })
+    );
+    expect(page2.body.data.data[0].id).not.toBe(page1.body.data.data[0].id);
+  });
+
+  it("never serves the write-time directives back to a client", async () => {
+    // `markRead` tells the writer to insert the row already read and
+    // `excludeSessionId` tells the relay which device to skip. Both are
+    // meaningless afterwards, and `markRead: "true"` sitting next to
+    // `isRead: false` on a row the user has since marked unread reads like a
+    // contradiction of the field that actually answers the question.
+    mocks.notificationRepo.findByUserId.mockResolvedValue([
+      callRow("c1", 3000),
+    ]);
+    mocks.notificationRepo.countByUserId.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get(`${BASE}?type=CALLS`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const data = res.body.data.data[0].payload.data;
+    expect(data.markRead).toBeUndefined();
+    expect(data.excludeSessionId).toBeUndefined();
+    // …while everything a client actually needs survives untouched.
+    expect(data.callStatus).toBe("MISSED");
+    expect(data.callDirection).toBe("INCOMING");
+    expect(data.durationSec).toBe("0");
+  });
+});
+
 describe("GET /api/chat/notifications/unread-count", () => {
   it("POSITIVE: returns the unread count for the caller", async () => {
     mocks.notificationRepo.getUnreadCount.mockResolvedValue(7);

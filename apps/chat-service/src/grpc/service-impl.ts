@@ -77,6 +77,7 @@ import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
+import { resolveAvatarRefresh } from "../services/notification.service.js";
 import {
   resolveGroupKey,
   resolveTransition,
@@ -4353,49 +4354,42 @@ export function createNotificationImpl(
             req.sessionId || null
           );
 
+          // ONE serializer for the list, whichever transport asked for it.
+          // This used to hand-roll its own row, and the two drifted: the socket
+          // shape had no `category`, no `actor` block and therefore no
+          // read-time avatar refresh (so it served presigned URLs that had
+          // already expired), no `isDeleted`, and `data` flat instead of under
+          // `payload`. That is two parsers on every client for one list.
+          //
+          // `notificationId`, `userId` and the flat `data` map are kept
+          // alongside the canonical fields: renaming them would break every
+          // client already reading this path, and emitting both costs nothing.
+          const refresh = await resolveAvatarRefresh(rows);
           const notifications = await Promise.all(
             rows.map(async (n) => {
-              const payloadObj = (n.payload ?? {}) as {
-                title?: string;
-                body?: string;
-                data?: Record<string, string>;
-              };
-              const rawData = payloadObj.data ?? {};
-              const entity = (n.entity ?? {}) as { id?: string };
-
-              let navParsed: unknown;
-              let actorParsed: unknown;
-              try {
-                if (rawData.navigation)
-                  navParsed = JSON.parse(rawData.navigation);
-              } catch {
-                /* skip */
-              }
-              try {
-                if (rawData.actorSnapshot)
-                  actorParsed = JSON.parse(rawData.actorSnapshot);
-              } catch {
-                /* skip */
-              }
-
+              const dto = await serializeNotification(
+                n,
+                req.userId as string,
+                refresh
+              );
+              const rawData =
+                ((n.payload ?? {}) as { data?: Record<string, string> }).data ??
+                {};
               const row: Record<string, unknown> = {
-                notificationId: n.id,
-                userId: n.userId,
-                type: n.type,
-                title: payloadObj.title ?? "",
-                body: payloadObj.body ?? "",
-                referenceId: entity.id ?? "",
-                isRead: n.isRead,
+                ...dto,
+                // Dates over gRPC go out as epoch ms, matching the `/notify`
+                // live events rather than the REST envelope's own conversion.
                 createdAt: n.createdAt.getTime(),
                 updatedAt: n.updatedAt.getTime(),
-                version: n.version ?? 1,
-                groupKey: n.groupKey ?? "",
-                // Include the full data map so clients can restore notification
-                // state (e.g. actionTaken="TERMINATED") on page refresh.
-                data: rawData,
+                // Legacy keys — kept for existing readers of this path.
+                notificationId: n.id,
+                userId: n.userId,
+                referenceId: dto.referenceId ?? "",
+                groupKey: dto.groupKey ?? "",
+                data:
+                  (dto.payload as { data?: Record<string, string> })?.data ??
+                  {},
               };
-              if (navParsed !== undefined) row.navigation = navParsed;
-              if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
 
               const friendship = await resolveNotificationFriendship(
                 req.userId as string,
