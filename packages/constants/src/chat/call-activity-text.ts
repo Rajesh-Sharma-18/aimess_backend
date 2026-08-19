@@ -10,13 +10,35 @@ import { formatCallDuration } from "./group-system-message-text.js";
  */
 export type CallActivityDirection = "INCOMING" | "OUTGOING";
 
+/**
+ * How long a ring must have lasted before a caller-side CANCEL counts, for the
+ * CALLEE, as a call they missed.
+ *
+ * A cancel and a timeout are indistinguishable from the callee's seat — both
+ * are "it rang and nobody picked up" — so a long ring the caller gave up on IS
+ * a missed call and must badge. A cancel inside this window is the caller
+ * catching a misdial before the callee could plausibly react, and badging that
+ * is noise. The threshold is the ONLY thing separating the two, which is why it
+ * lives here next to the readers of it rather than in either service.
+ */
+export const CALL_CANCEL_GRACE_SEC = 5;
+
+/**
+ * True when a CANCELLED ring lasted long enough that the callee genuinely
+ * missed it. `ringDurationSec` is `endedAt - initiatedAt` from the call record;
+ * an absent value (legacy event, group row) is treated as a real missed call —
+ * the pre-existing behaviour, so an old payload never silently loses its badge.
+ */
+export function cancelCountsAsMissed(ringDurationSec?: number | null): boolean {
+  if (ringDurationSec === undefined || ringDurationSec === null) return true;
+  return Number(ringDurationSec) >= CALL_CANCEL_GRACE_SEC;
+}
+
 type CallCopyBase =
   | "NOTIF_CALL_INCOMING"
   | "NOTIF_CALL_OUTGOING"
+  | "NOTIF_CALL_NO_ANSWER"
   | "NOTIF_CALL_MISSED"
-  | "NOTIF_CALL_DECLINED"
-  | "NOTIF_CALL_CANCELLED"
-  | "NOTIF_CALL_FAILED"
   | "NOTIF_CALL_ENDED"
   | "NOTIF_CALL_COMPLETED";
 
@@ -29,20 +51,19 @@ type CallCopyBase =
  * one call reads consistently in the DM, in the conversation list and in the
  * Notification Center.
  *
- * Direction only changes the wording where the two ends genuinely experienced
- * different things:
- *   - a call the callee never picked up is MISSED to them and OUTGOING to the
- *     caller (nothing was "missed" by the person who placed it),
- *   - a caller who hangs up mid-ring CANCELLED it, while for the callee that
- *     ring is indistinguishable from a missed call — so it reads as missed.
- * DECLINED / FAILED / ENDED describe the call, not a side, and read the same
- * for both.
+ * Every call that never connected collapses onto ONE viewer-relative pair: the
+ * caller got no answer, the callee missed it. AiMess deliberately has no
+ * user-facing "cancelled" or "declined" call — those are lifecycle states, and
+ * surfacing them told each side the other's business. The canonical status
+ * survives untouched on the call row and in `data.callStatus`.
  */
 export function buildCallActivityText(params: {
   callType?: string | null;
   status?: string | null;
   direction: CallActivityDirection;
   durationSec?: number | null;
+  /** Ring length in seconds (`endedAt - initiatedAt`) — CANCELLED only. */
+  ringDurationSec?: number | null;
   locale?: SupportedLocale;
 }): string {
   const locale = params.locale ?? STORED_TEXT_LOCALE;
@@ -64,20 +85,20 @@ export function buildCallActivityText(params: {
         key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_INCOMING"),
         locale
       );
+    // EVERY call that never connected, whoever ended it. "Cancelled" and
+    // "declined" are LIFECYCLE facts, not user-facing outcomes: the person who
+    // PLACED the call got no answer, and the person who was RUNG missed it.
+    // Which side hung up first is not what either of them experienced, so it
+    // must never reach the copy. The canonical status is still on the row
+    // (`data.callStatus`) for anything that genuinely needs it.
     case "MISSED":
-      return t(
-        key(outgoing ? "NOTIF_CALL_OUTGOING" : "NOTIF_CALL_MISSED"),
-        locale
-      );
     case "CANCELLED":
+    case "DECLINED":
+    case "FAILED":
       return t(
-        key(outgoing ? "NOTIF_CALL_CANCELLED" : "NOTIF_CALL_MISSED"),
+        key(outgoing ? "NOTIF_CALL_NO_ANSWER" : "NOTIF_CALL_MISSED"),
         locale
       );
-    case "DECLINED":
-      return t(key("NOTIF_CALL_DECLINED"), locale);
-    case "FAILED":
-      return t(key("NOTIF_CALL_FAILED"), locale);
     default: {
       const seconds = Math.max(0, Math.floor(Number(params.durationSec ?? 0)));
       // No duration recorded → say "Voice call", never a fabricated 00:00.
@@ -93,11 +114,26 @@ export function buildCallActivityText(params: {
 /** True when this outcome is the one the reader should be BADGED about. */
 export function isUnreadCallActivity(
   status: string,
-  direction: CallActivityDirection
+  direction: CallActivityDirection,
+  ringDurationSec?: number | null
 ): boolean {
   if (direction === "OUTGOING") return false;
   const s = String(status ?? "").toUpperCase();
-  // A ring the callee never answered — whether it timed out (MISSED) or the
-  // caller gave up first (CANCELLED) — is the missed call they need to see.
-  return s === "MISSED" || s === "CANCELLED";
+  // A ring the callee never answered is the missed call they need to see —
+  // whether it timed out (MISSED) or the caller gave up on a ring that had
+  // already run long enough to be missable (CANCELLED past the grace window).
+  // A caller who cancels inside that window leaves a read history row only.
+  //
+  // DECLINED badges as well: the decline is taken on ONE device, and the
+  // reader's other devices still need the row surfaced rather than arriving
+  // pre-read. The call was never answered on those, which is what the badge
+  // is about.
+  // FAILED sits here rather than in the default branch so the two halves of
+  // this module agree. `buildCallActivityText` already renders FAILED with the
+  // missed-call copy — telling the callee they missed a call while leaving the
+  // row unbadged is a contradiction that would surface the first time anything
+  // wrote it. Nothing writes it today (there is deliberately no producer), so
+  // this changes no current behaviour; it removes the trap.
+  if (s === "MISSED" || s === "DECLINED" || s === "FAILED") return true;
+  return s === "CANCELLED" && cancelCountsAsMissed(ringDurationSec);
 }

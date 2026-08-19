@@ -25,7 +25,7 @@ import { getCommunityReconcileClient } from "../grpc/community.client.js";
  * services that own the media (user-service, community-service) is the
  * resolve-on-read pattern the rest of the app already follows.
  */
-async function resolveAvatarRefresh(
+export async function resolveAvatarRefresh(
   rows: Notification[]
 ): Promise<AvatarRefreshMaps> {
   const actorIds = new Set<string>();
@@ -52,23 +52,14 @@ async function resolveAvatarRefresh(
 
   return {
     actorById: new Map(
-      // `|| a.isDeleted` is not an optimization — it is the whole point for a
-      // deleted actor. Their snapshot comes back with avatarUrl "", so the
-      // avatar-only filter dropped them from this map, and the serializer then
-      // fell back to `payload.data.actorSnapshot` — the identity frozen into
-      // the row at publish time, i.e. exactly the old name and avatar this is
-      // meant to hide. Keeping the entry lets the anonymized snapshot win, and
-      // its empty avatarUrl collapses to `avatar: null` downstream.
-      actors
-        .filter((a) => a.avatarUrl || a.isDeleted)
-        .map((a) => [
-          a.userId,
-          {
-            displayName: a.displayName,
-            avatarUrl: a.avatarUrl,
-            isDeleted: a.isDeleted === true,
-          },
-        ])
+      actors.map((a) => [
+        a.userId,
+        {
+          displayName: a.displayName,
+          avatarUrl: a.avatarUrl,
+          isDeleted: a.isDeleted === true,
+        },
+      ])
     ),
     communityById: new Map(
       communities
@@ -110,6 +101,22 @@ export class NotificationService {
     const refresh = await resolveAvatarRefresh(rows);
     return Promise.all(
       rows.map((n) => serializeNotification(n, userId, refresh))
+    );
+  }
+
+  /**
+   * Total rows in one tab (read + unread). Drives `pagination.totalData` —
+   * the unread per-tab counts drive the badges and are NOT interchangeable.
+   */
+  async getTotalCount(
+    userId: string,
+    category: NotificationCategory,
+    viewerSessionId?: string | null
+  ): Promise<number> {
+    return this.notificationRepo.countByUserId(
+      userId,
+      category,
+      viewerSessionId
     );
   }
 
@@ -156,6 +163,7 @@ export class NotificationService {
     friends: number;
     communities: number;
     mentions: number;
+    calls: number;
     system: number;
   }> {
     return this.notificationRepo.countByCategories(userId, viewerSessionId);

@@ -342,7 +342,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
   it("returns 400 when the account is no longer active", async () => {
     authRepo.findPasswordHashByUserId.mockResolvedValue({
       passwordHash: null,
-      status: "BANNED",
+      status: "SUSPENDED",
       deletedAt: null,
       linkedAccounts: [{ id: "link-1" }],
     });
@@ -352,6 +352,25 @@ describe("POST /api/auth/forgot-password/reset", () => {
       .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
 
     expect(res.status).toBe(400);
+  });
+
+  // Reset COMPLETION is the one password-reset step where a valid one-time
+  // token already proves ownership, so naming the ban leaks nothing an attacker
+  // could enumerate. Requesting the OTP deliberately stays ambiguous.
+  it("returns 403 ACCOUNT_BANNED when the account is permanently banned", async () => {
+    authRepo.findPasswordHashByUserId.mockResolvedValue({
+      passwordHash: null,
+      status: "BANNED",
+      deletedAt: null,
+      linkedAccounts: [{ id: "link-1" }],
+    });
+
+    const res = await request(app)
+      .post("/api/auth/forgot-password/reset")
+      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("ACCOUNT_BANNED");
   });
 
   it.each([

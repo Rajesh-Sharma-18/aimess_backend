@@ -73,8 +73,8 @@ info:
       and `community:catchup` boundaries are **exclusive** (the cursor item is not
       re-returned). REST timestamp cursors are epoch-ms; socket `messages:fetch`
       cursors are ISO-8601 strings.
-    - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`,
-      `call:ice`) carry client-side throttle expectations — see SOCKET_EVENTS.md
+    - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`)
+      carry client-side throttle expectations — see SOCKET_EVENTS.md
       "Rate limiting & throttling".
     - **Media:** attachments reference an `objectKey` / `url`; file bytes never
       cross the socket — see `docs/MEDIA_UPLOAD.md`.
@@ -174,7 +174,7 @@ channels:
       callAnswer: { $ref: "#/components/messages/CallAnswer" }
       callDecline: { $ref: "#/components/messages/CallDecline" }
       callEnd: { $ref: "#/components/messages/CallEnd" }
-      callIceSend: { $ref: "#/components/messages/CallIceSend" }
+      callRejoin: { $ref: "#/components/messages/CallRejoin" }
       # server -> client
       messageNew: { $ref: "#/components/messages/MessageNew" }
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
@@ -202,7 +202,11 @@ channels:
       callAnswered: { $ref: "#/components/messages/CallAnswered" }
       callDeclined: { $ref: "#/components/messages/CallDeclined" }
       callEnded: { $ref: "#/components/messages/CallEnded" }
-      callIceRecv: { $ref: "#/components/messages/CallIceRecv" }
+      callCancelled: { $ref: "#/components/messages/CallCancelled" }
+      callMissed: { $ref: "#/components/messages/CallMissed" }
+      callOutgoingMirror: { $ref: "#/components/messages/CallOutgoingMirror" }
+      callHandled: { $ref: "#/components/messages/CallHandled" }
+      callMemberDeclined: { $ref: "#/components/messages/CallMemberDeclined" }
       # friend management (client -> server)
       friendRequest: { $ref: "#/components/messages/FriendRequest" }
       friendAccept: { $ref: "#/components/messages/FriendAccept" }
@@ -222,6 +226,11 @@ channels:
       friendBlocked: { $ref: "#/components/messages/FriendBlocked" }
       friendUnblocked: { $ref: "#/components/messages/FriendUnblocked" }
       sessionExpired: { $ref: "#/components/messages/SessionExpired" }
+      # group lifecycle (server -> client)
+      groupClosed: { $ref: "#/components/messages/GroupClosed" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
   # ----------------------------------------------------------- /community
   community:
@@ -237,7 +246,7 @@ channels:
       communityJoin: { $ref: "#/components/messages/CommunityJoin" }
       communityLeave: { $ref: "#/components/messages/CommunityLeave" }
       communityMessageSend:
-        { $ref: "#/components/messages/CommunityMessageSend" }
+        { $ref: "#/compone  nts/messages/CommunityMessageSend" }
       communityMessagesFetch:
         { $ref: "#/components/messages/CommunityMessagesFetch" }
       communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }
@@ -281,6 +290,9 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
       # owner lifecycle (server -> client)
       communityClosed: { $ref: "#/components/messages/CommunityClosed" }
       communityReopened: { $ref: "#/components/messages/CommunityReopened" }
@@ -377,11 +389,15 @@ channels:
       notificationAllRead: { $ref: "#/components/messages/NotificationAllRead" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
+      notificationUpdated: { $ref: "#/components/messages/NotificationUpdated" }
       notificationDeleted: { $ref: "#/components/messages/NotificationDeleted" }
       mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
       communityJoinRequestUpdate:
         { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
       communityJoined: { $ref: "#/components/messages/CommunityJoined" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
   # --------------------------------------------------------------- /stream
   stream:
@@ -451,6 +467,9 @@ channels:
       streamMemberUnmuted: { $ref: "#/components/messages/StreamMemberUnmuted" }
       streamReactNew: { $ref: "#/components/messages/StreamReactNew" }
       streamError: { $ref: "#/components/messages/StreamError" }
+      # account lifecycle (server -> client) — emitted on ALL FOUR namespaces
+      userBanned: { $ref: "#/components/messages/UserBanned" }
+      userUnbanned: { $ref: "#/components/messages/UserUnbanned" }
 
 operations:
   # =================================================== /chat client -> server
@@ -741,11 +760,6 @@ operations:
     reply:
       channel: { $ref: "#/channels/chat" }
       messages: [{ $ref: "#/components/messages/Ack" }]
-  chat.callIce:
-    action: send
-    channel: { $ref: "#/channels/chat" }
-    summary: "call:ice — relay ICE candidate (Redis-only, fire-and-forget)"
-    messages: [{ $ref: "#/channels/chat/messages/callIceSend" }]
 
   # =================================================== /chat server -> client
   chat.onMessageNew:
@@ -881,6 +895,15 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "presence:status — a watched peer's online status changed"
     messages: [{ $ref: "#/channels/chat/messages/presenceStatus" }]
+  chat.callRejoin:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:rejoin — re-enter the call room after a transport reconnect"
+    messages: [{ $ref: "#/channels/chat/messages/callRejoin" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+
   chat.onCallIncoming:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -901,11 +924,31 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "call:ended"
     messages: [{ $ref: "#/channels/chat/messages/callEnded" }]
-  chat.onCallIce:
+  chat.onCallCancelled:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "call:ice — peer ICE candidate"
-    messages: [{ $ref: "#/channels/chat/messages/callIceRecv" }]
+    summary: "call:cancelled — the caller hung up before it was answered, or the server tore the ring down"
+    messages: [{ $ref: "#/channels/chat/messages/callCancelled" }]
+  chat.onCallMissed:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:missed — the ring elapsed without being answered"
+    messages: [{ $ref: "#/channels/chat/messages/callMissed" }]
+  chat.onCallOutgoingMirror:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:outgoing_mirror — one of YOUR other devices placed this call"
+    messages: [{ $ref: "#/channels/chat/messages/callOutgoingMirror" }]
+  chat.onCallHandled:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:handled — another of your devices answered/declined this ring. NON-TERMINAL"
+    messages: [{ $ref: "#/channels/chat/messages/callHandled" }]
+  chat.onCallMemberDeclined:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:member_declined — GROUP calls only: one member declined, the ring continues"
+    messages: [{ $ref: "#/channels/chat/messages/callMemberDeclined" }]
 
   # =============================================== /chat friend management
   chat.friendRequest:
@@ -1378,15 +1421,59 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  chat.onGroupClosed:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "group:closed — the group's owner was permanently banned, so the group was closed"
+    description: |
+      Delivered to `conv:<roomId>` AND to every ACTIVE member's `user:<id>` room.
+
+      NOT a disband: nobody is removed, every membership row stays ACTIVE, the
+      room stays in the inbox and stays fully readable. Only writes are refused,
+      with 403 CHAT_GROUP_CLOSED_ADMIN_BANNED. Key the read-only composer off
+      the inbox row's `isClosed`, never off membership status. There is no reopen.
+    messages: [{ $ref: "#/channels/chat/messages/groupClosed" }]
+  account.onBanned:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "user:banned — this account was permanently banned by a Super Admin"
+    description: |
+      Emitted on ALL FOUR namespaces (/chat, /community, /notify, /stream) to
+      the banned user's own sockets, immediately before every one of them is
+      force-disconnected. Declared once here to avoid four identical entries.
+
+      On receipt: stop in-flight work (including livestream publishing), clear
+      tokens and persisted auth state, close sockets with automatic reconnection
+      DISABLED, clear local caches and any offline queue, then route to login
+      showing the ACCOUNT_BANNED message.
+
+      Enforcement is server-side; this event is only so the client can explain
+      itself. A client that misses it gets 403 ACCOUNT_BANNED on its next call.
+    messages: [{ $ref: "#/channels/chat/messages/userBanned" }]
+  account.onUnbanned:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "user:unbanned — a Super Admin lifted a permanent ban"
+    description: |
+      Emitted on all four namespaces. Restores the ability to log in and nothing
+      else: revoked community/group memberships are NOT recreated, and
+      communities or groups closed because this user owned them stay closed.
+    messages: [{ $ref: "#/channels/chat/messages/userUnbanned" }]
   community.onClosed:
     action: receive
     channel: { $ref: "#/channels/community" }
-    summary: "community:closed — the owner closed the community (status → CLOSED)"
+    summary: "community:closed — the community was closed (owner, or a Super Admin ban of the owner)"
     description: |
-      Broadcast to the `community:<id>` room AND to every (now ex-)member's
-      `user:<id>` room when the community ADMIN/owner closes the community. All
-      members have been auto-removed and the community is read-only. Clients
-      should disable all community actions immediately — no refresh, no polling.
+      Broadcast to the `community:<id>` room AND to every member's `user:<id>`
+      room when the community is closed. The community becomes read-only;
+      clients disable all community actions immediately — no refresh, no polling.
+
+      `status` says which kind of close it was: CLOSED (the owner closed it,
+      reopenable) or CLOSED_BY_SYSTEM_BAN (its owner was permanently banned by a
+      Super Admin; `reason` is "ADMIN_BANNED", and it is NOT reopenable).
+
+      Members are NOT removed in either case. The community MUST stay in every
+      member's list — set the row's state, never delete the row.
     messages: [{ $ref: "#/channels/community/messages/communityClosed" }]
   community.onReopened:
     action: receive
@@ -1807,6 +1894,17 @@ operations:
     channel: { $ref: "#/channels/notify" }
     summary: "notification:new — in-app notification (+ any event forwarded verbatim from notify:<userId>)"
     messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
+  notify.onUpdated:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:updated — an existing row changed in place"
+    description: |
+      Emitted instead of `notification:new` when a row with the same `groupKey`
+      already exists — a call transitioning to its final outcome, a friend
+      request being accepted, an action being recorded. The row keeps its `id`
+      and its `createdAt` (so its position in the list does not move) and its
+      `version` increments. Apply only when `version >= the version held`.
+    messages: [{ $ref: "#/channels/notify/messages/notificationUpdated" }]
   notify.onDeleted:
     action: receive
     channel: { $ref: "#/channels/notify" }
@@ -2473,18 +2571,6 @@ components:
         - name: Hang up
           payload:
             callId: "call_6843e1a2b5c3d4e5"
-    CallIceSend:
-      name: "call:ice"
-      title: "call:ice (send)"
-      payload: { $ref: "#/components/schemas/CallIceSendPayload" }
-      examples:
-        - name: Relay an ICE candidate
-          payload:
-            callId: "call_6843e1a2b5c3d4e5"
-            candidate:
-              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
-              sdpMid: "0"
-              sdpMLineIndex: 0
 
     # -------- /chat server -> client --------
     MessageNew:
@@ -3063,19 +3149,86 @@ components:
             callId: "call_6843e1a2b5c3d4e5"
             endedBy: "user_abc123"
             durationSec: 0
-    CallIceRecv:
-      name: "call:ice"
-      title: "call:ice (receive)"
-      payload: { $ref: "#/components/schemas/CallIceRecvPayload" }
+    CallCancelled:
+      name: "call:cancelled"
+      title: "call:cancelled"
+      summary: |
+        Terminal. The ring is over and was never answered — the caller hung up
+        pre-answer, or the server tore it down (LiveKit room closed, unfriend,
+        the caller starting a new call). A ring that outlived
+        `CALL_CANCEL_GRACE_SEC` resolves as MISSED instead and arrives as
+        `call:missed`.
+      payload: { $ref: "#/components/schemas/CallRef" }
       examples:
-        - name: ICE candidate from peer
+        - name: Caller hung up before it was answered
           payload:
             callId: "call_6843e1a2b5c3d4e5"
-            from: "user_abc123"
-            candidate:
-              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
-              sdpMid: "0"
-              sdpMLineIndex: 0
+    CallMissed:
+      name: "call:missed"
+      title: "call:missed"
+      summary: |
+        Terminal. Nobody answered: the server's ring sweep flipped it, the
+        caller's client reported `reason: "NO_ANSWER"`, or the caller hung up on
+        a ring that had already run long enough to be a call the callee missed.
+        The callee also receives a user-visible missed-call push.
+      payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Ring elapsed
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+    CallOutgoingMirror:
+      name: "call:outgoing_mirror"
+      title: "call:outgoing_mirror"
+      summary: |
+        One of the RECIPIENT'S OWN other devices placed this call. Delivered on
+        `self:<callerId>` so sibling devices can show an outgoing banner; the
+        gateway also joins those sockets to the call room.
+      payload: { $ref: "#/components/schemas/CallOutgoingMirrorPayload" }
+      examples:
+        - name: Placed from another device
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            calleeId: "user_def456"
+            calleeName: "Krish"
+            calleeAvatarUrl: "https://cdn.example.com/a.jpg"
+            callType: "AUDIO"
+    CallHandled:
+      name: "call:handled"
+      title: "call:handled"
+      summary: |
+        **NON-TERMINAL.** Another of the recipient's devices answered or
+        declined this ring. A device that is itself mid-call on this `callId`
+        must IGNORE it; a device still ringing dismisses. Never delivered to the
+        device that acted.
+      payload: { $ref: "#/components/schemas/CallHandledPayload" }
+      examples:
+        - name: Answered on another device
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            reason: "answered_elsewhere"
+    CallMemberDeclined:
+      name: "call:member_declined"
+      title: "call:member_declined"
+      summary: "GROUP calls only. One rung member declined; the call keeps ringing for the rest of the roster."
+      payload: { $ref: "#/components/schemas/CallMemberDeclinedPayload" }
+      examples:
+        - name: A member declined
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            userId: "user_def456"
+    CallRejoin:
+      name: "call:rejoin"
+      title: "call:rejoin"
+      summary: |
+        Re-enter `call:<callId>` after a transport reconnect mid-call.
+        Authorized against a server-side membership marker written when this
+        user initiated or answered THAT call, so no new call is minted and a
+        peer cannot join a call they were never in. Ack data is `{ callId }`.
+      payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Rejoin after reconnect
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
 
     # -------- /chat friend management + session (client -> server) --------
     FriendRequest:
@@ -4570,7 +4723,7 @@ components:
     CommunityClosed:
       name: "community:closed"
       title: "community:closed"
-      summary: "Broadcast to community:<id> AND each ex-member's user:<id> when the owner closes the community (status → CLOSED). All members are auto-removed; clients disable all community actions immediately."
+      summary: "Broadcast to community:<id> AND each member's user:<id> when the community is closed — by its owner (status CLOSED) or by a Super Admin ban of its owner (status CLOSED_BY_SYSTEM_BAN, reason ADMIN_BANNED). Members are NOT removed; the community stays in their list, read-only."
       payload: { $ref: "#/components/schemas/CommunityClosedPayload" }
       examples:
         - name: Owner closed the community with a reason
@@ -4584,6 +4737,39 @@ components:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             status: "CLOSED"
             closedAt: 1749983445000
+    GroupClosed:
+      name: "group:closed"
+      title: "group:closed"
+      summary: "Emitted to conv:<roomId> AND each member's user:<id> when a group's owner is permanently system-banned. The room stays visible and readable; only writes are refused."
+      payload: { $ref: "#/components/schemas/GroupClosedPayload" }
+      examples:
+        - name: Group closed because its owner was banned
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedReasonCode: "ADMIN_BANNED"
+            closedAt: 1749983445000
+    UserBanned:
+      name: "user:banned"
+      title: "user:banned"
+      summary: "Emitted on all four namespaces to a user permanently banned by a Super Admin, immediately before every one of their sockets is force-disconnected."
+      payload: { $ref: "#/components/schemas/UserBannedPayload" }
+      examples:
+        - name: Permanent system ban
+          payload:
+            type: "SYSTEM"
+            userId: "9f1c1d20-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+            reason: "Policy violation"
+    UserUnbanned:
+      name: "user:unbanned"
+      title: "user:unbanned"
+      summary: "Emitted when a Super Admin lifts a permanent ban. Restores login only \u2014 memberships are not recreated and closed spaces stay closed."
+      payload: { $ref: "#/components/schemas/UserUnbannedPayload" }
+      examples:
+        - name: Ban lifted
+          payload:
+            type: "SYSTEM"
+            userId: "9f1c1d20-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
     CommunityReopened:
       name: "community:reopened"
       title: "community:reopened"
@@ -4924,6 +5110,17 @@ components:
         - name: New notification bumps count to 7
           payload:
             count: 7
+    NotificationUpdated:
+      name: "notification:updated"
+      title: "notification:updated (in-place row transition)"
+      summary: |
+        Same payload as `notification:new`. A row is UPDATED rather than created
+        whenever its `groupKey` already exists for this user — one call is one
+        row that transitions through its outcomes, never a card per state.
+        `createdAt` is frozen at first insert; `version` increments on every
+        change and is the conflict-resolution key.
+      payload: { $ref: "#/components/schemas/NotificationItem" }
+
     NotificationForwarded:
       name: "notification:new"
       title: "notification:new (forwarded in-app notification)"
@@ -5785,28 +5982,6 @@ components:
         callType: { type: string, enum: [AUDIO, VIDEO], default: AUDIO }
         privateRoomId: { type: string, maxLength: 200 }
       required: [calleeId]
-    IceCandidate:
-      type: object
-      description: |
-        A WebRTC ICE candidate (RTCIceCandidateInit). The backend relays it
-        opaquely — it is never parsed or persisted. An empty `candidate` string
-        signals end-of-candidates.
-      properties:
-        candidate: { type: string, maxLength: 1000 }
-        sdpMid: { type: string, maxLength: 100 }
-        sdpMLineIndex: { type: integer, minimum: 0 }
-        usernameFragment: { type: string, maxLength: 256 }
-    CallIceSendPayload:
-      type: object
-      description: "Trickle a single WebRTC ICE candidate to the peer. Fire-and-forget: no ack, no retry. On weak networks candidates can drop and call setup may fail — re-send the latest candidate on a short timer."
-      properties:
-        callId: { type: string, minLength: 1, maxLength: 200 }
-        candidate:
-          description: WebRTC ICE candidate (opaque to the backend).
-          oneOf:
-            - { $ref: "#/components/schemas/IceCandidate" }
-            - { type: string, maxLength: 1000 }
-      required: [callId, candidate]
 
     # -------- chat receive payloads --------
     QuoteData:
@@ -6436,15 +6611,26 @@ components:
         callId: { type: string }
         endedBy: { type: string }
         durationSec: { type: integer }
-    CallIceRecvPayload:
+    CallOutgoingMirrorPayload:
       type: object
       properties:
         callId: { type: string }
-        candidate:
-          oneOf:
-            - { $ref: "#/components/schemas/IceCandidate" }
-            - { type: string, maxLength: 1000 }
-        from: { type: string }
+        calleeId: { type: string }
+        calleeName: { type: string }
+        calleeAvatarUrl: { type: string }
+        callType: { type: string, enum: [AUDIO, VIDEO] }
+    CallHandledPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        reason:
+          type: string
+          enum: [answered_elsewhere, declined_elsewhere]
+    CallMemberDeclinedPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        userId: { type: string }
 
     # -------- community payloads --------
     # NOTE: community messages use the SAME `ContentType` enum as /chat (UPPER-CASE).
@@ -7451,12 +7637,21 @@ components:
     CommunityClosedPayload:
       type: object
       description: |
-        Server → client. Broadcast to community:<id> AND to every (now ex-)member's
-        user:<id> room when the owner closes the community (status → CLOSED). All
-        members are auto-removed; the community is read-only until reopened.
+        Server → client. Broadcast to community:<id> AND to every member's
+        user:<id> room when the community is closed. The community becomes
+        read-only. Members are NOT removed and the community MUST stay in their
+        list — clients set the row's state, they never delete the row.
+
+        Two causes, distinguished by `status`:
+          - CLOSED — the owner closed it. Reopenable by the owner.
+          - CLOSED_BY_SYSTEM_BAN — the owner was permanently banned by a Super
+            Admin, so the platform closed it. `reason` is "ADMIN_BANNED". NOT
+            reopenable: POST /communities/:id/reopen returns 403
+            COMMUNITY_CLOSED_ADMIN_BANNED, and lifting the owner's ban does not
+            reopen it.
       properties:
         communityId: { type: string }
-        status: { type: string, enum: [CLOSED] }
+        status: { type: string, enum: [CLOSED, CLOSED_BY_SYSTEM_BAN] }
         closedAt:
           {
             type: integer,
@@ -7465,9 +7660,69 @@ components:
         reason:
           {
             type: string,
-            description: "Optional owner-supplied reason. Absent when none given.",
+            description: 'Owner-supplied free text, or the literal "ADMIN_BANNED" when the owner was system-banned. Absent when none given.',
           }
       required: [communityId, status, closedAt]
+
+    GroupClosedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `group:closed` to conv:<roomId> AND to every
+        ACTIVE member's user:<id> room when a group's owner is permanently
+        banned by a Super Admin.
+
+        NOT a disband. Nobody is removed, every membership row stays ACTIVE, the
+        room stays in the inbox (isClosed: true, closedReasonCode:
+        "ADMIN_BANNED") and stays fully readable — only writes are refused, with
+        403 CHAT_GROUP_CLOSED_ADMIN_BANNED. Clients MUST key the read-only
+        composer off isClosed, never off membership status. There is no reopen.
+      properties:
+        roomId: { type: string }
+        status: { type: string, enum: [CLOSED] }
+        closedReasonCode: { type: string, enum: [ADMIN_BANNED] }
+        closedAt:
+          { type: integer, description: "Epoch ms when the group was closed." }
+      required: [roomId, status, closedReasonCode, closedAt]
+
+    UserBannedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `user:banned` to the banned user's own
+        sockets on ALL FOUR namespaces (/chat, /community, /notify, /stream),
+        immediately before the gateway force-disconnects every one of them.
+
+        On receipt the client MUST: stop any in-flight operation including
+        livestream publishing; clear stored tokens and persisted auth state;
+        close sockets with automatic reconnection DISABLED (the disconnect is
+        server-initiated, which most clients retry by default); clear local
+        caches and any offline queue; and route to login showing the
+        ACCOUNT_BANNED message.
+
+        The event is a courtesy notice, not the enforcement. A client that
+        misses it simply receives 403 ACCOUNT_BANNED on its next request.
+      properties:
+        type: { type: string, enum: [SYSTEM] }
+        userId: { type: string }
+        reason:
+          {
+            type: [string, "null"],
+            description: "Free-text reason recorded by the Super Admin; null when none.",
+          }
+      required: [type, userId]
+
+    UserUnbannedPayload:
+      type: object
+      description: |
+        Server → client. Emitted on `user:unbanned` when a Super Admin lifts a
+        permanent ban. Emit-only — no disconnect.
+
+        Lifting a ban restores the ability to LOG IN and nothing else. Community
+        and group memberships the ban revoked are NOT recreated, and communities
+        or groups closed because the user owned them stay closed.
+      properties:
+        type: { type: string, enum: [SYSTEM] }
+        userId: { type: string }
+      required: [type, userId]
     CommunityReopenedPayload:
       type: object
       description: |

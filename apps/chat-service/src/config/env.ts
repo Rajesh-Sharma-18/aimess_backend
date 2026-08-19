@@ -100,9 +100,10 @@ const envSchema = z.object({
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 
   // Same var as community-service's — the shared HTTPS host for both community
-  // (`/+<code>`, `/<handle>`) and group (`/g/<token>`) invite links. Falls back
-  // to the bare token/code when unset (local/dev).
-  INVITE_LINK_BASE_URL: z.string().url().optional(),
+  // (`/+<code>`, `/<handle>`) and group (`/g/<token>`) invite links. MUST match
+  // community-service's value or the two mint links on different domains; the
+  // default mirrors community-service's so an unset env cannot split them.
+  INVITE_LINK_BASE_URL: z.string().url().default("https://ai5dev.tech"),
 
   // LiveKit (self-hosted). See Docs/calls/CALLS-LIVEKIT.md.
   // LIVEKIT_URL is the WS URL clients connect to (ws://localhost:7880 dev,
@@ -121,7 +122,16 @@ const envSchema = z.object({
   // Ringing timeout: a Call left in RINGING for longer than this flips to
   // MISSED via a periodic sweep. Multi-node safe (atomic updateMany).
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
-  CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
+  // Sweep granularity, NOT the ring window — a row is only eligible once
+  // CALL_RINGING_TIMEOUT_SEC has already elapsed, so this is pure added latency
+  // on top of it. It is the ONLY slack available when a callee's decline never
+  // reaches the server (a backgrounded client whose socket write was lost): the
+  // caller sits on "Calling…" for the ring window plus this. At 15 s that was a
+  // 75 s worst case; at 5 s it is 65 s. The query behind it is one indexed
+  // lookup bounded by CALL_TIMEOUT_SWEEP_BATCH, so running it 3× as often is
+  // not a meaningful cost. Lowering the RING WINDOW instead would be wrong —
+  // that is how long a phone is supposed to ring.
+  CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(5),
   CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
 
   // Presence liveness.

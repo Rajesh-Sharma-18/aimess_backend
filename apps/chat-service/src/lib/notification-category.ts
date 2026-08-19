@@ -1,14 +1,19 @@
 /**
- * Notification Center tab taxonomy. The Notification page has 5 tabs — ALL,
- * FRIENDS, COMMUNITIES, MENTIONS, SYSTEM — and the REST endpoint filters +
- * counts by these buckets.
+ * Notification Center tab taxonomy. The Notification page has 6 tabs — ALL,
+ * FRIENDS, COMMUNITIES, MENTIONS, CALLS, SYSTEM — and the REST endpoint filters
+ * + counts by these buckets.
  *
  * Routing rules (checked in priority order inside categorize()):
  *   MENTIONS    → type ∈ MENTION_TYPES  (checked first so community.mention
  *                 doesn't also match the community.* COMMUNITIES branch)
+ *   CALLS       → type starts with "call.", or the legacy "CALL_MISSED"
  *   FRIENDS     → type starts with "friend."
  *   COMMUNITIES → type starts with "community." (excluding MENTION_TYPES)
  *   SYSTEM      → type starts with "auth." or "admin.", or ∈ SYSTEM_VERBATIM
+ *
+ * Every row lands in EXACTLY ONE tab, which is what keeps the per-tab unread
+ * counts from double-counting. Call history used to ride along in FRIENDS; it
+ * now has its own tab and is no longer listed or counted under Friends.
  *
  * Adding a new system notification:
  *   1. Publish it from the producer with a type that starts with "auth." or
@@ -31,6 +36,7 @@ export type NotificationCategory =
   | "FRIENDS"
   | "COMMUNITIES"
   | "MENTIONS"
+  | "CALLS"
   | "SYSTEM";
 
 export const NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
@@ -38,8 +44,22 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
   "FRIENDS",
   "COMMUNITIES",
   "MENTIONS",
+  "CALLS",
   "SYSTEM",
 ] as const;
+
+/**
+ * Private 1:1 call history. ONE live type carries every outcome (the outcome
+ * itself lives in `data.callStatus`), plus the legacy type of rows written
+ * before that projection existed. A group/community call is never projected
+ * into the inbox at all, so nothing community-shaped can leak in here.
+ */
+const CALL_TYPE_PREFIX = "call.";
+const CALL_LEGACY_TYPES = ["CALL_MISSED"] as const;
+
+const isCallType = (type: string): boolean =>
+  type.startsWith(CALL_TYPE_PREFIX) ||
+  (CALL_LEGACY_TYPES as readonly string[]).includes(type);
 
 const MENTION_TYPES = ["chat.mention", "community.mention"] as const;
 
@@ -69,15 +89,10 @@ export function categorize(type: string): Exclude<NotificationCategory, "ALL"> {
   // Mentions checked before COMMUNITIES so `community.mention` doesn't get
   // swallowed by the `community.` prefix branch.
   if ((MENTION_TYPES as readonly string[]).includes(type)) return "MENTIONS";
-  // `call.*` is private 1:1 call history — friend activity, never community
-  // activity (a group/community call is never projected here at all).
-  // "CALL_MISSED" is the legacy type of rows written before call.activity.
-  if (
-    type.startsWith("friend.") ||
-    type.startsWith("call.") ||
-    type === "CALL_MISSED"
-  )
-    return "FRIENDS";
+  // Checked before FRIENDS: call history has its own tab now, and a row must
+  // land in exactly one bucket or the per-tab counts double-count it.
+  if (isCallType(type)) return "CALLS";
+  if (type.startsWith("friend.")) return "FRIENDS";
   if (type.startsWith("community.")) return "COMMUNITIES";
   if (
     type.startsWith("auth.") ||
@@ -102,11 +117,12 @@ export function categoryWhere(
     case "ALL":
       return {};
     case "FRIENDS":
+      return { type: { startsWith: "friend." } };
+    case "CALLS":
       return {
         OR: [
-          { type: { startsWith: "friend." } },
-          { type: { startsWith: "call." } },
-          { type: { in: ["CALL_MISSED"] } },
+          { type: { startsWith: CALL_TYPE_PREFIX } },
+          { type: { in: [...CALL_LEGACY_TYPES] } },
         ],
       };
     case "COMMUNITIES":

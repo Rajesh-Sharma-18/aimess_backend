@@ -34,6 +34,12 @@ service MessagingService {
   // and forwards `room_finished` events; chat-service flips IN_PROGRESS→ENDED
   // (idempotent for other states).
   rpc HandleLiveKitRoomFinished (HandleLiveKitRoomFinishedRequest) returns (HandleLiveKitRoomFinishedResponse);
+  // LiveKit `participant_joined` — used to stamp `answeredAt` only when the
+  // CALLEE's media actually joins, not when they emitted `call:answer`. This
+  // is what separates a real answered-and-connected call (has a duration)
+  // from an accept-then-immediately-end race (no duration, treated as
+  // cancelled). Idempotent per callId.
+  rpc HandleLiveKitParticipantJoined (HandleLiveKitParticipantJoinedRequest) returns (HandleLiveKitParticipantJoinedResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Room-independent typing indicator fan-out for private/group — the exact
   // mirror of community's GetCommunityActiveMemberIds. Lets the gateway resolve
@@ -62,6 +68,12 @@ service MessagingService {
   // roster fan-out) — never a bare repository write.
   rpc AdminDisbandGroup       (AdminDisbandGroupRequest)       returns (AdminGroupMutationResult);
   rpc AdminRemoveGroupMember  (AdminRemoveGroupMemberRequest)  returns (AdminGroupMutationResult);
+  // Group-side cascade of a PERMANENT system ban. Mirrors community-service's
+  // AdminApplySystemBan: groups the banned user OWNS are CLOSED (not
+  // disbanded — a disband hides the room from everyone, a close leaves it in
+  // every member's list, readable, with a red banner), and their memberships
+  // in every other group are ended. Idempotent.
+  rpc AdminApplySystemBan     (AdminApplySystemBanRequest)     returns (AdminApplySystemBanResponse);
 
   // Admin Calling: analytics, the global kill-switch, and a lightweight health
   // ping. Calls are owned by chat-service, so the Call collection is only ever
@@ -182,7 +194,9 @@ message AdminGroupRow {
   int32           member_count = 5;
   int64           created_at    = 6;
   AdminGroupAdmin admin        = 7;
-  // Raw lifecycle status: "ACTIVE" | "DISBANDED".
+  // Raw lifecycle status: "ACTIVE" | "CLOSED" | "DISBANDED".
+  // CLOSED = the owner was permanently system-banned; the room stays visible
+  // and readable to its members but nobody can write.
   string          status       = 8;
   // Epoch ms; 0 when the group was never disbanded.
   int64           disbanded_at = 9;
@@ -245,6 +259,18 @@ message AdminDisbandGroupRequest {
   // backoffice AdminUser.id — stored as GroupRoom.disbandedBy (DB-only).
   string actor_admin_id = 2;
 }
+message AdminApplySystemBanRequest {
+  string user_id        = 1;
+  string actor_admin_id = 2; // backoffice AdminUser.id
+  string reason         = 3;
+}
+message AdminApplySystemBanResponse {
+  bool            ok                = 1;
+  repeated string closed_group_ids  = 2; // owned, now CLOSED (still visible)
+  repeated string removed_group_ids = 3; // memberships ended
+  string          error_code        = 4; // "" on success
+}
+
 message AdminRemoveGroupMemberRequest {
   string group_id       = 1;
   string user_id        = 2;
@@ -536,6 +562,14 @@ message AnswerCallRequest {
   // one leg per callee wins and the rest get ALREADY_ANSWERED — and only the
   // winning leg may later end the call. Empty falls back to session granularity.
   string leg_id    = 3;
+  // The auth session that made this request, so the "stop ringing" BACKSTOP PUSH
+  // can skip the device that already acted. `leg_id` cannot do this job: it is a
+  // per-page-load id the client mints, while device tokens are registered
+  // against a session — `session_id` is the only value present on both sides.
+  //
+  // This is the push-channel twin of the socket path's `handledByLegId`
+  // exclusion. Empty = exclude nothing (the previous behaviour).
+  string session_id = 4;
 }
 message AnswerCallResponse {
   string             call_id = 1;
@@ -545,6 +579,9 @@ message AnswerCallResponse {
 message DeclineCallRequest {
   string call_id   = 1;
   string callee_id = 2;
+  // See AnswerCallRequest.session_id — the device that declined must not be
+  // woken by the dismissal push for its own decline.
+  string session_id = 3;
 }
 message DeclineCallResponse {
   string call_id = 1;
@@ -560,6 +597,8 @@ message EndCallRequest {
   // RINGING call ended by the caller before it honours it. Empty = a
   // deliberate hangup, the historical behaviour.
   string reason  = 4;
+  // See AnswerCallRequest.session_id.
+  string session_id = 5;
 }
 message EndCallResponse {
   string call_id      = 1;
@@ -615,6 +654,17 @@ message HandleLiveKitRoomFinishedRequest {
   int32 remaining_participants = 3;
 }
 message HandleLiveKitRoomFinishedResponse {}
+
+message HandleLiveKitParticipantJoinedRequest {
+  // LiveKit room_name == callId by our convention.
+  string room_name = 1;
+  // The joining participant's identity — matches the userId used to mint the
+  // LiveKit token (see livekit.service.ts). Chat-service uses it to skip the
+  // caller (their join is meaningless for "answered", they were in the room
+  // from initiate) and only stamp answeredAt when the callee actually joins.
+  string participant_identity = 2;
+}
+message HandleLiveKitParticipantJoinedResponse {}
 
 message CatchupRoomRequest {
   string           conversation_id   = 1;

@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 
 import { env, isLinkHost } from "../config/env.js";
-import { detectFromSegment } from "../linkhost/detect-link.js";
+import { detectFromPath } from "../linkhost/detect-link.js";
 import { renderPreviewPage } from "../linkhost/preview.js";
 import { fetchPublicCommunityCard } from "../linkhost/public-card.js";
 import {
@@ -45,11 +45,29 @@ export function createLinkHostRouter(): IRouter {
     res.redirect(302, env.WEB_APP_URL);
   });
 
-  // Catch-all single-segment community link: `/<handle>` or `/+<code>`.
-  router.get("/:seg", async (req: Request, res: Response) => {
-    const rawSeg = req.params.seg;
-    const seg = Array.isArray(rawSeg) ? rawSeg[0] : rawSeg;
-    const target = detectFromSegment(seg);
+  // Catch-all. `detectFromPath` owns the grammar, so `/g/<token>` and
+  // `/community/@<handle>` match here too — the old single-segment `/:seg`
+  // route could never see a two-segment link at all.
+  router.get(/.*/, async (req: Request, res: Response) => {
+    const segments = req.path
+      .split("/")
+      .filter(Boolean)
+      .map((seg) => {
+        try {
+          return decodeURIComponent(seg);
+        } catch {
+          return seg;
+        }
+      });
+    const target = detectFromPath(segments);
+
+    // Not in the AIMESS link space — a marketing route. The link host is shared
+    // with the marketing site, so this MUST fall through rather than render a
+    // link page, or AIMESS swallows its own /terms-of-service (spec §7.5).
+    if (target === null) {
+      res.redirect(302, `${env.WEB_APP_URL}${req.originalUrl}`);
+      return;
+    }
 
     if (target.kind === "invalid") {
       res
@@ -65,8 +83,8 @@ export function createLinkHostRouter(): IRouter {
       return;
     }
 
-    // PUBLIC handles fetch a metadata card (for OG unfurl). PRIVATE codes never
-    // leak metadata to logged-out viewers → generic card.
+    // PUBLIC handles fetch a metadata card (for OG unfurl). PRIVATE codes and
+    // GROUP tokens never leak metadata to logged-out viewers → generic card.
     const card =
       target.kind === "public"
         ? await fetchPublicCommunityCard(target.handle)

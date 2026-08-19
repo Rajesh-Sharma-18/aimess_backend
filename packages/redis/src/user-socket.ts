@@ -183,12 +183,31 @@ export function publishSessionRevokedEvent(
   redis: Redis | Cluster,
   userId: string,
   sessionId: string,
-  reason: "terminated" | "logout" | "account_deleted" = "terminated"
+  reason: "terminated" | "logout" | "account_deleted" | "banned" = "terminated"
 ): Promise<number> {
   return redis.publish(
     `session-revoke:${userId}`,
     JSON.stringify({ sessionId, reason })
   );
+}
+
+// Publish a USER-wide (not session-wide) account-state signal: `user:banned`
+// when a Super Admin permanently bans the account, `user:unbanned` when the ban
+// is lifted.
+//
+// Deliberately its own channel family rather than a reuse of `user:<id>`:
+// `user:<id>` is relayed only by /chat and /community, is joinable by peers via
+// `presence:subscribe`, and is a plain relay with no disconnect semantics. The
+// api-gateway PSUBSCRIBEs `user-ban:*` on the same durable connection as
+// `session-revoke:*` and, for a ban, emits the event to every one of that
+// user's sockets across ALL live namespaces and then disconnects them.
+export function publishUserBanEvent(
+  redis: Redis | Cluster,
+  userId: string,
+  event: "user:banned" | "user:unbanned",
+  data: unknown
+): Promise<number> {
+  return redis.publish(`user-ban:${userId}`, JSON.stringify({ event, data }));
 }
 
 /**

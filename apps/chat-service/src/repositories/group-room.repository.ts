@@ -16,6 +16,11 @@ import {
   type AutoDeleteMode,
 } from "../lib/auto-delete.js";
 
+// Room statuses a member may still SEE: a CLOSED group (owner permanently
+// banned) stays in the inbox, listable and openable — read-only. DISBANDED is
+// deliberately excluded: a disband hides the room everywhere.
+const VISIBLE_ROOM_STATUS: { in: string[] } = { in: ["ACTIVE", "CLOSED"] };
+
 /** Clone a date pinned to the end of its UTC calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
   const end = new Date(d);
@@ -181,7 +186,7 @@ export class GroupRoomRepository {
 
   async findActiveByRoomId(roomId: string): Promise<GroupRoom | null> {
     return this.prisma.groupRoom.findFirst({
-      where: { roomId, status: "ACTIVE" },
+      where: { roomId, status: VISIBLE_ROOM_STATUS },
     });
   }
 
@@ -482,6 +487,25 @@ export class GroupRoomRepository {
     });
   }
 
+  // ACTIVE-only guard makes the ban cascade idempotent and stops it resurrecting
+  // a DISBANDED room. `updateMany` + re-read because the guard is not the @unique key.
+  async closeForSystemBan(
+    roomId: string,
+    actorAdminId: string
+  ): Promise<GroupRoom | null> {
+    const res = await this.prisma.groupRoom.updateMany({
+      where: { roomId, status: "ACTIVE" },
+      data: {
+        status: "CLOSED",
+        closedAt: new Date(),
+        closedBy: actorAdminId,
+        closedReasonCode: "ADMIN_BANNED",
+      },
+    });
+    if (res.count === 0) return null;
+    return this.findByRoomId(roomId);
+  }
+
   async setArchived(roomId: string, userId: string): Promise<GroupRoom | null> {
     const existing = await this.prisma.groupRoom.findUnique({
       where: { roomId },
@@ -523,7 +547,7 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.findMany({
       where: {
         roomId: { in: roomIds },
-        status: "ACTIVE",
+        status: VISIBLE_ROOM_STATUS,
         ...(params.cursor
           ? { lastMessageAt: { lt: new Date(params.cursor) } }
           : {}),
@@ -538,7 +562,7 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.count({
       where: {
         roomId: { in: roomIds },
-        status: "ACTIVE",
+        status: VISIBLE_ROOM_STATUS,
         ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
     });
@@ -557,7 +581,7 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.findMany({
       where: {
         roomId: { in: roomIds },
-        status: "ACTIVE",
+        status: VISIBLE_ROOM_STATUS,
         ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
       select: { roomId: true, lastMessageAt: true },
@@ -568,7 +592,7 @@ export class GroupRoomRepository {
    * Timestamp-bounded group fetch for the unified inbox.
    * - direction "before": lastMessageAt <= ts, newest-first (desc).
    * - direction "after" : lastMessageAt >= ts, oldest-first (asc).
-   * Only ACTIVE groups the user belongs to (roomIds) with a lastMessageAt.
+   * Only VISIBLE groups the user belongs to (roomIds) with a lastMessageAt.
    */
   /**
    * User Search — groups restricted to an explicit id set the caller already
@@ -586,7 +610,7 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.findMany({
       where: {
         roomId: { in: roomIds },
-        status: "ACTIVE",
+        status: VISIBLE_ROOM_STATUS,
         ...(q ? { AND: buildGroupSearchFilter(q) } : {}),
       },
       orderBy: { lastMessageAt: "desc" },
@@ -598,7 +622,7 @@ export class GroupRoomRepository {
   async findManyByRoomIds(roomIds: string[]): Promise<GroupRoom[]> {
     if (roomIds.length === 0) return [];
     return this.prisma.groupRoom.findMany({
-      where: { roomId: { in: roomIds }, status: "ACTIVE" },
+      where: { roomId: { in: roomIds }, status: VISIBLE_ROOM_STATUS },
     });
   }
 
@@ -616,7 +640,7 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.findMany({
       where: {
         roomId: { in: params.roomIds },
-        status: "ACTIVE",
+        status: VISIBLE_ROOM_STATUS,
         ...buildRoomKeysetWhere(params),
       },
       orderBy: [{ lastMessageAt: dir }, { roomId: dir }],

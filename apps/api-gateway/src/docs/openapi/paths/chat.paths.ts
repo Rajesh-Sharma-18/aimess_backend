@@ -1033,7 +1033,7 @@ const groupAutoDelete = {
     description:
       "Sets the policy for the whole group. Every member's messages follow it regardless of who sent them, and a message expires whether or not every member has read it — an offline or never-opening member does not hold it back.\n\n" +
       "**Permissions:** `ADMIN` and `MODERATOR` only. A plain member gets `403 CHAT_INSUFFICIENT_PERMISSIONS`; a non-member gets `404`.\n\n" +
-      "**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean \"the first member to open the chat deletes it for everyone who hasn't\" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n" +
+      '**`AFTER_VIEWING` is rejected** with `400 CHAT_AUTO_DELETE_MODE_UNSUPPORTED`. A group message carries one global deadline, so the mode could only mean "the first member to open the chat deletes it for everyone who hasn\'t" — that is a per-member visibility design, not a flag, so it is refused rather than approximated.\n\n' +
       "Restamp, no-op, turn-off and timer semantics are identical to the private endpoint.\n\n" +
       "**Errors**\n" +
       "- `CHAT_AUTO_DELETE_MODE_UNSUPPORTED` — `AFTER_VIEWING` in a group;\n" +
@@ -2100,6 +2100,49 @@ const notificationUnreadCount = {
     security: [{ bearerAuth: [] }],
     responses: {
       ...successResponse("Unread count", "ChatUnreadCountData"),
+      "401": unauthorized,
+    },
+  },
+};
+
+const notificationSync = {
+  get: {
+    tags: ["Chat — Notifications"],
+    operationId: "syncNotifications",
+    summary: "Delta-sync the notification inbox",
+    description:
+      "Everything that changed after `since`, oldest-first, INCLUDING soft-deleted " +
+      "tombstones (`isDeleted: true`) — apply those as removals. This is the " +
+      "reconnect / cold-start primitive: one call converges creates, in-place " +
+      "updates, reads and deletes made on any other device, replacing a full-feed " +
+      "refetch. Loop while `hasMore`, feeding `nextSince` back as `since`. " +
+      "Note the cursor formats differ ON PURPOSE and are not interchangeable: " +
+      "`since`/`nextSince` here are epoch-ms integers over `updatedAt`, while " +
+      "GET /chat/notifications pages on an ISO `createdAt` string.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "since",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, format: "int64", default: 0 },
+        description:
+          "Epoch ms. Rows with `updatedAt > since` are returned. Use the highest `updatedAt` you hold; 0 for a cold start.",
+      },
+      {
+        name: "limit",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "integer" as const,
+          minimum: 1,
+          maximum: 200,
+          default: 100,
+        },
+      },
+    ],
+    responses: {
+      ...successResponse("Changed notifications", "ChatNotificationSyncPage"),
       "401": unauthorized,
     },
   },
@@ -3895,6 +3938,152 @@ const callById = {
   },
 };
 
+// -----------------------------------------------------------------------------
+// Socket-free call control.
+//
+// These exist for iOS: the socket is torn down when the app leaves the
+// foreground, and a device woken by a VoIP push has no scene and therefore no
+// socket at all. They hit the SAME CallService methods the socket events do —
+// identical authorization gates, status transitions, Redis fan-out, push and
+// timeline card. There is no second call-state path.
+//
+// There is deliberately no REST endpoint to START a call; initiation is
+// socket-only (`call:initiate`).
+// -----------------------------------------------------------------------------
+const callIdPathParam = {
+  name: "callId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string" as const },
+  description: "The call's `callId` (not the Mongo `id`).",
+};
+
+const callAnswer = {
+  post: {
+    tags: ["Chat — Calls"],
+    operationId: "answerCall",
+    summary: "Answer a call without a socket",
+    description:
+      "Answers a RINGING call and returns fresh LiveKit credentials. `sessionId` " +
+      "for push-exclusion is taken from the JWT, never the body. Dismisses the " +
+      "ring on the caller's other devices via `call:handled`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [callIdPathParam],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            properties: {
+              legId: {
+                type: "string" as const,
+                description:
+                  "Per-launch connection id. Identifies ONE connection, not one login — two app processes share a session, so without it leg granularity degrades to session granularity.",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Call answered", "ChatCallAnswerResult"),
+      "401": unauthorized,
+      "403": {
+        description:
+          "You were not a participant in this call (CALL_NOT_PARTICIPANT).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "404": notFound,
+      "409": {
+        description:
+          "The call is no longer ringing — already answered, declined or ended.",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const callDecline = {
+  post: {
+    tags: ["Chat — Calls"],
+    operationId: "declineCall",
+    summary: "Decline a call without a socket",
+    description:
+      "Declines a RINGING call. Idempotent: declining an already-terminal call " +
+      "succeeds without changing it, so a double-tap is safe.",
+    security: [{ bearerAuth: [] }],
+    parameters: [callIdPathParam],
+    responses: {
+      ...successResponse("Call declined", "ChatCallActionResult"),
+      "401": unauthorized,
+      "403": {
+        description:
+          "You were not a participant in this call (CALL_NOT_PARTICIPANT).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "404": notFound,
+    },
+  },
+};
+
+const callEnd = {
+  post: {
+    tags: ["Chat — Calls"],
+    operationId: "endCall",
+    summary: "End a call without a socket",
+    description:
+      "Hangs up. Idempotent — ending an already-terminal call returns it unchanged. " +
+      "A ring the CALLER abandons is resolved server-side: past the missed-call " +
+      "grace window it settles as MISSED (and pushes the callee), inside it as a " +
+      "plain cancellation. The client does not decide that outcome.",
+    security: [{ bearerAuth: [] }],
+    parameters: [callIdPathParam],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            properties: {
+              legId: {
+                type: "string" as const,
+                description: "See POST /chat/calls/{callId}/answer.",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Call ended", "ChatCallEndResult"),
+      "401": unauthorized,
+      "403": {
+        description:
+          "You were not a participant in this call (CALL_NOT_PARTICIPANT).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "404": notFound,
+    },
+  },
+};
+
 // =============================================================================
 // Community message pin / unpin
 // =============================================================================
@@ -4229,6 +4418,7 @@ export const chatPaths = {
   "/chat/notifications/read": notificationRead,
   "/chat/notifications/read-all": notificationReadAll,
   "/chat/notifications/unread-count": notificationUnreadCount,
+  "/chat/notifications/sync": notificationSync,
   "/chat/notifications/{id}/action": notificationAction,
   "/chat/notifications/{id}": notificationById,
 
@@ -4282,4 +4472,7 @@ export const chatPaths = {
   // Calls
   "/chat/calls": callHistory,
   "/chat/calls/{callId}": callById,
+  "/chat/calls/{callId}/answer": callAnswer,
+  "/chat/calls/{callId}/decline": callDecline,
+  "/chat/calls/{callId}/end": callEnd,
 };

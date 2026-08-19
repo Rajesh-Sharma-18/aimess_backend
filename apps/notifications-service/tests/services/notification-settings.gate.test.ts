@@ -84,6 +84,15 @@ describe("evaluateDelivery — quiet hours interaction", () => {
 
   it("calls ring through quiet hours", () => {
     expect(evaluateDelivery(inWindow, "callEnabled")).toBe("ALLOW");
+    expect(evaluateDelivery(inWindow, "callEnabled", "CALL_INCOMING")).toBe(
+      "ALLOW"
+    );
+  });
+
+  it("quiet hours DO silence a missed-call alert — the call is already over", () => {
+    expect(evaluateDelivery(inWindow, "callEnabled", "CALL_MISSED")).toBe(
+      "QUIET_HOURS"
+    );
   });
 
   it("but the call toggle itself still binds during quiet hours", () => {

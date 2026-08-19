@@ -6,7 +6,7 @@ import {
   verifyAdminAccessToken,
   extractBearerToken,
 } from "@aimess/auth-jwt";
-import { getActiveSessionFromCache } from "@aimess/redis";
+import { getActiveSessionFromCache, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { env } from "../config/env.js";
@@ -116,11 +116,17 @@ export function createGatewaySocketAuthMiddleware(
 
         const verified = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
 
-        const active = await getActiveSessionFromCache(
-          redis,
-          verified.sessionId
-        ).catch(() => true); // Redis hiccup: fail open, same as HTTP middleware.
-        if (active === false) {
+        // Two independent verdicts, one round trip each: is this SESSION still
+        // alive, and is this USER permanently banned. `connectionStateRecovery`
+        // is configured with `skipMiddlewares: false`, so both also re-run on
+        // every reconnect — a banned user cannot resurrect a recovered socket.
+        const [active, banned] = await Promise.all([
+          getActiveSessionFromCache(redis, verified.sessionId).catch(
+            () => true
+          ), // Redis hiccup: fail open, same as HTTP middleware.
+          isUserBanned(redis, verified.userId).catch(() => false),
+        ]);
+        if (active === false || banned) {
           next(new Error("Authentication failed"));
           return;
         }

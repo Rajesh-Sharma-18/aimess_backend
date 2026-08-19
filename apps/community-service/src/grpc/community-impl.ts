@@ -1161,6 +1161,10 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
               communityAvatarUrl: communityAvatarView?.url ?? "",
               communityCoverUrl: communityCoverView?.url ?? "",
+              // Why it closed, on the OWNER status axis. `status` above is the
+              // separate platform-moderation axis, so this is the only signal
+              // that distinguishes a ban-close from an owner close.
+              statusClosedReasonCode: r.statusClosedReasonCode ?? "",
             };
           })
         );
@@ -1262,6 +1266,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
           roles: rows.map((r) => ({
             userId: r.userId,
             role: String(r.role),
+            status: String(r.status),
           })),
         });
       } catch (err) {
@@ -1355,6 +1360,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             livestreamCount: 0, // STUB until stream-service is wired
             createdAt: c.createdAt instanceof Date ? c.createdAt.getTime() : 0,
             communityAvatarUrl: communityAvatarView?.url ?? "",
+            statusClosedReasonCode: c.statusClosedReasonCode ?? "",
           },
           description: c.description ?? "",
           coverUrl: coverView?.url ?? "",
@@ -1657,6 +1663,169 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminSetModerationStatus failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Admin Community Conversation viewer — member-level moderation. Business
+  // failures (not-found / target-is-admin) are returned via `errorCode` (NOT
+  // thrown), matching adminSetModerationStatus above.
+  adminKickCommunityMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          targetUserId?: string;
+          reason?: string;
+          actorAdminId?: string;
+        };
+        const communityId = (req.communityId || "").trim();
+        const targetUserId = (req.targetUserId || "").trim();
+        if (!communityId || !targetUserId) {
+          callback(null, {
+            ok: false,
+            status: "",
+            errorCode: "COMMUNITY_MEMBER_NOT_FOUND",
+          });
+          return;
+        }
+
+        const result = await communityService.adminKickMember(
+          communityId,
+          targetUserId,
+          req.reason?.trim() || null,
+          req.actorAdminId?.trim() || "system"
+        );
+        callback(null, result);
+      } catch (err) {
+        logger.error("adminKickCommunityMember gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminKickCommunityMember failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminUnbanCommunityMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          targetUserId?: string;
+          actorAdminId?: string;
+        };
+        const communityId = (req.communityId || "").trim();
+        const targetUserId = (req.targetUserId || "").trim();
+        if (!communityId || !targetUserId) {
+          callback(null, {
+            ok: false,
+            status: "",
+            errorCode: "COMMUNITY_MEMBER_NOT_FOUND",
+          });
+          return;
+        }
+
+        const result = await communityService.adminUnbanMember(
+          communityId,
+          targetUserId,
+          req.actorAdminId?.trim() || "system"
+        );
+        callback(null, result);
+      } catch (err) {
+        logger.error("adminUnbanCommunityMember gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminUnbanCommunityMember failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminBanCommunityMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          targetUserId?: string;
+          reason?: string;
+          actorAdminId?: string;
+        };
+        const communityId = (req.communityId || "").trim();
+        const targetUserId = (req.targetUserId || "").trim();
+        if (!communityId || !targetUserId) {
+          callback(null, {
+            ok: false,
+            status: "",
+            errorCode: "COMMUNITY_MEMBER_NOT_FOUND",
+          });
+          return;
+        }
+
+        const result = await communityService.adminBanMember(
+          communityId,
+          targetUserId,
+          req.reason?.trim() || null,
+          req.actorAdminId?.trim() || "system"
+        );
+        callback(null, result);
+      } catch (err) {
+        logger.error("adminBanCommunityMember gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminBanCommunityMember failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Community half of a permanent Super Admin system ban: close owned
+  // communities, revoke every other membership. Best-effort by design — the
+  // service never throws for business reasons, so `ok` is false only when the
+  // request itself is unusable.
+  adminApplySystemBan: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          userId?: string;
+          actorAdminId?: string;
+          reason?: string;
+        };
+        const userId = (req.userId || "").trim();
+        if (!userId) {
+          callback(null, {
+            ok: false,
+            closedCommunityIds: [],
+            removedCommunityIds: [],
+            errorCode: "USER_NOT_FOUND",
+          });
+          return;
+        }
+
+        const result = await communityService.adminApplySystemBan(
+          userId,
+          req.actorAdminId?.trim() || "system",
+          req.reason?.trim() || null
+        );
+        callback(null, { ok: true, ...result, errorCode: "" });
+      } catch (err) {
+        logger.error("adminApplySystemBan gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminApplySystemBan failed",
         } as grpc.ServiceError);
       }
     })();

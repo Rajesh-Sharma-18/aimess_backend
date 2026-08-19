@@ -485,7 +485,10 @@ describe("bulkDeleteCommunities", () => {
     expect(repo.updateMemberStatus).toHaveBeenCalledWith(
       CID,
       NON_ADMIN,
-      "LEFT"
+      "LEFT",
+      undefined,
+      undefined,
+      undefined
     );
     expect(pubMemberLeft).toHaveBeenCalledTimes(1);
     const removedCall = pubRoomEvent.mock.calls.find(

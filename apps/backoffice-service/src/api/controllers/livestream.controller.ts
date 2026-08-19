@@ -6,6 +6,7 @@ import { getRequestContext } from "../../lib/request-context.js";
 import { livestreamService, thumbnailService } from "../../services/index.js";
 import type {
   ListLivestreamsQuery,
+  ListLivestreamCommentsQuery,
   ListLivestreamReportsQuery,
   ListLivestreamUsersQuery,
 } from "../../types/livestream.types.js";
@@ -13,6 +14,7 @@ import type {
   BulkEndInput,
   BulkReviewReportsInput,
   EndLivestreamInput,
+  ListLivestreamCommentsQueryInput,
   ListLivestreamReportsQueryInput,
   ListLivestreamUsersQueryInput,
   ListLivestreamsQueryInput,
@@ -95,6 +97,33 @@ export const listLivestreamUsers: RequestHandler = (req, res, next) => {
         success: true,
         data: result.data,
         pagination: result.pagination,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/livestreams/:livestreamId/comments — cursor page of chat comments,
+ * newest-first. Backs the read-only comment feed in the admin monitor; live
+ * comments arrive separately over the /admin socket.
+ */
+export const listLivestreamComments: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by livestreamIdParamSchema on the route.
+      const livestreamId = req.params.livestreamId as string;
+      const query = req.query as unknown as ListLivestreamCommentsQueryInput;
+      const result = await livestreamService.listLivestreamComments(
+        livestreamId,
+        query as ListLivestreamCommentsQuery
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result.data,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore,
       });
     } catch (error) {
       next(error);

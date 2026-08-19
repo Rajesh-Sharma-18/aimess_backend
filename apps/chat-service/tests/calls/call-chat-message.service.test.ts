@@ -5,7 +5,19 @@
  * the insert (message:new) and the transition (message:edited, same row/id/ts),
  * plus the invariant that the kind is VOICE_CALL / VIDEO_CALL at every state.
  */
+jest.mock("../../src/events/publish-conv-updated.js", () => ({
+  publishConvUpdatedSafe: jest.fn(),
+  publishCommunityUpdatedSafe: jest.fn(),
+}));
+
 import { CallChatMessageService } from "../../src/services/call-chat-message.service.js";
+import { publishConvUpdatedSafe } from "../../src/events/publish-conv-updated.js";
+
+const listBump = publishConvUpdatedSafe as jest.Mock;
+
+beforeEach(() => {
+  listBump.mockClear();
+});
 
 const CREATED_AT = new Date("2026-07-15T10:00:00.000Z");
 
@@ -147,6 +159,65 @@ describe("CallChatMessageService — row creation", () => {
 });
 
 describe("CallChatMessageService — in-place transitions", () => {
+  /**
+   * A call row never advances its timestamp, so anything sent mid-call is
+   * NEWER than every transition that follows. The snapshot write already
+   * refuses to rewind the room; the socket bump has to obey the same rule or it
+   * tells every list client to replace a newer preview with an older one.
+   */
+  it("does NOT bump the list when a real message landed mid-call", async () => {
+    const { service, stubs } = buildService();
+    stubs.messageRepo.findByClientMessageId.mockResolvedValue(
+      existingRow("ANSWERED")
+    );
+    // A text message became the room's last message while the call was up.
+    stubs.roomRepo.findByRoomId.mockResolvedValue({
+      roomId: "room-1",
+      participants: ["caller", "callee"],
+      lastMessageId: "some-newer-text",
+    });
+
+    await service.post({ ...base, outcome: "ENDED", durationSec: 42 });
+
+    // The card itself still updates in every open transcript...
+    const events = stubs.redis.publish.mock.calls.map(
+      (c) => JSON.parse(c[1] as string).event
+    );
+    expect(events).toContain("message:edited");
+    // ...but the room snapshot and the list bump both stand down.
+    expect(stubs.roomRepo.updateRoomOnNewMessage).not.toHaveBeenCalled();
+    expect(listBump).not.toHaveBeenCalled();
+  });
+
+  it("bumps the list while the call row IS still the room's last message", async () => {
+    const { service, stubs } = buildService();
+    stubs.messageRepo.findByClientMessageId.mockResolvedValue(
+      existingRow("ANSWERED")
+    );
+    stubs.roomRepo.findByRoomId.mockResolvedValue({
+      roomId: "room-1",
+      participants: ["caller", "callee"],
+      lastMessageId: "message-1",
+    });
+
+    await service.post({ ...base, outcome: "ENDED", durationSec: 42 });
+
+    expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalled();
+    expect(listBump).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roomId: "room-1",
+        lastMessageAt: CREATED_AT.getTime(),
+        // The identity/freshness quartet every other send path supplies —
+        // without it a client cannot tie-break this bump against a same-ms row.
+        preview: expect.objectContaining({
+          clientMessageId: "call:call-1",
+          seq: 7,
+          createdAt: CREATED_AT.getTime(),
+        }),
+      })
+    );
+  });
+
   it("rewrites the SAME row on end and fans out message:edited, not a second card", async () => {
     const { service, stubs } = buildService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue(
@@ -166,7 +237,7 @@ describe("CallChatMessageService — in-place transitions", () => {
         systemEvent: "CALL_ENDED",
         countInUnread: false,
         content: expect.objectContaining({
-          text: "Voice call lasted 02:05",
+          text: "Voice Call 02:05",
           call: expect.objectContaining({
             callStatus: "ENDED",
             durationSec: 125,
@@ -202,7 +273,7 @@ describe("CallChatMessageService — in-place transitions", () => {
         systemEvent: "CALL_ENDED",
         countInUnread: false,
         content: expect.objectContaining({
-          text: "Voice call declined",
+          text: "Voice call was not answered",
           call: expect.objectContaining({ callStatus: "DECLINED" }),
         }),
       })
@@ -225,7 +296,7 @@ describe("CallChatMessageService — in-place transitions", () => {
       expect.objectContaining({
         messageType: "VIDEO_CALL",
         content: expect.objectContaining({
-          text: "Video call cancelled",
+          text: "Video call was not answered",
           call: expect.objectContaining({ callStatus: "CANCELLED" }),
         }),
       })

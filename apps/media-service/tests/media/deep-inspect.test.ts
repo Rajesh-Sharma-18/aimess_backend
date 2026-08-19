@@ -194,6 +194,30 @@ describe("inspectMedia — polyglot files", () => {
     );
     expect(result.ok).toBe(true);
   });
+
+  // Every HDR phone photo is an MPF/Ultra HDR file: the primary image followed
+  // by a complete second JPEG holding the gain map. Rejecting that as trailing
+  // data rejected ordinary camera output.
+  it("accepts a multi-image (MPF / Ultra HDR) JPEG and reports the primary size", () => {
+    const gainMap = validJpeg({ width: 32, height: 24 });
+    const result = inspect(
+      validJpeg({ width: 3072, height: 4080, trailing: gainMap }),
+      "image/jpeg"
+    );
+    expect(result.ok).toBe(true);
+    expect(result.width).toBe(3072);
+    expect(result.height).toBe(4080);
+  });
+
+  it("still rejects a payload appended after the gain map", () => {
+    const gainMap = validJpeg({ width: 32, height: 24 });
+    const result = inspect(
+      validJpeg({ trailing: Buffer.concat([gainMap, ZIP]) }),
+      "image/jpeg"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("TRAILING_DATA");
+  });
 });
 
 describe("inspectMedia — decompression bombs and resource limits", () => {

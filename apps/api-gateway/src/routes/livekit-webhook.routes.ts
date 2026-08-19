@@ -41,6 +41,7 @@ export function createLiveKitWebhookRouter(
       let event: {
         event?: string;
         room?: { name?: string; numParticipants?: number };
+        participant?: { identity?: string };
       };
       try {
         // WebhookReceiver.receive expects a stringified body. express.raw gives
@@ -86,6 +87,21 @@ export function createLiveKitWebhookRouter(
             `livekit ${eventType} reconcile failed for room=${roomName}: ${String(err)}`
           );
           // Fall through to 200 — LiveKit shouldn't retry a business-logic miss.
+        }
+      } else if (eventType === "participant_joined" && roomName) {
+        // Stamps `answeredAt` when the CALLEE's media actually arrives — the
+        // only way the "accept then end before media joins" race gets a real
+        // duration rather than being counted as a real answered call.
+        // Idempotent: only the first callee-join per call sticks.
+        try {
+          await messagingClient.handleLiveKitParticipantJoined({
+            roomName,
+            participantIdentity: event.participant?.identity ?? "",
+          });
+        } catch (err) {
+          logger.warn(
+            `livekit participant_joined reconcile failed for room=${roomName}: ${String(err)}`
+          );
         }
       } else {
         logger.debug(

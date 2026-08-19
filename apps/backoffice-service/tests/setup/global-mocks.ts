@@ -78,6 +78,16 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
     getStreamStats: jest.fn(async () => ({ found: false })),
     adminUpdateThumbnail: jest.fn(async () => undefined),
     adminListViewerSessions: jest.fn(async () => ({ sessions: [], total: 0 })),
+    adminGetLivestreamReportCounts: jest.fn(async () => []),
+    getComments: jest.fn(async () => ({
+      comments: [],
+      nextCursor: "",
+      hasMore: false,
+    })),
+    forceEndStreamsByCreator: jest.fn(async () => ({
+      ok: true,
+      endedCount: 0,
+    })),
   },
 }));
 jest.mock("../../src/grpc/chat.client.js", () => ({

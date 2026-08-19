@@ -277,6 +277,15 @@ export const COMMUNITY_MESSAGES = {
     en: "This community is closed",
     th: "คอมมูนิตี้นี้ปิดอยู่",
   },
+  // Banner copy + reopen denial for a community closed because its admin/owner
+  // was permanently system-banned. The community stays visible to its members
+  // (never deleted, never removed from their list) but is read-only, and only a
+  // separate administrative action can revive it — an unban does NOT reopen it.
+  COMMUNITY_CLOSED_ADMIN_BANNED: {
+    vi: "Quản trị viên của cộng đồng này đã bị cấm. Cộng đồng này không còn khả dụng",
+    en: "The admin of this community has been banned. This community is no longer available.",
+    th: "ผู้ดูแลคอมมูนิตี้นี้ถูกแบน คอมมูนิตี้นี้ไม่พร้อมใช้งานอีกต่อไป",
+  },
   // Thrown when an action is attempted on a community the platform SUSPENDED.
   COMMUNITY_SUSPENDED: {
     vi: "Cộng đồng này đang bị tạm khóa",

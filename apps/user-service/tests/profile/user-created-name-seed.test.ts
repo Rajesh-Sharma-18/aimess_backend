@@ -1,7 +1,7 @@
 /**
- * `user.created` → profile seeding. The event now carries the verified social
- * provider name; this pins the mapping AND the fallback, so a provider that
- * sends nothing can never write a blank name over the placeholder pair.
+ * `user.created` → profile seeding. Social-provider names auto-fill when
+ * present; password registration leaves firstName/lastName empty so the user
+ * fills them in on the profile-details step.
  */
 jest.mock("../../src/repositories/user-profile.repository.js", () => ({
   userProfileRepository: {
@@ -64,15 +64,15 @@ describe("createFromUserCreatedEvent — name seeding", () => {
     );
   });
 
-  it("falls back to the account placeholder when the event carries no name", async () => {
+  it("leaves fields empty when the event carries no name (password registration)", async () => {
     await userProfileService.createFromUserCreatedEvent(BASE);
 
     expect(repo.createFromRegistration).toHaveBeenCalledWith(
-      expect.objectContaining({ firstName: "rajesh", lastName: "User" })
+      expect.objectContaining({ firstName: "", lastName: "" })
     );
   });
 
-  it("treats blank provider values as absent, never writing an empty name", async () => {
+  it("treats blank provider values as absent, leaving fields empty", async () => {
     await userProfileService.createFromUserCreatedEvent({
       ...BASE,
       firstName: "   ",
@@ -80,18 +80,57 @@ describe("createFromUserCreatedEvent — name seeding", () => {
     });
 
     expect(repo.createFromRegistration).toHaveBeenCalledWith(
-      expect.objectContaining({ firstName: "rajesh", lastName: "User" })
+      expect.objectContaining({ firstName: "", lastName: "" })
     );
   });
 
-  it("keeps a given name without a surname (surname stays the placeholder)", async () => {
+  it("keeps a given name without a surname (surname stays empty)", async () => {
     await userProfileService.createFromUserCreatedEvent({
       ...BASE,
       firstName: "Rajesh",
     });
 
     expect(repo.createFromRegistration).toHaveBeenCalledWith(
-      expect.objectContaining({ firstName: "Rajesh", lastName: "User" })
+      expect.objectContaining({ firstName: "Rajesh", lastName: "" })
+    );
+  });
+
+  it("never derives name from email (regression: rajesh.sharma@gmail.com)", async () => {
+    await userProfileService.createFromUserCreatedEvent({
+      ...BASE,
+      account: "rajesh_sharma",
+      email: "rajesh.sharma@gmail.com",
+      isGoogleLogin: false,
+    });
+
+    const call = repo.createFromRegistration.mock.calls[0][0];
+    expect(call.firstName).toBe("");
+    expect(call.lastName).toBe("");
+  });
+
+  it("Apple registration without name leaves fields empty", async () => {
+    await userProfileService.createFromUserCreatedEvent({
+      ...BASE,
+      email: "apple-relay@privaterelay.appleid.com",
+      firstName: undefined,
+      lastName: undefined,
+    });
+
+    expect(repo.createFromRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ firstName: "", lastName: "" })
+    );
+  });
+
+  it("Apple registration with name auto-fills both fields", async () => {
+    await userProfileService.createFromUserCreatedEvent({
+      ...BASE,
+      email: "user@icloud.com",
+      firstName: "Rajesh",
+      lastName: "Sharma",
+    });
+
+    expect(repo.createFromRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ firstName: "Rajesh", lastName: "Sharma" })
     );
   });
 

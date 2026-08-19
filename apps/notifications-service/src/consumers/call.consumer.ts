@@ -7,6 +7,7 @@ import {
 } from "@aimess/constants";
 
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { buildDeepLink } from "../lib/deep-link.js";
 import { callCopy } from "../lib/notification-copy.js";
 import { generateEventThreadId } from "../lib/thread-id.js";
@@ -24,6 +25,35 @@ import { pushToUser } from "../services/push.service.js";
  * Best-effort and safely duplicable: the client dedups on callId.
  */
 const CALL_PUSH_QUEUE = "call.push.queue";
+
+/**
+ * Where a call event goes after its retries are exhausted, so it is parked for
+ * inspection/replay instead of destroyed.
+ *
+ * Deliberately NOT wired as an `x-dead-letter-exchange` on `call.push.queue`:
+ * queue arguments are immutable once declared, chat-service asserts that queue
+ * with `{durable:true}` and nothing else, and a mismatched redeclare fails the
+ * channel — which would take the consumer down on deploy. Publishing here
+ * explicitly needs no argument change on either side and is the same amqplib
+ * the rest of this file already uses.
+ */
+const CALL_PUSH_DLQ = "call.push.dlq";
+
+/**
+ * Attempts before a message is parked. The projection is idempotent by
+ * construction (`groupKey = call:<callId>` transitions one row, never stacks
+ * one), so a replay is free and the only cost of another attempt is latency.
+ * One retry was not enough to outlive an ordinary rolling restart of
+ * chat-service, and the message it dropped was somebody's call history.
+ */
+const MAX_DELIVERY_ATTEMPTS = 3;
+
+/** 1-based attempt number for this delivery, carried on the message itself. */
+function attemptOf(message: amqp.ConsumeMessage): number {
+  const raw = message.properties.headers?.["x-delivery-attempt"];
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
 
 /**
  * Inbox type for call HISTORY. ONE type, not one per outcome — the outcome is
@@ -61,6 +91,8 @@ interface CallCancelPayload {
   reason: string;
   callerId?: string;
   callerName?: string;
+  /** Session of the device that caused the dismissal — never pushed to. */
+  excludeSessionId?: string;
 }
 
 // Same wire shape as the cancel payload; the meaning lives in the queue `type`.
@@ -74,6 +106,8 @@ interface CallActivityPayload {
   /** Canonical terminal CallTimelineStatus from chat-service. */
   status: string;
   durationSec: number;
+  /** Ring length in seconds; disambiguates a cancelled ring (see grace window). */
+  ringDurationSec?: number;
   privateRoomId: string;
   endedAt: number;
   callerName: string;
@@ -81,6 +115,75 @@ interface CallActivityPayload {
   calleeName: string;
   calleeAvatar: string;
 }
+
+/**
+ * One push per (call, recipient), no matter how many times the event is
+ * delivered.
+ *
+ * The recipient is part of the key, not an afterthought: a GROUP call publishes
+ * one `call.incoming` per rung member, all carrying the same callId. Keyed on
+ * the callId alone, this suppressed every member's ring but the first — the
+ * dedup silencing the very phones it exists to protect.
+ *
+ * The consumer below acks INSIDE a detached async task with `prefetch(20)`, so
+ * a restart, a channel drop or a broker reconnect mid-flight leaves the message
+ * unacked and RabbitMQ redelivers it. That is a genuine second `call.incoming`
+ * — a second VoIP push, a second PushKit delivery, and on iOS the second one
+ * lands against a callId the client may already consider settled, which is
+ * exactly the state that makes it fabricate a caller-less "Incoming call".
+ *
+ * `apns-collapse-id` only helps while APNs still HOLDS the first copy; once
+ * delivered, collapsing cannot recall it. Suppressing the duplicate here is the
+ * half that always works.
+ *
+ * Deliberately FAILS OPEN. A ring that is never sent is a missed call; a ring
+ * sent twice is noise. If Redis is unreachable we send — every time.
+ *
+ * Claimed BEFORE the push rather than after: `pushToUser` never throws (it
+ * swallows its own delivery failures), so there is no retry-after-failure path
+ * that an early claim could starve. The TTL is the ringing window — past that
+ * the callId can never ring again anyway.
+ */
+async function claimPushOnce(
+  kind: string,
+  callId: string,
+  calleeId: string,
+  ttlSec: number
+): Promise<boolean> {
+  try {
+    const won = await redis.set(
+      `push:sent:${kind}:${callId}:${calleeId}`,
+      "1",
+      "EX",
+      ttlSec,
+      "NX"
+    );
+    return won === "OK";
+  } catch (error) {
+    logger.warn(
+      `[push:consume] ${kind} dedup unavailable for ${callId}/${calleeId}, sending anyway: ${String(error)}`
+    );
+    return true;
+  }
+}
+
+/**
+ * The missed-call alert gets the same one-per-call claim as the ring, for the
+ * same reason and with the same fail-open bias.
+ *
+ * The PRODUCER side is already exactly-once: every path that resolves an
+ * unanswered ring calls `fanOutUnansweredRing` only after winning the atomic
+ * status claim on the call row, so there is one publish per call. What this
+ * covers is the transport — the consumer acks inside a detached task, so a
+ * broker reconnect or a mid-flight restart redelivers a genuine second
+ * `call.missed`, and the collapse key cannot recall a copy APNs already
+ * delivered. Buzzing someone twice for one missed call is the visible symptom.
+ *
+ * A callId reaches MISSED at most once (it is a terminal state on a unique
+ * row), so there is no legitimate second alert this can suppress — which is
+ * what makes the long TTL safe. It matches the push's own 24h expiry.
+ */
+const MISSED_PUSH_DEDUP_TTL_SEC = 24 * 60 * 60;
 
 async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   // HOP 3 of the push pipeline (RabbitMQ → notifications-service). If this
@@ -92,6 +195,20 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   );
   if (!data.calleeId || !data.callId) {
     logger.warn("[push:consume] dropped — missing calleeId/callId");
+    return;
+  }
+
+  if (
+    !(await claimPushOnce(
+      "call.incoming",
+      data.callId,
+      data.calleeId,
+      env.CALL_RINGING_TIMEOUT_SEC
+    ))
+  ) {
+    logger.warn(
+      `[push:consume] call.incoming callId=${data.callId} suppressed — ring already pushed (redelivery)`
+    );
     return;
   }
 
@@ -164,9 +281,27 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     return;
   }
 
+  if (
+    !(await claimPushOnce(
+      "call.missed",
+      data.callId,
+      data.calleeId,
+      MISSED_PUSH_DEDUP_TTL_SEC
+    ))
+  ) {
+    logger.warn(
+      `[push:consume] call.missed callId=${data.callId} suppressed — already pushed (redelivery)`
+    );
+    return;
+  }
+
   const isVideo = String(data.callType).toUpperCase() === "VIDEO";
   const caller = data.callerName || "Someone";
-  const deepLink = buildDeepLink("call", data.callId);
+  // The DM, not the call. A missed call is over — there is nothing to open on
+  // `aimess://call/<callId>`, and the matching Notification-Center row already
+  // deep-links to the conversation. Tapping either now lands in the same place,
+  // where the call card and the call-back button live.
+  const deepLink = buildDeepLink("conversation", data.callerId);
 
   await pushToUser({
     userId: data.calleeId,
@@ -227,11 +362,34 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
     skipInbox: true,
     dataOnly: true,
     priority: "high",
-    ttl: 30,
+    // MUST NOT be shorter than the ring's own TTL. A dismiss that expires while
+    // the ring it dismisses is still queued is worse than useless: APNs drops
+    // the cancel, keeps the CALL_INCOMING, and delivers the ring when the
+    // device comes back — a phone ringing for a call that ended minutes ago.
+    // This is always published AFTER the ring, so an equal TTL already outlives
+    // it; tying both to the same env value keeps that true if it is ever tuned.
+    ttl: env.CALL_RINGING_TIMEOUT_SEC,
     collapseKey: `call:${data.callId}`,
-    // Dismiss a stale VoIP ring on iOS too — same live-event exception as
-    // handleCallIncoming's allowVoip.
-    allowVoip: true,
+    // Never push a dismissal back to the device that produced it. It already
+    // tore its own ring down, and this is a high-priority push that WAKES it —
+    // the wake being the trigger that resurfaced a stale ring on iOS. Every
+    // OTHER device of this user still gets the backstop.
+    excludeSessionId: data.excludeSessionId,
+    // allowVoip is deliberately OFF, for the same reason as handleCallHandled
+    // below: iOS 13+ terminates the process if a PushKit delivery finishes
+    // without a `reportNewIncomingCall`, so the app is FORCED to fabricate a
+    // ring for whatever arrives on that channel. Routing a dismiss over VoIP
+    // therefore produced a second, caller-less "Incoming call" screen a few
+    // seconds after every cancel/decline/hangup — the ring the user had just
+    // got rid of, coming back. The VoIP channel can only ever mean "incoming".
+    //
+    // Live devices already learn of this over the socket (`call:cancelled`);
+    // this push only backstops a backgrounded one, which the normal data push
+    // below reaches (iOS delivers it to `didReceiveRemoteNotification`, where
+    // the app dismisses the CallKit ring without fabricating one). A device
+    // suspended so deeply that even that is lost still falls back to the
+    // client-side ring timeout.
+    allowVoip: false,
     data: {
       type: "CALL_CANCELLED",
       callId: data.callId,
@@ -257,13 +415,13 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
   // still ringing dismisses. That policy lives on the client; the backend's job
   // is to make the two cases distinguishable, which the `CALL_HANDLED` type does.
   //
-  // allowVoip is deliberately OFF (unlike handleCallCancel). A PushKit/VoIP push
-  // MUST report an incoming call to CallKit or iOS penalises the app — so the
-  // VoIP channel can only ever mean "incoming", never "stop". Routing a
-  // stop-ringing hint over VoIP is precisely what turned an answered call into a
-  // cancelled one. A normal data push is correct here; live devices are already
-  // told over the socket (`call:handled`), and this only backstops backgrounded
-  // siblings.
+  // allowVoip is deliberately OFF, as it now is on handleCallCancel too. A
+  // PushKit/VoIP push MUST report an incoming call to CallKit or iOS penalises
+  // the app — so the VoIP channel can only ever mean "incoming", never "stop".
+  // Routing a stop-ringing hint over VoIP is precisely what turned an answered
+  // call into a cancelled one. A normal data push is correct here; live devices
+  // are already told over the socket (`call:handled`), and this only backstops
+  // backgrounded siblings.
   await pushToUser({
     userId: data.calleeId,
     category: "callEnabled",
@@ -274,10 +432,17 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
     skipInbox: true,
     dataOnly: true,
     priority: "high",
-    ttl: 30,
+    // Same reasoning as handleCallCancel: never shorter than the ring's TTL, or
+    // the stop-ringing hint expires out from under a ring APNs is still holding.
+    ttl: env.CALL_RINGING_TIMEOUT_SEC,
     // Shares the ring's collapse key so it REPLACES the ring notification on the
     // sibling device rather than stacking beside it.
     collapseKey: `call:${data.callId}`,
+    // "Handled ELSEWHERE" is meaningless to the device that handled it — and it
+    // is the device most likely to be mid-call, where an unnecessary wake is
+    // most expensive. This is the push twin of the socket path's
+    // `handledByLegId` exclusion.
+    excludeSessionId: data.excludeSessionId,
     allowVoip: false,
     data: {
       type: "CALL_HANDLED",
@@ -307,7 +472,9 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
  * an outgoing call, and a call the reader was present for, are history — not
  * something to badge them about.
  */
-async function handleCallActivity(data: CallActivityPayload): Promise<void> {
+export async function handleCallActivity(
+  data: CallActivityPayload
+): Promise<void> {
   logger.info(
     `[push:consume] call.activity callId=${data.callId} status=${data.status} ` +
       `type=${data.callType} duration=${data.durationSec}`
@@ -321,6 +488,13 @@ async function handleCallActivity(data: CallActivityPayload): Promise<void> {
     String(data.callType).toUpperCase() === "VIDEO" ? "VIDEO" : "AUDIO";
   const status = String(data.status).toUpperCase();
   const durationSec = Math.max(0, Math.floor(Number(data.durationSec) || 0));
+  // Absent on a legacy/in-flight event — left undefined so the shared mapper
+  // falls back to the previous "a cancelled ring is a missed call" behaviour
+  // rather than silently un-badging it.
+  const ringDurationSec =
+    data.ringDurationSec === undefined || data.ringDurationSec === null
+      ? undefined
+      : Math.max(0, Math.floor(Number(data.ringDurationSec) || 0));
 
   // Direction comes from the call record's own participants — never from text.
   const sides: {
@@ -346,47 +520,87 @@ async function handleCallActivity(data: CallActivityPayload): Promise<void> {
     },
   ];
 
-  for (const side of sides) {
-    await pushToUser({
-      userId: side.userId,
-      category: "callEnabled",
-      type: CALL_ACTIVITY_TYPE,
-      copy: callCopy.activity(
-        side.peerName,
-        callType,
-        status,
-        side.direction,
-        durationSec
-      ),
-      // The peer's name is the card heading; the body is the call line.
-      inboxTitle: side.peerName || null,
-      // The peer — so the read path resolves their fresh name/avatar and a click
-      // opens their DM, the same contract a friendship row uses.
-      actorId: side.peerId,
-      deepLink: buildDeepLink("conversation", side.peerId),
-      // History, not a live event: the inbox row is the whole point.
-      skipPush: true,
-      data: {
+  // Each participant's row is written INDEPENDENTLY. Sequentially awaiting one
+  // side meant a failure on the first (the caller) threw out of this handler
+  // before the second was ever attempted, so one flaky recipient silently cost
+  // the OTHER participant their call history too. Both are derived from the
+  // same canonical call record; neither depends on the other succeeding.
+  const results = await Promise.allSettled(
+    sides.map((side) =>
+      pushToUser({
+        userId: side.userId,
+        category: "callEnabled",
         type: CALL_ACTIVITY_TYPE,
-        callId: data.callId,
-        callType,
-        callStatus: status,
-        callDirection: side.direction,
-        durationSec: String(durationSec),
-        peerId: side.peerId,
-        peerAvatarUrl: side.peerAvatar,
-        roomId: data.privateRoomId ?? "",
-        endedAt: String(data.endedAt ?? ""),
-        // ONE card per call, transitioned in place — never a card per state.
-        groupKey: `call:${data.callId}`,
-        // A settled call must not jump back to unread when a late duplicate
-        // transition rewrites it.
-        resurface: "false",
-        ...(isUnreadCallActivity(status, side.direction)
-          ? {}
-          : { markRead: "true" }),
-      },
-    });
+        copy: callCopy.activity(
+          side.peerName,
+          callType,
+          status,
+          side.direction,
+          durationSec,
+          ringDurationSec
+        ),
+        // The peer's name is the card heading; the body is the call line.
+        inboxTitle: side.peerName || null,
+        // The peer — so the read path resolves their fresh name/avatar and a
+        // click opens their DM, the same contract a friendship row uses.
+        actorId: side.peerId,
+        deepLink: buildDeepLink("conversation", side.peerId),
+        // History, not a live event: the inbox row is the whole point.
+        skipPush: true,
+        data: {
+          type: CALL_ACTIVITY_TYPE,
+          callId: data.callId,
+          callType,
+          callStatus: status,
+          callDirection: side.direction,
+          durationSec: String(durationSec),
+          peerId: side.peerId,
+          peerAvatarUrl: side.peerAvatar,
+          roomId: data.privateRoomId ?? "",
+          endedAt: String(data.endedAt ?? ""),
+          // ONE card per call, transitioned in place — never a card per state.
+          groupKey: `call:${data.callId}`,
+          // Where a tap on this row goes. Every other navigable notification
+          // type carries this; call rows did not, so a client had to special-
+          // case them and infer the destination from `peerId`/`roomId`.
+          // `serializeNotification` already parses `data.navigation` into a
+          // top-level `navigation` field, so this is purely additive — and it
+          // is the same destination the missed-call push already deep-links to.
+          navigation: JSON.stringify({
+            type: "conversation",
+            id: side.peerId,
+            roomId: data.privateRoomId ?? "",
+          }),
+          // A settled call must not jump back to unread when a late duplicate
+          // transition rewrites it.
+          resurface: "false",
+          ...(isUnreadCallActivity(status, side.direction, ringDurationSec)
+            ? {}
+            : { markRead: "true" }),
+        },
+      })
+    )
+  );
+
+  // A row that never got written is a hole in someone's call history, and
+  // pushToUser swallows its own failures — so name the recipient here or it is
+  // invisible. Throwing keeps the message unacked so the consumer can redeliver
+  // it (the groupKey makes a replay idempotent).
+  const failed = results
+    .map((result, index) => ({ result, side: sides[index]! }))
+    .filter((entry) => entry.result.status === "rejected");
+  if (failed.length > 0) {
+    for (const { result, side } of failed) {
+      logger.error(
+        `[call.activity] inbox row FAILED callId=${data.callId} ` +
+          `recipient=${side.userId} peer=${side.peerId} direction=${side.direction} ` +
+          `callType=${callType} callStatus=${status} type=${CALL_ACTIVITY_TYPE}: ` +
+          String((result as PromiseRejectedResult).reason)
+      );
+    }
+    throw new Error(
+      `call.activity projection failed for ${failed.length} of ${sides.length} participants (callId=${data.callId})`
+    );
   }
 }
 
@@ -397,6 +611,9 @@ export async function startCallConsumer(): Promise<void> {
   // chat-service publishes to a plain durable queue (NOT an exchange). Args MUST
   // match the publisher (apps/chat-service/src/events/publish-call-incoming.ts).
   await channel.assertQueue(CALL_PUSH_QUEUE, { durable: true });
+  // Plain durable queue, no arguments — nothing here changes the args of
+  // CALL_PUSH_QUEUE, so the redeclare stays compatible with chat-service's.
+  await channel.assertQueue(CALL_PUSH_DLQ, { durable: true });
   await channel.prefetch(20);
 
   logger.info("Call push consumer started");
@@ -425,9 +642,49 @@ export async function startCallConsumer(): Promise<void> {
         }
         channel.ack(message);
       } catch (error) {
-        // Deterministic/parse error → drop (no requeue) so it doesn't spin.
-        logger.error("Call push consumer failed to process message", error);
-        channel.nack(message, false, false);
+        // Bounded retry, then PARK — never destroy. Dropping on the first
+        // failure treated every error as deterministic, so one transient blip
+        // (chat-service restarting, a gRPC deadline) permanently erased that
+        // call from both participants' history. One retry was better but still
+        // did not outlive an ordinary rolling restart.
+        //
+        // Replay is safe by construction: every projection is keyed on
+        // `groupKey = call:<callId>` and transitions the same row, so a
+        // redelivery can only ever rewrite what is already there.
+        //
+        // The attempt count rides on the message because `fields.redelivered`
+        // is a boolean and cannot count past one. Requeue-with-header is a
+        // republish, so the message goes to the BACK of the queue rather than
+        // spinning at the head — a poisonous message cannot starve the others.
+        const attempt = attemptOf(message);
+        if (attempt < MAX_DELIVERY_ATTEMPTS) {
+          logger.error(
+            `Call push consumer failed (attempt ${attempt}/${MAX_DELIVERY_ATTEMPTS}), retrying`,
+            error
+          );
+          channel.sendToQueue(CALL_PUSH_QUEUE, message.content, {
+            persistent: true,
+            headers: {
+              ...(message.properties.headers ?? {}),
+              "x-delivery-attempt": attempt + 1,
+            },
+          });
+          channel.ack(message);
+          return;
+        }
+        logger.error(
+          `Call push consumer exhausted ${MAX_DELIVERY_ATTEMPTS} attempts — parking in ${CALL_PUSH_DLQ}`,
+          error
+        );
+        channel.sendToQueue(CALL_PUSH_DLQ, message.content, {
+          persistent: true,
+          headers: {
+            ...(message.properties.headers ?? {}),
+            "x-delivery-attempt": attempt,
+            "x-death-reason": String(error).slice(0, 500),
+          },
+        });
+        channel.ack(message);
       }
     })();
   });

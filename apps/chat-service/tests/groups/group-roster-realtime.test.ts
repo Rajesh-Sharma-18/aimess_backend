@@ -138,7 +138,7 @@ describe("POST /api/chat/group-members/add", () => {
     });
   });
 
-  it("RE-ADD: a KICKED row is re-admitted as ACTIVE with every removal field cleared", async () => {
+  it("RE-ADD: a KICKED row is re-admitted as ACTIVE with every KICK field cleared (a ban is not)", async () => {
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       userId: TARGET,
       status: "KICKED",
@@ -161,12 +161,32 @@ describe("POST /api/chat/group-members/add", () => {
         kickedAt: null,
         kickedBy: null,
         kickReason: null,
-        bannedAt: null,
-        bannedBy: null,
       })
+    );
+    // A ban must survive a re-invite — clearing it here would let any
+    // ADMIN/MODERATOR launder a ban into a plain add, bypassing `unban()`.
+    expect(mocks.groupMemberRepo.upsert.mock.calls[0][2]).not.toHaveProperty(
+      "bannedAt"
     );
     // The re-added member's own channel is what un-sticks their client.
     expect(channelsFor("group:added")).toEqual([`user:${TARGET}`]);
+  });
+
+  it("RE-ADD: a BANNED row is refused — the ban outlives the invite", async () => {
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "BANNED",
+      bannedAt: new Date(),
+      bannedBy: TEST_USER_ID,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(403);
+    expect(mocks.groupMemberRepo.upsert).not.toHaveBeenCalled();
   });
 
   it("CAPACITY: a full group rejects a NEW member but the already-ACTIVE case is not a capacity error", async () => {

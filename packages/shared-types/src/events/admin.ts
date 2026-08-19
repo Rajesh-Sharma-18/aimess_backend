@@ -50,6 +50,13 @@ export type AdminUserEventPayload = {
   actorId: string;
   /** ISO timestamp the mutation was applied. */
   at: string;
+  // Scope of a Super Admin ban. "SYSTEM" is the permanent platform-wide ban;
+  // absent on legacy publishers and on suspend, both of which mean SYSTEM.
+  // A "COMMUNITY"-scoped ban never reaches this queue at all — it is applied
+  // entirely inside community-service and must not touch sessions or login.
+  banType?: "SYSTEM" | "COMMUNITY";
+  // True for a permanent ban (no expiry). Suspends set this false/absent.
+  permanent?: boolean;
 };
 
 /**

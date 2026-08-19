@@ -119,15 +119,30 @@ export type DeliveryDecision = "ALLOW" | "CATEGORY_OFF" | "QUIET_HOURS";
  * The single decision point for account-level notification preferences.
  * Category toggle first, then quiet hours.
  */
+/**
+ * The only notification types quiet hours may never silence.
+ *
+ * A LIVE ring is time-critical, comes from a known contact, and is worthless a
+ * minute later — the `callEnabled` toggle is the only thing that may stop it.
+ * Everything else under that category is NOT live: a missed-call alert is a
+ * report of something that already finished, so it obeys quiet hours like any
+ * other push and the user finds the row waiting (the call-history inbox row is
+ * written before the quiet-hours gate, so nothing is lost). Exempting the whole
+ * `callEnabled` category is what used to wake people at 3am for a call that had
+ * already ended.
+ */
+const QUIET_HOURS_EXEMPT_TYPES = new Set<string>(["CALL_INCOMING"]);
+
 export function evaluateDelivery(
   settings: NotificationSettings,
-  category: NotificationCategory
+  category: NotificationCategory,
+  type?: string
 ): DeliveryDecision {
   if (!settings[category]) return "CATEGORY_OFF";
-  // A ring is time-critical and comes from a known contact, so quiet hours
-  // never silence it — the `callEnabled` toggle above is the only thing that
-  // can. This matches how every mainstream messenger treats Do Not Disturb.
-  if (category === "callEnabled") return "ALLOW";
+  if (type !== undefined && QUIET_HOURS_EXEMPT_TYPES.has(type)) return "ALLOW";
+  // Back-compat: a caller that passes no type keeps the old category-wide call
+  // exemption, so nothing silently starts being suppressed mid-rollout.
+  if (type === undefined && category === "callEnabled") return "ALLOW";
   if (isInQuietHours(settings)) return "QUIET_HOURS";
   return "ALLOW";
 }

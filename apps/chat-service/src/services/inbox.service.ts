@@ -134,6 +134,17 @@ export interface InboxItem {
    */
   isDisbanded: boolean | null;
   /**
+   * GROUP-only: the group was CLOSED because its owner was permanently banned
+   * by a super admin. Unlike a disband the row stays in the list and history
+   * stays readable, but every write is refused with
+   * `CHAT_GROUP_CLOSED_ADMIN_BANNED`. Carried here so a cold open renders the
+   * read-only composer + banner without waiting for the `group:closed` socket
+   * event. Null for PRIVATE rows.
+   */
+  isClosed: boolean | null;
+  /** GROUP-only: why the group was closed — "ADMIN_BANNED" today. Null otherwise. */
+  closedReasonCode: string | null;
+  /**
    * The room's effective auto-delete policy — the SAME DTO the
    * GET/PUT `/auto-delete` endpoints and the `conv:auto_delete:updated` socket
    * event return (see `lib/auto-delete.ts#buildAutoDeleteWire`), including
@@ -344,6 +355,8 @@ export class InboxService {
       memberMutedUntil: null,
       memberMutedUntilMs: null,
       isDisbanded: null,
+      isClosed: null,
+      closedReasonCode: null,
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
         conversationType: "PRIVATE",
         policyVersion: readPolicyVersion(room),
@@ -412,6 +425,8 @@ export class InboxService {
       memberMutedUntil: room.memberMutedUntil ?? null,
       memberMutedUntilMs: room.memberMutedUntilMs ?? null,
       isDisbanded: room.status === "DISBANDED",
+      isClosed: room.status === "CLOSED",
+      closedReasonCode: room.closedReasonCode ?? null,
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(room), {
         conversationType: "GROUP",
         policyVersion: readPolicyVersion(room),

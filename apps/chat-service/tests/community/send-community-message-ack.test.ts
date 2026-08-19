@@ -86,6 +86,7 @@ describe("sendCommunityMessage — ack payload carries the created message ident
       messageType: "TEXT",
       parentMessageId: null,
       quoteData: null,
+      sequenceNumber: 42,
       createdAt: CREATED_AT,
     };
 
@@ -93,17 +94,28 @@ describe("sendCommunityMessage — ack payload carries the created message ident
       createCommunityImpl(makeDepsWithSaved(saved))
         .sendCommunityMessage as Handler,
       REQ
-    )) as { messageId: string; roomId: string; sentAt: number };
+    )) as {
+      messageId: string;
+      roomId: string;
+      sentAt: number;
+      sequenceNumber: number;
+    };
 
     expect(res).toEqual({
       messageId: "689f0c3a1b2c3d4e5f607182",
       roomId: "room-abc",
       sentAt: CREATED_AT.getTime(),
+      sequenceNumber: 42,
     });
     // Never the proto3 defaults the empty-ack bug produced.
     expect(res.messageId).not.toBe("");
     expect(res.roomId).not.toBe("");
     expect(res.sentAt).toBeGreaterThan(0);
+    // The ordering key. `sentAt` is the row's createdAt, stamped a round trip
+    // AFTER the sequence is allocated, so the two can disagree — without the
+    // sequence here the sender can only place its own just-acked row by a
+    // timestamp that is not the order the server will serve it back in.
+    expect(res.sequenceNumber).toBe(42);
   });
 
   it("derives roomId from the persisted row, not the request echo", async () => {

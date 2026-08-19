@@ -15,6 +15,19 @@ export type CommunityImageView = {
   expiresIn: number;
 };
 
+// CLOSED_BY_SYSTEM_BAN is a wire-only refinement of CLOSED — the stored value
+// is CLOSED either way, so guards are unaffected; it tells clients the close
+// came from the owner's permanent ban and the owner cannot undo it.
+export type CommunityWireStatus = "ACTIVE" | "CLOSED" | "CLOSED_BY_SYSTEM_BAN";
+
+// Server-rendered banner so no client has to hardcode the sentence;
+// `messageKey` is there for clients that prefer their own copy.
+export type CommunityClosedBanner = {
+  type: "ADMIN_BANNED";
+  messageKey: "COMMUNITY_CLOSED_ADMIN_BANNED";
+  message: string;
+};
+
 /** A single live stream surfaced inside a community detail response. */
 export type LiveStreamSummary = {
   id: string;
@@ -124,7 +137,11 @@ export type CommunityData = {
    * legacy data ⇒ "ACTIVE". This is the field clients branch on to disable
    * community actions; `moderationStatus` is a separate platform concern.
    */
-  status: "ACTIVE" | "CLOSED";
+  status: CommunityWireStatus;
+  // Machine-readable cause of an owner close ("ADMIN_BANNED"); null otherwise.
+  closedReasonCode: string | null;
+  // Localized read-only banner; null when the community is not ban-closed.
+  banner: CommunityClosedBanner | null;
   createdAt: string;
   updatedAt: string;
   lastActivity: CommunityLastActivity;
@@ -398,7 +415,11 @@ export type CommunityListItem = {
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
-  status: "ACTIVE" | "CLOSED";
+  status: CommunityWireStatus;
+  // Machine-readable cause of an owner close ("ADMIN_BANNED"); null otherwise.
+  closedReasonCode: string | null;
+  // Localized read-only banner; null when the community is not ban-closed.
+  banner: CommunityClosedBanner | null;
   /**
    * True when an admin/moderator silenced the CALLER in this community
    * (can still read, cannot post). Distinct from `isMuted` (notification mute).
@@ -491,7 +512,7 @@ export type CommunityDiscoverItem = {
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
-  status: "ACTIVE" | "CLOSED";
+  status: CommunityWireStatus;
 };
 
 /** A single community member row returned by the member-listing endpoint. */
@@ -828,7 +849,7 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
     /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
-    status: "ACTIVE" | "CLOSED";
+    status: CommunityWireStatus;
   };
 };
 
@@ -894,7 +915,7 @@ export type MyInviteData = CommunityInviteData & {
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
     /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
-    status: "ACTIVE" | "CLOSED";
+    status: CommunityWireStatus;
   };
 };
 
@@ -974,7 +995,7 @@ export type MyReportData = CommunityReportData & {
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
     /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
-    status: "ACTIVE" | "CLOSED";
+    status: CommunityWireStatus;
   };
 };
 

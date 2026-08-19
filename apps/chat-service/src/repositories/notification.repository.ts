@@ -2,6 +2,7 @@
 import {
   categoryWhere,
   LOGIN_DETECTED_TYPE,
+  type NotificationCategory,
 } from "../lib/notification-category.js";
 import { env } from "../config/env.js";
 
@@ -228,18 +229,44 @@ export class NotificationRepository {
     });
   }
 
-  async countByUserId(userId: string): Promise<number> {
+  /**
+   * TOTAL rows the user can see in one tab — read and unread alike.
+   *
+   * Distinct from `countByCategories`, which is unread-only because it drives
+   * the header badges. The list endpoint needs this one instead: feeding an
+   * unread count into `pagination.totalData` reported `totalData: 0` /
+   * `totalPage: 0` for any tab whose rows had all been read, while the same
+   * response still returned rows and `hasMore: true`.
+   *
+   * Same `(userId, type)` index and the same self-login exclusion as the list
+   * query, so the number always describes exactly the rows that query returns.
+   */
+  async countByUserId(
+    userId: string,
+    category: NotificationCategory = "ALL",
+    viewerSessionId?: string | null
+  ): Promise<number> {
     return this.prisma.notification.count({
-      where: { userId, isDeleted: false },
+      where: {
+        userId,
+        isDeleted: false,
+        ...combineWhere(
+          excludeSelfLoginWhere(viewerSessionId),
+          categoryWhere(category)
+        ),
+      },
     });
   }
 
   /**
-   * Per-tab UNREAD counts for the Notification Center header badges. Five
+   * Per-tab UNREAD counts for the Notification Center header badges. Six
    * parallel counts (one per tab) — cheaper than a groupBy round-trip on
    * Mongo, and each predicate hits the `(userId, type)` index. Unread-only
    * so the badge decrements live as the user reads rows; the list-page
    * invalidation on `markRead` / `markAllRead` triggers the refetch.
+   *
+   * The per-tab buckets are disjoint (see `categorize`), so they sum to `all`
+   * — a row can never be counted under two tabs.
    */
   async countByCategories(
     userId: string,
@@ -249,6 +276,7 @@ export class NotificationRepository {
     friends: number;
     communities: number;
     mentions: number;
+    calls: number;
     system: number;
   }> {
     const selfExclusion = excludeSelfLoginWhere(viewerSessionId);
@@ -260,14 +288,16 @@ export class NotificationRepository {
           ...combineWhere(selfExclusion, categoryWhere(cat)),
         },
       });
-    const [all, friends, communities, mentions, system] = await Promise.all([
-      countFor("ALL"),
-      countFor("FRIENDS"),
-      countFor("COMMUNITIES"),
-      countFor("MENTIONS"),
-      countFor("SYSTEM"),
-    ]);
-    return { all, friends, communities, mentions, system };
+    const [all, friends, communities, mentions, calls, system] =
+      await Promise.all([
+        countFor("ALL"),
+        countFor("FRIENDS"),
+        countFor("COMMUNITIES"),
+        countFor("MENTIONS"),
+        countFor("CALLS"),
+        countFor("SYSTEM"),
+      ]);
+    return { all, friends, communities, mentions, calls, system };
   }
 
   async deleteById(

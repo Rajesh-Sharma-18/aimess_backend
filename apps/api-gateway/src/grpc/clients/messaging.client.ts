@@ -292,10 +292,18 @@ export interface AnswerCallParams {
   calleeId: string;
   /** The leg racing to answer. Only one leg per callee wins; the rest get CONFLICT. */
   legId?: string;
+  /**
+   * Auth session of the acting device, so the backstop "stop ringing" PUSH
+   * skips it. `legId` cannot serve here — it never crosses the push queue and
+   * device tokens are keyed by session, not by leg.
+   */
+  sessionId?: string;
 }
 export interface DeclineCallParams {
   callId: string;
   calleeId: string;
+  /** See AnswerCallParams.sessionId. */
+  sessionId?: string;
 }
 export interface EndCallParams {
   callId: string;
@@ -304,6 +312,8 @@ export interface EndCallParams {
   legId?: string;
   /** "NO_ANSWER" when the caller's ring window elapsed (see EndCallRequest). */
   reason?: "NO_ANSWER";
+  /** See AnswerCallParams.sessionId. */
+  sessionId?: string;
 }
 export interface EndCallResult {
   callId: string;
@@ -364,6 +374,10 @@ export interface MessagingClient {
     eventType: string;
     /** Participants left in the room; -1 when the webhook didn't report one. */
     remainingParticipants?: number;
+  }): Promise<unknown>;
+  handleLiveKitParticipantJoined(p: {
+    roomName: string;
+    participantIdentity: string;
   }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
   getRoomParticipantIds(
@@ -658,6 +672,24 @@ export function createMessagingClient(): MessagingClient {
     }
   );
 
+  /**
+   * Every call transition is a NON-CANCELLABLE write against the canonical call
+   * row, exactly like `sendMessage` above — and the same 2s default breaker
+   * timeout produced the same failure here. `initiateCall` alone does two
+   * user-service gRPC gates, takes the caller lock, runs several Mongo reads and
+   * mints two LiveKit tokens; past 2s the breaker abandons the ack while
+   * chat-service goes on to create a RINGING row and ring the callee, so the
+   * caller is told "Something went wrong" for a call that is genuinely placed —
+   * and five such abandons open the circuit and fast-fail every call for
+   * `resetTimeout`. Give the transition room to finish and trip only when
+   * chat-service is actually dead.
+   */
+  const CALL_BREAKER_OPTS = {
+    timeout: 15000,
+    volumeThreshold: 20,
+    errorThresholdPercentage: 80,
+  };
+
   const initiateCallBreaker = makeBreaker(
     "messaging.initiateCall",
     (p: InitiateCallParams) =>
@@ -667,7 +699,8 @@ export function createMessagingClient(): MessagingClient {
         type: p.type ?? "AUDIO",
         privateRoomId: p.privateRoomId ?? "",
         groupId: p.groupId ?? "",
-      })
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const answerCallBreaker = makeBreaker(
@@ -677,7 +710,9 @@ export function createMessagingClient(): MessagingClient {
         callId: p.callId,
         calleeId: p.calleeId,
         legId: p.legId ?? "",
-      })
+        sessionId: p.sessionId ?? "",
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const declineCallBreaker = makeBreaker(
@@ -686,15 +721,28 @@ export function createMessagingClient(): MessagingClient {
       call<unknown, CallStatusResult>("declineCall", {
         callId: p.callId,
         calleeId: p.calleeId,
-      })
+        sessionId: p.sessionId ?? "",
+      }),
+    CALL_BREAKER_OPTS
   );
 
-  const endCallBreaker = makeBreaker("messaging.endCall", (p: EndCallParams) =>
-    call<unknown, EndCallResult>("endCall", {
-      callId: p.callId,
-      userId: p.userId,
-      legId: p.legId ?? "",
-    })
+  const endCallBreaker = makeBreaker(
+    "messaging.endCall",
+    (p: EndCallParams) =>
+      call<unknown, EndCallResult>("endCall", {
+        callId: p.callId,
+        userId: p.userId,
+        legId: p.legId ?? "",
+        // Dropping this silently turned every ring the CALLER let run out into a
+        // CANCELLED call instead of a MISSED one — so `call.missed` never fired
+        // and the callee got no missed-call push on the path that produces almost
+        // all missed calls (the client's ring timeout beats the server sweep).
+        // The request object is untyped at the `call()` boundary, so nothing
+        // failed to compile when the field was left out.
+        reason: p.reason ?? "",
+        sessionId: p.sessionId ?? "",
+      }),
+    CALL_BREAKER_OPTS
   );
 
   const getCallHistoryBreaker = makeBreaker(
@@ -729,6 +777,15 @@ export function createMessagingClient(): MessagingClient {
         roomName: p.roomName,
         eventType: p.eventType,
         remainingParticipants: p.remainingParticipants ?? -1,
+      })
+  );
+
+  const handleLiveKitParticipantJoinedBreaker = makeBreaker(
+    "messaging.handleLiveKitParticipantJoined",
+    (p: { roomName: string; participantIdentity: string }) =>
+      call<unknown, Record<string, never>>("handleLiveKitParticipantJoined", {
+        roomName: p.roomName,
+        participantIdentity: p.participantIdentity,
       })
   );
 
@@ -783,6 +840,8 @@ export function createMessagingClient(): MessagingClient {
     endCall: (p) => endCallBreaker.fire(p),
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
     handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
+    handleLiveKitParticipantJoined: (p) =>
+      handleLiveKitParticipantJoinedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
     getRoomParticipantIds: (p) => getRoomParticipantIdsBreaker.fire(p),
   };

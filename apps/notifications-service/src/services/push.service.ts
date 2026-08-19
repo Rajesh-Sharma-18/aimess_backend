@@ -265,11 +265,68 @@ export interface PushInput {
    */
   excludeDeviceId?: string;
   /**
+   * Same intent as {@link excludeDeviceId}, keyed on the AUTH SESSION instead.
+   *
+   * Both exist because producers hold different ids. `deviceId` is whatever the
+   * client chose at registration (on iOS, `identifierForVendor`) and is only
+   * available to a caller that already knows it. `sessionId` is on every
+   * authenticated request and is stamped onto the token row at registration, so
+   * it is the only id a call action can actually correlate — see the call
+   * dismissal pushes in call.consumer.ts.
+   *
+   * A token row with a null sessionId (legacy registration) is never excluded:
+   * "unknown session" must not be read as "the acting one".
+   */
+  excludeSessionId?: string;
+  /**
    * APNs notification category — iOS maps this to registered UNNotificationCategory
    * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
    * Ignored on Android and data-only pushes.
    */
   apnsCategory?: string;
+}
+
+/**
+ * Keep only the newest VoIP token per device.
+ *
+ * PushKit tokens are long-lived and, unlike FCM registration tokens, a
+ * superseded one often stays ROUTABLE — APNs accepts a push for it and returns
+ * success, so the dead-token pruning that normally cleans this up never fires.
+ * A reinstall, a device restore, or re-registering under a new session
+ * therefore leaves the old row in place, and every ring is delivered to the
+ * same phone twice. The second PushKit delivery lands against a callId the
+ * client may already consider settled — which is exactly the state that makes
+ * iOS fabricate a caller-less "Incoming call" screen.
+ *
+ * `lastSeenAt` is the ordering key: registration bumps it, and an accepted push
+ * bumps it (throttled), so the largest value on a device is its live token.
+ *
+ * Deliberately narrow:
+ *  - VOIP only. FCM tokens rotate and are pruned on the first
+ *    `registration-token-not-registered`, so they self-heal; this channel does
+ *    not.
+ *  - Rows with a null `deviceId` are all kept. They are indistinguishable
+ *    devices, not one device — collapsing them would silence real phones.
+ */
+function collapseSupersededVoipTokens(
+  rows: DeviceTokenRow[]
+): DeviceTokenRow[] {
+  const newestPerDevice = new Map<string, DeviceTokenRow>();
+  for (const row of rows) {
+    if (row.tokenType !== "VOIP" || !row.deviceId) continue;
+    const current = newestPerDevice.get(row.deviceId);
+    // Strictly-greater keeps the FIRST row on a tie, so the result is stable
+    // rather than dependent on scan order.
+    if (!current || row.lastSeenAt > current.lastSeenAt) {
+      newestPerDevice.set(row.deviceId, row);
+    }
+  }
+  if (newestPerDevice.size === 0) return rows;
+
+  const keep = new Set([...newestPerDevice.values()].map((r) => r.token));
+  return rows.filter(
+    (row) => row.tokenType !== "VOIP" || !row.deviceId || keep.has(row.token)
+  );
 }
 
 /**
@@ -280,7 +337,10 @@ export interface PushInput {
  *   2. persist an inbox row via chat-service CreateNotification (best-effort),
  *   3. apply showPreview masking to the provider payload only,
  *   4. fan a push out to every (deduplicated) device token, pruning dead tokens.
- * Never throws — push delivery must not poison the consumer (which would DLQ).
+ * Never throws for a push-bearing send — push delivery must not poison the
+ * consumer. The ONE exception is an inbox-only projection (`skipPush`), where a
+ * failed inbox write means nothing was delivered at all: that error is
+ * rethrown so the caller can nack and let the queue redeliver it.
  */
 export async function pushToUser(input: PushInput): Promise<void> {
   if (NOTIFY_SUPPRESSED_TYPES.has(input.type)) {
@@ -305,6 +365,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
     dataOnly = false,
     allowVoip = false,
     excludeDeviceId,
+    excludeSessionId,
     apnsCategory,
   } = input;
 
@@ -334,7 +395,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   if (!skipSettingsGate) {
     try {
       const settings = await getNotificationSettings(userId);
-      decision = evaluateDelivery(settings, category);
+      decision = evaluateDelivery(settings, category, type);
       showPreview = settings.showPreview !== false;
     } catch (error) {
       // getNotificationSettings already allows-on-open; defensive catch only.
@@ -346,7 +407,16 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // Category OFF means "I do not want this class of thing" — kill the push and
   // the inbox row. Quiet hours means "not right now", so it only silences the
   // push further down and the inbox row is still written to be found later.
-  if (decision === "CATEGORY_OFF") {
+  //
+  // EXCEPT an inbox-only projection (`skipPush`), which sends no push at all:
+  // it is the HISTORY of something that already happened, written for both
+  // participants from one canonical record. A category toggle silences alerts;
+  // it must not erase the log. Suppressing it here is what made call history
+  // appear for one participant and not the other — the two ends of one call are
+  // two different users with two different toggles, so the DM's call card
+  // existed while the Notification-Center row did not. The push side stays
+  // fully gated: `skipPush` returns below, before any device is touched.
+  if (decision === "CATEGORY_OFF" && !skipPush) {
     logger.info(
       `Notification suppressed by category setting: user=${userId} type=${type} category=${category}`
     );
@@ -443,6 +513,19 @@ export async function pushToUser(input: PushInput): Promise<void> {
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
       logger.warn(error);
+      // For an inbox-ONLY projection the row is not a side effect, it is the
+      // whole delivery — swallowing the failure loses that recipient's history
+      // permanently and silently. Callers wrap each recipient independently and
+      // nack for one bounded redelivery (the groupKey makes replay idempotent),
+      // but that net only works if the failure actually reaches them: with the
+      // error swallowed here, `Promise.allSettled` saw two fulfilled promises
+      // and acked a message that had written one row instead of two. Observed
+      // live — one participant's call history had the row, the other never did,
+      // while the DM's call card existed for both.
+      //
+      // Push-bearing sends keep the old behaviour: there the push is still
+      // deliverable, so a lost row must not also cost them the notification.
+      if (skipPush) throw error;
     }
   }
 
@@ -472,10 +555,17 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
   // Deduplicate tokens before sending — prevents duplicate pushes when the same
   // token appears more than once in the store.
-  const deduped = [...new Map(rawTokens.map((t) => [t.token, t])).values()];
-  const visible = excludeDeviceId
-    ? deduped.filter((t) => t.deviceId !== excludeDeviceId)
-    : deduped;
+  const deduped = collapseSupersededVoipTokens([
+    ...new Map(rawTokens.map((t) => [t.token, t])).values(),
+  ]);
+  // Drop the originating device, by whichever id the producer had. Both
+  // comparisons are exact and skip null columns, so a legacy row with no
+  // deviceId/sessionId is delivered to rather than silently suppressed.
+  const visible = deduped.filter(
+    (t) =>
+      !(excludeDeviceId && t.deviceId === excludeDeviceId) &&
+      !(excludeSessionId && t.sessionId === excludeSessionId)
+  );
 
   // Last line of defence against the reported symptom: a device whose session
   // was revoked (logout, remote sign-out, password change, ban, deletion) must
@@ -539,7 +629,15 @@ export async function pushToUser(input: PushInput): Promise<void> {
 
       const result =
         tokenType === "VOIP"
-          ? await sendVoipPush({ token, data: data ?? {}, ttl })
+          ? await sendVoipPush({
+              token,
+              data: data ?? {},
+              ttl,
+              // The VoIP channel was the one delivery path with no collapse
+              // semantics at all, so a re-published ring could never replace
+              // the copy APNs was still holding.
+              collapseId: collapseKey,
+            })
           : await sendPush({
               token,
               title,
@@ -562,7 +660,17 @@ export async function pushToUser(input: PushInput): Promise<void> {
               // ceiling `senderAvatar` has always had. Fix by wiring the existing
               // permanent view-proxy URL (`viewProxyBaseUrl` + `MEDIA_SIGN_SECRET`
               // in createMediaUrlStrategy) if delayed pushes matter.
-              imageUrl: data?.communityAvatarUrl || data?.conversationAvatar,
+              // `callerAvatar` is the CALL exception, and it does not break the
+              // rule above: a 1:1 call has no conversation or community to
+              // stand for, so the person ringing IS the entity. Without it a
+              // missed-call tray entry (and the notification-carrying ring an
+              // iOS device with no VoIP token gets) showed the generic app
+              // icon, while the very same push already carried the avatar in
+              // its data map for the in-app UI to use.
+              imageUrl:
+                data?.communityAvatarUrl ||
+                data?.conversationAvatar ||
+                data?.callerAvatar,
               collapseKey,
               apnsThreadId,
               ttl,

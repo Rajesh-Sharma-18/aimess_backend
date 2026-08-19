@@ -11,6 +11,21 @@ interface SendVoipPushParams {
   data: Record<string, string>;
   /** VoIP push TTL in seconds — mirrors sendPush's `ttl`. */
   ttl?: number;
+  /**
+   * `apns-collapse-id` — mirrors sendPush's `collapseKey`. A push APNs is still
+   * HOLDING for an unreachable device is replaced by a later one with the same
+   * id instead of both being delivered. Only the ring travels this channel
+   * (dismissals are `allowVoip: false` on purpose), so in practice this
+   * de-duplicates a re-published `call.incoming` — an AMQP redelivery after a
+   * notifications-service restart, or two live VoIP tokens for one device —
+   * into a single ring.
+   *
+   * Bounded, not absolute: collapsing only applies while the first copy is
+   * still queued. One already delivered is delivered, and the second still
+   * arrives. Producer-side de-duplication is the fix for that; this is the
+   * cheap half.
+   */
+  collapseId?: string;
 }
 
 /** APNs reasons that mean the token is permanently dead → prune it. */
@@ -31,6 +46,7 @@ export async function sendVoipPush({
   token,
   data,
   ttl = 30,
+  collapseId,
 }: SendVoipPushParams): Promise<SendPushResult> {
   try {
     const notification = new apn.Notification();
@@ -38,6 +54,12 @@ export async function sendVoipPush({
     notification.topic = `${env.APNS_BUNDLE_ID}.voip`;
     notification.expiry = Math.floor(Date.now() / 1000) + ttl;
     notification.priority = 10;
+    // Same 64-BYTE APNs cap sendPush guards: an oversized id is rejected as
+    // `BadCollapseId` and takes the whole ring with it. Skipping it costs
+    // de-duplication; sending it costs the call.
+    if (collapseId && Buffer.byteLength(collapseId) <= 64) {
+      notification.collapseId = collapseId;
+    }
     // Use rawPayload so toJSON() returns our object verbatim. Setting
     // notification.payload (custom data) and leaving aps properties unset
     // causes apsPayload() to return undefined, which JSON.stringify silently

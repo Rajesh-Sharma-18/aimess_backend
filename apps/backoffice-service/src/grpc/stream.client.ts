@@ -45,6 +45,24 @@ export interface AdminViewerSessionRow {
   watchDurationSeconds: number;
 }
 
+/** One livestream chat comment. `senderAvatar` is already a presigned URL. */
+export interface StreamCommentRow {
+  id: string;
+  sentBy: string;
+  senderName: string;
+  senderAvatar: string;
+  message: string;
+  /** epoch ms. */
+  createdAt: number;
+}
+
+export interface GetCommentsArgs {
+  livestreamId: string;
+  limit: number;
+  /** Exclusive cursor — fetch comments older than this id. */
+  before?: string;
+}
+
 export interface AdminListViewerSessionsArgs {
   streamId: string;
   page: number;
@@ -88,6 +106,8 @@ export interface AdminStreamRow {
   /** Raw thumbnail object key ("" if none) — caller resolves to a URL. */
   thumbnail: string;
   sourceType: string;
+  /** External playback source (URL / YOUTUBE modes); "" for SRS-ingested streams. */
+  sourceUrl: string;
   status: string;
   hlsUrl: string;
   flvUrl: string;
@@ -117,6 +137,7 @@ interface RawAdminStreamRow {
   description: string;
   thumbnail: string;
   sourceType: string;
+  sourceUrl: string;
   status: string;
   hlsUrl: string;
   flvUrl: string;
@@ -174,6 +195,7 @@ function toAdminStreamRow(r: RawAdminStreamRow): AdminStreamRow {
     description: r.description,
     thumbnail: r.thumbnail ?? "",
     sourceType: r.sourceType,
+    sourceUrl: r.sourceUrl ?? "",
     status: r.status,
     hlsUrl: r.hlsUrl ?? "",
     flvUrl: r.flvUrl ?? "",
@@ -317,6 +339,47 @@ const adminListViewerSessionsBreaker = makeBreaker(
     }))
 );
 
+interface RawStreamComment {
+  id: string;
+  sentBy: string;
+  senderName: string;
+  senderAvatar: string;
+  message: string;
+  createdAt: string | number;
+}
+interface RawGetCommentsRes {
+  comments: RawStreamComment[];
+  nextCursor: string;
+  hasMore: boolean;
+}
+
+const getCommentsBreaker = makeBreaker(
+  "stream.getComments",
+  (args: GetCommentsArgs) =>
+    call<Record<string, unknown>, RawGetCommentsRes>("getComments", {
+      livestreamId: args.livestreamId,
+      limit: args.limit,
+      before: args.before ?? "",
+      after: "",
+      // "" = trusted internal caller: skips the per-viewer stream-ban gate that
+      // would otherwise apply to a userId. Authorization for this read happens at
+      // the admin REST edge (requirePermission(LIVESTREAMS_READ)), and the RPC
+      // itself is reachable only with the shared service token.
+      requesterId: "",
+    }).then((r) => ({
+      comments: (r.comments ?? []).map((c) => ({
+        id: c.id,
+        sentBy: c.sentBy,
+        senderName: c.senderName ?? "",
+        senderAvatar: c.senderAvatar ?? "",
+        message: c.message ?? "",
+        createdAt: Number(c.createdAt ?? 0),
+      })),
+      nextCursor: r.nextCursor ?? "",
+      hasMore: r.hasMore ?? false,
+    }))
+);
+
 interface RawAdminLivestreamReportCount {
   livestreamId: string;
   count: string | number;
@@ -341,7 +404,40 @@ const adminGetLivestreamReportCountsBreaker = makeBreaker(
 // whole admin list. `reportCount` degrades to 0, matching prior behavior.
 adminGetLivestreamReportCountsBreaker.fallback(() => ({ counts: [] }));
 
+interface RawCommunityStreamCount {
+  communityId: string;
+  count: number;
+}
+interface RawActiveStreamCountsRes {
+  counts?: RawCommunityStreamCount[];
+}
+
+// Only communities with count > 0 come back, so an absent id means 0 LIVE.
+// Fail-OPEN: a stream-service blip must not blank the whole community list.
+const activeStreamCountsBreaker = makeBreaker(
+  "stream.getActiveStreamCountsByCommunityIds",
+  (args: { communityIds: string[] }) =>
+    call<{ communityIds: string[] }, RawActiveStreamCountsRes>(
+      "getActiveStreamCountsByCommunityIds",
+      args
+    )
+);
+// Fail-open, same as the report-count enrichment above: a stream-service blip
+// degrades the column to 0 rather than failing the whole community list.
+activeStreamCountsBreaker.fallback(() => ({ counts: [] }));
+
 export const streamClient = {
+  async getActiveStreamCountsByCommunityIds(
+    communityIds: string[]
+  ): Promise<Map<string, number>> {
+    if (communityIds.length === 0) return new Map();
+    try {
+      const r = await activeStreamCountsBreaker.fire({ communityIds });
+      return new Map((r.counts ?? []).map((c) => [c.communityId, c.count]));
+    } catch {
+      return new Map();
+    }
+  },
   /** Backoffice admin list — fail-closed (propagates on outage). */
   async adminListStreams(
     args: AdminListStreamsArgs
@@ -353,6 +449,19 @@ export const streamClient = {
   async adminGetStream(streamId: string): Promise<AdminStreamRow | null> {
     const r = await adminGetStreamBreaker.fire({ streamId });
     return r.found && r.stream ? r.stream : null;
+  },
+
+  /**
+   * Livestream chat history for the admin monitor, newest-first. Fail-closed:
+   * an outage surfaces as a 503 rather than an empty transcript, which would
+   * read as "nobody commented".
+   */
+  async getComments(args: GetCommentsArgs): Promise<{
+    comments: StreamCommentRow[];
+    nextCursor: string;
+    hasMore: boolean;
+  }> {
+    return getCommentsBreaker.fire(args);
   },
 
   /** Backoffice admin viewer-session list (the actual "Livestream User List"). */

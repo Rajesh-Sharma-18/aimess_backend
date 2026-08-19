@@ -2,7 +2,11 @@ import { DELETED_ACCOUNT_DISPLAY_NAME, t } from "@aimess/constants";
 
 import type { Notification } from "../generated/prisma/index.js";
 
-import { categorize, LOGIN_DETECTED_TYPE } from "./notification-category.js";
+import {
+  categorize,
+  LOGIN_DETECTED_TYPE,
+  type NotificationCategory,
+} from "./notification-category.js";
 import {
   resolveNotificationFriendship,
   type NotificationFriendshipDTO,
@@ -21,7 +25,11 @@ import {
 export interface NotificationDTO {
   id: string;
   type: string;
-  category: "FRIENDS" | "COMMUNITIES" | "MENTIONS" | "SYSTEM";
+  /**
+   * Derived from `type` by `categorize()` — never stored. Typed off that
+   * function so a new tab cannot be added without this DTO following it.
+   */
+  category: Exclude<NotificationCategory, "ALL">;
   /** Null when the body already carries the subject — the client renders no heading. */
   title: string | null;
   body: string;
@@ -65,6 +73,28 @@ export interface NotificationDTO {
   navigation?: unknown;
   referenceId?: string;
   friendship?: NotificationFriendshipDTO;
+}
+
+/**
+ * Producer→persistence directives that must not reach a client.
+ *
+ * `markRead` tells `createNotificationImpl` to insert the row already read;
+ * `excludeSessionId` tells the relay which device to skip. Both are consumed
+ * server-side at write time and are meaningless — and misleading — afterwards:
+ * `markRead: "true"` on a row a user has since marked UNREAD reads like a
+ * contradiction of `isRead`, which is the actual answer. The `/notify` relay
+ * already strips them from its copy of `data`; this makes REST agree.
+ */
+const INTERNAL_DATA_DIRECTIVES = ["markRead", "excludeSessionId"] as const;
+
+function stripInternalDirectives<T extends { data?: Record<string, string> }>(
+  payload: T
+): T {
+  const data = payload.data;
+  if (!data || !INTERNAL_DATA_DIRECTIVES.some((k) => k in data)) return payload;
+  const cleaned = { ...data };
+  for (const key of INTERNAL_DATA_DIRECTIVES) delete cleaned[key];
+  return { ...payload, data: cleaned };
 }
 
 function parseJson(raw: unknown): unknown {
@@ -290,9 +320,54 @@ export async function serializeNotification(
         data.requesterDisplayName ?? "",
       ])
     : null;
-  const effectivePayload = scrubbed?.payload ?? payloadObj;
 
-  const storedBody = scrubbed?.body ?? payloadObj.body ?? "";
+  // Stale actor name refresh: the actor snapshot at publish time may have been
+  // a fallback ("Someone") because the profile wasn't ready yet. The fresh
+  // gRPC snapshot now has the real name, but the prose fields (resolution,
+  // title, body) still carry the old literal. Replace it so every surface
+  // agrees with the structured `actor.displayName` above.
+  const knownStaleNames =
+    !scrubbed && freshActor?.displayName
+      ? [
+          actorSnapshot?.displayName ?? "",
+          data.actorDisplayName ?? "",
+          data.requesterDisplayName ?? "",
+        ]
+          .map((n) => n.trim())
+          .filter((n) => n.length > 0 && n !== freshActor.displayName)
+      : [];
+  // When every stored name field is empty the producer used a localized
+  // "Someone" fallback — add all locale variants so the replacement catches
+  // whichever was interpolated into the resolution/body/title.
+  if (
+    !scrubbed &&
+    freshActor?.displayName &&
+    knownStaleNames.length === 0 &&
+    !(
+      actorSnapshot?.displayName ||
+      data.actorDisplayName ||
+      data.requesterDisplayName
+    )
+  ) {
+    for (const locale of ["en", "vi", "th"] as const) {
+      const fallback = t("SYS_NAME_SOMEONE", locale);
+      if (fallback !== freshActor.displayName) knownStaleNames.push(fallback);
+    }
+  }
+  const staleActorNames = knownStaleNames;
+  const refreshName = (text: string | undefined): string | undefined => {
+    if (!text || staleActorNames.length === 0) return text;
+    let out = text;
+    for (const stale of staleActorNames)
+      out = out.split(stale).join(freshActor!.displayName);
+    return out;
+  };
+
+  const effectivePayload = stripInternalDirectives(
+    scrubbed?.payload ?? payloadObj
+  );
+
+  const storedBody = scrubbed?.body ?? refreshName(payloadObj.body) ?? "";
   const body =
     row.type === LOGIN_DETECTED_TYPE && CLOBBERED_LOGIN_BODIES.has(storedBody)
       ? repairLoginBody(data)
@@ -300,13 +375,15 @@ export async function serializeNotification(
   const rawTitle =
     nonEmpty(
       (effectivePayload as { data?: Record<string, string> }).data?.inboxTitle
-    ) ?? nonEmpty(scrubbed?.title ?? payloadObj.title);
+    ) ?? nonEmpty(scrubbed?.title ?? refreshName(payloadObj.title));
   const title =
     data.suppressTitle === "true" ||
     !rawTitle ||
     (body.length > 0 && body.includes(rawTitle))
       ? null
       : rawTitle;
+
+  const resolution = nonEmpty(refreshName(data.resolution));
 
   return {
     id: row.id,
@@ -320,7 +397,7 @@ export async function serializeNotification(
     version: row.version ?? 1,
     groupKey: row.groupKey ?? null,
     isDeleted: row.isDeleted,
-    ...(nonEmpty(data.resolution) ? { resolution: data.resolution } : {}),
+    ...(resolution ? { resolution } : {}),
     ...(nonEmpty(data.resolutionTone)
       ? { resolutionTone: data.resolutionTone }
       : {}),

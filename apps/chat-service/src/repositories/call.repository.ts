@@ -105,6 +105,26 @@ export class CallRepository {
     });
   }
 
+  /**
+   * Idempotent: only the first callee-join per call stamps `answeredAt`.
+   * Later `participant_joined` webhook fires (reconnects, extra devices)
+   * find `answeredAt` non-null, match zero rows, no-op.
+   */
+  async markAnsweredIfNull(
+    callId: string,
+    answeredAt: Date
+  ): Promise<{ won: boolean }> {
+    const result = await this.prisma.call.updateMany({
+      where: {
+        callId,
+        status: CallStatus.IN_PROGRESS,
+        answeredAt: null,
+      },
+      data: { answeredAt },
+    });
+    return { won: result.count === 1 };
+  }
+
   async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
     const result = await this.prisma.call.updateMany({
       where: { callId, status: "RINGING" },

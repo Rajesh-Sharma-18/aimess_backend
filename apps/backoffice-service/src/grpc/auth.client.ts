@@ -158,6 +158,48 @@ export const adminGetUserBreaker: Breaker<{ userId: string }, AdminUserRecord> =
     }
   );
 
+export interface AdminSetAccountStatusResult {
+  ok: boolean;
+  status: string;
+  revokedSessions: number;
+  errorCode: string;
+}
+
+// int32 revokedSessions arrives as a number; the rest are strings.
+interface RawAdminSetAccountStatusResponse {
+  ok: boolean;
+  status: string;
+  revokedSessions: string | number;
+  errorCode: string;
+}
+
+// NOT wrapped in makeBreaker's fallback-on-failure behaviour by accident: this
+// is the one call whose failure must propagate. A permanent ban that did not
+// reach auth-service has not happened — the account can still log in — so the
+// caller aborts rather than writing a mirror row for a ban that is not real.
+// makeBreaker still gives us the circuit + timeout; the wrapper below rethrows.
+export const adminSetAccountStatusBreaker: Breaker<
+  {
+    userId: string;
+    status: string;
+    reason: string;
+    actorAdminId: string;
+  },
+  RawAdminSetAccountStatusResponse
+> = makeBreaker(
+  "auth.adminSetAccountStatus",
+  (args: {
+    userId: string;
+    status: string;
+    reason: string;
+    actorAdminId: string;
+  }) =>
+    call<typeof args, RawAdminSetAccountStatusResponse>(
+      "adminSetAccountStatus",
+      args
+    )
+);
+
 export const authClient = {
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
@@ -197,5 +239,26 @@ export const authClient = {
   // NOT_FOUND rejects the breaker; the repo layer catches and maps to null.
   async adminGetUser(userId: string): Promise<AdminUserRecord> {
     return adminGetUserBreaker.fire({ userId });
+  },
+  // Permanently ban / reinstate an account. Throws on transport failure by
+  // design — see the breaker comment above.
+  async adminSetAccountStatus(args: {
+    userId: string;
+    status: "BANNED" | "ACTIVE";
+    reason?: string | null;
+    actorAdminId: string;
+  }): Promise<AdminSetAccountStatusResult> {
+    const r = await adminSetAccountStatusBreaker.fire({
+      userId: args.userId,
+      status: args.status,
+      reason: args.reason ?? "",
+      actorAdminId: args.actorAdminId,
+    });
+    return {
+      ok: r.ok,
+      status: r.status,
+      revokedSessions: Number(r.revokedSessions),
+      errorCode: r.errorCode,
+    };
   },
 };

@@ -15,6 +15,7 @@ import {
   buildCallActivityText,
   formatCallDuration,
   isUnreadCallActivity,
+  CALL_CANCEL_GRACE_SEC,
 } from "@aimess/constants";
 
 import {
@@ -54,14 +55,12 @@ function buildService() {
     livekit: { deleteRoom: jest.fn().mockResolvedValue(undefined) },
     friendshipRepo: { findFriendship: jest.fn() },
     getCallPrivacy: jest.fn().mockResolvedValue({ whoCanCallMe: "EVERYONE" }),
-    getUserSnapshot: jest
-      .fn()
-      .mockImplementation((userId: string) =>
-        Promise.resolve({
-          displayName: `name-${userId}`,
-          avatarUrl: `a-${userId}`,
-        })
-      ),
+    getUserSnapshot: jest.fn().mockImplementation((userId: string) =>
+      Promise.resolve({
+        displayName: `name-${userId}`,
+        avatarUrl: `a-${userId}`,
+      })
+    ),
     callChatMessages: { post: jest.fn().mockResolvedValue(null) },
     callFlags: { isCallingEnabled: jest.fn().mockResolvedValue(true) },
     groupMemberRepo: {
@@ -106,7 +105,7 @@ describe("buildCallActivityText", () => {
   const voice = { callType: "AUDIO" as const };
   const video = { callType: "VIDEO" as const };
 
-  it("renders an unanswered ring as MISSED for the callee and OUTGOING for the caller", () => {
+  it("reads an unanswered ring as MISSED for the callee and NO ANSWER for the caller", () => {
     expect(
       buildCallActivityText({
         ...voice,
@@ -127,25 +126,52 @@ describe("buildCallActivityText", () => {
         status: "MISSED",
         direction: "OUTGOING",
       })
-    ).toBe("Outgoing voice call");
+    ).toBe("Voice call, no answer");
   });
 
-  it("renders a caller-abandoned ring as CANCELLED outgoing and MISSED incoming", () => {
-    expect(
-      buildCallActivityText({
-        ...voice,
-        status: "CANCELLED",
-        direction: "OUTGOING",
-      })
-    ).toBe("Cancelled voice call");
-    // The callee cannot tell a timeout from a caller hang-up — both are missed.
-    expect(
-      buildCallActivityText({
-        ...video,
-        status: "CANCELLED",
-        direction: "INCOMING",
-      })
-    ).toBe("Missed video call");
+  // "Cancelled" and "declined" are LIFECYCLE facts, not outcomes the reader
+  // experienced. Whoever ended an unanswered ring, the caller got no answer and
+  // the callee missed it — so all four terminal non-connected states collapse
+  // onto ONE viewer-relative pair.
+  it("never surfaces cancelled or declined — every unanswered call reads the same", () => {
+    for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
+      expect(
+        buildCallActivityText({ ...voice, status, direction: "OUTGOING" })
+      ).toBe("Voice call, no answer");
+      expect(
+        buildCallActivityText({ ...voice, status, direction: "INCOMING" })
+      ).toBe("Missed voice call");
+      expect(
+        buildCallActivityText({ ...video, status, direction: "OUTGOING" })
+      ).toBe("Video call, no answer");
+      expect(
+        buildCallActivityText({ ...video, status, direction: "INCOMING" })
+      ).toBe("Missed video call");
+    }
+  });
+
+  it("says nothing about which side hung up first", () => {
+    for (const direction of ["INCOMING", "OUTGOING"] as const) {
+      for (const status of ["MISSED", "CANCELLED", "DECLINED", "FAILED"]) {
+        const line = buildCallActivityText({ ...voice, status, direction });
+        expect(line.toLowerCase()).not.toContain("cancel");
+        expect(line.toLowerCase()).not.toContain("declin");
+        expect(line.toLowerCase()).not.toContain("reject");
+      }
+    }
+  });
+
+  it("does not let the ring length change the wording of a cancel", () => {
+    for (const ringDurationSec of [0, CALL_CANCEL_GRACE_SEC - 1, 60]) {
+      expect(
+        buildCallActivityText({
+          ...voice,
+          status: "CANCELLED",
+          direction: "INCOMING",
+          ringDurationSec,
+        })
+      ).toBe("Missed voice call");
+    }
   });
 
   it("renders a live ring by direction", () => {
@@ -163,17 +189,6 @@ describe("buildCallActivityText", () => {
         direction: "OUTGOING",
       })
     ).toBe("Outgoing video call");
-  });
-
-  it("renders declined and failed the same for both sides — they describe the call", () => {
-    for (const direction of ["INCOMING", "OUTGOING"] as const) {
-      expect(
-        buildCallActivityText({ ...voice, status: "DECLINED", direction })
-      ).toBe("Declined voice call");
-      expect(
-        buildCallActivityText({ ...video, status: "FAILED", direction })
-      ).toBe("Failed video call");
-    }
   });
 
   it("shows the canonical duration for a completed call", () => {
@@ -229,9 +244,28 @@ describe("isUnreadCallActivity", () => {
   it("badges only a call the reader never answered", () => {
     expect(isUnreadCallActivity("MISSED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("CANCELLED", "INCOMING")).toBe(true);
-    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(false);
+    expect(
+      isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC)
+    ).toBe(true);
+    // Declined on one device still badges the reader's other devices.
+    expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("ENDED", "INCOMING")).toBe(false);
-    expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(false);
+    // FAILED badges like every other outcome where the ring was never taken.
+    // It used to be excluded, which contradicted `buildCallActivityText` —
+    // that renders FAILED with the missed-call line, so the reader was being
+    // told they missed a call on a row that never badged. Nothing produces
+    // FAILED today (there is deliberately no producer), so this pins intent
+    // rather than behaviour.
+    expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(true);
+    // …and still never for the side that placed the call.
+    expect(isUnreadCallActivity("FAILED", "OUTGOING")).toBe(false);
+  });
+
+  it("does not badge a cancel the caller took back inside the grace window", () => {
+    expect(
+      isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC - 1)
+    ).toBe(false);
+    expect(isUnreadCallActivity("CANCELLED", "INCOMING", 0)).toBe(false);
   });
 
   it("never badges your own outgoing call", () => {
@@ -248,17 +282,40 @@ describe("isUnreadCallActivity", () => {
 });
 
 describe("notification tab routing for call rows", () => {
-  it("routes call activity to FRIENDS, including the legacy CALL_MISSED type", () => {
-    expect(categorize("call.activity")).toBe("FRIENDS");
-    expect(categorize("CALL_MISSED")).toBe("FRIENDS");
+  it("routes call activity to CALLS, including the legacy CALL_MISSED type", () => {
+    expect(categorize("call.activity")).toBe("CALLS");
+    expect(categorize("CALL_MISSED")).toBe("CALLS");
   });
 
-  it("selects call rows in the FRIENDS filter and nowhere else", () => {
-    const friends = JSON.stringify(categoryWhere("FRIENDS"));
-    expect(friends).toContain("call.");
-    expect(JSON.stringify(categoryWhere("COMMUNITIES"))).not.toContain("call.");
-    expect(JSON.stringify(categoryWhere("MENTIONS"))).not.toContain("call.");
-    expect(JSON.stringify(categoryWhere("SYSTEM"))).not.toContain("call.");
+  it("selects call rows in the CALLS filter and nowhere else", () => {
+    expect(JSON.stringify(categoryWhere("CALLS"))).toContain("call.");
+    // Calls have their own tab — a call row must no longer be listed or
+    // counted under Friends, or it would show up (and badge) in two places.
+    for (const other of [
+      "FRIENDS",
+      "COMMUNITIES",
+      "MENTIONS",
+      "SYSTEM",
+    ] as const) {
+      expect(JSON.stringify(categoryWhere(other))).not.toContain("call.");
+    }
+  });
+
+  it("keeps every tab disjoint so a row is counted exactly once", () => {
+    const types = [
+      "call.activity",
+      "CALL_MISSED",
+      "friend.requested",
+      "community.member_added",
+      "chat.mention",
+      "auth.security_new_login",
+    ];
+    for (const type of types) {
+      const tabs = (
+        ["FRIENDS", "COMMUNITIES", "MENTIONS", "CALLS", "SYSTEM"] as const
+      ).filter((tab) => categorize(type) === tab);
+      expect(tabs).toHaveLength(1);
+    }
   });
 
   it("leaves ALL unrestricted, so a call row appears there too", () => {

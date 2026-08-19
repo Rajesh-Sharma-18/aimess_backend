@@ -33,6 +33,7 @@ function scriptJson(value: unknown): string {
  */
 function webTargetPath(target: LinkTarget): string {
   if (target.kind === "private") return `/+${encodeURIComponent(target.code)}`;
+  if (target.kind === "group") return `/g/${encodeURIComponent(target.token)}`;
   if (target.kind === "public") return `/${encodeURIComponent(target.handle)}`;
   return "";
 }
@@ -56,13 +57,21 @@ export function renderPreviewPage(opts: PreviewOptions): string {
   const { target, card, pageUrl } = opts;
 
   const isPrivate = target.kind === "private";
-  const title =
-    card?.name ?? (isPrivate ? "Private community invite" : "AIMESS community");
-  const description =
-    card?.description ??
-    (isPrivate
-      ? "You've been invited to a private community on AIMESS. Open the app to request to join."
-      : "Join this community on AIMESS.");
+  const isGroup = target.kind === "group";
+  const genericTitle = isPrivate
+    ? "Private community invite"
+    : isGroup
+      ? "Group invite on AIMESS"
+      : "AIMESS community";
+  const genericDescription = isPrivate
+    ? "You've been invited to a private community on AIMESS. Open the app to request to join."
+    : isGroup
+      ? "You've been invited to a group chat on AIMESS. Open the app to join."
+      : "Join this community on AIMESS.";
+  // `card` is non-null ONLY for a resolvable PUBLIC handle, so a private code or
+  // a group token can never reach the real-metadata branch (spec §6.5).
+  const title = card?.name ?? genericTitle;
+  const description = card?.description ?? genericDescription;
   const image = card?.bannerUrl ?? card?.avatarUrl ?? "";
   const memberLine =
     card != null ? `${card.memberCount.toLocaleString()} members` : "";
@@ -72,6 +81,7 @@ export function renderPreviewPage(opts: PreviewOptions): string {
     kind: target.kind,
     handle: target.kind === "public" ? target.handle : "",
     code: target.kind === "private" ? target.code : "",
+    groupToken: target.kind === "group" ? target.token : "",
     token,
     scheme: env.APP_SCHEME,
     androidPackage: env.ANDROID_PACKAGE_NAME,
@@ -121,9 +131,10 @@ ${ogImageTag}
     ${
       card?.avatarUrl
         ? `<img class="avatar" src="${esc(card.avatarUrl)}" alt=""/>`
-        : `<div class="avatar">${isPrivate ? "🔒" : "👥"}</div>`
+        : `<div class="avatar">${isPrivate ? "🔒" : isGroup ? "💬" : "👥"}</div>`
     }
     ${isPrivate ? '<div class="lock">🔒 Private community</div>' : ""}
+    ${isGroup ? '<div class="lock">💬 Group invite</div>' : ""}
     <h1>${esc(title)}</h1>
     ${memberLine ? `<p class="meta">${esc(memberLine)}</p>` : ""}
     <p class="desc">${esc(description)}</p>
@@ -144,6 +155,7 @@ ${ogImageTag}
         ? "https://play.google.com/store/apps/details?id=" + CFG.androidPackage + "&referrer=" + encodeURIComponent(CFG.token)
         : CFG.webAppUrl + (CFG.webTarget || "");
       var extra = CFG.kind === "private" ? "S.code=" + CFG.code
+                : CFG.kind === "group"   ? "S.token=" + CFG.groupToken
                 : CFG.kind === "public"  ? "S.handle=" + CFG.handle : "";
       location.href = "intent://open#Intent;scheme=" + CFG.scheme + ";package=" + CFG.androidPackage + ";" +
         (extra ? extra + ";" : "") +
@@ -153,6 +165,8 @@ ${ogImageTag}
     if (/iPhone|iPad|iPod/i.test(ua)) {
       var appUrl = CFG.kind === "private"
         ? CFG.scheme + "://join?code=" + encodeURIComponent(CFG.code)
+        : CFG.kind === "group"
+        ? CFG.scheme + "://joingroup?token=" + encodeURIComponent(CFG.groupToken)
         : CFG.scheme + "://resolve?handle=" + encodeURIComponent(CFG.handle);
       var store = CFG.appleStoreAppId ? "https://apps.apple.com/app/id" + CFG.appleStoreAppId : CFG.webAppUrl + (CFG.webTarget || "");
       var t = setTimeout(function(){ location.href = store; }, 1200);

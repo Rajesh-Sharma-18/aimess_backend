@@ -77,6 +77,7 @@ import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { serializeNotification } from "../lib/notification-serializer.js";
+import { resolveAvatarRefresh } from "../services/notification.service.js";
 import {
   resolveGroupKey,
   resolveTransition,
@@ -1134,17 +1135,12 @@ export function createMessagingImpl(
             );
           }
 
-          callback(null, {
-            messageId: req.messageId,
-            reactions: reactions.map((r) => ({
-              userId: r.userId,
-              emoji: r.emoji,
-            })),
-          });
-
-          // WhatsApp-style lastActivity bump/revert — fire-and-forget, never
-          // blocks the ack (mirrors the REST reactDirect wrapper's identical call).
-          void deps.chatMessageOrchestrator
+          // WhatsApp-style lastActivity bump/revert, AWAITED BEFORE the ack —
+          // same rule the community react handlers already follow: a client that
+          // re-reads its list row on this ack must never land before the overlay
+          // write. The live bump inside is still fire-and-forget, and a failure
+          // here only warns (the reaction itself is already persisted).
+          await deps.chatMessageOrchestrator
             .bumpReactionActivity({
               conversationType:
                 reactConversationType === "GROUP" ? "GROUP" : "PRIVATE",
@@ -1159,6 +1155,14 @@ export function createMessagingImpl(
             .catch((err: unknown) =>
               logger.warn(`sendReaction activity bump failed: ${String(err)}`)
             );
+
+          callback(null, {
+            messageId: req.messageId,
+            reactions: reactions.map((r) => ({
+              userId: r.userId,
+              emoji: r.emoji,
+            })),
+          });
         } catch (err) {
           logger.error(`gRPC sendReaction error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -1569,11 +1573,13 @@ export function createMessagingImpl(
             callId?: string;
             calleeId?: string;
             legId?: string;
+            sessionId?: string;
           };
           const result = await deps.callService.answerCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
             legId: req.legId || undefined,
+            sessionId: req.sessionId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1596,10 +1602,15 @@ export function createMessagingImpl(
     ) => {
       void (async () => {
         try {
-          const req = call.request as { callId?: string; calleeId?: string };
+          const req = call.request as {
+            callId?: string;
+            calleeId?: string;
+            sessionId?: string;
+          };
           const result = await deps.callService.declineCall({
             callId: req.callId ?? "",
             calleeId: req.calleeId ?? "",
+            sessionId: req.sessionId || undefined,
           });
           callback(null, { callId: result.callId, status: result.status });
         } catch (err) {
@@ -1620,12 +1631,14 @@ export function createMessagingImpl(
             userId?: string;
             legId?: string;
             reason?: string;
+            sessionId?: string;
           };
           const result = await deps.callService.endCall({
             callId: req.callId ?? "",
             userId: req.userId ?? "",
             legId: req.legId || undefined,
             reason: req.reason === "NO_ANSWER" ? "NO_ANSWER" : undefined,
+            sessionId: req.sessionId || undefined,
           });
           callback(null, {
             callId: result.callId,
@@ -1697,6 +1710,30 @@ export function createMessagingImpl(
           callback(null, {});
         } catch (err) {
           logger.error(`gRPC handleLiveKitRoomFinished error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    handleLiveKitParticipantJoined: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<Record<string, never>>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            roomName?: string;
+            participantIdentity?: string;
+          };
+          await deps.callService.markMediaJoined(
+            req.roomName ?? "",
+            req.participantIdentity ?? ""
+          );
+          callback(null, {});
+        } catch (err) {
+          logger.error(
+            `gRPC handleLiveKitParticipantJoined error: ${String(err)}`
+          );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -2137,6 +2174,44 @@ export function createMessagingImpl(
         } catch (err) {
           logger.error(`gRPC adminDisbandGroup error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: group-side cascade of a permanent system ban —
+    // owned groups CLOSED, every other membership ended. Never throws to the
+    // caller: backoffice treats this leg as best-effort, so a partial failure
+    // returns the ids that did succeed.
+    adminApplySystemBan: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            actorAdminId?: string;
+            reason?: string;
+          };
+          const result = await deps.adminGroupService.adminApplySystemBan(
+            req.userId ?? "",
+            req.actorAdminId ?? "",
+            req.reason || undefined
+          );
+          callback(null, {
+            ok: true,
+            closedGroupIds: result.closedGroupIds,
+            removedGroupIds: result.removedGroupIds,
+            errorCode: "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminApplySystemBan error: ${String(err)}`);
+          callback(null, {
+            ok: false,
+            closedGroupIds: [],
+            removedGroupIds: [],
+            errorCode: "CHAT_SYSTEM_BAN_CASCADE_FAILED",
+          });
         }
       })();
     },
@@ -2864,6 +2939,7 @@ export function createCommunityImpl(
             messageId: saved.id,
             roomId: saved.roomId,
             sentAt,
+            sequenceNumber: saved.sequenceNumber ?? 0,
           });
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);
@@ -2955,6 +3031,87 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC getCommunityMessages error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Community Conversation viewer (backoffice-service only) — same
+    // wire shape as getCommunityMessages, but reads via
+    // getMessagesForModeration (no membership/PUBLIC gate).
+    adminGetCommunityMessages: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            roomId: string;
+            cursor: string;
+            limit: number;
+          };
+
+          const limit = req.limit || 30;
+          const [page, pinnedMessage] = await Promise.all([
+            deps.communityMessageService.getMessagesForModeration({
+              roomId: req.roomId,
+              cursor: req.cursor || undefined,
+              limit,
+            }),
+            deps.communityPinService.getActivePinSummary(req.roomId, ""),
+          ]);
+
+          // Both come straight from the keyset page. Deriving hasMore from
+          // `messages.length >= limit` would be wrong in both directions: a
+          // short page after DB filtering is not the end of history, and an
+          // exactly-full page is not proof there is more.
+          const messages = page.items;
+          const nextCursor = page.nextCursor ?? "";
+          const hasMore = page.hasMore;
+
+          callback(null, {
+            messages: messages.map((m) => ({
+              messageId: m.id,
+              roomId: m.roomId,
+              senderId: m.sentBy,
+              senderName: m.senderName ?? "",
+              senderAvatar:
+                ((m as unknown as Record<string, unknown>)
+                  .senderAvatar as string) ?? "",
+              message: m.message ?? "",
+              contentType: m.contentType,
+              mediaKey: (() => {
+                const att = Array.isArray(m.attachments)
+                  ? (m.attachments[0] as Record<string, unknown> | undefined)
+                  : undefined;
+                return (att?.url as string) ?? (att?.objectKey as string) ?? "";
+              })(),
+              attachmentsJson: Array.isArray(m.attachments)
+                ? JSON.stringify(m.attachments)
+                : "[]",
+              reactionsJson: JSON.stringify(m.reactions ?? []),
+              quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
+              sentAt:
+                m.createdAt instanceof Date
+                  ? m.createdAt.getTime()
+                  : Date.now(),
+              systemMessageType:
+                ((m as Record<string, unknown>).systemMessageType as string) ??
+                "",
+              systemMetadata: (() => {
+                const meta = (m as Record<string, unknown>).systemMetadata;
+                return meta ? JSON.stringify(meta) : "";
+              })(),
+              isPersonal: Boolean((m as Record<string, unknown>).isPersonal),
+            })),
+            nextCursor,
+            hasMore,
+            pinnedMessageJson: pinnedMessage
+              ? JSON.stringify(pinnedMessage)
+              : "",
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetCommunityMessages error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -4201,49 +4358,42 @@ export function createNotificationImpl(
             req.sessionId || null
           );
 
+          // ONE serializer for the list, whichever transport asked for it.
+          // This used to hand-roll its own row, and the two drifted: the socket
+          // shape had no `category`, no `actor` block and therefore no
+          // read-time avatar refresh (so it served presigned URLs that had
+          // already expired), no `isDeleted`, and `data` flat instead of under
+          // `payload`. That is two parsers on every client for one list.
+          //
+          // `notificationId`, `userId` and the flat `data` map are kept
+          // alongside the canonical fields: renaming them would break every
+          // client already reading this path, and emitting both costs nothing.
+          const refresh = await resolveAvatarRefresh(rows);
           const notifications = await Promise.all(
             rows.map(async (n) => {
-              const payloadObj = (n.payload ?? {}) as {
-                title?: string;
-                body?: string;
-                data?: Record<string, string>;
-              };
-              const rawData = payloadObj.data ?? {};
-              const entity = (n.entity ?? {}) as { id?: string };
-
-              let navParsed: unknown;
-              let actorParsed: unknown;
-              try {
-                if (rawData.navigation)
-                  navParsed = JSON.parse(rawData.navigation);
-              } catch {
-                /* skip */
-              }
-              try {
-                if (rawData.actorSnapshot)
-                  actorParsed = JSON.parse(rawData.actorSnapshot);
-              } catch {
-                /* skip */
-              }
-
+              const dto = await serializeNotification(
+                n,
+                req.userId as string,
+                refresh
+              );
+              const rawData =
+                ((n.payload ?? {}) as { data?: Record<string, string> }).data ??
+                {};
               const row: Record<string, unknown> = {
-                notificationId: n.id,
-                userId: n.userId,
-                type: n.type,
-                title: payloadObj.title ?? "",
-                body: payloadObj.body ?? "",
-                referenceId: entity.id ?? "",
-                isRead: n.isRead,
+                ...dto,
+                // Dates over gRPC go out as epoch ms, matching the `/notify`
+                // live events rather than the REST envelope's own conversion.
                 createdAt: n.createdAt.getTime(),
                 updatedAt: n.updatedAt.getTime(),
-                version: n.version ?? 1,
-                groupKey: n.groupKey ?? "",
-                // Include the full data map so clients can restore notification
-                // state (e.g. actionTaken="TERMINATED") on page refresh.
-                data: rawData,
+                // Legacy keys — kept for existing readers of this path.
+                notificationId: n.id,
+                userId: n.userId,
+                referenceId: dto.referenceId ?? "",
+                groupKey: dto.groupKey ?? "",
+                data:
+                  (dto.payload as { data?: Record<string, string> })?.data ??
+                  {},
               };
-              if (navParsed !== undefined) row.navigation = navParsed;
-              if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
 
               const friendship = await resolveNotificationFriendship(
                 req.userId as string,

@@ -59,6 +59,10 @@ export interface SendCommunityMessageResult {
   messageId: string;
   roomId: string;
   sentAt: number;
+  // Per-room ordering key. `sentAt` is the row's createdAt, stamped after the
+  // sequence is allocated, so the two do not always agree — this is what lets
+  // the sender place its own just-acked row without waiting for the echo.
+  sequenceNumber: number;
 }
 export interface GetCommunityMessagesParams {
   roomId: string;
@@ -462,9 +466,14 @@ export function createCommunityClient(): CommunityClient {
           ...(p.contact ? { contact: p.contact } : {}),
           ...(p.sticker ? { sticker: p.sticker } : {}),
         }),
-        // int64 `sentAt` arrives as a string (proto-loader longs:String); coerce
-        // so the ack matches the `community:message:new` broadcast (a number).
-      }).then((r) => ({ ...r, sentAt: Number(r.sentAt) }))
+        // int64 `sentAt`/`sequenceNumber` arrive as strings (proto-loader
+        // longs:String); coerce so the ack matches the
+        // `community:message:new` broadcast (numbers).
+      }).then((r) => ({
+        ...r,
+        sentAt: Number(r.sentAt),
+        sequenceNumber: Number(r.sequenceNumber ?? 0),
+      }))
   );
   const getMsgsBreaker = makeBreaker(
     "community.getCommunityMessages",

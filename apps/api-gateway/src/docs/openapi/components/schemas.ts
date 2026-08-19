@@ -9419,8 +9419,9 @@ export const openApiSchemas = {
     type: "string",
     description:
       "Free-form event-type string from @aimess/shared-types (no DB enum). " +
-      "Tab bucketing is by prefix, not an allowlist: `friend.*` and `call.*` → " +
-      "FRIENDS, `community.*` (except `community.mention`) → COMMUNITIES, " +
+      "Tab bucketing is by prefix, not an allowlist: `call.*` (and legacy " +
+      "CALL_MISSED) → CALLS, `friend.*` → FRIENDS, `community.*` (except " +
+      "`community.mention`) → COMMUNITIES, " +
       "`chat.mention`/`community.mention` → MENTIONS, everything else " +
       "(auth.*, admin.*, session.*, user.registered, ...) → SYSTEM. " +
       "Only a subset of possible event types are actually written to the " +
@@ -9434,9 +9435,10 @@ export const openApiSchemas = {
   },
   NotificationCategory: {
     type: "string",
-    enum: ["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "SYSTEM"],
+    enum: ["ALL", "FRIENDS", "COMMUNITIES", "MENTIONS", "CALLS", "SYSTEM"],
     description:
-      "Notification Center tab. ALL means no filter (also the default).",
+      "Notification Center tab. ALL means no filter (also the default). " +
+      "The non-ALL buckets are disjoint, so their unread counts sum to ALL's.",
   },
   NotificationActorBlock: {
     type: "object",
@@ -9476,9 +9478,10 @@ export const openApiSchemas = {
       friends: { type: "integer", example: 3 },
       communities: { type: "integer", example: 6 },
       mentions: { type: "integer", example: 0 },
+      calls: { type: "integer", example: 2 },
       system: { type: "integer", example: 3 },
     },
-    required: ["all", "friends", "communities", "mentions", "system"],
+    required: ["all", "friends", "communities", "mentions", "calls", "system"],
   },
   ChatNotification: {
     type: "object",
@@ -9591,6 +9594,26 @@ export const openApiSchemas = {
       type: { $ref: "#/components/schemas/NotificationCategory" },
     },
     required: ["pagination", "data", "hasMore", "nextCursor", "counts", "type"],
+  },
+  ChatNotificationSyncPage: {
+    type: "object",
+    properties: {
+      notifications: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatNotification" },
+        description:
+          "Oldest-first, and INCLUDING tombstones — a row with `isDeleted: true` means remove it locally.",
+      },
+      nextSince: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms. Feed back as `since` on the next call. Unchanged from the request when nothing was returned.",
+      },
+      hasMore: { type: "boolean" },
+      counts: { $ref: "#/components/schemas/NotificationCounts" },
+    },
+    required: ["notifications", "nextSince", "hasMore", "counts"],
   },
   ChatMarkReadRequest: {
     oneOf: [
@@ -11141,10 +11164,22 @@ export const openApiSchemas = {
         ],
       },
       privateRoomId: { type: "string", nullable: true },
+      groupId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Set only for a GROUP call — the room it was started from. `null` for 1:1, where `calleeId` is authoritative.",
+      },
+      calleeIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "GROUP calls only: every rung member (excludes the caller). Empty for 1:1.",
+      },
       initiatedAt: {
         type: "integer",
         format: "int64",
-        description: "Epoch ms.",
+        description: "Ring start. Epoch ms.",
       },
       answeredAt: {
         type: "integer",
@@ -11186,6 +11221,59 @@ export const openApiSchemas = {
       hasMore: { type: "boolean" },
     },
     required: ["calls", "nextCursor", "hasMore"],
+  },
+
+  // Results of the socket-free call-control routes. `status` is the DB
+  // `CallStatus`, NOT the semantic timeline outcome — a caller-side cancel
+  // reads `ENDED` here while the DM card and the notification row read
+  // `CANCELLED`. One record at two levels of granularity, by design.
+  ChatCallActionResult: {
+    type: "object",
+    properties: {
+      callId: { type: "string" },
+      status: {
+        type: "string",
+        enum: [
+          "RINGING",
+          "IN_PROGRESS",
+          "ENDED",
+          "MISSED",
+          "DECLINED",
+          "FAILED",
+        ],
+      },
+    },
+    required: ["callId", "status"],
+  },
+  ChatCallAnswerResult: {
+    allOf: [
+      { $ref: "#/components/schemas/ChatCallActionResult" },
+      {
+        type: "object",
+        properties: {
+          livekitUrl: { type: "string" },
+          token: {
+            type: "string",
+            description: "LiveKit access token for this participant.",
+          },
+        },
+      },
+    ],
+  },
+  ChatCallEndResult: {
+    allOf: [
+      { $ref: "#/components/schemas/ChatCallActionResult" },
+      {
+        type: "object",
+        properties: {
+          durationSec: {
+            type: "integer",
+            description:
+              "0 for a call that never connected. Never fabricated from the ring length.",
+          },
+        },
+      },
+    ],
   },
 
   // --- Message reactions ---

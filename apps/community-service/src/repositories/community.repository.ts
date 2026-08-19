@@ -116,6 +116,7 @@ function mineActivitySelect(userId: string) {
     createdAt: true,
     moderationStatus: true,
     status: true,
+    statusClosedReasonCode: true,
     members: {
       where: { userId },
       select: {
@@ -434,6 +435,16 @@ export const communityRepository = {
       where: { id: { in: ids } },
       include: { category: { select: { id: true, name: true } } },
     });
+  },
+
+  // Communities this user owns — the input to the system-ban cascade. Indexed
+  // on adminId; deleted rows are skipped since there is nothing left to close.
+  async findCommunityIdsByAdminId(userId: string): Promise<string[]> {
+    const rows = await prisma.community.findMany({
+      where: { adminId: userId, deletedAt: { isSet: false } },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
   },
 
   /** Case-insensitive display-name lookup (uniqueness check). */
@@ -1854,12 +1865,19 @@ export const communityRepository = {
       and.push(...buildCommunitySearchFilter(params.q));
     }
 
+    // Owner-CLOSED communities are not surfaced for discovery/joining, but one the caller already belongs to stays visible in their OWN mine-search: closing is a write-lock, not a removal, so the row must never vanish from an existing member's list.
+    // `not` → Mongo `$ne`, which also matches legacy rows where `status` is unset (treated as ACTIVE), so backward-compat is preserved.
+    and.push({
+      OR: [
+        { status: { not: CommunityStatus.CLOSED } },
+        ...(params.includeMemberCommunityIds?.length
+          ? [{ id: { in: params.includeMemberCommunityIds } }]
+          : []),
+      ],
+    });
+
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
-      // Owner-CLOSED communities are not surfaced for discovery/joining. `not`
-      // → Mongo `$ne`, which also matches legacy rows where `status` is unset
-      // (treated as ACTIVE), so backward-compat is preserved.
-      status: { not: CommunityStatus.CLOSED },
       AND: and,
     };
 
@@ -2092,6 +2110,10 @@ export const communityRepository = {
           createdAt: true,
           adminId: true,
           moderationStatus: true,
+          // Owner-close axis. The admin list reports `status` from
+          // moderationStatus, so this is the only field that can tell the panel
+          // a community went read-only because its owner was system-banned.
+          statusClosedReasonCode: true,
           avatarUrl: true,
           coverUrl: true,
           category: { select: { id: true, name: true, slug: true } },
@@ -2325,13 +2347,19 @@ export const communityRepository = {
   async getMemberRolesByUserIds(
     communityId: string,
     userIds: string[]
-  ): Promise<Array<{ userId: string; role: CommunityMemberRole }>> {
+  ): Promise<
+    Array<{
+      userId: string;
+      role: CommunityMemberRole;
+      status: CommunityMemberStatus;
+    }>
+  > {
     if (userIds.length === 0 || !/^[a-fA-F0-9]{24}$/.test(communityId)) {
       return [];
     }
     return prisma.communityMember.findMany({
       where: { communityId, userId: { in: userIds } },
-      select: { userId: true, role: true },
+      select: { userId: true, role: true, status: true },
     });
   },
 

@@ -303,15 +303,56 @@ const requiredTrimmedText = (label: string, maxLen: number) =>
  */
 const banReasonInput = requiredTrimmedText("Reason", CUSTOM_BAN_REASON_MAX_LEN);
 
-export const banUserSchema = z.object({
+// Scope of the ban. SYSTEM is the permanent platform-wide ban (blocks login on
+// Web/Android/iOS, kills every session, closes the communities and groups the
+// user owned, ends their livestreams). COMMUNITY restricts one community only
+// and leaves the rest of the account untouched.
+//
+// Defaults to SYSTEM so every existing caller — the admin panel already POSTs
+// this endpoint with no banType — keeps its current meaning exactly.
+const banTypeInput = z.enum(["SYSTEM", "COMMUNITY"]).default("SYSTEM");
+
+// Kept as a plain object (not the refined schema) so `bulkBanSchema` can still
+// `.extend` it — superRefine returns a ZodEffects, which has no `.extend`.
+const banUserBaseSchema = z.object({
+  banType: banTypeInput,
+  // Required for (and only meaningful to) a COMMUNITY-scoped ban.
+  communityId: z.string().trim().min(1).max(64).optional(),
   reason: banReasonInput,
   note: z.string().max(2000).optional(),
-  // durationDays>0 turns a "ban" into a time-boxed suspend (see service docs).
+  // Legacy SYSTEM-scope escape hatch only: durationDays>0 turns a "ban" into
+  // a time-boxed suspend (see service docs). A COMMUNITY ban is permanent by
+  // definition and rejects it outright.
   durationDays: z.number().int().positive().nullable().default(null),
   reportId: z.string().uuid().optional(),
   notifyUser: z.boolean().default(false),
   forceLogout: z.boolean().default(true),
 });
+
+const requireCommunityScopeFields = (
+  value: z.infer<typeof banUserBaseSchema>,
+  ctx: z.RefinementCtx
+): void => {
+  if (value.banType !== "COMMUNITY") return;
+  if (!value.communityId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["communityId"],
+      message: "communityId is required for a COMMUNITY ban",
+    });
+  }
+  if (value.durationDays != null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["durationDays"],
+      message: "A community ban has no duration",
+    });
+  }
+};
+
+export const banUserSchema = banUserBaseSchema.superRefine(
+  requireCommunityScopeFields
+);
 export type BanUserInput = z.infer<typeof banUserSchema>;
 
 // ---------------------------------------------------------------------------
@@ -334,16 +375,33 @@ export type SuspendUserInput = z.infer<typeof suspendUserSchema>;
  * (`{}` when no body is sent). `note` is an optional free-text justification
  * the service falls back on a default reason when it is absent.
  */
-export type UnbanUserInput = { note?: string };
+// Every field is optional so a body-less POST (the panel's existing "activate"
+// call) keeps working unchanged and still means "lift the system ban".
+export const unbanUserSchema = z
+  .object({
+    banType: banTypeInput,
+    communityId: z.string().trim().min(1).max(64).optional(),
+    note: z.string().max(2000).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.banType === "COMMUNITY" && !value.communityId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["communityId"],
+        message: "communityId is required for a COMMUNITY unban",
+      });
+    }
+  });
+export type UnbanUserInput = z.infer<typeof unbanUserSchema>;
 
 // ---------------------------------------------------------------------------
 // Bulk.
 // ---------------------------------------------------------------------------
 const userIdsField = z.array(z.string().trim().min(1).max(64)).min(1).max(100);
 
-export const bulkBanSchema = banUserSchema.extend({
-  userIds: userIdsField,
-});
+export const bulkBanSchema = banUserBaseSchema
+  .extend({ userIds: userIdsField })
+  .superRefine(requireCommunityScopeFields);
 export type BulkBanInput = z.infer<typeof bulkBanSchema>;
 
 export const bulkActivateSchema = z.object({

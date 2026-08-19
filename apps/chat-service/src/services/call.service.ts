@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { callContentType, isTerminalCallStatus } from "@aimess/constants";
+import {
+  callContentType,
+  cancelCountsAsMissed,
+  isTerminalCallStatus,
+} from "@aimess/constants";
 import {
   BadRequestError,
   ConflictError,
@@ -59,6 +63,34 @@ const CALL_LEG_TTL_SEC = 4 * 60 * 60;
  * `SYSTEM_*` reasons so call analytics and support can tell them apart.
  */
 const END_REASON_FRIENDSHIP = "SYSTEM_FRIENDSHIP";
+
+/**
+ * How long after a call goes IN_PROGRESS an end/decline may still be read as
+ * "the callee tapped it in the split second after Accept", i.e. before their
+ * media ever came up.
+ *
+ * This bounds EVERY pre-media branch, and the bound is the whole point.
+ * `answeredAt` is stamped only by LiveKit's `participant_joined` webhook, so
+ * `answeredAt === null` is the ABSENCE OF EVIDENCE that media joined — never
+ * proof that it didn't. Treating it as proof means one dropped webhook makes a
+ * call the two of them actually held settle as a cancelled ring, which the
+ * callee then reads as "Missed" in their history.
+ *
+ * A genuine accept-then-end race is sub-second. Past this window the call
+ * demonstrably outlived any such race and is treated as answered, webhook or
+ * no webhook — a connected call must never regress to missed.
+ */
+const ACCEPT_THEN_END_WINDOW_MS = 10_000;
+
+/**
+ * Socket-room membership marker, written when a user initiates or answers a
+ * call and read by the gateway to authorize `call:rejoin` after a transport
+ * reconnect. Written HERE (rather than only in the gateway) so the REST call
+ * actions — the fallback a backgrounded/killed mobile app uses, where there is
+ * no socket to join — leave the same membership behind as the socket path.
+ * Key/value/TTL must stay identical to the gateway's `rememberCallMember`.
+ */
+const CALL_MEMBER_TTL_SEC = 4 * 60 * 60;
 
 /**
  * Fetch caller display name + presigned avatar URL for the `call:incoming`
@@ -237,6 +269,24 @@ export class CallService {
     return (await this.redis.get(key)) === legId;
   }
 
+  /** See {@link CALL_MEMBER_TTL_SEC}. Best-effort: rejoin is a convenience, not correctness. */
+  private async rememberCallMember(
+    callId: string,
+    userId: string
+  ): Promise<void> {
+    if (!callId || !userId) return;
+    try {
+      await this.redis.set(
+        `call:member:${callId}:${userId}`,
+        "1",
+        "EX",
+        CALL_MEMBER_TTL_SEC
+      );
+    } catch (err) {
+      logger.warn(`CallService|rememberCallMember|failed: ${String(err)}`);
+    }
+  }
+
   /** Token-checked release, so a retaken claim is never deleted out from under. */
   private async releaseCallLeg(
     callId: string,
@@ -333,12 +383,39 @@ export class CallService {
         now
       );
       for (const stale of ownRinging) {
+        // Redialling is a hangup like any other, so it asks the SAME question:
+        // from the old callee's seat, did that ring last long enough to be a
+        // call they missed? It is the commonest shape of a missed call there
+        // is — nobody picks up, the caller immediately tries again — and it
+        // used to settle CANCELLED unconditionally, which is the one ending
+        // that produces no missed-call push and no MISSED history row. Every
+        // other path to an abandoned ring already routes through this one
+        // decision; this was the last that did not.
+        const missed = this.ringResolvesAsMissed({
+          call: stale,
+          endedAt: now,
+          endedByUserId: params.callerId,
+        });
         const { won } = await this.callRepo.claimStatusTransition(
           stale.callId,
           CallStatus.RINGING,
-          { status: CallStatus.ENDED, endedAt: now, endedBy: params.callerId }
+          {
+            status: missed ? CallStatus.MISSED : CallStatus.ENDED,
+            endedAt: now,
+            endedBy: params.callerId,
+          }
         );
         if (!won) continue;
+        if (missed) {
+          // The shared fan-out: `call:missed`, the ring dismissal, the MISSED
+          // card and the tray push — identical to a swept timeout, so the two
+          // ways of reaching this outcome cannot drift.
+          await this.fanOutUnansweredRing(
+            { ...stale, status: CallStatus.MISSED, endedAt: now },
+            now
+          );
+          continue;
+        }
         // Fans out to the caller's own `self:` channel too, not just the
         // callee's: the caller's OTHER devices are showing an outgoing-mirror
         // banner for this abandoned ring and have no other way to learn it died.
@@ -432,6 +509,8 @@ export class CallService {
       );
       throw new ConflictError("CALL_USER_BUSY");
     }
+
+    await this.rememberCallMember(callId, params.callerId);
 
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
     // UI in parallel — independent I/O. The CALLEE snapshot is not refetched:
@@ -632,6 +711,8 @@ export class CallService {
       calleeIds,
     });
 
+    await this.rememberCallMember(callId, params.callerId);
+
     const callerSnapshot = await this.getUserSnapshot(params.callerId).catch(
       () => ({ displayName: "", avatarUrl: "" })
     );
@@ -721,6 +802,13 @@ export class CallService {
     callId: string;
     calleeId: string;
     legId?: string;
+    /**
+     * Auth session of the device that answered. Push-exclusion only — it is the
+     * device most likely to be mid-call, and "answered elsewhere" is the one
+     * message it must never act on. `legId` already excludes it on the SOCKET
+     * path (`handledByLegId`); this is the same guarantee for the push.
+     */
+    sessionId?: string;
   }): Promise<Call & { livekit: LiveKitCredentials }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -773,7 +861,7 @@ export class CallService {
   }
 
   private async answerCallClaimed(
-    params: { callId: string; calleeId: string },
+    params: { callId: string; calleeId: string; sessionId?: string },
     call: Call,
     legId: string | undefined
   ): Promise<Call & { livekit: LiveKitCredentials }> {
@@ -781,6 +869,10 @@ export class CallService {
       params.callId,
       params.calleeId
     );
+    // Answering is what earns a seat in `call:<id>` — record it before any
+    // early return below, so a retried/duplicate answer is still allowed to
+    // rejoin the room after a reconnect.
+    await this.rememberCallMember(params.callId, params.calleeId);
     // Already answered — by THIS leg (a retry or a reconnect after the claim
     // landed), because a foreign leg could not have got past claimCallLeg.
     if (call.status === CallStatus.IN_PROGRESS) return { ...call, livekit };
@@ -807,13 +899,30 @@ export class CallService {
     );
     if (alreadyBusy) throw new ConflictError("CALL_USER_BUSY");
 
-    const answeredAt = new Date();
+    // `answeredAt` is stamped HERE, in the same atomic transition that answers
+    // the call — the callee picking up IS the answer, and that is the moment
+    // every terminal path measures a real call from.
+    //
+    // It used to be stamped only by LiveKit's `participant_joined` webhook, so
+    // that the value could mean "media was provably up". That made an inbound
+    // webhook load-bearing for correctness: when it did not arrive, `answeredAt`
+    // stayed null on calls the two of them had genuinely held, and the terminal
+    // paths — which all read `answeredAt` to tell an answered call from an
+    // abandoned ring — settled them as cancelled rings. The caller's history
+    // then read "no answer" and the callee's "Missed" for a call they had just
+    // been talking on.
+    //
+    // The webhook still refines this: `markMediaJoined` stamps only when the
+    // field is null, so it remains the media-up signal for any path that
+    // answers without going through here. What it no longer does is decide
+    // whether the call happened at all.
+    const transitionedAt = new Date();
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
       CallStatus.RINGING,
       {
         status: CallStatus.IN_PROGRESS,
-        answeredAt,
+        answeredAt: transitionedAt,
       }
     );
     if (!won) {
@@ -828,8 +937,8 @@ export class CallService {
     const updated: Call = {
       ...call,
       status: CallStatus.IN_PROGRESS,
-      answeredAt,
-      updatedAt: answeredAt,
+      answeredAt: transitionedAt,
+      updatedAt: transitionedAt,
     };
 
     await Promise.all([
@@ -864,6 +973,12 @@ export class CallService {
       callId: params.callId,
       reason: "answered_elsewhere",
       callerId: call.callerId,
+      // The push CAN now carry an exclusion — not the leg (which never crosses
+      // the queue), but the session behind it. The answering device is dropped
+      // at fan-out, so the comment above's "no leg exclusion" hazard no longer
+      // depends on the client ignoring its own event. Sibling devices, which
+      // are the whole point of this push, still receive it.
+      excludeSessionId: params.sessionId,
     });
 
     // "Ringing…" → "Ongoing" on the SAME card. The final duration replaces this
@@ -872,7 +987,7 @@ export class CallService {
     await this.postCallChatMessageSafe(
       updated,
       "ANSWERED",
-      answeredAt,
+      transitionedAt,
       0,
       params.calleeId
     );
@@ -883,11 +998,56 @@ export class CallService {
   async declineCall(params: {
     callId: string;
     calleeId: string;
+    /**
+     * Auth session of the device that declined. Only ever used to EXCLUDE that
+     * device from the dismissal push — never for authorization, so a client
+     * that omits it loses nothing but the exclusion.
+     */
+    sessionId?: string;
   }): Promise<Call> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     if (!this.isCallee(call, params.calleeId))
       throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+
+    // Accept-then-decline race (1:1): the callee tapped Decline in the tight
+    // window after their client already emitted `call:answer` but before the
+    // callee's media actually joined LiveKit. Row is IN_PROGRESS with a null
+    // `answeredAt`. Treat this as a valid decline — the user's intent is
+    // clearly "no", and no real call happened. Delegate through `endCall`
+    // (attributed to the callee), which now takes the pre-media branch and
+    // publishes `call:cancelled` + posts a CANCELLED chat card with no
+    // duration. Group calls stay in the RINGING-only path below — a group
+    // decline mid-roster does not translate to "reject the whole call".
+    //
+    // Time-bounded on `updatedAt` (stamped by the RINGING → IN_PROGRESS claim)
+    // because this is the ONLY decline path that can end a call that is already
+    // up: a decline replayed long after the fact — a mobile client flushing a
+    // queued intent on reconnect, or a retried delivery — would otherwise hang
+    // up a live conversation. `answeredAt` cannot bound it: it is stamped by
+    // the best-effort `participant_joined` webhook, so a lost webhook leaves it
+    // null for the entire call. See ACCEPT_THEN_END_WINDOW_MS.
+    // A row with no `updatedAt` (hand-built fixtures, pre-migration rows) gives us
+    // nothing to judge staleness by — treat it as in-window so the pre-existing
+    // behaviour holds rather than silently swallowing a genuine decline.
+    const sinceAnswerMs = call.updatedAt
+      ? Date.now() - call.updatedAt.getTime()
+      : 0;
+    if (
+      call.status === CallStatus.IN_PROGRESS &&
+      call.answeredAt === null &&
+      !call.groupId &&
+      sinceAnswerMs <= ACCEPT_THEN_END_WINDOW_MS
+    ) {
+      // `endCall`'s cancel branch is a strict refinement of `Call` (durationSec
+      // narrowed to `number`), so it's assignable to `declineCall`'s Promise<Call>.
+      return this.endCall({
+        callId: params.callId,
+        userId: params.calleeId,
+        sessionId: params.sessionId,
+      });
+    }
+
     // Idempotent / stale-UI: already left RINGING — succeed without error so
     // double-taps don't trip the gateway circuit breaker.
     if (call.status !== CallStatus.RINGING) return call;
@@ -928,7 +1088,10 @@ export class CallService {
         callId: params.callId,
         reason: "declined",
         callerId: call.callerId,
+        excludeSessionId: params.sessionId,
       });
+
+      // Deliberately NO missed-call push here — see the 1:1 branch below.
 
       if (updated.calleeIds.length > 0) return updated;
 
@@ -1019,6 +1182,7 @@ export class CallService {
       callId: params.callId,
       reason: "declined",
       callerId: call.callerId,
+      excludeSessionId: params.sessionId,
     });
 
     await this.postCallChatMessageSafe(
@@ -1028,6 +1192,32 @@ export class CallService {
       0,
       params.calleeId
     );
+
+    // NO missed-call push here, on either decline path. A decline is the
+    // callee ACTING on the ring, not missing it: the dismissal published just
+    // above (reason "declined") is what clears it from their other devices, and
+    // the Notification-Center row comes from the DECLINED card projection —
+    // which `isUnreadCallActivity` already badges. Pushing "Missed call from X"
+    // on top buzzed the very device that had just tapped Decline (the missed
+    // producer takes no session exclusion), immediately after telling it the
+    // ring was handled.
+    // NO missed-call push on a decline. A declined call is not a missed one,
+    // and `call.missed` is a plain banner-with-sound addressed to the CALLEE —
+    // the person who just declined. It carries no acting-device exclusion (only
+    // `CallCancelPayload` has one), and its `call:missed:<id>` collapse key
+    // differs from the ring's `call:<id>`, so it does not replace the ring: it
+    // stacks a fresh "Missed call from X" alert seconds after the user
+    // deliberately dismissed the call. With no TTL it inherits the 24 h
+    // default, so a device offline at decline time can surface it hours later.
+    //
+    // Nothing is lost by omitting it. The push writes no history (`skipInbox`);
+    // the ONE call-history row comes from the `call.activity` projection, which
+    // fires on every terminal transition and already marks a DECLINED call
+    // unread for the callee — so the decliner's other devices still get the row
+    // surfaced. Their ring is dismissed by the `call.cancelled` push above.
+    //
+    // The genuine missed-call push stays where it belongs: `fanOutUnansweredRing`,
+    // the ring that really was never answered.
 
     return updated;
   }
@@ -1071,6 +1261,13 @@ export class CallService {
      * client cannot fabricate one.
      */
     reason?: "NO_ANSWER";
+    /**
+     * Auth session of the device that hung up. Push-exclusion only — see
+     * {@link declineCall}. Note this ends the call for the OTHER party too, so
+     * it only suppresses the dismissal aimed at the hanging-up user's own other
+     * devices when they are the callee; the peer is unaffected.
+     */
+    sessionId?: string;
   }): Promise<Call & { durationSec: number }> {
     const call = await this.callRepo.findByCallId(params.callId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
@@ -1108,30 +1305,49 @@ export class CallService {
 
     const endedAt = new Date();
     const wasRinging = call.status === CallStatus.RINGING;
+    // Time spent IN_PROGRESS, measured from the RINGING → IN_PROGRESS claim
+    // that stamped `updatedAt`. A row with no `updatedAt` (hand-built fixture,
+    // pre-migration) reads as 0 so the pre-existing behaviour holds.
+    const sinceAnswerMs = call.updatedAt
+      ? endedAt.getTime() - call.updatedAt.getTime()
+      : 0;
+    // "Accepted, then ended before the media ever came up" — no duration,
+    // cancel event, CANCELLED card, so an accept-then-end race never records a
+    // call with a spurious duration timer.
+    //
+    // TIME-BOUNDED, and that bound is load-bearing: `answeredAt` is stamped
+    // only by LiveKit's `participant_joined` webhook, so a dropped webhook
+    // leaves `answeredAt` null on a call that was genuinely held. Unbounded,
+    // this branch turned every such call into a cancelled ring, which the
+    // callee's history then rendered as "Missed" — a connected call regressing
+    // to missed, on no evidence beyond a webhook that never arrived.
+    const wasPreMedia =
+      call.status === CallStatus.IN_PROGRESS &&
+      call.answeredAt === null &&
+      sinceAnswerMs <= ACCEPT_THEN_END_WINDOW_MS;
+    const cancelPath = wasRinging || wasPreMedia;
     const durationSec = call.answeredAt
       ? Math.max(
           0,
           Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
         )
-      : 0;
+      : cancelPath
+        ? 0
+        : // Answered, but the media webhook never landed: time it from the
+          // answer transition. Off by at most the webhook's own latency, and
+          // far better than reporting a real conversation as a cancelled ring.
+          Math.max(0, Math.floor(sinceAnswerMs / 1000));
 
     // A ring the CALLER let run out is a NO-ANSWER, not a cancellation — the
     // very outcome the RINGING → MISSED sweep would record a beat later, only
-    // without the wait. That wait is why it never happened in practice: the
-    // client's ring timeout ends the call at the same 60s the server sweep uses,
-    // so the row always settled as CANCELLED first and the caller never saw
-    // "No answer" nor the callee a missed call.
-    //
-    // Every clause is server-side: the call must still be RINGING, must never
-    // have been answered, and the request must come from the caller. So this
-    // only ever picks between two honest readings of one hangup, and the
-    // CONNECTED race is impossible — an answer moves the row to IN_PROGRESS,
-    // and the claim below is scoped to the status read above.
-    const noAnswer =
-      wasRinging &&
-      !call.answeredAt &&
-      params.reason === "NO_ANSWER" &&
-      call.callerId === params.userId;
+    // without the wait. See `ringResolvesAsMissed` for why `reason` alone was
+    // not enough to detect it.
+    const noAnswer = this.ringResolvesAsMissed({
+      call,
+      endedAt,
+      endedByUserId: params.userId,
+      reason: params.reason,
+    });
 
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
@@ -1164,11 +1380,22 @@ export class CallService {
     // It goes to the CALLER's `self:` channel too — the caller's other devices
     // are showing an outgoing-mirror banner for this ring and would otherwise
     // never learn it was cancelled, leaving the banner up forever.
+    //
+    // Three outcomes, most specific first:
+    //  - the caller reporting NO_ANSWER on a still-RINGING call is the same
+    //    outcome the RINGING → MISSED sweep records, so it runs the identical
+    //    fan-out through one shared method — the two paths to that outcome can
+    //    never drift into two different behaviours. NO_ANSWER implies RINGING,
+    //    so `cancelPath` would match it too — hence it is checked FIRST.
+    //  - any other pre-answer end is a cancel. The `wasPreMedia` branch
+    //    (accept-then-quick-end race) shares this exact fan-out: the callee's
+    //    `self:<id>` gets `call:cancelled` (their mirror device needs the same
+    //    dismiss), and the caller-side sees a cancelled card rather than a fake
+    //    connected one with a duration.
+    //  - otherwise media really connected, so it ends with a duration.
     if (noAnswer) {
-      // Identical fan-out to the sweep's — one shared method, so the two paths
-      // to the same outcome can never drift into two different behaviours.
       await this.fanOutUnansweredRing(updated, endedAt);
-    } else if (wasRinging) {
+    } else if (cancelPath) {
       const targets = this.ringTargets(call);
       await this.publishToCallAndParticipants(
         updated,
@@ -1185,6 +1412,11 @@ export class CallService {
           callId: params.callId,
           reason: "ended",
           callerId: call.callerId,
+          // Passed unconditionally: a session belongs to exactly one user and
+          // this fan-out is scoped to `calleeId`'s own tokens, so it can only
+          // ever match when the callee IS the device that ended the call (the
+          // accept-then-end race). A caller-driven hangup matches nothing.
+          excludeSessionId: params.sessionId,
         });
       }
 
@@ -1273,12 +1505,19 @@ export class CallService {
             Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
           )
         : 0;
+      // A ring cut short by an unfriend/block is still a ring the callee did not
+      // take. Past the grace window it reads to them exactly like a timeout, so
+      // it settles as MISSED and rides the shared unanswered fan-out rather than
+      // going out as a silent dismiss. No `endedByUserId`: the server ended this,
+      // not the caller.
+      const missed =
+        wasRinging && this.ringResolvesAsMissed({ call, endedAt: now });
 
       const { won } = await this.callRepo.claimStatusTransition(
         call.callId,
         call.status,
         {
-          status: CallStatus.ENDED,
+          status: missed ? CallStatus.MISSED : CallStatus.ENDED,
           endedAt: now,
           durationSec,
           endedBy: END_REASON_FRIENDSHIP,
@@ -1286,6 +1525,14 @@ export class CallService {
       );
       if (!won) continue;
       ended++;
+
+      if (missed) {
+        await this.fanOutUnansweredRing(
+          { ...call, status: CallStatus.MISSED, endedAt: now },
+          now
+        );
+        continue;
+      }
 
       const updated: Call = {
         ...call,
@@ -1453,6 +1700,79 @@ export class CallService {
    *  4. The missed-call push, the only thing that tells a backgrounded or
    *     offline callee afterwards.
    */
+  /**
+   * How long this call actually rang, in whole seconds, derived from the call
+   * record alone — never from anything a client sent.
+   */
+  private ringDurationSecOf(
+    call: Pick<Call, "initiatedAt">,
+    at: Date
+  ): number | null {
+    const startedAt = new Date(call.initiatedAt).getTime();
+    // `initiatedAt` is non-nullable in the schema, so this only fires on a
+    // hand-built row. Returning null rather than a bogus 0 matters: the caller
+    // reads it as "ring length unknown", and unknown must NEVER be read as a
+    // missed call. Asserting MISSED from missing data would invent a missed
+    // call, which is the one direction of this decision that is not recoverable.
+    if (!Number.isFinite(startedAt)) return null;
+    return Math.max(0, Math.floor((at.getTime() - startedAt) / 1000));
+  }
+
+  /**
+   * THE ONE PLACE the backend decides that a ring nobody answered is a MISSED
+   * call rather than a cancelled one.
+   *
+   * Two signals, either of which is sufficient:
+   *
+   *  - the caller's client says its ring window elapsed (`reason: "NO_ANSWER"`),
+   *  - or the ring simply lasted long enough that, from the callee's seat, it
+   *    IS a missed call — `cancelCountsAsMissed`, the same predicate the inbox
+   *    projection already uses to decide whether the callee's row arrives
+   *    badged.
+   *
+   * The second signal is what closes a hole that only ever appeared in
+   * production: `reason` is optional on the wire, and a caller's ring timeout
+   * typically fires at the same 60s as the server sweep and wins the race. A
+   * client that omitted it turned a genuine missed call into a cancellation,
+   * which skipped `fanOutUnansweredRing` entirely — so the callee got an unread
+   * "Missed call" row in the app and NO push telling them about it. The badge
+   * half of the rule and the push half disagreed; now both read the same
+   * predicate.
+   *
+   * Every clause is server-verified, so a client can neither fabricate nor
+   * suppress the outcome:
+   *
+   *  - `wasRinging` — an answered call is `IN_PROGRESS` and can never reach
+   *    here, which is what makes "a connected call must never become MISSED"
+   *    structural rather than a rule someone has to remember.
+   *  - `!answeredAt` — belt and braces on the same thing.
+   *  - the request must come from the CALLER. A callee hanging up a ring is
+   *    them acting on it, not missing it.
+   */
+  private ringResolvesAsMissed(params: {
+    call: Pick<Call, "status" | "answeredAt" | "callerId" | "initiatedAt">;
+    endedAt: Date;
+    endedByUserId?: string;
+    reason?: string;
+  }): boolean {
+    const { call } = params;
+    if (call.status !== CallStatus.RINGING) return false;
+    if (call.answeredAt) return false;
+    if (
+      params.endedByUserId !== undefined &&
+      params.endedByUserId !== call.callerId
+    )
+      return false;
+    if (params.reason === "NO_ANSWER") return true;
+    const ringDurationSec = this.ringDurationSecOf(call, params.endedAt);
+    // Unknown ring length → not missed. `cancelCountsAsMissed` reads an absent
+    // value as missed, which is right for the BADGE it guards (that row's status
+    // already says the ring went unanswered) and wrong here, where the status
+    // itself is what is being decided.
+    if (ringDurationSec === null) return false;
+    return cancelCountsAsMissed(ringDurationSec);
+  }
+
   private async fanOutUnansweredRing(call: Call, at: Date): Promise<void> {
     // Kicked off first so it overlaps the publishes below instead of adding to
     // the tail latency of the sweep loop.
@@ -1641,12 +1961,33 @@ export class CallService {
         return;
       }
       const endedAt = new Date();
+      // Same question as a caller-side hangup: from the callee's seat, did this
+      // ring last long enough to be a call they missed? `endedByUserId` is
+      // omitted because there is no user behind a LiveKit teardown — the caller
+      // check does not apply, but every other clause does.
+      const missed = this.ringResolvesAsMissed({ call, endedAt });
       const { won } = await this.callRepo.claimStatusTransition(
         callId,
         CallStatus.RINGING,
-        { status: CallStatus.ENDED, endedAt, endedBy: "SYSTEM_LIVEKIT" }
+        {
+          status: missed ? CallStatus.MISSED : CallStatus.ENDED,
+          endedAt,
+          endedBy: "SYSTEM_LIVEKIT",
+        }
       );
       if (!won) return;
+
+      // A ring that outlived the grace window settles through the SAME shared
+      // fan-out every other unanswered ring uses — one `call:missed`, one
+      // MISSED card, and the tray push that is the only thing telling a
+      // backgrounded callee it happened.
+      if (missed) {
+        await this.fanOutUnansweredRing(
+          { ...call, status: CallStatus.MISSED, endedAt },
+          endedAt
+        );
+        return;
+      }
 
       // Publish to BOTH rooms — mirrors sweepMissedCalls. Unlike endCall's
       // RINGING branch (where the CALLER initiated the end and already cleared
@@ -1702,12 +2043,22 @@ export class CallService {
     if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
 
     const endedAt = new Date();
+    // Same bound as `endCall`: a missing `participant_joined` webhook must not
+    // turn a call that was actually held into a cancelled ring. See
+    // ACCEPT_THEN_END_WINDOW_MS.
+    const sinceAnswerMs = call.updatedAt
+      ? endedAt.getTime() - call.updatedAt.getTime()
+      : 0;
+    const preMedia =
+      call.answeredAt === null && sinceAnswerMs <= ACCEPT_THEN_END_WINDOW_MS;
     const durationSec = call.answeredAt
       ? Math.max(
           0,
           Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
         )
-      : 0;
+      : preMedia
+        ? 0
+        : Math.max(0, Math.floor(sinceAnswerMs / 1000));
 
     const { won } = await this.callRepo.claimStatusTransition(
       callId,
@@ -1720,6 +2071,38 @@ export class CallService {
       }
     );
     if (!won) return;
+
+    // Media never actually joined for the callee before the room went away
+    // (accept-then-quick-end / callee never fully connected). Same shape as
+    // the RINGING branch above: cancelled event, CANCELLED card, no duration
+    // — never surface a fake connected call.
+    if (preMedia) {
+      const cancelPayload = JSON.stringify({
+        event: "call:cancelled",
+        data: { callId },
+      });
+      await this.publishToCallAndParticipants(
+        call,
+        cancelPayload,
+        "reconcile|preMediaCancel"
+      );
+      for (const calleeId of this.ringTargets(call)) {
+        publishCallCancelSafe({
+          calleeId,
+          callId,
+          reason: "cancelled",
+          callerId: call.callerId,
+        });
+      }
+      await this.postCallChatMessageSafe(
+        call,
+        "CANCELLED",
+        endedAt,
+        0,
+        "SYSTEM_LIVEKIT"
+      );
+      return;
+    }
 
     await this.publishToCallAndParticipants(
       call,
@@ -1737,6 +2120,36 @@ export class CallService {
       durationSec,
       "SYSTEM_LIVEKIT"
     );
+  }
+
+  /**
+   * Stamp `answeredAt` from a LiveKit `participant_joined` webhook — the only
+   * event that proves the callee's media actually arrived. Idempotent; the
+   * caller's own join and every reconnect / duplicate-identity race no-op.
+   * The webhook is best-effort: if it never lands, `endCall` sees a null
+   * `answeredAt` and closes the row as cancelled (no duration), which is a
+   * strictly better failure than the previous "count from the answer socket
+   * event and produce a spurious duration".
+   */
+  async markMediaJoined(
+    callId: string,
+    participantIdentity: string
+  ): Promise<void> {
+    if (!callId || !participantIdentity) return;
+    const call = await this.callRepo.findByCallId(callId);
+    if (!call) return; // room name wasn't a callId — ignore
+    if (call.status !== CallStatus.IN_PROGRESS) return; // already terminal
+    if (call.answeredAt !== null) return; // already stamped
+    // The caller joined LiveKit at initiate; only the callee's join proves
+    // the media path is up on both sides. Anything else is a no-op.
+    if (!this.isCallee(call, participantIdentity)) return;
+
+    const { won } = await this.callRepo.markAnsweredIfNull(callId, new Date());
+    if (won) {
+      logger.info(
+        `CallService|markMediaJoined|answeredAt stamped call=${callId} participant=${participantIdentity}`
+      );
+    }
   }
 
   private async postCallChatMessageSafe(
@@ -1835,6 +2248,14 @@ export class CallService {
       callType: String(call.type ?? "").toUpperCase() || CallType.AUDIO,
       status: outcome,
       durationSec: Math.max(0, Math.floor(durationSec)),
+      // Derived from the call record, never from the client: how long this call
+      // actually rang. Only CANCELLED reads it.
+      ringDurationSec: Math.max(
+        0,
+        Math.floor(
+          (endedAt.getTime() - new Date(call.initiatedAt).getTime()) / 1000
+        )
+      ),
       privateRoomId: call.privateRoomId ?? "",
       endedAt: endedAt.getTime(),
       callerName: caller.displayName ?? "",

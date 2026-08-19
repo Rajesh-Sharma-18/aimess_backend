@@ -27,6 +27,7 @@ import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
+import { assertNotSystemBanned, isSystemBanned } from "../lib/system-ban.js";
 
 /** A single watching user, enriched for the owner-only viewers list. */
 export interface StreamViewerView {
@@ -148,6 +149,8 @@ export interface AdminStreamRow {
   description: string;
   thumbnail: string | null;
   sourceType: string;
+  /** External source (URL / YOUTUBE modes only) — null for SRS-ingested streams. */
+  sourceUrl: string | null;
   status: string;
   hlsUrl: string | null;
   flvUrl: string | null;
@@ -195,6 +198,7 @@ function toAdminRow(s: Livestream): AdminStreamRow {
     description: s.description,
     thumbnail: s.thumbnail,
     sourceType: s.sourceType,
+    sourceUrl: s.sourceUrl,
     status: s.status,
     hlsUrl: s.hlsUrl,
     flvUrl: s.flvUrl,
@@ -317,6 +321,10 @@ export class LivestreamService {
     sourceType: string;
     sourceUrl?: string;
   }): Promise<CreateStreamResult> {
+    // Before anything else: force-ending a banned host's stream is pointless if
+    // they can immediately mint another key here.
+    await assertNotSystemBanned(this.redis, params.creatorId);
+
     if (env.STREAM_REQUIRE_MEMBERSHIP) {
       let membership;
       try {
@@ -460,6 +468,17 @@ export class LivestreamService {
       logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
       return false;
     }
+    // The webhook carries no JWT — it authenticates by streamKey alone, so a
+    // banned host still holding a key would otherwise re-publish from OBS.
+    // Checked before the already-LIVE short-circuit, which returns allow.
+    if (
+      await isSystemBanned(this.redis, stream.creatorId, { denyOnError: true })
+    ) {
+      logger.warn(
+        `on_publish denied for stream id=${stream.id}: creator=${stream.creatorId} is system-banned`
+      );
+      return false;
+    }
     if (stream.status === "ENDED") {
       logger.warn(
         `on_publish for ${stream.status} stream id=${stream.id} — denying`
@@ -569,47 +588,36 @@ export class LivestreamService {
   /**
    * SRS on_unpublish hook: the publisher dropped.
    *
-   * Source-type-aware behaviour on LIVE → …:
-   *   - PHONE_CAMERA (WHIP): LIVE → RECONNECTING. Browser-refresh / mobile-blip
-   *     is the exact case the grace window (`STREAM_RECONNECT_GRACE_MS`) was
-   *     designed for — the tab remounts and republishes with the same
-   *     streamKey within seconds, and viewers see "Reconnecting…" instead of
-   *     a dead stream. The sweeper finalizes RECONNECTING streams whose grace
-   *     window expires without a republish.
-   *   - OBS_RTMP: LIVE → ENDED immediately. OBS Stop and OBS network drops
-   *     both look identical to SRS (RTMP close), and OBS users predominantly
-   *     mean it when they stop — the 45s "waiting to reconnect" limbo is
-   *     confusing UX for an OBS session that was clearly stopped on purpose.
-   *     If an OBS streamer with a genuine network blip loses their stream,
-   *     they can restart it (rarely mid-broadcast anyway; OBS is typically
-   *     wired ethernet at a desk).
-   *   - URL / YOUTUBE: LIVE → ENDED. Neither carries a browser-side
-   *     reconnect concept; the source is either publishable or it isn't.
+   * LIVE → RECONNECTING for every source type. Publisher-drop always gets the
+   * grace window (`STREAM_RECONNECT_GRACE_MS`) — network blip on OBS/RTMP
+   * ingest, browser tab remount on WHIP, ffmpeg stall on URL restream. All
+   * republish paths (OBS built-in RTMP reconnect ~10s, browser useGoLiveBroadcast
+   * republish, ffmpeg respawn) resume the same session on the same streamKey.
+   * The sweeper finalizes RECONNECTING streams whose grace window expires
+   * without a republish.
    *
-   * RECONNECTING/ENDED → no-op: idempotent against a duplicate or
-   * retried on_unpublish. Critically, a second unpublish while already
-   * RECONNECTING must NOT reset `disconnectedAt` — a flapping connection that
-   * keeps failing to fully republish must not indefinitely extend its own
-   * grace window.
+   * PENDING → ENDED outright (unpublish with no preceding publish = bad state).
+   * RECONNECTING/ENDED → no-op (idempotent against duplicate hooks). A second
+   * unpublish while already RECONNECTING must NOT reset `disconnectedAt` — a
+   * flapping connection that keeps failing to fully republish must not
+   * indefinitely extend its own grace window.
+   *
    * NOTE: heartbeats are intentionally ignored while RECONNECTING (see
    * {@link recordHeartbeat}) so a still-open companion app cannot keep
    * `lastHeartbeatAt` fresh and prevent the heartbeat sweeper from acting as
    * a backstop if the reconnect sweep misses a stale stream.
    *
-   * RECONNECTING/ENDED/CANCELLED → no-op (idempotent against duplicate hooks).
-   * PENDING → finalized outright (unpublish with no preceding publish = bad state).
-   *
-   * STALE HOOKS: a browser WHIP reconnect republishes by DELETEing the old WHIP
-   * resource and POSTing a new one. SRS dispatches both hooks on background
-   * coroutines and Express serves them concurrently, so the OLD connection's
-   * on_unpublish can land AFTER the NEW connection's on_publish. Acting on it
-   * would demote a stream whose publisher is very much alive — media keeps
-   * flowing, the UI sits on "RECONNECTING" forever, and 45 s later the
-   * reconnect-grace sweeper ends a perfectly healthy broadcast. `clientId` (SRS
-   * `client_id`) identifies the connection the hook is about: if it doesn't
-   * match the one {@link handlePublish} last put on air, the hook is stale and
-   * dropped. Null on either side = unknown provenance → honour the hook, which
-   * is the pre-existing behaviour.
+   * STALE HOOKS: a WHIP or RTMP reconnect closes the old publisher and opens
+   * a new one. SRS dispatches both hooks on background coroutines and Express
+   * serves them concurrently, so the OLD connection's on_unpublish can land
+   * AFTER the NEW connection's on_publish. Acting on it would demote a stream
+   * whose publisher is very much alive — media keeps flowing, the UI sits on
+   * "RECONNECTING" forever, and one grace-window later the reconnect-grace
+   * sweeper ends a perfectly healthy broadcast. `clientId` (SRS `client_id`)
+   * identifies the connection the hook is about: if it doesn't match the one
+   * {@link handlePublish} last put on air, the hook is stale and dropped.
+   * Null on either side = unknown provenance → honour the hook, which is the
+   * pre-existing behaviour.
    */
   async handleUnpublish(streamKey: string, clientId?: string): Promise<void> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
@@ -633,19 +641,19 @@ export class LivestreamService {
       return;
     }
 
-    if (stream.status === "LIVE" && stream.sourceType === "PHONE_CAMERA") {
+    if (stream.status === "LIVE") {
       const updated = await this.streamRepo.updateById(stream.id, {
         status: "RECONNECTING",
         disconnectedAt: new Date(),
       });
       await this.publishStatus(updated.id, "RECONNECTING", updated.communityId);
       logger.info(
-        `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window (source=PHONE_CAMERA)`
+        `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window (source=${stream.sourceType})`
       );
       return;
     }
 
-    // OBS_RTMP / URL / YOUTUBE / PENDING → straight to ENDED.
+    // PENDING (never actually went live) → straight to ENDED.
     await this.finalizeAsEnded(stream);
   }
 
@@ -756,6 +764,8 @@ export class LivestreamService {
     id: string,
     requesterId: string
   ): Promise<PublishCredentialsResult> {
+    await assertNotSystemBanned(this.redis, requesterId);
+
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.creatorId !== requesterId) {
@@ -800,6 +810,8 @@ export class LivestreamService {
    * webhook/manual environment resuming the same session, not a fresh go-live.
    */
   async markLive(id: string, requesterId: string): Promise<StreamView> {
+    await assertNotSystemBanned(this.redis, requesterId);
+
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.creatorId !== requesterId) {
@@ -1843,13 +1855,20 @@ export class LivestreamService {
       };
     }
 
-    // Bans always win, even for would-be members.
-    if (await this.banRepo.isBanned(streamId, userId)) {
+    // Bans always win, even for would-be members. A permanent system ban is
+    // one of them, read in parallel so the join gate costs no extra round-trip.
+    // Fail-open on a Redis error like every other read here: the gateway
+    // handshake rejects a banned user's socket before it ever gets this far.
+    const [streamBanned, systemBanned] = await Promise.all([
+      this.banRepo.isBanned(streamId, userId),
+      isSystemBanned(this.redis, userId, { denyOnError: false }),
+    ]);
+    if (streamBanned || systemBanned) {
       return {
         allowed: false,
         isBanned: true,
         status: "",
-        reason: "BANNED",
+        reason: systemBanned ? "ACCOUNT_BANNED" : "BANNED",
         canComment: false,
         streamStatus: "",
         title: "",

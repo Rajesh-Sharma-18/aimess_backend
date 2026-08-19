@@ -569,10 +569,18 @@ export function registerChatNamespace(
         // signal that stops those peers rendering the old identity until their
         // next fetch. Nothing else is ever mirrored; adding to this list means
         // handing peer watchers data they did not subscribe to.
+        // `user:profile_updated` is mirrored on exactly the same footing as
+        // `user:account_deleted`: same audience (the peers rendering this
+        // user's row or chat header), same signal-only payload
+        // (`{ userId, updatedAt }` — no name, no avatar, no online state), and
+        // it discloses strictly LESS than the presence they already subscribed
+        // to. It is what stops those peers rendering the old profile picture
+        // until their next fetch.
         if (
           pattern === "user:*" &&
           (parsed.event === "presence:status" ||
-            parsed.event === "user:account_deleted")
+            parsed.event === "user:account_deleted" ||
+            parsed.event === "user:profile_updated")
         ) {
           chat
             .to(`presence:${channel.slice("user:".length)}`)
@@ -692,6 +700,27 @@ export function registerChatNamespace(
             ? (viewerUserId: string) =>
                 viewerHidesReadReceipts(userClient, viewerUserId)
             : undefined;
+
+        // Fast path for the receipt that actually flips the sender's tick.
+        // chat-service publishes every `message:read` straight to each other
+        // participant's `user:<id>` as well as to `conv:<roomId>`, and a
+        // `user:<id>` room holds exactly ONE viewer — so the reciprocity
+        // check above can be answered once, up front, and the event go out as
+        // a plain room emit. Routing it through `emitPersonalizedSender` with
+        // `skipViewer` made `message:read` the only chat event that had to
+        // `fetchSockets()` (a Redis round trip, 5s cluster timeout, and on
+        // that timeout a SILENT drop with no fallback) before a single byte
+        // reached the sender. The `conv:*` copy still takes the per-socket
+        // path below, since that room mixes viewers with different settings.
+        if (parsed.event === "message:read" && pattern === "user:*") {
+          const viewerUserId = channel.slice("user:".length);
+          void viewerHidesReadReceipts(userClient, viewerUserId).then(
+            (hides) => {
+              if (!hides) chat.to(channel).emit(parsed.event, parsed.data);
+            }
+          );
+          return;
+        }
 
         void emitPersonalizedSender(
           chat,
@@ -1947,6 +1976,10 @@ export function registerChatNamespace(
             callId: r.data.callId,
             calleeId: userId,
             legId: socket.data.callLegId,
+            // Excludes this device from the backstop push only. `legId` already
+            // excludes it on the socket fan-out; the push queue cannot carry a
+            // leg, and device tokens are keyed by session anyway.
+            sessionId,
           })
           .then((result) => {
             // Callee joins `call:<callId>` on answer — mirrors the caller's
@@ -1985,7 +2018,12 @@ export function registerChatNamespace(
           `/chat call:decline userId=${userId} callId=${r.data.callId} socket=${socket.id}`
         );
         messagingClient
-          .declineCall({ callId: r.data.callId, calleeId: userId })
+          .declineCall({
+            callId: r.data.callId,
+            calleeId: userId,
+            // See the answerCall call above — push-exclusion for this device.
+            sessionId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_DECLINED", locale, result)
           )
@@ -2011,6 +2049,8 @@ export function registerChatNamespace(
             userId,
             legId: r.data.legId ?? socket.data.callLegId,
             reason: r.data.reason,
+            // See the answerCall call above — push-exclusion for this device.
+            sessionId,
           })
           .then((result) =>
             ackOk(callback, "SOCKET_CALL_ENDED", locale, result)

@@ -165,6 +165,7 @@ jest.mock("../../src/messaging/publish-community-chat.js", () => ({
   publishCommunityMemberSyncedForChatSafe: jest.fn(),
   publishCommunityMemberMuteSyncedForChatSafe: jest.fn(),
   publishCommunityMemberMuteRetractedForChatSafe: jest.fn(),
+  publishCommunityMetaSyncedForChatSafe: jest.fn(),
   publishCommunityStatusChangedForChatSafe: jest.fn(),
   publishCommunityVisibilityChangedForChatSafe: jest.fn(),
 }));
@@ -182,6 +183,12 @@ jest.mock("../../src/lib/community-cache.js", () => ({
     del: jest.fn().mockResolvedValue(undefined),
     getType: jest.fn().mockResolvedValue(null),
     setType: jest.fn().mockResolvedValue(undefined),
+    getNameAvailability: jest.fn().mockResolvedValue(null),
+    setNameAvailability: jest.fn().mockResolvedValue(undefined),
+    invalidateNameAvailability: jest.fn().mockResolvedValue(undefined),
+    getHandleAvailability: jest.fn().mockResolvedValue(null),
+    setHandleAvailability: jest.fn().mockResolvedValue(undefined),
+    invalidateHandleAvailability: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -245,6 +252,7 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
     notifyMemberMuteStatus: jest.fn().mockResolvedValue(undefined),
     notifyMemberBanStatus: jest.fn().mockResolvedValue(undefined),
     forceEndStreamsByCreator: jest.fn().mockResolvedValue(undefined),
+    forceEndStreamsByCommunity: jest.fn().mockResolvedValue(undefined),
   }),
 }));
 

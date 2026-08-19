@@ -8,7 +8,10 @@ import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 import { SystemEvent } from "../types/enums.js";
-import { assertGroupMember } from "../lib/access-guard.js";
+import {
+  assertGroupMember,
+  assertGroupRoomWritable,
+} from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import { inviteContentType } from "@aimess/constants";
 import {
@@ -75,6 +78,8 @@ export class GroupInviteLinkService {
   }): Promise<GroupInviteLink> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    // A frozen room takes no new members, so it must mint no new links either.
+    assertGroupRoomWritable(room);
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
@@ -123,6 +128,7 @@ export class GroupInviteLinkService {
     description: string;
     memberCount: number;
     memberLimit: number;
+    invitedByName: string;
   }> {
     const link = await this.inviteLinkRepo.findActiveByToken(token);
     if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
@@ -140,6 +146,18 @@ export class GroupInviteLinkService {
     const room = await this.roomRepo.findActiveByRoomId(link.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
 
+    // Who is inviting — the preview screen names them. Same snapshot chokepoint every other name goes through, so a deleted inviter reads "Deleted Account" here too.
+    // The snapshot service is an optional dependency (see the constructor), so an empty name is a valid answer, not a failure — the client falls back to a generic line.
+    const inviterSnapshot =
+      this.userSnapshotService && this.cacheRepo
+        ? (
+            await this.userSnapshotService.getUserSnapshotsMap(
+              [link.createdBy],
+              this.cacheRepo
+            )
+          ).get(link.createdBy)
+        : null;
+
     return {
       token: link.token,
       groupId: room.roomId,
@@ -148,6 +166,7 @@ export class GroupInviteLinkService {
       description: room.description,
       memberCount: room.memberCount,
       memberLimit: room.memberLimit,
+      invitedByName: inviterSnapshot ? resolveDisplayName(inviterSnapshot) : "",
     };
   }
 
@@ -168,6 +187,7 @@ export class GroupInviteLinkService {
 
     const room = await this.roomRepo.findActiveByRoomId(link.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
+    assertGroupRoomWritable(room);
 
     await memberService.addMember(
       {
@@ -229,6 +249,7 @@ export class GroupInviteLinkService {
 
     const room = await this.roomRepo.findActiveByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    assertGroupRoomWritable(room);
 
     // Resolve the link to share.
     let link: GroupInviteLink;
