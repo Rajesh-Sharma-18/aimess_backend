@@ -426,6 +426,12 @@ Namespaces on `api.ai5dev.tech`: `/chat`, `/community`, `/stream`. These are the
 matter to a link-tap flow — all verified against
 `apps/api-gateway/src/sockets/namespaces/*.ts`.
 
+> **Full payload schemas live in `apps/api-gateway/asyncapi/asyncapi.yaml`**, which is the
+> authoritative machine-readable socket contract and documents every event below with its
+> complete payload, delivery semantics and worked examples (`community:added` alone has the
+> add-by-admin and create-your-own flows spelled out). This section is a link-flow-shaped
+> index into it, not a replacement for it. If the two ever disagree, asyncapi.yaml wins.
+
 ### 8.1 After joining a community (namespace `/community`)
 
 | Event                      | Direction                 | Payload highlights                   | Notes                                                                                                                                                                 |
