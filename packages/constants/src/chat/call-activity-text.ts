@@ -128,6 +128,12 @@ export function isUnreadCallActivity(
   // reader's other devices still need the row surfaced rather than arriving
   // pre-read. The call was never answered on those, which is what the badge
   // is about.
-  if (s === "MISSED" || s === "DECLINED") return true;
+  // FAILED sits here rather than in the default branch so the two halves of
+  // this module agree. `buildCallActivityText` already renders FAILED with the
+  // missed-call copy — telling the callee they missed a call while leaving the
+  // row unbadged is a contradiction that would surface the first time anything
+  // wrote it. Nothing writes it today (there is deliberately no producer), so
+  // this changes no current behaviour; it removes the trap.
+  if (s === "MISSED" || s === "DECLINED" || s === "FAILED") return true;
   return s === "CANCELLED" && cancelCountsAsMissed(ringDurationSec);
 }

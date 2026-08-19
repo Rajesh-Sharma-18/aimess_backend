@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { callContentType, isTerminalCallStatus } from "@aimess/constants";
+import {
+  callContentType,
+  cancelCountsAsMissed,
+  isTerminalCallStatus,
+} from "@aimess/constants";
 import {
   BadRequestError,
   ConflictError,
@@ -1290,21 +1294,14 @@ export class CallService {
 
     // A ring the CALLER let run out is a NO-ANSWER, not a cancellation — the
     // very outcome the RINGING → MISSED sweep would record a beat later, only
-    // without the wait. That wait is why it never happened in practice: the
-    // client's ring timeout ends the call at the same 60s the server sweep uses,
-    // so the row always settled as CANCELLED first and the caller never saw
-    // "No answer" nor the callee a missed call.
-    //
-    // Every clause is server-side: the call must still be RINGING, must never
-    // have been answered, and the request must come from the caller. So this
-    // only ever picks between two honest readings of one hangup, and the
-    // CONNECTED race is impossible — an answer moves the row to IN_PROGRESS,
-    // and the claim below is scoped to the status read above.
-    const noAnswer =
-      wasRinging &&
-      !call.answeredAt &&
-      params.reason === "NO_ANSWER" &&
-      call.callerId === params.userId;
+    // without the wait. See `ringResolvesAsMissed` for why `reason` alone was
+    // not enough to detect it.
+    const noAnswer = this.ringResolvesAsMissed({
+      call,
+      endedAt,
+      endedByUserId: params.userId,
+      reason: params.reason,
+    });
 
     const { won } = await this.callRepo.claimStatusTransition(
       params.callId,
@@ -1462,12 +1459,19 @@ export class CallService {
             Math.floor((now.getTime() - call.answeredAt.getTime()) / 1000)
           )
         : 0;
+      // A ring cut short by an unfriend/block is still a ring the callee did not
+      // take. Past the grace window it reads to them exactly like a timeout, so
+      // it settles as MISSED and rides the shared unanswered fan-out rather than
+      // going out as a silent dismiss. No `endedByUserId`: the server ended this,
+      // not the caller.
+      const missed =
+        wasRinging && this.ringResolvesAsMissed({ call, endedAt: now });
 
       const { won } = await this.callRepo.claimStatusTransition(
         call.callId,
         call.status,
         {
-          status: CallStatus.ENDED,
+          status: missed ? CallStatus.MISSED : CallStatus.ENDED,
           endedAt: now,
           durationSec,
           endedBy: END_REASON_FRIENDSHIP,
@@ -1475,6 +1479,14 @@ export class CallService {
       );
       if (!won) continue;
       ended++;
+
+      if (missed) {
+        await this.fanOutUnansweredRing(
+          { ...call, status: CallStatus.MISSED, endedAt: now },
+          now
+        );
+        continue;
+      }
 
       const updated: Call = {
         ...call,
@@ -1642,6 +1654,79 @@ export class CallService {
    *  4. The missed-call push, the only thing that tells a backgrounded or
    *     offline callee afterwards.
    */
+  /**
+   * How long this call actually rang, in whole seconds, derived from the call
+   * record alone — never from anything a client sent.
+   */
+  private ringDurationSecOf(
+    call: Pick<Call, "initiatedAt">,
+    at: Date
+  ): number | null {
+    const startedAt = new Date(call.initiatedAt).getTime();
+    // `initiatedAt` is non-nullable in the schema, so this only fires on a
+    // hand-built row. Returning null rather than a bogus 0 matters: the caller
+    // reads it as "ring length unknown", and unknown must NEVER be read as a
+    // missed call. Asserting MISSED from missing data would invent a missed
+    // call, which is the one direction of this decision that is not recoverable.
+    if (!Number.isFinite(startedAt)) return null;
+    return Math.max(0, Math.floor((at.getTime() - startedAt) / 1000));
+  }
+
+  /**
+   * THE ONE PLACE the backend decides that a ring nobody answered is a MISSED
+   * call rather than a cancelled one.
+   *
+   * Two signals, either of which is sufficient:
+   *
+   *  - the caller's client says its ring window elapsed (`reason: "NO_ANSWER"`),
+   *  - or the ring simply lasted long enough that, from the callee's seat, it
+   *    IS a missed call — `cancelCountsAsMissed`, the same predicate the inbox
+   *    projection already uses to decide whether the callee's row arrives
+   *    badged.
+   *
+   * The second signal is what closes a hole that only ever appeared in
+   * production: `reason` is optional on the wire, and a caller's ring timeout
+   * typically fires at the same 60s as the server sweep and wins the race. A
+   * client that omitted it turned a genuine missed call into a cancellation,
+   * which skipped `fanOutUnansweredRing` entirely — so the callee got an unread
+   * "Missed call" row in the app and NO push telling them about it. The badge
+   * half of the rule and the push half disagreed; now both read the same
+   * predicate.
+   *
+   * Every clause is server-verified, so a client can neither fabricate nor
+   * suppress the outcome:
+   *
+   *  - `wasRinging` — an answered call is `IN_PROGRESS` and can never reach
+   *    here, which is what makes "a connected call must never become MISSED"
+   *    structural rather than a rule someone has to remember.
+   *  - `!answeredAt` — belt and braces on the same thing.
+   *  - the request must come from the CALLER. A callee hanging up a ring is
+   *    them acting on it, not missing it.
+   */
+  private ringResolvesAsMissed(params: {
+    call: Pick<Call, "status" | "answeredAt" | "callerId" | "initiatedAt">;
+    endedAt: Date;
+    endedByUserId?: string;
+    reason?: string;
+  }): boolean {
+    const { call } = params;
+    if (call.status !== CallStatus.RINGING) return false;
+    if (call.answeredAt) return false;
+    if (
+      params.endedByUserId !== undefined &&
+      params.endedByUserId !== call.callerId
+    )
+      return false;
+    if (params.reason === "NO_ANSWER") return true;
+    const ringDurationSec = this.ringDurationSecOf(call, params.endedAt);
+    // Unknown ring length → not missed. `cancelCountsAsMissed` reads an absent
+    // value as missed, which is right for the BADGE it guards (that row's status
+    // already says the ring went unanswered) and wrong here, where the status
+    // itself is what is being decided.
+    if (ringDurationSec === null) return false;
+    return cancelCountsAsMissed(ringDurationSec);
+  }
+
   private async fanOutUnansweredRing(call: Call, at: Date): Promise<void> {
     // Kicked off first so it overlaps the publishes below instead of adding to
     // the tail latency of the sweep loop.
@@ -1830,12 +1915,33 @@ export class CallService {
         return;
       }
       const endedAt = new Date();
+      // Same question as a caller-side hangup: from the callee's seat, did this
+      // ring last long enough to be a call they missed? `endedByUserId` is
+      // omitted because there is no user behind a LiveKit teardown — the caller
+      // check does not apply, but every other clause does.
+      const missed = this.ringResolvesAsMissed({ call, endedAt });
       const { won } = await this.callRepo.claimStatusTransition(
         callId,
         CallStatus.RINGING,
-        { status: CallStatus.ENDED, endedAt, endedBy: "SYSTEM_LIVEKIT" }
+        {
+          status: missed ? CallStatus.MISSED : CallStatus.ENDED,
+          endedAt,
+          endedBy: "SYSTEM_LIVEKIT",
+        }
       );
       if (!won) return;
+
+      // A ring that outlived the grace window settles through the SAME shared
+      // fan-out every other unanswered ring uses — one `call:missed`, one
+      // MISSED card, and the tray push that is the only thing telling a
+      // backgrounded callee it happened.
+      if (missed) {
+        await this.fanOutUnansweredRing(
+          { ...call, status: CallStatus.MISSED, endedAt },
+          endedAt
+        );
+        return;
+      }
 
       // Publish to BOTH rooms — mirrors sweepMissedCalls. Unlike endCall's
       // RINGING branch (where the CALLER initiated the end and already cleared

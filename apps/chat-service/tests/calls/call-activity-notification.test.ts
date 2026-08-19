@@ -250,7 +250,15 @@ describe("isUnreadCallActivity", () => {
     // Declined on one device still badges the reader's other devices.
     expect(isUnreadCallActivity("DECLINED", "INCOMING")).toBe(true);
     expect(isUnreadCallActivity("ENDED", "INCOMING")).toBe(false);
-    expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(false);
+    // FAILED badges like every other outcome where the ring was never taken.
+    // It used to be excluded, which contradicted `buildCallActivityText` —
+    // that renders FAILED with the missed-call line, so the reader was being
+    // told they missed a call on a row that never badged. Nothing produces
+    // FAILED today (there is deliberately no producer), so this pins intent
+    // rather than behaviour.
+    expect(isUnreadCallActivity("FAILED", "INCOMING")).toBe(true);
+    // …and still never for the side that placed the call.
+    expect(isUnreadCallActivity("FAILED", "OUTGOING")).toBe(false);
   });
 
   it("does not badge a cancel the caller took back inside the grace window", () => {
