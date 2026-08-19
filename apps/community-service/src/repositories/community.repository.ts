@@ -1865,12 +1865,19 @@ export const communityRepository = {
       and.push(...buildCommunitySearchFilter(params.q));
     }
 
+    // Owner-CLOSED communities are not surfaced for discovery/joining, but one the caller already belongs to stays visible in their OWN mine-search: closing is a write-lock, not a removal, so the row must never vanish from an existing member's list.
+    // `not` → Mongo `$ne`, which also matches legacy rows where `status` is unset (treated as ACTIVE), so backward-compat is preserved.
+    and.push({
+      OR: [
+        { status: { not: CommunityStatus.CLOSED } },
+        ...(params.includeMemberCommunityIds?.length
+          ? [{ id: { in: params.includeMemberCommunityIds } }]
+          : []),
+      ],
+    });
+
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
-      // Owner-CLOSED communities are not surfaced for discovery/joining. `not`
-      // → Mongo `$ne`, which also matches legacy rows where `status` is unset
-      // (treated as ACTIVE), so backward-compat is preserved.
-      status: { not: CommunityStatus.CLOSED },
       AND: and,
     };
 

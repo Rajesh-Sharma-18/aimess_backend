@@ -33,30 +33,54 @@ const FALLBACK: ChatSettings = {
 };
 
 const cache = new Map<string, { value: ChatSettings; expiresAt: number }>();
+// In-flight lookups, so N concurrent callers for one user (a burst of reads,
+// or the settings gate racing the mark-read write) share ONE round trip.
+const inFlight = new Map<string, Promise<ChatSettings>>();
+// A failed/timed-out lookup is remembered only briefly. It used to be
+// remembered not at all, which meant a slow user-service charged EVERY
+// mark-read the full gRPC timeout (2s) before its receipt could publish, with
+// nothing ever warming up. Kept far shorter than TTL_MS on purpose: a user's
+// disabled read receipts broadcast for a few seconds past recovery, not a
+// minute.
+const FAIL_OPEN_MS = 5_000;
 
-export async function getAccountChatSettings(
-  userId: string
-): Promise<ChatSettings> {
-  if (!userId) return FALLBACK;
-
-  const hit = cache.get(userId);
-  if (hit && hit.expiresAt > Date.now()) return hit.value;
-
-  // The client already fails open; this catch is the belt to that braces. A
-  // settings lookup is never worth failing a send or a mark-read over, and the
-  // two layers are edited by different people at different times.
-  const value = await userGrpcClient.getChatSettings(userId).catch(() => null);
-  // Never CACHE the fallback: that would keep a user's disabled read receipts
-  // broadcasting for a minute after user-service came back.
-  if (!value) return FALLBACK;
-
+function remember(userId: string, value: ChatSettings, ttlMs: number): void {
   // Map preserves insertion order — drop the oldest rather than growing unbounded.
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(userId, { value, expiresAt: Date.now() + TTL_MS });
-  return value;
+  cache.set(userId, { value, expiresAt: Date.now() + ttlMs });
+}
+
+export function getAccountChatSettings(userId: string): Promise<ChatSettings> {
+  if (!userId) return Promise.resolve(FALLBACK);
+
+  const hit = cache.get(userId);
+  if (hit && hit.expiresAt > Date.now()) return Promise.resolve(hit.value);
+
+  const pending = inFlight.get(userId);
+  if (pending) return pending;
+
+  // The client already fails open; this catch is the belt to that braces. A
+  // settings lookup is never worth failing a send or a mark-read over, and the
+  // two layers are edited by different people at different times.
+  const p = userGrpcClient
+    .getChatSettings(userId)
+    .catch(() => null)
+    .then((value) => {
+      if (!value) {
+        remember(userId, FALLBACK, FAIL_OPEN_MS);
+        return FALLBACK;
+      }
+      remember(userId, value, TTL_MS);
+      return value;
+    })
+    .finally(() => {
+      inFlight.delete(userId);
+    });
+  inFlight.set(userId, p);
+  return p;
 }
 
 /**

@@ -1374,6 +1374,7 @@ export class ChatMessageOrchestrator {
         unreadCountByUser?: Record<string, number>;
         participants?: string[];
         lastMessageId?: string | null;
+        lastMessageSeq?: number | null;
         lastReadMessageIdByUser?: Record<string, string>;
       } | null;
       // A target that is malformed, or belongs to another room, is REJECTED —
@@ -1395,16 +1396,27 @@ export class ChatMessageOrchestrator {
       const acceptedReadId =
         room?.lastReadMessageIdByUser?.[params.readerId] ??
         params.upToMessageId;
-      // Independent lookups — run together, not one after the other.
+      // Independent lookups — run together, not one after the other. The room's
+      // newest seq is denormalized onto the row (`lastMessageSeq`, written in
+      // the same $set as `lastMessageId` on every send), so it is read off the
+      // document already in hand; the message lookup is only for legacy rows
+      // that predate the column. Every round trip here sits between the reader's
+      // click and the sender's blue tick.
+      const denormalizedLastSeq =
+        typeof room?.lastMessageSeq === "number" && room.lastMessageSeq > 0
+          ? room.lastMessageSeq
+          : null;
       [readToSeq, lastMessageSeq] = await Promise.all([
         this.privateMessageService
           .getMessageSequence(acceptedReadId)
           .catch(() => 0),
-        room?.lastMessageId
-          ? this.privateMessageService
-              .getMessageSequence(room.lastMessageId)
-              .catch(() => 0)
-          : Promise.resolve(0),
+        denormalizedLastSeq !== null
+          ? Promise.resolve(denormalizedLastSeq)
+          : room?.lastMessageId
+            ? this.privateMessageService
+                .getMessageSequence(room.lastMessageId)
+                .catch(() => 0)
+            : Promise.resolve(0),
       ]);
     }
 
@@ -1648,9 +1660,13 @@ export class ChatMessageOrchestrator {
       })
     );
 
-    // WhatsApp-style lastActivity bump/revert — fire-and-forget, never blocks
-    // the reaction response (mirrors every other post-write side-effect here).
-    void this.bumpReactionActivity({
+    // WhatsApp-style lastActivity bump/revert. AWAITED, matching the community
+    // react handlers: the overlay write has to land before this response, or a
+    // client that re-reads its list row on the ack (which is the only way the
+    // reactor sees the line when the conv:updated bump is lost) races ahead of
+    // the write and reads the pre-reaction activity. The live bump inside stays
+    // fire-and-forget, so this only waits on the identity resolve + one write.
+    await this.bumpReactionActivity({
       conversationType,
       roomId: params.roomId,
       messageId: params.messageId,

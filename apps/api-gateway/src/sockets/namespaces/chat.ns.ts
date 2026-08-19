@@ -701,6 +701,27 @@ export function registerChatNamespace(
                 viewerHidesReadReceipts(userClient, viewerUserId)
             : undefined;
 
+        // Fast path for the receipt that actually flips the sender's tick.
+        // chat-service publishes every `message:read` straight to each other
+        // participant's `user:<id>` as well as to `conv:<roomId>`, and a
+        // `user:<id>` room holds exactly ONE viewer — so the reciprocity
+        // check above can be answered once, up front, and the event go out as
+        // a plain room emit. Routing it through `emitPersonalizedSender` with
+        // `skipViewer` made `message:read` the only chat event that had to
+        // `fetchSockets()` (a Redis round trip, 5s cluster timeout, and on
+        // that timeout a SILENT drop with no fallback) before a single byte
+        // reached the sender. The `conv:*` copy still takes the per-socket
+        // path below, since that room mixes viewers with different settings.
+        if (parsed.event === "message:read" && pattern === "user:*") {
+          const viewerUserId = channel.slice("user:".length);
+          void viewerHidesReadReceipts(userClient, viewerUserId).then(
+            (hides) => {
+              if (!hides) chat.to(channel).emit(parsed.event, parsed.data);
+            }
+          );
+          return;
+        }
+
         void emitPersonalizedSender(
           chat,
           channel,
