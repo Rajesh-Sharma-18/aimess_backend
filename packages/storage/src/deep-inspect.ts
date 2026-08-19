@@ -425,7 +425,48 @@ function inspectJpeg(
     reject("SIGNATURE_MISMATCH", "missing JPEG SOI marker");
   }
 
-  let p = 2;
+  let end = walkJpegImage(b, 2, out, true);
+
+  // MPF (Multi-Picture Format) and Ultra HDR files are several complete JPEGs
+  // concatenated: the primary image, then a gain map and/or thumbnails. Every
+  // Pixel, Galaxy and iPhone photo taken since HDR became the default looks
+  // like this, so treating the secondary images as appended junk rejected
+  // ordinary camera output. They are consumed here so only what follows the
+  // LAST image counts as trailing. Each one still has to parse as a whole JPEG
+  // (SOI, SOFn, EOI), so a smuggled archive or executable is unchanged: it is
+  // not a JPEG and still trips the polyglot guard below.
+  let extras = 0;
+  while (
+    end + 1 < b.length &&
+    b[end] === 0xff &&
+    b[end + 1] === 0xd8 &&
+    extras < MAX_JPEG_MPF_IMAGES
+  ) {
+    end = walkJpegImage(b, end + 2, out, false);
+    extras++;
+  }
+
+  if (input.complete)
+    out.trailingBytes = measureTrailing(b, end, input.totalSize);
+  return out;
+}
+
+/** Secondary images an MPF/Ultra HDR JPEG may carry (gain map + thumbnails). */
+const MAX_JPEG_MPF_IMAGES = 8;
+
+/**
+ * Walk one JPEG image starting just past its SOI and return the offset directly
+ * after its EOI. `primary` marks the first image in the file — only it supplies
+ * the reported dimensions and metadata flags, since a gain map's own SOFn
+ * describes the gain map, not the photo.
+ */
+function walkJpegImage(
+  b: Buffer,
+  from: number,
+  out: DeepInspectResult,
+  primary: boolean
+): number {
+  let p = from;
   let sawSof = false;
   let end = -1;
   let nodes = 0;
@@ -464,8 +505,10 @@ function inspectJpeg(
       marker !== 0xcc
     ) {
       need(b, p + 2, 6, "SOFn");
-      out.height = b.readUInt16BE(p + 3);
-      out.width = b.readUInt16BE(p + 5);
+      if (primary) {
+        out.height = b.readUInt16BE(p + 3);
+        out.width = b.readUInt16BE(p + 5);
+      }
       sawSof = true;
     }
 
@@ -495,9 +538,7 @@ function inspectJpeg(
   if (!sawSof)
     reject("MALFORMED_CONTAINER", "no JPEG frame header (SOFn) found");
   if (end < 0) reject("TRUNCATED", "no JPEG EOI marker found");
-  if (input.complete)
-    out.trailingBytes = measureTrailing(b, end, input.totalSize);
-  return out;
+  return end;
 }
 
 function skipEntropyCoded(b: Buffer, from: number): number {
