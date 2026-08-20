@@ -12,8 +12,16 @@
 import { signAccessToken } from "@aimess/auth-jwt";
 import jwt from "jsonwebtoken";
 
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET as string;
-const ADMIN_SECRET = process.env.JWT_ADMIN_SECRET as string;
+import { env } from "../../src/config/env.js";
+
+// Read the secrets from the SAME config module the middleware verifies with,
+// not from `process.env`. `tests/setup/env.ts` seeds process.env first, but the
+// gateway's config loads `.env` through dotenvx with `override: true`, so the
+// two disagree whenever that load wins — and `admin-edge.test.ts` then rejected
+// a token it had just minted, flaking on module import order rather than on
+// anything the edge actually does.
+const ACCESS_SECRET = env.JWT_ACCESS_SECRET;
+const ADMIN_SECRET = env.JWT_ADMIN_SECRET as string;
 
 export const TEST_USER_ID = "11111111-1111-4111-8111-111111111111";
 export const TEST_SESSION_ID = "22222222-2222-4222-8222-222222222222";
