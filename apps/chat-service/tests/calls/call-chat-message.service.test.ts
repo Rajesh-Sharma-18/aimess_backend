@@ -10,13 +10,22 @@ jest.mock("../../src/events/publish-conv-updated.js", () => ({
   publishCommunityUpdatedSafe: jest.fn(),
 }));
 
+// Mocked so the "no chat push" guard below can assert it is never reached. This
+// service must not push at all — see that test for why.
+jest.mock("../../src/events/publish-message-sent.js", () => ({
+  publishMessageSentSafe: jest.fn(),
+}));
+
 import { CallChatMessageService } from "../../src/services/call-chat-message.service.js";
 import { publishConvUpdatedSafe } from "../../src/events/publish-conv-updated.js";
+import { publishMessageSentSafe } from "../../src/events/publish-message-sent.js";
 
 const listBump = publishConvUpdatedSafe as jest.Mock;
+const publishMessageSent = publishMessageSentSafe as jest.Mock;
 
 beforeEach(() => {
   listBump.mockClear();
+  publishMessageSent.mockClear();
 });
 
 const CREATED_AT = new Date("2026-07-15T10:00:00.000Z");
@@ -322,6 +331,27 @@ describe("CallChatMessageService — in-place transitions", () => {
     expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
       expect.objectContaining({ unreadIncrement: 1 })
     );
+  });
+
+  // This service writes the card and bumps the conversation. It does NOT push.
+  //
+  // A MISSED transition used to also publish `chat.message_sent` as a "push
+  // fallback", but the only caller that reaches here with MISSED is
+  // `fanOutUnansweredRing`, which already fires the dedicated missed-call push
+  // for the same callee. Different queues, different collapse keys — so neither
+  // replaced the other and one missed call produced TWO lock-screen banners.
+  it("publishes no chat message push on ANY outcome — the call push owns that", async () => {
+    for (const outcome of ["RINGING", "MISSED", "ENDED", "DECLINED"]) {
+      const { service, stubs } = buildService();
+      publishMessageSent.mockClear();
+      stubs.messageRepo.findByClientMessageId.mockResolvedValue(
+        outcome === "RINGING" ? null : existingRow("RINGING")
+      );
+
+      await service.post({ ...base, outcome: outcome as never });
+
+      expect(publishMessageSent).not.toHaveBeenCalled();
+    }
   });
 });
 

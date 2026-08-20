@@ -8,7 +8,6 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
-import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
@@ -541,27 +540,28 @@ export class CallChatMessageService {
       },
     });
 
-    // Push fallback for a call the callee never picked up. Only on the MISSED
-    // transition — a ringing card must not push (the VoIP/incoming-call push
-    // from CallService already covers that), and an ended/declined card is
-    // something the callee was demonstrably present for.
-    if (params.outcome === "MISSED") {
-      const callerSnapshot = await this.getUserSnapshot(params.callerId).catch(
-        () => ({ displayName: "", avatarUrl: "" })
-      );
-      publishMessageSentSafe({
-        conversationId: roomId,
-        conversationType: "PRIVATE",
-        messageId: message.id,
-        clientMessageId,
-        senderId: params.callerId,
-        senderName: callerSnapshot.displayName,
-        senderAvatar: callerSnapshot.avatarUrl,
-        preview: text,
-        messageType,
-        sentAt: serverTs,
-        recipientIds: [params.calleeId],
-      });
-    }
+    // NO push from here, for ANY outcome — this method writes the chat card and
+    // bumps the conversation, nothing else.
+    //
+    // A MISSED transition used to also publish `chat.message_sent`, as a "push
+    // fallback for a call the callee never picked up". It was not a fallback: the
+    // only call site that reaches this with MISSED is `fanOutUnansweredRing`,
+    // which already fires `publishCallMissedSafe` for the same callee. The two
+    // travel on different queues with different collapse keys — `call:missed:<id>`
+    // versus the message key — and collapsing is scoped to the key, so neither
+    // could ever replace the other. One missed call, two banners on the lock
+    // screen.
+    //
+    // The call-specific push is the one that survives: it carries the caller
+    // snapshot and per-locale copy, where this one shipped write-time English.
+    // Nothing else is lost — unread counts come from `countInUnread` above, the
+    // conversation-list bump from `publishConvUpdatedSafe`, and the call-history
+    // row from `projectCallActivitySafe` in CallService. This push wrote no
+    // inbox row at all (`skipInbox`).
+    //
+    // One deliberate behaviour change: it was gated as a MESSAGE (DM-mute
+    // aware), and the survivor is gated on `callEnabled`. A user who has call
+    // notifications off but chat notifications on no longer gets a missed-call
+    // banner — which is what having call notifications off should mean.
   }
 }
