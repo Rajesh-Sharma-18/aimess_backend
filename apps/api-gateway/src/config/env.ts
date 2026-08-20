@@ -129,10 +129,6 @@ const envSchema = z.object({
   APPLE_APP_IDS: z.string().default(""),
   /** Apple App Store numeric id (App Store URL for deferred deep link). */
   APPLE_STORE_APP_ID: z.string().optional(),
-  /** community-service internal base URL for unauthenticated public-card lookups. */
-  COMMUNITY_INTERNAL_URL: z.string().url().optional(),
-  /** Shared secret for gateway → service internal (unauthenticated) calls. */
-  INTERNAL_SHARED_SECRET: z.string().optional(),
 
   /** Optional JSON policy file (default: apps/api-gateway/config/app-versions.json). */
   APP_VERSION_CONFIG_PATH: z.string().min(1).optional(),

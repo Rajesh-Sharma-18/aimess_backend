@@ -88,7 +88,12 @@ export function renderPreviewPage(opts: PreviewOptions): string {
       ? "You've been invited to a group chat on AIMESS. Open the app to join."
       : "Join this community on AIMESS.";
   const title = card?.name ?? genericTitle;
-  const description = card?.description ?? genericDescription;
+  // A description identical to the name renders the same string twice.
+  const about =
+    card && card.description?.trim() !== card.name.trim()
+      ? card.description
+      : null;
+  const description = about ?? genericDescription;
   const memberLine =
     card != null ? `${card.memberCount.toLocaleString()} members` : "";
 

@@ -38,6 +38,15 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // enumeration risk). Must be registered before the generic service proxy.
   v1Router.use("/communities/invite-links", inviteLinkPreviewRateLimiter);
 
+  // community-service's card route is the one unauthenticated community
+  // endpoint, so it carries the same enumeration risk as the invite preview and
+  // shares its limiter. The authenticated `/by-handle/:handle` resolver above it
+  // is deliberately NOT throttled this hard — normal app navigation uses it.
+  v1Router.use(
+    "/communities/by-handle/:handle/card",
+    inviteLinkPreviewRateLimiter
+  );
+
   // Unauthenticated preview card for a shared link (community handle / group
   // invite token) — what the web interstitial renders. Same enumeration risk as
   // the invite-link preview above, so it shares that limiter, and it is mounted

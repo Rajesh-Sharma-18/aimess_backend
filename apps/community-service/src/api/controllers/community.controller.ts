@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 
-import { HTTP_STATUS, t } from "@aimess/constants";
+import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import { communityService } from "../../services/community.service.js";
@@ -110,6 +110,19 @@ export const resolveCommunityByHandle = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(community, t("COMMUNITY_FETCHED", req.locale)));
+  }
+);
+
+/**
+ * Unauthenticated PUBLIC-only metadata card for the link preview / OG unfurl
+ * (api-gateway `GET /api/v1/invites/details`). A private, closed or missing
+ * community 404s and reveals nothing.
+ */
+export const getCommunityPublicCard = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { handle } = req.params as unknown as HandleParams;
+    const card = await communityService.getPublicCard(handle);
+    return res.status(HTTP_STATUS.OK).json(new ApiResponse(card, "OK"));
   }
 );
 
@@ -893,6 +906,11 @@ export const createCommunityInvite = asyncHandler(
       req.auth.userId,
       userIds
     );
+    // Same partial-success rule as the invite-link bulk-send: a per-recipient
+    // `reason` is a message KEY, localized here, never a thrown error.
+    result.results = result.results.map((r) =>
+      r.reason ? { ...r, message: t(r.reason as MessageKey, req.locale) } : r
+    );
 
     return res
       .status(HTTP_STATUS.CREATED)
@@ -1348,11 +1366,21 @@ export const bulkSendCommunityInviteLink = asyncHandler(
       req.auth.userId,
       body
     );
+    // Per-recipient failures ride inside a 200 (partial-success contract), so
+    // the error-handler never sees them — localize the item messages here.
+    // `code` stays the stable machine value clients switch on.
+    const localized = {
+      ...result,
+      failures: result.failures.map((f) => ({
+        ...f,
+        message: t(f.code as MessageKey, req.locale),
+      })),
+    };
     return res
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(
-          result,
+          localized,
           t("COMMUNITY_INVITE_LINK_BULK_SENT", req.locale)
         )
       );
