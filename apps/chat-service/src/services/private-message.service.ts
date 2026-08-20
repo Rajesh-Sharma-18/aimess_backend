@@ -1476,6 +1476,9 @@ export class PrivateMessageService {
         roomId: updated.roomId,
         recipientIds: (room.participants ?? []).filter(Boolean),
         senderId: updated.senderId ?? "",
+        // PRIVATE rows carry no "<sender>: " prefix (see the group edit
+        // refresh, which does pass the name).
+        senderName: "",
         lastMessageId: updated.id,
         lastMessageAt: updated.createdAt.getTime(),
         // An edit is not new activity: nobody's unread badge may move.

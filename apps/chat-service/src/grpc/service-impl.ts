@@ -470,6 +470,10 @@ export function createMessagingImpl(
                 : "PRIVATE") as "GROUP" | "PRIVATE",
               roomId: req.conversationId,
               senderId: req.senderId,
+              // The SERVER-resolved name, not `req.senderName` — the socket
+              // path leaves that empty, and a group list row renders
+              // "<senderName>: <preview>".
+              senderName: resolvedSenderName,
               lastMessageId: msg.id,
               lastMessageAt: bumpSentAt,
               preview: {
@@ -1192,6 +1196,18 @@ export function createMessagingImpl(
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
 
+          // Same server-side resolution as `sendMessage` above: the socket path
+          // sends these empty, and a group row denormalizes the name onto both
+          // the message and the list preview.
+          const { senderName: fwdSenderName, senderAvatar: fwdSenderAvatar } =
+            await resolveSenderIdentity(
+              deps.userSnapshotService,
+              deps.cacheRepo,
+              req.senderId ?? "",
+              req.senderName || undefined,
+              req.senderAvatar || undefined
+            );
+
           let message: {
             id: string;
             messageType: string;
@@ -1208,8 +1224,8 @@ export function createMessagingImpl(
               sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
-              senderName: req.senderName ?? "",
-              senderAvatar: req.senderAvatar ?? "",
+              senderName: fwdSenderName,
+              senderAvatar: fwdSenderAvatar,
               clientMessageId: req.clientMessageId ?? null,
             });
           } else {
@@ -1233,7 +1249,7 @@ export function createMessagingImpl(
                 : Date.now();
             const full = message as Record<string, unknown>;
             const [fwdAvatar, fwdContent] = await Promise.all([
-              resolveMediaUrl(req.senderAvatar || ""),
+              resolveMediaUrl(fwdSenderAvatar),
               resolveBroadcastContent(full.content ?? null),
             ]);
             await redis.publish(
@@ -1247,7 +1263,7 @@ export function createMessagingImpl(
                   conversationType:
                     conversationType === "GROUP" ? "GROUP" : "PRIVATE",
                   senderId: req.senderId ?? "",
-                  senderName: req.senderName,
+                  senderName: fwdSenderName,
                   senderAvatar: fwdAvatar,
                   senderRole: (full.senderRole as string) ?? "",
                   receiverId: req.receiverId,
@@ -1281,6 +1297,7 @@ export function createMessagingImpl(
                 : "PRIVATE") as "GROUP" | "PRIVATE",
               roomId: targetId,
               senderId: req.senderId ?? "",
+              senderName: fwdSenderName,
               lastMessageId: message.id,
               lastMessageAt: message.createdAt.getTime(),
               preview: {

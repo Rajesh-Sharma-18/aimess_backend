@@ -531,6 +531,7 @@ export class GroupInviteLinkService {
         type: "PRIVATE",
         roomId: room.roomId,
         senderId: inviterId,
+        senderName: inviterName ?? "",
         recipientIds: [inviterId, recipientId],
         lastMessageId: message.id,
         lastMessageAt: sentAt,

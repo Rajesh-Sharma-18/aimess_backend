@@ -552,6 +552,10 @@ export class GroupMessageController {
             // guard — it points BACKWARD at the previous visible message.
             deleteRecalc: true,
             senderId: recalc.senderId ?? "",
+            // The PREVIOUS visible message's sender, which the recalc already
+            // resolved — a group row keeps its "<name>: <preview>" prefix after
+            // the last message is deleted.
+            senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
             preview: { contentType: recalc.messageType, text: preview },
@@ -587,6 +591,7 @@ export class GroupMessageController {
               this.messageService.getUnreadCountsByUser(rId),
             deleteRecalc: true,
             senderId: recalc.senderId ?? "",
+            senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             // 0 = "this viewer has nothing visible left" (sorts to the bottom);
             // reusing the hidden row's time would pin it to the top.
@@ -805,6 +810,7 @@ export class GroupMessageController {
       redis: this.redis,
       type: "GROUP",
       roomId: targetRoomId,
+      senderName: senderName ?? (full.senderName as string) ?? "",
       fetchRecipients: () =>
         this.messageService.getActiveMemberIds(targetRoomId),
       senderId: userId,

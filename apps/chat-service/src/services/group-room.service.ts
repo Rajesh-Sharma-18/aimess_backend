@@ -1069,7 +1069,9 @@ export class GroupRoomService {
       type: "GROUP",
       roomId,
       recipientIds: [userId],
+      // Emptied row: no message, so no sender and no name.
       senderId: "",
+      senderName: "",
       lastMessageId: "",
       lastMessageAt: 0,
       preview: { contentType: "", text: "", createdAt: 0 },
