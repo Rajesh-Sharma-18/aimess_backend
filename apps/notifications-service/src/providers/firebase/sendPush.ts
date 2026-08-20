@@ -135,13 +135,29 @@ export async function sendPush({
   };
 
   const isAndroid = String(platform ?? "").toUpperCase() === "ANDROID";
+  const kind = String(enrichedData.type ?? "").toUpperCase();
   // A `notification` block makes this a NOTIFICATION message on Android: when the app is
   // backgrounded or killed the OS draws the tray entry itself and onMessageReceived is never
   // called — so the client cannot group by conversation, attach avatars, or offer Reply.
-  // Android message pushes therefore go data-only and the app owns the presentation.
+  // Android therefore goes data-only across the board and the app owns the presentation.
   // iOS keeps the block (no Notification Service Extension to rebuild it there).
-  const androidOwnsRendering = isAndroid && enrichedData.type === "MESSAGE";
+  //
+  // The avatar is why this cannot stay scoped to messages. `imageUrl` below is an AVATAR
+  // (communityAvatarUrl || conversationAvatar || callerAvatar), but `notification.image` is the
+  // OS's ONLY image slot and renders full-bleed — Android has no way to express "circular large
+  // icon" from a push payload. Every OS-drawn card therefore came out as the app launcher icon
+  // beside the entity's avatar blown up to full width. The client puts it in the icon slot, but
+  // only ever sees the push when it owns the rendering.
+  const androidOwnsRendering = isAndroid;
   const omitNotification = dataOnly || androidOwnsRendering;
+
+  // The localized copy lived in the `notification` block the client no longer receives, so carry
+  // it in the data map. MESSAGE is excluded on purpose: it renders from `preview`/`contentType`
+  // into MessagingStyle, and a raw title/body would override that composed text.
+  if (androidOwnsRendering && kind !== "MESSAGE") {
+    if (title) enrichedData.pushTitle = title;
+    if (body) enrichedData.pushBody = body;
+  }
 
   // Background pushes must always be priority 5 — Apple silently drops or
   // delays background notifications sent with priority 10.
