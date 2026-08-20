@@ -13,6 +13,7 @@
  */
 import {
   buildCallActivityText,
+  localizeMessagePreview,
   t,
   type CallActivityDirection,
   type SupportedLocale,
@@ -389,7 +390,12 @@ export const chatCopy = {
       /** GROUP rooms only — titles the push on the group, like a community. */
       groupName?: string;
       senderName?: string;
+      /** Built in `STORED_TEXT_LOCALE` by the producer — one preview, many
+       *  recipient languages. A pure media LABEL ("🎤 Voice Message") is
+       *  re-rendered per recipient below; message text is never touched. */
       preview?: string;
+      /** Canonical content type behind `preview`, for that re-render. */
+      messageType?: string;
     }): LocalizedCopy =>
     (locale) => {
       // A message in a NAMED room (community or group) titles on the room and
@@ -399,18 +405,23 @@ export const chatCopy = {
       const roomName = params.isCommunity
         ? params.communityName
         : params.groupName;
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
       return roomName
         ? {
             title: roomName,
             body: t("NOTIF_CHAT_COMMUNITY_BODY", locale, {
               name: person(params.senderName, locale),
-              preview: params.preview || t("NOTIF_CHAT_SENT_A_MESSAGE", locale),
+              preview: preview || t("NOTIF_CHAT_SENT_A_MESSAGE", locale),
             }),
           }
         : {
             title: params.senderName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
             body:
-              params.preview ||
+              preview ||
               t(
                 params.isCommunity
                   ? "NOTIF_CHAT_SENT_A_MESSAGE"

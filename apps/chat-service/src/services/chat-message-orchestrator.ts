@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "@aimess/logger";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
+  STORED_TEXT_LOCALE,
   buildReactionActivityText,
   isCallContentType,
 } from "@aimess/constants";
@@ -1891,7 +1892,10 @@ export class ChatMessageOrchestrator {
   private async resolveBroadcastQuote(
     raw: unknown
   ): Promise<CanonicalQuote | null> {
-    const quote = buildCanonicalQuote(raw);
+    // One payload, many recipients: the broadcast keeps the stored English
+    // label (recipients re-read it localized on history/REST) rather than
+    // baking the SENDER's language into everyone's copy.
+    const quote = buildCanonicalQuote(raw, STORED_TEXT_LOCALE);
     if (!quote) return null;
     if (!quote.thumbnail) return quote;
     const urlMap = await resolveMediaUrlMap([quote.thumbnail]);

@@ -12,7 +12,12 @@ import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
-import { currentLocale, isHiddenSystemMessage, t } from "@aimess/constants";
+import {
+  currentLocale,
+  isHiddenSystemMessage,
+  localizeMessagePreview,
+  t,
+} from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
@@ -435,7 +440,14 @@ export function buildLastActivity(community: {
       type: rawType as "message" | "edited" | "deleted",
       userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
-      preview: community.lastActivityPreview ?? "",
+      // The preview was rendered by chat-service in `STORED_TEXT_LOCALE` when
+      // the message landed — one row, every member's language. A pure media
+      // LABEL ("🎤 Voice Message") is re-rendered for THIS reader; a preview
+      // carrying user text or a filename is returned untouched.
+      preview: localizeMessagePreview(
+        community.lastActivityPreview ?? "",
+        identity.contentType
+      ),
       dateTime: community.lastActivityAt.getTime(),
       ...identity,
     };

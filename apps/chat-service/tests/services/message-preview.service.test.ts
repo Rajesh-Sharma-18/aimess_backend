@@ -16,7 +16,7 @@
  * canonical list automatically if a new kind is added.
  */
 
-import { CONTENT_TYPES } from "@aimess/constants";
+import { CONTENT_TYPES, localizeMessagePreview, t } from "@aimess/constants";
 
 import {
   convertMessageToPreview,
@@ -260,5 +260,39 @@ describe("REGRESSION: the exact expression persisted as community.activity messa
       files: [{ name: "invoice.pdf" }],
     });
     expect(messagePreview).toBe("📄 invoice.pdf");
+  });
+});
+
+describe("convertMessageToPreview — reader language", () => {
+  it("renders the label in the requested locale, English by default", () => {
+    expect(convertMessageToPreview("VOICE", { text: "" })).toBe(
+      "🎤 Voice Message"
+    );
+    expect(convertMessageToPreview("VOICE", { text: "" }, "vi")).toBe(
+      t("PREVIEW_VOICE", "vi")
+    );
+    expect(convertMessageToPreview("VOICE", { text: "" }, "th")).toBe(
+      t("PREVIEW_VOICE", "th")
+    );
+  });
+
+  it("never translates user data — a filename rides through verbatim", () => {
+    expect(
+      convertMessageToPreview("DOCUMENT", { files: [{ name: "q3.pdf" }] }, "th")
+    ).toBe("📄 q3.pdf");
+  });
+
+  it("localizeMessagePreview swaps a baked English label, nothing else", () => {
+    expect(localizeMessagePreview("🎤 Voice Message", "VOICE", "vi")).toBe(
+      t("PREVIEW_VOICE", "vi")
+    );
+    // Already localized (a second pass, e.g. REST after the socket) is a no-op.
+    expect(
+      localizeMessagePreview(t("PREVIEW_VOICE", "vi"), "VOICE", "vi")
+    ).toBe(t("PREVIEW_VOICE", "vi"));
+    // Same words, but typed by a human into a TEXT message: untouched.
+    expect(localizeMessagePreview("🎤 Voice Message", "TEXT", "vi")).toBe(
+      "🎤 Voice Message"
+    );
   });
 });

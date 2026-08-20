@@ -33,6 +33,13 @@ const IDENTICAL_ALLOWED = new Set([
   // "{{label}} {{duration}}" — the completed-call preview. The label is itself
   // a translated string, so there is no prose here to translate.
   "SYS_CALL_ENDED",
+  // Preview labels that are the SAME word in every supported language: a
+  // loanword ("Video") or a format name ("GIF"). Translating them would make
+  // the row read worse, not better.
+  "PREVIEW_VIDEO",
+  "PREVIEW_GIF",
+  "QUOTE_VIDEO",
+  "QUOTE_GIF",
 ]);
 
 const placeholders = (text: string): string =>

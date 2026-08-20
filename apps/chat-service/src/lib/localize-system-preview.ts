@@ -1,6 +1,7 @@
 import {
   currentLocale,
   isPersonalizableSystemContentType,
+  localizeMessagePreview,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
   type SupportedLocale,
@@ -42,7 +43,12 @@ export function withLocalizedSystemPreview<
   const contentType = String(
     preview.contentType ?? preview.messageType ?? ""
   ).toUpperCase();
-  if (!isPersonalizableSystemContentType(contentType)) return preview;
+  if (!isPersonalizableSystemContentType(contentType)) {
+    // Not a SYSTEM row — but a media/structured row previews as a LABEL
+    // ("🎤 Voice Message"), baked in English at write time exactly like a
+    // system sentence, so it needs the same per-reader rebuild.
+    return withLocalizedLabel(preview, contentType, locale);
+  }
 
   const systemEvent = String(preview.systemEvent ?? "");
   if (!systemEvent) return preview;
@@ -74,6 +80,27 @@ export function withLocalizedSystemPreview<
         );
   if (localized === storedText) return preview;
 
+  return {
+    ...preview,
+    ...(preview.text !== undefined ? { text: localized } : {}),
+    ...(nested && typeof nested === "object"
+      ? { content: { ...nested, text: localized } }
+      : {}),
+  };
+}
+
+/**
+ * The media/structured half of {@link withLocalizedSystemPreview}: swap the
+ * baked English label for this reader's, leaving a preview that carries user
+ * data (a filename, a place name) exactly as stored.
+ */
+function withLocalizedLabel<
+  T extends { text?: string | null; content?: unknown },
+>(preview: T, contentType: string, locale: SupportedLocale): T {
+  const nested = preview.content as { text?: string | null } | null | undefined;
+  const storedText = String(preview.text ?? nested?.text ?? "");
+  const localized = localizeMessagePreview(storedText, contentType, locale);
+  if (!storedText || localized === storedText) return preview;
   return {
     ...preview,
     ...(preview.text !== undefined ? { text: localized } : {}),

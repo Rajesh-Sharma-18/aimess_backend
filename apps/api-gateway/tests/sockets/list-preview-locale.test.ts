@@ -148,4 +148,38 @@ describe("one bump, one language per recipient", () => {
     expect(previewOf(vi.emit.mock.calls[0][1])).toBe("Alex đã xóa Jim");
     expect(previewOf(th.emit.mock.calls[0][1])).toBe("AlexนำJimออกจากกลุ่ม");
   });
+
+  it("translates a media LABEL row per reader, and only the label", () => {
+    const voiceBump = {
+      type: "PRIVATE",
+      lastMessage: { contentType: "VOICE", text: "🎤 Voice Message" },
+    };
+    expect(previewOf(personalizeConvUpdatedPreview(voiceBump, "x", "en"))).toBe(
+      "🎤 Voice Message"
+    );
+    expect(previewOf(personalizeConvUpdatedPreview(voiceBump, "x", "vi"))).toBe(
+      t("PREVIEW_VOICE", "vi")
+    );
+    expect(previewOf(personalizeConvUpdatedPreview(voiceBump, "x", "th"))).toBe(
+      t("PREVIEW_VOICE", "th")
+    );
+
+    // A preview carrying user data (a filename) is never rewritten.
+    const docBump = {
+      type: "PRIVATE",
+      lastMessage: { contentType: "DOCUMENT", text: "📄 q3-report.pdf" },
+    };
+    expect(previewOf(personalizeConvUpdatedPreview(docBump, "x", "th"))).toBe(
+      "📄 q3-report.pdf"
+    );
+
+    // TEXT is user-written — never touched, in any language.
+    const textBump = {
+      type: "PRIVATE",
+      lastMessage: { contentType: "TEXT", text: "Voice Message" },
+    };
+    expect(previewOf(personalizeConvUpdatedPreview(textBump, "x", "vi"))).toBe(
+      "Voice Message"
+    );
+  });
 });

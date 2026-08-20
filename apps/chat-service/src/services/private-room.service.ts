@@ -1,3 +1,4 @@
+import { currentLocale } from "@aimess/constants";
 import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
@@ -930,7 +931,11 @@ export class PrivateRoomService {
         // previews are returned untouched.
         preview: lmRecord
           ? localizedActivityPreview(
-              convertMessageToPreview(lmMessageType, lmRecord.content),
+              convertMessageToPreview(
+                lmMessageType,
+                lmRecord.content,
+                currentLocale()
+              ),
               {
                 messageType: lmMessageType,
                 systemEvent: lmRecord.systemEvent as string | null,

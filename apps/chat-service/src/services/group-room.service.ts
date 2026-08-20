@@ -1,3 +1,4 @@
+import { currentLocale } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -167,7 +168,11 @@ export function buildGroupLastActivity(
     type: "message",
     userId: (lp.senderId as string) || null,
     username: (lp.senderName as string) || "",
-    preview: convertMessageToPreview(contentType, { text: lp.text ?? "" }),
+    preview: convertMessageToPreview(
+      contentType,
+      { text: lp.text ?? "" },
+      currentLocale()
+    ),
     dateTime: createdAt,
     messageId: (lp.messageId as string) || "",
     clientMessageId: (lp.clientMessageId as string) ?? null,

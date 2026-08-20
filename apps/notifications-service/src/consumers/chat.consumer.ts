@@ -147,6 +147,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
     senderName: data.senderName,
     preview: data.preview,
+    messageType: data.messageType,
   });
 
   // Include messageId in the community deep link so the client can scroll to

@@ -1,4 +1,5 @@
 import {
+  localizeMessagePreview,
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
@@ -98,7 +99,7 @@ export function personalizeConvUpdatedPreview(
   if (conversationType !== "GROUP" && conversationType !== "PRIVATE") {
     return data;
   }
-  return withRebuiltPreviewText(d, (preview, storedText) => {
+  return withRebuiltPreviewText(d, locale, (preview, storedText) => {
     if (!preview.systemEvent) return storedText;
     const systemData = preview.systemData ?? {};
     return conversationType === "PRIVATE"
@@ -126,7 +127,7 @@ export function personalizeCommunityUpdatedPreview(
   locale: SupportedLocale = STORED_TEXT_LOCALE
 ): unknown {
   const d = data as Record<string, unknown>;
-  return withRebuiltPreviewText(d, (preview, storedText) => {
+  return withRebuiltPreviewText(d, locale, (preview, storedText) => {
     if (!preview.systemMessageType) return storedText;
     const metadata = preview.systemMetadata ?? {};
     return personalizeCommunitySystemMessageForViewer(
@@ -149,13 +150,24 @@ export function personalizeCommunityUpdatedPreview(
  */
 function withRebuiltPreviewText(
   d: Record<string, unknown>,
+  locale: SupportedLocale,
   rebuild: (preview: BumpedPreview, storedText: string) => string
 ): unknown {
   const preview = d.lastMessage as BumpedPreview | null | undefined;
   if (!preview || typeof preview !== "object") return d;
-  if (String(preview.contentType ?? "").toUpperCase() !== "SYSTEM") return d;
-
+  const contentType = String(preview.contentType ?? "").toUpperCase();
   const storedText = String(preview.text ?? "");
+  // A media/structured row previews as a LABEL ("🎤 Voice Message"), baked in
+  // English by the publisher for the same reason a SYSTEM sentence is: one
+  // broadcast, many languages. Swap it for this socket's, then stop — there is
+  // no `systemEvent` to rebuild from.
+  if (contentType !== "SYSTEM") {
+    const label = localizeMessagePreview(storedText, contentType, locale);
+    return label === storedText
+      ? d
+      : { ...d, lastMessage: { ...preview, text: label } };
+  }
+
   const rebuilt = rebuild(preview, storedText);
   if (rebuilt === storedText) return d;
   return { ...d, lastMessage: { ...preview, text: rebuilt } };
