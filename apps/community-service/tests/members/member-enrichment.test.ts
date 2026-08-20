@@ -19,6 +19,15 @@
  * hiccup turned every member into "Unknown".
  */
 
+// The global setup stubs `lib/user-client.js` for every suite, which silently
+// defeated this one: `fetchUserSnapshotHits` returned an empty Map, so the
+// enrichment branch under test never ran and the stored snapshot always won.
+// Opt back into the real module — the gRPC client beneath it is still stubbed,
+// which is the I/O boundary this suite means to control.
+jest.mock("../../src/lib/user-client.js", () =>
+  jest.requireActual("../../src/lib/user-client.js")
+);
+
 jest.mock("@aimess/storage", () => ({
   MEDIA_PREFIXES: { community: [], userAvatars: [] },
   parseObjectKeyFromStored: jest.fn(() => null),

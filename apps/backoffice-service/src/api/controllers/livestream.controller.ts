@@ -1,9 +1,11 @@
 import { NotFoundError, BadRequestError } from "@aimess/errors";
 import { StorageValidationError } from "@aimess/storage";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { livestreamService, thumbnailService } from "../../services/index.js";
+import { apiResponseWith, paginated } from "../lib/respond.js";
 import type {
   ListLivestreamsQuery,
   ListLivestreamCommentsQuery,
@@ -21,7 +23,7 @@ import type {
   ThumbnailPresignInput,
   ThumbnailSaveInput,
 } from "../validators/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** GET /v1/livestreams — paginated, filtered list. */
 export const listLivestreams: RequestHandler = (req, res, next) => {
@@ -31,11 +33,15 @@ export const listLivestreams: RequestHandler = (req, res, next) => {
       const result = await livestreamService.listLivestreams(
         query as ListLivestreamsQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_LIVESTREAMS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -50,10 +56,11 @@ export const getLivestreamDetails: RequestHandler = (req, res, next) => {
       const livestreamId = req.params.livestreamId as string;
       const livestream = await livestreamService.getLivestream(livestreamId);
       if (!livestream) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: livestream,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(livestream, t("ADMIN_LIVESTREAM_FETCHED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -71,11 +78,15 @@ export const listLivestreamReports: RequestHandler = (req, res, next) => {
         livestreamId,
         query as ListLivestreamReportsQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_LIVESTREAM_REPORTS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -93,11 +104,15 @@ export const listLivestreamUsers: RequestHandler = (req, res, next) => {
         livestreamId,
         query as ListLivestreamUsersQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_LIVESTREAM_VIEWERS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -119,12 +134,15 @@ export const listLivestreamComments: RequestHandler = (req, res, next) => {
         livestreamId,
         query as ListLivestreamCommentsQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        nextCursor: result.nextCursor,
-        hasMore: result.hasMore,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          apiResponseWith(
+            result.data,
+            t("ADMIN_LIVESTREAM_COMMENTS_FETCHED", req.locale),
+            { nextCursor: result.nextCursor, hasMore: result.hasMore }
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -144,10 +162,9 @@ export const endLivestream: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_LIVESTREAM_ENDED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -165,10 +182,11 @@ export const bulkEndLivestreams: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(result, t("ADMIN_LIVESTREAMS_BULK_ENDED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -190,16 +208,18 @@ export const presignThumbnailUpload: RequestHandler = (req, res, next) => {
         contentType: body.contentType,
         contentLength: body.contentLength,
       });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: {
-          uploadUrl: result.uploadUrl,
-          objectKey: result.objectKey,
-          expiresIn: result.expiresIn,
-          maxBytes: result.maxBytes,
-          headers: result.headers,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            uploadUrl: result.uploadUrl,
+            objectKey: result.objectKey,
+            expiresIn: result.expiresIn,
+            maxBytes: result.maxBytes,
+            headers: result.headers,
+          },
+          t("ADMIN_LIVESTREAM_THUMBNAIL_UPLOAD_READY", req.locale)
+        )
+      );
     } catch (error) {
       if (error instanceof StorageValidationError) {
         return next(new BadRequestError(error.code));
@@ -226,10 +246,14 @@ export const saveThumbnail: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: { livestreamId, thumbnail: body.objectKey },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { livestreamId, thumbnail: body.objectKey },
+            t("ADMIN_LIVESTREAM_THUMBNAIL_UPDATED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -247,10 +271,14 @@ export const bulkReviewLivestreamReports: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_LIVESTREAM_REPORTS_BULK_REVIEWED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

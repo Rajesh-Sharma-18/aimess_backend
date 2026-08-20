@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminAuthService } from "../../services/index.js";
@@ -15,11 +16,9 @@ export const login: RequestHandler = (req, res, next) => {
         password,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_LOGIN_SUCCESS", req.locale),
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_LOGIN_SUCCESS", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -35,11 +34,9 @@ export const refresh: RequestHandler = (req, res, next) => {
         refreshToken,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_TOKEN_REFRESHED", req.locale),
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_TOKEN_REFRESHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -56,11 +53,14 @@ export const logout: RequestHandler = (req, res, next) => {
         admin.sid,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_LOGOUT_SUCCESS", req.locale),
-        data: { loggedOut: true },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { loggedOut: true },
+            t("ADMIN_LOGOUT_SUCCESS", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

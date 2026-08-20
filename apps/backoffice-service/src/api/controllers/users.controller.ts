@@ -1,8 +1,10 @@
 import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { userManagementService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
 import { moderationReasonEnum, unbanUserSchema } from "../validators/index.js";
@@ -17,7 +19,7 @@ import type {
   UnbanUserInput,
   UserReportsQueryInput,
 } from "../validators/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** GET /v1/users — paginated, filtered list. */
 export const listUsers: RequestHandler = (req, res, next) => {
@@ -29,11 +31,15 @@ export const listUsers: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_USERS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -50,10 +56,14 @@ export const listUsers: RequestHandler = (req, res, next) => {
  */
 export const getBanReasons: RequestHandler = (req, res, next) => {
   try {
-    res.status(HTTP_STATUS.OK).json({
-      success: true,
-      data: moderationReasonEnum.options,
-    });
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          moderationReasonEnum.options,
+          t("ADMIN_BAN_REASONS_FETCHED", req.locale)
+        )
+      );
   } catch (error) {
     next(error);
   }
@@ -67,10 +77,9 @@ export const getUserDetails: RequestHandler = (req, res, next) => {
       const userId = req.params.userId as string;
       const user = await userManagementService.getUser(userId);
       if (!user) throw new NotFoundError("USER_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: user,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(user, t("ADMIN_USER_FETCHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -88,11 +97,15 @@ export const listUserReports: RequestHandler = (req, res, next) => {
         page,
         limit
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_USER_REPORTS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -115,13 +128,15 @@ export const listUserCommunities: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: {
-          items: result.data,
-          pagination: result.pagination,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            items: result.data,
+            pagination: result.pagination,
+          },
+          t("ADMIN_USER_COMMUNITIES_FETCHED", req.locale)
+        )
+      );
     } catch (error) {
       next(error);
     }
@@ -148,14 +163,16 @@ export const listOtherCommunityMembers: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: {
-          community: result.community,
-          items: result.items,
-          pagination: result.pagination,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            community: result.community,
+            items: result.items,
+            pagination: result.pagination,
+          },
+          t("ADMIN_COMMUNITY_CO_MEMBERS_FETCHED", req.locale)
+        )
+      );
     } catch (error) {
       next(error);
     }
@@ -177,10 +194,9 @@ export const banUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_BANNED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -202,10 +218,9 @@ export const suspendUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_SUSPENDED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -231,10 +246,9 @@ export const unbanUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_UNBANNED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -255,10 +269,11 @@ export const bulkBanUsers: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(result, t("ADMIN_USERS_BULK_BANNED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -279,10 +294,11 @@ export const bulkActivateUsers: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(result, t("ADMIN_USERS_BULK_ACTIVATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }

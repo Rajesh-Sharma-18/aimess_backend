@@ -1,8 +1,10 @@
 import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { communityService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type {
   CommunityDetail,
   CommunityDetailResponse,
@@ -21,7 +23,7 @@ import type {
   MemberModerationBodyInput,
   ReopenCommunityInput,
 } from "../validators/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** GET /v1/communities — paginated, filtered list. */
 export const listCommunities: RequestHandler = (req, res, next) => {
@@ -33,11 +35,15 @@ export const listCommunities: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_COMMUNITIES_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -88,10 +94,14 @@ export const getCommunityDetails: RequestHandler = (req, res, next) => {
       const communityId = req.params.communityId as string;
       const community = await communityService.getCommunity(communityId);
       if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: toCommunityDetailResponse(community),
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            toCommunityDetailResponse(community),
+            t("ADMIN_COMMUNITY_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -109,11 +119,15 @@ export const listCommunityMembers: RequestHandler = (req, res, next) => {
         communityId,
         query as ListCommunityMembersQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_COMMUNITY_MEMBERS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -131,11 +145,15 @@ export const listCommunityMutedMembers: RequestHandler = (req, res, next) => {
         communityId,
         query as ListMutedMembersQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_COMMUNITY_MUTED_MEMBERS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -155,10 +173,9 @@ export const closeCommunity: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_COMMUNITY_CLOSED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -178,10 +195,11 @@ export const reopenCommunity: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_COMMUNITY_REOPENED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -199,10 +217,14 @@ export const bulkCloseCommunities: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITIES_BULK_CLOSED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -224,10 +246,14 @@ export const getCommunityConversationMessages: RequestHandler = (
         communityId,
         query
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITY_MESSAGES_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -249,10 +275,14 @@ export const removeCommunityMember: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITY_MEMBER_REMOVED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -274,10 +304,14 @@ export const banCommunityMember: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITY_MEMBER_BANNED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -299,10 +333,14 @@ export const unbanCommunityMember: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITY_MEMBER_UNBANNED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -320,10 +358,14 @@ export const bulkReopenCommunities: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_COMMUNITIES_BULK_REOPENED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

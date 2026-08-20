@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import {
   callAnalyticsService,
@@ -8,7 +9,7 @@ import type {
   CallAnalyticsQueryInput,
   DashboardChartsQueryInput,
 } from "../validators/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /**
  * GET /v1/dashboard/overview — stat cards only (users/active/communities/
@@ -18,7 +19,14 @@ export const getDashboardOverview: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const data = await dashboardService.getOverview();
-      res.status(HTTP_STATUS.OK).json({ success: true, data });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            data,
+            t("ADMIN_DASHBOARD_OVERVIEW_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -34,7 +42,11 @@ export const getDashboardCharts: RequestHandler = (req, res, next) => {
     try {
       const { period } = req.query as unknown as DashboardChartsQueryInput;
       const data = await dashboardService.getCharts(period);
-      res.status(HTTP_STATUS.OK).json({ success: true, data });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(data, t("ADMIN_DASHBOARD_CHARTS_FETCHED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -48,7 +60,14 @@ export const getDashboardServiceStatus: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const data = await dashboardService.getServiceStatus();
-      res.status(HTTP_STATUS.OK).json({ success: true, data });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            data,
+            t("ADMIN_DASHBOARD_SERVICE_STATUS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -70,7 +89,14 @@ export const getDashboardCallAnalytics: RequestHandler = (req, res, next) => {
         fromDate,
         toDate,
       });
-      res.status(HTTP_STATUS.OK).json({ success: true, data });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            data,
+            t("ADMIN_DASHBOARD_CALL_ANALYTICS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

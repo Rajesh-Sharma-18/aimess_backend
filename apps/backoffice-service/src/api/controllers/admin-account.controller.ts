@@ -1,8 +1,10 @@
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminAccountService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type { ListAdminAccountsQuery } from "../../types/admin-account.types.js";
 import type {
   CreateAdminAccountInput,
@@ -21,11 +23,15 @@ export const listAdminAccounts: RequestHandler = (req, res, next) => {
         query as ListAdminAccountsQuery,
         req.admin!
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_ACCOUNTS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -42,7 +48,9 @@ export const createAdminAccount: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.CREATED).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.CREATED)
+        .json(new ApiResponse(result, t("ADMIN_ACCOUNT_CREATED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -55,7 +63,9 @@ export const getAdminAccountDetails: RequestHandler = (req, res, next) => {
     try {
       const adminId = req.params.adminId as string;
       const result = await adminAccountService.getAdminAccount(adminId);
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_ACCOUNT_FETCHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -74,7 +84,9 @@ export const updateAdminAccount: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_ACCOUNT_UPDATED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -91,7 +103,11 @@ export const activateAdminAccount: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_ACCOUNT_ACTIVATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -108,7 +124,11 @@ export const deactivateAdminAccount: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_ACCOUNT_DEACTIVATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -127,7 +147,11 @@ export const updateAdminAccountStatus: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_ACCOUNT_STATUS_UPDATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -135,11 +159,15 @@ export const updateAdminAccountStatus: RequestHandler = (req, res, next) => {
 };
 
 /** GET /v1/admin-accounts/permissions — the full permission catalogue. */
-export const listPermissions: RequestHandler = (_req, res, next) => {
+export const listPermissions: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const result = await adminAccountService.listPermissions();
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_PERMISSIONS_FETCHED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -152,7 +180,14 @@ export const getAdminPermissions: RequestHandler = (req, res, next) => {
     try {
       const adminId = req.params.adminId as string;
       const result = await adminAccountService.getAdminPermissions(adminId);
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_ACCOUNT_PERMISSIONS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -171,7 +206,14 @@ export const updateAdminPermissions: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_ACCOUNT_PERMISSIONS_UPDATED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

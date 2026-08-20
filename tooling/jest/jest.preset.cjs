@@ -62,7 +62,15 @@ module.exports = {
     // Prisma 7's generated `client.js` uses top-level `import.meta` (ESM-only)
     // which CJS-mode Jest cannot parse. Redirect every service's generated
     // client to a universal stub. MUST precede the generic ".js"-strip rule.
-    "(?:\\.{1,2}/)+generated/prisma/client(?:\\.js)?$":
+    //
+    // The pattern allows ANY leading path, not just `./`/`../` segments. The
+    // previous `(?:\.{1,2}/)+generated/...` required `generated` to follow the
+    // dot-segments immediately, so it matched production code's
+    // `../generated/prisma/client.js` but NOT a test's
+    // `../../src/generated/prisma/client.js` — which is why
+    // `auth-service/tests/lib/session-context.test.ts` died on `import.meta`
+    // while every service module importing the same client was fine.
+    "(?:.*/)?generated/prisma/client(?:\\.js)?$":
       "<rootDir>/../../tooling/jest/prisma-client.stub.cjs",
     // @aimess/<pkg> → that package's TypeScript source entrypoint.
     "^@aimess/([^/]+)$": "<rootDir>/../../packages/$1/src/index.ts",

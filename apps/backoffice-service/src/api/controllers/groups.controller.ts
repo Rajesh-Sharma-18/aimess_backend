@@ -1,6 +1,7 @@
 import { NotFoundError } from "@aimess/errors";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { groupService } from "../../services/index.js";
@@ -25,14 +26,15 @@ export const listGroups: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Groups fetched successfully",
-        data: {
-          items: result.items,
-          pagination: result.pagination,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            items: result.items,
+            pagination: result.pagination,
+          },
+          t("ADMIN_GROUPS_FETCHED", req.locale)
+        )
+      );
     } catch (error) {
       next(error);
     }
@@ -51,11 +53,9 @@ export const getGroupDetails: RequestHandler = (req, res, next) => {
         getRequestContext(req)
       );
       if (!group) throw new NotFoundError("GROUP_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Group fetched successfully",
-        data: group,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(group, t("ADMIN_GROUP_FETCHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -76,14 +76,15 @@ export const listGroupMembers: RequestHandler = (req, res, next) => {
         getRequestContext(req)
       );
       if (!result.found) throw new NotFoundError("GROUP_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Group members fetched successfully",
-        data: {
-          items: result.items,
-          pagination: result.pagination,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            items: result.items,
+            pagination: result.pagination,
+          },
+          t("ADMIN_GROUP_MEMBERS_FETCHED", req.locale)
+        )
+      );
     } catch (error) {
       next(error);
     }
@@ -103,11 +104,9 @@ export const disbandGroup: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Group disbanded successfully",
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_GROUP_DISBANDED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -129,11 +128,11 @@ export const removeGroupMember: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Group member removed successfully",
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_GROUP_MEMBER_REMOVED", req.locale))
+        );
     } catch (error) {
       next(error);
     }

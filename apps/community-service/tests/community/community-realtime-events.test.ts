@@ -37,6 +37,11 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 }));
 
 jest.mock("@aimess/redis", () => ({
+  // Spread the real module first: a factory that returns only the stubs
+  // replaces EVERY other export with undefined, and `createBannedUserGuard`
+  // is called at import time by `authenticate-access-token.ts` - so every
+  // suite that touches `app.ts` died on "is not a function" before it ran.
+  ...jest.requireActual("@aimess/redis"),
   publishCommunityRoomEvent: jest.fn(async () => 1),
   publishChatUserEvent: jest.fn(async () => 1),
 }));
@@ -227,16 +232,22 @@ describe("kickMember — real-time broadcasts", () => {
     ).resolves.not.toThrow();
   });
 
-  it("posts a MEMBER_REMOVED chat system message (visible moderation — Telegram parity)", async () => {
+  it("posts NO MEMBER_REMOVED chat system message (removal is silent)", async () => {
     await communityService.kickMember(CID, ADMIN, TARGET, "violating rules");
 
-    // Moderation actions are visible to all members (Telegram parity): the
-    // chat-timeline SYSTEM line is posted. Only MEMBER_LEFT / MEMBER_JOINED are
-    // hidden (HIDDEN_SYSTEM_MESSAGE_TYPES); MEMBER_REMOVED is NOT.
+    // This assertion used to be inverted, on the premise that "only
+    // MEMBER_LEFT / MEMBER_JOINED are hidden". That is not the policy:
+    // `HIDDEN_SYSTEM_MESSAGE_TYPES` in packages/constants lists MEMBER_REMOVED
+    // and MEMBER_BANNED as well, and its policy table spells out the rule —
+    // "Member removed by admin | chat system msg: No (HIDDEN)". The removed
+    // user learns via `community:membership:removed` on their personal channel
+    // and other members via the `community:member:removed` roster event; no
+    // "{name} was removed" text may reach chat history, sync, lastActivity, or
+    // any API surface. Moderation history lives in the audit log.
     const postedTypes = pubSysMsg.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).toContain("MEMBER_REMOVED");
+    expect(postedTypes).not.toContain("MEMBER_REMOVED");
   });
 
   it("does NOT write removal to lastActivity (removal never becomes the list preview)", async () => {

@@ -17,6 +17,13 @@ const mockIncr = jest.fn();
 const mockExpire = jest.fn(async () => 1);
 let mockReady = true;
 
+// The global setup stubs the limiter itself to a resolved no-op so functional
+// suites are never throttled. That also made every assertion here vacuous, so
+// restore the real module — the Redis fake below is what this suite controls.
+jest.mock("../../src/lib/invite-rate-limit.js", () =>
+  jest.requireActual("../../src/lib/invite-rate-limit.js")
+);
+
 jest.mock("../../src/config/redis.js", () => ({
   redis: {
     incr: (key: string) => mockIncr(key),

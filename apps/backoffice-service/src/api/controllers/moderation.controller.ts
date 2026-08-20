@@ -1,8 +1,10 @@
 import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { moderationService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type {
   ListReportsQuery,
   ListReportUsersQuery,
@@ -18,7 +20,7 @@ import type {
   ReportRelatedQueryInput,
   ResolveReportInput,
 } from "../validators/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** GET /v1/moderation/reports — paginated, filtered list. */
 export const listReports: RequestHandler = (req, res, next) => {
@@ -28,11 +30,15 @@ export const listReports: RequestHandler = (req, res, next) => {
       const result = await moderationService.listReports(
         query as ListReportsQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_REPORTS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -51,10 +57,9 @@ export const getReportDetails: RequestHandler = (req, res, next) => {
       const detail =
         await moderationService.getReportModerationDetail(reportId);
       if (!detail) throw new NotFoundError("REPORT_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: detail,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(detail, t("ADMIN_REPORT_FETCHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -77,14 +82,15 @@ export const listReportUsers: RequestHandler = (req, res, next) => {
         query as unknown as ListReportUsersQuery
       );
       if (!result) throw new NotFoundError("REPORT_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Users fetched successfully.",
-        data: {
-          users: result.items,
-          pagination: result.pagination,
-        },
-      });
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            users: result.items,
+            pagination: result.pagination,
+          },
+          t("ADMIN_REPORT_USERS_FETCHED", req.locale)
+        )
+      );
     } catch (error) {
       next(error);
     }
@@ -104,10 +110,9 @@ export const resolveReport: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_REPORT_RESOLVED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -127,10 +132,9 @@ export const dismissReport: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_REPORT_DISMISSED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -148,10 +152,11 @@ export const bulkResolveReports: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(result, t("ADMIN_REPORTS_BULK_RESOLVED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -169,10 +174,11 @@ export const bulkDismissReports: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(207).json({
-        success: true,
-        data: result,
-      });
+      res
+        .status(207)
+        .json(
+          new ApiResponse(result, t("ADMIN_REPORTS_BULK_DISMISSED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -189,11 +195,15 @@ export const getReportEvidence: RequestHandler = (req, res, next) => {
         reportId,
         query
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_REPORT_EVIDENCE_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -207,11 +217,15 @@ export const getReportHistory: RequestHandler = (req, res, next) => {
       const reportId = req.params.reportId as string;
       const query = req.query as unknown as ReportHistoryQueryInput;
       const result = await moderationService.listReportHistory(reportId, query);
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_REPORT_HISTORY_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -225,11 +239,15 @@ export const getReportRelated: RequestHandler = (req, res, next) => {
       const reportId = req.params.reportId as string;
       const query = req.query as unknown as ReportRelatedQueryInput;
       const result = await moderationService.listReportRelated(reportId, query);
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_REPORT_RELATED_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

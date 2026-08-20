@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
-import { HTTP_STATUS } from "@aimess/constants";
+import { ApiResponse } from "@aimess/utils";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 import { systemMaintenanceService } from "../../services/index.js";
 import { getRequestContext } from "../../lib/request-context.js";
@@ -17,7 +18,14 @@ export const disconnectAllFriendships: RequestHandler = (req, res, next) => {
         req.admin!.id,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_FRIENDSHIPS_DISCONNECTED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -25,11 +33,15 @@ export const disconnectAllFriendships: RequestHandler = (req, res, next) => {
 };
 
 /** GET /v1/system/calling — current state of the platform-wide kill-switch. */
-export const getCallingEnabled: RequestHandler = (_req, res, next) => {
+export const getCallingEnabled: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const result = await systemMaintenanceService.getCallingEnabled();
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_CALLING_STATE_FETCHED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -50,7 +62,11 @@ export const setCallingEnabled: RequestHandler = (req, res, next) => {
         req.admin!.id,
         getRequestContext(req)
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("ADMIN_CALLING_STATE_UPDATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }

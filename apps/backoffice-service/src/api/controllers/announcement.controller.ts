@@ -1,8 +1,10 @@
 import { NotFoundError } from "@aimess/errors";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { announcementService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type { ListAnnouncementsQuery } from "../../types/announcement.types.js";
 import type {
   CreateAnnouncementInput,
@@ -18,7 +20,11 @@ export const createAnnouncement: RequestHandler = (req, res, next) => {
         body,
         req.admin!.id
       );
-      res.status(HTTP_STATUS.CREATED).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.CREATED)
+        .json(
+          new ApiResponse(result, t("ADMIN_ANNOUNCEMENT_CREATED", req.locale))
+        );
     } catch (error) {
       next(error);
     }
@@ -33,11 +39,15 @@ export const listAnnouncements: RequestHandler = (req, res, next) => {
       const result = await announcementService.listAnnouncements(
         query as ListAnnouncementsQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_ANNOUNCEMENTS_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -52,7 +62,14 @@ export const getAnnouncementDetails: RequestHandler = (req, res, next) => {
       const announcement =
         await announcementService.getAnnouncementDetails(announcementId);
       if (!announcement) throw new NotFoundError("ANNOUNCEMENT_NOT_FOUND");
-      res.status(HTTP_STATUS.OK).json({ success: true, data: announcement });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            announcement,
+            t("ADMIN_ANNOUNCEMENT_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
