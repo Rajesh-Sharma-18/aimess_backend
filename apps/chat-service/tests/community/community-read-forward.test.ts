@@ -82,6 +82,11 @@ function buildService(
     findById: jest.fn(),
     save: jest.fn(),
     findOne: jest.fn(),
+    // markMessageRead recomputes the unread badge in ONE batched call after
+    // advancing the pointer. Absent from this stub, the recompute threw and was
+    // swallowed by the service's own warn-and-continue, so the read succeeded
+    // but the badge assertion saw a stale count.
+    countUnreadBulk: jest.fn().mockResolvedValue(new Map()),
     ...overrides.messageRepo,
   };
   const memberRepo = {
@@ -91,6 +96,12 @@ function buildService(
     findActiveByRoom: jest.fn().mockResolvedValue([]),
     findVisibleByUserAndRooms: jest.fn().mockResolvedValue([]),
     bulkAdvanceReadToNow: jest.fn().mockResolvedValue(0),
+    // `assertCommunityMember` lazily heals a stale mirror: on a non-active
+    // local RoomMember it asks community-service and, if that says ACTIVE,
+    // upserts the mirror in place. Without this the heal threw
+    // "upsert is not a function" and the guard surfaced a TypeError instead of
+    // the ForbiddenError the caller is owed.
+    upsert: jest.fn(async (_roomId, _userId, mapped) => mapped),
     ...overrides.memberRepo,
   };
   const roomRepo = {
