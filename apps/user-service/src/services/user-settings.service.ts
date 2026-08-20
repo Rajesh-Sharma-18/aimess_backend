@@ -233,7 +233,12 @@ function assertQuietHoursWindow(
 
   const start = update.quietHoursStart ?? current.quietHoursStart;
   const end = update.quietHoursEnd ?? current.quietHoursEnd;
-  if (!start || !end) {
+  // A zero-length window (start === end) is the same failure a MISSING end is:
+  // the row reads "enabled" but `isInQuietHours` treats it as never-quiet, so
+  // the user is shown a schedule that can never fire. Rejected for the same
+  // reason and with the same code. Switching quiet hours OFF is unaffected —
+  // this whole check returns early when `enabled` is false.
+  if (!start || !end || start === end) {
     throw new BadRequestError("USER_SETTINGS_INVALID_QUIET_HOURS");
   }
 }

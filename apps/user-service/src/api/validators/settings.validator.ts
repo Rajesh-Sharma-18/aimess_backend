@@ -92,7 +92,13 @@ const updatePrivacySettingsSchema = z
 const autoDeleteDefaultSchema = z
   .object({
     mode: z.enum(["OFF", "TIMER"]),
-    ttlSeconds: z.number().int().min(60).max(365 * 24 * 3600).nullable().optional(),
+    ttlSeconds: z
+      .number()
+      .int()
+      .min(60)
+      .max(365 * 24 * 3600)
+      .nullable()
+      .optional(),
   })
   .strict()
   .refine((v) => v.mode !== "TIMER" || typeof v.ttlSeconds === "number", {
@@ -137,6 +143,12 @@ const updateNotificationSettingsSchema = z
     call: z.boolean().optional(),
     friendRequest: z.boolean().optional(),
     system: z.boolean().optional(),
+    /**
+     * @deprecated RETIRED category — accepted and stored, but it gates nothing
+     * (see RETIRED_CATEGORIES in notifications-service). Kept only so an older
+     * mobile build that still sends it does not get its whole PATCH rejected
+     * by `.strict()`.
+     */
     community: z.boolean().optional(),
     liveStream: z.boolean().optional(),
     showPreview: z.boolean().optional(),

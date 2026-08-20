@@ -43,12 +43,13 @@ const settings = (
 /** A Date whose UTC wall-clock is the given local time — tests pin timezone explicitly. */
 const utc = (iso: string): Date => new Date(`${iso}Z`);
 
+// The categories a user can still switch off — one per row on the Notification
+// Preferences screen. `communityEnabled` is deliberately absent; see below.
 const CATEGORIES: NotificationCategory[] = [
   "chatEnabled",
   "callEnabled",
   "friendRequestEnabled",
   "systemEnabled",
-  "communityEnabled",
   "liveStreamEnabled",
 ];
 
@@ -66,7 +67,32 @@ describe("evaluateDelivery — category toggles", () => {
   it("one category OFF does not affect the others", () => {
     const only = settings({ chatEnabled: false });
     expect(evaluateDelivery(only, "chatEnabled")).toBe("CATEGORY_OFF");
-    expect(evaluateDelivery(only, "communityEnabled")).toBe("ALLOW");
+    expect(evaluateDelivery(only, "callEnabled")).toBe("ALLOW");
+  });
+
+  // The Community row was removed from the Notification Preferences screen, so
+  // no client can ever switch this back on. Honouring a stored `false` would
+  // silence community notifications permanently for anyone who had already
+  // turned it off, which is why the category is retired rather than deleted.
+  it("communityEnabled is retired — a stored false no longer suppresses", () => {
+    expect(evaluateDelivery(ALL_ON, "communityEnabled")).toBe("ALLOW");
+    expect(
+      evaluateDelivery(
+        settings({ communityEnabled: false }),
+        "communityEnabled"
+      )
+    ).toBe("ALLOW");
+  });
+
+  it("quiet hours still apply to retired categories", () => {
+    const quiet = settings({
+      communityEnabled: false,
+      quietHoursEnabled: true,
+      quietHoursStart: "00:00",
+      quietHoursEnd: "23:59",
+      timezone: "UTC",
+    });
+    expect(evaluateDelivery(quiet, "communityEnabled")).toBe("QUIET_HOURS");
   });
 });
 

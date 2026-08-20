@@ -45,9 +45,15 @@ import {
 const COMMUNITY_QUEUE = "community.queue";
 
 /**
- * community.* notification scaffold. Defaults to the communityEnabled category;
- * livestream events pass "liveStreamEnabled" so they honor the dedicated
- * per-user livestream notification toggle.
+ * community.* notification scaffold. Defaults to the communityEnabled
+ * category; livestream events pass "liveStreamEnabled" so they honor the
+ * dedicated per-user livestream notification toggle.
+ *
+ * `communityEnabled` no longer has an account-level switch behind it (see
+ * RETIRED_CATEGORIES in notification-settings.service). It is kept as the
+ * category value because it is what maps these events onto the community's
+ * OWN `announcementEnabled` preference in push.service — that per-community
+ * toggle, plus ACTIVE membership and quiet hours, is the whole gate now.
  */
 function base(
   type: string,

@@ -4891,7 +4891,12 @@ export const openApiSchemas = {
       call: { type: "boolean" },
       friendRequest: { type: "boolean" },
       system: { type: "boolean" },
-      community: { type: "boolean" },
+      community: {
+        type: "boolean",
+        deprecated: true,
+        description:
+          "RETIRED. Still returned so older clients keep parsing, but it no longer suppresses anything. Community chat messages are gated by `chat`, community livestreams by `liveStream`, and every other community notification by that community's own per-community preferences.",
+      },
       liveStream: { type: "boolean" },
       showPreview: {
         type: "boolean",
@@ -5022,7 +5027,12 @@ export const openApiSchemas = {
       call: { type: "boolean" },
       friendRequest: { type: "boolean" },
       system: { type: "boolean" },
-      community: { type: "boolean" },
+      community: {
+        type: "boolean",
+        deprecated: true,
+        description:
+          "RETIRED. Accepted and stored so an older client's PATCH is not rejected by the strict schema, but it gates nothing.",
+      },
       liveStream: { type: "boolean" },
       showPreview: { type: "boolean" },
       quietHours: { $ref: "#/components/schemas/UpdateQuietHoursRequest" },

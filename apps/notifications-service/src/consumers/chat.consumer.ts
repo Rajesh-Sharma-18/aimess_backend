@@ -136,7 +136,12 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
-  const category = isCommunity ? "communityEnabled" : "chatEnabled";
+  // Every chat message — private, group AND community — is gated by the one
+  // account-level Chat toggle, which is exactly what its subtitle promises
+  // ("1-1, group, community messages"). Community messages used to sit under
+  // the separate `communityEnabled` category, so turning Chat off left the
+  // busiest source of messages still pushing; that category is now retired.
+  const category = "chatEnabled" as const;
 
   // Community/group messages: title = room name (if known), body = "Sender: preview".
   // Private: title = sender name, body = preview text.
@@ -190,9 +195,9 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
-    // Community chat messages share the `communityEnabled` global category
-    // with generic community events but must gate on the community's own
-    // `chatEnabled` preference (the "Chat" toggle), not `announcementEnabled`.
+    // The ACTIVE-roster + per-community `chatEnabled` gates were already
+    // resolved for the whole fan-out above, so push.service must not redo them
+    // per recipient (and must not fall back to `announcementEnabled`).
     ...(isCommunity ? { communityGatesPreResolved: true as const } : {}),
     type: "MESSAGE",
     copy,

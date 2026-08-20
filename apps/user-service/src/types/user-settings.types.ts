@@ -63,6 +63,13 @@ export type UserNotificationSettings = {
   call: boolean;
   friendRequest: boolean;
   system: boolean;
+  /**
+   * @deprecated RETIRED — no longer gates anything, and no client shows it.
+   * Community chat messages are covered by `chat`, community livestreams by
+   * `liveStream`, and every other community notification by that community's
+   * own per-community preferences. Still read/written so older mobile builds
+   * keep round-tripping the field instead of 400-ing on `.strict()`.
+   */
   community: boolean;
   liveStream: boolean;
   /** false hides message content in the push banner (lock-screen privacy). */

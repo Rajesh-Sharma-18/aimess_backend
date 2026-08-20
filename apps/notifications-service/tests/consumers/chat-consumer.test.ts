@@ -3,7 +3,8 @@
  *
  * Verifies the COMMUNITY conversationType branch added alongside T7:
  *
- *   - COMMUNITY messages use category:"communityEnabled" (not "chatEnabled")
+ *   - COMMUNITY messages use category:"chatEnabled", same as PRIVATE and GROUP —
+ *     the account-level Chat toggle covers "1-1, group, community messages"
  *   - communityId is forwarded in the FCM data map so the client can deep-link
  *     to the correct community chat screen
  *   - PRIVATE and GROUP messages continue to use category:"chatEnabled"
@@ -124,7 +125,7 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     isGroupMutedMock.mockResolvedValue(false); // default: not muted
   });
 
-  it("COMMUNITY → category:communityEnabled + communityId in FCM data", async () => {
+  it("COMMUNITY → category:chatEnabled + communityId in FCM data", async () => {
     consume(
       makeMsg({ ...BASE, conversationType: "COMMUNITY", communityId: "comm1" })
     );
@@ -141,7 +142,7 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
       },
     ];
     const push = builderFn("recipient-uuid");
-    expect(push.category).toBe("communityEnabled");
+    expect(push.category).toBe("chatEnabled");
     expect(push.data.communityId).toBe("comm1");
     expect(push.data.conversationType).toBe("COMMUNITY");
     // Regression: conversation-based grouping (thread-id) keyed by communityId,
