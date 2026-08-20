@@ -44,6 +44,7 @@ export interface RawAdminGroupRow {
   createdAt: string;
   admin: RawAdminGroupAdmin;
   status: string;
+  ownerAccountStatus: string;
   disbandedAt: string;
   lastMessageAt: string;
 }
@@ -121,6 +122,29 @@ export interface AdminGroupMutationRes {
   ok: boolean;
   found: boolean;
   errorCode: string;
+}
+
+export interface AdminBanGroupMemberReq {
+  groupId: string;
+  userId: string;
+  actorAdminId: string;
+  // "" is treated as absent by chat-service (`req.reason || undefined`).
+  reason: string;
+}
+
+export interface AdminUnbanGroupMemberReq {
+  groupId: string;
+  userId: string;
+  actorAdminId: string;
+}
+
+// errorCode: "" | CHAT_GROUP_NOT_FOUND | CHAT_GROUP_NOT_ACTIVE | CHAT_NOT_A_MEMBER.
+// closedGroup=true when the banned member was the group owner (whole group CLOSED).
+export interface AdminGroupBanRes {
+  ok: boolean;
+  found: boolean;
+  errorCode: string;
+  closedGroup: boolean;
 }
 
 // Group-side cascade of a permanent system ban.
@@ -293,6 +317,45 @@ export const adminGetCommunityMessagesBreaker: Breaker<
     >("adminGetCommunityMessages", req)
 );
 
+// ---- Admin Group Conversation viewer (messaging.MessagingService) ----------
+// Same DTO field set as the community viewer; int64 sent_at arrives as a string.
+export interface RawAdminGroupMessageDto {
+  messageId: string;
+  roomId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  message: string;
+  contentType: string;
+  mediaKey: string;
+  attachmentsJson: string;
+  reactionsJson: string;
+  quoteDataJson: string;
+  sentAt: string | number;
+  systemMessageType: string;
+  systemMetadata: string;
+  isDeleted: boolean;
+}
+export interface AdminGetGroupMessagesReq {
+  groupId: string;
+  cursor: string;
+  limit: number;
+}
+export interface AdminGetGroupMessagesRes {
+  messages: RawAdminGroupMessageDto[];
+  nextCursor: string;
+  hasMore: boolean;
+}
+export const adminGetGroupMessagesBreaker: Breaker<
+  AdminGetGroupMessagesReq,
+  AdminGetGroupMessagesRes
+> = makeBreaker("chat.adminGetGroupMessages", (req: AdminGetGroupMessagesReq) =>
+  call<AdminGetGroupMessagesReq, AdminGetGroupMessagesRes>(
+    "adminGetGroupMessages",
+    req
+  )
+);
+
 export const getGroupCountBreaker: NoArgBreaker<RawGroupCount> =
   makeBreakerNoArgs("chat.getGroupCount", () =>
     call<unknown, RawGroupCount>("getGroupCount", {})
@@ -349,6 +412,23 @@ export const adminRemoveGroupMemberBreaker: Breaker<
       "adminRemoveGroupMember",
       req
     )
+);
+
+export const adminBanGroupMemberBreaker: Breaker<
+  AdminBanGroupMemberReq,
+  AdminGroupBanRes
+> = makeBreaker("chat.adminBanGroupMember", (req: AdminBanGroupMemberReq) =>
+  call<AdminBanGroupMemberReq, AdminGroupBanRes>("adminBanGroupMember", req)
+);
+
+export const adminUnbanGroupMemberBreaker: Breaker<
+  AdminUnbanGroupMemberReq,
+  AdminGroupMutationRes
+> = makeBreaker("chat.adminUnbanGroupMember", (req: AdminUnbanGroupMemberReq) =>
+  call<AdminUnbanGroupMemberReq, AdminGroupMutationRes>(
+    "adminUnbanGroupMember",
+    req
+  )
 );
 
 export const adminGetCallAnalyticsBreaker: Breaker<
@@ -433,6 +513,22 @@ export const chatClient = {
   ): Promise<AdminGroupMutationRes> {
     return adminRemoveGroupMemberBreaker.fire(req);
   },
+  async adminBanGroupMember(
+    req: AdminBanGroupMemberReq
+  ): Promise<AdminGroupBanRes> {
+    const r = await adminBanGroupMemberBreaker.fire(req);
+    return {
+      ok: r.ok,
+      found: r.found,
+      errorCode: r.errorCode ?? "",
+      closedGroup: r.closedGroup ?? false,
+    };
+  },
+  adminUnbanGroupMember(
+    req: AdminUnbanGroupMemberReq
+  ): Promise<AdminGroupMutationRes> {
+    return adminUnbanGroupMemberBreaker.fire(req);
+  },
 
   async adminGetCallAnalytics(
     req: AdminCallAnalyticsReq
@@ -483,5 +579,10 @@ export const chatClient = {
     req: AdminGetCommunityMessagesReq
   ): Promise<AdminGetCommunityMessagesRes> {
     return adminGetCommunityMessagesBreaker.fire(req);
+  },
+  adminGetGroupMessages(
+    req: AdminGetGroupMessagesReq
+  ): Promise<AdminGetGroupMessagesRes> {
+    return adminGetGroupMessagesBreaker.fire(req);
   },
 };

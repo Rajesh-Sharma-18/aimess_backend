@@ -33,6 +33,8 @@ export interface AdminGroupRowResult {
   admin: AdminGroupAdminResult;
   /** Raw lifecycle status: "ACTIVE" | "DISBANDED" | "CLOSED" (owner system-banned). */
   status: string;
+  /** Owner's ACCOUNT status from auth ("ACTIVE" | "SUSPENDED" | "BANNED" | ""). */
+  ownerAccountStatus: string;
   /** Epoch ms; 0 when never disbanded. */
   disbandedAt: number;
 }
@@ -269,6 +271,122 @@ export class AdminGroupService {
   }
 
   /**
+   * Platform-admin GROUP ban — permanent, indefinite, one member, one group.
+   *
+   * A normal member/moderator is banned through GroupMemberService.ban (status
+   * BANNED, `group:removed` BAN eviction, rejoin/invite block) exactly like the
+   * in-group ban, minus the actor/role gate.
+   *
+   * Banning the group OWNER (the `role: "ADMIN"` membership) instead CLOSES the
+   * whole group — same rule as the system-ban cascade (`adminApplySystemBan`):
+   * a group cannot outlive a banned owner, but it is NOT deleted. The room goes
+   * CLOSED (visible, readable, write-locked, `group:closed` ADMIN_BANNED banner)
+   * and the owner's own membership is marked BANNED so the ban is auditable and
+   * a later unban has a state to clear. Closing does NOT reopen on unban.
+   */
+  async banGroupMember(params: {
+    groupId: string;
+    userId: string;
+    actorAdminId: string;
+    reason?: string;
+  }): Promise<{
+    ok: boolean;
+    found: boolean;
+    errorCode: string;
+    closedGroup: boolean;
+  }> {
+    const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
+    if (!row)
+      return {
+        ok: false,
+        found: false,
+        errorCode: "CHAT_GROUP_NOT_FOUND",
+        closedGroup: false,
+      };
+    if (row.status !== "ACTIVE")
+      return {
+        ok: false,
+        found: true,
+        errorCode: "CHAT_GROUP_NOT_ACTIVE",
+        closedGroup: false,
+      };
+
+    const member = await this.groupMemberRepo.findActiveByRoomAndUser(
+      params.groupId,
+      params.userId
+    );
+    if (!member)
+      return {
+        ok: false,
+        found: true,
+        errorCode: "CHAT_NOT_A_MEMBER",
+        closedGroup: false,
+      };
+
+    if (member.role === "ADMIN") {
+      // Owner ban → close the group (idempotent), then mark the owner's own
+      // membership BANNED without the evict/count churn of a member ban: the
+      // room is already read-only for everyone, so eviction is moot and the
+      // roster is deliberately kept.
+      await this.groupRoomService.closeGroupForSystemBan(
+        params.groupId,
+        params.actorAdminId
+      );
+      await this.groupMemberRepo.updateStatus(
+        params.groupId,
+        params.userId,
+        "BANNED",
+        {
+          bannedAt: new Date(),
+          bannedBy: params.actorAdminId,
+          kickReason: params.reason || null,
+        }
+      );
+      return { ok: true, found: true, errorCode: "", closedGroup: true };
+    }
+
+    await this.groupMemberService.ban({
+      roomId: params.groupId,
+      targetUserId: params.userId,
+      bannedBy: params.actorAdminId,
+      reason: params.reason,
+      asPlatformAdmin: true,
+    });
+    return { ok: true, found: true, errorCode: "", closedGroup: false };
+  }
+
+  /**
+   * Platform-admin GROUP unban. Clears the membership BANNED state (→ LEFT) so a
+   * future add/invite redemption is no longer rejected. Does NOT re-add the user
+   * and does NOT reopen a group that was CLOSED by an owner ban — both match the
+   * community/system unban asymmetry (lifting a ban never restores access).
+   */
+  async unbanGroupMember(params: {
+    groupId: string;
+    userId: string;
+    actorAdminId: string;
+  }): Promise<{ ok: boolean; found: boolean; errorCode: string }> {
+    const row = await this.groupRoomRepo.adminFindByRoomId(params.groupId);
+    if (!row)
+      return { ok: false, found: false, errorCode: "CHAT_GROUP_NOT_FOUND" };
+
+    const member = await this.groupMemberRepo.findByRoomAndUser(
+      params.groupId,
+      params.userId
+    );
+    if (!member || member.status !== "BANNED")
+      return { ok: false, found: true, errorCode: "CHAT_NOT_A_MEMBER" };
+
+    await this.groupMemberService.unban({
+      roomId: params.groupId,
+      targetUserId: params.userId,
+      unbannedBy: params.actorAdminId,
+      asPlatformAdmin: true,
+    });
+    return { ok: true, found: true, errorCode: "" };
+  }
+
+  /**
    * Group-side cascade of a PERMANENT super-admin system ban.
    *
    * Groups the user OWNS are CLOSED, not disbanded: a disband ends every
@@ -346,7 +464,7 @@ export class AdminGroupService {
   /** Batch snapshots (username/avatar) + auth emails for a set of user ids. */
   private async resolveIdentities(userIds: string[]): Promise<{
     snapshots: Map<string, Record<string, unknown>>;
-    authMap: Map<string, { email: string }>;
+    authMap: Map<string, { email: string; status: string }>;
   }> {
     const ids = [...new Set(userIds.filter(Boolean))];
     const [snapshots, authMap] = await Promise.all([
@@ -380,7 +498,7 @@ export class AdminGroupService {
     row: GroupRoom,
     ownerId: string,
     snapshots: Map<string, Record<string, unknown>>,
-    authMap: Map<string, { email: string }>,
+    authMap: Map<string, { email: string; status: string }>,
     urlMap: Map<string, string>
   ): AdminGroupRowResult {
     const snap = snapshots.get(ownerId);
@@ -398,6 +516,7 @@ export class AdminGroupService {
         avatarUrl: urlFromMap(urlMap, (snap?.avatar as string) ?? ""),
       },
       status: row.status,
+      ownerAccountStatus: authMap.get(ownerId)?.status ?? "",
       disbandedAt:
         row.disbandedAt instanceof Date ? row.disbandedAt.getTime() : 0,
     };
@@ -406,7 +525,7 @@ export class AdminGroupService {
   private toMemberRow(
     m: GroupMember,
     snapshots: Map<string, Record<string, unknown>>,
-    authMap: Map<string, { email: string }>,
+    authMap: Map<string, { email: string; status: string }>,
     urlMap: Map<string, string>
   ): AdminGroupMemberRowResult {
     const snap = snapshots.get(m.userId);

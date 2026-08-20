@@ -62,30 +62,32 @@ livestreamRoutes.post(
   bulkReviewLivestreamReports
 );
 
-// Single-livestream detail + actions.
+// Single-livestream detail + actions. Detail/viewers/comments/reports now
+// require LIVESTREAMS_VIEW so a view-only admin can watch a stream without
+// being able to end it. LIVESTREAMS_MODERATE implies LIVESTREAMS_VIEW.
 livestreamRoutes.get(
   "/livestreams/:livestreamId",
-  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  requirePermission(PERMISSIONS.LIVESTREAMS_VIEW),
   validateParams(livestreamIdParamSchema),
   getLivestreamDetails
 );
 livestreamRoutes.get(
   "/livestreams/:livestreamId/reports",
-  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  requirePermission(PERMISSIONS.LIVESTREAMS_VIEW),
   validateParams(livestreamIdParamSchema),
   validateQuery(listLivestreamReportsQuerySchema),
   listLivestreamReports
 );
 livestreamRoutes.get(
   "/livestreams/:livestreamId/users",
-  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  requirePermission(PERMISSIONS.LIVESTREAMS_VIEW),
   validateParams(livestreamIdParamSchema),
   validateQuery(listLivestreamUsersQuerySchema),
   listLivestreamUsers
 );
 livestreamRoutes.get(
   "/livestreams/:livestreamId/comments",
-  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  requirePermission(PERMISSIONS.LIVESTREAMS_VIEW),
   validateParams(livestreamIdParamSchema),
   validateQuery(listLivestreamCommentsQuerySchema),
   listLivestreamComments

@@ -146,6 +146,7 @@ export {
   groupMemberParamSchema,
   disbandGroupSchema,
   removeGroupMemberSchema,
+  groupMessagesQuerySchema,
   groupSortByEnum,
   groupSortOrderEnum,
   groupRoleEnum,
@@ -155,6 +156,7 @@ export {
   type GroupMemberParam,
   type DisbandGroupInput,
   type RemoveGroupMemberInput,
+  type GroupMessagesQueryInput,
 } from "./groups.validator.js";
 
 export {

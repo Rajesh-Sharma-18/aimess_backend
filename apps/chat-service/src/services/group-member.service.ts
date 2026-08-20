@@ -824,14 +824,23 @@ export class GroupMemberService {
     targetUserId: string;
     bannedBy: string;
     reason?: string;
+    // Backoffice (platform-admin) ban — same bypass as `kick`: skip the in-group
+    // actor lookup and role-order check (`bannedBy` is then an AdminUser.id, not
+    // a member), post the system line actor-less, and skip the in-group admin
+    // activity mirror (backoffice already audited the action).
+    asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.bannedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    const actor = params.asPlatformAdmin
+      ? null
+      : await this.memberRepo.findActiveByRoomAndUser(
+          params.roomId,
+          params.bannedBy
+        );
+    if (!params.asPlatformAdmin) {
+      if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+      }
     }
 
     const target = await this.memberRepo.findActiveByRoomAndUser(
@@ -840,9 +849,12 @@ export class GroupMemberService {
     );
     if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
-    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
-      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+    // Role-order gate for in-group actors only — a platform admin outranks everyone.
+    if (actor) {
+      const roleOrder = ["ADMIN", "MODERATOR", "MEMBER"];
+      if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
+        throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+      }
     }
 
     const updated = await this.memberRepo.updateStatus(
@@ -866,10 +878,11 @@ export class GroupMemberService {
     this.emitGroupRemoved(params.roomId, params.targetUserId, "BAN");
     await this.sysMsg.post({
       roomId: params.roomId,
-      actorId: params.bannedBy,
+      actorId: params.asPlatformAdmin ? null : params.bannedBy,
       systemEvent: SystemEvent.MEMBER_BANNED,
       systemData: { targetUserId: params.targetUserId },
       excludeUserId: params.targetUserId,
+      skipAdminActivity: params.asPlatformAdmin,
     });
     await this.publishRosterChange({
       roomId: params.roomId,
@@ -892,14 +905,20 @@ export class GroupMemberService {
     roomId: string;
     targetUserId: string;
     unbannedBy: string;
+    // Backoffice (platform-admin) unban — same bypass as `ban`/`kick`.
+    asPlatformAdmin?: boolean;
   }): Promise<GroupMember | null> {
-    const actor = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.unbannedBy
-    );
-    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
-    if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
-      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    const actor = params.asPlatformAdmin
+      ? null
+      : await this.memberRepo.findActiveByRoomAndUser(
+          params.roomId,
+          params.unbannedBy
+        );
+    if (!params.asPlatformAdmin) {
+      if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+      if (!["ADMIN", "MODERATOR"].includes(actor.role)) {
+        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+      }
     }
 
     const target = await this.memberRepo.findByRoomAndUser(
@@ -919,9 +938,10 @@ export class GroupMemberService {
 
     await this.sysMsg.post({
       roomId: params.roomId,
-      actorId: params.unbannedBy,
+      actorId: params.asPlatformAdmin ? null : params.unbannedBy,
       systemEvent: SystemEvent.MEMBER_UNBANNED,
       systemData: { targetUserId: params.targetUserId },
+      skipAdminActivity: params.asPlatformAdmin,
     });
 
     return updated;

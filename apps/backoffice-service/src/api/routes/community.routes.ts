@@ -68,20 +68,20 @@ communityRoutes.post(
 // Single-community detail + actions.
 communityRoutes.get(
   "/communities/:communityId",
-  requirePermission(PERMISSIONS.COMMUNITIES_READ),
+  requirePermission(PERMISSIONS.COMMUNITIES_VIEW),
   validateParams(communityIdParamSchema),
   getCommunityDetails
 );
 communityRoutes.get(
   "/communities/:communityId/members",
-  requirePermission(PERMISSIONS.COMMUNITIES_READ),
+  requirePermission(PERMISSIONS.COMMUNITIES_VIEW),
   validateParams(communityIdParamSchema),
   validateQuery(listCommunityMembersQuerySchema),
   listCommunityMembers
 );
 communityRoutes.get(
   "/communities/:communityId/muted-members",
-  requirePermission(PERMISSIONS.COMMUNITIES_READ),
+  requirePermission(PERMISSIONS.COMMUNITIES_VIEW),
   validateParams(communityIdParamSchema),
   validateQuery(listMutedMembersQuerySchema),
   listCommunityMutedMembers
@@ -102,11 +102,13 @@ communityRoutes.post(
 );
 
 // Community Conversation viewer — read-only message history + member
-// moderation (remove/ban from THIS community). Gated the same as every
-// other community-moderation route: COMMUNITIES_MODERATE.
+// moderation (remove/ban from THIS community). Reading the transcript now
+// only requires COMMUNITIES_VIEW (COMMUNITIES_MODERATE implies view), so an
+// admin scoped to view-only can still open the conversation without holding
+// the destructive-action key.
 communityRoutes.get(
   "/communities/:communityId/messages",
-  requirePermission(PERMISSIONS.COMMUNITIES_MODERATE),
+  requirePermission(PERMISSIONS.COMMUNITIES_VIEW),
   validateParams(communityIdParamSchema),
   validateQuery(communityMessagesQuerySchema),
   getCommunityConversationMessages

@@ -5,11 +5,13 @@ import type { RequestHandler } from "express";
 import { getRequestContext } from "../../lib/request-context.js";
 import { groupService } from "../../services/index.js";
 import type {
+  GroupConversationMessagesQuery,
   ListGroupMembersQuery,
   ListGroupsQuery,
 } from "../../types/group.types.js";
 import type {
   DisbandGroupInput,
+  GroupMessagesQueryInput,
   ListGroupMembersQueryInput,
   ListGroupsQueryInput,
   RemoveGroupMemberInput,
@@ -83,6 +85,31 @@ export const listGroupMembers: RequestHandler = (req, res, next) => {
           items: result.items,
           pagination: result.pagination,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/groups/:groupId/messages — read-only conversation viewer page. */
+export const getGroupConversationMessages: RequestHandler = (
+  req,
+  res,
+  next
+) => {
+  void (async () => {
+    try {
+      // Narrowed by groupIdParamSchema on the route.
+      const groupId = req.params.groupId as string;
+      const query = req.query as unknown as GroupMessagesQueryInput;
+      const result = await groupService.getConversationMessages(
+        groupId,
+        query as GroupConversationMessagesQuery
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result,
       });
     } catch (error) {
       next(error);

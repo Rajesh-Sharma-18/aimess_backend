@@ -333,6 +333,9 @@ export type CommunityMemberRow = {
   avatar: MediaObject | null;
   role: CommunityMemberRole;
   status: CommunityMemberStatus;
+  // Account status from the backoffice UserIndex mirror: ACTIVE | BANNED |
+  // SUSPENDED. Lets the panel hide the ban action for a SYSTEM-banned user.
+  accountStatus: string;
   joinedAt: number;
 };
 
