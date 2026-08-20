@@ -69,6 +69,7 @@ import {
   resolveContentFiles,
   resolveQuoteThumbnail,
   fileMediaKey,
+  pushImageKeyOf,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -525,6 +526,14 @@ export function createMessagingImpl(
               senderName: resolvedSenderName,
               senderAvatar: resolvedSenderAvatar,
               preview: buildPushPreview(msg.messageType, pushText),
+              ...(pushImageKeyOf(msg.messageType, msg.content)
+                ? {
+                    previewImageKey: pushImageKeyOf(
+                      msg.messageType,
+                      msg.content
+                    ),
+                  }
+                : {}),
               messageType: msg.messageType,
               sentAt: pushSentAt,
             };
@@ -2945,6 +2954,15 @@ export function createCommunityImpl(
               senderName,
               senderAvatar,
               preview: buildPushPreview(saved.messageType, saved.message ?? ""),
+              ...(pushImageKeyOf(saved.messageType, {
+                files: lastAttachments,
+              })
+                ? {
+                    previewImageKey: pushImageKeyOf(saved.messageType, {
+                      files: lastAttachments,
+                    }),
+                  }
+                : {}),
               messageType: normalizeMessageType(saved.messageType),
               sentAt,
               fetchRecipients: () =>
