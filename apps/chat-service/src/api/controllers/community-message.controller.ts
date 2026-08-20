@@ -594,6 +594,10 @@ export class CommunityMessageController {
         preview: { contentType: "SYSTEM", text: selfPreview },
         subjectUserId: userId,
         selfPreview,
+        // Preview-only: the canonical `lastActivityAt` this list sorts on is
+        // deliberately never written by a reaction (see the comment above), so
+        // the bump must not move the row either — it only repaints the subtitle.
+        activityOnly: true,
         ...(isSelfReaction
           ? {}
           : {
@@ -688,6 +692,9 @@ export class CommunityMessageController {
             lastMessageId: revertBump.lastMessageId,
             lastMessageAt: revertAt,
             preview: revertBump.preview,
+            // Same as the add: repaint the subtitle back to the real last
+            // message without moving the row (the row never moved).
+            activityOnly: true,
             resolveOverrides: () =>
               Promise.resolve(
                 new Map(recipients.map((id) => [id, revertBump]))

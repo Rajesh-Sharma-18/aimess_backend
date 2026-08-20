@@ -1765,6 +1765,11 @@ export class ChatMessageOrchestrator {
         lastMessageAt: reactedAt.getTime(),
         preview: { contentType: "SYSTEM", text: selfPreview },
         countInUnread: false,
+        // Preview-only: the reaction overlay never moves the row (see
+        // `activityOnly`). The canonical lastMessageAt this list sorts on was
+        // deliberately not written, so bumping the row here would sort it above
+        // conversations that really are more recent — and snap back on refetch.
+        activityOnly: true,
         resolveOverrides: () =>
           Promise.resolve(
             isSelfReaction
@@ -1831,6 +1836,9 @@ export class ChatMessageOrchestrator {
           }
         : { contentType: "", text: "" },
       countInUnread: false,
+      // Same as the add above: this only repaints the subtitle back to the real
+      // last message. The row never moved, so it must not move now either.
+      activityOnly: true,
     });
   }
 
