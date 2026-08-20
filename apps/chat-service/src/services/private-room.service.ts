@@ -37,6 +37,10 @@ import {
 } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { foldTickStatus } from "../lib/tick-status.js";
+import {
+  privateReceiptCursorOf,
+  receiptVisibleToViewer,
+} from "../lib/read-receipts.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -761,7 +765,12 @@ export class PrivateRoomService {
     const idsToResolve = new Set<string>();
     const ownRowMeta = new Map<
       string,
-      { lastMessageId: string; peerReadCursorId: string | null; peerId: string }
+      {
+        lastMessageId: string;
+        peerReadCursorId: string | null;
+        peerReadAt: Date | null;
+        peerId: string;
+      }
     >();
     for (const room of rooms) {
       const rawLmForStatus = perUserFallback.has(room.roomId)
@@ -791,14 +800,14 @@ export class PrivateRoomService {
       )
         continue;
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
-      const cursorMap = (room.lastReadMessageIdByUser ?? {}) as Record<
-        string,
-        string
-      >;
-      const peerReadCursorId = cursorMap[peerId] || null;
+      // The EXPOSABLE pointer (frozen while the peer's receipts are off), never
+      // the plain read one — see `privateReceiptCursorOf`.
+      const peerCursor = privateReceiptCursorOf(room, peerId);
+      const peerReadCursorId = peerCursor.messageId;
       ownRowMeta.set(room.roomId, {
         lastMessageId: room.lastMessageId,
         peerReadCursorId,
+        peerReadAt: peerCursor.readAt,
         peerId,
       });
       idsToResolve.add(room.lastMessageId);
@@ -815,8 +824,8 @@ export class PrivateRoomService {
     // WhatsApp-style: the viewer must allow receipts to SEE one, and the peer
     // must allow receipts to GIVE one. Cached per user, so this is at most one
     // lookup per distinct peer on the page.
-    const viewerSeesReceipts = (await getAccountChatSettings(userId))
-      .readReceipts;
+    const viewerSettings = await getAccountChatSettings(userId);
+    const viewerSeesReceipts = viewerSettings.readReceipts;
     const receiptPeerIds = [
       ...new Set([...ownRowMeta.values()].map((m) => m.peerId).filter(Boolean)),
     ];
@@ -843,7 +852,15 @@ export class PrivateRoomService {
           )?.sequenceNumber ?? 0)
         : 0;
       const receiptsVisible =
-        viewerSeesReceipts && peerGivesReceipts.get(meta.peerId) !== false;
+        viewerSeesReceipts &&
+        peerGivesReceipts.get(meta.peerId) !== false &&
+        // A receipt that predates this viewer's own OFF → ON switch was
+        // withheld from them while it was off and stays withheld: flipping the
+        // switch is a policy change, not a read event.
+        receiptVisibleToViewer(
+          viewerSettings.readReceiptsEnabledAt,
+          meta.peerReadAt
+        );
       // Same fold the chatroom bubble runs (`foldTickStatus`), fed the same
       // settings-gated peer watermark the history endpoint hands the client as
       // `peerReadSeq` — one message can no longer resolve to two ticks.

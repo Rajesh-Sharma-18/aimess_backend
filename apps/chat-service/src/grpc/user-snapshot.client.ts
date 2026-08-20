@@ -52,6 +52,15 @@ export interface ChatSettings {
   autoDeleteDefaultTtlSeconds: number | null;
   typingIndicators: boolean;
   readReceipts: boolean;
+  /**
+   * Epoch ms of the most recent OFF → ON transition of `readReceipts`; 0 when
+   * the user has never switched them off.
+   *
+   * The switch is a policy, not a read event: receipts stamped while it was off
+   * were never given to this user and stay invisible after it goes back on. See
+   * `lib/read-receipts.ts#receiptVisibleToViewer`.
+   */
+  readReceiptsEnabledAt: number;
 }
 
 export interface CallPrivacy {
@@ -272,6 +281,12 @@ export const userGrpcClient = {
         autoDeleteDefaultTtlSeconds: r.autoDeleteDefaultTtlSeconds || null,
         typingIndicators: r.typingIndicators !== false,
         readReceipts: r.readReceipts !== false,
+        // int64 arrives as a STRING (longs: String). 0/absent = never disabled.
+        readReceiptsEnabledAt:
+          Number(
+            (r as unknown as { readReceiptsEnabledAtMs?: string | number })
+              .readReceiptsEnabledAtMs ?? 0
+          ) || 0,
       };
     } catch {
       return null;

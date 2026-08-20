@@ -54,6 +54,18 @@ function toChatUpdate(
   const { autoDeleteDefault, ...rest } = input;
   const update: ChatSettingsUpdate = { ...rest };
 
+  // Read receipts are a point-in-time policy, not a boolean applied to history.
+  // Switching them back ON opens the gate from HERE ON: every receipt stamped
+  // while the switch was off stays invisible to this user, so nothing that was
+  // withheld turns blue retroactively. Stamped only on the OFF → ON edge — a
+  // re-save of an already-on switch is not a transition and must not move the
+  // line, or a no-op settings write would hide receipts the user can see.
+  if (
+    rest.readReceipts === true &&
+    current.chatSettings?.readReceipts === false
+  )
+    update.readReceiptsEnabledAt = new Date();
+
   if (autoDeleteDefault) {
     const ttl =
       autoDeleteDefault.mode === "TIMER"

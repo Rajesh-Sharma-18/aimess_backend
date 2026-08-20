@@ -242,6 +242,11 @@ message GetChatSettingsResponse {
   string auto_delete_default_mode     = 4;
   int32  auto_delete_default_ttl_seconds = 5;
   int32  auto_delete_default_version  = 6;
+  // Epoch ms of the most recent OFF -> ON transition of read_receipts; 0 when
+  // the user has never switched them off. A receipt stamped BEFORE this instant
+  // was withheld while the switch was off and must stay invisible to this user
+  // — turning the switch back on is not itself a read event.
+  int64  read_receipts_enabled_at_ms = 7;
 }
 
 message FilterVisiblePresenceRequest {

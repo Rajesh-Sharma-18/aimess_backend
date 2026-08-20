@@ -189,7 +189,9 @@ describe("CommunityMessageService.markMessageRead", () => {
       ROOM_ID,
       READER_ID,
       MESSAGE_ID,
-      expect.any(Date)
+      expect.any(Date),
+      // Read receipts on: the EXPOSABLE pointer moves with the read one.
+      true
     );
 
     // Redis publish called twice (community broadcast + own-device sync)
@@ -382,7 +384,10 @@ describe("CommunityMessageService.markMessageRead", () => {
       ROOM_ID,
       READER_ID,
       MESSAGE_ID,
-      expect.any(Date)
+      expect.any(Date),
+      // A banned reader publishes no receipt, so the exposable pointer freezes
+      // — the same gate the community broadcast below applies, but persisted.
+      false
     );
     const channels = redisMock.publish.mock.calls.map(
       ([channel]: [string]) => channel
@@ -949,7 +954,14 @@ describe("RoomMemberRepository — banned rows own a read pointer", () => {
     expect(findFirst.mock.calls[0][0].where.status).toEqual(VISIBLE_STATUSES);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { lastReadMessageId: MESSAGE_ID, lastReadAt: readAt },
+        // The exposable pointer rides along on every accepted read — see
+        // `lib/read-receipts.ts` for why it is a second pointer and not a flag.
+        data: {
+          lastReadMessageId: MESSAGE_ID,
+          lastReadAt: readAt,
+          receiptReadMessageId: MESSAGE_ID,
+          receiptReadAt: expect.any(Date),
+        },
       })
     );
   });
@@ -971,7 +983,14 @@ describe("RoomMemberRepository — banned rows own a read pointer", () => {
     await repo.advanceReadPointer(ROOM_ID, READER_ID, MESSAGE_ID, readAt);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { lastReadMessageId: MESSAGE_ID, lastReadAt: readAt },
+        // The exposable pointer rides along on every accepted read — see
+        // `lib/read-receipts.ts` for why it is a second pointer and not a flag.
+        data: {
+          lastReadMessageId: MESSAGE_ID,
+          lastReadAt: readAt,
+          receiptReadMessageId: MESSAGE_ID,
+          receiptReadAt: expect.any(Date),
+        },
       })
     );
 

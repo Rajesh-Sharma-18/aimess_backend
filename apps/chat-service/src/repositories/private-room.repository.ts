@@ -453,6 +453,13 @@ export class PrivateRoomRepository {
     roomId: string;
     userId: string;
     upToMessageId: string;
+    /**
+     * Does this reader currently give read receipts? Only then does the
+     * EXPOSABLE pointer move with the read one. Off, it freezes where it stood
+     * — which is what stops a read taken with the switch off from surfacing
+     * later, since flipping the switch back on is a policy change, not a read.
+     */
+    givesReceipts: boolean;
   }): Promise<PrivateRoom | null> {
     // See updateRoomOnNewMessage: same read-modify-write race on the JSON
     // unread fields, same fix.
@@ -463,8 +470,9 @@ export class PrivateRoomRepository {
     roomId: string;
     userId: string;
     upToMessageId: string;
+    givesReceipts: boolean;
   }): Promise<PrivateRoom | null> {
-    const { roomId, userId, upToMessageId } = params;
+    const { roomId, userId, upToMessageId, givesReceipts } = params;
     const now = new Date();
 
     const existing = await this.prisma.privateRoom.findUnique({
@@ -528,7 +536,35 @@ export class PrivateRoomRepository {
       string,
       string
     >;
+    // Captured before the advance below — the freeze branch needs the pointer
+    // as it stood, which is also the receipt legacy rows already published.
+    const priorReadAt = lastReadAtByUser[userId] ?? null;
+    const priorReadMessageId = lastReadMessageIdByUser[userId] ?? null;
     lastReadAtByUser[userId] = now.toISOString();
+
+    // The EXPOSABLE half of the pointer, written on EVERY accepted read —
+    // receipts on or off. Once the key exists the legacy fallback in
+    // `privateReceiptCursorOf` stops, so a reader with the switch off is frozen
+    // at whatever they had already published instead of quietly keeping the old
+    // always-expose behaviour. Read BEFORE `lastReadMessageIdByUser` is
+    // advanced below: the freeze has to keep the PREVIOUS pointer, not this
+    // read's target.
+    const receiptReadMessageIdByUser = (existing.receiptReadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    const receiptReadAtByUser = (existing.receiptReadAtByUser ?? {}) as Record<
+      string,
+      string | null
+    >;
+    if (givesReceipts) {
+      receiptReadMessageIdByUser[userId] = upToMessageId;
+      // The instant of the RECEIPT, not of the message — that is what a viewer
+      // who re-enabled receipts compares their own OFF → ON line against.
+      receiptReadAtByUser[userId] = now.toISOString();
+    } else {
+      receiptReadMessageIdByUser[userId] =
+        receiptReadMessageIdByUser[userId] ?? priorReadMessageId;
+      receiptReadAtByUser[userId] = receiptReadAtByUser[userId] ?? priorReadAt;
+    }
 
     lastReadMessageIdByUser[userId] = upToMessageId;
 
@@ -560,6 +596,10 @@ export class PrivateRoomRepository {
         lastReadAtByUser: lastReadAtByUser as unknown as Prisma.InputJsonValue,
         lastReadMessageIdByUser:
           lastReadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        receiptReadMessageIdByUser:
+          receiptReadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        receiptReadAtByUser:
+          receiptReadAtByUser as unknown as Prisma.InputJsonValue,
         hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
         firstUnreadMessageIdByUser:
           firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,

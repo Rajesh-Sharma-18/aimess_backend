@@ -851,7 +851,8 @@ describe("GET /rooms/:roomId/conversation (membership-gated)", () => {
       ROOM,
       expect.any(String),
       "m1",
-      new Date(5)
+      new Date(5),
+      expect.any(Boolean)
     );
   });
 });

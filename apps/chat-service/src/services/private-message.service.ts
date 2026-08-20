@@ -53,10 +53,15 @@ import {
   type AutoDeleteStamp,
 } from "../lib/auto-delete.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
-import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import {
+  getAccountChatSettings,
+  mayBroadcastReadReceipts,
+} from "../lib/account-chat-settings.js";
 import {
   assertMaySeeReadReceipts,
   buildReadReceipts,
+  privateReceiptCursorOf,
+  receiptVisibleToViewer,
   type ReadReceiptCandidate,
   type ReadReceiptsPayload,
 } from "../lib/read-receipts.js";
@@ -965,6 +970,10 @@ export class PrivateMessageService {
       roomId: params.roomId,
       userId: params.userId,
       upToMessageId: params.lastMessageId,
+      // Settings → Chat → Read Receipt at the instant of the READ. Off, the
+      // read still happens (unread, badges, arming) but the exposable pointer
+      // freezes, so nothing about it can be published now or later.
+      givesReceipts: await mayBroadcastReadReceipts(params.userId),
     });
 
     // Arming runs only on an ACCEPTED read, and only up to its watermark.
@@ -1014,32 +1023,24 @@ export class PrivateMessageService {
     const message = await this.getMessageContext(roomId, messageId, userId);
     if (message.senderId !== userId)
       throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
-    await assertMaySeeReadReceipts(userId);
+    const viewerReadReceiptsEnabledAt = await assertMaySeeReadReceipts(userId);
 
     const room = await this.roomRepo.findByRoomId(roomId);
     const peerId = (room?.participants ?? []).find((id) => id !== userId);
     const candidates: ReadReceiptCandidate[] = [];
     if (peerId) {
-      const readMessageId = (
-        (room?.lastReadMessageIdByUser ?? {}) as Record<string, string>
-      )[peerId];
-      if (readMessageId) {
-        const peerSeq = await this.getMessageSequence(readMessageId);
-        if (peerSeq >= (message.sequenceNumber ?? 0)) {
-          const readAtRaw = (
-            (room?.lastReadAtByUser ?? {}) as Record<string, string>
-          )[peerId];
-          candidates.push({
-            userId: peerId,
-            readAt: readAtRaw ? new Date(readAtRaw) : null,
-          });
-        }
+      const cursor = privateReceiptCursorOf(room, peerId);
+      if (cursor.messageId) {
+        const peerSeq = await this.getMessageSequence(cursor.messageId);
+        if (peerSeq >= (message.sequenceNumber ?? 0))
+          candidates.push({ userId: peerId, readAt: cursor.readAt });
       }
     }
 
     return buildReadReceipts({
       messageId,
       candidates,
+      viewerReadReceiptsEnabledAt,
       userSnapshotService: this.userSnapshotService,
       cacheRepo: this.cacheRepo,
     });
@@ -1076,11 +1077,18 @@ export class PrivateMessageService {
       getAccountChatSettings(peerId),
     ]);
     if (!viewer.readReceipts || !peer.readReceipts) return 0;
-    const lastReadMessageIdByUser = (room.lastReadMessageIdByUser ??
-      {}) as Record<string, string>;
-    const peerReadMessageId = lastReadMessageIdByUser[peerId];
-    if (!peerReadMessageId) return 0;
-    return this.getMessageSequence(peerReadMessageId);
+    // The EXPOSABLE pointer, not the plain read one: the plain one keeps
+    // advancing while the peer's receipts are off (it drives their unread
+    // badge), and exposing it here is what made messages read during that
+    // window turn blue the moment either side switched receipts back on.
+    const cursor = privateReceiptCursorOf(room, peerId);
+    if (!cursor.messageId) return 0;
+    // ...and the viewer's own OFF → ON line: a receipt taken while THIS user
+    // was not being shown receipts stays withheld, since the switch flipping is
+    // not a read event.
+    if (!receiptVisibleToViewer(viewer.readReceiptsEnabledAt, cursor.readAt))
+      return 0;
+    return this.getMessageSequence(cursor.messageId);
   }
 
   /**

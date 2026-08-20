@@ -123,6 +123,7 @@ export function startUserGrpcServer(): grpc.Server {
         autoDeleteDefaultVersion: number;
         typingIndicators: boolean;
         readReceipts: boolean;
+        readReceiptsEnabledAtMs: number;
       }>
     ) => {
       void (async () => {
@@ -132,6 +133,9 @@ export function startUserGrpcServer(): grpc.Server {
           );
           callback(null, {
             ...row,
+            // Epoch ms on the wire (§6): 0 = never switched off, so nothing is
+            // hidden. Consumers compare it against a receipt's own timestamp.
+            readReceiptsEnabledAtMs: row.readReceiptsEnabledAt?.getTime() ?? 0,
             // proto3 int32 has no null — 0 is "no ttl", which is only ever read
             // alongside mode === "TIMER" on the consumer side.
             autoDeleteDefaultTtlSeconds: row.autoDeleteDefaultTtlSeconds ?? 0,

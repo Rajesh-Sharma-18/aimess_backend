@@ -17,6 +17,7 @@ import {
   assertMaySeeReadReceipts,
   buildReadReceipts,
   readersAtOrPast,
+  receiptCursorOf,
   type ReadReceiptsPayload,
 } from "../lib/read-receipts.js";
 
@@ -2262,7 +2263,8 @@ export class CommunityMessageService {
           params.roomId,
           params.userId,
           newest.id,
-          newest.createdAt
+          newest.createdAt,
+          await mayBroadcastReadReceipts(params.userId)
         )
         .then(() => {
           // Opening the transcript advances lastReadAt — push a fresh nav-badge
@@ -3118,7 +3120,10 @@ export class CommunityMessageService {
         params.roomId,
         params.readerId,
         params.upToMessageId,
-        now
+        now,
+        // Same gate the broadcast below applies, but persisted: a read taken
+        // with receipts off must not resurface when they go back on.
+        !readerIsBanned && (await mayBroadcastReadReceipts(params.readerId))
       )
       .catch((err: unknown) => {
         logger.warn(
@@ -3489,11 +3494,22 @@ export class CommunityMessageService {
     if (message.deletedForAll) throw new GoneError("CHAT_MESSAGE_DELETED");
     if (message.sentBy !== userId)
       throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
-    await assertMaySeeReadReceipts(userId);
+    const viewerReadReceiptsEnabledAt = await assertMaySeeReadReceipts(userId);
 
+    // Exposable pointers only: a member who read this while their receipts were
+    // off is frozen short of it and never appears here — see `receiptCursorOf`.
     const members = (
       await this.memberRepo.findActiveReadersSince(roomId, message.createdAt)
-    ).filter((m) => m.userId !== userId && m.lastReadMessageId);
+    )
+      .map((m) => {
+        const cursor = receiptCursorOf(m);
+        return {
+          userId: m.userId,
+          lastReadMessageId: cursor.messageId,
+          lastReadAt: cursor.readAt,
+        };
+      })
+      .filter((m) => m.userId !== userId && m.lastReadMessageId);
     const uniqueReadIds = [
       ...new Set(members.map((m) => m.lastReadMessageId as string)),
     ];
@@ -3506,6 +3522,7 @@ export class CommunityMessageService {
 
     return buildReadReceipts({
       messageId,
+      viewerReadReceiptsEnabledAt,
       candidates: readersAtOrPast(
         members,
         seqById,

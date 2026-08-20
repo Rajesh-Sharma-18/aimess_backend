@@ -59,10 +59,15 @@ import {
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
-import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import {
+  getAccountChatSettings,
+  mayBroadcastReadReceipts,
+} from "../lib/account-chat-settings.js";
 import {
   assertMaySeeReadReceipts,
   buildReadReceipts,
+  receiptCursorOf,
+  receiptVisibleToViewer,
   readersAtOrPast,
   type ReadReceiptsPayload,
 } from "../lib/read-receipts.js";
@@ -900,7 +905,10 @@ export class GroupMessageService {
           params.userId,
           newest.id,
           newest.createdAt,
-          remainingUnread
+          remainingUnread,
+          // Read receipts at the instant of the read — off, the exposable
+          // pointer freezes and this read stays unpublishable forever.
+          await mayBroadcastReadReceipts(params.userId)
         )
         .catch((err: unknown) => {
           logger.warn(
@@ -2086,9 +2094,8 @@ export class GroupMessageService {
     // applies it in GroupRoomService.computeLastMessageReadStatuses — the two
     // surfaces have to fold the SAME numbers or the same message shows a blue
     // tick in the room and a grey one in the list.
-    const viewerSeesReceipts = (await getAccountChatSettings(excludeUserId))
-      .readReceipts;
-    if (!viewerSeesReceipts) return {};
+    const viewerSettings = await getAccountChatSettings(excludeUserId);
+    if (!viewerSettings.readReceipts) return {};
     const givesReceipts = new Map(
       await Promise.all(
         others.map(
@@ -2100,14 +2107,21 @@ export class GroupMessageService {
         )
       )
     );
+    // The EXPOSABLE pointer per member — frozen while their receipts were off,
+    // and only past this viewer's own OFF → ON line. Anything else is a receipt
+    // that was withheld at the time and must stay withheld.
+    const cursorOf = (m: (typeof others)[number]) => {
+      const cursor = receiptCursorOf(m);
+      return givesReceipts.get(m.userId) === false ||
+        !receiptVisibleToViewer(
+          viewerSettings.readReceiptsEnabledAt,
+          cursor.readAt
+        )
+        ? null
+        : cursor.messageId;
+    };
     const uniqueMessageIds = [
-      ...new Set(
-        others
-          .filter(
-            (m) => m.lastReadMessageId && givesReceipts.get(m.userId) !== false
-          )
-          .map((m) => m.lastReadMessageId as string)
-      ),
+      ...new Set(others.map(cursorOf).filter((id): id is string => !!id)),
     ];
     const seqById = new Map<string, number>();
     await Promise.all(
@@ -2120,10 +2134,8 @@ export class GroupMessageService {
     // dropping the silent ones would let one reader turn a group message blue.
     const cursors: Record<string, number> = {};
     for (const m of others) {
-      cursors[m.userId] =
-        m.lastReadMessageId && givesReceipts.get(m.userId) !== false
-          ? (seqById.get(m.lastReadMessageId) ?? 0)
-          : 0;
+      const id = cursorOf(m);
+      cursors[m.userId] = id ? (seqById.get(id) ?? 0) : 0;
     }
     return cursors;
   }
@@ -2144,11 +2156,17 @@ export class GroupMessageService {
     const message = await this.getMessageContext(roomId, messageId, userId);
     if (message.senderId !== userId)
       throw new ForbiddenError("CHAT_NOT_MESSAGE_SENDER");
-    await assertMaySeeReadReceipts(userId);
+    const viewerReadReceiptsEnabledAt = await assertMaySeeReadReceipts(userId);
 
-    const members = (await this.memberRepo.findActiveMembers(roomId)).filter(
-      (m) => m.userId !== userId && m.lastReadMessageId
-    );
+    // Exposable pointers only — see `receiptCursorOf`.
+    const members = (await this.memberRepo.findActiveMembers(roomId))
+      .map((m) => ({ ...m, ...receiptCursorOf(m) }))
+      .filter((m) => m.userId !== userId && m.messageId)
+      .map((m) => ({
+        userId: m.userId,
+        lastReadMessageId: m.messageId,
+        lastReadAt: m.readAt,
+      }));
     const uniqueReadIds = [
       ...new Set(members.map((m) => m.lastReadMessageId as string)),
     ];
@@ -2161,6 +2179,7 @@ export class GroupMessageService {
 
     return buildReadReceipts({
       messageId,
+      viewerReadReceiptsEnabledAt,
       candidates: readersAtOrPast(
         members,
         seqById,
@@ -2250,7 +2269,8 @@ export class GroupMessageService {
       params.userId,
       message.id,
       message.createdAt,
-      remainingUnread
+      remainingUnread,
+      await mayBroadcastReadReceipts(params.userId)
     );
     const seq = (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
     const acceptedId = updated?.lastReadMessageId;
@@ -2300,13 +2320,25 @@ export class GroupMessageService {
       (message as { sequenceNumber?: number }).sequenceNumber ?? 0;
 
     const members = await this.memberRepo.findActiveMembers(params.roomId);
-    const candidates = members.filter(
-      (m) => m.userId !== message.senderId && m.lastReadMessageId
-    );
+    // The EXPOSABLE pointer, and only past this requester's own OFF → ON line:
+    // a read taken while the reader's receipts were off, or while the requester
+    // was being shown none, was never theirs to see and does not become theirs
+    // when a switch flips. See `lib/read-receipts.ts`.
+    const requesterEnabledAt = (
+      await getAccountChatSettings(params.requesterId)
+    ).readReceiptsEnabledAt;
+    const candidates = members
+      .map((m) => ({ ...m, cursor: receiptCursorOf(m) }))
+      .filter(
+        (m) =>
+          m.userId !== message.senderId &&
+          m.cursor.messageId &&
+          receiptVisibleToViewer(requesterEnabledAt, m.cursor.readAt)
+      );
 
     const seqById = new Map<string, number>();
     await Promise.all(
-      [...new Set(candidates.map((m) => m.lastReadMessageId as string))].map(
+      [...new Set(candidates.map((m) => m.cursor.messageId as string))].map(
         async (id) => {
           seqById.set(id, await this.getMessageSequence(id));
         }
@@ -2314,10 +2346,10 @@ export class GroupMessageService {
     );
 
     const readers = candidates.filter((m) => {
-      const seq = seqById.get(m.lastReadMessageId as string) ?? 0;
+      const seq = seqById.get(m.cursor.messageId as string) ?? 0;
       return messageSeq > 0
         ? seq >= messageSeq
-        : !!m.lastReadAt && m.lastReadAt >= message.createdAt;
+        : !!m.cursor.readAt && m.cursor.readAt >= message.createdAt;
     });
 
     const snapshots =
@@ -2339,7 +2371,7 @@ export class GroupMessageService {
           userId: m.userId,
           displayName: resolveDisplayName(snap),
           avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
-          readAt: m.lastReadAt ? new Date(m.lastReadAt).getTime() : null,
+          readAt: m.cursor.readAt ? m.cursor.readAt.getTime() : null,
         };
       }),
       totalMembers: members.filter((m) => m.userId !== message.senderId).length,
