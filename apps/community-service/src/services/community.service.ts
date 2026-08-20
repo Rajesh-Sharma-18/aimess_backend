@@ -4420,7 +4420,12 @@ export const communityService = {
       community.adminId === callerId ||
       membership.role === CommunityMemberRole.ADMIN;
 
-    if (isAdmin) {
+    // A CLOSED community (owner permanently banned) can never transfer
+    // ownership and is already read-only for everyone, so the "must keep an
+    // owner" rule is void — the banned/unbanned owner would otherwise be
+    // trapped holding a dead room in their list forever. Let them leave like a
+    // plain member; the community stays CLOSED and readable for the rest.
+    if (isAdmin && !communityAccessPolicy.isOwnerClosed(community)) {
       if (community.memberCount === 1) {
         // Admin is the only member → delete the community (members first, then
         // community in a transaction). No audit needed since the community
@@ -4819,11 +4824,14 @@ export const communityService = {
         continue;
       }
 
+      const bulkCommunity = communityMap.get(communityId)!;
       const isAdmin = membership.role === CommunityMemberRole.ADMIN;
 
-      if (isAdmin) {
-        const community = communityMap.get(communityId)!;
-        if (community.memberCount === 1) {
+      // A CLOSED community (owner banned) can never transfer ownership, so the
+      // admin block is void — let them leave like a member (mirrors single
+      // leaveCommunity). Falls through to the non-admin LEFT path below.
+      if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
+        if (bulkCommunity.memberCount === 1) {
           // Admin is the only member — auto-delete the community.
           await communityRepository.deleteCommunityHard(communityId);
           logger.info(

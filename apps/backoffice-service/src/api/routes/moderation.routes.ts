@@ -62,37 +62,39 @@ moderationRoutes.post(
   bulkDismissReports
 );
 
-// Single-report detail + actions.
+// Single-report detail + actions. Detail/evidence/history/related/users now
+// require REPORTS_VIEW so a view-only admin can inspect a report queue
+// entry without holding REPORTS_ACTION (which implies view).
 moderationRoutes.get(
   "/reports/:reportId",
-  requirePermission(PERMISSIONS.REPORTS_READ),
+  requirePermission(PERMISSIONS.REPORTS_VIEW),
   validateParams(reportIdParamSchema),
   getReportDetails
 );
 moderationRoutes.get(
   "/reports/:reportId/evidence",
-  requirePermission(PERMISSIONS.REPORTS_READ),
+  requirePermission(PERMISSIONS.REPORTS_VIEW),
   validateParams(reportIdParamSchema),
   validateQuery(reportEvidenceQuerySchema),
   getReportEvidence
 );
 moderationRoutes.get(
   "/reports/:reportId/history",
-  requirePermission(PERMISSIONS.REPORTS_READ),
+  requirePermission(PERMISSIONS.REPORTS_VIEW),
   validateParams(reportIdParamSchema),
   validateQuery(reportHistoryQuerySchema),
   getReportHistory
 );
 moderationRoutes.get(
   "/reports/:reportId/related",
-  requirePermission(PERMISSIONS.REPORTS_READ),
+  requirePermission(PERMISSIONS.REPORTS_VIEW),
   validateParams(reportIdParamSchema),
   validateQuery(reportRelatedQuerySchema),
   getReportRelated
 );
 moderationRoutes.get(
   "/reports/:reportId/users",
-  requirePermission(PERMISSIONS.REPORTS_READ),
+  requirePermission(PERMISSIONS.REPORTS_VIEW),
   validateParams(reportIdParamSchema),
   validateQuery(listReportUsersQuerySchema),
   listReportUsers

@@ -14,7 +14,10 @@ export const groupSortOrderEnum = z.enum(["asc", "desc"]);
 export const groupRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
 // Omitted → chat-service's ACTIVE default; "ALL" → no status filter.
 export const groupStatusEnum = z.enum(["ACTIVE", "DISBANDED", "ALL"]);
-export const groupMemberStatusEnum = z.enum(["ACTIVE", "ALL"]);
+// "" / "ACTIVE" = active default, "ALL" = no filter, "BANNED" = exact match
+// (chat-service AdminListGroupMembersRequest.status does the exact match). BANNED
+// backs the admin's "find + unban a group-banned member" flow.
+export const groupMemberStatusEnum = z.enum(["ACTIVE", "BANNED", "ALL"]);
 
 // ---------------------------------------------------------------------------
 // List query.
@@ -59,6 +62,16 @@ export const removeGroupMemberSchema = z.object({
   reason: z.string().trim().min(1).max(2000).optional(),
 });
 export type RemoveGroupMemberInput = z.infer<typeof removeGroupMemberSchema>;
+
+// ---------------------------------------------------------------------------
+// Conversation viewer query. `cursor` is the before_seq boundary (a
+// sequenceNumber) echoed back from the previous page's nextCursor.
+// ---------------------------------------------------------------------------
+export const groupMessagesQuerySchema = z.object({
+  cursor: z.string().trim().max(32).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(30),
+});
+export type GroupMessagesQueryInput = z.infer<typeof groupMessagesQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Members list query.

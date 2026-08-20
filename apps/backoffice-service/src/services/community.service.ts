@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { chatClient } from "../grpc/chat.client.js";
+import { getAccountStatuses } from "../repositories/user-directory.repository.js";
 import {
   communityMembersRepository,
   communityMutesRepository,
@@ -98,11 +99,29 @@ export const communityService = {
   },
 
   /** List a community's members (the "Community User List" grid). */
-  listCommunityMembers(
+  async listCommunityMembers(
     communityId: string,
     query: ListCommunityMembersQuery
   ): Promise<Paginated<CommunityMemberRow>> {
-    return communityMembersRepository.listMembers(communityId, query);
+    const result = await communityMembersRepository.listMembers(
+      communityId,
+      query
+    );
+
+    // Stamp each member's ACCOUNT status from the UserIndex mirror so the panel
+    // can hide the ban action for a SYSTEM-banned user (unbannable only from the
+    // User profile). One indexed query for the whole page.
+    if (result.data.length > 0) {
+      const statuses = await getAccountStatuses(
+        result.data.map((m) => m.userId)
+      );
+      result.data = result.data.map((m) => ({
+        ...m,
+        accountStatus: statuses.get(m.userId) ?? "ACTIVE",
+      }));
+    }
+
+    return result;
   },
 
   /** List a community's currently-muted members (platform-admin only). */

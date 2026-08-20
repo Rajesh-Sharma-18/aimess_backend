@@ -67,6 +67,7 @@ export {
   listGroups,
   getGroupDetails,
   listGroupMembers,
+  getGroupConversationMessages,
   disbandGroup,
   removeGroupMember,
 } from "./groups.controller.js";

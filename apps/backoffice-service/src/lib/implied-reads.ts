@@ -1,10 +1,11 @@
 import { PERMISSIONS } from "../constants/index.js";
 
 /**
- * Every module in the panel carries two permissions: `<module>.read` gates
- * route access and `<module>.manage|moderate|action` gates the row/page
- * actions. Acting on a module implies being able to open it, so the action key
- * always grants the read key.
+ * Each module carries up to three keys: `<module>.read` (enter module, see
+ * list), `<module>.view` (open detail/conversation/player), and
+ * `<module>.manage|moderate|action` (destructive actions). The higher key
+ * always implies the lower ones — so an edit grant alone still lets the admin
+ * open the module, and a view grant alone still lets them enter it.
  *
  * Without this, a hand-picked override set — or a role row seeded before
  * `categories.manage` / `announcements.manage` / `admins.manage` were split
@@ -16,14 +17,17 @@ export function withImpliedReads(keys: Iterable<string>): string[] {
   const effective = new Set(keys);
   for (const key of [...effective]) {
     const [group, action] = key.split(".");
-    if (
-      group &&
-      (action === "manage" || action === "moderate" || action === "action")
-    ) {
+    if (!group) continue;
+    if (action === "manage" || action === "moderate" || action === "action") {
+      // Edit implies view + read (where the catalogue defines them; settings
+      // has neither, so nothing gets invented that a catalogue-validated
+      // PATCH would then reject).
+      const view = `${group}.view`;
       const read = `${group}.read`;
-      // Only keys the catalogue actually has: `settings.manage` has no page and
-      // no `settings.read`, and inventing one puts a key in the effective set
-      // that every catalogue-validated write (PATCH permissions) then rejects.
+      if (CATALOGUE_KEYS.has(view)) effective.add(view);
+      if (CATALOGUE_KEYS.has(read)) effective.add(read);
+    } else if (action === "view") {
+      const read = `${group}.read`;
       if (CATALOGUE_KEYS.has(read)) effective.add(read);
     }
   }
