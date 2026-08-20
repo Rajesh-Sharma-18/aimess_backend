@@ -53,6 +53,7 @@ import {
   type AutoDeleteStamp,
 } from "../lib/auto-delete.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
+import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import {
   assertMaySeeReadReceipts,
   buildReadReceipts,
@@ -1065,6 +1066,16 @@ export class PrivateMessageService {
     if (!room) return 0;
     const peerId = (room.participants ?? []).find((id) => id !== userId);
     if (!peerId) return 0;
+    // Settings → Chat → Read Receipt, reciprocal, applied HERE rather than only
+    // on the list tick. This cursor is what the client folds into the bubble's
+    // blue tick; the inbox row folds the same rule server-side. Gating one and
+    // not the other is what made an open chat show ✓✓ blue next to a list row
+    // still on ✓✓ grey for the very same message.
+    const [viewer, peer] = await Promise.all([
+      getAccountChatSettings(userId),
+      getAccountChatSettings(peerId),
+    ]);
+    if (!viewer.readReceipts || !peer.readReceipts) return 0;
     const lastReadMessageIdByUser = (room.lastReadMessageIdByUser ??
       {}) as Record<string, string>;
     const peerReadMessageId = lastReadMessageIdByUser[peerId];

@@ -36,6 +36,7 @@ import {
   resolveAccountDefaultSetting,
 } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import { foldTickStatus } from "../lib/tick-status.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -843,14 +844,21 @@ export class PrivateRoomService {
         : 0;
       const receiptsVisible =
         viewerSeesReceipts && peerGivesReceipts.get(meta.peerId) !== false;
-      if (receiptsVisible && lastSeq > 0 && peerReadSeq >= lastSeq) {
-        readStatusByRoom.set(roomId, "READ");
-      } else {
-        readStatusByRoom.set(
-          roomId,
-          (lastMsg?.deliveredTo ?? []).length > 0 ? "DELIVERED" : "SENT"
-        );
-      }
+      // Same fold the chatroom bubble runs (`foldTickStatus`), fed the same
+      // settings-gated peer watermark the history endpoint hands the client as
+      // `peerReadSeq` — one message can no longer resolve to two ticks.
+      // The peer appearing in the last message's `deliveredTo` IS
+      // "peerDeliveredSeq >= lastSeq"; `markDeliveredUpTo` never lists the
+      // sender, so anyone in there is the peer.
+      readStatusByRoom.set(
+        roomId,
+        foldTickStatus({
+          seq: lastSeq,
+          otherCount: 1,
+          readSeqs: receiptsVisible ? [peerReadSeq] : [],
+          deliveredSeqs: (lastMsg?.deliveredTo ?? []).length ? [lastSeq] : [],
+        })
+      );
     }
 
     const now = Date.now();

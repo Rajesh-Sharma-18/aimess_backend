@@ -11,6 +11,7 @@ import { publishChatUserEvent } from "@aimess/redis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import { foldTickStatus } from "../lib/tick-status.js";
 import {
   buildAutoDeleteWire,
   readPolicyVersion,
@@ -526,21 +527,6 @@ export class GroupRoomService {
       const others = (activeMembersByRoom.get(roomId) ?? []).filter(
         (m) => m.userId !== userId
       );
-      const allRead =
-        viewerSeesReceipts &&
-        others.length > 0 &&
-        lastSeq > 0 &&
-        others.every(
-          (m) =>
-            memberGivesReceipts.get(m.userId) !== false &&
-            (m.lastReadMessageId
-              ? (seqById.get(m.lastReadMessageId) ?? 0)
-              : 0) >= lastSeq
-        );
-      if (allRead) {
-        result.set(roomId, "READ");
-        continue;
-      }
       const lastMsg = lastMessageById.get(lastMessageId) as
         | { deliveredTo?: unknown }
         | undefined;
@@ -549,7 +535,27 @@ export class GroupRoomService {
         : [];
       const otherIds = new Set(others.map((m) => m.userId));
       const anyDelivered = deliveredTo.some((id) => otherIds.has(id));
-      result.set(roomId, anyDelivered ? "DELIVERED" : "SENT");
+      // Same fold the chatroom bubble runs, over the same settings-gated
+      // watermarks `getMemberReadCursors` hands the client as `memberReadSeq`.
+      // A member who gives no receipts stays in the array at 0 rather than
+      // being dropped, so "everyone else read it" can never be satisfied by
+      // the members who happen to broadcast.
+      result.set(
+        roomId,
+        foldTickStatus({
+          seq: lastSeq,
+          otherCount: others.length,
+          readSeqs: viewerSeesReceipts
+            ? others.map((m) =>
+                memberGivesReceipts.get(m.userId) === false ||
+                !m.lastReadMessageId
+                  ? 0
+                  : (seqById.get(m.lastReadMessageId) ?? 0)
+              )
+            : [],
+          deliveredSeqs: anyDelivered ? [lastSeq] : [],
+        })
+      );
     }
     return result;
   }

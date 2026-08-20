@@ -59,6 +59,7 @@ import {
 } from "../lib/access-guard.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
+import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import {
   assertMaySeeReadReceipts,
   buildReadReceipts,
@@ -2079,11 +2080,34 @@ export class GroupMessageService {
     excludeUserId: string
   ): Promise<Record<string, number>> {
     const members = await this.memberRepo.findActiveMembers(roomId);
-    const others = members.filter(
-      (m) => m.userId !== excludeUserId && m.lastReadMessageId
+    const others = members.filter((m) => m.userId !== excludeUserId);
+    if (others.length === 0) return {};
+    // Settings → Chat → Read Receipt, reciprocal, exactly as the list tick
+    // applies it in GroupRoomService.computeLastMessageReadStatuses — the two
+    // surfaces have to fold the SAME numbers or the same message shows a blue
+    // tick in the room and a grey one in the list.
+    const viewerSeesReceipts = (await getAccountChatSettings(excludeUserId))
+      .readReceipts;
+    if (!viewerSeesReceipts) return {};
+    const givesReceipts = new Map(
+      await Promise.all(
+        others.map(
+          async (m) =>
+            [
+              m.userId,
+              (await getAccountChatSettings(m.userId)).readReceipts,
+            ] as const
+        )
+      )
     );
     const uniqueMessageIds = [
-      ...new Set(others.map((m) => m.lastReadMessageId as string)),
+      ...new Set(
+        others
+          .filter(
+            (m) => m.lastReadMessageId && givesReceipts.get(m.userId) !== false
+          )
+          .map((m) => m.lastReadMessageId as string)
+      ),
     ];
     const seqById = new Map<string, number>();
     await Promise.all(
@@ -2091,9 +2115,15 @@ export class GroupMessageService {
         seqById.set(id, await this.getMessageSequence(id));
       })
     );
+    // EVERY other active member is a key, including the ones sitting at 0.
+    // The client counts the keys to know how many readers "all of them" means;
+    // dropping the silent ones would let one reader turn a group message blue.
     const cursors: Record<string, number> = {};
     for (const m of others) {
-      cursors[m.userId] = seqById.get(m.lastReadMessageId as string) ?? 0;
+      cursors[m.userId] =
+        m.lastReadMessageId && givesReceipts.get(m.userId) !== false
+          ? (seqById.get(m.lastReadMessageId) ?? 0)
+          : 0;
     }
     return cursors;
   }
