@@ -25,6 +25,7 @@ import { authClient } from "../grpc/auth.client.js";
 import { chatClient } from "../grpc/chat.client.js";
 import { communityClient } from "../grpc/community.client.js";
 import { streamClient } from "../grpc/stream.client.js";
+import { userClient } from "../grpc/user.client.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   ListCommunityMembersQuery,
@@ -142,6 +143,31 @@ function toIso(ms: number): string {
  * Bulk writes ONE AuditLog + ONE ModerationAction per AFFECTED user (mirroring
  * moderation's per-target audit granularity), not a single blanket log.
  */
+/**
+ * Mirror an account restriction onto the user-service PROFILE row.
+ *
+ * auth-service owns "can this account log in"; user-service owns the identity
+ * every other service reads (BulkGetUserSnapshots). Without this mirror a
+ * suspended/banned account is indistinguishable from an active one to
+ * community-service and chat-service, so invites, group adds and DM invite
+ * cards keep targeting an account that can never act on them.
+ *
+ * Best-effort, exactly like the space cascade: the restriction has already
+ * landed in auth-service and must not be rolled back because user-service
+ * blipped.
+ */
+function mirrorProfileStatus(userId: string, restricted: boolean): void {
+  void userClient
+    .adminSetProfileStatus(userId, restricted ? "SUSPENDED" : "ACTIVE")
+    .catch((err: unknown) => {
+      logger.error("user-service profile status mirror failed", {
+        userId,
+        restricted,
+        err,
+      });
+    });
+}
+
 export const userManagementService = {
   /** List users; controller attaches the response `meta` envelope. */
   async listUsers(
@@ -605,6 +631,7 @@ export const userManagementService = {
       userId,
       timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
     );
+    mirrorProfileStatus(userId, true);
 
     return result;
   },
@@ -664,6 +691,7 @@ export const userManagementService = {
     });
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
+    mirrorProfileStatus(userId, true);
 
     return result;
   },
@@ -761,6 +789,7 @@ export const userManagementService = {
       at: toIso(ref.at),
       banType: "SYSTEM",
     });
+    mirrorProfileStatus(userId, false);
 
     return result;
   },
@@ -843,6 +872,7 @@ export const userManagementService = {
         item.userId,
         timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
       );
+      mirrorProfileStatus(item.userId, true);
     }
 
     return result;
@@ -893,6 +923,7 @@ export const userManagementService = {
         actorId: ref.actorId,
         at: toIso(ref.at),
       });
+      mirrorProfileStatus(item.userId, false);
     }
 
     return result;

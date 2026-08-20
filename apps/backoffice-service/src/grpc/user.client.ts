@@ -108,6 +108,24 @@ export const adminDisconnectAllFriendshipsBreaker: Breaker<
   { timeout: 10 * 60 * 1000 }
 );
 
+interface AdminSetProfileStatusResponse {
+  ok: boolean;
+  status: string;
+  errorCode: string;
+}
+
+export const adminSetProfileStatusBreaker: Breaker<
+  { userId: string; status: string },
+  AdminSetProfileStatusResponse
+> = makeBreaker(
+  "user.adminSetProfileStatus",
+  (args: { userId: string; status: string }) =>
+    call<{ userId: string; status: string }, AdminSetProfileStatusResponse>(
+      "adminSetProfileStatus",
+      args
+    )
+);
+
 export const userClient = {
   // Empty input → no gRPC call (avoids a needless round-trip).
   async adminGetProfilesByIds(
@@ -140,5 +158,17 @@ export const userClient = {
     confirm: boolean
   ): Promise<AdminDisconnectAllFriendshipsResponse> {
     return adminDisconnectAllFriendshipsBreaker.fire({ confirm });
+  },
+  /**
+   * Mirror an account ban/suspend/reinstate onto the user-service profile so
+   * every service that reads BulkGetUserSnapshots (invites, group adds, DM
+   * invite cards) can refuse a banned recipient. Best-effort by design — same
+   * rule as the space cascade: the ban itself already landed in auth-service.
+   */
+  async adminSetProfileStatus(
+    userId: string,
+    status: "ACTIVE" | "SUSPENDED"
+  ): Promise<void> {
+    await adminSetProfileStatusBreaker.fire({ userId, status });
   },
 };

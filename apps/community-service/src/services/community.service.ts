@@ -126,7 +126,8 @@ import { getStreamClient } from "../grpc/stream.client.js";
 import type { LiveStreamSummary } from "../types/community.types.js";
 import {
   fetchAcceptedFriendIds,
-  fetchExistingUserIds,
+  fetchInviteIneligibility,
+  INVITE_INELIGIBILITY_CODE,
   fetchUserSnapshots,
   fetchUserSnapshotHits,
 } from "../lib/user-client.js";
@@ -7466,10 +7467,16 @@ export const communityService = {
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
     communityAccessPolicy.assertWritable(community);
 
-    // Batch fetch existing memberships and invite rows in parallel.
-    const [existingMembers, existingInvites] = await Promise.all([
+    // Batch fetch existing memberships, invite rows AND recipient-account
+    // eligibility in parallel. The eligibility gate is the SAME helper the
+    // invite-link bulk-share uses: without it this endpoint happily created
+    // invite rows (and DM cards) for deleted, suspended and blocked users.
+    const [existingMembers, existingInvites, ineligible] = await Promise.all([
       communityRepository.findMembersByUserIds(communityId, userIds),
       communityRepository.findInvitesByUserIds(communityId, userIds),
+      fetchInviteIneligibility(callerId, [
+        ...new Set(userIds.filter((id) => id !== callerId)),
+      ]),
     ]);
 
     const membershipByUserId = new Map(
@@ -7486,6 +7493,16 @@ export const communityService = {
     for (const userId of userIds) {
       if (userId === callerId) {
         results.push({ userId, outcome: "FAILED", reason: "SELF_INVITE" });
+        continue;
+      }
+
+      const ineligibleReason = ineligible.get(userId);
+      if (ineligibleReason) {
+        results.push({
+          userId,
+          outcome: "FAILED",
+          reason: INVITE_INELIGIBILITY_CODE[ineligibleReason],
+        });
         continue;
       }
 
@@ -9401,8 +9418,8 @@ export const communityService = {
     const candidateIds = requestedIds.filter((id) => id !== callerId);
     const selfSkipped = requestedIds.length - candidateIds.length;
 
-    const [existingIds, memberRows] = await Promise.all([
-      fetchExistingUserIds(candidateIds),
+    const [ineligible, memberRows] = await Promise.all([
+      fetchInviteIneligibility(callerId, candidateIds),
       candidateIds.length
         ? communityRepository.findMembersByUserIds(communityId, candidateIds)
         : Promise.resolve(
@@ -9430,16 +9447,16 @@ export const communityService = {
       linkRow.expiresAt === null && linkRow.maxUses === null;
 
     for (const recipientId of candidateIds) {
-      // `existingIds === null` means the user-service lookup was UNAVAILABLE
-      // (circuit open / transient gRPC error). Fail OPEN there — a verification
-      // blip must not block an otherwise-valid bulk send (the recipient still
-      // re-validates on redeem). When the lookup succeeded, an absent id is a
-      // genuine non-existent user and is reported precisely.
-      if (existingIds && !existingIds.has(recipientId)) {
+      // Recipient-account gate (deleted / suspended / blocked / missing). One
+      // shared helper for every invite path — see `fetchInviteIneligibility`,
+      // which fails OPEN on a user-service outage so a verification blip never
+      // blocks an otherwise-valid send.
+      const blocker = ineligible.get(recipientId);
+      if (blocker) {
         failures.push({
           userId: recipientId,
-          code: "USER_NOT_FOUND",
-          message: "User does not exist",
+          code: INVITE_INELIGIBILITY_CODE[blocker],
+          message: INVITE_INELIGIBILITY_CODE[blocker],
         });
         continue;
       }

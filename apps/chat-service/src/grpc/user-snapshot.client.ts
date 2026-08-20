@@ -26,6 +26,12 @@ interface UserSnapshotRecord {
    * auth-service name fallback, drop presence, hide profile navigation.
    */
   isDeleted: boolean;
+  /**
+   * Account admin-suspended or admin-banned. The identity is NOT anonymized
+   * (history renders normally) — this flag only gates ACTIONS whose target has
+   * to be able to log in and respond, e.g. receiving a group invite card.
+   */
+  isSuspended: boolean;
 }
 
 interface BulkSnapshotsResult {
@@ -75,6 +81,13 @@ export interface ChatFriendshipInfo {
   canAccept?: boolean;
   canReject?: boolean;
   canCancel?: boolean;
+  /**
+   * TRUE when EITHER side blocks the other. `status` is caller-relative and
+   * only ever reports an OUTGOING block (an incoming one must stay invisible),
+   * so this is the only field that answers "may these two interact at all".
+   * Read by action gates — invite sending — never by relationship rendering.
+   */
+  blockedEitherWay?: boolean;
 }
 
 interface FriendshipInfoRecord {
@@ -86,6 +99,7 @@ interface FriendshipInfoRecord {
   canAccept?: boolean;
   canReject?: boolean;
   canCancel?: boolean;
+  blockedEitherWay?: boolean;
 }
 
 interface CheckFriendshipsResult {
@@ -296,6 +310,7 @@ export const userGrpcClient = {
             canAccept: r.canAccept ?? false,
             canReject: r.canReject ?? false,
             canCancel: r.canCancel ?? false,
+            blockedEitherWay: r.blockedEitherWay ?? false,
           },
         ])
       );

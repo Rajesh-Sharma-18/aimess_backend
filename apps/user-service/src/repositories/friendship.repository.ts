@@ -391,9 +391,21 @@ export const friendshipRepository = {
   async findRelationshipsForUser(
     callerId: string,
     candidateIds: string[]
-  ): Promise<{ rows: FriendshipRow[]; blockedIds: Set<string> }> {
-    if (candidateIds.length === 0) return { rows: [], blockedIds: new Set() };
-    const [rows, blocks] = await Promise.all([
+  ): Promise<{
+    rows: FriendshipRow[];
+    blockedIds: Set<string>;
+    /**
+     * Candidates who blocked the CALLER. Deliberately kept apart from
+     * `blockedIds`: the viewer-facing relationship status must never reveal an
+     * incoming block (that is why `blockedIds` is one-directional). Only
+     * action gates that must fail either way — invite sending — read this.
+     */
+    blockedByIds: Set<string>;
+  }> {
+    if (candidateIds.length === 0) {
+      return { rows: [], blockedIds: new Set(), blockedByIds: new Set() };
+    }
+    const [rows, blocks, incomingBlocks] = await Promise.all([
       prisma.friendship.findMany({
         where: {
           OR: [
@@ -407,9 +419,14 @@ export const friendshipRepository = {
         where: { blockerId: callerId, blockedId: { in: candidateIds } },
         select: { blockedId: true },
       }),
+      prisma.block.findMany({
+        where: { blockedId: callerId, blockerId: { in: candidateIds } },
+        select: { blockerId: true },
+      }),
     ]);
     const blockedIds = new Set(blocks.map((b) => b.blockedId));
-    return { rows, blockedIds };
+    const blockedByIds = new Set(incomingBlocks.map((b) => b.blockerId));
+    return { rows, blockedIds, blockedByIds };
   },
 
   /**

@@ -11,6 +11,9 @@ import request from "supertest";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
+// Globally mocked in tests/setup/global-mocks.ts — imported here to override the
+// invite-recipient gate's two lookups per test.
+import { userGrpcClient } from "../../src/grpc/user-snapshot.client.js";
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
@@ -370,6 +373,61 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
         receiverId: RECIPIENT,
       })
     );
+  });
+
+  // Recipient-account gate: a DM invite must never be written to an account
+  // that cannot act on it, nor across a block in either direction.
+  it.each([
+    ["deleted", { isDeleted: true }, "INVITE_RECIPIENT_DELETED"],
+    ["suspended", { isSuspended: true }, "INVITE_RECIPIENT_SUSPENDED"],
+  ])(
+    "EDGE: refuses a %s recipient (no DM written)",
+    async (_label, snapshotOverride, code) => {
+      mockGroupAndCaller();
+      (userGrpcClient.bulkGetUserSnapshots as jest.Mock).mockResolvedValueOnce([
+        {
+          userId: RECIPIENT,
+          username: "u",
+          displayName: "U",
+          avatarObjectKey: "",
+          avatarUrl: "",
+          isDeleted: false,
+          isSuspended: false,
+          ...snapshotOverride,
+        },
+      ]);
+
+      const res = await request(app)
+        .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+        .set(bearer(makeAccessToken()))
+        .send({ userIds: [RECIPIENT] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.results[0]).toMatchObject({
+        userId: RECIPIENT,
+        status: "FAILED",
+        code,
+      });
+      expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    }
+  );
+
+  it("EDGE: refuses a blocked recipient (block in either direction)", async () => {
+    mockGroupAndCaller();
+    (userGrpcClient.checkFriendships as jest.Mock).mockResolvedValueOnce(
+      new Map([[RECIPIENT, { status: "NONE", blockedEitherWay: true }]])
+    );
+
+    const res = await request(app)
+      .post(`/api/chat/invite-links/room/${ROOM}/bulk-send`)
+      .set(bearer(makeAccessToken()))
+      .send({ userIds: [RECIPIENT] });
+
+    expect(res.body.data.results[0]).toMatchObject({
+      status: "FAILED",
+      code: "INVITE_RECIPIENT_BLOCKED",
+    });
+    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
   });
 
   it("EDGE: skips a recipient who is already an active member", async () => {

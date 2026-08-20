@@ -24,14 +24,29 @@ interface UserSnapshotRecord {
    * never let a stored member snapshot win over these anonymized values.
    */
   isDeleted: boolean;
+  /**
+   * Account admin-suspended or admin-banned. Unlike `isDeleted` the identity is
+   * still real (history renders normally) — this flag only gates ACTIONS whose
+   * target must be able to log in and respond: invites, member adds, DM cards.
+   */
+  isSuspended: boolean;
 }
 
 interface BulkSnapshotsResult {
   users: UserSnapshotRecord[];
 }
 
+export interface FriendshipInfoRecord {
+  userId: string;
+  status: "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
+  direction: string;
+  /** TRUE when EITHER side blocks the other — `status` only reports outgoing. */
+  blockedEitherWay: boolean;
+}
+
 interface CheckFriendshipsResult {
   friendIds: string[];
+  relationships?: FriendshipInfoRecord[];
 }
 
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
@@ -87,5 +102,22 @@ export const userGrpcClient = {
       candidateIds,
     });
     return result.friendIds ?? [];
+  },
+
+  /**
+   * Same RPC as {@link checkFriendships}, but keeps the full per-candidate
+   * relationship instead of only the ACCEPTED subset — the BLOCKED rows are
+   * what invite eligibility needs (a block in EITHER direction is reported as
+   * BLOCKED by user-service).
+   */
+  async checkRelationships(
+    callerId: string,
+    candidateIds: string[]
+  ): Promise<FriendshipInfoRecord[]> {
+    const result = await checkFriendshipsBreaker.fire({
+      callerId,
+      candidateIds,
+    });
+    return result.relationships ?? [];
   },
 };

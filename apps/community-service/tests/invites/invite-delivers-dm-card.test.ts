@@ -13,7 +13,13 @@
  */
 
 jest.mock("../../src/lib/user-client.js", () => ({
-  fetchExistingUserIds: jest.fn(async () => null),
+  fetchInviteIneligibility: jest.fn(async () => new Map()),
+  INVITE_INELIGIBILITY_CODE: {
+    NOT_FOUND: "INVITE_RECIPIENT_NOT_FOUND",
+    DELETED: "INVITE_RECIPIENT_DELETED",
+    SUSPENDED: "INVITE_RECIPIENT_SUSPENDED",
+    BLOCKED: "INVITE_RECIPIENT_BLOCKED",
+  },
   fetchUserSnapshots: jest.fn(async () => new Map()),
   fetchUserSnapshotHits: jest.fn(async () => new Map()),
   fetchAcceptedFriendIds: jest.fn(async () => new Set()),
@@ -31,6 +37,11 @@ jest.mock("@aimess/storage", () => ({
 }));
 
 jest.mock("@aimess/redis", () => ({
+  // Spread the real module first: a factory that returns only the stubs
+  // replaces EVERY other export with undefined, and `createBannedUserGuard`
+  // is called at import time by `authenticate-access-token.ts` - so every
+  // suite that touches `app.ts` died on "is not a function" before it ran.
+  ...jest.requireActual("@aimess/redis"),
   publishCommunityRoomEvent: jest.fn(async () => 1),
   publishChatUserEvent: jest.fn(async () => 1),
 }));
@@ -50,11 +61,13 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
 }));
 
 import { communityService } from "../../src/services/community.service.js";
+import { fetchInviteIneligibility } from "../../src/lib/user-client.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { publishCommunityInviteLinkSharedForChatSafe } from "../../src/messaging/publish-community-chat.js";
 import { publishCommunityInviteSentSafe } from "../../src/messaging/publish-community.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
+const ineligible = fetchInviteIneligibility as unknown as jest.Mock;
 const publishDm =
   publishCommunityInviteLinkSharedForChatSafe as unknown as jest.Mock;
 const publishInviteSent =
@@ -129,6 +142,33 @@ describe("bulkCreateInvites — 1:1 chat invitation card fan-out", () => {
         recipientId: UID_A,
       })
     );
+    expect(publishDm).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientId: UID_B })
+    );
+  });
+
+  // Recipient-account gate: a MODERATOR inviting a blocked/suspended/deleted
+  // account must produce neither an invite row nor a DM card.
+  it.each([
+    ["BLOCKED", "INVITE_RECIPIENT_BLOCKED"],
+    ["SUSPENDED", "INVITE_RECIPIENT_SUSPENDED"],
+    ["DELETED", "INVITE_RECIPIENT_DELETED"],
+  ])("refuses a %s recipient (no invite row, no DM)", async (reason, code) => {
+    ineligible.mockResolvedValueOnce(new Map([[UID_A, reason]]));
+
+    const res = await communityService.bulkCreateInvites(CID, CALLER, [
+      UID_A,
+      UID_B,
+    ]);
+
+    expect(res.invited).toBe(1);
+    expect(res.results).toContainEqual({
+      userId: UID_A,
+      outcome: "FAILED",
+      reason: code,
+    });
+    expect(repo.createInvite).toHaveBeenCalledTimes(1);
+    expect(publishDm).toHaveBeenCalledTimes(1);
     expect(publishDm).toHaveBeenCalledWith(
       expect.objectContaining({ recipientId: UID_B })
     );

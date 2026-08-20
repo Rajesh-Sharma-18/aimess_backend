@@ -7134,7 +7134,15 @@ export const openApiSchemas = {
       reason: {
         type: "string",
         description:
-          "Present when outcome is FAILED (e.g. SELF_INVITE, USER_BANNED).",
+          "Present when outcome is FAILED. SELF_INVITE, or a recipient-account " +
+          "gate code shared with every invite path: INVITE_RECIPIENT_NOT_FOUND, " +
+          "INVITE_RECIPIENT_DELETED, INVITE_RECIPIENT_SUSPENDED, " +
+          "INVITE_RECIPIENT_BLOCKED. Gate codes are also i18n message keys.",
+      },
+      message: {
+        type: "string",
+        description:
+          "Localised text for `reason` (present for recipient-gate failures).",
       },
     },
     required: ["userId", "outcome"],

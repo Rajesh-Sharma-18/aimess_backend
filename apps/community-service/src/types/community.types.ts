@@ -863,7 +863,11 @@ export type BulkInviteUserResult = {
   userId: string;
   outcome: BulkInviteOutcome;
   inviteId?: string;
+  /** Stable machine code; for recipient-eligibility failures it is also the
+   *  `@aimess/constants` message key the controller localizes into `message`. */
   reason?: string;
+  /** Localized text for `reason`, filled in by the controller. */
+  message?: string;
 };
 
 /** Summary returned by the bulk-invite endpoint. */

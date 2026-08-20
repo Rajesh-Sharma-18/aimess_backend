@@ -349,6 +349,22 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * Admin mirror of an account ban/suspend/reinstate (backoffice → gRPC
+   * AdminSetProfileStatus). Only ACTIVE <-> SUSPENDED; a DELETED profile is
+   * terminal and is left alone so a late ban event cannot resurrect it.
+   */
+  adminSetStatus(userId: string, status: ProfileStatus) {
+    return prisma.userProfile.updateMany({
+      where: {
+        userId,
+        deletedAt: null,
+        status: { not: ProfileStatus.DELETED },
+      },
+      data: { status },
+    });
+  },
+
   softDelete(userId: string, deletedAt: Date) {
     return prisma.userProfile.update({
       where: { userId },
