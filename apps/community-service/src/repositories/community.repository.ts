@@ -106,6 +106,8 @@ function mineActivitySelect(userId: string) {
     lastActivitySeq: true,
     lastActivityContentType: true,
     lastActivitySelfPreview: true,
+    lastActivitySystemType: true,
+    lastActivitySystemMetadata: true,
     lastActivityTargetUserId: true,
     lastActivityTargetPreview: true,
     lastActivityReactionAt: true,
@@ -512,6 +514,9 @@ export const communityRepository = {
         // Mine / List / Sync APIs show the same string as the chat room from the
         // instant of creation (before the async community.activity event lands).
         lastActivityPreview: "Community created",
+        // Canonical event behind that text, so the read path re-renders the row
+        // in each reader's language exactly like any other system line.
+        lastActivitySystemType: "COMMUNITY_CREATED",
         lastActivityUsername: null,
       },
       include: { category: { select: { id: true, name: true } } },
@@ -1444,6 +1449,14 @@ export const communityRepository = {
       clientMessageId?: string | null;
       seq?: number | null;
       contentType?: string | null;
+    } = {},
+    /** SYSTEM activity only — the event + params the preview was rendered from,
+     *  so the list row can be re-rendered in each reader's language. Always
+     *  written (null when absent) for the same reason `identity` is: a later
+     *  bump must never leave a PREVIOUS system line's params behind. */
+    system: {
+      type?: string | null;
+      metadata?: Record<string, unknown> | null;
     } = {}
   ): Promise<number> {
     const seq = identity.seq ?? 0;
@@ -1497,6 +1510,9 @@ export const communityRepository = {
         lastActivityClientMessageId: identity.clientMessageId || null,
         lastActivitySeq: seq,
         lastActivityContentType: identity.contentType || null,
+        lastActivitySystemType: system.type || null,
+        lastActivitySystemMetadata:
+          (system.metadata as Prisma.InputJsonValue | undefined) ?? null,
       },
     });
     return result.count;
@@ -1562,6 +1578,10 @@ export const communityRepository = {
           : activity.clientMessageId || null,
         lastActivitySeq: empty ? 0 : (activity.seq ?? 0),
         lastActivityContentType: empty ? null : activity.contentType || null,
+        // The rolled-back pointer is a different message — never keep the
+        // removed system line's render params.
+        lastActivitySystemType: null,
+        lastActivitySystemMetadata: null,
       },
     });
     return result.count;
@@ -1908,6 +1928,8 @@ export const communityRepository = {
           lastActivitySeq: true,
           lastActivityContentType: true,
           lastActivitySelfPreview: true,
+          lastActivitySystemType: true,
+          lastActivitySystemMetadata: true,
           category: { select: { id: true, name: true } },
         },
       }),

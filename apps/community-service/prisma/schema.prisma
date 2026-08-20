@@ -103,6 +103,14 @@ model Community {
   // the list renders this instead of the third-person preview. Opaque string —
   // rendered by chat-service (single template source), never composed here.
   lastActivitySelfPreview String?
+  // SYSTEM activity only — the canonical event + params the preview above was
+  // rendered from (chat-service's `community.activity` carries the same pair
+  // `community:message:new` does). The stored previews are baked in English at
+  // write time and read by members in three languages, so the list row is
+  // re-rendered from these per reader. Null for non-SYSTEM activity and for
+  // rows written before this pair was carried — those keep their baked text.
+  lastActivitySystemType     String?
+  lastActivitySystemMetadata Json?
   // Reaction activity ("X reacted ❤️ to your message") is ABOUT two people at
   // once: the actor (lastActivityUserId/lastActivitySelfPreview above) AND the
   // reacted-to message's owner. This pair mirrors that same self-preview

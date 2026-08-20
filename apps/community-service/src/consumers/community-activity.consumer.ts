@@ -35,6 +35,10 @@ interface CommunityActivityMessage {
     clientMessageId?: string | null;
     seq?: number;
     contentType?: string;
+    /** SYSTEM lines only — the canonical event + params behind `messagePreview`,
+     *  stored so `GET /communities/mine` can re-render the row per reader. */
+    systemMessageType?: string;
+    systemMetadata?: Record<string, unknown>;
     /** Second self-referential viewer (role change / join target) — reactions
      *  no longer use this field. */
     targetUserId?: string;
@@ -139,6 +143,10 @@ export async function startCommunityActivityConsumer(): Promise<void> {
                   clientMessageId: parsed.data.clientMessageId ?? null,
                   seq: parsed.data.seq ?? 0,
                   contentType: parsed.data.contentType ?? null,
+                },
+                {
+                  type: parsed.data.systemMessageType ?? null,
+                  metadata: parsed.data.systemMetadata ?? null,
                 }
               );
               logger.info(

@@ -16,7 +16,11 @@ import {
   currentLocale,
   isHiddenSystemMessage,
   localizeMessagePreview,
+  personalizeCommunitySystemMessageForViewer,
+  STORED_TEXT_LOCALE,
   t,
+  type CommunitySystemMessageType,
+  type SupportedLocale,
 } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
@@ -356,6 +360,67 @@ export function selectListPreview(
     lastActivityUserId?: string | null;
     lastActivityTargetUserId?: string | null;
     lastActivityTargetPreview?: string | null;
+    lastActivitySystemType?: string | null;
+    lastActivitySystemMetadata?: unknown;
+  },
+  viewerId: string
+): string | null {
+  return localizeSystemPreview(pickListPreview(row, viewerId), row, viewerId);
+}
+
+/**
+ * Re-render a SYSTEM list row in the reader's language.
+ *
+ * Every preview this file returns was rendered by chat-service at write time in
+ * `STORED_TEXT_LOCALE` (English) — one row, read by members in three languages.
+ * The transcript already re-renders each system line per reader from
+ * `systemMessageType` + `systemMetadata`; the list row did not, so switching
+ * language translated the conversation and left the row above it in English.
+ *
+ * The swap happens ONLY while the stored text still equals the English
+ * rendering of this row's own system event for THIS viewer — which is what
+ * keeps the personal overlays honest: a delete-for-me `selfPreview` (some other
+ * message's text) or a legacy row written before the params were carried never
+ * matches, and is returned exactly as stored.
+ */
+function localizeSystemPreview(
+  preview: string | null,
+  row: {
+    lastActivitySystemType?: string | null;
+    lastActivitySystemMetadata?: unknown;
+  },
+  viewerId: string
+): string | null {
+  const systemType = row.lastActivitySystemType;
+  if (!preview || !systemType) return preview;
+  const locale = currentLocale();
+  const metadata =
+    row.lastActivitySystemMetadata &&
+    typeof row.lastActivitySystemMetadata === "object"
+      ? (row.lastActivitySystemMetadata as Record<string, unknown>)
+      : {};
+  const render = (target: SupportedLocale): string =>
+    personalizeCommunitySystemMessageForViewer(
+      systemType as CommunitySystemMessageType,
+      metadata,
+      preview,
+      String(metadata.actorName ?? ""),
+      String(metadata.targetName ?? ""),
+      viewerId,
+      target
+    );
+  return preview === render(STORED_TEXT_LOCALE) ? render(locale) : preview;
+}
+
+/** The stored preview this viewer resolves to, before any translation. */
+function pickListPreview(
+  row: {
+    lastActivityType?: string | null;
+    lastActivityPreview?: string | null;
+    lastActivitySelfPreview?: string | null;
+    lastActivityUserId?: string | null;
+    lastActivityTargetUserId?: string | null;
+    lastActivityTargetPreview?: string | null;
   },
   viewerId: string
 ): string | null {
@@ -427,8 +492,10 @@ export function buildLastActivity(community: {
       type: "created",
       userId: null,
       username: null,
-      // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single source of truth.
-      preview: "Community created",
+      // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single
+      // source of truth, and rendered in the READER's language like every other
+      // system line rather than the English the column was seeded with.
+      preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
       dateTime: community.createdAt.getTime(),
       ...EMPTY_ACTIVITY_IDENTITY,
     };
@@ -480,7 +547,9 @@ export function buildLastActivity(community: {
     // all show the same string while the async write catches up.
     preview:
       community.lastActivityPreview ??
-      (systemType === "created" ? "Community created" : ""),
+      (systemType === "created"
+        ? t("SYS_COMMUNITY_CREATED", currentLocale())
+        : ""),
     dateTime,
     ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
@@ -2378,7 +2447,7 @@ export const communityService = {
         type: "created",
         userId: null,
         username: null,
-        preview: "Community created",
+        preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
         dateTime: community.createdAt.getTime(),
       },
     };

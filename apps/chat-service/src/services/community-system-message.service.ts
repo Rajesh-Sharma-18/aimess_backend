@@ -413,6 +413,11 @@ export class CommunitySystemMessageService {
           senderUsername: "",
           messagePreview: clip(fallbackText),
           type: "system",
+          // The canonical pair behind the sentence — community-service re-renders
+          // the list row from it in each reader's language (the transcript
+          // already did; the row did not).
+          systemMessageType,
+          systemMetadata: wireMetadata,
           ...(selfActivity
             ? {
                 subjectUserId: selfActivity.subjectUserId,
