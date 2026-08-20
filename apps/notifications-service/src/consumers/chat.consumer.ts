@@ -5,7 +5,7 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
-import { chatCopy } from "../lib/notification-copy.js";
+import { chatCopy, chatPreviewHiddenBody } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
@@ -178,7 +178,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   } satisfies NotificationNavigation);
 
   const showPreviewOverride = (locale: SupportedLocale): string =>
-    chatCopy.messagePreviewHidden(
+    chatPreviewHiddenBody(
       isCommunity ? data.communityName : isGroup ? data.groupName : undefined,
       locale
     );

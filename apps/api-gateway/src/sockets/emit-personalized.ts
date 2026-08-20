@@ -34,7 +34,11 @@ export async function emitPersonalizedSender(
   // receipts, where the viewer's own Settings → Chat switch decides whether
   // they may see someone else's — a decision the publisher cannot make, since
   // one broadcast reaches many viewers with different settings.
-  skipViewer?: (viewerUserId: string) => Promise<boolean>
+  skipViewer?: (viewerUserId: string) => Promise<boolean>,
+  // Skip the ONE device that caused the event — the newly-logged-in session
+  // must not be shown its own "new login detected" alert. A session id rather
+  // than a user id: every other device of the same user still gets it.
+  excludeSessionId?: string
 ): Promise<void> {
   const isPersonalizable =
     data &&
@@ -45,7 +49,13 @@ export async function emitPersonalizedSender(
   // If we don't have both senderId and senderName, no custom personalizeFn
   // (like SYSTEM messages), AND nothing to filter per viewer, just do a normal
   // broadcast.
-  if (!isPersonalizable && !personalizeFn && !excludeUserId && !skipViewer) {
+  if (
+    !isPersonalizable &&
+    !personalizeFn &&
+    !excludeUserId &&
+    !skipViewer &&
+    !excludeSessionId
+  ) {
     namespace.to(channel).emit(event, data);
     return;
   }
@@ -72,6 +82,11 @@ export async function emitPersonalizedSender(
     for (const socket of sockets) {
       const viewerUserId = String(socket.data.userId ?? "");
       if (excludeUserId && viewerUserId === excludeUserId) continue;
+      if (
+        excludeSessionId &&
+        String(socket.data.sessionId ?? "") === excludeSessionId
+      )
+        continue;
       if (skipByViewer?.get(viewerUserId)) continue;
       const locale =
         (socket.data.locale as SupportedLocale | undefined) ?? DEFAULT_LOCALE;
@@ -102,7 +117,7 @@ export async function emitPersonalizedSender(
     // Do NOT fall back to a full-room broadcast when someone must be filtered
     // out — that would leak the very event (their own removal line, a read
     // receipt they opted out of) the filter exists to withhold.
-    if (excludeUserId || skipViewer) return;
+    if (excludeUserId || skipViewer || excludeSessionId) return;
     namespace.to(channel).emit(event, data);
   }
 }

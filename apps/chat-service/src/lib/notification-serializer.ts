@@ -1,4 +1,13 @@
-import { DELETED_ACCOUNT_DISPLAY_NAME, t } from "@aimess/constants";
+import {
+  COPY_REF_KEY,
+  currentLocale,
+  DATA_REF_KEY,
+  DELETED_ACCOUNT_DISPLAY_NAME,
+  renderNotificationCopy,
+  renderNotificationData,
+  t,
+  type SupportedLocale,
+} from "@aimess/constants";
 
 import type { Notification } from "../generated/prisma/index.js";
 
@@ -85,7 +94,15 @@ export interface NotificationDTO {
  * contradiction of `isRead`, which is the actual answer. The `/notify` relay
  * already strips them from its copy of `data`; this makes REST agree.
  */
-const INTERNAL_DATA_DIRECTIVES = ["markRead", "excludeSessionId"] as const;
+const INTERNAL_DATA_DIRECTIVES = [
+  "markRead",
+  "excludeSessionId",
+  // Replay tickets consumed by `localizeRow` below. They describe how to build
+  // the sentence, so once it IS built they are noise on the wire — and a client
+  // that started reading them would be re-implementing the copy catalog.
+  COPY_REF_KEY,
+  DATA_REF_KEY,
+] as const;
 
 function stripInternalDirectives<T extends { data?: Record<string, string> }>(
   payload: T
@@ -240,6 +257,41 @@ function scrubDeletedActor(
 }
 
 /**
+ * Re-render a row's system-generated copy in the READER's language.
+ *
+ * A notification persists the sentence it was created with, so before this the
+ * language a row was WRITTEN in was the language it read in forever: turn the
+ * app back to English and every Vietnamese-era card stayed Vietnamese. The
+ * producer now also stores a replay ticket (`data.copyRef` / `data.dataRef` —
+ * the copy builder plus the arguments it was called with), and this rebuilds
+ * from that ticket on every read.
+ *
+ * Returns `null` whenever there is nothing to replay: rows written before the
+ * ticket existed, and rows whose text is AUTHORED rather than product copy
+ * (admin announcements, ban notices, a moderator's warning note) — those
+ * producers pass raw `title`/`body`, never a builder, so they have no ticket
+ * and keep their text verbatim. That is the whole backward-compatibility
+ * story: no migration, no backfill, nothing deleted.
+ *
+ * Names are NOT part of this. They live in `data`/`actorSnapshot` and are
+ * re-interpolated by the same builder, so "Mohit Vasundhara" survives a
+ * language switch untouched while the sentence around it changes.
+ */
+function localizeRow(
+  data: Record<string, string>,
+  locale: SupportedLocale
+): { title?: string; body?: string; resolution?: string } | null {
+  const copy = renderNotificationCopy(data[COPY_REF_KEY], locale);
+  const extra = renderNotificationData(data[DATA_REF_KEY], locale);
+  if (!copy && !extra) return null;
+  return {
+    ...(copy?.title ? { title: copy.title } : {}),
+    ...(copy?.body ? { body: copy.body } : {}),
+    ...(extra?.resolution ? { resolution: extra.resolution } : {}),
+  };
+}
+
+/**
  * One-shot Notification row → response DTO. Reuses the existing
  * `resolveNotificationFriendship` enricher (friend actionability) — no new
  * gRPC calls beyond the batched avatar refresh already done by the caller.
@@ -248,13 +300,32 @@ function scrubDeletedActor(
 export async function serializeNotification(
   row: Notification,
   viewerId: string,
-  refresh: AvatarRefreshMaps = EMPTY_REFRESH
+  refresh: AvatarRefreshMaps = EMPTY_REFRESH,
+  // Defaults to the ambient request locale (`x-lang` on REST, the socket
+  // handshake's language over gRPC), which is what makes the SAME row read
+  // English on one device and Vietnamese on another.
+  locale: SupportedLocale = currentLocale()
 ): Promise<NotificationDTO> {
-  const payloadObj = (row.payload ?? {}) as {
+  const storedPayload = (row.payload ?? {}) as {
     title?: string;
     body?: string;
     data?: Record<string, string>;
   };
+  const storedData = storedPayload.data ?? {};
+  const localized = localizeRow(storedData, locale);
+  // The re-rendered sentence replaces the stored one for every downstream step
+  // — the deleted-actor scrub and the stale-name refresh both rewrite prose, and
+  // they must operate on the text the reader will actually see.
+  const payloadObj = localized
+    ? {
+        ...storedPayload,
+        ...(localized.title !== undefined ? { title: localized.title } : {}),
+        ...(localized.body !== undefined ? { body: localized.body } : {}),
+        ...(localized.resolution !== undefined
+          ? { data: { ...storedData, resolution: localized.resolution } }
+          : {}),
+      }
+    : storedPayload;
   const data = payloadObj.data ?? {};
   const entity = (row.entity ?? {}) as { id?: string };
 

@@ -1,5 +1,10 @@
 import { logger } from "@aimess/logger";
-import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+import {
+  DEFAULT_LOCALE,
+  runWithLocale,
+  t,
+  type SupportedLocale,
+} from "@aimess/constants";
 import {
   AdminUserEvents,
   AuthEvents,
@@ -24,7 +29,12 @@ import {
   type DeliveryDecision,
   type NotificationCategory,
 } from "./notification-settings.service.js";
-import type { LocalizedCopy } from "../lib/notification-copy.js";
+import {
+  COPY_REF_KEY,
+  DATA_REF_KEY,
+  type LocalizedCopy,
+  type LocalizedData,
+} from "../lib/notification-copy.js";
 
 type CommunityPrefField =
   | "chatEnabled"
@@ -165,7 +175,7 @@ export interface PushInput {
    * card's `resolution` line), so they must be rendered in the recipient's
    * language like `copy`. Merged over `data`.
    */
-  localizedData?: (locale: SupportedLocale) => Record<string, string>;
+  localizedData?: LocalizedData;
 
   /** Canonical deep-link for navigation on notification click. */
   deepLink?: string;
@@ -495,21 +505,39 @@ export async function pushToUser(input: PushInput): Promise<void> {
   if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
       const inboxTitle = inboxTitleOverride;
-      await chatNotificationClient.createNotification({
-        userId,
-        actorId,
-        type,
-        title,
-        body,
-        data: {
-          ...(data ?? {}),
-          ...(inboxTitle === null
-            ? { suppressTitle: "true" }
-            : inboxTitle
-              ? { inboxTitle }
-              : {}),
-        },
-      });
+      // Replay tickets, not text. `title`/`body` below are this recipient's
+      // language AT WRITE TIME and stay on the row as the fallback every
+      // pre-existing notification already depends on; these two say how to
+      // rebuild the same sentence in whatever language the reader is using when
+      // they open the list. Absent when a producer passed raw `title`/`body`
+      // (admin announcements, ban notices) — that is authored content, not
+      // product copy, and must never be re-rendered.
+      const copyRef = input.copy?.descriptor;
+      const dataRef = input.localizedData?.descriptor;
+      // Run the write under the RECIPIENT's language, not the consumer's
+      // ambient default: `serviceCallMetadata` forwards `currentLocale()` as
+      // `x-lang`, which is the locale chat-service serializes the realtime
+      // `notification:new` frame in. Without this the row a Vietnamese user
+      // gets pushed in Vietnamese arrived over the socket in the server default.
+      await runWithLocale(locale, () =>
+        chatNotificationClient.createNotification({
+          userId,
+          actorId,
+          type,
+          title,
+          body,
+          data: {
+            ...(data ?? {}),
+            ...(copyRef ? { [COPY_REF_KEY]: JSON.stringify(copyRef) } : {}),
+            ...(dataRef ? { [DATA_REF_KEY]: JSON.stringify(dataRef) } : {}),
+            ...(inboxTitle === null
+              ? { suppressTitle: "true" }
+              : inboxTitle
+                ? { inboxTitle }
+                : {}),
+          },
+        })
+      );
     } catch (error) {
       logger.warn(`CreateNotification inbox write failed for ${userId}`);
       logger.warn(error);
