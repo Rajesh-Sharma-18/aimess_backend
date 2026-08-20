@@ -231,8 +231,27 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       senderName: data.senderName ?? "",
       senderAvatar: data.senderAvatar ?? "",
       ...(data.groupName ? { groupName: data.groupName } : {}),
+      // The conversation's own image (group avatar / community logo), resolved
+      // from the authoritative room row by chat-service's publisher. Emitted
+      // under BOTH the generic key and the entity-specific one the rest of the
+      // push surface already uses: every community.* event carries
+      // `communityAvatarUrl` and every group lifecycle event is published with
+      // `groupAvatarUrl`, so a client keyed on those names rendered an image
+      // for lifecycle notifications and nothing for the chat message that
+      // matters most. `conversationAvatar` stays the canonical key
+      // (push.service promotes it to the FCM/APNs tray image); the aliases just
+      // stop the group/community identity from being invisible to a reader that
+      // never learned the generic name. Android is the surface this decides:
+      // its MESSAGE pushes are data-only, so the data map is the ONLY place a
+      // picture can arrive — iOS still gets `fcm_options.image`.
       ...(data.conversationAvatar
-        ? { conversationAvatar: data.conversationAvatar }
+        ? {
+            conversationAvatar: data.conversationAvatar,
+            ...(isGroup ? { groupAvatarUrl: data.conversationAvatar } : {}),
+            ...(isCommunity
+              ? { communityAvatarUrl: data.conversationAvatar }
+              : {}),
+          }
         : {}),
       canReply: data.canReply === false ? "false" : "true",
       ...(typeof data.unreadCount === "number"
