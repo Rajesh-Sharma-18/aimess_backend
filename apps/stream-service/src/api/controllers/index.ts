@@ -137,6 +137,22 @@ export class StreamController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
   });
 
+  videoLost = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.markVideoLost(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
+
+  videoRestored = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.markVideoRestored(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
+
   reportQuality = asyncHandler(async (req: Request, res: Response) => {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
