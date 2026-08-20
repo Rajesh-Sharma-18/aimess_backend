@@ -4,6 +4,7 @@ import { env, isLinkHost } from "../config/env.js";
 import { detectFromPath } from "../linkhost/detect-link.js";
 import { renderPreviewPage } from "../linkhost/preview.js";
 import { fetchPublicCommunityCard } from "../linkhost/public-card.js";
+import { fetchGroupInviteCard } from "../linkhost/group-card.js";
 import {
   buildAppleAppSiteAssociation,
   buildAssetLinks,
@@ -77,23 +78,34 @@ export function createLinkHostRouter(): IRouter {
           renderPreviewPage({
             target,
             card: null,
+            unfurl: false,
             pageUrl: absoluteUrl(req),
           })
         );
       return;
     }
 
-    // PUBLIC handles fetch a metadata card (for OG unfurl). PRIVATE codes and
-    // GROUP tokens never leak metadata to logged-out viewers → generic card.
+    // PUBLIC handles and GROUP tokens both render a real card; only the PUBLIC
+    // one is allowed into the OG tags (`unfurl`), and a PRIVATE code renders
+    // nothing at all — see `renderPreviewPage`.
     const card =
       target.kind === "public"
         ? await fetchPublicCommunityCard(target.handle)
-        : null;
+        : target.kind === "group"
+          ? await fetchGroupInviteCard(target.token)
+          : null;
 
     res
       .status(200)
       .type("html")
-      .send(renderPreviewPage({ target, card, pageUrl: absoluteUrl(req) }));
+      .send(
+        renderPreviewPage({
+          target,
+          card,
+          unfurl: target.kind === "public",
+          pageUrl: absoluteUrl(req),
+        })
+      );
   });
 
   return router;
