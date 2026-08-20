@@ -8,11 +8,16 @@
  *
  * These assert only ROUTING, never business logic. Status code alone cannot tell
  * the two apart: a MOUNTED handler running against this suite's empty repo mocks
- * legitimately answers 404 (`CHAT_ROOM_NOT_FOUND`). The reliable discriminator is
- * the response SHAPE — Express's default no-route handler emits `text/html`
- * ("Cannot GET /…"), whereas any route that reached a handler goes through the
- * service's `errorHandler` and emits the JSON `{ success: false, error }` envelope.
- * So: mounted ⇒ JSON, unmounted ⇒ HTML, whatever the status.
+ * legitimately answers 404 (`CHAT_ROOM_NOT_FOUND`). The discriminator is the
+ * error CODE: an unmatched path is now terminated by the shared `notFoundHandler`
+ * and answers `ROUTE_NOT_FOUND`, while anything that reached a handler answers a
+ * domain code (or a non-404 status entirely).
+ *
+ * This used to key on content-type — unmounted meant Express's `text/html`
+ * "Cannot GET /…" body. That signal is gone on purpose: every service now
+ * terminates its chain with a JSON 404 rather than falling through to Express's
+ * `finalhandler`, so a client that mistypes a route gets the documented envelope
+ * instead of HTML its JSON parse chokes on.
  */
 import request from "supertest";
 
@@ -34,11 +39,9 @@ type Method = "get" | "post" | "delete" | "patch";
 /**
  * Did this request reach a handler at all?
  *
- * `isJson` is the load-bearing signal: the service's `errorHandler` always answers
- * JSON, so anything that reached a route is JSON regardless of status. Express's
- * no-route fallback answers `text/html`. `noRoute` corroborates it by finding the
- * default handler's "Cannot GET /…" text — note it sits inside a `<pre>`, so it is
- * NOT at the start of a line and must not be anchored with `^`.
+ * `noRoute` is the load-bearing signal: only the terminal `notFoundHandler`
+ * emits `ROUTE_NOT_FOUND`, so it is set iff nothing matched. `isJson` is kept as
+ * a corroborating assertion — every answer, matched or not, must be JSON.
  */
 async function reachedAHandler(method: Method, path: string) {
   const res = await request(app)[method](path).set(bearer(makeAccessToken()));
@@ -46,7 +49,7 @@ async function reachedAHandler(method: Method, path: string) {
     isJson: String(res.headers["content-type"] ?? "").includes(
       "application/json"
     ),
-    noRoute: /Cannot (GET|POST|PUT|PATCH|DELETE) \//.test(String(res.text)),
+    noRoute: res.status === 404 && res.body?.code === "ROUTE_NOT_FOUND",
     status: res.status,
   };
 }
@@ -129,7 +132,8 @@ describe("the retired /api/v2 (and singular-group) paths are gone", () => {
   it.each(RETIRED)("GET %s → no route", async (path) => {
     const { isJson, noRoute, status } = await reachedAHandler("get", path);
     expect(status).toBe(404);
-    expect(isJson).toBe(false);
+    // JSON even when nothing matched — that is the point of the terminal 404.
+    expect(isJson).toBe(true);
     expect(noRoute).toBe(true);
   });
 });

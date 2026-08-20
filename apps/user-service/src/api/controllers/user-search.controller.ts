@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { NotFoundError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type {
@@ -37,10 +38,9 @@ export const removeRecentUserSearch = asyncHandler(
       targetId,
     });
     if (!deleted) {
-      return res.status(HTTP_STATUS.NOT_FOUND).json({
-        success: false,
-        message: t("RECENT_SEARCH_NOT_FOUND", req.locale),
-      });
+      // Thrown, not written: `asyncHandler` forwards it to the shared error
+      // handler, which is the only place the error envelope is built.
+      throw new NotFoundError("RECENT_SEARCH_NOT_FOUND");
     }
     return res
       .status(HTTP_STATUS.OK)

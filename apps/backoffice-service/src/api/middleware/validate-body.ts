@@ -1,21 +1,9 @@
-import { t } from "@aimess/constants";
-import { zodErrorMessage } from "@aimess/utils";
-import type { RequestHandler } from "express";
-import type { ZodSchema } from "zod";
-
-/** Validates `req.body` against a Zod schema before controllers run. */
-export function validateBody(schema: ZodSchema): RequestHandler {
-  return (req, res, next) => {
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({
-        success: false,
-        message:
-          zodErrorMessage(parsed.error) || t("VALIDATION_FAILED", req.locale),
-      });
-      return;
-    }
-    req.body = parsed.data;
-    next();
-  };
-}
+/**
+ * Validates `req.body` against a Zod schema before controllers run.
+ *
+ * Re-exported from `@aimess/utils` so all five services answer an invalid
+ * request identically — same status, same code, and the same field-level
+ * `error.details` a form needs to mark the offending input. Kept as a file so
+ * every existing route import is unchanged.
+ */
+export { validateBody } from "@aimess/utils";

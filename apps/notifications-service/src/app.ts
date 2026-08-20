@@ -1,15 +1,11 @@
 import cors from "cors";
-import express, {
-  type Express,
-  type NextFunction,
-  type Request,
-  type Response,
-} from "express";
+import express, { type Express } from "express";
 import helmet from "helmet";
 
-import { logger } from "@aimess/logger";
+import { localeMiddleware, notFoundHandler } from "@aimess/utils";
 
 import { env } from "./config/env.js";
+import { errorHandler } from "./middleware/error-handler.js";
 import { deviceRouter } from "./routes/device.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
 import { testPushRouter } from "./routes/test-push.routes.js";
@@ -22,6 +18,7 @@ export function createApp(): Express {
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+  app.use(localeMiddleware);
 
   app.use("/health", healthRouter);
 
@@ -33,20 +30,11 @@ export function createApp(): Express {
     app.use("/test", testPushRouter);
   }
 
-  // Minimal error handler — maps @aimess/errors (and auth failures) to JSON.
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    const statusCode =
-      typeof err === "object" &&
-      err !== null &&
-      "statusCode" in err &&
-      typeof (err as { statusCode?: unknown }).statusCode === "number"
-        ? (err as { statusCode: number }).statusCode
-        : 500;
-    const message =
-      err instanceof Error ? err.message : "Internal server error";
-    if (statusCode >= 500) logger.error(err);
-    res.status(statusCode).json({ success: false, message });
-  });
+  // Anything below the routes answers in the shared envelope. The hand-rolled
+  // handler this replaces echoed `err.message` of an UNHANDLED throw straight
+  // to the client — a stack frame, a query, or a connection string, verbatim.
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }

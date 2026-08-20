@@ -1,99 +1,16 @@
-import type { NextFunction, Request, Response } from "express";
+/**
+ * Re-export of the shared handler in `@aimess/utils`. Kept as a file so the
+ * existing `import { errorHandler } from "./middleware/error-handler.js"` in
+ * `app.ts` is unchanged.
+ */
+import { createErrorHandler } from "@aimess/utils";
 
-import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
-import { ConflictError, deriveAppErrorCode, isAppError } from "@aimess/errors";
-import { logger } from "@aimess/logger";
-import { resolveLocaleFromRequest } from "@aimess/utils";
-
-import { Prisma } from "../generated/prisma/client.js";
-
-function isInvalidJsonBodyError(error: unknown): boolean {
-  if (!(error instanceof SyntaxError)) return false;
-
-  const bodyError = error as SyntaxError & {
-    status?: number;
-    statusCode?: number;
-    type?: string;
-  };
-
-  return (
-    bodyError.type === "entity.parse.failed" ||
-    bodyError.status === 400 ||
-    bodyError.statusCode === 400
-  );
-}
-
-function localizedMessage(
-  req: Request,
-  messageKey: string | undefined,
-  fallback: string
-): string {
-  if (!messageKey) return fallback;
-
-  const locale = req.locale ?? resolveLocaleFromRequest(req);
-  try {
-    const message = t(messageKey as MessageKey, locale);
-    return message === messageKey ? fallback : message;
-  } catch {
-    return fallback;
-  }
-}
-
-export function errorHandler(
-  error: unknown,
-  req: Request,
-  res: Response,
-  _next: NextFunction
-): void {
-  if (isAppError(error)) {
-    res.status(error.statusCode).json({
-      success: false,
-      // `message` is localized, so it can never be branched on — `code` is the stable token clients compare against (e.g. the 429 on repeated logins).
-      code: deriveAppErrorCode(error),
-      message: localizedMessage(req, error.messageKey, error.message),
-    });
-    return;
-  }
-
-  const locale = req.locale ?? resolveLocaleFromRequest(req);
-
-  if (isInvalidJsonBodyError(error)) {
-    res.status(HTTP_STATUS.BAD_REQUEST).json({
-      success: false,
-      message: t("VALIDATION_FAILED", locale),
-    });
-    return;
-  }
-
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    if (error.code === "P2002") {
-      const collidedOnAccount = String(error.meta?.target ?? "")
-        .toLowerCase()
-        .includes("account");
-      const conflict = new ConflictError(
-        collidedOnAccount ? "AUTH_ACCOUNT_TAKEN" : "AUTH_EMAIL_EXISTS"
-      );
-      res.status(conflict.statusCode).json({
-        success: false,
-        code: deriveAppErrorCode(conflict),
-        message: localizedMessage(req, conflict.messageKey, conflict.message),
-      });
-      return;
-    }
-  }
-
-  logger.error(error);
-
-  if (error instanceof Error) {
-    res.status(500).json({
-      success: false,
-      message: t("INTERNAL_SERVER_ERROR", locale),
-    });
-    return;
-  }
-
-  res.status(500).json({
-    success: false,
-    message: t("INTERNAL_SERVER_ERROR", locale),
-  });
-}
+export const errorHandler = createErrorHandler({
+  service: "auth-service",
+  // Two unique columns collide here and they are not interchangeable: an email
+  // clash must not tell the user their username is taken.
+  uniqueConstraintKey: (target) =>
+    target.toLowerCase().includes("account")
+      ? "AUTH_ACCOUNT_TAKEN"
+      : "AUTH_EMAIL_EXISTS",
+});

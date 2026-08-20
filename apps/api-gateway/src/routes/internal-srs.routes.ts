@@ -1,5 +1,6 @@
 import express, { Router, type IRouter, type Request } from "express";
 import { logger } from "@aimess/logger";
+import { sendApiError } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 
@@ -54,9 +55,9 @@ export function createInternalSrsRouter(): IRouter {
     (req, res) => {
       void (async () => {
         if (!env.STREAM_SERVICE_URL) {
-          res.status(503).json({
-            success: false,
-            message: "Stream service is not configured.",
+          sendApiError(req, res, {
+            statusCode: 503,
+            messageKey: "SERVICE_UNAVAILABLE",
           });
           return;
         }
@@ -95,9 +96,10 @@ export function createInternalSrsRouter(): IRouter {
             .send(text);
         } catch (error) {
           logger.error(`SRS hook proxy failed: ${String(error)}`);
-          res.status(502).json({
-            success: false,
-            message: "Stream service temporarily unavailable.",
+          sendApiError(req, res, {
+            statusCode: 503,
+            messageKey: "SERVICE_UNAVAILABLE",
+            retryAfterSec: 5,
           });
         }
       })();

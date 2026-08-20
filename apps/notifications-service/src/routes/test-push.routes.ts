@@ -5,7 +5,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 
 import { logger } from "@aimess/logger";
-import { zodErrorMessage } from "@aimess/utils";
+import { ApiResponse, validateBody } from "@aimess/utils";
 
 import { sendPush } from "../providers/firebase/sendPush.js";
 
@@ -17,37 +17,35 @@ const testPushSchema = z.object({
   body: z.string().min(1).max(500),
 });
 
-testPushRouter.post("/push", async (req: Request, res: Response) => {
-  const parsed = testPushSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      success: false,
-      message: zodErrorMessage(parsed.error) || "Request body is invalid",
-    });
+testPushRouter.post(
+  "/push",
+  validateBody(testPushSchema),
+  async (req: Request, res: Response) => {
+    const { tokens, title, body } = req.body as z.infer<typeof testPushSchema>;
+
+    const results = await Promise.all(
+      tokens.map(async (token) => {
+        try {
+          const { messageId } = await sendPush({ token, title, body });
+          return { token, ok: messageId !== null, messageId };
+        } catch (error) {
+          logger.error("sendPush threw for token", error);
+          const message =
+            error instanceof Error ? error.message : "unknown error";
+          return { token, ok: false, error: message };
+        }
+      })
+    );
+
+    const okCount = results.filter((r) => r.ok).length;
+
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(
+          { sent: okCount, total: tokens.length, results },
+          "Test push dispatched"
+        )
+      );
   }
-
-  const { tokens, title, body } = parsed.data;
-
-  const results = await Promise.all(
-    tokens.map(async (token) => {
-      try {
-        const { messageId } = await sendPush({ token, title, body });
-        return { token, ok: messageId !== null, messageId };
-      } catch (error) {
-        logger.error("sendPush threw for token", error);
-        const message =
-          error instanceof Error ? error.message : "unknown error";
-        return { token, ok: false, error: message };
-      }
-    })
-  );
-
-  const okCount = results.filter((r) => r.ok).length;
-
-  return res.status(200).json({
-    success: true,
-    sent: okCount,
-    total: tokens.length,
-    results,
-  });
-});
+);

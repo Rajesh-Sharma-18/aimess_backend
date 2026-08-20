@@ -1,6 +1,8 @@
 import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 
+import { sendApiError } from "@aimess/utils";
+
 import { env } from "../config/env.js";
 
 /**
@@ -22,11 +24,17 @@ const PUBLIC_ADMIN_PATHS = new Set<string>([
   "/v1/health/ready",
 ]);
 
+/**
+ * 401 in the shared envelope. This wrote `{ success, message }` directly, so an
+ * admin client got no `error.code` to branch on and no `requestId` to quote —
+ * the two things every other 401 on the platform carries.
+ */
 function unauthorized(
+  req: Parameters<RequestHandler>[0],
   res: Parameters<RequestHandler>[1],
-  message: string
+  messageKey: string
 ): void {
-  res.status(401).json({ success: false, message });
+  sendApiError(req, res, { statusCode: 401, messageKey });
 }
 
 /**
@@ -41,18 +49,18 @@ export const adminJwt: RequestHandler = (req, res, next) => {
 
   if (!env.JWT_ADMIN_SECRET) {
     // Misconfiguration: fail closed rather than forwarding unauthenticated.
-    unauthorized(res, "Admin auth not configured");
+    unauthorized(req, res, "AUTH_UNAUTHORIZED");
     return;
   }
 
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
-    unauthorized(res, "Authentication token is required.");
+    unauthorized(req, res, "UNAUTHORIZED");
     return;
   }
   const token = header.slice("Bearer ".length).trim();
   if (!token) {
-    unauthorized(res, "Authentication token is required.");
+    unauthorized(req, res, "UNAUTHORIZED");
     return;
   }
 
@@ -61,9 +69,9 @@ export const adminJwt: RequestHandler = (req, res, next) => {
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
-      unauthorized(res, "Authentication token has expired.");
+      unauthorized(req, res, "AUTH_TOKEN_EXPIRED");
     } else {
-      unauthorized(res, "Invalid authentication token.");
+      unauthorized(req, res, "AUTH_INVALID_TOKEN");
     }
   }
 };

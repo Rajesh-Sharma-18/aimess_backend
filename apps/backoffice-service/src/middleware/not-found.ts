@@ -1,10 +1,6 @@
-import type { RequestHandler } from "express";
-
-import { HTTP_STATUS, t } from "@aimess/constants";
-
-/** Terminal 404 — any unmatched route returns a JSON envelope (never HTML). */
-export const notFound: RequestHandler = (req, res) => {
-  res
-    .status(HTTP_STATUS.NOT_FOUND)
-    .json({ success: false, message: t("ROUTE_NOT_FOUND", req.locale) });
-};
+/**
+ * Terminal 404 — any unmatched route returns the shared JSON envelope, never
+ * Express's HTML `finalhandler` body. Re-exported from `@aimess/utils` so all
+ * nine services answer identically.
+ */
+export { notFoundHandler as notFound } from "@aimess/utils";

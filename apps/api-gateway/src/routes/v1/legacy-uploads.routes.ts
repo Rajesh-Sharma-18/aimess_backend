@@ -1,7 +1,7 @@
 import express, { Router, type IRouter } from "express";
 import type { Request, Response } from "express";
 
-import { asyncHandler } from "@aimess/utils";
+import { asyncHandler, sendApiError } from "@aimess/utils";
 import { HTTP_STATUS } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
@@ -35,9 +35,11 @@ export function createLegacyUploadsRouter(mediaServiceUrl: string): IRouter {
       // Contract: `type` must be the literal "AVATAR".
       // Error envelope matches the platform shape `{ success:false, message }`.
       if (body.type !== "AVATAR") {
-        return res.status(HTTP_STATUS.BAD_REQUEST).json({
-          success: false,
-          message: 'Invalid upload type. Only "AVATAR" is supported.',
+        return sendApiError(req, res, {
+          statusCode: HTTP_STATUS.BAD_REQUEST,
+          code: "VALIDATION_FAILED",
+          fallbackMessage: 'Invalid upload type. Only "AVATAR" is supported.',
+          details: { type: ['Only "AVATAR" is supported.'] },
         });
       }
 
@@ -66,10 +68,10 @@ export function createLegacyUploadsRouter(mediaServiceUrl: string): IRouter {
       } catch (error) {
         logger.error("/users/uploads/url → media-service forward failed");
         logger.error(error);
-        return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
-          success: false,
-          message:
-            "Media service temporarily unavailable. Please try again later.",
+        return sendApiError(req, res, {
+          statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+          messageKey: "SERVICE_UNAVAILABLE",
+          retryAfterSec: 5,
         });
       }
 

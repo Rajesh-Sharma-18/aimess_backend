@@ -7,33 +7,66 @@ import {
 } from "@aimess/errors";
 
 /**
+ * A code-like token is an UPPER_SNAKE_CASE identifier. Every domain
+ * `messageKey` is one (`AUTH_EMAIL_EXISTS`, `COMMUNITY_JOIN_BANNED`, …);
+ * a validation detail is a human sentence and must never be echoed as a code.
+ */
+const CODE_LIKE = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * The stable, machine-readable classification a client branches on.
+ *
+ * Prefers the DOMAIN key (`AUTH_EMAIL_EXISTS`) when the error carries one,
+ * falling back to the TRANSPORT class derived from the status
+ * (`BAD_REQUEST`, `RATE_LIMITED`, …). Seven of the nine services already
+ * derived it this way — this is that rule, in one place.
+ */
+export function resolveApiErrorCode(
+  statusCode: number,
+  messageKey?: string
+): string {
+  if (messageKey && CODE_LIKE.test(messageKey)) return messageKey;
+  return resolveErrorCode(statusCode);
+}
+
+/** Field-level validation failures, keyed by dotted path. */
+export type ApiErrorDetails = Record<string, string[]>;
+
+/**
  * The structured error envelope every HTTP surface answers with.
  *
- * ## Why `message` appears twice
+ * ## Why fields are duplicated
  *
- * The documented shape is `{ success: false, error: { code, message, retryAfter,
- * retryable } }`. Every existing client — the web app's `getApiErrorMessage`,
- * the iOS and Android clients, and ~344 backend tests — reads the TOP-LEVEL
- * `message` that nine hand-rolled error handlers have emitted since day one.
- * Removing it in the same change that introduces `error` would break all of
- * them at once for no functional gain.
+ * This shape is the strict SUPERSET of the nine hand-rolled envelopes that
+ * preceded it, so adopting it breaks nothing:
  *
- * So this is a strictly ADDITIVE migration: the top-level `message` is retained
- * verbatim, and `error` is added beside it. New clients read `error.code` /
- * `error.retryAfter` / `error.retryable`; old clients keep working untouched.
+ * - top-level `message` — read by the web app's `getApiErrorMessage`, the iOS
+ *   and Android clients, and ~344 backend tests. Every service emitted it.
+ * - top-level `code` — auth, user, backoffice, community and media emitted it.
+ * - `error.statusCode` — chat-service emitted it.
+ * - `error.{code,message,retryAfter,retryable,requestId}` — the api-gateway and
+ *   chat-service envelope.
  *
- * Drop the top-level `message` only once every client reads `error.message` —
- * it is duplicated, not authoritative.
+ * `details` is the only genuinely new field (previously `errors`, and only in
+ * user-service). New clients should read `error.*`; the top-level `message` and
+ * `code` are duplicated mirrors, not authoritative, and can be dropped once
+ * every client has migrated.
  */
 export interface ApiErrorBody {
   success: false;
   /** @deprecated Read `error.message`. Retained for pre-existing clients. */
   message: string;
+  /** @deprecated Read `error.code`. Retained for pre-existing clients. */
+  code: string;
   error: {
-    /** Stable, machine-readable transport classification. */
-    code: ApiErrorCode;
+    /** Echo of the HTTP status, for clients that only see the parsed body. */
+    statusCode: number;
+    /** Stable, machine-readable classification — domain key or transport class. */
+    code: string;
     /** Localized, display-ready sentence. Same string as the top-level `message`. */
     message: string;
+    /** Field-level validation failures. Only present on 400/422. */
+    details?: ApiErrorDetails;
     /** Seconds to wait before retrying. Present on 429/503 when known. */
     retryAfter?: number;
     /** Whether re-sending this exact request could succeed later. */
@@ -69,8 +102,10 @@ export interface BuildApiErrorOptions {
   fallbackMessage?: string;
   retryAfterSec?: number;
   requestId?: string;
-  /** Override the status-derived code (rarely needed). */
-  code?: ApiErrorCode;
+  /** Field-level validation failures. */
+  details?: ApiErrorDetails;
+  /** Override the derived code (rarely needed). */
+  code?: ApiErrorCode | (string & {});
 }
 
 /** Build the wire body for a failed request. Pure — does not touch the response. */
@@ -81,9 +116,10 @@ export function buildApiError({
   fallbackMessage,
   retryAfterSec,
   requestId,
+  details,
   code,
 }: BuildApiErrorOptions): ApiErrorBody {
-  const resolvedCode = code ?? resolveErrorCode(statusCode);
+  const resolvedCode = code ?? resolveApiErrorCode(statusCode, messageKey);
   const message = localize(
     messageKey,
     locale,
@@ -93,9 +129,12 @@ export function buildApiError({
   return {
     success: false,
     message,
+    code: resolvedCode,
     error: {
+      statusCode,
       code: resolvedCode,
       message,
+      ...(details && Object.keys(details).length > 0 ? { details } : {}),
       ...(retryAfterSec !== undefined && retryAfterSec >= 0
         ? { retryAfter: retryAfterSec }
         : {}),

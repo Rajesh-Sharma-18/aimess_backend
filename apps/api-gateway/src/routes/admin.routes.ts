@@ -1,4 +1,9 @@
 import { logger } from "@aimess/logger";
+import {
+  buildApiError,
+  resolveLocaleFromRequest,
+  sendApiError,
+} from "@aimess/utils";
 import { Router, type IRouter } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
@@ -44,11 +49,10 @@ export function createAdminRouter(): IRouter {
 
   const target = env.BACKOFFICE_SERVICE_URL;
   if (!target) {
-    adminRouter.use((_req, res) => {
-      res.status(503).json({
-        success: false,
-        message:
-          "This service is currently unavailable. Please contact support.",
+    adminRouter.use((req, res) => {
+      sendApiError(req, res, {
+        statusCode: 503,
+        messageKey: "SERVICE_UNAVAILABLE",
       });
     });
     return adminRouter;
@@ -64,18 +68,25 @@ export function createAdminRouter(): IRouter {
       // Do NOT prepend `/v1` again or the upstream gets `/v1/v1/...`.
       pathRewrite: (path) => path.replace(/^\/admin/, "") || "/",
       on: {
-        error: (error, _req, res) => {
+        error: (error, req, res) => {
           logger.error("backoffice proxy error");
           logger.error(error);
           if (res && "writeHead" in res && !res.headersSent) {
-            res.writeHead(502, { "Content-Type": "application/json" });
-            res.end(
-              JSON.stringify({
-                success: false,
-                message:
-                  "Service temporarily unavailable. Please try again later.",
-              })
-            );
+            // Raw `writeHead` because http-proxy hands back a bare
+            // ServerResponse, not an Express one — so the envelope is built
+            // here and written directly. 503, not 502: the upstream is
+            // unreachable, and the client is told the failure is retryable.
+            const body = buildApiError({
+              statusCode: 503,
+              locale: resolveLocaleFromRequest(req as never),
+              messageKey: "SERVICE_UNAVAILABLE",
+              retryAfterSec: 5,
+            });
+            res.writeHead(503, {
+              "Content-Type": "application/json",
+              "Retry-After": "5",
+            });
+            res.end(JSON.stringify(body));
           }
         },
       },

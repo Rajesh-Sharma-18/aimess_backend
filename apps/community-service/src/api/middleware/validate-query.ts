@@ -1,29 +1,9 @@
-import { t } from "@aimess/constants";
-import { zodErrorMessage } from "@aimess/utils";
-import type { RequestHandler } from "express";
-import type { ZodSchema } from "zod";
-
-/** Validates `req.query` against a Zod schema before controllers run. */
-export function validateQuery(schema: ZodSchema): RequestHandler {
-  return (req, res, next) => {
-    const parsed = schema.safeParse(req.query);
-    if (!parsed.success) {
-      res.status(400).json({
-        success: false,
-        message:
-          zodErrorMessage(parsed.error) || t("VALIDATION_FAILED", req.locale),
-      });
-      return;
-    }
-    // Express 5 re-parses req.query on every access, so mutating it in place is
-    // lost (coerced/defaulted values never reach the controller). Replace the
-    // getter with the validated/coerced result.
-    Object.defineProperty(req, "query", {
-      value: parsed.data,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
-    next();
-  };
-}
+/**
+ * Validates `req.query` against a Zod schema before controllers run.
+ *
+ * Re-exported from `@aimess/utils` so all five services answer an invalid
+ * request identically — same status, same code, and the same field-level
+ * `error.details` a form needs to mark the offending input. Kept as a file so
+ * every existing route import is unchanged.
+ */
+export { validateQuery } from "@aimess/utils";

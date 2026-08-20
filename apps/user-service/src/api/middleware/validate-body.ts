@@ -1,25 +1,9 @@
-import { t } from "@aimess/constants";
-import { zodErrorMessage, zodFieldErrors } from "@aimess/utils";
-import type { RequestHandler } from "express";
-import type { ZodSchema } from "zod";
-
-export function validateBody(schema: ZodSchema): RequestHandler {
-  return (req, res, next) => {
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) {
-      // `code` + `errors` are additive: clients that only read `message` are
-      // unaffected, but a form can now mark the field that actually failed
-      // instead of showing one comma-joined sentence.
-      res.status(400).json({
-        success: false,
-        code: "VALIDATION_FAILED",
-        message:
-          zodErrorMessage(parsed.error) || t("VALIDATION_FAILED", req.locale),
-        errors: zodFieldErrors(parsed.error),
-      });
-      return;
-    }
-    req.body = parsed.data;
-    next();
-  };
-}
+/**
+ * Validates `req.body` against a Zod schema before controllers run.
+ *
+ * Re-exported from `@aimess/utils` so all five services answer an invalid
+ * request identically — same status, same code, and the same field-level
+ * `error.details` a form needs to mark the offending input. Kept as a file so
+ * every existing route import is unchanged.
+ */
+export { validateBody } from "@aimess/utils";

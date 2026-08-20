@@ -3,6 +3,7 @@ import { Router, type IRouter } from "express";
 import { createAuthenticateAccessToken } from "@aimess/auth-jwt";
 
 import { createBannedUserGuard } from "@aimess/redis";
+import { validateBody, validateParams } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -11,6 +12,10 @@ import {
   registerDevice,
   unregisterDevice,
 } from "../api/controllers/device.controller.js";
+import {
+  registerDeviceSchema,
+  unregisterDeviceParamsSchema,
+} from "../api/validators/device.validator.js";
 
 export const deviceRouter: IRouter = Router();
 
@@ -25,5 +30,15 @@ const authenticate = createAuthenticateAccessToken({
   assertUserBanned: createBannedUserGuard(() => redis),
 });
 
-deviceRouter.post("/", authenticate, registerDevice);
-deviceRouter.delete("/:token", authenticate, unregisterDevice);
+deviceRouter.post(
+  "/",
+  authenticate,
+  validateBody(registerDeviceSchema),
+  registerDevice
+);
+deviceRouter.delete(
+  "/:token",
+  authenticate,
+  validateParams(unregisterDeviceParamsSchema),
+  unregisterDevice
+);

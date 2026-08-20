@@ -3804,15 +3804,82 @@ export const openApiSchemas = {
   },
   ApiErrorResponse: {
     type: "object",
+    description:
+      "The single error envelope every service answers with. `error` is " +
+      "authoritative; the top-level `message` and `code` are deprecated " +
+      "mirrors kept for clients written before the envelope was unified.",
     properties: {
       success: { type: "boolean", example: false },
       message: {
         type: "string",
+        description:
+          "DEPRECATED mirror of `error.message`. Localized per request — never branch on it.",
         example: "Tài khoản hoặc mật khẩu không đúng",
       },
-      errors: { type: "object", description: "Present on validation errors" },
+      code: {
+        type: "string",
+        description: "DEPRECATED mirror of `error.code`.",
+        example: "AUTH_INVALID_CREDENTIALS",
+      },
+      error: { $ref: "#/components/schemas/ApiError" },
     },
-    required: ["success", "message"],
+    required: ["success", "message", "code", "error"],
+  },
+  ApiError: {
+    type: "object",
+    properties: {
+      statusCode: { type: "integer", example: 401 },
+      code: {
+        type: "string",
+        description:
+          "Stable, machine-readable classification — the DOMAIN key when the " +
+          "failure has one (`AUTH_INVALID_CREDENTIALS`, " +
+          "`COMMUNITY_JOIN_BANNED`), otherwise the transport class derived " +
+          "from the status (`BAD_REQUEST`, `NOT_FOUND`, `RATE_LIMITED`, " +
+          "`SERVER_ERROR`, …). This is the field to branch on.",
+        example: "AUTH_INVALID_CREDENTIALS",
+      },
+      message: {
+        type: "string",
+        description:
+          "Localized, display-ready sentence for the request locale.",
+        example: "Tài khoản hoặc mật khẩu không đúng",
+      },
+      details: {
+        type: "object",
+        additionalProperties: { type: "array", items: { type: "string" } },
+        description:
+          "Field-level validation failures keyed by dotted path, so a form " +
+          "can mark the offending input. Only present on 400/422.",
+        example: {
+          "notifications.quietHours.start": [
+            "Time must be in HH:mm 24-hour format",
+          ],
+        },
+      },
+      retryAfter: {
+        type: "integer",
+        description:
+          "Seconds to wait before retrying. Present on 429/503 when known, " +
+          "and mirrored in the `Retry-After` response header.",
+        example: 30,
+      },
+      retryable: {
+        type: "boolean",
+        description:
+          "Whether re-sending this exact request could succeed later. A " +
+          "statement about the SERVER, not the operation — combine it with " +
+          "request safety before auto-retrying a non-idempotent call.",
+        example: false,
+      },
+      requestId: {
+        type: "string",
+        description:
+          "Echo of `x-request-id`, so a user-reported failure can be matched " +
+          "to its server log line.",
+      },
+    },
+    required: ["statusCode", "code", "message", "retryable"],
   },
   AuthUser: {
     type: "object",
