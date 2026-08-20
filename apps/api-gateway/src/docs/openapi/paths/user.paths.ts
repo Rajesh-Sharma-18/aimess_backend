@@ -1623,7 +1623,7 @@ export const userPaths = {
               },
               notificationToggle: {
                 summary: "Turn one notification category off",
-                value: { notifications: { community: false } },
+                value: { notifications: { liveStream: false } },
               },
               quietHoursUpdate: {
                 summary: "Configure Quiet Hours (weeknights, 0=Sunday)",
@@ -1684,8 +1684,8 @@ export const userPaths = {
                     call: true,
                     friendRequest: true,
                     system: true,
-                    community: false,
-                    liveStream: true,
+                    community: true,
+                    liveStream: false,
                     showPreview: true,
                     quietHours: {
                       enabled: true,

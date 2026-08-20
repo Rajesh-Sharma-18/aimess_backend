@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminAuthService } from "../../services/index.js";
@@ -13,10 +14,9 @@ export const getMe: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const profile = await adminAuthService.getMe(req.admin!.id);
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: profile,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(profile, t("ADMIN_PROFILE_FETCHED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -32,11 +32,9 @@ export const updateMe: RequestHandler = (req, res, next) => {
         ...getRequestContext(req),
         sessionId: req.admin!.sid,
       });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: "Profile updated",
-        data: profile,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(profile, t("ADMIN_PROFILE_UPDATED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -56,11 +54,14 @@ export const changePassword: RequestHandler = (req, res, next) => {
         },
         { ...getRequestContext(req), sessionId: req.admin!.sid }
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("AUTH_CHANGE_PASSWORD_SUCCESS", req.locale),
-        data: { passwordChanged: true },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { passwordChanged: true },
+            t("AUTH_CHANGE_PASSWORD_SUCCESS", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

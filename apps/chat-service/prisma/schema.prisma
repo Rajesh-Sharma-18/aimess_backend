@@ -41,6 +41,16 @@ model PrivateRoom {
   unreadCountByUser         Json     @default("{}")
   lastReadAtByUser          Json     @default("{}")
   lastReadMessageIdByUser   Json     @default("{}")
+  // The EXPOSABLE half of the read pointer above: how far this user has read
+  // *while giving read receipts*, and when that pointer last moved. It stops
+  // dead while Settings → Chat → Read Receipt is off and resumes from where it
+  // stood, so a read taken with the switch off is never published — not live,
+  // and not on a later refresh once the switch goes back on. `lastRead*` keeps
+  // advancing regardless: unread badges are the reader's own state, never a
+  // receipt. A user with NO key here has never read under the new write path —
+  // their `lastRead*` pointer is the legacy receipt (see `receiptCursorOf`).
+  receiptReadMessageIdByUser Json    @default("{}")
+  receiptReadAtByUser       Json     @default("{}")
   hasUnreadByUser           Json     @default("{}")
   firstUnreadMessageIdByUser Json    @default("{}")
   lastUnreadMessageIdByUser Json     @default("{}")
@@ -410,6 +420,13 @@ model GroupMember {
   clearChatAt          DateTime?
   lastReadMessageId    String?   @db.ObjectId
   lastReadAt           DateTime?
+  // Exposable read pointer — see PrivateRoom.receiptReadMessageIdByUser. Frozen
+  // while this member's read receipts are off. `receiptReadAt` is the instant
+  // the RECEIPT happened (not the message's own createdAt, which is what
+  // `lastReadAt` stores here), because that instant is what decides whether a
+  // viewer who re-enabled receipts is allowed to see it.
+  receiptReadMessageId String?   @db.ObjectId
+  receiptReadAt        DateTime?
   unreadCount          Int       @default(0)
   notificationSettings Json      @default("{\"mute\": false, \"muteUntil\": null}")
   createdAt            DateTime  @default(now())
@@ -620,6 +637,9 @@ model RoomMember {
   mutedUntil DateTime?
   lastReadMessageId String?   @db.ObjectId
   lastReadAt        DateTime?
+  // Exposable read pointer — see PrivateRoom.receiptReadMessageIdByUser.
+  receiptReadMessageId String?   @db.ObjectId
+  receiptReadAt        DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

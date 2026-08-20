@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "@aimess/logger";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
+  STORED_TEXT_LOCALE,
   buildReactionActivityText,
   isCallContentType,
 } from "@aimess/constants";
@@ -1086,6 +1087,11 @@ export class ChatMessageOrchestrator {
             recalc.messageType,
             recalc.content
           );
+          // Only the GROUP recalc resolves a name (its rows render
+          // "<sender>: <preview>"); PRIVATE has none and "" is the documented
+          // sender-less value.
+          const recalcSenderName =
+            (recalc as { senderName?: string }).senderName ?? "";
           if (conversationType === "GROUP") {
             publishConvUpdatedSafe({
               redis: this.redis,
@@ -1114,6 +1120,7 @@ export class ChatMessageOrchestrator {
               // monotonic number instead of special-casing `deleteRecalc`.
               projectionRevision: result.revision ?? 0,
               senderId: recalc.senderId ?? "",
+              senderName: recalcSenderName,
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
               preview: {
@@ -1150,6 +1157,7 @@ export class ChatMessageOrchestrator {
               // surviving message's.
               projectionRevision: result.revision ?? 0,
               senderId: recalc.senderId ?? "",
+              senderName: recalcSenderName,
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
               preview: {
@@ -1190,6 +1198,9 @@ export class ChatMessageOrchestrator {
           const preview = recalc.hasLastMessage
             ? buildMessagePreview(recalc.messageType, recalc.content)
             : "";
+          // See the delete-for-everyone recalc above.
+          const recalcSenderName =
+            (recalc as { senderName?: string }).senderName ?? "";
           publishConvUpdatedSafe({
             redis: this.redis,
             type: conversationType,
@@ -1202,6 +1213,7 @@ export class ChatMessageOrchestrator {
                 : this.privateMessageService.getUnreadCountsByUser(rId),
             deleteRecalc: true,
             senderId: recalc.senderId ?? "",
+            senderName: recalcSenderName,
             lastMessageId: recalc.prevMessageId ?? "",
             // 0 = "this viewer has nothing visible left" (sorts to the bottom);
             // reusing the hidden row's time would pin it to the top.
@@ -1891,7 +1903,10 @@ export class ChatMessageOrchestrator {
   private async resolveBroadcastQuote(
     raw: unknown
   ): Promise<CanonicalQuote | null> {
-    const quote = buildCanonicalQuote(raw);
+    // One payload, many recipients: the broadcast keeps the stored English
+    // label (recipients re-read it localized on history/REST) rather than
+    // baking the SENDER's language into everyone's copy.
+    const quote = buildCanonicalQuote(raw, STORED_TEXT_LOCALE);
     if (!quote) return null;
     if (!quote.thumbnail) return quote;
     const urlMap = await resolveMediaUrlMap([quote.thumbnail]);

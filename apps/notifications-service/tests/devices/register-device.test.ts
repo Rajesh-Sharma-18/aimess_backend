@@ -59,7 +59,11 @@ describe("POST /v1/devices", () => {
       .send(validBody);
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true });
+    expect(res.body).toEqual({
+      success: true,
+      message: "Device registered",
+      data: null,
+    });
     expect(repo.upsert).toHaveBeenCalledTimes(1);
     expect(repo.upsert).toHaveBeenCalledWith({
       userId: TEST_USER_ID,
@@ -204,7 +208,11 @@ describe("POST /v1/devices", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
-    expect(res.body.message).toBe("Failed to register device");
+    // The handler no longer writes its own body: an unhandled repository
+    // failure now answers through the shared envelope, which never echoes the
+    // caught error and always carries a machine-readable code.
+    expect(res.body.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(res.body.error.retryable).toBe(true);
   });
 
   // --- EDGE -----------------------------------------------------------------

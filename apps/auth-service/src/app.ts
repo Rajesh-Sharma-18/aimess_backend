@@ -2,7 +2,7 @@ import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { auditContextMiddleware } from "@aimess/constants";
-import { localeMiddleware } from "@aimess/utils";
+import { localeMiddleware, notFoundHandler } from "@aimess/utils";
 
 import { accountDeletionRoutes } from "./api/routes/account-deletion.routes.js";
 import { authRoutes } from "./api/routes/auth.routes.js";
@@ -62,6 +62,9 @@ if (env.NODE_ENV === "development") {
   app.use("/api/auth", testPushRoutes);
 }
 
+// Terminates the chain so an unmatched path answers with the JSON envelope
+// instead of falling through to Express's HTML `finalhandler`.
+app.use(notFoundHandler);
 app.use(errorHandler);
 
 export default app;

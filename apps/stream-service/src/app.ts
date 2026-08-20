@@ -2,7 +2,7 @@ import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { auditContextMiddleware } from "@aimess/constants";
-import { localeMiddleware } from "@aimess/utils";
+import { localeMiddleware, notFoundHandler } from "@aimess/utils";
 
 import { createServiceRoutes } from "./api/routes/index.js";
 import type { StreamController } from "./api/controllers/index.js";
@@ -35,6 +35,9 @@ export function createApp(deps: AppDeps): Express {
   app.use("/internal", createInternalRoutes(deps.livestreamService));
   app.use("/api/v1", createServiceRoutes(deps.controller));
 
+  // Terminates the chain so an unmatched path answers with the JSON envelope
+  // instead of falling through to Express's HTML `finalhandler`.
+  app.use(notFoundHandler);
   app.use(errorHandler);
 
   return app;

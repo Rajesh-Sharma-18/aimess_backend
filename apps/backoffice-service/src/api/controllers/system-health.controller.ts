@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
-import { HTTP_STATUS } from "@aimess/constants";
+import { ApiResponse } from "@aimess/utils";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 import { systemHealthService } from "../../services/index.js";
 
@@ -9,11 +10,15 @@ import { systemHealthService } from "../../services/index.js";
  * never throws on a down dependency, so a partial outage returns 200 with the
  * affected components marked `down`/`degraded`.
  */
-export const getSystemHealth: RequestHandler = (_req, res, next) => {
+export const getSystemHealth: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const data = await systemHealthService.getSystemHealth();
-      res.status(HTTP_STATUS.OK).json({ success: true, data });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(data, t("ADMIN_SYSTEM_HEALTH_FETCHED", req.locale))
+        );
     } catch (error) {
       next(error);
     }

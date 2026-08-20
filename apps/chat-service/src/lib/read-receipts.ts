@@ -43,6 +43,88 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
  */
 export const MAX_READ_RECEIPT_USERS = 200;
 
+/**
+ * One member's EXPOSABLE read pointer — how far they have read *while giving
+ * receipts*, and when that pointer last moved.
+ *
+ * Rows written before this pair existed carry no `receiptRead*` at all. For
+ * those the plain read pointer IS the receipt: they were all written under the
+ * old always-expose behaviour, so falling back keeps every blue tick the fleet
+ * can already see instead of blanking history on deploy. Once a member reads
+ * once under the new write path the key exists — including when receipts are
+ * off, where it is frozen at its previous value — and the fallback stops.
+ */
+export function receiptCursorOf(member: {
+  lastReadMessageId?: string | null;
+  lastReadAt?: Date | null;
+  receiptReadMessageId?: string | null;
+  receiptReadAt?: Date | null;
+}): { messageId: string | null; readAt: Date | null } {
+  const written = member.receiptReadMessageId !== undefined;
+  return written
+    ? {
+        messageId: member.receiptReadMessageId ?? null,
+        readAt: member.receiptReadAt ?? null,
+      }
+    : {
+        messageId: member.lastReadMessageId ?? null,
+        readAt: member.lastReadAt ?? null,
+      };
+}
+
+/**
+ * {@link receiptCursorOf} for a PRIVATE room, whose pointers live in per-user
+ * JSON maps rather than a membership row. Same legacy rule: no key for this
+ * user in the receipt map means the row predates it, so the plain read pointer
+ * stands in.
+ */
+export function privateReceiptCursorOf(
+  room: {
+    lastReadMessageIdByUser?: unknown;
+    lastReadAtByUser?: unknown;
+    receiptReadMessageIdByUser?: unknown;
+    receiptReadAtByUser?: unknown;
+  } | null,
+  userId: string
+): { messageId: string | null; readAt: Date | null } {
+  const asMap = (v: unknown) => (v ?? {}) as Record<string, string | null>;
+  const receiptIds = asMap(room?.receiptReadMessageIdByUser);
+  const toDate = (raw: string | null | undefined) =>
+    raw ? new Date(raw) : null;
+  if (userId in receiptIds)
+    return {
+      messageId: receiptIds[userId] || null,
+      readAt: toDate(asMap(room?.receiptReadAtByUser)[userId]),
+    };
+  return {
+    messageId: asMap(room?.lastReadMessageIdByUser)[userId] || null,
+    readAt: toDate(asMap(room?.lastReadAtByUser)[userId]),
+  };
+}
+
+/**
+ * May a VIEWER be shown a receipt that happened at `readAt`?
+ *
+ * `readReceiptsEnabledAt` is the instant the viewer last switched receipts back
+ * ON. A receipt older than that line was withheld from them while the switch
+ * was off, and the switch flipping is not itself a read event — so it stays
+ * withheld forever. 0 (never switched off) admits everything, and so does a
+ * receipt with no timestamp at all: those are legacy rows, already visible.
+ *
+ * This is the VIEWER half of the point-in-time rule; the READER half is the
+ * frozen `receiptRead*` cursor above. Both are needed: the frozen cursor stops
+ * a reader from leaking reads they took with the switch off, and this stops a
+ * viewer's own off-period from being back-filled when they switch on again.
+ */
+export function receiptVisibleToViewer(
+  viewerReadReceiptsEnabledAt: number,
+  readAt: Date | null | undefined
+): boolean {
+  if (!viewerReadReceiptsEnabledAt) return true;
+  if (!readAt) return true;
+  return readAt.getTime() >= viewerReadReceiptsEnabledAt;
+}
+
 /** One member's read watermark, already proven to cover the target message. */
 export interface ReadReceiptCandidate {
   userId: string;
@@ -74,9 +156,15 @@ export interface ReadReceiptsPayload {
  * who gives no receipts is shown none. Throws rather than returning an empty
  * list so the client can hide the menu item instead of opening an empty sheet.
  */
-export async function assertMaySeeReadReceipts(userId: string): Promise<void> {
-  const { readReceipts } = await getAccountChatSettings(userId);
+export async function assertMaySeeReadReceipts(
+  userId: string
+): Promise<number> {
+  const { readReceipts, readReceiptsEnabledAt } =
+    await getAccountChatSettings(userId);
   if (!readReceipts) throw new ForbiddenError("CHAT_READ_RECEIPTS_DISABLED");
+  // Returned, not just checked: the sheet must also drop the readers whose
+  // receipt predates this viewer's own OFF → ON line.
+  return readReceiptsEnabledAt;
 }
 
 /**
@@ -87,12 +175,16 @@ export async function assertMaySeeReadReceipts(userId: string): Promise<void> {
 export async function buildReadReceipts(params: {
   messageId: string;
   candidates: ReadReceiptCandidate[];
+  /** The viewer's own OFF → ON line — {@link assertMaySeeReadReceipts}. */
+  viewerReadReceiptsEnabledAt: number;
   userSnapshotService: UserSnapshotService;
   cacheRepo: CacheRepository;
 }): Promise<ReadReceiptsPayload> {
-  const sorted = [...params.candidates].sort(
-    (a, b) => (b.readAt?.getTime() ?? 0) - (a.readAt?.getTime() ?? 0)
-  );
+  const sorted = [...params.candidates]
+    .filter((c) =>
+      receiptVisibleToViewer(params.viewerReadReceiptsEnabledAt, c.readAt)
+    )
+    .sort((a, b) => (b.readAt?.getTime() ?? 0) - (a.readAt?.getTime() ?? 0));
   const hasMore = sorted.length > MAX_READ_RECEIPT_USERS;
   const capped = sorted.slice(0, MAX_READ_RECEIPT_USERS);
 

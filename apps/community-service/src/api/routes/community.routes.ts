@@ -26,6 +26,7 @@ import {
   createCommunityInvite,
   createCommunityInviteLink,
   createCommunityJoinRequest,
+  getCommunityPublicCard,
   createCommunityReport,
   declineCommunityInvite,
   closeCommunity,
@@ -141,7 +142,18 @@ import {
 
 export const communityRoutes: IRouter = Router();
 
-// All community endpoints require a valid access token.
+// GET /by-handle/:handle/card — the ONLY unauthenticated community route.
+// Renders the "Open in app" link preview / OG unfurl, which has no session and
+// no user by definition. PUBLIC communities only: `getPublicCard` 404s a
+// private, closed or missing one, so nothing here is a leak. Registered before
+// `authenticateAccessToken` below — everything after it needs a token.
+communityRoutes.get(
+  "/by-handle/:handle/card",
+  validateParams(handleParamsSchema),
+  getCommunityPublicCard
+);
+
+// All other community endpoints require a valid access token.
 communityRoutes.use(authenticateAccessToken);
 
 // Static / specific routes MUST be registered before the `/:id` param route.

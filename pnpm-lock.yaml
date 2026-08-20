@@ -1100,6 +1100,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../errors
+      "@aimess/logger":
+        specifier: workspace:*
+        version: link:../logger
     devDependencies:
       "@types/express":
         specifier: ^5.0.6

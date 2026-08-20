@@ -52,6 +52,11 @@ jest.mock("../../src/config/redis.js", () => ({
 
 // --- @aimess/redis: socket event publishers --------------------------------
 jest.mock("@aimess/redis", () => ({
+  // Spread the real module first: a factory that returns only the stubs
+  // replaces EVERY other export with undefined, and `createBannedUserGuard`
+  // is called at import time by `authenticate-access-token.ts` - so every
+  // suite that touches `app.ts` died on "is not a function" before it ran.
+  ...jest.requireActual("@aimess/redis"),
   publishChatUserEvent: jest.fn().mockResolvedValue(undefined),
   publishCommunityRoomEvent: jest.fn().mockResolvedValue(undefined),
 }));
@@ -197,12 +202,21 @@ jest.mock("../../src/lib/community-cache.js", () => ({
 // anyway, so this preserves existing suites while giving close/reopen-focused
 // suites correct isOwnerClosed/isEffectivelyClosed derivation) -------------
 jest.mock("../../src/lib/community-access-policy.js", () => {
+  const { ForbiddenError } = jest.requireActual("@aimess/errors");
   const isOwnerClosed = (c) => (c?.status ?? "ACTIVE") === "CLOSED";
   const isPlatformSuspended = (c) => c?.moderationStatus === "SUSPENDED";
   const isEffectivelyClosed = (c) => isOwnerClosed(c) || isPlatformSuspended(c);
   const deriveStatus = (c) => (isOwnerClosed(c) ? "CLOSED" : "ACTIVE");
-  const assertWritable = jest.fn();
-  const assertJoinable = jest.fn();
+  // These were bare `jest.fn()`s, i.e. no-ops, which silently disabled the
+  // closed/suspended gate in EVERY suite - `join-community.test.ts` asserted a
+  // 403 the mock could never produce. The predicates above were already
+  // faithful, so the asserts are now built from them and throw the same
+  // ForbiddenError codes as `lib/community-access-policy.ts`.
+  const assertWritable = jest.fn((c) => {
+    if (isOwnerClosed(c)) throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+    if (isPlatformSuspended(c)) throw new ForbiddenError("COMMUNITY_SUSPENDED");
+  });
+  const assertJoinable = jest.fn(assertWritable);
   return {
     communityAccessPolicy: {
       isOwnerClosed: jest.fn(isOwnerClosed),
@@ -230,13 +244,56 @@ jest.mock("../../src/lib/invite-rate-limit.js", () => ({
 
 // --- User gRPC client: mock user-service calls ----------------------------
 jest.mock("../../src/lib/user-client.js", () => ({
-  fetchUserSnapshots: jest.fn().mockResolvedValue(new Map()),
+  // `fetchUserSnapshots` GUARANTEES an entry per requested id - it back-fills
+  // a placeholder for anything user-service did not resolve - which is why
+  // callers legitimately write `map.get(id)!`. Resolving a bare empty Map broke
+  // that invariant, so `approveJoinRequest` crashed on `snap.username`.
+  // Mirrors `FALLBACK_SNAPSHOT` in src/lib/user-client.ts.
+  fetchUserSnapshots: jest.fn(async (userIds: string[] = []) => {
+    return new Map(
+      userIds.map((userId) => [
+        userId,
+        {
+          userId,
+          username: userId,
+          displayName: "Unknown",
+          avatarObjectKey: null,
+          isDeleted: false,
+        },
+      ])
+    );
+  }),
+  // The HITS variant deliberately preserves the gap - an unresolved id is
+  // simply absent - so an empty Map IS a valid answer here.
   fetchUserSnapshotHits: jest.fn().mockResolvedValue(new Map()),
   fetchAcceptedFriendIds: jest.fn().mockResolvedValue([]),
   fetchExistingUserIds: jest.fn().mockResolvedValue([]),
+  // Recipient-eligibility gate for every invite path. Default: everyone is
+  // eligible; negative cases override it per test.
+  fetchInviteIneligibility: jest.fn().mockResolvedValue(new Map()),
+  INVITE_INELIGIBILITY_CODE: {
+    NOT_FOUND: "INVITE_RECIPIENT_NOT_FOUND",
+    DELETED: "INVITE_RECIPIENT_DELETED",
+    SUSPENDED: "INVITE_RECIPIENT_SUSPENDED",
+    BLOCKED: "INVITE_RECIPIENT_BLOCKED",
+  },
 }));
 
 // --- gRPC clients: prevent real channel creation --------------------------
+// `src/grpc/user.client.js` was the one the header claimed was mocked but never
+// was. Only `src/lib/user-client.js` (the wrapper above) had a factory, so any
+// suite importing the gRPC client directly loaded it for real — and it resolves
+// its .proto path with `import.meta.url`, which CJS-mode Jest cannot parse. The
+// suite died with "Cannot use 'import.meta' outside a module" before a single
+// test ran.
+jest.mock("../../src/grpc/user.client.js", () => ({
+  userGrpcClient: {
+    bulkGetUserSnapshots: jest.fn().mockResolvedValue([]),
+    checkFriendships: jest.fn().mockResolvedValue([]),
+    checkRelationships: jest.fn().mockResolvedValue([]),
+  },
+}));
+
 jest.mock("../../src/grpc/chat.client.js", () => ({
   getChatClient: jest.fn().mockReturnValue({
     GetCommunityLastMessages: jest.fn(),

@@ -82,6 +82,11 @@ function buildService(
     findById: jest.fn(),
     save: jest.fn(),
     findOne: jest.fn(),
+    // markMessageRead recomputes the unread badge in ONE batched call after
+    // advancing the pointer. Absent from this stub, the recompute threw and was
+    // swallowed by the service's own warn-and-continue, so the read succeeded
+    // but the badge assertion saw a stale count.
+    countUnreadBulk: jest.fn().mockResolvedValue(new Map()),
     ...overrides.messageRepo,
   };
   const memberRepo = {
@@ -91,6 +96,12 @@ function buildService(
     findActiveByRoom: jest.fn().mockResolvedValue([]),
     findVisibleByUserAndRooms: jest.fn().mockResolvedValue([]),
     bulkAdvanceReadToNow: jest.fn().mockResolvedValue(0),
+    // `assertCommunityMember` lazily heals a stale mirror: on a non-active
+    // local RoomMember it asks community-service and, if that says ACTIVE,
+    // upserts the mirror in place. Without this the heal threw
+    // "upsert is not a function" and the guard surfaced a TypeError instead of
+    // the ForbiddenError the caller is owed.
+    upsert: jest.fn(async (_roomId, _userId, mapped) => mapped),
     ...overrides.memberRepo,
   };
   const roomRepo = {
@@ -178,7 +189,9 @@ describe("CommunityMessageService.markMessageRead", () => {
       ROOM_ID,
       READER_ID,
       MESSAGE_ID,
-      expect.any(Date)
+      expect.any(Date),
+      // Read receipts on: the EXPOSABLE pointer moves with the read one.
+      true
     );
 
     // Redis publish called twice (community broadcast + own-device sync)
@@ -371,7 +384,10 @@ describe("CommunityMessageService.markMessageRead", () => {
       ROOM_ID,
       READER_ID,
       MESSAGE_ID,
-      expect.any(Date)
+      expect.any(Date),
+      // A banned reader publishes no receipt, so the exposable pointer freezes
+      // — the same gate the community broadcast below applies, but persisted.
+      false
     );
     const channels = redisMock.publish.mock.calls.map(
       ([channel]: [string]) => channel
@@ -938,7 +954,14 @@ describe("RoomMemberRepository — banned rows own a read pointer", () => {
     expect(findFirst.mock.calls[0][0].where.status).toEqual(VISIBLE_STATUSES);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { lastReadMessageId: MESSAGE_ID, lastReadAt: readAt },
+        // The exposable pointer rides along on every accepted read — see
+        // `lib/read-receipts.ts` for why it is a second pointer and not a flag.
+        data: {
+          lastReadMessageId: MESSAGE_ID,
+          lastReadAt: readAt,
+          receiptReadMessageId: MESSAGE_ID,
+          receiptReadAt: expect.any(Date),
+        },
       })
     );
   });
@@ -960,7 +983,14 @@ describe("RoomMemberRepository — banned rows own a read pointer", () => {
     await repo.advanceReadPointer(ROOM_ID, READER_ID, MESSAGE_ID, readAt);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { lastReadMessageId: MESSAGE_ID, lastReadAt: readAt },
+        // The exposable pointer rides along on every accepted read — see
+        // `lib/read-receipts.ts` for why it is a second pointer and not a flag.
+        data: {
+          lastReadMessageId: MESSAGE_ID,
+          lastReadAt: readAt,
+          receiptReadMessageId: MESSAGE_ID,
+          receiptReadAt: expect.any(Date),
+        },
       })
     );
 

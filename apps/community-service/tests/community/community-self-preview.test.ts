@@ -15,6 +15,8 @@
  * of truth `listMine` calls; no repository / cache surface needed.
  */
 
+import { runWithLocale } from "@aimess/constants";
+
 import {
   selectListPreview,
   applyPersonalLastActivityOverlay,
@@ -254,5 +256,63 @@ describe("applyPersonalLastActivityOverlay", () => {
       dateTime: JOIN_AT,
     });
     expect(out).toBe(communityWide);
+  });
+});
+
+/**
+ * The row and the transcript preview the SAME system line, so they must agree on
+ * language. Only the stored English rendering is swapped — a personal overlay
+ * (delete-for-me writes another message's text into `selfPreview`) and a legacy
+ * row with no stored event are returned exactly as stored.
+ */
+describe("selectListPreview — reader language", () => {
+  const roleChange = {
+    lastActivityType: "system",
+    lastActivityPreview: "Alex is now a moderator",
+    lastActivitySystemType: "ROLE_CHANGED",
+    lastActivitySystemMetadata: {
+      targetUserId: "u-alex",
+      targetName: "Alex",
+      newRole: "MODERATOR",
+    },
+  };
+
+  it("renders the row in the reader's language", () => {
+    const en = selectListPreview(roleChange, "u-other");
+    expect(en).toBe("Alex is now a moderator");
+
+    const vi = runWithLocale("vi", () =>
+      selectListPreview(roleChange, "u-other")
+    );
+    expect(vi).not.toBe(en);
+    expect(vi).toContain("Alex");
+
+    const th = runWithLocale("th", () =>
+      selectListPreview(roleChange, "u-other")
+    );
+    expect(th).not.toBe(en);
+    expect(th).not.toBe(vi);
+  });
+
+  it("keeps a legacy row (no stored event) exactly as written", () => {
+    const legacy = {
+      lastActivityType: "system",
+      lastActivityPreview: "Alex is now a moderator",
+    };
+    expect(
+      runWithLocale("vi", () => selectListPreview(legacy, "u-other"))
+    ).toBe("Alex is now a moderator");
+  });
+
+  it("never rewrites a personal overlay that is not this row's system line", () => {
+    const hidden = {
+      ...roleChange,
+      lastActivityUserId: "u-me",
+      // delete-for-me overlay: the viewer's own previous-visible message.
+      lastActivitySelfPreview: "See you tomorrow",
+    };
+    expect(runWithLocale("vi", () => selectListPreview(hidden, "u-me"))).toBe(
+      "See you tomorrow"
+    );
   });
 });

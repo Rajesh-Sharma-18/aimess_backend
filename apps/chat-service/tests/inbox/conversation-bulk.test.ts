@@ -649,6 +649,7 @@ describe("POST /conversations/read/bulk", () => {
       roomId: PRIVATE_ROOM,
       userId: TEST_USER_ID,
       upToMessageId: MSG_ID,
+      givesReceipts: true,
     });
     // Same effects as the per-room POST .../read: sender receipt + own-device sync.
     expect(
@@ -695,7 +696,8 @@ describe("POST /conversations/read/bulk", () => {
       TEST_USER_ID,
       MSG_ID,
       new Date(1000),
-      0
+      0,
+      true
     );
   });
 

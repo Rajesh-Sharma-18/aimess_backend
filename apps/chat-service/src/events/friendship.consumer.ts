@@ -375,7 +375,10 @@ export class FriendshipEventConsumer {
         type: "PRIVATE",
         roomId: room.roomId,
         recipientIds: [event.userA, event.userB],
+        // Nobody sent this — it is a friendship transition re-previewing the
+        // room's own surviving message. Sender-less by design.
         senderId: "",
+        senderName: "",
         lastMessageId: visible?.id ?? "",
         lastMessageAt: at.getTime(),
         // Never an unread: nothing was sent, so no badge and no receipt.

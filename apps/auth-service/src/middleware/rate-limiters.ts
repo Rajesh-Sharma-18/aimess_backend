@@ -1,5 +1,7 @@
 import type { Request } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import { rateLimitHandler } from "@aimess/utils";
+
 import { env } from "../config/env.js";
 import { resolveClientIp } from "../lib/session-context.js";
 
@@ -18,10 +20,7 @@ export const sensitiveAuthRateLimiter = rateLimit({
     trustProxy: env.TRUST_PROXY_HOPS > 0,
   },
   keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
-  message: {
-    success: false,
-    message: "Too many attempts, please try again later.",
-  },
+  handler: rateLimitHandler(),
 });
 
 /** QR login generation: configurable requests/minute/IP (unauthenticated endpoint). */
@@ -32,10 +31,7 @@ export const qrGenerationRateLimiter = rateLimit({
   legacyHeaders: false,
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
   keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
-  message: {
-    success: false,
-    message: "Too many QR login sessions requested, please try again later.",
-  },
+  handler: rateLimitHandler(),
 });
 
 // NOTE: there is deliberately no `deleteAccountRateLimiter` here any more.
@@ -60,10 +56,7 @@ export const changePasswordRateLimiter = rateLimit({
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
   keyGenerator: (req: Request) =>
     req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
-  message: {
-    success: false,
-    message: "Too many attempts, please try again later.",
-  },
+  handler: rateLimitHandler(),
 });
 
 /** QR login scan: configurable requests/minute/user (authenticated endpoint). */
@@ -75,8 +68,5 @@ export const qrScanRateLimiter = rateLimit({
   validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
   keyGenerator: (req: Request) =>
     req.auth?.userId ?? ipKeyGenerator(resolveClientIp(req)),
-  message: {
-    success: false,
-    message: "Too many QR scan attempts, please try again later.",
-  },
+  handler: rateLimitHandler(),
 });

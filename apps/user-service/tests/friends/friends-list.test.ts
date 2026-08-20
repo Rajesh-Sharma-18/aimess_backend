@@ -17,6 +17,16 @@ jest.mock("../../src/services/avatar.service.js", () => ({
     resolveViewUrlForClient: jest.fn(async () => null),
   },
 }));
+// `listFriends` reads the per-friend call allow-list alongside the profile page
+// (one `Promise.all`). Only the friends repository was mocked, so this one hit
+// a real Prisma client that the suite never configures and every populated page
+// 500'd on "Cannot read properties of undefined (reading 'findMany')". The
+// empty-list case passed only because it returns before this call.
+jest.mock("../../src/repositories/user-settings.repository.js", () => ({
+  userSettingsRepository: {
+    findCallAllowedIds: jest.fn(async () => []),
+  },
+}));
 
 import request from "supertest";
 

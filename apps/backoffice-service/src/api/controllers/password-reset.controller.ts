@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminPasswordResetService } from "../../services/index.js";
@@ -18,11 +19,9 @@ export const forgotPassword: RequestHandler = (req, res, next) => {
       await adminPasswordResetService.requestOtp(getRequestContext(req), {
         email,
       });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_OTP_SENT", req.locale),
-        data: { email },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse({ email }, t("ADMIN_OTP_SENT", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -35,11 +34,9 @@ export const verifyOtp: RequestHandler = (req, res, next) => {
     try {
       const { email, code } = req.body as VerifyOtpInput;
       const result = await adminPasswordResetService.verifyOtp({ email, code });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_OTP_VERIFIED", req.locale),
-        data: result,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_OTP_VERIFIED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -54,11 +51,9 @@ export const resendOtp: RequestHandler = (req, res, next) => {
       await adminPasswordResetService.resendOtp(getRequestContext(req), {
         email,
       });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_OTP_SENT", req.locale),
-        data: { email },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse({ email }, t("ADMIN_OTP_SENT", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -74,11 +69,14 @@ export const resetPassword: RequestHandler = (req, res, next) => {
         resetToken,
         password,
       });
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        message: t("ADMIN_PASSWORD_RESET_SUCCESS", req.locale),
-        data: { reset: true },
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { reset: true },
+            t("ADMIN_PASSWORD_RESET_SUCCESS", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }

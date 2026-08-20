@@ -3,7 +3,8 @@
  *
  * Verifies the COMMUNITY conversationType branch added alongside T7:
  *
- *   - COMMUNITY messages use category:"communityEnabled" (not "chatEnabled")
+ *   - COMMUNITY messages use category:"chatEnabled", same as PRIVATE and GROUP —
+ *     the account-level Chat toggle covers "1-1, group, community messages"
  *   - communityId is forwarded in the FCM data map so the client can deep-link
  *     to the correct community chat screen
  *   - PRIVATE and GROUP messages continue to use category:"chatEnabled"
@@ -124,7 +125,7 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
     isGroupMutedMock.mockResolvedValue(false); // default: not muted
   });
 
-  it("COMMUNITY → category:communityEnabled + communityId in FCM data", async () => {
+  it("COMMUNITY → category:chatEnabled + communityId in FCM data", async () => {
     consume(
       makeMsg({ ...BASE, conversationType: "COMMUNITY", communityId: "comm1" })
     );
@@ -141,7 +142,7 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
       },
     ];
     const push = builderFn("recipient-uuid");
-    expect(push.category).toBe("communityEnabled");
+    expect(push.category).toBe("chatEnabled");
     expect(push.data.communityId).toBe("comm1");
     expect(push.data.conversationType).toBe("COMMUNITY");
     // Regression: conversation-based grouping (thread-id) keyed by communityId,
@@ -682,6 +683,74 @@ describe("startChatConsumer — push title tracks the event's room name", () => 
     expect(push.showPreviewOverride?.("en")).toBe(
       "New message in Family Group 2026"
     );
+  });
+
+  it("GROUP → the group avatar rides the data map under BOTH the generic and the group-specific key (never the sender's)", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "GROUP",
+        groupName: "Testing Vasundhara",
+        conversationAvatar: "https://cdn.example.com/group.png",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.data.conversationAvatar).toBe(
+      "https://cdn.example.com/group.png"
+    );
+    // Android MESSAGE pushes are data-only, so the data map is the only place a
+    // picture can reach the tray — and a client keyed on the same name group
+    // lifecycle events use must find it there too.
+    expect(push.data.groupAvatarUrl).toBe("https://cdn.example.com/group.png");
+    // The actor's avatar is still carried for the in-app row, but it is NOT
+    // what represents the conversation.
+    expect(push.data.senderAvatar).toBe("https://cdn.example.com/alice.png");
+    expect(push.data.communityAvatarUrl).toBeUndefined();
+  });
+
+  it("GROUP with no avatar → no avatar keys at all (empty string would be a broken image, not a fallback)", async () => {
+    consume(
+      makeMsg({ ...BASE, conversationType: "GROUP", groupName: "No Photo" })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.data.conversationAvatar).toBeUndefined();
+    expect(push.data.groupAvatarUrl).toBeUndefined();
+  });
+
+  it("COMMUNITY → the room logo rides under communityAvatarUrl, the key every other community push uses", async () => {
+    consume(
+      makeMsg({
+        ...BASE,
+        conversationType: "COMMUNITY",
+        communityId: "comm1",
+        conversationAvatar: "https://cdn.example.com/community.png",
+      })
+    );
+    await flush();
+
+    const push = pushFor();
+    expect(push.data.communityAvatarUrl).toBe(
+      "https://cdn.example.com/community.png"
+    );
+    expect(push.data.conversationAvatar).toBe(
+      "https://cdn.example.com/community.png"
+    );
+    expect(push.data.groupAvatarUrl).toBeUndefined();
+  });
+
+  it("PRIVATE → no conversation avatar (the sender IS the entity — unchanged behaviour)", async () => {
+    consume(makeMsg({ ...BASE, conversationType: "PRIVATE" }));
+    await flush();
+
+    const push = pushFor();
+    expect(push.data.conversationAvatar).toBeUndefined();
+    expect(push.data.groupAvatarUrl).toBeUndefined();
+    expect(push.data.communityAvatarUrl).toBeUndefined();
+    expect(push.data.senderAvatar).toBe("https://cdn.example.com/alice.png");
   });
 
   it("PRIVATE → still titles on the sender (no room name involved)", async () => {

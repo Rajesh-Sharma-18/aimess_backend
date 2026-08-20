@@ -1,3 +1,4 @@
+import { currentLocale } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -10,6 +11,11 @@ import { publishChatUserEvent } from "@aimess/redis";
 
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
+import { foldTickStatus } from "../lib/tick-status.js";
+import {
+  receiptCursorOf,
+  receiptVisibleToViewer,
+} from "../lib/read-receipts.js";
 import {
   buildAutoDeleteWire,
   readPolicyVersion,
@@ -167,7 +173,11 @@ export function buildGroupLastActivity(
     type: "message",
     userId: (lp.senderId as string) || null,
     username: (lp.senderName as string) || "",
-    preview: convertMessageToPreview(contentType, { text: lp.text ?? "" }),
+    preview: convertMessageToPreview(
+      contentType,
+      { text: lp.text ?? "" },
+      currentLocale()
+    ),
     dateTime: createdAt,
     messageId: (lp.messageId as string) || "",
     clientMessageId: (lp.clientMessageId as string) ?? null,
@@ -476,8 +486,8 @@ export class GroupRoomService {
     // receipts to see one, and a member who disabled them gives none, so they
     // never count towards "everyone has read it". Cached per user (60s TTL), so
     // this is one lookup per distinct member on the page, not one per room.
-    const viewerSeesReceipts = (await getAccountChatSettings(userId))
-      .readReceipts;
+    const viewerSettings = await getAccountChatSettings(userId);
+    const viewerSeesReceipts = viewerSettings.readReceipts;
     const otherMemberIds = new Set<string>();
     for (const roomId of ownRoomIds) {
       for (const member of activeMembersByRoom.get(roomId) ?? []) {
@@ -497,8 +507,11 @@ export class GroupRoomService {
     for (const roomId of ownRoomIds) {
       idsToResolve.add(lastMessageIdByRoom.get(roomId) as string);
       for (const member of activeMembersByRoom.get(roomId) ?? []) {
-        if (member.userId !== userId && member.lastReadMessageId)
-          idsToResolve.add(member.lastReadMessageId);
+        if (member.userId === userId) continue;
+        // The EXPOSABLE pointer — frozen while that member's receipts are off,
+        // so a read taken during the off window can never turn this tick blue.
+        const cursor = receiptCursorOf(member);
+        if (cursor.messageId) idsToResolve.add(cursor.messageId);
       }
     }
     const resolvedMessages = idsToResolve.size
@@ -521,21 +534,6 @@ export class GroupRoomService {
       const others = (activeMembersByRoom.get(roomId) ?? []).filter(
         (m) => m.userId !== userId
       );
-      const allRead =
-        viewerSeesReceipts &&
-        others.length > 0 &&
-        lastSeq > 0 &&
-        others.every(
-          (m) =>
-            memberGivesReceipts.get(m.userId) !== false &&
-            (m.lastReadMessageId
-              ? (seqById.get(m.lastReadMessageId) ?? 0)
-              : 0) >= lastSeq
-        );
-      if (allRead) {
-        result.set(roomId, "READ");
-        continue;
-      }
       const lastMsg = lastMessageById.get(lastMessageId) as
         | { deliveredTo?: unknown }
         | undefined;
@@ -544,7 +542,34 @@ export class GroupRoomService {
         : [];
       const otherIds = new Set(others.map((m) => m.userId));
       const anyDelivered = deliveredTo.some((id) => otherIds.has(id));
-      result.set(roomId, anyDelivered ? "DELIVERED" : "SENT");
+      // Same fold the chatroom bubble runs, over the same settings-gated
+      // watermarks `getMemberReadCursors` hands the client as `memberReadSeq`.
+      // A member who gives no receipts stays in the array at 0 rather than
+      // being dropped, so "everyone else read it" can never be satisfied by
+      // the members who happen to broadcast.
+      result.set(
+        roomId,
+        foldTickStatus({
+          seq: lastSeq,
+          otherCount: others.length,
+          readSeqs: viewerSeesReceipts
+            ? others.map((m) => {
+                const cursor = receiptCursorOf(m);
+                return memberGivesReceipts.get(m.userId) === false ||
+                  !cursor.messageId ||
+                  // Receipts older than the viewer's own OFF → ON line were
+                  // withheld while it was off and stay withheld.
+                  !receiptVisibleToViewer(
+                    viewerSettings.readReceiptsEnabledAt,
+                    cursor.readAt
+                  )
+                  ? 0
+                  : (seqById.get(cursor.messageId) ?? 0);
+              })
+            : [],
+          deliveredSeqs: anyDelivered ? [lastSeq] : [],
+        })
+      );
     }
     return result;
   }
@@ -1058,7 +1083,9 @@ export class GroupRoomService {
       type: "GROUP",
       roomId,
       recipientIds: [userId],
+      // Emptied row: no message, so no sender and no name.
       senderId: "",
+      senderName: "",
       lastMessageId: "",
       lastMessageAt: 0,
       preview: { contentType: "", text: "", createdAt: 0 },

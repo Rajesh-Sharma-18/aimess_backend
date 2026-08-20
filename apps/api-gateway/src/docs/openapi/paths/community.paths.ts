@@ -5453,14 +5453,23 @@ export const communityPaths = {
                                 code: {
                                   type: "string",
                                   enum: [
-                                    "USER_NOT_FOUND",
+                                    "INVITE_RECIPIENT_NOT_FOUND",
+                                    "INVITE_RECIPIENT_DELETED",
+                                    "INVITE_RECIPIENT_SUSPENDED",
+                                    "INVITE_RECIPIENT_BLOCKED",
                                     "ALREADY_MEMBER",
                                     "USER_BANNED",
                                   ],
                                   description:
-                                    "USER_NOT_FOUND = platform user does not exist; " +
+                                    "Recipient-account gate (shared with the group invite bulk-send): " +
+                                    "INVITE_RECIPIENT_NOT_FOUND = no such account; " +
+                                    "INVITE_RECIPIENT_DELETED = the account was deleted; " +
+                                    "INVITE_RECIPIENT_SUSPENDED = the account is admin-suspended/banned; " +
+                                    "INVITE_RECIPIENT_BLOCKED = a block exists in either direction. " +
+                                    "Community-scoped outcomes: " +
                                     "ALREADY_MEMBER = already an ACTIVE member of this community; " +
-                                    "USER_BANNED = banned from this community.",
+                                    "USER_BANNED = banned from this community. " +
+                                    "The code is also the i18n message key of `message`.",
                                 },
                                 message: {
                                   type: "string",

@@ -1,28 +1,9 @@
-import type { NextFunction, Request, Response } from "express";
-import type { ZodSchema } from "zod";
-
-import { zodErrorMessage } from "@aimess/utils";
-
 /**
- * Express middleware factory: validate request body against a Zod schema.
- * On success, replaces `req.body` with the parsed (and coerced) value.
- * On failure, responds 400 with all issues merged into a single-line message.
+ * Validates `req.body` against a Zod schema before controllers run.
+ *
+ * Re-exported from `@aimess/utils` so all five services answer an invalid
+ * request identically — same status, same code, and the same field-level
+ * `error.details` a form needs to mark the offending input. Kept as a file so
+ * every existing route import is unchanged.
  */
-export function validateBody(schema: ZodSchema) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    // Express 5 leaves `req.body` undefined when the request carries no body at
-    // all (Express 4 defaulted it to `{}`). Endpoints whose schema is entirely
-    // optional — `/:roomId/leave` — must still accept a body-less POST, so
-    // normalize here instead of teaching every such schema to accept undefined.
-    // Schemas with required fields still reject `{}` with the same 400.
-    const result = schema.safeParse(req.body ?? {});
-    if (!result.success) {
-      res
-        .status(400)
-        .json({ success: false, message: zodErrorMessage(result.error) });
-      return;
-    }
-    req.body = result.data;
-    next();
-  };
-}
+export { validateBody } from "@aimess/utils";

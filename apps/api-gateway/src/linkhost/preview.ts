@@ -1,6 +1,17 @@
 import { env } from "../config/env.js";
 import { deferredToken, type LinkTarget } from "./detect-link.js";
-import type { PublicCommunityCard } from "./public-card.js";
+
+/**
+ * Card data rendered on the interstitial. A PUBLIC community card and a GROUP
+ * invite card are the same shape here — only `unfurl` differs (see below).
+ */
+export interface PreviewCard {
+  name: string;
+  description: string | null;
+  avatarUrl: string | null;
+  bannerUrl?: string | null;
+  memberCount: number;
+}
 
 /** HTML-escape untrusted text before interpolation. */
 function esc(value: string): string {
@@ -40,8 +51,16 @@ function webTargetPath(target: LinkTarget): string {
 
 interface PreviewOptions {
   target: LinkTarget;
-  /** Non-null only for resolvable PUBLIC handles. */
-  card: PublicCommunityCard | null;
+  /** Non-null for a resolvable PUBLIC handle or a live GROUP invite token. */
+  card: PreviewCard | null;
+  /**
+   * Whether this card may go into the OG/Twitter tags. TRUE only for PUBLIC
+   * communities: a group invite link pasted into a chat would otherwise unfurl
+   * the group's name, avatar and member count to everyone in that chat, so a
+   * group renders its real metadata on the PAGE (the visitor holds the token)
+   * but keeps generic tags for crawlers (spec §14/§16).
+   */
+  unfurl: boolean;
   /** Absolute URL of this preview page (for og:url). */
   pageUrl: string;
 }
@@ -54,7 +73,7 @@ interface PreviewOptions {
  * deferred-deep-link store fallback.
  */
 export function renderPreviewPage(opts: PreviewOptions): string {
-  const { target, card, pageUrl } = opts;
+  const { target, card, pageUrl, unfurl } = opts;
 
   const isPrivate = target.kind === "private";
   const isGroup = target.kind === "group";
@@ -68,13 +87,20 @@ export function renderPreviewPage(opts: PreviewOptions): string {
     : isGroup
       ? "You've been invited to a group chat on AIMESS. Open the app to join."
       : "Join this community on AIMESS.";
-  // `card` is non-null ONLY for a resolvable PUBLIC handle, so a private code or
-  // a group token can never reach the real-metadata branch (spec §6.5).
   const title = card?.name ?? genericTitle;
-  const description = card?.description ?? genericDescription;
-  const image = card?.bannerUrl ?? card?.avatarUrl ?? "";
+  // A description identical to the name renders the same string twice.
+  const about =
+    card && card.description?.trim() !== card.name.trim()
+      ? card.description
+      : null;
+  const description = about ?? genericDescription;
   const memberLine =
     card != null ? `${card.memberCount.toLocaleString()} members` : "";
+
+  // Crawler-facing values. Never the group's own metadata — see `unfurl`.
+  const ogTitle = unfurl ? title : genericTitle;
+  const ogDescription = unfurl ? description : genericDescription;
+  const image = unfurl ? (card?.bannerUrl ?? card?.avatarUrl ?? "") : "";
 
   const token = deferredToken(target);
   const clientConfig = {
@@ -106,9 +132,9 @@ export function renderPreviewPage(opts: PreviewOptions): string {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>${esc(title)}</title>
-<meta property="og:title" content="${esc(title)}"/>
-<meta property="og:description" content="${esc(description)}"/>
+<title>${esc(ogTitle)}</title>
+<meta property="og:title" content="${esc(ogTitle)}"/>
+<meta property="og:description" content="${esc(ogDescription)}"/>
 <meta property="og:type" content="website"/>
 <meta property="og:url" content="${esc(pageUrl)}"/>
 ${ogImageTag}

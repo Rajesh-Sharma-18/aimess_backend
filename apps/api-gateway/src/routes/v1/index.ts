@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 
 import { createServiceProxy } from "../../proxy/create-service-proxy.js";
+import { createChatBanGate } from "../../middleware/ban-gate.js";
 import {
   sensitiveAuthRateLimiter,
   otpRateLimiter,
@@ -13,6 +14,7 @@ import { appVersionRouter } from "./app-version.routes.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
 import { createNotificationsAliasRouter } from "./notifications.routes.js";
 import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
+import { invitesRouter } from "./invites.routes.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 
 export function createV1Router(_messagingClient: MessagingClient): IRouter {
@@ -36,6 +38,21 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // Dedicated limiter for the public invite-link preview endpoint (unauthenticated,
   // enumeration risk). Must be registered before the generic service proxy.
   v1Router.use("/communities/invite-links", inviteLinkPreviewRateLimiter);
+
+  // community-service's card route is the one unauthenticated community
+  // endpoint, so it carries the same enumeration risk as the invite preview and
+  // shares its limiter. The authenticated `/by-handle/:handle` resolver above it
+  // is deliberately NOT throttled this hard — normal app navigation uses it.
+  v1Router.use(
+    "/communities/by-handle/:handle/card",
+    inviteLinkPreviewRateLimiter
+  );
+
+  // Unauthenticated preview card for a shared link (community handle / group
+  // invite token) — what the web interstitial renders. Same enumeration risk as
+  // the invite-link preview above, so it shares that limiter, and it is mounted
+  // before the generic service proxies because it fans out to two services.
+  v1Router.use("/invites", inviteLinkPreviewRateLimiter, invitesRouter);
 
   // Rate-limit device-token registration (POST /api/v1/devices).
   // Token floods are cheap to send but expensive to prune; 10/min per IP
@@ -74,6 +91,12 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   for (const otpPath of ["/auth/verify-otp", "/auth/resend-otp"]) {
     v1Router.use(otpPath, otpRateLimiter);
   }
+
+  // Scoped ban gate: reject a system-banned user's still-valid access token on
+  // chat/group REST before it reaches chat-service (spec §28 — an old token must
+  // not outlive the ban). Registered before the generic proxy so it runs first
+  // on `/chat`; fail-open, so it never breaks chat for non-banned users.
+  v1Router.use("/chat", createChatBanGate());
 
   for (const service of getServicesForVersion("v1")) {
     v1Router.use(

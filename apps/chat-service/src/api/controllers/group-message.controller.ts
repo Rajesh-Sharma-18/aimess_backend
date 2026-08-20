@@ -174,12 +174,20 @@ export class GroupMessageController {
     // Best-effort: never blocks/fails the message page itself.
     // pinnedMessage rides along on every page so the pinned banner hydrates from
     // the timeline call itself instead of a second round-trip.
-    const [memberReadSeq, pinnedMessage] = await Promise.all([
-      this.messageService
-        .getMemberReadCursors(roomId, userId)
-        .catch(() => ({}) as Record<string, number>),
-      this.pinService.getActivePinSummary(roomId, userId),
-    ]);
+    // `memberDeliveredSeq` is the parallel signal for the grey ✓✓ tier. Without
+    // it the sender's group bubbles collapsed to a single ✓ on every reload
+    // while the inbox row (which folds `deliveredTo` server-side) still said
+    // DELIVERED — the same message, two ticks.
+    const [memberReadSeq, memberDeliveredSeq, pinnedMessage] =
+      await Promise.all([
+        this.messageService
+          .getMemberReadCursors(roomId, userId)
+          .catch(() => ({}) as Record<string, number>),
+        this.messageService
+          .getMemberDeliveredCursors(roomId, userId)
+          .catch(() => ({}) as Record<string, number>),
+        this.pinService.getActivePinSummary(roomId, userId),
+      ]);
 
     if (around) {
       const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
@@ -203,7 +211,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, memberReadSeq, pinnedMessage },
+            { ...paginated, memberReadSeq, memberDeliveredSeq, pinnedMessage },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -244,7 +252,7 @@ export class GroupMessageController {
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, memberReadSeq, pinnedMessage },
+            { ...paginated, memberReadSeq, memberDeliveredSeq, pinnedMessage },
             paginated.data.length
               ? t("CHAT_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_MESSAGES_FOUND", req.locale)
@@ -291,7 +299,10 @@ export class GroupMessageController {
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse({ ...paginated, memberReadSeq, pinnedMessage }, msg)
+        new ApiResponse(
+          { ...paginated, memberReadSeq, memberDeliveredSeq, pinnedMessage },
+          msg
+        )
       );
   }
 
@@ -541,6 +552,10 @@ export class GroupMessageController {
             // guard — it points BACKWARD at the previous visible message.
             deleteRecalc: true,
             senderId: recalc.senderId ?? "",
+            // The PREVIOUS visible message's sender, which the recalc already
+            // resolved — a group row keeps its "<name>: <preview>" prefix after
+            // the last message is deleted.
+            senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
             preview: { contentType: recalc.messageType, text: preview },
@@ -576,6 +591,7 @@ export class GroupMessageController {
               this.messageService.getUnreadCountsByUser(rId),
             deleteRecalc: true,
             senderId: recalc.senderId ?? "",
+            senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
             // 0 = "this viewer has nothing visible left" (sorts to the bottom);
             // reusing the hidden row's time would pin it to the top.
@@ -794,6 +810,7 @@ export class GroupMessageController {
       redis: this.redis,
       type: "GROUP",
       roomId: targetRoomId,
+      senderName: senderName ?? (full.senderName as string) ?? "",
       fetchRecipients: () =>
         this.messageService.getActiveMemberIds(targetRoomId),
       senderId: userId,

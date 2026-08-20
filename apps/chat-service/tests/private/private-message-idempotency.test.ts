@@ -25,9 +25,21 @@ function buildService() {
     createMessage: jest.fn(),
     createForwardedMessage: jest.fn(),
     findById: jest.fn(),
+    // Duplicate-collapse first asks whether the colliding clientMessageId was
+    // an ALBUM batch before falling back to the single-row lookup. These specs
+    // all send one message, so there is no batch.
+    findAlbumBatchByClientMessageId: jest.fn(async () => []),
   };
   const roomRepo = {
     allocateSequence: jest.fn(async () => 7),
+    // The send path moved to a BLOCK allocation via `allocateRoomSlot`
+    // (lib/room-lock.ts) so one album's rows share a contiguous range; this
+    // stub still only had the single-slot API it replaced.
+    allocateSequenceBlock: jest.fn(async (roomId: string, count: number) => ({
+      lastSequence: 6 + count,
+      lastRevision: 6 + count,
+      room: { roomId, participants: [SENDER, RECEIVER] },
+    })),
     updateRoomOnNewMessage: jest.fn(async () => undefined),
     // forwardMessage now unconditionally binds the caller to the SOURCE message's
     // ACTUAL room (closes the gRPC/socket read-IDOR, H-1). This idempotency-race
@@ -37,10 +49,23 @@ function buildService() {
       roomId: ROOM,
       participants: [SENDER, RECEIVER],
     })),
+    // The forward path takes the sequence number and the room's auto-delete
+    // timer off ONE write, so it uses this rather than `allocateSequence`.
+    allocateSequenceWithRoom: jest.fn(async (roomId: string) => ({
+      sequenceNumber: 7,
+      room: { roomId, participants: [SENDER, RECEIVER] },
+    })),
   };
   const cacheRepo = {};
   const userSnapshotService = { getUserSnapshotsMap: jest.fn() };
-  const userServiceClient = { checkFriendship: jest.fn(async () => true) };
+  // The send gate checks friendship AND the block list; this stub predates the
+  // block check, so every send threw "isFriendshipBlocked is not a function"
+  // and the P2002-collapse assertions below never ran. Not blocked = the
+  // precondition this suite assumes.
+  const userServiceClient = {
+    checkFriendship: jest.fn(async () => true),
+    isFriendshipBlocked: jest.fn(async () => false),
+  };
   const reportRepo = {};
 
   const service = new PrivateMessageService(

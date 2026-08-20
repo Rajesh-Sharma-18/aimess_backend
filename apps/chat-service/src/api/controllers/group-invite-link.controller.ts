@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
-import { HTTP_STATUS, t } from "@aimess/constants";
+import { HTTP_STATUS, t, type MessageKey } from "@aimess/constants";
 
 import { buildListResponse } from "../../lib/pagination.js";
 import type { GroupInviteLinkService } from "../../services/group-invite-link.service.js";
@@ -56,7 +56,17 @@ export class GroupInviteLinkController {
       userIds,
       token,
     });
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    // Per-recipient failures ride inside a 200 (partial-success contract), so
+    // the error-handler never localizes them — do it here. `code` stays the
+    // stable machine value clients switch on.
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse({
+        ...result,
+        results: result.results.map((r) =>
+          r.code ? { ...r, message: t(r.code as MessageKey, req.locale) } : r
+        ),
+      })
+    );
   });
 
   getActiveLinks = asyncHandler(async (req: Request, res: Response) => {

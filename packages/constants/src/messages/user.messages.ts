@@ -48,9 +48,9 @@ export const USER_MESSAGES = {
     th: "รายชื่อผู้ที่อนุญาตให้โทรมีข้อมูลไม่ถูกต้อง",
   },
   USER_SETTINGS_INVALID_QUIET_HOURS: {
-    vi: "Giờ yên tĩnh cần có cả thời gian bắt đầu và kết thúc",
-    en: "Quiet hours need both a start time and an end time.",
-    th: "ช่วงเวลาเงียบต้องระบุทั้งเวลาเริ่มต้นและเวลาสิ้นสุด",
+    vi: "Giờ yên tĩnh cần thời gian bắt đầu và kết thúc khác nhau",
+    en: "Quiet hours need a start time and a different end time.",
+    th: "ช่วงเวลาเงียบต้องระบุเวลาเริ่มต้นและเวลาสิ้นสุดที่ไม่ซ้ำกัน",
   },
   USER_AUTH_SERVICE_UNAVAILABLE: {
     vi: "Dịch vụ xác thực tạm thời không khả dụng",

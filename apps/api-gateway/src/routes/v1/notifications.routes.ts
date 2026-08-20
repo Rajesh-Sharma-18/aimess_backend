@@ -1,7 +1,7 @@
 import express, { Router, type IRouter } from "express";
 import type { Request, Response } from "express";
 
-import { asyncHandler } from "@aimess/utils";
+import { asyncHandler, sendApiError } from "@aimess/utils";
 import { HTTP_STATUS } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
@@ -89,7 +89,7 @@ async function forward(
   url: string,
   method: "POST" | "DELETE",
   body?: Record<string, unknown>
-): Promise<Response> {
+): Promise<Response | void> {
   let upstream: globalThis.Response;
   try {
     upstream = await fetch(url, {
@@ -110,11 +110,12 @@ async function forward(
       `${method} /notifications/fcm-token → notifications-service forward failed`
     );
     logger.error(error);
-    return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
-      success: false,
-      message:
-        "Notification service temporarily unavailable. Please try again later.",
+    sendApiError(req, res, {
+      statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+      messageKey: "SERVICE_UNAVAILABLE",
+      retryAfterSec: 5,
     });
+    return;
   }
 
   const payload = await upstream.text();

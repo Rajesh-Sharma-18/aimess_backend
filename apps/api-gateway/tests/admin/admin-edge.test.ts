@@ -7,21 +7,26 @@
  *
  * In the test env: ADMIN_IP_WHITELIST is empty (allow-all), BACKOFFICE_SERVICE_URL
  * is set (so the proxy mounts). The actual backoffice upstream may or may not be
- * reachable from a dev box, so we DO NOT assert a specific proxied status. The
- * edge rejects with exactly these gateway-authored messages:
- *     "Authentication token is required." | "Invalid authentication token." |
- *     "Authentication token has expired." | "Admin auth not configured"
- * When the edge ACCEPTS, the request is proxied and the body comes from
- * downstream (a 502 graceful error if the upstream is down, or the real service
- * response if up) — and is NEVER one of those edge messages. We therefore prove
- * accept-vs-reject deterministically by checking for the edge-rejection envelope,
- * independent of whether a backoffice happens to be running locally.
+ * reachable from a dev box, so we DO NOT assert a specific proxied status.
+ *
+ * REJECTIONS are asserted over HTTP on `error.code` — UNAUTHORIZED,
+ * AUTH_INVALID_TOKEN, AUTH_TOKEN_EXPIRED — never on the sentence, which is
+ * localized per request.
+ *
+ * ACCEPTANCE is asserted by calling `adminJwt` directly. It used to be inferred
+ * from "the response is not one of the edge's own messages", which worked only
+ * while the gateway and backoffice-service happened to word their 401s
+ * differently. They now share one error envelope, so a proxied 401 is
+ * byte-identical to an edge 401 and no response-based check can separate them.
+ * Calling the middleware asks the real question — does a valid token reach
+ * `next()` — and is independent of whether a backoffice is running locally.
  *
  * Admin tokens are HS256 over JWT_ADMIN_SECRET (see middleware/admin-jwt.ts).
  */
 import request from "supertest";
 
 import { createApp } from "../../src/app.js";
+import { adminJwt } from "../../src/middleware/admin-jwt.js";
 import type { MessagingClient } from "../../src/grpc/clients/messaging.client.js";
 import {
   bearer,
@@ -37,33 +42,45 @@ const PROTECTED = "/admin/v1/users";
 // A public admin path (login) — adminJwt skips it.
 const PUBLIC_LOGIN = "/admin/v1/auth/login";
 
-/** The exact messages the gateway edge (adminJwt) emits when it REJECTS. */
-const EDGE_REJECTION_MESSAGES = new Set([
-  "Authentication token is required.",
-  "Invalid authentication token.",
-  "Authentication token has expired.",
-  "Admin auth not configured",
+/** The exact codes the gateway edge (adminJwt) emits when it REJECTS. */
+const EDGE_REJECTION_CODES = new Set([
+  "UNAUTHORIZED",
+  "AUTH_INVALID_TOKEN",
+  "AUTH_TOKEN_EXPIRED",
+  "AUTH_UNAUTHORIZED",
 ]);
 
 /** True iff the response is a gateway-edge 401 rejection (not a proxied reply). */
-function isEdgeRejection(res: { status: number; body: { message?: string } }) {
+function isEdgeRejection(res: { status: number; body: { code?: string } }) {
   return (
     res.status === 401 &&
-    typeof res.body.message === "string" &&
-    EDGE_REJECTION_MESSAGES.has(res.body.message)
+    typeof res.body.code === "string" &&
+    EDGE_REJECTION_CODES.has(res.body.code)
   );
+}
+
+/** Assert the shared error envelope, ignoring the localized sentence. */
+function expectEdge401(
+  res: { status: number; body: Record<string, unknown> },
+  code: string
+) {
+  expect(res.status).toBe(401);
+  expect(res.body.success).toBe(false);
+  expect(res.body.code).toBe(code);
+  expect(res.body.error).toMatchObject({
+    statusCode: 401,
+    code,
+    retryable: false,
+  });
+  expect(typeof res.body.message).toBe("string");
 }
 
 describe("/admin/* edge — adminJwt", () => {
   // --- NEGATIVE: unauthenticated on a protected path -----------------------
-  it("no Authorization header → 401 Authentication token is required.", async () => {
+  it("no Authorization header → 401 UNAUTHORIZED", async () => {
     const res = await request(app).get(PROTECTED);
 
-    expect(res.status).toBe(401);
-    expect(res.body).toEqual({
-      success: false,
-      message: "Authentication token is required.",
-    });
+    expectEdge401(res, "UNAUTHORIZED");
   });
 
   it("malformed header (no 'Bearer ' prefix) → 401", async () => {
@@ -71,11 +88,7 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set("Authorization", "Token abc.def.ghi");
 
-    expect(res.status).toBe(401);
-    expect(res.body).toEqual({
-      success: false,
-      message: "Authentication token is required.",
-    });
+    expectEdge401(res, "UNAUTHORIZED");
   });
 
   it("'Bearer ' with empty token → 401", async () => {
@@ -83,8 +96,7 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set("Authorization", "Bearer ");
 
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Authentication token is required.");
+    expectEdge401(res, "UNAUTHORIZED");
   });
 
   it("expired admin token → 401 Authentication token has expired.", async () => {
@@ -92,11 +104,7 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set(bearer(makeExpiredAdminToken()));
 
-    expect(res.status).toBe(401);
-    expect(res.body).toEqual({
-      success: false,
-      message: "Authentication token has expired.",
-    });
+    expectEdge401(res, "AUTH_TOKEN_EXPIRED");
   });
 
   it("forged admin token (wrong secret) → 401 Invalid authentication token.", async () => {
@@ -104,8 +112,7 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set(bearer(makeForgedAdminToken()));
 
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid authentication token.");
+    expectEdge401(res, "AUTH_INVALID_TOKEN");
   });
 
   it("garbage (non-JWT) bearer token → 401", async () => {
@@ -113,8 +120,7 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set("Authorization", "Bearer not-a-jwt");
 
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid authentication token.");
+    expectEdge401(res, "AUTH_INVALID_TOKEN");
   });
 
   it("a USER access token (wrong audience/secret) is NOT a valid admin token → 401", async () => {
@@ -124,19 +130,52 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid authentication token.");
+    expectEdge401(res, "AUTH_INVALID_TOKEN");
   });
 
   // --- POSITIVE: a valid admin token passes the edge -----------------------
-  it("valid admin token passes the edge (proxied, NOT an edge 401)", async () => {
-    const res = await request(app).get(PROTECTED).set(bearer(makeAdminToken()));
+  //
+  // Driven through `adminJwt` directly rather than over HTTP. Now that every
+  // service answers in ONE error envelope, a 401 from the proxied
+  // backoffice-service is byte-identical to an edge 401 — same
+  // `error.code: AUTH_INVALID_TOKEN`, same shape — so a response-based
+  // discriminator cannot tell "the edge rejected me" from "the edge let me
+  // through and the upstream rejected me". It only appeared to work while the
+  // two services emitted different prose. Calling the middleware answers the
+  // actual question (does a valid token reach `next()`?) and does not depend on
+  // whether a backoffice happens to be running on the machine.
+  function runAdminJwt(path: string, headers: Record<string, string> = {}) {
+    const next = jest.fn();
+    const res = {
+      headersSent: false,
+      setHeader: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    } as unknown as Parameters<typeof adminJwt>[1];
+    adminJwt(
+      { headers, path, method: "GET" } as unknown as Parameters<
+        typeof adminJwt
+      >[0],
+      res,
+      next
+    );
+    return { next, res };
+  }
 
-    // Edge accepted → request was proxied. The proxied status varies with
-    // whether a backoffice is reachable, but it must NOT be a gateway-edge
-    // rejection — a 401 with an edge message would mean the edge wrongly
-    // rejected a valid token.
-    expect(isEdgeRejection(res)).toBe(false);
+  it("valid admin token passes the edge", () => {
+    const { next, res } = runAdminJwt("/v1/users", {
+      authorization: `Bearer ${makeAdminToken()}`,
+    });
+
+    expect(next).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("still rejects at the edge without a token", () => {
+    const { next, res } = runAdminJwt("/v1/users");
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 
   // --- PUBLIC PATHS: adminJwt is skipped -----------------------------------
@@ -173,7 +212,6 @@ describe("/admin/* edge — adminJwt", () => {
       .get(PROTECTED)
       .set("Authorization", `Bearer ${tampered}`);
 
-    expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid authentication token.");
+    expectEdge401(res, "AUTH_INVALID_TOKEN");
   });
 });

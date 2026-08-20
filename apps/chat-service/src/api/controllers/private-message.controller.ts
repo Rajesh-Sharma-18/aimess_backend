@@ -423,6 +423,11 @@ export class PrivateMessageController {
             // guard — it points BACKWARD at the previous visible message.
             deleteRecalc: true,
             senderId: recalc.senderId,
+            // A PRIVATE row is titled by the peer, never by a
+            // "<sender>: <preview>" prefix, so there is no name to carry here
+            // (the recalc does not resolve one). "" is the documented
+            // sender-less value, not an omission.
+            senderName: "",
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),
             preview: {
@@ -469,6 +474,11 @@ export class PrivateMessageController {
               this.messageService.getUnreadCountsByUser(result.roomId),
             deleteRecalc: true,
             senderId: recalc.senderId,
+            // A PRIVATE row is titled by the peer, never by a
+            // "<sender>: <preview>" prefix, so there is no name to carry here
+            // (the recalc does not resolve one). "" is the documented
+            // sender-less value, not an omission.
+            senderName: "",
             lastMessageId: recalc.prevMessageId ?? "",
             // NEVER a stale createdAt when nothing visible remains: 0 is the
             // documented "viewer has nothing left" signal and sorts to the
@@ -686,6 +696,8 @@ export class PrivateMessageController {
       roomId: targetRoomId,
       recipientIds: [userId, receiverId],
       senderId: userId,
+      // PRIVATE rows carry no sender prefix — see the delete-recalc bumps above.
+      senderName: "",
       lastMessageId: result.id,
       lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
       preview: {

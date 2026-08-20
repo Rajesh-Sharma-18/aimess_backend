@@ -1,3 +1,5 @@
+import { STORED_TEXT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
+
 /**
  * MessagePreviewService — the SINGLE SOURCE OF TRUTH for every conversation /
  * community list bump preview and every push (FCM data-message) preview across
@@ -24,7 +26,8 @@
  */
 export function convertMessageToPreview(
   contentType: string,
-  content: unknown
+  content: unknown,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
   const type = String(contentType ?? "").toUpperCase();
   const c: Record<string, unknown> =
@@ -44,29 +47,32 @@ export function convertMessageToPreview(
 
   switch (type) {
     case "TEXT":
-      return text ? text.slice(0, 200) : "Sent a message";
+      return text ? text.slice(0, 200) : t("PREVIEW_TEXT_FALLBACK", locale);
     case "IMAGE":
-      return "📷 Photo";
+      return t("PREVIEW_IMAGE", locale);
     case "VIDEO":
-      return "🎥 Video";
+      return t("PREVIEW_VIDEO", locale);
     case "GIF":
-      return "🎞 GIF";
+      return t("PREVIEW_GIF", locale);
     case "VOICE":
-      return "🎤 Voice Message";
+      return t("PREVIEW_VOICE", locale);
     case "AUDIO":
-      return "🎵 Audio";
+      return t("PREVIEW_AUDIO", locale);
+    // The filename/place/contact name below is USER DATA — interpolated as-is,
+    // never translated. Such a preview never equals a pure label, which is what
+    // keeps `localizeMessagePreview` from touching it downstream.
     case "DOCUMENT":
-      return fileName ? `📄 ${fileName}` : "📄 Document";
+      return fileName ? `📄 ${fileName}` : t("PREVIEW_DOCUMENT", locale);
     case "STICKER":
-      return "Sticker";
+      return t("PREVIEW_STICKER", locale);
     case "LOCATION":
-      return placeName ? `📍 ${placeName}` : "📍 Location";
+      return placeName ? `📍 ${placeName}` : t("PREVIEW_LOCATION", locale);
     case "CONTACT":
-      return contactName ? `👤 ${contactName}` : "👤 Contact";
+      return contactName ? `👤 ${contactName}` : t("PREVIEW_CONTACT", locale);
     case "SYSTEM":
       return text || "";
     default:
-      return text ? text.slice(0, 200) : "New message";
+      return text ? text.slice(0, 200) : t("PREVIEW_UNKNOWN", locale);
   }
 }
 
@@ -81,8 +87,12 @@ export const buildMessagePreview = convertMessageToPreview;
  * over {@link convertMessageToPreview} for the push path (which has only the body
  * text in hand, not the structured content object).
  */
-export function buildPushPreview(messageType: string, text: string): string {
-  return convertMessageToPreview(messageType, { text });
+export function buildPushPreview(
+  messageType: string,
+  text: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): string {
+  return convertMessageToPreview(messageType, { text }, locale);
 }
 
 const REACTION_TARGET_PREVIEW_MAX_LEN = 40;
@@ -96,10 +106,11 @@ const REACTION_TARGET_PREVIEW_MAX_LEN = 40;
  */
 export function buildReactionTargetPreview(
   contentType: string,
-  content: unknown
+  content: unknown,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
 ): string {
   const type = String(contentType ?? "").toUpperCase();
-  const preview = convertMessageToPreview(contentType, content);
+  const preview = convertMessageToPreview(contentType, content, locale);
   if (type !== "TEXT" && type !== "SYSTEM") return preview;
   const truncated =
     preview.length > REACTION_TARGET_PREVIEW_MAX_LEN

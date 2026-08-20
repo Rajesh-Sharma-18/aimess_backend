@@ -11,12 +11,20 @@
  * contentJson, sentAt) so existing V1 clients keep working byte-for-byte.
  */
 
+import {
+  currentLocale,
+  localizeQuotePreview,
+  STORED_TEXT_LOCALE,
+  t,
+  type SupportedLocale,
+} from "@aimess/constants";
+
 export type ConversationKind = "PRIVATE" | "GROUP" | "COMMUNITY";
 
 /** Canonical message type is UPPER-CASE everywhere (§1 single casing). */
 export function normalizeMessageType(type: string | null | undefined): string {
-  const t = String(type ?? "").trim();
-  return t ? t.toUpperCase() : "TEXT";
+  const raw = String(type ?? "").trim();
+  return raw ? raw.toUpperCase() : "TEXT";
 }
 
 /** Map a stored message entity to its client wire shape: drop the internal
@@ -64,7 +72,8 @@ export interface CanonicalQuote {
 export function buildReplyPreviewText(
   messageType: string,
   content: unknown,
-  attachmentCount: number
+  attachmentCount: number,
+  locale: SupportedLocale = currentLocale()
 ): string {
   const type = normalizeMessageType(messageType);
   const c: Record<string, unknown> =
@@ -81,29 +90,31 @@ export function buildReplyPreviewText(
     case "TEXT":
       return text;
     case "IMAGE":
-      return attachmentCount > 1 ? `📷 ${attachmentCount} Photos` : "📷 Photo";
+      return attachmentCount > 1
+        ? t("QUOTE_IMAGE_MANY", locale, { count: attachmentCount })
+        : t("QUOTE_IMAGE", locale);
     case "VIDEO":
-      return "🎥 Video";
+      return t("QUOTE_VIDEO", locale);
     case "VOICE":
-      return "🎤 Voice message";
+      return t("QUOTE_VOICE", locale);
     case "AUDIO":
-      return "🎵 Audio";
+      return t("QUOTE_AUDIO", locale);
     case "DOCUMENT":
-      return fileName ? `📄 ${fileName}` : "📄 Document";
+      return fileName ? `📄 ${fileName}` : t("QUOTE_DOCUMENT", locale);
     case "GIF":
-      return "GIF";
+      return t("QUOTE_GIF", locale);
     case "STICKER":
-      return "Sticker";
+      return t("QUOTE_STICKER", locale);
     case "CONTACT":
-      return "Contact";
+      return t("QUOTE_CONTACT", locale);
     case "LOCATION":
-      return "Location";
+      return t("QUOTE_LOCATION", locale);
     // A call row's own `content.text` is its lifecycle sentence ("Voice call
     // cancelled") — the quote names the thing replied to, not its outcome.
     case "VOICE_CALL":
-      return "📞 Voice call";
+      return t("QUOTE_VOICE_CALL", locale);
     case "VIDEO_CALL":
-      return "📹 Video call";
+      return t("QUOTE_VIDEO_CALL", locale);
     default:
       return text;
   }
@@ -117,7 +128,10 @@ export function buildReplyPreviewText(
  * `isDeleted` always wins over the stored preview text — "Message deleted" is
  * derived here, on every read, so a delete never needs a preview-text rewrite.
  */
-export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
+export function buildCanonicalQuote(
+  raw: unknown,
+  locale: SupportedLocale = currentLocale()
+): CanonicalQuote | null {
   if (!raw || typeof raw !== "object") return null;
   const q = raw as Record<string, unknown>;
   const isDeleted = Boolean(q.isDeleted ?? q.deletedForAll ?? false);
@@ -130,10 +144,16 @@ export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
     messageType: q.messageType
       ? normalizeMessageType(q.messageType as string)
       : "",
+    // The stored preview was rendered in `STORED_TEXT_LOCALE` when the reply was
+    // written; a pure label is re-rendered for THIS reader, user text is not.
     preview: isDeleted
-      ? "Message deleted"
+      ? t("QUOTE_DELETED", locale)
       : typeof storedPreview === "string"
-        ? storedPreview
+        ? localizeQuotePreview(
+            storedPreview,
+            typeof q.messageType === "string" ? q.messageType : "",
+            locale
+          )
         : "",
     isDeleted,
     thumbnail:
@@ -194,10 +214,14 @@ export function buildReplyQuoteSnapshot(
     senderId: input.senderId,
     senderName: input.senderName,
     messageType: normalizeMessageType(input.messageType),
+    // PERSISTED snapshot: pinned to `STORED_TEXT_LOCALE`, never the sender's
+    // language — the row is read by everyone, and `buildCanonicalQuote`
+    // re-renders the label per reader.
     preview: buildReplyPreviewText(
       input.messageType,
       input.content,
-      attachmentCount
+      attachmentCount,
+      STORED_TEXT_LOCALE
     ),
     isDeleted: Boolean(input.isDeleted),
     thumbnail: thumbnailKey || null,

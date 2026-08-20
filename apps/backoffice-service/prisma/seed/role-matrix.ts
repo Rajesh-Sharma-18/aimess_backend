@@ -18,8 +18,21 @@ const READ_BASELINE = [
   "livestreams.read",
 ];
 
+// Every read that has a paired `.view` (module with a detail/conversation
+// screen). Support Agent and Analyst get this alongside READ_BASELINE so
+// their existing "open a user/community/livestream" behavior is unchanged
+// after view was split out of read.
+const VIEW_BASELINE = [
+  "users.view",
+  "reports.view",
+  "communities.view",
+  "groups.view",
+  "livestreams.view",
+];
+
 const ALL_PERMISSIONS = [
   ...READ_BASELINE,
+  ...VIEW_BASELINE,
   "users.moderate",
   "reports.action",
   "communities.moderate",
@@ -51,6 +64,7 @@ export const ROLE_MATRIX: RoleDefinition[] = [
       "Full operations except managing other admins / global settings.",
     permissions: [
       ...READ_BASELINE,
+      ...VIEW_BASELINE,
       "users.moderate",
       "reports.action",
       "communities.moderate",
@@ -75,6 +89,7 @@ export const ROLE_MATRIX: RoleDefinition[] = [
       "Acts on users/communities/groups/livestreams + works the report queue. No deletes, no config.",
     permissions: [
       ...READ_BASELINE,
+      ...VIEW_BASELINE,
       "users.moderate",
       "reports.action",
       "communities.moderate",
@@ -87,7 +102,7 @@ export const ROLE_MATRIX: RoleDefinition[] = [
     name: "Support Agent",
     description:
       "Read-heavy: views users/communities/groups and triages reports; cannot moderate.",
-    permissions: [...READ_BASELINE, "systemhealth.read"],
+    permissions: [...READ_BASELINE, ...VIEW_BASELINE, "systemhealth.read"],
   },
   {
     key: "ANALYST",

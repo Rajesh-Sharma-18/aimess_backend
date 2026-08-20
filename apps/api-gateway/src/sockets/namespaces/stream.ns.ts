@@ -751,6 +751,7 @@ export function registerStreamNamespace(
               hlsQualities: access.hlsQualities,
               flvUrl: access.flvUrl || null,
               flvQualities: access.flvQualities,
+              videoLostSince: access.videoLostSince || null,
             },
           });
           emitViewerCount(streamId);

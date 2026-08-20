@@ -1,5 +1,7 @@
 import type { RequestHandler } from "express";
 
+import { sendApiError } from "@aimess/utils";
+
 import { env, getAdminIpWhitelist } from "../config/env.js";
 
 const allowlist = getAdminIpWhitelist();
@@ -31,8 +33,5 @@ export const adminIpAllowlist: RequestHandler = (req, res, next) => {
     return;
   }
 
-  res.status(403).json({
-    success: false,
-    message: "You do not have permission to access this resource.",
-  });
+  sendApiError(req, res, { statusCode: 403, messageKey: "FORBIDDEN" });
 };

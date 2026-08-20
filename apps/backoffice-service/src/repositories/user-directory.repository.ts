@@ -59,6 +59,27 @@ export function countBannedUsers(): Promise<number> {
   return prisma.userIndex.count({ where: { status: { in: BANNED_STATUSES } } });
 }
 
+/**
+ * Batch-resolve the mirrored ACCOUNT status for a set of users from the
+ * `UserIndex` mirror (the only place a ban is persisted — see
+ * {@link resolveModerationStatus}). Used to stamp a member row's account status
+ * so the panel can hide the ban action for a user who is already SYSTEM-banned
+ * (a system ban can only be lifted from the User profile, never from a
+ * community/group member list). Missing ids simply aren't in the map — the
+ * caller defaults them to ACTIVE.
+ */
+export async function getAccountStatuses(
+  userIds: string[]
+): Promise<Map<string, UserStatus>> {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.userIndex.findMany({
+    where: { userId: { in: ids } },
+    select: { userId: true, status: true },
+  });
+  return new Map(rows.map((r) => [r.userId, r.status as UserStatus]));
+}
+
 /** The `UserIndex` columns needed to merge moderation state into a live-sourced row. */
 export type MirrorModerationRow = {
   status: UserStatus;

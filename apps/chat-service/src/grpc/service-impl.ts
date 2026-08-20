@@ -69,6 +69,7 @@ import {
   resolveContentFiles,
   resolveQuoteThumbnail,
   fileMediaKey,
+  pushImageKeyOf,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -470,6 +471,10 @@ export function createMessagingImpl(
                 : "PRIVATE") as "GROUP" | "PRIVATE",
               roomId: req.conversationId,
               senderId: req.senderId,
+              // The SERVER-resolved name, not `req.senderName` — the socket
+              // path leaves that empty, and a group list row renders
+              // "<senderName>: <preview>".
+              senderName: resolvedSenderName,
               lastMessageId: msg.id,
               lastMessageAt: bumpSentAt,
               preview: {
@@ -521,6 +526,14 @@ export function createMessagingImpl(
               senderName: resolvedSenderName,
               senderAvatar: resolvedSenderAvatar,
               preview: buildPushPreview(msg.messageType, pushText),
+              ...(pushImageKeyOf(msg.messageType, msg.content)
+                ? {
+                    previewImageKey: pushImageKeyOf(
+                      msg.messageType,
+                      msg.content
+                    ),
+                  }
+                : {}),
               messageType: msg.messageType,
               sentAt: pushSentAt,
             };
@@ -1192,6 +1205,18 @@ export function createMessagingImpl(
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
 
+          // Same server-side resolution as `sendMessage` above: the socket path
+          // sends these empty, and a group row denormalizes the name onto both
+          // the message and the list preview.
+          const { senderName: fwdSenderName, senderAvatar: fwdSenderAvatar } =
+            await resolveSenderIdentity(
+              deps.userSnapshotService,
+              deps.cacheRepo,
+              req.senderId ?? "",
+              req.senderName || undefined,
+              req.senderAvatar || undefined
+            );
+
           let message: {
             id: string;
             messageType: string;
@@ -1208,8 +1233,8 @@ export function createMessagingImpl(
               sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
-              senderName: req.senderName ?? "",
-              senderAvatar: req.senderAvatar ?? "",
+              senderName: fwdSenderName,
+              senderAvatar: fwdSenderAvatar,
               clientMessageId: req.clientMessageId ?? null,
             });
           } else {
@@ -1233,7 +1258,7 @@ export function createMessagingImpl(
                 : Date.now();
             const full = message as Record<string, unknown>;
             const [fwdAvatar, fwdContent] = await Promise.all([
-              resolveMediaUrl(req.senderAvatar || ""),
+              resolveMediaUrl(fwdSenderAvatar),
               resolveBroadcastContent(full.content ?? null),
             ]);
             await redis.publish(
@@ -1247,7 +1272,7 @@ export function createMessagingImpl(
                   conversationType:
                     conversationType === "GROUP" ? "GROUP" : "PRIVATE",
                   senderId: req.senderId ?? "",
-                  senderName: req.senderName,
+                  senderName: fwdSenderName,
                   senderAvatar: fwdAvatar,
                   senderRole: (full.senderRole as string) ?? "",
                   receiverId: req.receiverId,
@@ -1281,6 +1306,7 @@ export function createMessagingImpl(
                 : "PRIVATE") as "GROUP" | "PRIVATE",
               roomId: targetId,
               senderId: req.senderId ?? "",
+              senderName: fwdSenderName,
               lastMessageId: message.id,
               lastMessageAt: message.createdAt.getTime(),
               preview: {
@@ -2243,6 +2269,130 @@ export function createMessagingImpl(
       })();
     },
 
+    // Admin Group Moderation: permanently ban one member from one group (owner
+    // ban closes the whole group). Business failures come back as errorCode.
+    adminBanGroupMember: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            userId?: string;
+            actorAdminId?: string;
+            reason?: string;
+          };
+          const result = await deps.adminGroupService.banGroupMember({
+            groupId: req.groupId ?? "",
+            userId: req.userId ?? "",
+            actorAdminId: req.actorAdminId ?? "",
+            reason: req.reason || undefined,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminBanGroupMember error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Moderation: lift a group ban.
+    adminUnbanGroupMember: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            userId?: string;
+            actorAdminId?: string;
+          };
+          const result = await deps.adminGroupService.unbanGroupMember({
+            groupId: req.groupId ?? "",
+            userId: req.userId ?? "",
+            actorAdminId: req.actorAdminId ?? "",
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC adminUnbanGroupMember error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Conversation viewer (backoffice-service only) — read-only,
+    // membership-gate-free group history. before_seq cursor; same DTO shape as
+    // adminGetCommunityMessages so the panel reuses one message model.
+    adminGetGroupMessages: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId: string;
+            cursor: string;
+            limit: number;
+          };
+          const limit = req.limit || 30;
+          const parsedSeq = req.cursor ? Number(req.cursor) : NaN;
+          const seq = Number.isFinite(parsedSeq) ? parsedSeq : null;
+
+          const page = await deps.groupMessageService.getMessagesForModeration({
+            roomId: req.groupId,
+            seq,
+            limit,
+          });
+
+          // `page.items` are canonical enriched wire messages: attachments,
+          // avatars and quote thumbnails are already presigned download URLs.
+          callback(null, {
+            messages: page.items.map((m) => {
+              const content = (m.content ?? {}) as {
+                text?: string;
+                files?: unknown[];
+              };
+              const files = Array.isArray(content.files) ? content.files : [];
+              const firstFile = files[0] as Record<string, unknown> | undefined;
+              const str = (v: unknown): string =>
+                typeof v === "string" ? v : "";
+              return {
+                messageId: str(m.id),
+                roomId: str(m.roomId),
+                senderId: str(m.senderId),
+                senderName: str(m.senderName),
+                senderAvatar: str(m.senderAvatar),
+                message: content.text ?? "",
+                contentType: str(m.contentType) || "TEXT",
+                mediaKey:
+                  str(firstFile?.downloadUrl) ||
+                  str(firstFile?.url) ||
+                  str(firstFile?.objectKey),
+                attachmentsJson: JSON.stringify(files),
+                reactionsJson: JSON.stringify(
+                  m.reactionGroups ?? m.reactions ?? []
+                ),
+                quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
+                sentAt: Number(m.serverTs) || 0,
+                systemMessageType: str(m.systemEvent),
+                systemMetadata: m.systemData
+                  ? JSON.stringify(m.systemData)
+                  : "",
+                isDeleted: Boolean(m.isDeleted),
+              };
+            }),
+            nextCursor: page.nextCursor ?? "",
+            hasMore: page.hasMore,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetGroupMessages error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Admin Calling: aggregate call stats over an optional date range. The
     // `calls` collection lives in chat-service's DB, so this RPC is the only
     // way the admin panel can see it.
@@ -2928,6 +3078,15 @@ export function createCommunityImpl(
               senderName,
               senderAvatar,
               preview: buildPushPreview(saved.messageType, saved.message ?? ""),
+              ...(pushImageKeyOf(saved.messageType, {
+                files: lastAttachments,
+              })
+                ? {
+                    previewImageKey: pushImageKeyOf(saved.messageType, {
+                      files: lastAttachments,
+                    }),
+                  }
+                : {}),
               messageType: normalizeMessageType(saved.messageType),
               sentAt,
               fetchRecipients: () =>

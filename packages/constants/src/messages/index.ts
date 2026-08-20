@@ -5,6 +5,7 @@ import { COMMON_MESSAGES } from "./common.messages.js";
 import { COMMUNITY_MESSAGES } from "./community.messages.js";
 import { MEDIA_MESSAGES } from "./media.messages.js";
 import { NOTIFICATION_MESSAGES } from "./notification.messages.js";
+import { PREVIEW_MESSAGES } from "./preview.messages.js";
 import { SOCKET_MESSAGES } from "./socket.messages.js";
 import { STREAM_MESSAGES } from "./stream.messages.js";
 import { SYSTEM_MESSAGES } from "./system.messages.js";
@@ -34,6 +35,7 @@ export const MESSAGES = {
   ...STREAM_MESSAGES,
   ...SYSTEM_MESSAGES,
   ...NOTIFICATION_MESSAGES,
+  ...PREVIEW_MESSAGES,
   ...COMMON_MESSAGES,
 } as const satisfies MessageCatalog;
 
@@ -52,6 +54,10 @@ export {
   NOTIFICATION_MESSAGES,
   type NotificationMessageKey,
 } from "./notification.messages.js";
+export {
+  PREVIEW_MESSAGES,
+  type PreviewMessageKey,
+} from "./preview.messages.js";
 export { SOCKET_MESSAGES, type SocketMessageKey } from "./socket.messages.js";
 export { STREAM_MESSAGES, type StreamMessageKey } from "./stream.messages.js";
 export { SYSTEM_MESSAGES, type SystemMessageKey } from "./system.messages.js";

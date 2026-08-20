@@ -43,6 +43,12 @@ service UserService {
   // backoffice-service's RBAC + audit log around this call). Never expose this
   // RPC, or a wrapper around it, without an equivalent admin gate.
   rpc AdminDisconnectAllFriendships (AdminDisconnectAllFriendshipsRequest) returns (AdminDisconnectAllFriendshipsResponse);
+  // Admin Panel: mirror an account-level ban/suspend/reinstate onto the profile
+  // row. auth-service owns AuthUser.status (login), but every OTHER service
+  // reads identity through BulkGetUserSnapshots and had no way to know an
+  // account is suspended — so invites, group adds and DMs kept targeting a
+  // banned user. backoffice-service calls this alongside AdminSetAccountStatus.
+  rpc AdminSetProfileStatus (AdminSetProfileStatusRequest) returns (AdminSetProfileStatusResponse);
 }
 
 message CheckFriendshipRequest {
@@ -141,6 +147,12 @@ message UserSnapshotRecord {
   // invites, group adds, notification recipients) MUST exclude these rows;
   // callers that render history MUST render them.
   bool   is_deleted      = 6;
+  // TRUE when the account is admin-suspended or admin-banned (ProfileStatus
+  // SUSPENDED, mirrored from backoffice via AdminSetProfileStatus). The profile
+  // is NOT anonymized — history still renders the real name — but every caller
+  // gating an ACTION on the recipient (invite, group add, DM invite card) must
+  // refuse: the account cannot log in to act on it.
+  bool   is_suspended    = 7;
 }
 
 message BulkGetUserSnapshotsResponse {
@@ -172,6 +184,11 @@ message FriendshipInfo {
   bool   can_accept    = 6;
   bool   can_reject    = 7;
   bool   can_cancel    = 8;
+  // TRUE when EITHER user blocks the other. `status` above stays
+  // caller-relative and one-directional (an incoming block must never be
+  // visible), so this is the only field that answers "may these two interact
+  // at all". Read by invite/add-member gates, never by relationship rendering.
+  bool   blocked_either_way = 9;
 }
 
 message GetFriendshipViewRequest {
@@ -225,6 +242,11 @@ message GetChatSettingsResponse {
   string auto_delete_default_mode     = 4;
   int32  auto_delete_default_ttl_seconds = 5;
   int32  auto_delete_default_version  = 6;
+  // Epoch ms of the most recent OFF -> ON transition of read_receipts; 0 when
+  // the user has never switched them off. A receipt stamped BEFORE this instant
+  // was withheld while the switch was off and must stay invisible to this user
+  // — turning the switch back on is not itself a read event.
+  int64  read_receipts_enabled_at_ms = 7;
 }
 
 message FilterVisiblePresenceRequest {
@@ -249,6 +271,18 @@ message FilterPresenceViewersRequest {
 // derived fields such as conv:updated's `isOffline`.
 message FilterPresenceViewersResponse {
   repeated string allowed_viewer_ids = 1;
+}
+
+// ACTIVE | SUSPENDED — the profile mirror of an admin ban/suspend. DELETED is
+// deliberately NOT settable here; account deletion has its own pipeline.
+message AdminSetProfileStatusRequest {
+  string user_id = 1;
+  string status  = 2;
+}
+message AdminSetProfileStatusResponse {
+  bool   ok         = 1;
+  string status     = 2; // status after the write; "" when ok=false
+  string error_code = 3; // "USER_NOT_FOUND" | "INVALID_STATUS" | ""
 }
 
 message AdminDisconnectAllFriendshipsRequest {

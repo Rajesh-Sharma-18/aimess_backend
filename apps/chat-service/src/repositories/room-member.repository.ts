@@ -87,7 +87,12 @@ export class RoomMemberRepository {
     roomId: string,
     userId: string,
     messageId: string,
-    messageCreatedAt: Date
+    messageCreatedAt: Date,
+    /**
+     * Does this member currently give read receipts? Only then does the
+     * EXPOSABLE pointer move — see GroupMemberRepository.advanceReadPointer.
+     */
+    givesReceipts = true
   ): Promise<RoomMember | null> {
     const existing = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: { in: ["active", "banned"] } },
@@ -104,6 +109,12 @@ export class RoomMemberRepository {
       data: {
         lastReadMessageId: messageId,
         lastReadAt: messageCreatedAt,
+        receiptReadMessageId: givesReceipts
+          ? messageId
+          : (existing.receiptReadMessageId ?? existing.lastReadMessageId),
+        receiptReadAt: givesReceipts
+          ? new Date()
+          : (existing.receiptReadAt ?? existing.lastReadAt ?? new Date(0)),
       },
     });
   }
@@ -205,11 +216,22 @@ export class RoomMemberRepository {
       userId: string;
       lastReadMessageId: string | null;
       lastReadAt: Date | null;
+      receiptReadMessageId: string | null;
+      receiptReadAt: Date | null;
     }>
   > {
+    // Still bounded by `lastReadAt`: the exposable pointer never runs AHEAD of
+    // the plain one, so this stays a superset of the members who could have a
+    // receipt here, and the caller narrows it with `receiptCursorOf`.
     const rows = await this.prisma.roomMember.findMany({
       where: { roomId, status: "active", lastReadAt: { gte: since } },
-      select: { userId: true, lastReadMessageId: true, lastReadAt: true },
+      select: {
+        userId: true,
+        lastReadMessageId: true,
+        lastReadAt: true,
+        receiptReadMessageId: true,
+        receiptReadAt: true,
+      },
     });
     // Mongo's Prisma range filters also match an explicit null (the same trap
     // the auto-delete sweeper hit with `lte`), so re-assert it in code.

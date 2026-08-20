@@ -57,7 +57,9 @@ describe("POST /groups/rooms/:roomId/read (mark-read → orchestrator)", () => {
       TEST_USER_ID,
       "507f1f77bcf86cd799439011",
       new Date(1000),
-      0
+      0,
+      // Read receipts on, so the exposable pointer advances with the read one.
+      true
     );
     expect(mocks.redis.publish).toHaveBeenCalledWith(
       `conv:${ROOM}`,

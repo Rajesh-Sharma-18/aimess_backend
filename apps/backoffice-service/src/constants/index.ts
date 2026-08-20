@@ -17,17 +17,27 @@ export type RoleKeyValue = (typeof ROLE_KEYS)[keyof typeof ROLE_KEYS];
  * Permission catalogue (resource.action). Source of truth for the seed.
  * See docs/ADMIN-SERVICE-DESIGN.md §5.
  */
+// Every module carries up to three keys: `<module>.read` gates entering the
+// module (sidebar + list), `<module>.view` gates the detail/conversation/
+// player screens, and `<module>.moderate|manage|action` gates the destructive
+// actions. `view` and `read` are implied from an action key (see
+// lib/implied-reads.ts) so a grant of just the edit key still works.
 export const PERMISSIONS = {
   DASHBOARD_READ: "dashboard.read",
   USERS_READ: "users.read",
+  USERS_VIEW: "users.view",
   USERS_MODERATE: "users.moderate",
   REPORTS_READ: "reports.read",
+  REPORTS_VIEW: "reports.view",
   REPORTS_ACTION: "reports.action",
   COMMUNITIES_READ: "communities.read",
+  COMMUNITIES_VIEW: "communities.view",
   COMMUNITIES_MODERATE: "communities.moderate",
   GROUPS_READ: "groups.read",
+  GROUPS_VIEW: "groups.view",
   GROUPS_MODERATE: "groups.moderate",
   LIVESTREAMS_READ: "livestreams.read",
+  LIVESTREAMS_VIEW: "livestreams.view",
   LIVESTREAMS_MODERATE: "livestreams.moderate",
   CATEGORIES_READ: "categories.read",
   CATEGORIES_MANAGE: "categories.manage",
@@ -87,6 +97,10 @@ export const AUDIT_ACTIONS = {
   GROUP_MEMBERS_VIEWED: "group.members_viewed",
   GROUP_DISBANDED: "group.disbanded",
   GROUP_MEMBER_REMOVED: "group.member_removed",
+  // Permanent, indefinite GROUP-scoped ban/unban of a single member (mandatory
+  // USER_MANAGEMENT category, mirrors COMMUNITY_MEMBER_BANNED/UNBANNED).
+  GROUP_MEMBER_BANNED: "group.member_banned",
+  GROUP_MEMBER_UNBANNED: "group.member_unbanned",
   LIVESTREAM_ENDED: "livestream.ended",
   LIVESTREAM_BULK_ENDED: "livestream.bulk_ended",
   LIVESTREAM_REPORTS_BULK_REVIEWED: "livestream.reports_bulk_reviewed",

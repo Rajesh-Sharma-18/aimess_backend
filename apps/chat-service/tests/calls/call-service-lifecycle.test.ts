@@ -82,8 +82,8 @@ describe("CallService.sweepMissedCalls", () => {
     const flipped = await service.sweepMissedCalls(new Date(1_000_000), 60, 50);
 
     expect(flipped).toBe(2);
-    // Both call rooms AND both user rooms got a publish (2 * 2 = 4).
-    expect(stubs.redis.publish).toHaveBeenCalledTimes(4);
+    // Per call: the call room, the CALLER's own room, and the callee's — 2*3 = 6.
+    expect(stubs.redis.publish).toHaveBeenCalledTimes(6);
     expect(stubs.redis.publish).toHaveBeenCalledWith(
       "call:c1",
       expect.stringContaining("call:missed")
@@ -92,6 +92,19 @@ describe("CallService.sweepMissedCalls", () => {
       "self:u2",
       expect.stringContaining("call:missed")
     );
+    // The caller's own channel is the point of the fix: `call:<id>` is joined
+    // only at the initiate ack, so a caller who reconnected since is no longer
+    // in it. Without this they never learn their own ring ended and the panel
+    // hangs on "Calling…" forever. u1 placed both calls, hence twice.
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "self:u1",
+      expect.stringContaining("call:missed")
+    );
+    expect(
+      stubs.redis.publish.mock.calls.filter(
+        (c: unknown[]) => c[0] === "self:u1"
+      )
+    ).toHaveLength(2);
     expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(2);
     expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
       expect.objectContaining({ callId: "c1", outcome: "MISSED" })
@@ -174,7 +187,15 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
 
-  it("RINGING → cancels (caller abandoned before answer): RINGING→ENDED + call:cancelled to BOTH rooms + CANCELLED chat row", async () => {
+  // Regression: the caller is the ring's ONLY room participant, so the room
+  // empties whenever THEIR media connection churns — a network switch, the app
+  // backgrounding, a throttled tab — even though their /chat socket is fine and
+  // the callee's phone is still ringing. LiveKit closes the empty room and fires
+  // `room_finished`, and honouring it killed a live ring: the callee's incoming
+  // call vanished before it could be answered and the caller's call ended
+  // without ever connecting. A media event cannot tell "caller gone" from
+  // "caller's media blipped", so it settles nothing while a call is RINGING.
+  it("RINGING + room_finished → ignored (a media event may never cancel a ring)", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
@@ -187,34 +208,19 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
 
     await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
 
-    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
-      "c1",
-      "RINGING",
-      expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
-    );
-    // Callee on their personal channel (they never joined call:<id>)...
-    expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "self:u2",
-      expect.stringContaining("call:cancelled")
-    );
-    // ...and caller on `call:<id>` (they joined at ack) so their FE clears too,
-    // covering the rare network-split where their own Disconnected doesn't fire.
-    expect(stubs.redis.publish).toHaveBeenCalledWith(
-      "call:c1",
-      expect.stringContaining("call:cancelled")
-    );
-    // Pre-answer cancel posts a CANCELLED audit row — mirrors endCall's wasRinging.
-    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
-      expect.objectContaining({ callId: "c1", outcome: "CANCELLED" })
-    );
+    // The ring survives INTACT — no status claim, nothing published to either
+    // side, no audit row — so the callee can still pick up. Settling it is left
+    // to the missed sweep, the socket-drop cleanup, or a participant.
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
   });
 
-  // Regression: rapid cancel-then-recall churns the caller's LiveKit connection,
-  // and during RINGING the caller is the room's ONLY participant — so treating
-  // participant_left like room_finished cancelled the brand-new call. The caller
-  // saw a 15s hang then "engine not connected"; the callee's incoming box
-  // appeared and vanished before it could be answered.
-  it("RINGING + participant_left → ignored (only room_finished may cancel a ring)", async () => {
+  // The same rule, reached by the other event type. Originally its own bug:
+  // rapid cancel-then-recall churns the caller's LiveKit connection, and
+  // treating participant_left as terminal cancelled the brand-new call — the
+  // caller saw a 15s hang then "engine not connected".
+  it("RINGING + participant_left → ignored (same rule, other event type)", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue({
       callId: "c1",
@@ -251,22 +257,6 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       "IN_PROGRESS",
       expect.objectContaining({ status: "ENDED", endedBy: "SYSTEM_LIVEKIT" })
     );
-  });
-
-  it("RINGING with a lost claim (raced by decline/sweep) publishes nothing", async () => {
-    const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue({
-      callId: "c1",
-      status: "RINGING",
-      callerId: "u1",
-      calleeId: "u2",
-    });
-    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
-
-    await service.reconcileFromLiveKitRoomFinished("c1", "room_finished");
-
-    expect(stubs.redis.publish).not.toHaveBeenCalled();
-    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
   });
 
   it("losing the atomic terminal transition emits no event or chat row", async () => {
@@ -480,6 +470,41 @@ describe("CallService — call leg ownership", () => {
     );
     expect(JSON.parse(String(answered?.[1])).data).toEqual(
       expect.objectContaining({ answeredByUserId: "u2" })
+    );
+  });
+
+  // The in-call timer's shared origin. Without it every client invented its own
+  // start — Android from local media arrival, web from performance.now(), iOS
+  // from its own room connect — so the two panels counted different calls.
+  it("`call:answered` carries the server's answeredAt as epoch ms", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingCall);
+    stubs.livekit.mintToken.mockResolvedValue({ url: "ws://lk", token: "t" });
+
+    const before = Date.now();
+    await service.answerCall({ callId: "c1", calleeId: "u2", legId: "legA" });
+    const after = Date.now();
+
+    const answered = stubs.redis.publish.mock.calls.find((c: unknown[]) =>
+      String(c[1]).includes("call:answered")
+    );
+    const { answeredAt } = JSON.parse(String(answered?.[1])).data;
+
+    // A NUMBER, not an ISO string — every other timestamp on this bus is epoch
+    // ms and the clients parse it as such.
+    expect(typeof answeredAt).toBe("number");
+    expect(answeredAt).toBeGreaterThanOrEqual(before);
+    expect(answeredAt).toBeLessThanOrEqual(after);
+    // Milliseconds, never seconds: Android rescales anything that looks like
+    // seconds and would land the timer decades off.
+    expect(String(answeredAt)).toHaveLength(13);
+
+    // And it is the SAME instant written to the row, not a second `new Date()`.
+    const persisted = stubs.callRepo.claimStatusTransition.mock.calls.find(
+      (c: unknown[]) => (c[2] as { answeredAt?: Date })?.answeredAt
+    );
+    expect((persisted?.[2] as { answeredAt: Date }).answeredAt.getTime()).toBe(
+      answeredAt
     );
   });
 

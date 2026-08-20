@@ -5,7 +5,7 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
-import { chatCopy } from "../lib/notification-copy.js";
+import { chatCopy, chatPreviewHiddenBody } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
 import { pushToUsers } from "../services/push.service.js";
 import {
@@ -136,7 +136,12 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     if (recipients.length === 0) return;
   }
 
-  const category = isCommunity ? "communityEnabled" : "chatEnabled";
+  // Every chat message — private, group AND community — is gated by the one
+  // account-level Chat toggle, which is exactly what its subtitle promises
+  // ("1-1, group, community messages"). Community messages used to sit under
+  // the separate `communityEnabled` category, so turning Chat off left the
+  // busiest source of messages still pushing; that category is now retired.
+  const category = "chatEnabled" as const;
 
   // Community/group messages: title = room name (if known), body = "Sender: preview".
   // Private: title = sender name, body = preview text.
@@ -147,6 +152,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
     senderName: data.senderName,
     preview: data.preview,
+    messageType: data.messageType,
   });
 
   // Include messageId in the community deep link so the client can scroll to
@@ -172,7 +178,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   } satisfies NotificationNavigation);
 
   const showPreviewOverride = (locale: SupportedLocale): string =>
-    chatCopy.messagePreviewHidden(
+    chatPreviewHiddenBody(
       isCommunity ? data.communityName : isGroup ? data.groupName : undefined,
       locale
     );
@@ -189,9 +195,9 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   await pushToUsers(recipients, (userId) => ({
     userId,
     category,
-    // Community chat messages share the `communityEnabled` global category
-    // with generic community events but must gate on the community's own
-    // `chatEnabled` preference (the "Chat" toggle), not `announcementEnabled`.
+    // The ACTIVE-roster + per-community `chatEnabled` gates were already
+    // resolved for the whole fan-out above, so push.service must not redo them
+    // per recipient (and must not fall back to `announcementEnabled`).
     ...(isCommunity ? { communityGatesPreResolved: true as const } : {}),
     type: "MESSAGE",
     copy,
@@ -225,8 +231,27 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       senderName: data.senderName ?? "",
       senderAvatar: data.senderAvatar ?? "",
       ...(data.groupName ? { groupName: data.groupName } : {}),
+      // The conversation's own image (group avatar / community logo), resolved
+      // from the authoritative room row by chat-service's publisher. Emitted
+      // under BOTH the generic key and the entity-specific one the rest of the
+      // push surface already uses: every community.* event carries
+      // `communityAvatarUrl` and every group lifecycle event is published with
+      // `groupAvatarUrl`, so a client keyed on those names rendered an image
+      // for lifecycle notifications and nothing for the chat message that
+      // matters most. `conversationAvatar` stays the canonical key
+      // (push.service promotes it to the FCM/APNs tray image); the aliases just
+      // stop the group/community identity from being invisible to a reader that
+      // never learned the generic name. Android is the surface this decides:
+      // its MESSAGE pushes are data-only, so the data map is the ONLY place a
+      // picture can arrive — iOS still gets `fcm_options.image`.
       ...(data.conversationAvatar
-        ? { conversationAvatar: data.conversationAvatar }
+        ? {
+            conversationAvatar: data.conversationAvatar,
+            ...(isGroup ? { groupAvatarUrl: data.conversationAvatar } : {}),
+            ...(isCommunity
+              ? { communityAvatarUrl: data.conversationAvatar }
+              : {}),
+          }
         : {}),
       canReply: data.canReply === false ? "false" : "true",
       ...(typeof data.unreadCount === "number"

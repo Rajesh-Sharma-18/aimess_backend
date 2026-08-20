@@ -13,7 +13,13 @@
  */
 
 jest.mock("../../src/lib/user-client.js", () => ({
-  fetchExistingUserIds: jest.fn(),
+  fetchInviteIneligibility: jest.fn(),
+  INVITE_INELIGIBILITY_CODE: {
+    NOT_FOUND: "INVITE_RECIPIENT_NOT_FOUND",
+    DELETED: "INVITE_RECIPIENT_DELETED",
+    SUSPENDED: "INVITE_RECIPIENT_SUSPENDED",
+    BLOCKED: "INVITE_RECIPIENT_BLOCKED",
+  },
   fetchUserSnapshots: jest.fn(async () => new Map()),
   fetchUserSnapshotHits: jest.fn(async () => new Map()),
   fetchAcceptedFriendIds: jest.fn(async () => new Set()),
@@ -31,6 +37,11 @@ jest.mock("@aimess/storage", () => ({
 }));
 
 jest.mock("@aimess/redis", () => ({
+  // Spread the real module first: a factory that returns only the stubs
+  // replaces EVERY other export with undefined, and `createBannedUserGuard`
+  // is called at import time by `authenticate-access-token.ts` - so every
+  // suite that touches `app.ts` died on "is not a function" before it ran.
+  ...jest.requireActual("@aimess/redis"),
   publishCommunityRoomEvent: jest.fn(async () => 1),
   publishChatUserEvent: jest.fn(async () => 1),
 }));
@@ -50,13 +61,13 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import {
-  fetchExistingUserIds,
+  fetchInviteIneligibility,
   fetchUserSnapshotHits,
 } from "../../src/lib/user-client.js";
 import { publishCommunityInviteLinkSharedForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
-const existing = fetchExistingUserIds as unknown as jest.Mock;
+const ineligible = fetchInviteIneligibility as unknown as jest.Mock;
 const snapshotHits = fetchUserSnapshotHits as unknown as jest.Mock;
 const publishInvite =
   publishCommunityInviteLinkSharedForChatSafe as unknown as jest.Mock;
@@ -66,7 +77,6 @@ const LINK_ID = "b".repeat(24);
 const CALLER = "99999999-9999-4999-8999-999999999999";
 const UID_A = "885ad4e0-e238-4f9a-9773-e215321885b4";
 const UID_B = "22222222-2222-4222-8222-222222222222";
-const UID_C = "33333333-3333-4333-8333-333333333333";
 
 const community = {
   id: CID,
@@ -115,8 +125,8 @@ beforeEach(() => {
   repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
   repo.findInviteLinkById.mockResolvedValue(link());
   repo.findMembersByUserIds.mockResolvedValue([]);
-  // Default: every queried user exists (overridden per negative test).
-  existing.mockResolvedValue(new Set([UID_A, UID_B, UID_C]));
+  // Default: every queried recipient is eligible (overridden per negative test).
+  ineligible.mockResolvedValue(new Map());
   // Default: inviter snapshot resolves (overridden per enrichment test).
   snapshotHits.mockResolvedValue(new Map());
 });
@@ -168,7 +178,7 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
   // --- Negative (per-user) ---
 
   it("nonexistent user → USER_NOT_FOUND failure, NO event", async () => {
-    existing.mockResolvedValue(new Set()); // user-service knows no such user
+    ineligible.mockResolvedValue(new Map([[UID_A, "NOT_FOUND"]]));
 
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
       userIds: [UID_A],
@@ -178,7 +188,11 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(res.summary).toMatchObject({ sent: 0, failed: 1 });
     expect(res.sentUserIds).toEqual([]);
     expect(res.failures).toEqual([
-      { userId: UID_A, code: "USER_NOT_FOUND", message: expect.any(String) },
+      {
+        userId: UID_A,
+        code: "INVITE_RECIPIENT_NOT_FOUND",
+        message: expect.any(String),
+      },
     ]);
     expect(publishInvite).not.toHaveBeenCalled();
   });
@@ -223,10 +237,29 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(publishInvite).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["BLOCKED", "INVITE_RECIPIENT_BLOCKED"],
+    ["SUSPENDED", "INVITE_RECIPIENT_SUSPENDED"],
+    ["DELETED", "INVITE_RECIPIENT_DELETED"],
+  ])("%s recipient -> %s failure, NO event", async (reason, code) => {
+    ineligible.mockResolvedValue(new Map([[UID_A, reason]]));
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: LINK_ID,
+    });
+
+    expect(res.summary).toMatchObject({ sent: 0, failed: 1 });
+    expect(res.failures).toEqual([
+      { userId: UID_A, code, message: expect.any(String) },
+    ]);
+    expect(publishInvite).not.toHaveBeenCalled();
+  });
+
   // --- Mixed bulk ---
 
   it("one valid + one nonexistent → sent=1, failed=1, event only for the valid one", async () => {
-    existing.mockResolvedValue(new Set([UID_A])); // UID_B does not exist
+    ineligible.mockResolvedValue(new Map([[UID_B, "NOT_FOUND"]]));
 
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
       userIds: [UID_A, UID_B],
@@ -236,7 +269,11 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(res.summary).toMatchObject({ requested: 2, sent: 1, failed: 1 });
     expect(res.sentUserIds).toEqual([UID_A]);
     expect(res.failures).toEqual([
-      { userId: UID_B, code: "USER_NOT_FOUND", message: expect.any(String) },
+      {
+        userId: UID_B,
+        code: "INVITE_RECIPIENT_NOT_FOUND",
+        message: expect.any(String),
+      },
     ]);
     expect(publishInvite).toHaveBeenCalledTimes(1);
     expect(publishInvite).toHaveBeenCalledWith(
@@ -275,8 +312,9 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(res.sentUserIds).toEqual([UID_A]);
   });
 
-  it("user-service UNAVAILABLE (existence null) → fail open, valid sends still go out", async () => {
-    existing.mockResolvedValue(null); // breaker open / gRPC error
+  it("user-service UNAVAILABLE → fail open, valid sends still go out", async () => {
+    // The gate swallows transport errors and returns an empty map (fail open).
+    ineligible.mockResolvedValue(new Map());
 
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
       userIds: [UID_A, UID_B],

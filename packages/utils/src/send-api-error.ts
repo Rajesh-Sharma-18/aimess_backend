@@ -55,3 +55,25 @@ export function sendCaughtApiError(
   const described = describeError(error);
   sendApiError(req, res, { ...described, fallbackMessage });
 }
+
+/**
+ * `express-rate-limit` `handler` that answers in the shared envelope.
+ *
+ * The limiters that used the library's `message` option instead answered with a
+ * hand-written `{ success, message }` — English-only, no `code`, and no
+ * `retryAfter` in the body, so a throttled client had nothing to branch on and
+ * nothing to wait on. `resetTime` is the library's own view of when the window
+ * clears, which is why the hint is derived from it rather than guessed.
+ */
+export function rateLimitHandler(messageKey = "RATE_LIMITED") {
+  return (req: Request, res: Response): void => {
+    const info = (req as Request & { rateLimit?: { resetTime?: Date } })
+      .rateLimit;
+    const retryAfterSec =
+      info?.resetTime instanceof Date
+        ? Math.max(0, Math.ceil((info.resetTime.getTime() - Date.now()) / 1000))
+        : undefined;
+
+    sendApiError(req, res, { statusCode: 429, messageKey, retryAfterSec });
+  };
+}

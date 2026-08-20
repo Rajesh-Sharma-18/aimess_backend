@@ -16,6 +16,12 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     countActiveInviteLinksByCreator: jest.fn(async () => 0),
     createInviteLink: jest.fn(),
     createAuditLog: jest.fn(),
+    // The atomic first-writer guard behind `ensurePermanentInvitationCode`
+    // (updateMany WHERE invitationCode IS NULL). It was missing from this
+    // mock, so every path that mints a permanent code threw
+    // "setInvitationCodeOnce is not a function" instead of exercising the
+    // branch under test. `count: 1` = this caller won the race.
+    setInvitationCodeOnce: jest.fn(async () => ({ count: 1 })),
   },
 }));
 
@@ -50,6 +56,13 @@ const publicCommunity = {
   coverUrl: null,
   moderationStatus: "ACTIVE",
   status: "ACTIVE",
+  // A real row always carries these. Without `createdAt` the permanent-link
+  // projection (`invitationCodeCreatedAt ?? createdAt`) called `.toISOString()`
+  // on undefined; with the code already minted, the invite path takes its fast
+  // path instead of re-running the first-writer race against a stubbed re-read.
+  createdAt: new Date("2026-06-01T00:00:00.000Z"),
+  invitationCode: "permanentcode123456789012",
+  invitationCodeCreatedAt: new Date("2026-06-01T00:00:00.000Z"),
 };
 
 beforeEach(() => {
@@ -189,16 +202,22 @@ describe("createInviteLink — request-to-join default", () => {
     createdAt: new Date("2026-06-23T00:00:00.000Z"),
   };
 
+  // The assertion moved, the intent did not: a bare call must never silently
+  // auto-approve. A parameterless call on a PRIVATE community now returns that
+  // community's PERMANENT invite link instead of minting a throwaway row, so
+  // there is no `createInviteLink` call left to inspect — the guarantee lives
+  // in the returned link. The legacy row-creating path is still asserted by the
+  // explicit-autoApprove case below.
   it("defaults autoApprove=false for a PRIVATE community when not specified", async () => {
     repo.findById.mockResolvedValue({ ...publicCommunity, type: "PRIVATE" });
     repo.findMembership.mockResolvedValue({ status: "ACTIVE", role: "ADMIN" });
-    repo.createInviteLink.mockResolvedValue(linkRow);
 
-    await communityService.createInviteLink(CID, CALLER, {});
+    const link = await communityService.createInviteLink(CID, CALLER, {});
 
-    expect(repo.createInviteLink).toHaveBeenCalledWith(
-      expect.objectContaining({ autoApprove: false })
-    );
+    expect(link.autoApprove).toBe(false);
+    expect(link.isPermanent).toBe(true);
+    // Idempotent by construction: a bare call consumes no link quota.
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 
   it("respects an explicit autoApprove=true", async () => {

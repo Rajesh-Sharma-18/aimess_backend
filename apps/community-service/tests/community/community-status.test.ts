@@ -17,6 +17,11 @@
  */
 
 jest.mock("@aimess/redis", () => ({
+  // Spread the real module first: a factory that returns only the stubs
+  // replaces EVERY other export with undefined, and `createBannedUserGuard`
+  // is called at import time by `authenticate-access-token.ts` - so every
+  // suite that touches `app.ts` died on "is not a function" before it ran.
+  ...jest.requireActual("@aimess/redis"),
   publishCommunityRoomEvent: jest.fn(async () => 1),
   publishChatUserEvent: jest.fn(async () => 1),
 }));

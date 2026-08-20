@@ -35,6 +35,16 @@ export interface CommunityActivityPayload {
   /** Activity type stored in community-service (e.g. "message", "reaction", "edited"). Defaults to "message". */
   type?: string;
   /**
+   * SYSTEM lines only — the canonical event + params behind `messagePreview`,
+   * the SAME pair `community:message:new` carries. `messagePreview` is baked at
+   * write time in `STORED_TEXT_LOCALE` (English) and read by every member in
+   * their own language, so community-service stores these and re-renders the
+   * sentence per reader instead of serving the writer's copy. Without them a
+   * community list row stayed English while the transcript above it translated.
+   */
+  systemMessageType?: string;
+  systemMetadata?: Record<string, unknown>;
+  /**
    * For self-referential SYSTEM lines (a role change or a join), the user the
    * line is ABOUT. community-service stores it as `lastActivityUserId` so the
    * `GET /communities/mine` list can render the personalized `selfPreview`

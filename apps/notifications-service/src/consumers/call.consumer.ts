@@ -141,11 +141,19 @@ interface CallActivityPayload {
  *
  * Claimed BEFORE the push rather than after: `pushToUser` never throws (it
  * swallows its own delivery failures), so there is no retry-after-failure path
- * that an early claim could starve. The TTL is the ringing window — past that
- * the callId can never ring again anyway.
+ * that an early claim could starve. The TTL is per-kind: the ringing window for
+ * a ring, the push's own expiry for a missed alert — see each caller.
+ *
+ * Rule for choosing what to claim: claim the events that produce a user-visible
+ * artifact — `call.incoming` (a ring UI) and `call.missed` (a banner). The
+ * silent `dataOnly` dismissals (`call.cancelled`, `call.handled`) are
+ * deliberately NOT claimed; see the note on those handlers.
  */
 async function claimPushOnce(
-  kind: string,
+  // Union rather than `string`: the kind is the Redis key-space namespace, so a
+  // typo would silently open a second namespace that dedups nothing. The two
+  // claimable kinds are fixed by the rule above.
+  kind: "call.incoming" | "call.missed",
   callId: string,
   calleeId: string,
   ttlSec: number
@@ -207,7 +215,7 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
     ))
   ) {
     logger.warn(
-      `[push:consume] call.incoming callId=${data.callId} suppressed — ring already pushed (redelivery)`
+      `[push:consume] call.incoming callId=${data.callId} callee=${data.calleeId} suppressed — ring already pushed (redelivery)`
     );
     return;
   }
@@ -290,7 +298,7 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     ))
   ) {
     logger.warn(
-      `[push:consume] call.missed callId=${data.callId} suppressed — already pushed (redelivery)`
+      `[push:consume] call.missed callId=${data.callId} callee=${data.calleeId} suppressed — already pushed (redelivery)`
     );
     return;
   }
@@ -352,6 +360,16 @@ async function handleCallCancel(data: CallCancelPayload): Promise<void> {
   // Data-only, same collapseKey as the incoming ring (`call:<id>`) — replaces
   // it on the device so the client can dismiss a ring that was answered
   // elsewhere / declined / ended / missed before this device woke up.
+  //
+  // Deliberately NOT claimed through `claimPushOnce`, unlike the ring and the
+  // missed banner. It draws nothing, so a duplicate is a silent no-op rather
+  // than a second notification, and sharing the ring's collapse key means the
+  // transport dedups it for free. It is also the BACKSTOP for a socket
+  // `call:cancelled` that may have been lost: suppressing the one copy that
+  // would have cleared a stuck ring costs far more than sending it twice. More
+  // than one producer can legitimately address the same (callId, calleeId)
+  // here, and that they never collide is a guarantee held in chat-service — a
+  // claim on this side would hard-couple to it.
   await pushToUser({
     userId: data.calleeId,
     category: "callEnabled",
@@ -422,6 +440,11 @@ async function handleCallHandled(data: CallHandledPayload): Promise<void> {
   // call into a cancelled one. A normal data push is correct here; live devices
   // are already told over the socket (`call:handled`), and this only backstops
   // backgrounded siblings.
+  //
+  // Deliberately NOT claimed through `claimPushOnce` — same reasoning as
+  // handleCallCancel above: dataOnly, so a duplicate draws nothing; shares the
+  // ring's collapse key; and it is a backstop whose whole value is arriving
+  // even when an earlier signal was lost.
   await pushToUser({
     userId: data.calleeId,
     category: "callEnabled",

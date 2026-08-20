@@ -20,10 +20,26 @@ import {
   type SupportedLocale,
 } from "@aimess/constants";
 
-/** Keys whose text is legitimately identical across languages (pure structure). */
+/**
+ * Keys whose text is legitimately identical across languages (pure structure).
+ *
+ * Kept in step with `scripts/validate-i18n.mjs`, which enforces the same rules
+ * outside Jest. `SYS_CALL_ENDED` was allowlisted there but not here, so this
+ * suite failed on a key the project had already decided was correct.
+ */
 const IDENTICAL_ALLOWED = new Set([
   "SYS_COMMUNITY_LIVESTREAM_ENDED_DURATION",
   "NOTIF_CHAT_COMMUNITY_BODY",
+  // "{{label}} {{duration}}" — the completed-call preview. The label is itself
+  // a translated string, so there is no prose here to translate.
+  "SYS_CALL_ENDED",
+  // Preview labels that are the SAME word in every supported language: a
+  // loanword ("Video") or a format name ("GIF"). Translating them would make
+  // the row read worse, not better.
+  "PREVIEW_VIDEO",
+  "PREVIEW_GIF",
+  "QUOTE_VIDEO",
+  "QUOTE_GIF",
 ]);
 
 const placeholders = (text: string): string =>

@@ -108,6 +108,91 @@ export async function fetchExistingUserIds(
   }
 }
 
+/**
+ * Why an invite may not be sent to a recipient. `null`/absent = eligible.
+ *
+ *  - NOT_FOUND  — no such account.
+ *  - DELETED    — the account was deleted (tombstone; renders in history only).
+ *  - SUSPENDED  — admin-banned/suspended; they cannot log in to act on it.
+ *  - BLOCKED    — a block exists in EITHER direction between the two users.
+ */
+export type InviteIneligibility =
+  | "NOT_FOUND"
+  | "DELETED"
+  | "SUSPENDED"
+  | "BLOCKED";
+
+/**
+ * Wire code for each ineligibility — ALSO the `@aimess/constants` message key,
+ * so the controller localizes with `t(code, locale)` and clients can map the
+ * code themselves. Shared verbatim with chat-service's group invite bulk-send.
+ */
+export const INVITE_INELIGIBILITY_CODE: Record<InviteIneligibility, string> = {
+  NOT_FOUND: "INVITE_RECIPIENT_NOT_FOUND",
+  DELETED: "INVITE_RECIPIENT_DELETED",
+  SUSPENDED: "INVITE_RECIPIENT_SUSPENDED",
+  BLOCKED: "INVITE_RECIPIENT_BLOCKED",
+};
+
+/**
+ * ONE eligibility gate for every invite path (direct invites AND invite-link
+ * bulk-share). Two batch RPCs, never per-user.
+ *
+ * FAILS OPEN on a user-service outage — an eligible send must not be blocked by
+ * a verification blip, and every one of these states is re-checked at redeem /
+ * accept time. That mirrors the pre-existing `fetchExistingUserIds` policy.
+ */
+export async function fetchInviteIneligibility(
+  callerId: string,
+  candidateIds: string[]
+): Promise<Map<string, InviteIneligibility>> {
+  const out = new Map<string, InviteIneligibility>();
+  if (candidateIds.length === 0) return out;
+
+  const [snapshots, relationships] = await Promise.all([
+    userGrpcClient
+      .bulkGetUserSnapshots(candidateIds)
+      .catch((error: unknown) => {
+        logger.error(
+          "fetchInviteIneligibility: snapshot lookup failed — failing open"
+        );
+        logger.error(error);
+        return null;
+      }),
+    userGrpcClient
+      .checkRelationships(callerId, candidateIds)
+      .catch((error: unknown) => {
+        logger.error(
+          "fetchInviteIneligibility: relationship lookup failed — failing open"
+        );
+        logger.error(error);
+        return null;
+      }),
+  ]);
+
+  if (snapshots) {
+    const byId = new Map(snapshots.map((u) => [u.userId, u]));
+    for (const id of candidateIds) {
+      const snap = byId.get(id);
+      if (!snap) out.set(id, "NOT_FOUND");
+      else if (snap.isDeleted) out.set(id, "DELETED");
+      else if (snap.isSuspended) out.set(id, "SUSPENDED");
+    }
+  }
+
+  // A block outranks nothing — an id already marked DELETED/SUSPENDED keeps
+  // that (more specific) reason; only eligible ids can become BLOCKED.
+  if (relationships) {
+    for (const rel of relationships) {
+      if (rel.blockedEitherWay && !out.has(rel.userId)) {
+        out.set(rel.userId, "BLOCKED");
+      }
+    }
+  }
+
+  return out;
+}
+
 export async function fetchAcceptedFriendIds(
   callerId: string,
   candidateIds: string[]

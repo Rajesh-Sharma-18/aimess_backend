@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import type { Request, Response } from "express";
 
-import { asyncHandler } from "@aimess/utils";
+import { asyncHandler, sendApiError } from "@aimess/utils";
 import { HTTP_STATUS } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
@@ -32,21 +32,23 @@ export function createLinkedDevicesAliasRouter(
   }
 
   async function relay(
+    req: Request,
     res: Response,
     upstreamRequest: () => Promise<globalThis.Response>,
     serviceLabel: string
-  ): Promise<Response> {
+  ): Promise<Response | void> {
     let upstream: globalThis.Response;
     try {
       upstream = await upstreamRequest();
     } catch (error) {
       logger.error(`${serviceLabel} forward failed`);
       logger.error(error);
-      return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
-        success: false,
-        message:
-          "Auth service temporarily unavailable. Please try again later.",
+      sendApiError(req, res, {
+        statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+        messageKey: "SERVICE_UNAVAILABLE",
+        retryAfterSec: 5,
       });
+      return;
     }
     const payload = await upstream.text();
     return res.status(upstream.status).type("application/json").send(payload);
@@ -56,6 +58,7 @@ export function createLinkedDevicesAliasRouter(
     "/users/linked-devices",
     asyncHandler(async (req: Request, res: Response) =>
       relay(
+        req,
         res,
         () => fetch(base, { method: "GET", headers: forwardHeaders(req) }),
         "GET /users/linked-devices → auth-service"
@@ -68,6 +71,7 @@ export function createLinkedDevicesAliasRouter(
     asyncHandler(async (req: Request, res: Response) => {
       const deviceId = String(req.params.deviceId);
       return relay(
+        req,
         res,
         () =>
           fetch(`${base}/${encodeURIComponent(deviceId)}`, {

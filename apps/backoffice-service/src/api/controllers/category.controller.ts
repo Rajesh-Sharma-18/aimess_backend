@@ -1,7 +1,9 @@
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import type { RequestHandler } from "express";
+import { ApiResponse } from "@aimess/utils";
 
 import { categoryService } from "../../services/index.js";
+import { paginated } from "../lib/respond.js";
 import type { ListCategoriesQuery } from "../../types/category.types.js";
 import type {
   CreateCategoryInput,
@@ -18,11 +20,15 @@ export const listCategories: RequestHandler = (req, res, next) => {
       const result = await categoryService.listCategories(
         query as ListCategoriesQuery
       );
-      res.status(HTTP_STATUS.OK).json({
-        success: true,
-        data: result.data,
-        pagination: result.pagination,
-      });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          paginated(
+            result.data,
+            result.pagination,
+            t("ADMIN_CATEGORIES_FETCHED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -35,7 +41,9 @@ export const createCategory: RequestHandler = (req, res, next) => {
     try {
       const body = req.body as CreateCategoryInput;
       const result = await categoryService.createCategory(body, req.admin!.id);
-      res.status(HTTP_STATUS.CREATED).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.CREATED)
+        .json(new ApiResponse(result, t("ADMIN_CATEGORY_CREATED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -53,7 +61,9 @@ export const updateCategory: RequestHandler = (req, res, next) => {
         body,
         req.admin!.id
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_CATEGORY_UPDATED", req.locale)));
     } catch (error) {
       next(error);
     }
@@ -71,7 +81,14 @@ export const updateCategoryVisibility: RequestHandler = (req, res, next) => {
         body.status,
         req.admin!.id
       );
-      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            result,
+            t("ADMIN_CATEGORY_VISIBILITY_UPDATED", req.locale)
+          )
+        );
     } catch (error) {
       next(error);
     }
@@ -84,7 +101,9 @@ export const deleteCategory: RequestHandler = (req, res, next) => {
     try {
       const categoryId = req.params.categoryId as string;
       await categoryService.deleteCategory(categoryId, req.admin!.id);
-      res.status(HTTP_STATUS.OK).json({ success: true, data: null });
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(null, t("ADMIN_CATEGORY_DELETED", req.locale)));
     } catch (error) {
       next(error);
     }

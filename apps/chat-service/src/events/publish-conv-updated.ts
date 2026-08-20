@@ -80,11 +80,22 @@ interface PublishConvUpdatedParams {
   roomId: string;
   recipientIds: string[];
   senderId: string;
-  /** Sender's live display name — mirrors `publishCommunityUpdated`'s
-   *  `senderName` so the gateway's "You:"-personalization (which requires both
-   *  senderId AND senderName) fires for `conv:updated` too. Optional/"" for
-   *  call sites (delete-recalc) that don't have it in hand. */
-  senderName?: string;
+  /**
+   * Sender's live display name — the group inbox row's "<name>: <preview>"
+   * prefix, and the input to the gateway's "You:"-personalization (which
+   * requires both senderId AND senderName).
+   *
+   * REQUIRED, exactly like `publishCommunityUpdated`'s field of the same name.
+   * It used to be optional, and the socket send path (gRPC `sendMessage`)
+   * simply never passed it — so every group row bumped in realtime published
+   * `senderName: ""` while the REST inbox, reading the same denormalized
+   * `GroupRoom.lastMessagePreview`, returned the real name. The list therefore
+   * lost its sender prefix the moment a message arrived live and got it back on
+   * the next refetch. Community never had that bug for one reason only: its
+   * publisher makes the field mandatory. Pass `""` ONLY for a genuinely
+   * sender-less row (SYSTEM lines, call cards, an emptied conversation).
+   */
+  senderName: string;
   lastMessageId: string;
   /** epoch ms */
   lastMessageAt: number;

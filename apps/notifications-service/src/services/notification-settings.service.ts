@@ -133,12 +133,32 @@ export type DeliveryDecision = "ALLOW" | "CATEGORY_OFF" | "QUIET_HOURS";
  */
 const QUIET_HOURS_EXEMPT_TYPES = new Set<string>(["CALL_INCOMING"]);
 
+/**
+ * RETIRED account-level categories. The field still exists on the DB row, the
+ * gRPC message and the REST envelope so older clients keep parsing, but it is
+ * no longer allowed to suppress anything.
+ *
+ * `communityEnabled` was removed from the Notification Preferences screen:
+ * community CHAT messages moved to `chatEnabled` (which is what the Chat row
+ * has always claimed to cover — "1-1, group, community messages"), community
+ * livestreams already had `liveStreamEnabled`, and every other community event
+ * is gated by that community's OWN per-community preference
+ * (`announcementEnabled`) plus the ACTIVE-membership check in push.service.
+ *
+ * Ignoring the stored value here — rather than deleting the column — is
+ * deliberate: anyone who had already switched Community off would otherwise be
+ * silenced forever, since no screen can ever switch it back on.
+ */
+const RETIRED_CATEGORIES = new Set<NotificationCategory>(["communityEnabled"]);
+
 export function evaluateDelivery(
   settings: NotificationSettings,
   category: NotificationCategory,
   type?: string
 ): DeliveryDecision {
-  if (!settings[category]) return "CATEGORY_OFF";
+  if (!RETIRED_CATEGORIES.has(category) && !settings[category]) {
+    return "CATEGORY_OFF";
+  }
   if (type !== undefined && QUIET_HOURS_EXEMPT_TYPES.has(type)) return "ALLOW";
   // Back-compat: a caller that passes no type keeps the old category-wide call
   // exemption, so nothing silently starts being suppressed mid-rollout.

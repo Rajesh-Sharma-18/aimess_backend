@@ -30,6 +30,7 @@ const FALLBACK: ChatSettings = {
   autoDeleteDefaultTtlSeconds: null,
   typingIndicators: true,
   readReceipts: true,
+  readReceiptsEnabledAt: 0,
 };
 
 const cache = new Map<string, { value: ChatSettings; expiresAt: number }>();

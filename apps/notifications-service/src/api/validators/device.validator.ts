@@ -14,3 +14,7 @@ export type RegisterDeviceInput = z.infer<typeof registerDeviceSchema>;
 export const unregisterDeviceParamsSchema = z.object({
   token: z.string().min(1).max(4096),
 });
+
+export type UnregisterDeviceParams = z.infer<
+  typeof unregisterDeviceParamsSchema
+>;

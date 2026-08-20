@@ -66,6 +66,12 @@ model Livestream {
   // pre-existing rows) — in that case the hook is honoured as before.
   publisherClientId String?
   lastHeartbeatAt  DateTime?
+  // Set when the browser publisher reports its camera track ended
+  // (device unplug / MediaTrack ended). Cleared on restore. Viewers read
+  // this on stream:join to show the "camera disconnected" overlay if they
+  // join mid-grace. Client owns the 60s grace-timer that auto-ends the
+  // stream; this field is purely for state relay + late-joiner snapshot.
+  videoLostAt      DateTime?
   // Last self-reported (browser WHIP) or server-polled (OBS/SRS) quality
   // snapshot. Null until the first report arrives after go-live.
   lastKnownResolution   String?

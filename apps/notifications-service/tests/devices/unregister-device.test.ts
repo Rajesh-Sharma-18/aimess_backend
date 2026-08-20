@@ -53,7 +53,11 @@ describe("DELETE /v1/devices/:token", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true, removed: true });
+    expect(res.body).toEqual({
+      success: true,
+      message: "Device unregistered",
+      data: { removed: true },
+    });
     expect(repo.deleteByUserAndToken).toHaveBeenCalledTimes(1);
     expect(repo.deleteByUserAndToken).toHaveBeenCalledWith(TEST_USER_ID, TOKEN);
   });
@@ -66,7 +70,11 @@ describe("DELETE /v1/devices/:token", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true, removed: false });
+    expect(res.body).toEqual({
+      success: true,
+      message: "Device unregistered",
+      data: { removed: false },
+    });
   });
 
   it("url-decodes a percent-encoded token before scoping the delete", async () => {
@@ -135,7 +143,10 @@ describe("DELETE /v1/devices/:token", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
-    expect(res.body.message).toBe("Failed to unregister device");
+    // See the note in register-device.test.ts: the shared error handler owns
+    // the 500 body now, so the caught error is logged and never echoed.
+    expect(res.body.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(res.body.error.retryable).toBe(true);
   });
 
   // --- SECURITY: IDOR -------------------------------------------------------
@@ -150,7 +161,7 @@ describe("DELETE /v1/devices/:token", () => {
       .set(bearer(makeAccessToken({ userId: attackerId })));
 
     expect(res.status).toBe(200);
-    expect(res.body.removed).toBe(false);
+    expect(res.body.data.removed).toBe(false);
     // Crucially the repository is called with the attacker's own id, never a
     // victim's, so the row owned by another user is untouched.
     expect(repo.deleteByUserAndToken).toHaveBeenCalledWith(

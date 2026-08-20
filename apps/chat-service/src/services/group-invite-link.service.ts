@@ -23,6 +23,10 @@ import { generateRoomId, buildParticipantsKey } from "../lib/room-id.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { resolveDisplayName } from "./user-snapshot.service.js";
+import {
+  fetchInviteIneligibility,
+  INVITE_INELIGIBILITY_CODE,
+} from "../lib/invite-recipient-gate.js";
 
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -37,7 +41,11 @@ import { GroupMemberService } from "./group-member.service.js";
 
 export interface GroupBulkInviteResult {
   userId: string;
-  status: "SENT" | "SKIPPED_ALREADY_MEMBER";
+  status: "SENT" | "SKIPPED_ALREADY_MEMBER" | "FAILED";
+  /** Set when `status === "FAILED"`: stable code AND `@aimess/constants`
+   *  message key (INVITE_RECIPIENT_BLOCKED / _SUSPENDED / _DELETED /
+   *  _NOT_FOUND). Absent on SENT/SKIPPED. */
+  code?: string;
 }
 
 /** Shareable HTTPS invite URL for a group token: `https://aimess.me/g/<token>`
@@ -281,8 +289,24 @@ export class GroupInviteLinkService {
     // whole call reuses this nonce and is deduped per-recipient below.
     const shareNonce = `${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 
+    // Recipient-account gate (deleted / suspended / blocked / missing), one
+    // batch for the whole send. Same helper + codes as community-service's
+    // invite paths — an invite DM must never be written to a recipient who
+    // cannot act on it, and never across a block in either direction.
+    const ineligible = await fetchInviteIneligibility(callerId, userIds);
+
     const results: GroupBulkInviteResult[] = [];
     for (const recipientId of userIds) {
+      const blocker = ineligible.get(recipientId);
+      if (blocker) {
+        results.push({
+          userId: recipientId,
+          status: "FAILED",
+          code: INVITE_INELIGIBILITY_CODE[blocker],
+        });
+        continue;
+      }
+
       const alreadyMember = await this.memberRepo.findActiveByRoomAndUser(
         roomId,
         recipientId
@@ -507,6 +531,7 @@ export class GroupInviteLinkService {
         type: "PRIVATE",
         roomId: room.roomId,
         senderId: inviterId,
+        senderName: inviterName ?? "",
         recipientIds: [inviterId, recipientId],
         lastMessageId: message.id,
         lastMessageAt: sentAt,

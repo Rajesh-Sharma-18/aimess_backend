@@ -71,10 +71,14 @@ usersRoutes.get(
   getBanReasons
 );
 
-// Single-user detail + actions.
+// Single-user detail + actions. The whole detail bundle (profile, reports,
+// communities, community-members grid) is now gated on USERS_VIEW so an
+// admin scoped to view-only can still open a user without holding the
+// ban/suspend key. USERS_MODERATE implies USERS_VIEW so existing grants
+// still work.
 usersRoutes.get(
   "/users/:userId",
-  requirePermission(PERMISSIONS.USERS_READ),
+  requirePermission(PERMISSIONS.USERS_VIEW),
   validateParams(userIdParamSchema),
   getUserDetails
 );
@@ -84,13 +88,13 @@ usersRoutes.get(
 // path.
 usersRoutes.get(
   "/users/:userId/details",
-  requirePermission(PERMISSIONS.USERS_READ),
+  requirePermission(PERMISSIONS.USERS_VIEW),
   validateParams(userIdParamSchema),
   getUserDetails
 );
 usersRoutes.get(
   "/users/:userId/reports",
-  requirePermission(PERMISSIONS.USERS_READ),
+  requirePermission(PERMISSIONS.USERS_VIEW),
   validateParams(userIdParamSchema),
   validateQuery(userReportsQuerySchema),
   listUserReports
@@ -100,14 +104,14 @@ usersRoutes.get(
 // shallower `/communities` so Express matches it first.
 usersRoutes.get(
   "/users/:userId/communities/:communityId/members",
-  requirePermission(PERMISSIONS.USERS_READ),
+  requirePermission(PERMISSIONS.USERS_VIEW),
   validateParams(userCommunityMembersParamSchema),
   validateQuery(listOtherMembersQuerySchema),
   listOtherCommunityMembers
 );
 usersRoutes.get(
   "/users/:userId/communities",
-  requirePermission(PERMISSIONS.USERS_READ),
+  requirePermission(PERMISSIONS.USERS_VIEW),
   validateParams(userIdParamSchema),
   validateQuery(listUserCommunitiesQuerySchema),
   listUserCommunities

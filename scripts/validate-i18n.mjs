@@ -18,7 +18,10 @@
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { MESSAGES, SUPPORTED_LOCALES } = require("../packages/constants/dist/index.js");
+const {
+  MESSAGES,
+  SUPPORTED_LOCALES,
+} = require("../packages/constants/dist/index.js");
 
 /** Keys whose text is legitimately identical across languages. */
 const IDENTICAL_ALLOWED = new Set([
@@ -28,10 +31,20 @@ const IDENTICAL_ALLOWED = new Set([
   // "{{label}} {{duration}}" — the completed-call preview. The label is itself
   // a translated string, so there is no prose here to translate.
   "SYS_CALL_ENDED",
+  // Preview labels that are the SAME word in every supported language: a
+  // loanword ("Video") or a format name ("GIF"). Translating them would make
+  // the row read worse, not better.
+  "PREVIEW_VIDEO",
+  "PREVIEW_GIF",
+  "QUOTE_VIDEO",
+  "QUOTE_GIF",
 ]);
 
 const placeholders = (text) =>
-  [...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]).sort().join(",");
+  [...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)]
+    .map((m) => m[1])
+    .sort()
+    .join(",");
 
 const errors = [];
 const counts = Object.fromEntries(SUPPORTED_LOCALES.map((l) => [l, 0]));

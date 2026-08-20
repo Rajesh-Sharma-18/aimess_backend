@@ -357,7 +357,14 @@ export class GroupMemberRepository {
     userId: string,
     messageId: string,
     messageCreatedAt: Date,
-    remainingUnread: number
+    remainingUnread: number,
+    /**
+     * Does this member currently give read receipts? Only then does the
+     * EXPOSABLE pointer (`receiptRead*`) move with the read one; off, it freezes
+     * where it stood so the read never surfaces — not live, and not on a later
+     * refresh once the switch goes back on.
+     */
+    givesReceipts = true
   ): Promise<GroupMember | null> {
     // Guard against optimistic client ids ("tmp-…") — Prisma throws on a
     // non-ObjectId write into `lastReadMessageId` (@db.ObjectId).
@@ -388,6 +395,22 @@ export class GroupMemberRepository {
         lastReadMessageId: messageId,
         lastReadAt: messageCreatedAt,
         unreadCount: remainingUnread < 0 ? 0 : remainingUnread,
+        // Written on EVERY accepted read so the legacy fallback in
+        // `receiptCursorOf` stops after the first one: giving receipts advances
+        // it, not giving them pins it to what this member had already published.
+        receiptReadMessageId: givesReceipts
+          ? messageId
+          : (existing.receiptReadMessageId ?? existing.lastReadMessageId),
+        // The instant of the RECEIPT — `lastReadAt` above stores the MESSAGE's
+        // own createdAt, which says nothing about when the switch was on. Frozen with
+        // nothing to freeze — a member whose FIRST read comes with the switch
+        // off — still has to write something, or the row stays indistinguishable
+        // from one that predates these columns and `receiptCursorOf` would fall
+        // back to the plain pointer and leak exactly the read being withheld.
+        // Epoch is that marker: no id, so it is nobody's receipt.
+        receiptReadAt: givesReceipts
+          ? new Date()
+          : (existing.receiptReadAt ?? existing.lastReadAt ?? new Date(0)),
       },
     });
   }
@@ -513,8 +536,16 @@ export class GroupMemberRepository {
     } = params;
 
     const and: Array<Record<string, unknown>> = [{ roomId }];
-    const statusFilter = (status || "ACTIVE").toUpperCase();
-    if (statusFilter !== "ALL") and.push({ status: statusFilter });
+    // Default (no explicit status) shows the meaningful roster — ACTIVE members
+    // PLUS BANNED ones (so a group-banned member, incl. a banned owner of a
+    // CLOSED group, stays visible and can be unbanned). LEFT/KICKED are still
+    // excluded. "ALL" drops the filter entirely; any explicit status is exact.
+    const statusFilter = (status || "").toUpperCase();
+    if (statusFilter === "") {
+      and.push({ status: { in: ["ACTIVE", "BANNED"] } });
+    } else if (statusFilter !== "ALL") {
+      and.push({ status: statusFilter });
+    }
     if (role) and.push({ role });
     if (userIdsFromSearch || qExactUserId) {
       const dedup = [

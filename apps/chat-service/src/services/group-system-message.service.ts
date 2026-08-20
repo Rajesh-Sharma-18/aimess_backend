@@ -320,7 +320,10 @@ export class GroupSystemMessageService {
             (
               await this.memberRepo.findActiveMembers(roomId, { limit: 500 })
             ).map((m) => m.userId),
+          // A SYSTEM line is nobody's message; the publisher blanks both
+          // fields for SYSTEM anyway.
           senderId: "",
+          senderName: "",
           lastMessageId: message.id,
           lastMessageAt: sysServerTs,
           // `text` is the write-time English; the canonical pair travels with it
@@ -514,7 +517,10 @@ export class GroupSystemMessageService {
             (
               await this.memberRepo.findActiveMembers(roomId, { limit: 500 })
             ).map((m) => m.userId),
+          // A SYSTEM line is nobody's message; the publisher blanks both
+          // fields for SYSTEM anyway.
           senderId: "",
+          senderName: "",
           lastMessageId: message.id,
           lastMessageAt: serverTs,
           preview: {

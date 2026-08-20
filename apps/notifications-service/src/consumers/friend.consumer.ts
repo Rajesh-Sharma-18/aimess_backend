@@ -1,6 +1,5 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
-import { t } from "@aimess/constants";
 import {
   FriendshipEvents,
   type FriendAcceptedPayload,
@@ -12,7 +11,7 @@ import {
 
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
-import { friendCopy } from "../lib/notification-copy.js";
+import { friendCopy, resolutionCopy } from "../lib/notification-copy.js";
 import { pushToUser } from "../services/push.service.js";
 
 // user-service publishes friendship events to a plain durable queue (NOT a
@@ -73,11 +72,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.addresseeId,
         copy: friendCopy.acceptedForRequester(p.addresseeName),
-        localizedData: (locale) => ({
-          resolution: t("NOTIF_FRIEND_RESOLUTION_ACCEPTED", locale, {
-            name: p.addresseeName?.trim() || t("SYS_NAME_SOMEONE", locale),
-          }),
-        }),
+        localizedData: resolutionCopy.friendAccepted(p.addresseeName),
         deepLink: deepLinkForRequester,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -105,9 +100,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.requesterId,
         copy: friendCopy.acceptedForAddressee(p.requesterName),
-        localizedData: (locale) => ({
-          resolution: t("NOTIF_FRIEND_RESOLUTION_NOW_FRIENDS", locale),
-        }),
+        localizedData: resolutionCopy.friendNowFriends(),
         deepLink: deepLinkForAddressee,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -141,9 +134,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.addresseeId,
         copy: friendCopy.rejected(p.addresseeName),
-        localizedData: (locale) => ({
-          resolution: t("NOTIF_FRIEND_RESOLUTION_DECLINED", locale),
-        }),
+        localizedData: resolutionCopy.friendDeclined(),
         deepLink,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
@@ -172,9 +163,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.requesterId,
         copy: friendCopy.rejectedSelf(p.requesterName),
-        localizedData: (locale) => ({
-          resolution: t("NOTIF_FRIEND_RESOLUTION_DECLINED_SELF", locale),
-        }),
+        localizedData: resolutionCopy.friendDeclinedSelf(),
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {
           friendshipId: p.friendshipId,
@@ -205,9 +194,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         type,
         actorId: p.addresseeId,
         copy: friendCopy.cancelled(p.requesterName),
-        localizedData: (locale) => ({
-          resolution: t("NOTIF_FRIEND_RESOLUTION_CANCELLED", locale),
-        }),
+        localizedData: resolutionCopy.friendCancelled(),
         dataOnly: true,
         apnsThreadId: `friend_${p.friendshipId}`,
         data: {

@@ -25,6 +25,7 @@ import { authClient } from "../grpc/auth.client.js";
 import { chatClient } from "../grpc/chat.client.js";
 import { communityClient } from "../grpc/community.client.js";
 import { streamClient } from "../grpc/stream.client.js";
+import { userClient } from "../grpc/user.client.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   ListCommunityMembersQuery,
@@ -142,6 +143,31 @@ function toIso(ms: number): string {
  * Bulk writes ONE AuditLog + ONE ModerationAction per AFFECTED user (mirroring
  * moderation's per-target audit granularity), not a single blanket log.
  */
+/**
+ * Mirror an account restriction onto the user-service PROFILE row.
+ *
+ * auth-service owns "can this account log in"; user-service owns the identity
+ * every other service reads (BulkGetUserSnapshots). Without this mirror a
+ * suspended/banned account is indistinguishable from an active one to
+ * community-service and chat-service, so invites, group adds and DM invite
+ * cards keep targeting an account that can never act on them.
+ *
+ * Best-effort, exactly like the space cascade: the restriction has already
+ * landed in auth-service and must not be rolled back because user-service
+ * blipped.
+ */
+function mirrorProfileStatus(userId: string, restricted: boolean): void {
+  void userClient
+    .adminSetProfileStatus(userId, restricted ? "SUSPENDED" : "ACTIVE")
+    .catch((err: unknown) => {
+      logger.error("user-service profile status mirror failed", {
+        userId,
+        restricted,
+        err,
+      });
+    });
+}
+
 export const userManagementService = {
   /** List users; controller attaches the response `meta` envelope. */
   async listUsers(
@@ -468,6 +494,12 @@ export const userManagementService = {
       return banFromCommunity(userId, input, actor, ctx);
     }
 
+    // Group-scoped ban: same shape as COMMUNITY — touches ONE group membership
+    // (or closes the group if the target owns it) and leaves the account intact.
+    if (input.banType === "GROUP") {
+      return banFromGroup(userId, input, actor, ctx);
+    }
+
     const ref = buildActor(actor);
     const before = await userDirectoryRepository.getById(userId);
 
@@ -605,6 +637,7 @@ export const userManagementService = {
       userId,
       timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
     );
+    mirrorProfileStatus(userId, true);
 
     return result;
   },
@@ -664,6 +697,7 @@ export const userManagementService = {
     });
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
+    mirrorProfileStatus(userId, true);
 
     return result;
   },
@@ -684,6 +718,10 @@ export const userManagementService = {
   ): Promise<UserStatusResult> {
     if (input.banType === "COMMUNITY") {
       return unbanFromCommunity(userId, input, actor, ctx);
+    }
+
+    if (input.banType === "GROUP") {
+      return unbanFromGroup(userId, input, actor, ctx);
     }
 
     const ref = buildActor(actor);
@@ -761,6 +799,7 @@ export const userManagementService = {
       at: toIso(ref.at),
       banType: "SYSTEM",
     });
+    mirrorProfileStatus(userId, false);
 
     return result;
   },
@@ -843,6 +882,7 @@ export const userManagementService = {
         item.userId,
         timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
       );
+      mirrorProfileStatus(item.userId, true);
     }
 
     return result;
@@ -893,6 +933,7 @@ export const userManagementService = {
         actorId: ref.actorId,
         at: toIso(ref.at),
       });
+      mirrorProfileStatus(item.userId, false);
     }
 
     return result;
@@ -1128,6 +1169,119 @@ function mapCommunityScopeError(errorCode: string): Error {
     return new NotFoundError(errorCode);
   }
   return new ConflictError(errorCode || "COMMUNITY_BAN_FAILED");
+}
+
+// Group-scoped ban: the exact community-scoped analogue. Delegates to
+// chat-service (owner of aimess_chat) over the AdminBanGroupMember RPC — a
+// normal member's membership goes BANNED (evicted, rejoin-blocked); the group
+// OWNER instead has the whole group CLOSED (ADMIN_BANNED banner, roster kept).
+// The ACCOUNT is never touched, so the caller sees back the unchanged status.
+async function banFromGroup(
+  userId: string,
+  input: BanUserInput,
+  actor: RequestAdmin,
+  ctx: RequestCtx
+): Promise<UserStatusResult> {
+  const groupId = input.groupId as string;
+  const result = await chatClient.adminBanGroupMember({
+    groupId,
+    userId,
+    actorAdminId: actor.id,
+    reason: input.reason,
+  });
+  if (!result.ok) {
+    throw mapGroupScopeError(result.errorCode);
+  }
+
+  await moderationActionRepository.create({
+    actorId: actor.id,
+    type: "ban_group_member",
+    targetType: "user",
+    targetId: userId,
+    reason: input.reason,
+    metadata: { groupId, ...(input.note ? { note: input.note } : {}) },
+    reportId: input.reportId ?? null,
+  });
+
+  await auditService.record({
+    actorId: actor.id,
+    action: AUDIT_ACTIONS.GROUP_MEMBER_BANNED,
+    targetType: "user",
+    targetId: userId,
+    after: {
+      banType: "GROUP",
+      groupId,
+      reason: input.reason,
+      note: input.note ?? null,
+      permanent: true,
+      // Banning a group's own owner closes that group as a side effect; the
+      // audit row names it or the blast radius is invisible.
+      closedGroup: result.closedGroup ?? false,
+    },
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+  });
+
+  return currentAccountStatus(userId);
+}
+
+async function unbanFromGroup(
+  userId: string,
+  input: UnbanUserInput,
+  actor: RequestAdmin,
+  ctx: RequestCtx
+): Promise<UserStatusResult> {
+  const groupId = input.groupId as string;
+  const result = await chatClient.adminUnbanGroupMember({
+    groupId,
+    userId,
+    actorAdminId: actor.id,
+  });
+  if (!result.ok) {
+    throw mapGroupScopeError(result.errorCode);
+  }
+
+  await moderationActionRepository.create({
+    actorId: actor.id,
+    type: "unban_group_member",
+    targetType: "user",
+    targetId: userId,
+    reason: input.note ?? "Group ban lifted by admin",
+    metadata: { groupId },
+  });
+
+  await auditService.record({
+    actorId: actor.id,
+    action: AUDIT_ACTIONS.GROUP_MEMBER_UNBANNED,
+    targetType: "user",
+    targetId: userId,
+    after: {
+      banType: "GROUP",
+      groupId,
+      note: input.note ?? null,
+      // Same asymmetry as community/system unban: the membership stays LEFT (the
+      // user must rejoin), and a group CLOSED by an owner ban stays CLOSED.
+      membershipRestored: false,
+    },
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+  });
+
+  return currentAccountStatus(userId);
+}
+
+// chat-service emits CHAT_GROUP_NOT_FOUND / CHAT_GROUP_NOT_ACTIVE /
+// CHAT_NOT_A_MEMBER. CHAT_NOT_A_MEMBER is a localized END-USER key (renders as
+// "You are not a member of this group") — wrong for a platform admin who was
+// never a member — so re-code it to an admin-scoped conflict.
+function mapGroupScopeError(errorCode: string): Error {
+  if (errorCode === "CHAT_GROUP_NOT_FOUND") {
+    return new NotFoundError("GROUP_NOT_FOUND");
+  }
+  if (errorCode === "CHAT_NOT_A_MEMBER") {
+    return new ConflictError("GROUP_MEMBER_NOT_ACTIVE");
+  }
+  return new ConflictError(errorCode || "GROUP_BAN_FAILED");
 }
 
 /**

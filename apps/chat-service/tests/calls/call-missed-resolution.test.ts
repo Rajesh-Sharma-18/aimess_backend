@@ -263,27 +263,32 @@ describe("terminal states are never downgraded", () => {
 });
 
 describe("server-driven teardown of a ring nobody took", () => {
-  it("LiveKit room_finished past the grace window resolves MISSED and pushes", async () => {
-    const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue(ringingFor(PAST_GRACE));
+  // A LiveKit event used to resolve a ring here, on either side of the grace
+  // window. It must not, at ANY ring length: during RINGING the caller is the
+  // room's only participant, so the room empties on any churn in their media
+  // connection while their /chat socket is fine and the callee is still being
+  // rung. Acting on that killed live calls — the callee's incoming call vanished
+  // before it could be answered, the caller's ended without connecting.
+  //
+  // The grace-window decision itself is unchanged and still covered, through the
+  // paths that legitimately settle a ring: `endCall` above (which is what the
+  // gateway's socket-drop cleanup invokes) and `endCallsBetween` below.
+  for (const [label, ringSec] of [
+    ["past the grace window", PAST_GRACE],
+    ["inside the grace window", INSIDE_GRACE],
+  ] as const) {
+    it(`LiveKit room_finished ${label} leaves the ring alone`, async () => {
+      const { service, stubs } = buildService();
+      stubs.callRepo.findByCallId.mockResolvedValue(ringingFor(ringSec));
 
-    await service.reconcileFromLiveKitRoomFinished("call-1", "room_finished");
+      await service.reconcileFromLiveKitRoomFinished("call-1", "room_finished");
 
-    expect(claimedStatus(stubs)).toBe(CallStatus.MISSED);
-    expect(cardStatuses(stubs)).toEqual(["MISSED"]);
-    expect(missedPush).toHaveBeenCalledTimes(1);
-  });
-
-  it("LiveKit room_finished inside the grace window stays a cancel", async () => {
-    const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue(ringingFor(INSIDE_GRACE));
-
-    await service.reconcileFromLiveKitRoomFinished("call-1", "room_finished");
-
-    expect(claimedStatus(stubs)).toBe(CallStatus.ENDED);
-    expect(cardStatuses(stubs)).toEqual(["CANCELLED"]);
-    expect(missedPush).not.toHaveBeenCalled();
-  });
+      expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+      expect(cardStatuses(stubs)).toEqual([]);
+      expect(missedPush).not.toHaveBeenCalled();
+      expect(cancelPush).not.toHaveBeenCalled();
+    });
+  }
 
   it("an unfriend during a long ring resolves MISSED and pushes", async () => {
     const { service, stubs } = buildService();

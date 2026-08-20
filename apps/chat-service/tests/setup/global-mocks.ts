@@ -196,6 +196,21 @@ jest.mock("../../src/grpc/user-snapshot.client.js", () => ({
     getFriendshipView: jest.fn(async () => null),
     getFriendshipInfoBulk: jest.fn(async () => []),
     getUserSnapshotsBulk: jest.fn(async () => []),
+    // Read by the invite-recipient gate (lib/invite-recipient-gate.ts). Default:
+    // every recipient exists, is live and is not blocked, so invite tests keep
+    // exercising the delivery path; negative cases override these two.
+    bulkGetUserSnapshots: jest.fn(async (userIds: string[]) =>
+      userIds.map((userId) => ({
+        userId,
+        username: "u",
+        displayName: "U",
+        avatarObjectKey: "",
+        avatarUrl: "",
+        isDeleted: false,
+        isSuspended: false,
+      }))
+    ),
+    checkFriendships: jest.fn(async () => new Map()),
     getCallPrivacy: jest.fn(async () => null),
     adminSearchProfileIds: jest.fn(async () => []),
     getChatSettings: jest.fn(async () => ({

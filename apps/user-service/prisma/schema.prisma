@@ -180,6 +180,15 @@ model ChatSettings {
   autoDeleteDefaultVersion    Int     @default(0)
   typingIndicators Boolean         @default(true)
   readReceipts     Boolean         @default(true)
+  // The instant read receipts were most recently switched back ON.
+  //
+  // A preference is not a read event: while receipts were OFF this user gave
+  // none and was shown none, and flipping the switch back must not resurrect
+  // the ones that were withheld in between. Every receipt is therefore stamped
+  // with the instant it happened (chat-service's `receiptReadAt` watermarks),
+  // and a receipt older than this line is invisible to this user forever.
+  // Null = never disabled, so nothing is hidden.
+  readReceiptsEnabledAt DateTime?  @db.Timestamptz(3)
   updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
 
   @@map("chat_settings")

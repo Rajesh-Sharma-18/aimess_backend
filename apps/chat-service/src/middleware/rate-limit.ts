@@ -1,6 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 
 import { logger } from "@aimess/logger";
+import {
+  buildApiError,
+  getRequestId,
+  resolveLocaleFromRequest,
+} from "@aimess/utils";
 
 import { redis } from "../config/redis.js";
 
@@ -24,7 +29,11 @@ interface RateLimitOptions {
 }
 
 /** Log once per fail-open so a silent Redis outage is visible in the logs. */
-function logFailOpen(keyPrefix: string, reason: string, detail?: unknown): void {
+function logFailOpen(
+  keyPrefix: string,
+  reason: string,
+  detail?: unknown
+): void {
   logger.warn("rate_limit_fail_open", {
     service: "chat-service",
     rule: keyPrefix,
@@ -145,18 +154,19 @@ export function createRateLimit({
         // `retryAfterSec` field that no client read, so every throttled client
         // fell back to guessing when to retry.
         res.setHeader("Retry-After", String(retryAfterSec));
+        // Built through the shared envelope rather than written out here, so a
+        // Vietnamese or Thai user is throttled in their own language. The
+        // top-level `retryAfterSec` is a legacy mirror of `error.retryAfter`,
+        // kept for any client already reading it.
         res.status(429).json({
-          success: false,
-          message: "Too many requests, please try again later.",
-          // Retained for any client already reading it.
-          retryAfterSec,
-          error: {
+          ...buildApiError({
             statusCode: 429,
-            code: "RATE_LIMITED",
-            message: "Too many requests, please try again later.",
-            retryAfter: retryAfterSec,
-            retryable: true,
-          },
+            locale: req.locale ?? resolveLocaleFromRequest(req),
+            messageKey: "RATE_LIMITED",
+            retryAfterSec,
+            requestId: getRequestId(req),
+          }),
+          retryAfterSec,
         });
         return;
       }

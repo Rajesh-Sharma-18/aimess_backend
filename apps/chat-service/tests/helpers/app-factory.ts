@@ -113,6 +113,25 @@ function redisMock(): any {
       exec: jest.fn(async () => null),
     })),
     zrange: jest.fn(async () => []),
+    // Presence/unread fan-outs batch their reads through a pipeline; without it
+    // the call threw "p.redis.pipeline is not a function".
+    pipeline: jest.fn(() => {
+      const chain: Record<string, unknown> = {};
+      for (const op of [
+        "get",
+        "set",
+        "setex",
+        "del",
+        "incr",
+        "expire",
+        "hget",
+        "hset",
+      ]) {
+        chain[op] = jest.fn().mockReturnValue(chain);
+      }
+      chain.exec = jest.fn(async () => []);
+      return chain;
+    }),
     on: jest.fn(),
   };
 }
@@ -249,6 +268,32 @@ export function buildApp(): BuiltApp {
   for (const repo of [privateRoomRepo, groupRoomRepo]) {
     repo.getRoomRevision.mockResolvedValue(0);
   }
+  // The private send path allocates a BLOCK of sequence numbers through
+  // `allocateRoomSlot` (lib/room-lock.ts), which immediately reads
+  // `block.lastSequence`. The auto-vivified Proxy method resolved `undefined`,
+  // so every private send died inside `drain()` before reaching the controller.
+  let privateSeq = 0;
+  privateRoomRepo.allocateSequenceBlock.mockImplementation(
+    async (roomId: string, count: number) => {
+      privateSeq += count;
+      return {
+        lastSequence: privateSeq,
+        lastRevision: privateSeq,
+        room: { roomId, participants: [TEST_USER_ID, TEST_PEER_ID] },
+      };
+    }
+  );
+
+  // `forwardMessage` allocates the TARGET room's slot through the same
+  // one-write helper the group path uses; only groupRoomRepo had a default, so
+  // every private forward read `sequenceNumber` off undefined.
+  privateRoomRepo.allocateSequenceWithRoom.mockImplementation(
+    async (roomId: string) => ({
+      sequenceNumber: 1,
+      room: { roomId, participants: [TEST_USER_ID, TEST_PEER_ID] },
+    })
+  );
+
   // The group send/forward path takes the first sequence number and the room's
   // auto-delete timer off ONE write. Delegating to `allocateSequence` keeps every
   // spec that already stubs that (and asserts on the seq it returns) working

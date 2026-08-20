@@ -68,6 +68,8 @@ export type ChatSettingsUpdate = {
   autoDeleteDefaultVersion?: number;
   typingIndicators?: boolean;
   readReceipts?: boolean;
+  /** Stamped by the service on an OFF → ON transition only — never by a client. */
+  readReceiptsEnabledAt?: Date;
 };
 
 export type AppSettingsUpdate = {
@@ -203,6 +205,7 @@ export const userSettingsRepository = {
     autoDeleteDefaultVersion: number;
     typingIndicators: boolean;
     readReceipts: boolean;
+    readReceiptsEnabledAt: Date | null;
   }> {
     const row = await prisma.chatSettings.findUnique({
       where: { userId },
@@ -213,6 +216,7 @@ export const userSettingsRepository = {
         autoDeleteDefaultVersion: true,
         typingIndicators: true,
         readReceipts: true,
+        readReceiptsEnabledAt: true,
       },
     });
     return {
@@ -228,6 +232,7 @@ export const userSettingsRepository = {
       autoDeleteDefaultVersion: row?.autoDeleteDefaultVersion ?? 0,
       typingIndicators: row?.typingIndicators ?? true,
       readReceipts: row?.readReceipts ?? true,
+      readReceiptsEnabledAt: row?.readReceiptsEnabledAt ?? null,
     };
   },
 

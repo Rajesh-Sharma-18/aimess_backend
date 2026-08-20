@@ -123,6 +123,7 @@ export function startUserGrpcServer(): grpc.Server {
         autoDeleteDefaultVersion: number;
         typingIndicators: boolean;
         readReceipts: boolean;
+        readReceiptsEnabledAtMs: number;
       }>
     ) => {
       void (async () => {
@@ -132,6 +133,9 @@ export function startUserGrpcServer(): grpc.Server {
           );
           callback(null, {
             ...row,
+            // Epoch ms on the wire (§6): 0 = never switched off, so nothing is
+            // hidden. Consumers compare it against a receipt's own timestamp.
+            readReceiptsEnabledAtMs: row.readReceiptsEnabledAt?.getTime() ?? 0,
             // proto3 int32 has no null — 0 is "no ttl", which is only ever read
             // alongside mode === "TIMER" on the consumer side.
             autoDeleteDefaultTtlSeconds: row.autoDeleteDefaultTtlSeconds ?? 0,
@@ -385,11 +389,57 @@ export function startUserGrpcServer(): grpc.Server {
                 avatarObjectKey: isDeleted ? "" : (p.avatarUrl ?? ""),
                 avatarUrl: isDeleted ? "" : (avatarViews[i]?.url ?? ""),
                 isDeleted,
+                // Admin ban/suspend mirror. Not anonymized (history must still
+                // render the name) — it exists so ACTION paths (invites, group
+                // adds) can refuse a recipient who cannot log in.
+                isSuspended: p.status === ProfileStatus.SUSPENDED,
               };
             }),
           });
         } catch (err) {
           logger.error(`gRPC bulkGetUserSnapshots error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Panel: mirror an account ban/suspend/reinstate onto the profile so
+    // every service reading BulkGetUserSnapshots sees it (see the .proto note).
+    adminSetProfileStatus: (
+      call: grpc.ServerUnaryCall<{ userId: string; status: string }, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { userId?: string; status?: string };
+          const userId = req.userId ?? "";
+          const status = (req.status ?? "").toUpperCase();
+          if (
+            status !== ProfileStatus.ACTIVE &&
+            status !== ProfileStatus.SUSPENDED
+          ) {
+            callback(null, {
+              ok: false,
+              status: "",
+              errorCode: "INVALID_STATUS",
+            });
+            return;
+          }
+          const result = await userProfileRepository.adminSetStatus(
+            userId,
+            status as ProfileStatus
+          );
+          if (result.count === 0) {
+            callback(null, {
+              ok: false,
+              status: "",
+              errorCode: "USER_NOT_FOUND",
+            });
+            return;
+          }
+          callback(null, { ok: true, status, errorCode: "" });
+        } catch (err) {
+          logger.error(`gRPC adminSetProfileStatus error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -418,16 +468,17 @@ export function startUserGrpcServer(): grpc.Server {
             callback(null, { friendIds: [], relationships: [] });
             return;
           }
-          const [friendIds, { rows, blockedIds }] = await Promise.all([
-            friendshipRepository.findAcceptedFriendIdsForUser(
-              callerId,
-              candidateIds
-            ),
-            friendshipRepository.findRelationshipsForUser(
-              callerId,
-              candidateIds
-            ),
-          ]);
+          const [friendIds, { rows, blockedIds, blockedByIds }] =
+            await Promise.all([
+              friendshipRepository.findAcceptedFriendIdsForUser(
+                callerId,
+                candidateIds
+              ),
+              friendshipRepository.findRelationshipsForUser(
+                callerId,
+                candidateIds
+              ),
+            ]);
           const rowByPeer = new Map(
             rows.map((r) => [
               r.requesterId === callerId ? r.addresseeId : r.requesterId,
@@ -452,6 +503,12 @@ export function startUserGrpcServer(): grpc.Server {
               canAccept: view.canAccept,
               canReject: view.canReject,
               canCancel: view.canCancel,
+              // Either-direction block. `status` stays one-directional on
+              // purpose (an incoming block must not be visible as BLOCKED);
+              // this flag exists only for action gates that must refuse both
+              // ways, e.g. sending a group/community invite DM.
+              blockedEitherWay:
+                blockedIds.has(userId) || blockedByIds.has(userId),
             };
           });
           callback(null, { friendIds, relationships });

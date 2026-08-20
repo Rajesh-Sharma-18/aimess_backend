@@ -1,23 +1,32 @@
 /**
- * The 20-key permission catalogue (resource.action) and the per-key group.
- * Source of truth: docs/ADMIN-SERVICE-DESIGN.md §5.
+ * Permission catalogue (resource.action) and the per-key group. Source of
+ * truth: docs/ADMIN-SERVICE-DESIGN.md §5.
  *
- * Every module carries two keys: `<module>.read` gates route access and
- * `<module>.moderate|action|manage` gates the row/page actions. Read-only
- * modules (dashboard, auditlogs, systemhealth) have nothing to act on and
- * carry the read key alone.
+ * Each user-facing module carries up to three keys:
+ *   `<module>.read`       — enter module (sidebar + list)
+ *   `<module>.view`       — open detail / conversation / player screens
+ *   `<module>.moderate|action|manage` — destructive actions (ban, close, end…)
+ *
+ * Read-only modules (dashboard, auditlogs, systemhealth) carry `read` only;
+ * management modules whose only detail IS the row (categories, announcements,
+ * admins) skip the view key since there is nothing to view apart from the row.
  */
 export const PERMISSION_CATALOGUE: { key: string; group: string }[] = [
   { key: "dashboard.read", group: "dashboard" },
   { key: "users.read", group: "users" },
+  { key: "users.view", group: "users" },
   { key: "users.moderate", group: "users" },
   { key: "reports.read", group: "reports" },
+  { key: "reports.view", group: "reports" },
   { key: "reports.action", group: "reports" },
   { key: "communities.read", group: "communities" },
+  { key: "communities.view", group: "communities" },
   { key: "communities.moderate", group: "communities" },
   { key: "groups.read", group: "groups" },
+  { key: "groups.view", group: "groups" },
   { key: "groups.moderate", group: "groups" },
   { key: "livestreams.read", group: "livestreams" },
+  { key: "livestreams.view", group: "livestreams" },
   { key: "livestreams.moderate", group: "livestreams" },
   { key: "categories.read", group: "categories" },
   { key: "categories.manage", group: "categories" },

@@ -5,6 +5,7 @@ import { logger } from "@aimess/logger";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
+import { localizeNotificationFrame } from "../localize-notification.js";
 import { scopeSocketLocale } from "../locale-scope.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
 
@@ -48,12 +49,26 @@ export function registerNotifyNamespace(
       const room = channel.replace("notify:", "user:");
       if (parsed.excludeSessionId) {
         // Exclude the newly-logged-in device from receiving its own login alert.
-        notify
-          .to(room)
-          .except(`session:${parsed.excludeSessionId}`)
-          .emit(parsed.event, parsed.data);
+        // Still per-socket rather than a room broadcast, so the surviving
+        // devices get the frame in THEIR language like every other one.
+        void emitPersonalizedSender(
+          notify,
+          room,
+          parsed.event,
+          parsed.data,
+          localizeNotificationFrame,
+          undefined,
+          undefined,
+          parsed.excludeSessionId
+        );
       } else {
-        void emitPersonalizedSender(notify, room, parsed.event, parsed.data);
+        void emitPersonalizedSender(
+          notify,
+          room,
+          parsed.event,
+          parsed.data,
+          localizeNotificationFrame
+        );
       }
     } catch (err) {
       logger.warn(

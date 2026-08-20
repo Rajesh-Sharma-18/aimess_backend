@@ -12,7 +12,16 @@ import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
-import { currentLocale, isHiddenSystemMessage, t } from "@aimess/constants";
+import {
+  currentLocale,
+  isHiddenSystemMessage,
+  localizeMessagePreview,
+  personalizeCommunitySystemMessageForViewer,
+  STORED_TEXT_LOCALE,
+  t,
+  type CommunitySystemMessageType,
+  type SupportedLocale,
+} from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
@@ -126,7 +135,8 @@ import { getStreamClient } from "../grpc/stream.client.js";
 import type { LiveStreamSummary } from "../types/community.types.js";
 import {
   fetchAcceptedFriendIds,
-  fetchExistingUserIds,
+  fetchInviteIneligibility,
+  INVITE_INELIGIBILITY_CODE,
   fetchUserSnapshots,
   fetchUserSnapshotHits,
 } from "../lib/user-client.js";
@@ -350,6 +360,67 @@ export function selectListPreview(
     lastActivityUserId?: string | null;
     lastActivityTargetUserId?: string | null;
     lastActivityTargetPreview?: string | null;
+    lastActivitySystemType?: string | null;
+    lastActivitySystemMetadata?: unknown;
+  },
+  viewerId: string
+): string | null {
+  return localizeSystemPreview(pickListPreview(row, viewerId), row, viewerId);
+}
+
+/**
+ * Re-render a SYSTEM list row in the reader's language.
+ *
+ * Every preview this file returns was rendered by chat-service at write time in
+ * `STORED_TEXT_LOCALE` (English) — one row, read by members in three languages.
+ * The transcript already re-renders each system line per reader from
+ * `systemMessageType` + `systemMetadata`; the list row did not, so switching
+ * language translated the conversation and left the row above it in English.
+ *
+ * The swap happens ONLY while the stored text still equals the English
+ * rendering of this row's own system event for THIS viewer — which is what
+ * keeps the personal overlays honest: a delete-for-me `selfPreview` (some other
+ * message's text) or a legacy row written before the params were carried never
+ * matches, and is returned exactly as stored.
+ */
+function localizeSystemPreview(
+  preview: string | null,
+  row: {
+    lastActivitySystemType?: string | null;
+    lastActivitySystemMetadata?: unknown;
+  },
+  viewerId: string
+): string | null {
+  const systemType = row.lastActivitySystemType;
+  if (!preview || !systemType) return preview;
+  const locale = currentLocale();
+  const metadata =
+    row.lastActivitySystemMetadata &&
+    typeof row.lastActivitySystemMetadata === "object"
+      ? (row.lastActivitySystemMetadata as Record<string, unknown>)
+      : {};
+  const render = (target: SupportedLocale): string =>
+    personalizeCommunitySystemMessageForViewer(
+      systemType as CommunitySystemMessageType,
+      metadata,
+      preview,
+      String(metadata.actorName ?? ""),
+      String(metadata.targetName ?? ""),
+      viewerId,
+      target
+    );
+  return preview === render(STORED_TEXT_LOCALE) ? render(locale) : preview;
+}
+
+/** The stored preview this viewer resolves to, before any translation. */
+function pickListPreview(
+  row: {
+    lastActivityType?: string | null;
+    lastActivityPreview?: string | null;
+    lastActivitySelfPreview?: string | null;
+    lastActivityUserId?: string | null;
+    lastActivityTargetUserId?: string | null;
+    lastActivityTargetPreview?: string | null;
   },
   viewerId: string
 ): string | null {
@@ -421,8 +492,10 @@ export function buildLastActivity(community: {
       type: "created",
       userId: null,
       username: null,
-      // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single source of truth.
-      preview: "Community created",
+      // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single
+      // source of truth, and rendered in the READER's language like every other
+      // system line rather than the English the column was seeded with.
+      preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
       dateTime: community.createdAt.getTime(),
       ...EMPTY_ACTIVITY_IDENTITY,
     };
@@ -434,7 +507,14 @@ export function buildLastActivity(community: {
       type: rawType as "message" | "edited" | "deleted",
       userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
-      preview: community.lastActivityPreview ?? "",
+      // The preview was rendered by chat-service in `STORED_TEXT_LOCALE` when
+      // the message landed — one row, every member's language. A pure media
+      // LABEL ("🎤 Voice Message") is re-rendered for THIS reader; a preview
+      // carrying user text or a filename is returned untouched.
+      preview: localizeMessagePreview(
+        community.lastActivityPreview ?? "",
+        identity.contentType
+      ),
       dateTime: community.lastActivityAt.getTime(),
       ...identity,
     };
@@ -467,7 +547,9 @@ export function buildLastActivity(community: {
     // all show the same string while the async write catches up.
     preview:
       community.lastActivityPreview ??
-      (systemType === "created" ? "Community created" : ""),
+      (systemType === "created"
+        ? t("SYS_COMMUNITY_CREATED", currentLocale())
+        : ""),
     dateTime,
     ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
@@ -2365,7 +2447,7 @@ export const communityService = {
         type: "created",
         userId: null,
         username: null,
-        preview: "Community created",
+        preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
         dateTime: community.createdAt.getTime(),
       },
     };
@@ -4420,7 +4502,12 @@ export const communityService = {
       community.adminId === callerId ||
       membership.role === CommunityMemberRole.ADMIN;
 
-    if (isAdmin) {
+    // A CLOSED community (owner permanently banned) can never transfer
+    // ownership and is already read-only for everyone, so the "must keep an
+    // owner" rule is void — the banned/unbanned owner would otherwise be
+    // trapped holding a dead room in their list forever. Let them leave like a
+    // plain member; the community stays CLOSED and readable for the rest.
+    if (isAdmin && !communityAccessPolicy.isOwnerClosed(community)) {
       if (community.memberCount === 1) {
         // Admin is the only member → delete the community (members first, then
         // community in a transaction). No audit needed since the community
@@ -4819,11 +4906,14 @@ export const communityService = {
         continue;
       }
 
+      const bulkCommunity = communityMap.get(communityId)!;
       const isAdmin = membership.role === CommunityMemberRole.ADMIN;
 
-      if (isAdmin) {
-        const community = communityMap.get(communityId)!;
-        if (community.memberCount === 1) {
+      // A CLOSED community (owner banned) can never transfer ownership, so the
+      // admin block is void — let them leave like a member (mirrors single
+      // leaveCommunity). Falls through to the non-admin LEFT path below.
+      if (isAdmin && !communityAccessPolicy.isOwnerClosed(bulkCommunity)) {
+        if (bulkCommunity.memberCount === 1) {
           // Admin is the only member — auto-delete the community.
           await communityRepository.deleteCommunityHard(communityId);
           logger.info(
@@ -7466,10 +7556,16 @@ export const communityService = {
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
     communityAccessPolicy.assertWritable(community);
 
-    // Batch fetch existing memberships and invite rows in parallel.
-    const [existingMembers, existingInvites] = await Promise.all([
+    // Batch fetch existing memberships, invite rows AND recipient-account
+    // eligibility in parallel. The eligibility gate is the SAME helper the
+    // invite-link bulk-share uses: without it this endpoint happily created
+    // invite rows (and DM cards) for deleted, suspended and blocked users.
+    const [existingMembers, existingInvites, ineligible] = await Promise.all([
       communityRepository.findMembersByUserIds(communityId, userIds),
       communityRepository.findInvitesByUserIds(communityId, userIds),
+      fetchInviteIneligibility(callerId, [
+        ...new Set(userIds.filter((id) => id !== callerId)),
+      ]),
     ]);
 
     const membershipByUserId = new Map(
@@ -7486,6 +7582,16 @@ export const communityService = {
     for (const userId of userIds) {
       if (userId === callerId) {
         results.push({ userId, outcome: "FAILED", reason: "SELF_INVITE" });
+        continue;
+      }
+
+      const ineligibleReason = ineligible.get(userId);
+      if (ineligibleReason) {
+        results.push({
+          userId,
+          outcome: "FAILED",
+          reason: INVITE_INELIGIBILITY_CODE[ineligibleReason],
+        });
         continue;
       }
 
@@ -9401,8 +9507,8 @@ export const communityService = {
     const candidateIds = requestedIds.filter((id) => id !== callerId);
     const selfSkipped = requestedIds.length - candidateIds.length;
 
-    const [existingIds, memberRows] = await Promise.all([
-      fetchExistingUserIds(candidateIds),
+    const [ineligible, memberRows] = await Promise.all([
+      fetchInviteIneligibility(callerId, candidateIds),
       candidateIds.length
         ? communityRepository.findMembersByUserIds(communityId, candidateIds)
         : Promise.resolve(
@@ -9430,16 +9536,16 @@ export const communityService = {
       linkRow.expiresAt === null && linkRow.maxUses === null;
 
     for (const recipientId of candidateIds) {
-      // `existingIds === null` means the user-service lookup was UNAVAILABLE
-      // (circuit open / transient gRPC error). Fail OPEN there — a verification
-      // blip must not block an otherwise-valid bulk send (the recipient still
-      // re-validates on redeem). When the lookup succeeded, an absent id is a
-      // genuine non-existent user and is reported precisely.
-      if (existingIds && !existingIds.has(recipientId)) {
+      // Recipient-account gate (deleted / suspended / blocked / missing). One
+      // shared helper for every invite path — see `fetchInviteIneligibility`,
+      // which fails OPEN on a user-service outage so a verification blip never
+      // blocks an otherwise-valid send.
+      const blocker = ineligible.get(recipientId);
+      if (blocker) {
         failures.push({
           userId: recipientId,
-          code: "USER_NOT_FOUND",
-          message: "User does not exist",
+          code: INVITE_INELIGIBILITY_CODE[blocker],
+          message: INVITE_INELIGIBILITY_CODE[blocker],
         });
         continue;
       }

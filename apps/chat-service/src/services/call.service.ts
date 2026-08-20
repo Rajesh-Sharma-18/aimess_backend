@@ -949,7 +949,26 @@ export class CallService {
           // Who picked up, so a device that is still legitimately ringing (a
           // GROUP call's other members) doesn't mistake someone else's answer
           // for "answered on my other device".
-          data: { callId: params.callId, answeredByUserId: params.calleeId },
+          //
+          // `answeredAt` is the one clock both sides can share. Without it every
+          // client had to invent its own origin for the in-call timer — Android
+          // from local media arrival, web from `performance.now()`, iOS from its
+          // own room connect — so the two panels counted different calls and
+          // drifted apart by however long the media legs differed. This is the
+          // SAME instant that was just written to the row, so a timer rendered
+          // as `now - answeredAt` agrees on every device and survives a
+          // reconnect without restarting.
+          //
+          // Epoch ms, matching every other timestamp on this bus (`initiatedAt`,
+          // `missedAt`, `endedAt`, `serverTs`) — and matching what the clients
+          // already parse. NEVER seconds: Android's AimessTime.normalizeEpoch
+          // rescales any value that looks like seconds and would land the timer
+          // decades off.
+          data: {
+            callId: params.callId,
+            answeredByUserId: params.calleeId,
+            answeredAt: transitionedAt.getTime(),
+          },
         }),
         "answerCall"
       ),
@@ -1692,8 +1711,11 @@ export class CallService {
    * exactly once per call — no duplicate card, push or unread increment, even if
    * the sweep and the caller race. Every step is individually non-fatal.
    *
-   *  1. `call:missed` on `call:<id>` and each rung callee's `self:<id>` — the
-   *     caller's panel goes to "no answer", the callee's ring UI clears.
+   *  1. `call:missed` on `call:<id>` and on EVERY participant's `self:<id>`,
+   *     caller included — the caller's panel goes to "no answer", the callee's
+   *     ring UI clears. The caller's own channel matters because `call:<id>` is
+   *     joined only at the initiate ack: a socket that reconnected since is no
+   *     longer in it and would otherwise hang on "Calling…" indefinitely.
    *  2. A dismissal data-push, so a device that never woke stops ringing.
    *  3. ONE call card, transitioned in place to MISSED. Both participants read
    *     that same row; the caller renders "No answer", the callee "Missed call".
@@ -1786,24 +1808,15 @@ export class CallService {
     });
     // GROUP calls loop the whole rung roster on the self:<id> side.
     const targets = this.ringTargets(call);
-    await Promise.all([
-      this.redis
-        .publish(`call:${call.callId}`, payload)
-        .catch((err: unknown) =>
-          logger.warn(
-            `CallService|missed|publish call room failed: ${String(err)}`
-          )
-        ),
-      ...targets.map((calleeId) =>
-        this.redis
-          .publish(`self:${calleeId}`, payload)
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|missed|publish user room failed calleeId=${calleeId}: ${String(err)}`
-            )
-          )
-      ),
-    ]);
+    // Through the shared helper, like every other terminal fan-out. This used to
+    // hand-roll the same publishes MINUS `self:<callerId>` — the one terminal
+    // path in this service that skipped the caller's own channel. A caller whose
+    // socket was not in `call:<callId>` at this moment (reconnected and not yet
+    // rejoined, or removed by the disconnect cleanup) therefore never learned
+    // their own ring had ended, and sat on "Calling…" forever. Their answering
+    // device now gets the event on both channels; all three clients already
+    // dedup or are idempotent for that.
+    await this.publishToCallAndParticipants(call, payload, "missed");
     for (const calleeId of targets) {
       publishCallCancelSafe({
         calleeId,
@@ -1947,95 +1960,36 @@ export class CallService {
       return;
     }
 
+    // NO LiveKit event may settle a ringing call — not `participant_left`, and
+    // not `room_finished` either.
+    //
+    // During RINGING the caller is the room's ONLY participant, so the room
+    // empties on any churn in THEIR media connection: a network switch, the app
+    // backgrounding, a throttled browser tab. LiveKit then closes the empty room
+    // on its own timeout and fires `room_finished` — while the caller's /chat
+    // socket is perfectly healthy and the callee's phone is still ringing. The
+    // webhook simply cannot tell "the caller is gone" from "the caller's media
+    // blipped", so acting on it killed live rings: the callee's incoming call
+    // vanished before it could be answered and the caller's call ended without
+    // ever connecting.
+    //
+    // `participant_left` was already excluded for exactly this reason; the same
+    // reasoning always applied to `room_finished`, and leaving that half open is
+    // what kept the bug alive. It got worse when iOS started joining at the
+    // initiate ack like web and Android — every platform now exposes a
+    // sole-participant room for the whole ring.
+    //
+    // Nothing can get stuck, because three paths settle a ring and none of them
+    // is a media webhook:
+    //   1. the ring timing out — `sweepMissedCalls`, the authority here;
+    //   2. the caller's socket genuinely dropping — the gateway's disconnect
+    //      cleanup calls `endCall` after CALL_DISCONNECT_GRACE_MS, which is
+    //      FASTER than LiveKit's room close and, because it passes the acting
+    //      user, still resolves cancel-vs-missed through `ringResolvesAsMissed`;
+    //   3. a real decision — answer / decline / hangup / relationship teardown.
     if (call.status === CallStatus.RINGING) {
-      // `participant_left` must never cancel a ringing call. During RINGING the
-      // caller is the room's ONLY participant, so any churn on their connection
-      // fires it — notably cancelling one call while immediately placing the next,
-      // which cancelled the brand-new call and surfaced to the caller as a 15s
-      // hang then "engine not connected". Only a real room close counts here; a
-      // caller who is genuinely gone is still caught by the 60s missed sweep.
-      if (eventType !== "room_finished") {
-        logger.debug(
-          `CallService|reconcile|ignoring ${eventType} for RINGING call=${callId}`
-        );
-        return;
-      }
-      const endedAt = new Date();
-      // Same question as a caller-side hangup: from the callee's seat, did this
-      // ring last long enough to be a call they missed? `endedByUserId` is
-      // omitted because there is no user behind a LiveKit teardown — the caller
-      // check does not apply, but every other clause does.
-      const missed = this.ringResolvesAsMissed({ call, endedAt });
-      const { won } = await this.callRepo.claimStatusTransition(
-        callId,
-        CallStatus.RINGING,
-        {
-          status: missed ? CallStatus.MISSED : CallStatus.ENDED,
-          endedAt,
-          endedBy: "SYSTEM_LIVEKIT",
-        }
-      );
-      if (!won) return;
-
-      // A ring that outlived the grace window settles through the SAME shared
-      // fan-out every other unanswered ring uses — one `call:missed`, one
-      // MISSED card, and the tray push that is the only thing telling a
-      // backgrounded callee it happened.
-      if (missed) {
-        await this.fanOutUnansweredRing(
-          { ...call, status: CallStatus.MISSED, endedAt },
-          endedAt
-        );
-        return;
-      }
-
-      // Publish to BOTH rooms — mirrors sweepMissedCalls. Unlike endCall's
-      // RINGING branch (where the CALLER initiated the end and already cleared
-      // their own session), this is a server-triggered end: the caller has NOT
-      // done any local teardown, so they must be told too — otherwise their FE
-      // sits with a ghost outgoing ring if their own `RoomEvent.Disconnected`
-      // didn't fire (rare network split where LiveKit sees them leave but the
-      // /chat socket survives). Callee gets it on `self:<id>` (they never joined
-      // `call:<id>` — pre-answer); caller gets it on `call:<id>` (joined at ack).
-      const cancelPayload = JSON.stringify({
-        event: "call:cancelled",
-        data: { callId },
-      });
-      const targets = this.ringTargets(call);
-      await Promise.all([
-        ...targets.map((calleeId) =>
-          this.redis
-            .publish(`self:${calleeId}`, cancelPayload)
-            .catch((err: unknown) =>
-              logger.warn(
-                `CallService|reconcile|cancel publish (callee=${calleeId}) failed: ${String(err)}`
-              )
-            )
-        ),
-        this.redis
-          .publish(`call:${callId}`, cancelPayload)
-          .catch((err: unknown) =>
-            logger.warn(
-              `CallService|reconcile|cancel publish (call room) failed: ${String(err)}`
-            )
-          ),
-      ]);
-
-      for (const calleeId of targets) {
-        publishCallCancelSafe({
-          calleeId,
-          callId,
-          reason: "cancelled",
-          callerId: call.callerId,
-        });
-      }
-
-      await this.postCallChatMessageSafe(
-        call,
-        "CANCELLED",
-        endedAt,
-        0,
-        "SYSTEM_LIVEKIT"
+      logger.debug(
+        `CallService|reconcile|ignoring ${eventType} for RINGING call=${callId} — a ring is settled by the sweep, the socket-drop cleanup or a participant, never by a media event`
       );
       return;
     }

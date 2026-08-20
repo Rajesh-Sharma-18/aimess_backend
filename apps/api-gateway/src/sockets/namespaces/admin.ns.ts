@@ -31,6 +31,15 @@ const ADMIN_STREAM_SUBSCRIBE = "admin:stream:subscribe";
 const ADMIN_STREAM_UNSUBSCRIBE = "admin:stream:unsubscribe";
 
 /**
+ * Admin Group Conversation viewer: watch/stop watching ONE group's live message
+ * stream. Same shape and rationale as the community viewer — the admin token is
+ * signed with a different secret, so the user-facing /chat namespace would
+ * reject it outright and the panel would otherwise need a parallel chat socket.
+ */
+const ADMIN_GROUP_SUBSCRIBE = "admin:group:subscribe";
+const ADMIN_GROUP_UNSUBSCRIBE = "admin:group:unsubscribe";
+
+/**
  * The ONLY community events mirrored to /admin. The conversation viewer is
  * read-only, so typing/read-receipt/presence/member traffic is deliberately
  * excluded — an allowlist rather than a denylist, so a future event added to
@@ -56,6 +65,22 @@ const ADMIN_VIEWABLE_COMMUNITY_EVENTS = new Set([
  * `senderAvatar` to a presigned URL before publishing (its /stream counterpart
  * re-presigns only for legacy raw-key rows).
  */
+/**
+ * The ONLY group (chat) events mirrored to /admin. Group messages travel on the
+ * shared `conv:<roomId>` channel (private DMs use the same channel), so the
+ * allowlist is doubly important here — it keeps DM-shaped events off the panel
+ * even though the viewer only ever joins a group's conv room. Read-only: message
+ * lifecycle plus the two moderation-state events the viewer must reflect live
+ * (a member banned/removed, the group closed by an owner ban).
+ */
+const ADMIN_VIEWABLE_GROUP_EVENTS = new Set([
+  "message:new",
+  "message:edited",
+  "message:delete",
+  "group:member:removed",
+  "group:closed",
+]);
+
 const ADMIN_VIEWABLE_STREAM_EVENTS = new Set([
   "stream:comment:new",
   "stream:comment:deleted",
@@ -73,6 +98,12 @@ const ADMIN_VIEWABLE_STREAM_EVENTS = new Set([
  * `requirePermission(COMMUNITIES_MODERATE)`.
  */
 const COMMUNITIES_MODERATE = "communities.moderate";
+
+/**
+ * Permission required to watch a group's live conversation. Same message bodies
+ * as GET /admin/v1/groups/:id/messages, so it MUST match that route's guard.
+ */
+const GROUPS_MODERATE = "groups.moderate";
 
 /**
  * Permission required to monitor a livestream. Matches the REST guard on
@@ -170,6 +201,26 @@ export function registerAdminNamespace(
         return;
       }
 
+      // Group mirror for the conversation viewer. Group messages travel on the
+      // SHARED `conv:<roomId>` channel (private DMs too), so the room-membership
+      // gate below is what scopes delivery: only a group whose `conv:<groupId>`
+      // room an admin has joined ever emits, and the allowlist keeps DM-shaped
+      // events off the panel regardless.
+      if (channel.startsWith("conv:")) {
+        if (!admin.adapter.rooms.has(channel)) return;
+        try {
+          const parsed = JSON.parse(message) as RedisSocketEvent;
+          if (ADMIN_VIEWABLE_GROUP_EVENTS.has(parsed.event)) {
+            admin.local.to(channel).emit(parsed.event, parsed.data);
+          }
+        } catch (err) {
+          logger.warn(
+            `/admin Redis message parse error on ${channel}: ${String(err)}`
+          );
+        }
+        return;
+      }
+
       // Livestream mirror for the monitor. Same channel-name-IS-room-name
       // convention; `stream:<streamId>` here is a /admin room, distinct from
       // the identically-named room on /stream.
@@ -224,6 +275,10 @@ export function registerAdminNamespace(
   // be bookkeeping for nothing. Delivery is still scoped by room membership:
   // with no admin subscribed, `admin.to(...)` fans out to nobody.
   void redisSub.psubscribe("community:*");
+  // Group conversation viewer. `conv:*` also carries private DM traffic, but the
+  // per-message `admin.adapter.rooms.has(channel)` short-circuit above means a
+  // conv nobody is watching costs nothing, and the allowlist scopes what leaks.
+  void redisSub.psubscribe("conv:*");
   // Same again for the livestream monitor. stream-service is the only publisher
   // on `stream:<id>`; the presence hashes that share the prefix are plain keys,
   // never channels.
@@ -289,6 +344,59 @@ export function registerAdminNamespace(
         if (!communityId) return;
         desiredCommunities.delete(communityId);
         void socket.leave(`community:${communityId}`);
+      }
+    );
+
+    // Groups this socket currently WANTS to watch — same race guard as the
+    // community set above (async permission check vs. a sync unsubscribe).
+    const desiredGroups = new Set<string>();
+
+    socket.on(
+      ADMIN_GROUP_SUBSCRIBE,
+      (
+        payload: { groupId?: string } | undefined,
+        callback?: (res: unknown) => void
+      ) => {
+        const groupId = payload?.groupId?.trim();
+        if (!groupId) {
+          callback?.({ success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        desiredGroups.add(groupId);
+        void (async () => {
+          if (
+            !(await adminHasPermission(
+              redisPub,
+              String(adminId),
+              GROUPS_MODERATE
+            ))
+          ) {
+            desiredGroups.delete(groupId);
+            logger.warn(
+              `/admin group subscribe denied adminId=${String(adminId)} group=${groupId}`
+            );
+            callback?.({ success: false, error: "FORBIDDEN" });
+            return;
+          }
+          if (!desiredGroups.has(groupId)) {
+            callback?.({ success: false, error: "UNSUBSCRIBED" });
+            return;
+          }
+          // Group messages travel on `conv:<roomId>`; the /admin room shares
+          // that name (distinct from /chat's identically-named room).
+          await socket.join(`conv:${groupId}`);
+          callback?.({ success: true });
+        })();
+      }
+    );
+
+    socket.on(
+      ADMIN_GROUP_UNSUBSCRIBE,
+      (payload: { groupId?: string } | undefined) => {
+        const groupId = payload?.groupId?.trim();
+        if (!groupId) return;
+        desiredGroups.delete(groupId);
+        void socket.leave(`conv:${groupId}`);
       }
     );
 

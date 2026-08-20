@@ -40,6 +40,96 @@ export const COMMON_MESSAGES = {
     en: "App version checked",
     th: "ตรวจสอบเวอร์ชันแอปแล้ว",
   },
+
+  // --- Generic transport failures -------------------------------------------
+  // Every service's error handler resolves these. They existed only as inline
+  // English strings before, which is why a Vietnamese or Thai user got an
+  // untranslated sentence for a malformed body, an oversized upload, or a
+  // Prisma constraint violation.
+
+  /** HTTP 401 — no credential, or one that has expired. */
+  UNAUTHORIZED: {
+    vi: "Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.",
+    en: "Authentication token missing or expired. Please log in again.",
+    th: "โทเค็นการยืนยันตัวตนหายไปหรือหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง",
+  },
+  /** HTTP 403 — authenticated, but not allowed to do this. */
+  FORBIDDEN: {
+    vi: "Bạn không có quyền thực hiện thao tác này.",
+    en: "You do not have permission to perform this action.",
+    th: "คุณไม่มีสิทธิ์ดำเนินการนี้",
+  },
+  /** HTTP 400 — the body was not parseable JSON. */
+  INVALID_JSON_BODY: {
+    vi: "Nội dung yêu cầu không phải JSON hợp lệ.",
+    en: "Request body is not valid JSON.",
+    th: "เนื้อหาคำขอไม่ใช่ JSON ที่ถูกต้อง",
+  },
+  /** HTTP 413 — the body exceeded the configured limit. */
+  PAYLOAD_TOO_LARGE: {
+    vi: "Nội dung yêu cầu quá lớn.",
+    en: "Request payload is too large.",
+    th: "เนื้อหาคำขอมีขนาดใหญ่เกินไป",
+  },
+  /** HTTP 409 — a unique constraint was violated and no domain key fits. */
+  RESOURCE_CONFLICT: {
+    vi: "Dữ liệu này đã tồn tại.",
+    en: "This resource already exists.",
+    th: "ข้อมูลนี้มีอยู่แล้ว",
+  },
+  /** HTTP 400 — an identifier was not a well-formed id. */
+  INVALID_ID_FORMAT: {
+    vi: "Định dạng mã không hợp lệ.",
+    en: "Invalid ID format provided.",
+    th: "รูปแบบรหัสไม่ถูกต้อง",
+  },
+  /** HTTP 404 — the record the request needed does not exist. */
+  RESOURCE_NOT_FOUND: {
+    vi: "Không tìm thấy dữ liệu yêu cầu.",
+    en: "The requested resource was not found.",
+    th: "ไม่พบข้อมูลที่ร้องขอ",
+  },
+  /** HTTP 400 — the request referenced a record that does not exist. */
+  INVALID_REFERENCE: {
+    vi: "Yêu cầu tham chiếu đến dữ liệu không tồn tại.",
+    en: "The request references data that does not exist.",
+    th: "คำขออ้างอิงถึงข้อมูลที่ไม่มีอยู่",
+  },
+  /** HTTP 400 — the database rejected the request and no better key applies. */
+  REQUEST_FAILED: {
+    vi: "Không thể xử lý yêu cầu này.",
+    en: "The request could not be processed.",
+    th: "ไม่สามารถดำเนินการคำขอนี้ได้",
+  },
+  // --- Invite recipient eligibility -----------------------------------------
+  // Per-recipient outcomes shared by EVERY invite path (community direct
+  // invites, community invite-link share, group invite-link share). They are
+  // item-level results inside a 200 response, not thrown errors, so the
+  // controller localizes them explicitly.
+  /** A block exists in either direction between sender and recipient. */
+  INVITE_RECIPIENT_BLOCKED: {
+    vi: "Bạn không thể gửi lời mời cho người dùng đã bị chặn.",
+    en: "You cannot send invitations to a blocked user.",
+    th: "คุณไม่สามารถส่งคำเชิญไปยังผู้ใช้ที่ถูกบล็อกได้",
+  },
+  /** Recipient is admin-suspended or admin-banned — they cannot act on it. */
+  INVITE_RECIPIENT_SUSPENDED: {
+    vi: "Tài khoản người dùng này hiện đang bị tạm khóa.",
+    en: "This user account is currently suspended.",
+    th: "บัญชีผู้ใช้นี้ถูกระงับอยู่ในขณะนี้",
+  },
+  /** Recipient account was deleted. */
+  INVITE_RECIPIENT_DELETED: {
+    vi: "Tài khoản người nhận không còn tồn tại.",
+    en: "Recipient account no longer exists.",
+    th: "บัญชีผู้รับไม่มีอยู่แล้ว",
+  },
+  /** No such account (never existed, or an id from a stale client list). */
+  INVITE_RECIPIENT_NOT_FOUND: {
+    vi: "Không tìm thấy tài khoản người nhận.",
+    en: "Recipient account could not be found.",
+    th: "ไม่พบบัญชีผู้รับ",
+  },
 } as const satisfies MessageCatalog;
 
 export type CommonMessageKey = keyof typeof COMMON_MESSAGES;

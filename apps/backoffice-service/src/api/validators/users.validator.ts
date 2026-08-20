@@ -310,7 +310,7 @@ const banReasonInput = requiredTrimmedText("Reason", CUSTOM_BAN_REASON_MAX_LEN);
 //
 // Defaults to SYSTEM so every existing caller — the admin panel already POSTs
 // this endpoint with no banType — keeps its current meaning exactly.
-const banTypeInput = z.enum(["SYSTEM", "COMMUNITY"]).default("SYSTEM");
+const banTypeInput = z.enum(["SYSTEM", "COMMUNITY", "GROUP"]).default("SYSTEM");
 
 // Kept as a plain object (not the refined schema) so `bulkBanSchema` can still
 // `.extend` it — superRefine returns a ZodEffects, which has no `.extend`.
@@ -318,6 +318,8 @@ const banUserBaseSchema = z.object({
   banType: banTypeInput,
   // Required for (and only meaningful to) a COMMUNITY-scoped ban.
   communityId: z.string().trim().min(1).max(64).optional(),
+  // Required for (and only meaningful to) a GROUP-scoped ban.
+  groupId: z.string().trim().min(1).max(64).optional(),
   reason: banReasonInput,
   note: z.string().max(2000).optional(),
   // Legacy SYSTEM-scope escape hatch only: durationDays>0 turns a "ban" into
@@ -333,6 +335,23 @@ const requireCommunityScopeFields = (
   value: z.infer<typeof banUserBaseSchema>,
   ctx: z.RefinementCtx
 ): void => {
+  if (value.banType === "GROUP") {
+    if (!value.groupId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["groupId"],
+        message: "groupId is required for a GROUP ban",
+      });
+    }
+    if (value.durationDays != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["durationDays"],
+        message: "A group ban has no duration",
+      });
+    }
+    return;
+  }
   if (value.banType !== "COMMUNITY") return;
   if (!value.communityId) {
     ctx.addIssue({
@@ -381,6 +400,7 @@ export const unbanUserSchema = z
   .object({
     banType: banTypeInput,
     communityId: z.string().trim().min(1).max(64).optional(),
+    groupId: z.string().trim().min(1).max(64).optional(),
     note: z.string().max(2000).optional(),
   })
   .superRefine((value, ctx) => {
@@ -389,6 +409,13 @@ export const unbanUserSchema = z
         code: z.ZodIssueCode.custom,
         path: ["communityId"],
         message: "communityId is required for a COMMUNITY unban",
+      });
+    }
+    if (value.banType === "GROUP" && !value.groupId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["groupId"],
+        message: "groupId is required for a GROUP unban",
       });
     }
   });
