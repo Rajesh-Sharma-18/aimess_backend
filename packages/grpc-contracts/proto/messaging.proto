@@ -68,6 +68,17 @@ service MessagingService {
   // roster fan-out) — never a bare repository write.
   rpc AdminDisbandGroup       (AdminDisbandGroupRequest)       returns (AdminGroupMutationResult);
   rpc AdminRemoveGroupMember  (AdminRemoveGroupMemberRequest)  returns (AdminGroupMutationResult);
+  // Admin Group Ban: permanent, indefinite ban of ONE member from ONE group.
+  // Reuses chat-service's own ban()/unban() write paths (group:removed BAN
+  // eviction, rejoin/invite-redemption block). Banning the group OWNER (role
+  // ADMIN) instead CLOSES the group (owner-banned banner, roster kept) — same
+  // shape as the system-ban cascade, scoped to this one group.
+  rpc AdminBanGroupMember     (AdminBanGroupMemberRequest)     returns (AdminGroupBanResult);
+  rpc AdminUnbanGroupMember   (AdminUnbanGroupMemberRequest)   returns (AdminGroupMutationResult);
+  // Admin Group Conversation viewer (backoffice-service only): read-only,
+  // membership-gate-free group message history. Same wire shape as
+  // AdminGetCommunityMessages; cursor is a `before_seq` sequenceNumber boundary.
+  rpc AdminGetGroupMessages   (AdminGetGroupMessagesRequest)   returns (AdminGetGroupMessagesResponse);
   // Group-side cascade of a PERMANENT system ban. Mirrors community-service's
   // AdminApplySystemBan: groups the banned user OWNS are CLOSED (not
   // disbanded — a disband hides the room from everyone, a close leaves it in
@@ -200,6 +211,8 @@ message AdminGroupRow {
   string          status       = 8;
   // Epoch ms; 0 when the group was never disbanded.
   int64           disbanded_at = 9;
+  // Owner's ACCOUNT status from auth ("ACTIVE" | "SUSPENDED" | "BANNED" | "").
+  string          owner_account_status = 11;
 }
 message AdminListGroupsRequest {
   string q          = 1;
@@ -283,6 +296,60 @@ message AdminGroupMutationResult {
   bool   found      = 2;
   // "" on success, else CHAT_GROUP_NOT_FOUND | CHAT_GROUP_ALREADY_DISBANDED | CHAT_NOT_A_MEMBER
   string error_code = 3;
+}
+
+message AdminBanGroupMemberRequest {
+  string group_id       = 1;
+  string user_id        = 2;
+  string actor_admin_id = 3; // backoffice AdminUser.id
+  // Persisted as GroupMember.kickReason.
+  string reason         = 4;
+}
+message AdminUnbanGroupMemberRequest {
+  string group_id       = 1;
+  string user_id        = 2;
+  string actor_admin_id = 3;
+}
+message AdminGroupBanResult {
+  bool   ok           = 1;
+  bool   found        = 2;
+  // "" on success, else CHAT_GROUP_NOT_FOUND | CHAT_GROUP_NOT_ACTIVE |
+  // CHAT_NOT_A_MEMBER (ban target / unban non-banned target).
+  string error_code   = 3;
+  // true when the target was the group OWNER, so the whole group was CLOSED
+  // (ADMIN_BANNED) rather than a single membership banned.
+  bool   closed_group = 4;
+}
+
+message AdminGetGroupMessagesRequest {
+  string group_id = 1;
+  // before_seq boundary (a sequenceNumber as a string). "" = newest page.
+  string cursor   = 2;
+  int32  limit    = 3;
+}
+message AdminGroupMessageDto {
+  string message_id          = 1;
+  string room_id             = 2;
+  string sender_id           = 3;
+  string sender_name         = 4;
+  // Raw avatar object key; backoffice presigns at its output boundary.
+  string sender_avatar       = 5;
+  string message             = 6;   // content.text
+  string content_type        = 7;   // messageType
+  string media_key           = 8;   // first attachment's object key, if any
+  string attachments_json    = 9;   // JSON.stringify(content.files ?? [])
+  string reactions_json      = 10;
+  string quote_data_json     = 11;
+  int64  sent_at             = 12;  // createdAt, epoch ms
+  string system_message_type = 13;  // systemEvent
+  string system_metadata     = 14;  // JSON.stringify(systemData)
+  bool   is_deleted          = 15;
+}
+message AdminGetGroupMessagesResponse {
+  repeated AdminGroupMessageDto messages = 1;
+  // Next before_seq boundary; "" when there is no older page.
+  string next_cursor = 2;
+  bool   has_more    = 3;
 }
 
 // ---------------------------------------------------------------------------

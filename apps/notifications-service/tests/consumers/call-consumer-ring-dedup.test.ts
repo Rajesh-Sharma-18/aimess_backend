@@ -290,4 +290,46 @@ describe("call.consumer — missed-call push", () => {
 
     expect(push).toHaveBeenCalledTimes(1);
   });
+
+  // The recipient belongs in the missed key for exactly the reason it belongs
+  // in the ring key: `fanOutUnansweredRing` loops the rung roster and publishes
+  // one `call.missed` per member, all sharing a single callId. Keyed on the
+  // callId alone, the first member's claim would swallow everyone else's
+  // "Missed call" banner. Distinct from the "three separate missed calls" case
+  // above, which varies the callId and holds the callee fixed.
+  it("banners every member of a group call sharing one callId", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(missedMessage("group-call", "member-a"));
+    await flush();
+    onMessage(missedMessage("group-call", "member-b"));
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(redisMock.set.mock.calls.map((c) => c[0])).toEqual([
+      "push:sent:call.missed:group-call:member-a",
+      "push:sent:call.missed:group-call:member-b",
+    ]);
+  });
+
+  // The ring and the missed banner are two different artifacts for the same
+  // call and the same person. They are separated ONLY by the `kind` segment of
+  // the key, so collapsing the namespaces would make a rung call unable to
+  // report itself missed.
+  it("does not let the ring claim suppress the missed banner", async () => {
+    const onMessage = await setupConsumer();
+
+    onMessage(ringMessage());
+    await flush();
+    onMessage(missedMessage());
+    await flush();
+
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(push.mock.calls[0][0].type).toBe("CALL_INCOMING");
+    expect(push.mock.calls[1][0].type).toBe("CALL_MISSED");
+    expect(redisMock.set.mock.calls.map((c) => c[0])).toEqual([
+      "push:sent:call.incoming:call-1:callee-1",
+      "push:sent:call.missed:call-1:callee-1",
+    ]);
+  });
 });

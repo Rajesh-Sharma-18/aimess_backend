@@ -791,6 +791,43 @@ export class GroupMessageService {
     return { items, hasMore, nextCursor, cursors, roomRevision };
   }
 
+  /**
+   * Admin (platform-admin) moderation read — the group counterpart of
+   * CommunityMessageService.getMessagesForModeration. NO membership gate and no
+   * per-user visibility cutoff: a super-admin monitoring a group sees the full
+   * history, including messages a member deleted just for themselves. Uses the
+   * same seq-keyset repo query the member read uses (before_seq only — the
+   * viewer loads the newest page then scrolls up), so pagination is identical to
+   * the consumer contract. `userId: ""` disables the per-user delete filter.
+   */
+  async getMessagesForModeration(params: {
+    roomId: string;
+    /** before_seq boundary; null = newest page. */
+    seq: number | null;
+    limit: number;
+  }): Promise<{
+    items: Array<Record<string, unknown>>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.findByRoomIdSeq({
+      userId: "",
+      roomId: params.roomId,
+      direction: "before",
+      seq: params.seq,
+      limit: params.limit,
+    });
+    const hasMore = rows.length > params.limit;
+    const page = rows.slice(0, params.limit);
+    const last = page[page.length - 1];
+    const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
+    // Reuse the canonical resolve-on-read hydrator so attachments, sender/reaction
+    // avatars and quote thumbnails come back as presigned download URLs (not raw
+    // object keys) — same wire shape the member read + socket use, no viewer.
+    const items = await this.enrichForWire(page);
+    return { items, hasMore, nextCursor };
+  }
+
   /** Raw message lookup — the path-param delete route resolves its room from the message. */
   findMessageById(messageId: string): Promise<GroupMessage | null> {
     return this.messageRepo.findById(messageId);

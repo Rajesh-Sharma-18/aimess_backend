@@ -117,6 +117,7 @@ function harness() {
       hlsQualities: {},
       flvUrl: "",
       flvQualities: {},
+      videoLostSince: "",
     })),
     getComments: jest.fn(async () => ({
       comments: [],

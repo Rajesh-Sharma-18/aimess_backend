@@ -40,6 +40,9 @@ async function toRow(
     avatar: await resolveAvatarOrNull(r.avatarUrl),
     role: r.role as CommunityMemberRole,
     status: r.status as CommunityMemberStatus,
+    // Placeholder — the service layer stamps the real account status from the
+    // UserIndex mirror (community-service doesn't carry it on the member row).
+    accountStatus: "ACTIVE",
     // r.joinedAt arrives as an ISO 8601 string from the proto — coerce to epoch ms.
     joinedAt: new Date(r.joinedAt).getTime(),
   };

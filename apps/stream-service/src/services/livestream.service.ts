@@ -115,6 +115,11 @@ export interface StreamAccess {
   hlsQualities: Record<string, string>;
   flvUrl: string | null;
   flvQualities: Record<string, string>;
+  // ISO timestamp of when the browser publisher reported its camera track
+  // ended; null when the source is publishing normally. Lets viewers who
+  // join mid-grace render the "camera disconnected" overlay immediately
+  // instead of waiting for the next stream:video_lost push.
+  videoLostSince: string | null;
 }
 
 /** A ban row as exposed over REST. */
@@ -1145,6 +1150,73 @@ export class LivestreamService {
   }
 
   /**
+   * Browser publisher reported its camera MediaStreamTrack ended (device
+   * unplug, permission revoked). Persist `videoLostAt` so late-joining
+   * viewers see the overlay from their join ack, and fan the event to the
+   * room over the existing `stream:*` Redis channel — the gateway relays
+   * `stream:video_lost` straight to every socket in the stream room.
+   *
+   * The 60s grace-timer that ends the stream on no recovery lives on the
+   * publisher client. A dead publisher client (tab close, crash) is picked
+   * up by the existing heartbeat sweeper, so no new server-side timeout
+   * job is needed.
+   */
+  async markVideoLost(id: string, requesterId: string): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status !== "LIVE") {
+      throw new BadRequestError("STREAM_NOT_LIVE");
+    }
+    const now = new Date();
+    await this.streamRepo.updateById(id, { videoLostAt: now });
+    try {
+      await this.redis.publish(
+        `stream:${id}`,
+        JSON.stringify({
+          event: "stream:video_lost",
+          data: {
+            streamId: id,
+            communityId: stream.communityId,
+            videoLostSince: now.toISOString(),
+          },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `video_lost broadcast failed for stream=${id}: ${String(error)}`
+      );
+    }
+  }
+
+  async markVideoRestored(id: string, requesterId: string): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status !== "LIVE") {
+      throw new BadRequestError("STREAM_NOT_LIVE");
+    }
+    await this.streamRepo.updateById(id, { videoLostAt: null });
+    try {
+      await this.redis.publish(
+        `stream:${id}`,
+        JSON.stringify({
+          event: "stream:video_restored",
+          data: { streamId: id, communityId: stream.communityId },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `video_restored broadcast failed for stream=${id}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
    * Persist a video-quality snapshot and relay it to viewers over the same
    * `stream:<id>` Redis channel `publishStatus`/`updateStream` already use
    * (the gateway fans any `stream:*` event straight to the room, so no
@@ -1852,6 +1924,7 @@ export class LivestreamService {
         hlsQualities: {},
         flvUrl: null,
         flvQualities: {},
+        videoLostSince: null,
       };
     }
 
@@ -1879,6 +1952,7 @@ export class LivestreamService {
         hlsQualities: {},
         flvUrl: null,
         flvQualities: {},
+        videoLostSince: null,
       };
     }
 
@@ -1909,6 +1983,7 @@ export class LivestreamService {
           hlsQualities: {},
           flvUrl: null,
           flvQualities: {},
+          videoLostSince: null,
         };
       }
     } catch (error) {
@@ -1948,6 +2023,9 @@ export class LivestreamService {
       hlsQualities: buildHlsQualityUrls(stream.hlsUrl),
       flvUrl: stream.flvUrl,
       flvQualities: buildFlvQualityUrls(stream.flvUrl),
+      videoLostSince: stream.videoLostAt
+        ? stream.videoLostAt.toISOString()
+        : null,
     };
 
     // The owner can always watch their own stream.

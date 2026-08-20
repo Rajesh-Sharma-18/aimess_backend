@@ -3,6 +3,7 @@ import { Router, type IRouter } from "express";
 import { PERMISSIONS } from "../../constants/index.js";
 import {
   disbandGroup,
+  getGroupConversationMessages,
   getGroupDetails,
   listGroupMembers,
   listGroups,
@@ -19,6 +20,7 @@ import {
   disbandGroupSchema,
   groupIdParamSchema,
   groupMemberParamSchema,
+  groupMessagesQuerySchema,
   listGroupMembersQuerySchema,
   listGroupsQuerySchema,
   removeGroupMemberSchema,
@@ -40,17 +42,29 @@ groupRoutes.get(
 
 groupRoutes.get(
   "/groups/:groupId",
-  requirePermission(PERMISSIONS.GROUPS_READ),
+  requirePermission(PERMISSIONS.GROUPS_VIEW),
   validateParams(groupIdParamSchema),
   getGroupDetails
 );
 
 groupRoutes.get(
   "/groups/:groupId/members",
-  requirePermission(PERMISSIONS.GROUPS_READ),
+  requirePermission(PERMISSIONS.GROUPS_VIEW),
   validateParams(groupIdParamSchema),
   validateQuery(listGroupMembersQuerySchema),
   listGroupMembers
+);
+
+// Read-only Group Conversation viewer. Carries the same message bodies a
+// member would see; now gated on GROUPS_VIEW (implied by GROUPS_MODERATE)
+// so a view-only admin can open the transcript without holding the
+// destructive-action key.
+groupRoutes.get(
+  "/groups/:groupId/messages",
+  requirePermission(PERMISSIONS.GROUPS_VIEW),
+  validateParams(groupIdParamSchema),
+  validateQuery(groupMessagesQuerySchema),
+  getGroupConversationMessages
 );
 
 // Moderate. Destructive lifecycle actions are POST /<resource>/:id/<verb>.

@@ -1,9 +1,14 @@
 import { logger } from "@aimess/logger";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
+import { chatClient } from "../grpc/chat.client.js";
+import { getAccountStatuses } from "../repositories/user-directory.repository.js";
 import { groupRepository } from "../repositories/index.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
+  GroupConversationMessageItem,
+  GroupConversationMessagesQuery,
+  GroupConversationMessagesResult,
   GroupItem,
   GroupMemberItem,
   GroupPagination,
@@ -89,6 +94,19 @@ export const groupService = {
   }> {
     const result = await groupRepository.listMembers(groupId, query);
 
+    // Stamp each member's ACCOUNT status from the UserIndex mirror so the panel
+    // can hide the ban action for a SYSTEM-banned user (unbannable only from the
+    // User profile). One indexed query for the whole page.
+    if (result.found && result.items.length > 0) {
+      const statuses = await getAccountStatuses(
+        result.items.map((m) => m.userId)
+      );
+      result.items = result.items.map((m) => ({
+        ...m,
+        accountStatus: statuses.get(m.userId) ?? "ACTIVE",
+      }));
+    }
+
     // Only audit when the group exists. Best-effort + non-blocking: a READ must
     // never 500 because an audit insert failed, so we fire-and-forget and
     // log-and-continue on error. (Mutation paths keep the blocking model.)
@@ -108,6 +126,46 @@ export const groupService = {
     }
 
     return result;
+  },
+
+  // Read-only Group Conversation viewer — before_seq cursor page of message
+  // history from chat-service (no membership gate, admin sees all). Mirrors
+  // community.getConversationMessages. chat-service already resolves sender
+  // avatars AND attachment object keys to presigned download URLs on this RPC
+  // (enrichForWire), so nothing is re-signed here — pass them through. A read,
+  // so no audit row (parity with the community viewer).
+  async getConversationMessages(
+    groupId: string,
+    query: GroupConversationMessagesQuery
+  ): Promise<GroupConversationMessagesResult> {
+    const res = await chatClient.adminGetGroupMessages({
+      groupId,
+      cursor: query.cursor ?? "",
+      limit: query.limit,
+    });
+
+    const messages: GroupConversationMessageItem[] = (res.messages ?? []).map(
+      (m) => ({
+        messageId: m.messageId,
+        senderId: m.senderId,
+        senderName: m.senderName || "Unknown",
+        senderAvatar: m.senderAvatar || null,
+        message: m.message,
+        contentType: m.contentType,
+        attachments: m.attachmentsJson ? JSON.parse(m.attachmentsJson) : [],
+        reactions: m.reactionsJson ? JSON.parse(m.reactionsJson) : [],
+        quoteData: m.quoteDataJson ? JSON.parse(m.quoteDataJson) : null,
+        sentAt: Number(m.sentAt) || 0,
+        systemMessageType: m.systemMessageType || null,
+        isDeleted: Boolean(m.isDeleted),
+      })
+    );
+
+    return {
+      messages,
+      nextCursor: res.nextCursor || null,
+      hasMore: Boolean(res.hasMore),
+    };
   },
 
   // Disband a group platform-side. The repository throws NotFound/Conflict on

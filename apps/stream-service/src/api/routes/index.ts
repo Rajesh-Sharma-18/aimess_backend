@@ -40,6 +40,16 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     controller.heartbeat
   );
   router.post(
+    "/streams/:id/video-lost",
+    authenticateAccessToken,
+    controller.videoLost
+  );
+  router.post(
+    "/streams/:id/video-restored",
+    authenticateAccessToken,
+    controller.videoRestored
+  );
+  router.post(
     "/streams/:id/quality",
     authenticateAccessToken,
     controller.reportQuality

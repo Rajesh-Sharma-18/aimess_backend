@@ -77,6 +77,8 @@ export interface CheckStreamAccessResult {
   flvUrl: string;
   /** Manual FLV rungs keyed by label ("Source" | "480p" | "360p"); {} when off */
   flvQualities: Record<string, string>;
+  /** ISO-8601 timestamp of when the browser publisher's camera track ended, "" when video is publishing normally. */
+  videoLostSince: string;
 }
 
 export interface DeleteCommentParams {

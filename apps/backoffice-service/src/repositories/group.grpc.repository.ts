@@ -54,6 +54,7 @@ async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
       avatar: adminAvatar,
     },
     status: r.status || "ACTIVE",
+    ownerAccountStatus: r.ownerAccountStatus || "ACTIVE",
     disbandedAt: epochOrNull(r.disbandedAt),
     lastMessageAt: epochOrNull(r.lastMessageAt),
   };
@@ -71,6 +72,9 @@ async function rowToMemberItem(
     role: r.role,
     joinedAt: msToEpoch(r.joinedAt),
     status: r.status || "ACTIVE",
+    // Placeholder — the service layer stamps the real account status from the
+    // UserIndex mirror (chat-service doesn't carry it on the member row).
+    accountStatus: "ACTIVE",
     kickedAt: epochOrNull(r.kickedAt),
     bannedAt: epochOrNull(r.bannedAt),
   };

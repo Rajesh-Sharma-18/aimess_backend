@@ -536,8 +536,16 @@ export class GroupMemberRepository {
     } = params;
 
     const and: Array<Record<string, unknown>> = [{ roomId }];
-    const statusFilter = (status || "ACTIVE").toUpperCase();
-    if (statusFilter !== "ALL") and.push({ status: statusFilter });
+    // Default (no explicit status) shows the meaningful roster — ACTIVE members
+    // PLUS BANNED ones (so a group-banned member, incl. a banned owner of a
+    // CLOSED group, stays visible and can be unbanned). LEFT/KICKED are still
+    // excluded. "ALL" drops the filter entirely; any explicit status is exact.
+    const statusFilter = (status || "").toUpperCase();
+    if (statusFilter === "") {
+      and.push({ status: { in: ["ACTIVE", "BANNED"] } });
+    } else if (statusFilter !== "ALL") {
+      and.push({ status: statusFilter });
+    }
     if (role) and.push({ role });
     if (userIdsFromSearch || qExactUserId) {
       const dedup = [

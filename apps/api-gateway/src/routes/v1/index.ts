@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 
 import { createServiceProxy } from "../../proxy/create-service-proxy.js";
+import { createChatBanGate } from "../../middleware/ban-gate.js";
 import {
   sensitiveAuthRateLimiter,
   otpRateLimiter,
@@ -90,6 +91,12 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   for (const otpPath of ["/auth/verify-otp", "/auth/resend-otp"]) {
     v1Router.use(otpPath, otpRateLimiter);
   }
+
+  // Scoped ban gate: reject a system-banned user's still-valid access token on
+  // chat/group REST before it reaches chat-service (spec §28 — an old token must
+  // not outlive the ban). Registered before the generic proxy so it runs first
+  // on `/chat`; fail-open, so it never breaks chat for non-banned users.
+  v1Router.use("/chat", createChatBanGate());
 
   for (const service of getServicesForVersion("v1")) {
     v1Router.use(
