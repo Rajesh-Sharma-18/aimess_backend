@@ -148,7 +148,24 @@ export async function sendPush({
   // icon" from a push payload. Every OS-drawn card therefore came out as the app launcher icon
   // beside the entity's avatar blown up to full width. The client puts it in the icon slot, but
   // only ever sees the push when it owns the rendering.
-  const androidOwnsRendering = isAndroid;
+  // CALL_MISSED is carved back out, and this is not cosmetic — it is a live production bug.
+  // Going data-only across the board relocated the copy into `pushTitle`/`pushBody` (below),
+  // but the Android parser that reads those keys shipped ~an hour AFTER this line changed, so
+  // every build in the field renders a missed call with a null title. Android's CALL-category
+  // fallback title is the literal string "Incoming call" — so hanging up an unanswered ring
+  // posts a vibrating, high-importance card on the callee's phone announcing an incoming call
+  // that does not exist, and the missed call itself is never reported.
+  //
+  // Restoring the `notification` block for this ONE type makes the OS draw the correct banner
+  // on every installed build immediately, with no client release. It also restores the
+  // pre-regression `androidPriority` (normal — a missed call is not time-critical; see the
+  // comment in call.consumer.ts's handleCallMissed).
+  //
+  // Widen this back to `isAndroid` only once a build containing the `pushTitle`/`pushBody`
+  // parser is measurably in the field. The cost of leaving it carved out is the one the
+  // comment above describes: the OS renders the avatar full-bleed rather than as a circular
+  // large icon. That is strictly better than announcing a phantom call.
+  const androidOwnsRendering = isAndroid && kind !== "CALL_MISSED";
   const omitNotification = dataOnly || androidOwnsRendering;
 
   // The localized copy lived in the `notification` block the client no longer receives, so carry
