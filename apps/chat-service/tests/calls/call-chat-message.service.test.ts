@@ -312,7 +312,13 @@ describe("CallChatMessageService — in-place transitions", () => {
     );
   });
 
-  it("MISSED is the one transition that raises the callee's badge", async () => {
+  // MISSED used to be the one transition that raised the callee's badge. It no
+  // longer does: no recount of a private room's unread total can ever see a
+  // call row (they all carry a `systemEvent`), so that credit was unreachable
+  // and stuck the nav badge above an empty Unread tab. The callee still hears
+  // about it — call push + notification inbox row. See
+  // tests/calls/missed-call-unread-badge.test.ts.
+  it("MISSED transitions the card without raising the callee's badge", async () => {
     const { service, stubs } = buildService();
     stubs.messageRepo.findByClientMessageId.mockResolvedValue(
       existingRow("RINGING")
@@ -326,10 +332,10 @@ describe("CallChatMessageService — in-place transitions", () => {
     await service.post({ ...base, outcome: "MISSED" });
 
     expect(stubs.messageRepo.updateCallState).toHaveBeenCalledWith(
-      expect.objectContaining({ countInUnread: true })
+      expect.objectContaining({ countInUnread: false })
     );
     expect(stubs.roomRepo.updateRoomOnNewMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ unreadIncrement: 1 })
+      expect.objectContaining({ unreadIncrement: 0 })
     );
   });
 
