@@ -9,6 +9,7 @@ import type { ListAnnouncementsQuery } from "../../types/announcement.types.js";
 import type {
   CreateAnnouncementInput,
   ListAnnouncementsQueryInput,
+  UpdateAnnouncementInput,
 } from "../validators/index.js";
 
 /** POST /v1/announcements */
@@ -25,6 +26,40 @@ export const createAnnouncement: RequestHandler = (req, res, next) => {
         .json(
           new ApiResponse(result, t("ADMIN_ANNOUNCEMENT_CREATED", req.locale))
         );
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** PUT /v1/announcements/:announcementId — edit a still-SCHEDULED announcement. */
+export const updateAnnouncement: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const announcementId = req.params.announcementId as string;
+      const body = req.body as UpdateAnnouncementInput;
+      const result = await announcementService.updateScheduledAnnouncement(
+        announcementId,
+        body,
+        req.admin!.id
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** POST /v1/announcements/:announcementId/cancel */
+export const cancelAnnouncement: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const announcementId = req.params.announcementId as string;
+      const result = await announcementService.cancelAnnouncement(
+        announcementId,
+        req.admin!.id
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
     } catch (error) {
       next(error);
     }

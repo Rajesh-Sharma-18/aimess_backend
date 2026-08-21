@@ -131,6 +131,27 @@ export const deviceTokenRepository = {
   },
 
   /**
+   * Of the given users, those who have at least one live FCM registration on
+   * `platform`. A token row exists only while its session does, so this is the
+   * set of users actually reachable on that device type right now.
+   *
+   * VOIP rows are excluded: an iOS PushKit token is registered for call
+   * ringing only and can never carry a normal notification.
+   */
+  async findUserIdsWithPlatform(
+    userIds: string[],
+    platform: DeviceTokenPlatform
+  ): Promise<string[]> {
+    if (userIds.length === 0) return [];
+    const rows = await prisma.deviceToken.findMany({
+      where: { userId: { in: userIds }, platform, tokenType: "FCM" },
+      select: { userId: true },
+      distinct: ["userId"],
+    });
+    return rows.map((row) => row.userId);
+  },
+
+  /**
    * Mark a token as still alive (a push was accepted for it), at most once per
    * `TOUCH_THROTTLE_MS`. This is what keeps a long-lived, genuinely active
    * device off the stale sweeper's list without a write per notification.
