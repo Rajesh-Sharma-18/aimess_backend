@@ -455,9 +455,9 @@ describe("room-policy contract", () => {
   });
 
   it("rejects group AFTER_VIEWING at the pure-validation layer too", async () => {
-    expect(
-      validateAutoDeleteInput({ mode: "AFTER_VIEWING" }, "GROUP")
-    ).toBe("CHAT_AUTO_DELETE_MODE_UNSUPPORTED");
+    expect(validateAutoDeleteInput({ mode: "AFTER_VIEWING" }, "GROUP")).toBe(
+      "CHAT_AUTO_DELETE_MODE_UNSUPPORTED"
+    );
     expect(
       validateAutoDeleteInput({ mode: "AFTER_VIEWING" }, "PRIVATE")
     ).toBeNull();
@@ -723,7 +723,8 @@ describe("auto-delete sweeper", () => {
 
     expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
       ROOM,
-      expect.objectContaining({ id: "msg-prev", createdAt: prevAt })
+      expect.objectContaining({ id: "msg-prev", createdAt: prevAt }),
+      { expectLastMessageId: "msg-latest" }
     );
   });
 
@@ -780,7 +781,10 @@ describe("auto-delete sweeper", () => {
 
     expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledWith(
       ROOM,
-      expect.objectContaining({ id: "msg-newer", createdAt: newerAt })
+      expect.objectContaining({ id: "msg-newer", createdAt: newerAt }),
+      // Compare-and-swap on the snapshot the recalculation read: the write is
+      // refused outright if the newer message's own bump lands first.
+      { expectLastMessageId: "msg-expired" }
     );
     // Never rolled back to anything older than what actually survives.
     expect(mocks.privateRoomRepo.setLastMessage).toHaveBeenCalledTimes(1);
@@ -806,7 +810,9 @@ describe("auto-delete sweeper", () => {
     expect(deleteDirect).toHaveBeenCalledTimes(2);
     // The failing row is handed back with its attempt count so the shared
     // backoff can space out the retry, instead of being re-tried every tick.
-    expect(mocks.privateMessageRepo.releaseAutoDeleteClaim).toHaveBeenCalledWith(
+    expect(
+      mocks.privateMessageRepo.releaseAutoDeleteClaim
+    ).toHaveBeenCalledWith(
       expect.objectContaining({ id: "msg-1", attempts: 2 })
     );
   });
@@ -837,7 +843,12 @@ describe("restamp durability", () => {
       room({ mode: "TIMER", ttlSeconds: 86400, setAt: "", setBy: TEST_USER_ID })
     );
     mocks.privateRoomRepo.setAutoDelete.mockResolvedValue({
-      ...room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID }),
+      ...room({
+        mode: "TIMER",
+        ttlSeconds: 3600,
+        setAt: "",
+        setBy: TEST_USER_ID,
+      }),
       autoDeletePolicyVersion: 8,
     });
 
@@ -861,7 +872,12 @@ describe("restamp durability", () => {
       room({ mode: "TIMER", ttlSeconds: 86400, setAt: "", setBy: TEST_USER_ID })
     );
     mocks.privateRoomRepo.setAutoDelete.mockResolvedValue({
-      ...room({ mode: "TIMER", ttlSeconds: 3600, setAt: "", setBy: TEST_USER_ID }),
+      ...room({
+        mode: "TIMER",
+        ttlSeconds: 3600,
+        setAt: "",
+        setBy: TEST_USER_ID,
+      }),
       autoDeletePolicyVersion: 9,
     });
     mocks.privateMessageRepo.restampPendingAutoDeletes.mockRejectedValue(
@@ -969,7 +985,10 @@ describe("claimDueAutoDeletes query shape", () => {
     const conditions: any[] = captured[0]?.where?.AND ?? [];
     expect(
       conditions.some(
-        (c) => c?.autoDeleteAt && "not" in c.autoDeleteAt && c.autoDeleteAt.not === null
+        (c) =>
+          c?.autoDeleteAt &&
+          "not" in c.autoDeleteAt &&
+          c.autoDeleteAt.not === null
       )
     ).toBe(true);
     expect(conditions.some((c) => c?.autoDeleteAt?.lte === now)).toBe(true);

@@ -31,7 +31,8 @@
  *
  * This guard is for FORWARD bumps only. The delete/clear recalculation path
  * (`setLastMessage`, `rollbackLastActivity`) is the one legitimate BACKWARD
- * move and stays unconditional — it carries its own `lte` race guard instead.
+ * move, so it cannot use this predicate — it guards with `sameSnapshotWhere`
+ * (compare-and-swap on the snapshot it read) instead.
  */
 
 /** Room rows whose stored snapshot predates this field read back as `null`. */
@@ -114,3 +115,36 @@ export function newerSnapshotMongoQuery(
     ],
   };
 }
+
+/**
+ * The BACKWARD move's guard: compare-and-swap on the snapshot the caller read.
+ *
+ * A delete/expiry recalculation reads the room, resolves the newest surviving
+ * message, then writes — three steps, no lock. Anything landing in between
+ * (a new message, or a second recalculation from the same bulk auto-delete
+ * sweep) makes that resolved value stale, and the unguarded write then pinned
+ * the conversation list to a message that no longer exists or rewound it past a
+ * message that just arrived. `newerSnapshotWhere` cannot be used here — a
+ * recalculation is legitimately backward — so the predicate is identity
+ * instead: only overwrite the exact snapshot the decision was made from.
+ *
+ * On MongoDB `{ field: null }` does NOT match a document where the field is
+ * absent (see the `isSet` note in private-room.repository), so the empty-room
+ * case has to accept both spellings or a room that never had a message could
+ * never be CAS'd.
+ */
+export function sameSnapshotWhere(
+  expectedLastMessageId: string | null | undefined
+): Record<string, unknown> {
+  return expectedLastMessageId
+    ? { lastMessageId: expectedLastMessageId }
+    : { OR: [{ lastMessageId: null }, { lastMessageId: { isSet: false } }] };
+}
+
+/**
+ * How many read-decide-CAS passes a delete/expiry recalculation gets before it
+ * gives up. Each refused swap means a strictly newer snapshot won, so the loop
+ * converges; 3 covers a bulk auto-delete sweep colliding with a live send
+ * without ever spinning on a genuinely hot room.
+ */
+export const RECALC_CAS_ATTEMPTS = 3;

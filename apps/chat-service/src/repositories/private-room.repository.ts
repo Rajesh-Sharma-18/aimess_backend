@@ -4,7 +4,10 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
-import { newerSnapshotMongoQuery } from "../lib/last-activity-guard.js";
+import {
+  newerSnapshotMongoQuery,
+  sameSnapshotWhere,
+} from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
@@ -811,6 +814,13 @@ export class PrivateRoomRepository {
    * Overwrite the room's last-message snapshot after a delete-for-everyone
    * removes the current last message. Accepts null to clear (no visible messages
    * remain). Unlike updateRoomOnNewMessage, this does not touch unread counts.
+   *
+   * `expectLastMessageId` makes the write a compare-and-swap on the snapshot the
+   * caller resolved its replacement from (see lib/last-activity-guard.ts): the
+   * write is skipped, and `false` returned, when something else moved the
+   * snapshot in the meantime — a message that arrived while an auto-delete sweep
+   * was recalculating, or a second recalculation from the same bulk expiry.
+   * Omitted, the write is unconditional exactly as before.
    */
   async setLastMessage(
     roomId: string,
@@ -823,10 +833,18 @@ export class PrivateRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
-    } | null
-  ): Promise<void> {
-    await this.prisma.privateRoom.update({
-      where: { roomId },
+    } | null,
+    opts?: { expectLastMessageId?: string | null }
+  ): Promise<boolean> {
+    const where =
+      opts && "expectLastMessageId" in opts
+        ? ({
+            roomId,
+            ...sameSnapshotWhere(opts.expectLastMessageId),
+          } as Prisma.PrivateRoomWhereInput)
+        : ({ roomId } as Prisma.PrivateRoomWhereInput);
+    const { count } = await this.prisma.privateRoom.updateMany({
+      where,
       data: message
         ? {
             lastMessageId: message.id,
@@ -849,6 +867,7 @@ export class PrivateRoomRepository {
             lastMessage: null as unknown as Prisma.InputJsonValue,
           },
     });
+    return count > 0;
   }
 
   /**
