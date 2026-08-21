@@ -12,6 +12,7 @@ import type {
   ListAnnouncementsQuery,
   Paginated,
   PaginationMeta,
+  UpdateAnnouncementInput,
 } from "../types/announcement.types.js";
 
 type SortField = "createdAt" | "scheduledAt" | "sentAt" | "title";
@@ -28,6 +29,7 @@ function toDetail(row: Announcement): AnnouncementDetail {
     description: row.description,
     target: row.target,
     kind: row.kind,
+    deviceType: row.deviceType,
     communityId: row.communityId,
     status: row.status,
     scheduledAt: row.scheduledAt ? row.scheduledAt.getTime() : null,
@@ -37,6 +39,7 @@ function toDetail(row: Announcement): AnnouncementDetail {
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     sentAt: row.sentAt ? row.sentAt.getTime() : null,
+    cancelledAt: row.cancelledAt ? row.cancelledAt.getTime() : null,
   };
 }
 
@@ -46,8 +49,10 @@ function toListItem(row: Announcement): AnnouncementListItem {
     title: row.title,
     target: row.target,
     communityId: row.communityId,
+    deviceType: row.deviceType,
     recipientCount: row.recipientCount,
     status: row.status,
+    scheduledAt: row.scheduledAt ? row.scheduledAt.getTime() : null,
     announcedAt: (row.sentAt ?? row.createdAt).getTime(),
   };
 }
@@ -64,6 +69,7 @@ export const announcementRepository = {
         description: input.description,
         target: input.target,
         kind: input.kind,
+        deviceType: input.deviceType,
         communityId: input.communityId ?? null,
         scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
         status,
@@ -85,6 +91,7 @@ export const announcementRepository = {
       ];
     }
     if (query.target) where.target = query.target;
+    if (query.deviceType) where.deviceType = query.deviceType;
     if (query.status && query.status.length > 0) {
       where.status = { in: query.status };
     }
@@ -127,13 +134,79 @@ export const announcementRepository = {
     return row ? toDetail(row) : null;
   },
 
+  /**
+   * Edit a still-SCHEDULED announcement in place (same row, same id — the
+   * poller picks up the new scheduledAt on its next tick, so no job to
+   * reschedule). `updateMany` + a status guard makes this a compare-and-swap:
+   * count 0 means the row was claimed, sent, or cancelled in the meantime and
+   * the edit is rejected rather than silently mutating an in-flight send.
+   */
+  async updateScheduled(
+    id: string,
+    input: UpdateAnnouncementInput
+  ): Promise<boolean> {
+    const result = await prisma.announcement.updateMany({
+      where: { id, status: "SCHEDULED" },
+      data: {
+        title: input.title,
+        description: input.description,
+        deviceType: input.deviceType,
+        scheduledAt: new Date(input.scheduledAt),
+      },
+    });
+    return result.count === 1;
+  },
+
+  /**
+   * PROCESSING rows that delivered SOME pages and then stopped making progress.
+   * Distinct from `findStalledProcessing` (which delivered nothing and is safe
+   * to replay): re-running these would double-notify everyone already reached,
+   * so they are marked FAILED instead — a terminal, visible state.
+   */
+  async findHalfDeliveredProcessing(
+    before: Date
+  ): Promise<Pick<Announcement, "id" | "recipientCount">[]> {
+    return prisma.announcement.findMany({
+      where: {
+        status: "PROCESSING",
+        sentAt: null,
+        recipientCount: { gt: 0 },
+        updatedAt: { lt: before },
+      },
+      select: { id: true, recipientCount: true },
+    });
+  },
+
+  /** Same CAS guard as `updateScheduled` — only an unclaimed row can be cancelled. */
+  async cancelScheduled(id: string): Promise<boolean> {
+    const result = await prisma.announcement.updateMany({
+      where: { id, status: "SCHEDULED" },
+      data: { status: "CANCELLED", cancelledAt: new Date() },
+    });
+    return result.count === 1;
+  },
+
+  async getStatus(id: string): Promise<AnnouncementStatus | null> {
+    const row = await prisma.announcement.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    return row?.status ?? null;
+  },
+
   /** SCHEDULED rows whose scheduledAt is due — candidates for the scheduler to claim. */
   async findDueScheduled(
     now: Date
   ): Promise<
     Pick<
       Announcement,
-      "id" | "title" | "description" | "target" | "kind" | "communityId"
+      | "id"
+      | "title"
+      | "description"
+      | "target"
+      | "kind"
+      | "deviceType"
+      | "communityId"
     >[]
   > {
     return prisma.announcement.findMany({
@@ -144,6 +217,47 @@ export const announcementRepository = {
         description: true,
         target: true,
         kind: true,
+        deviceType: true,
+        communityId: true,
+      },
+    });
+  },
+
+  /**
+   * PROCESSING rows that were claimed but never actually delivered anything —
+   * the process died (restart, crash, broker down) between the claim and the
+   * first enqueued batch, leaving a row no tick would ever look at again.
+   * `recipientCount = 0 AND sentAt = null` is what makes re-enqueueing safe:
+   * a run that had already pushed to anyone would have incremented the count.
+   */
+  async findStalledProcessing(
+    before: Date
+  ): Promise<
+    Pick<
+      Announcement,
+      | "id"
+      | "title"
+      | "description"
+      | "target"
+      | "kind"
+      | "deviceType"
+      | "communityId"
+    >[]
+  > {
+    return prisma.announcement.findMany({
+      where: {
+        status: "PROCESSING",
+        sentAt: null,
+        recipientCount: 0,
+        updatedAt: { lt: before },
+      },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        target: true,
+        kind: true,
+        deviceType: true,
         communityId: true,
       },
     });

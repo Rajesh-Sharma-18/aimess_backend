@@ -17,6 +17,8 @@ jest.mock("../../src/services/index.js", () => {
     ...actual,
     announcementService: {
       createAnnouncement: jest.fn(),
+      updateScheduledAnnouncement: jest.fn(),
+      cancelAnnouncement: jest.fn(),
       listAnnouncements: jest.fn(),
       getAnnouncementDetails: jest.fn(),
     },
@@ -84,6 +86,63 @@ beforeEach(() => {
   svc.createAnnouncement.mockResolvedValue(DETAIL);
   svc.listAnnouncements.mockResolvedValue(PAGE);
   svc.getAnnouncementDetails.mockResolvedValue(DETAIL);
+  svc.updateScheduledAnnouncement.mockResolvedValue(DETAIL);
+  svc.cancelAnnouncement.mockResolvedValue({
+    ...DETAIL,
+    status: "CANCELLED",
+  });
+});
+
+const future = () => new Date(Date.now() + 3_600_000).toISOString();
+
+describe("PUT /v1/announcements/:announcementId", () => {
+  const body = () => ({
+    title: "Edited",
+    description: "Edited body",
+    deviceType: "ANDROID",
+    scheduledAt: future(),
+  });
+
+  it("updates a scheduled announcement → 200", async () => {
+    const res = await request(app)
+      .put(`/v1/announcements/${AID}`)
+      .set(auth())
+      .send(body());
+    expect(res.status).toBe(200);
+    expect(svc.updateScheduledAnnouncement).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a past scheduledAt", { scheduledAt: "2020-01-01T00:00:00.000Z" }],
+    ["a missing scheduledAt", { scheduledAt: undefined }],
+    ["an unknown deviceType", { deviceType: "WATCH" }],
+    ["a blank title", { title: "   " }],
+  ])("returns 400 for %s", async (_label, patch) => {
+    const res = await request(app)
+      .put(`/v1/announcements/${AID}`)
+      .set(auth())
+      .send({ ...body(), ...patch });
+    expect(res.status).toBe(400);
+    expect(svc.updateScheduledAnnouncement).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /v1/announcements/:announcementId/cancel", () => {
+  it("cancels a scheduled announcement → 200", async () => {
+    const res = await request(app)
+      .post(`/v1/announcements/${AID}/cancel`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("CANCELLED");
+  });
+
+  it("returns 400 for an invalid uuid param", async () => {
+    const res = await request(app)
+      .post("/v1/announcements/not-a-uuid/cancel")
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.cancelAnnouncement).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /v1/announcements", () => {

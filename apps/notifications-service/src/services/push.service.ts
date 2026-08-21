@@ -179,6 +179,13 @@ export interface PushInput {
 
   /** Canonical deep-link for navigation on notification click. */
   deepLink?: string;
+  /**
+   * Absolute https URL opened when a WEB notification is clicked. Separate from
+   * `deepLink` on purpose: `deepLink` is the `aimess://` scheme the native apps
+   * consume, and Web Push's `fcm_options.link` only accepts http(s) — handing it
+   * a custom scheme means the click goes nowhere.
+   */
+  webLink?: string;
   /** FCM collapse key — collapse multiple notifs for same conversation. */
   collapseKey?: string;
   /**
@@ -193,6 +200,16 @@ export interface PushInput {
    * duplicate banners when user is already viewing the conversation.
    */
   chatType?: "PERSONAL" | "GROUP" | "COMMUNITY";
+  /**
+   * Restrict delivery to these device platforms. Filters the recipient's LIVE
+   * device-token rows (one row per registered session, removed on logout /
+   * session revoke), so this targets active SESSIONS — not any stored profile
+   * or "primary device" preference. Omit for every platform.
+   *
+   * Push-only: the Notification-Center row is per-user, not per-device, and is
+   * still written.
+   */
+  platforms?: ("ANDROID" | "IOS" | "WEB")[];
   /** FCM message TTL in seconds (default 86400 = 24h). */
   ttl?: number;
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
@@ -364,8 +381,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
     actorId,
     data: rawData,
     deepLink,
+    webLink,
     collapseKey,
     apnsThreadId,
+    platforms,
     ttl,
     priority,
     bypassSettings = false,
@@ -592,7 +611,12 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const visible = deduped.filter(
     (t) =>
       !(excludeDeviceId && t.deviceId === excludeDeviceId) &&
-      !(excludeSessionId && t.sessionId === excludeSessionId)
+      !(excludeSessionId && t.sessionId === excludeSessionId) &&
+      // Platform-targeted send (announcements): keep only the sessions running
+      // on a requested platform. Exact match, so a row with an unrecognized
+      // platform string is excluded rather than delivered to by accident.
+      (!platforms ||
+        platforms.includes(t.platform as "ANDROID" | "IOS" | "WEB"))
   );
 
   // Last line of defence against the reported symptom: a device whose session
@@ -672,6 +696,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
               body: pushBody,
               data,
               deepLink,
+              webLink,
               // The notification represents the CONVERSATION/COMMUNITY, so the
               // tray image is the entity's own avatar — never the actor's.
               // `communityAvatarUrl` is what community.* events carry;

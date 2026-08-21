@@ -39,6 +39,7 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
         description: row.description,
         target: row.target,
         kind: row.kind,
+        deviceType: row.deviceType,
         communityId: row.communityId,
         cursor: 0,
         limit: DELIVERY_BATCH_LIMIT,
@@ -51,6 +52,93 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
         `Announcement scheduler: failed to claim ${row.id} (${describeDbError(error)})`
       );
     }
+  }
+
+  await requeueStalledProcessing(now);
+  await failHalfDeliveredProcessing(now);
+}
+
+/**
+ * A row that delivered some pages and then stopped is NOT safe to replay —
+ * everyone already reached would be notified twice. Mark it FAILED so it stops
+ * claiming to be in flight and an operator can see (and re-send) it.
+ */
+async function failHalfDeliveredProcessing(now: Date): Promise<void> {
+  let stalled;
+  try {
+    stalled = await announcementRepository.findHalfDeliveredProcessing(
+      new Date(now.getTime() - STALLED_PROCESSING_MS)
+    );
+  } catch (error) {
+    logger.error(
+      `Announcement scheduler: skipping half-delivered sweep (${describeDbError(error)})`
+    );
+    return;
+  }
+
+  for (const row of stalled) {
+    try {
+      await announcementRepository.markFailed(
+        row.id,
+        `Delivery stalled after ${row.recipientCount} recipients — remaining batches were not processed`
+      );
+      logger.warn(
+        `Announcement ${row.id} marked FAILED: stalled at ${row.recipientCount} recipients`
+      );
+    } catch (error) {
+      logger.error(
+        `Announcement scheduler: failed to mark ${row.id} FAILED (${describeDbError(error)})`
+      );
+    }
+  }
+}
+
+/**
+ * How long a PROCESSING row may sit with nothing delivered before the tick
+ * re-enqueues it. Long enough that a slow-but-live delivery is never racing a
+ * retry; the in-flight cursor message holds a Redis batch lock anyway.
+ *
+ * ponytail: fixed window, no attempt counter — a row that keeps stalling is
+ * retried every tick. Add a retry cap if that ever shows up in the logs.
+ */
+const STALLED_PROCESSING_MS = 15 * 60 * 1000;
+
+/**
+ * Recover announcements claimed by a process that died before it enqueued
+ * anything (the "server restarts mid-send" case). Only rows that provably
+ * delivered to nobody are touched, so this can never double-notify.
+ */
+async function requeueStalledProcessing(now: Date): Promise<void> {
+  let stalled;
+  try {
+    stalled = await announcementRepository.findStalledProcessing(
+      new Date(now.getTime() - STALLED_PROCESSING_MS)
+    );
+  } catch (error) {
+    logger.error(
+      `Announcement scheduler: skipping stalled sweep (${describeDbError(error)})`
+    );
+    return;
+  }
+
+  for (const row of stalled) {
+    logger.warn(
+      `Announcement ${row.id} stalled in PROCESSING with no recipients — re-enqueueing`
+    );
+    enqueueAnnouncementDeliverySafe({
+      announcementId: row.id,
+      title: row.title,
+      description: row.description,
+      target: row.target,
+      kind: row.kind,
+      deviceType: row.deviceType,
+      communityId: row.communityId,
+      cursor: 0,
+      limit: DELIVERY_BATCH_LIMIT,
+      // Distinct from the original batchId: that one's Redis idempotency lock
+      // is what made the dead attempt un-retryable in the first place.
+      batchId: `ann:${row.id}:cursor:0:requeue`,
+    });
   }
 }
 

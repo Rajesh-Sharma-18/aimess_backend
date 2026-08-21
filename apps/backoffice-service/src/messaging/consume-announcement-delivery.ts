@@ -76,6 +76,19 @@ export async function handleAnnouncementDeliverMessage(
   }
 
   try {
+    // Cancellation can only win the CAS while the row is still SCHEDULED, so a
+    // single-page announcement can never be cancelled mid-flight. A MULTI-page
+    // one re-publishes cursors after it is already PROCESSING, which is a gap
+    // the CAS does not cover — re-read the status per page so a cancel that
+    // lands between pages stops the remaining fan-out.
+    const status = await announcementRepository.getStatus(data.announcementId);
+    if (status === "CANCELLED") {
+      logger.info(
+        `Announcement ${data.announcementId} cancelled — stopping delivery at cursor ${data.cursor}`
+      );
+      return;
+    }
+
     const recipients = await fetchRecipientPage(data);
 
     if (recipients.length === 0 && data.cursor === 0) {
@@ -96,6 +109,7 @@ export async function handleAnnouncementDeliverMessage(
         title: data.title,
         body: data.description,
         kind: data.kind,
+        deviceType: data.deviceType,
         userIds: recipients,
         batchId: `ann:${data.announcementId}:notify:${data.cursor}`,
       });
@@ -141,8 +155,7 @@ export async function handleAnnouncementDeliverMessage(
       return;
     }
 
-    // Below max attempts — rethrow so the wiring nacks and the broker's DLX
-    // retry path (or a manual replay) picks the batch back up.
+    // Below max attempts — rethrow so the wiring requeues this batch.
     throw error;
   }
 }
@@ -154,6 +167,17 @@ export async function startAnnouncementDeliveryConsumer(): Promise<void> {
   await channel.assertExchange("announcement.delivery.queue.dlx", "direct", {
     durable: true,
   });
+  // Bind a real queue to the DLX. Without it the exchange discarded everything
+  // routed to it, so a batch that exhausted its retries was gone with no trace
+  // — the failure was invisible in both the broker and the DB.
+  await channel.assertQueue("announcement.delivery.queue.dead", {
+    durable: true,
+  });
+  await channel.bindQueue(
+    "announcement.delivery.queue.dead",
+    "announcement.delivery.queue.dlx",
+    "announcement.delivery.queue.dead"
+  );
   await channel.assertQueue(ANNOUNCEMENT_DELIVERY_QUEUE, {
     durable: true,
     deadLetterExchange: "announcement.delivery.queue.dlx",
@@ -181,11 +205,15 @@ export async function startAnnouncementDeliveryConsumer(): Promise<void> {
         }
         channel.ack(message);
       } catch (error) {
-        logger.error(
-          "Announcement delivery consumer failed to process message"
-        );
+        // requeue=true: the handler's own Redis attempt counter is the bound
+        // (MAX_ATTEMPTS, after which it marks the announcement FAILED and
+        // returns normally). Discarding here instead is what stranded a
+        // half-delivered announcement in PROCESSING: the remaining pages were
+        // never re-attempted and nothing was ever marked failed.
+        const requeue = !(error instanceof SyntaxError);
+        logger.error(`Announcement delivery batch failed (requeue=${requeue})`);
         logger.error(error);
-        channel.nack(message, false, false);
+        channel.nack(message, false, requeue);
       }
     })();
   });

@@ -9,6 +9,8 @@ interface SendPushParams {
   data?: Record<string, string>;
   /** Canonical deep-link for click-to-navigate (web + native). */
   deepLink?: string;
+  /** Absolute https URL for the WEB click target (`webpush.fcm_options.link`). */
+  webLink?: string;
   /**
    * Large image / avatar shown by the OS (FCM `notification.image`, APNs
    * `fcm_options.image`, Web Push `icon`). Must be an already-resolved absolute
@@ -100,10 +102,21 @@ async function sendWithRetry(
           ? String((error as { code?: unknown }).code)
           : "";
       if (attempt >= 2 || !RETRYABLE_CODES.has(code)) throw error;
-      logger.warn(`FCM transient failure (${code}) — retry ${attempt + 1}/2`);
+      logger.warn(
+        `[push:fcm] retry ${attempt + 1}/2 after transient failure (${code})`
+      );
       await sleep(200 * 2 ** attempt);
     }
   }
+}
+
+/**
+ * Tokens are delivery credentials — anyone holding one can push to that device,
+ * so only the tail goes to the log. Enough to tell two devices of the same user
+ * apart and to match a log line against a `device_tokens` row.
+ */
+function tokenTail(token: string): string {
+  return "..." + token.slice(-12);
 }
 
 export interface SendPushResult {
@@ -119,6 +132,7 @@ export async function sendPush({
   body,
   data,
   deepLink,
+  webLink,
   imageUrl,
   collapseKey,
   apnsThreadId,
@@ -188,6 +202,13 @@ export async function sendPush({
   // Only absolute http(s) URLs are fetchable by the OS; an object key or a
   // relative path would make FCM reject the whole message.
   const image = /^https?:\/\//i.test(imageUrl ?? "") ? imageUrl : undefined;
+
+  // Web Push only accepts an http(s) click target. `deepLink` is `aimess://`
+  // for every chat/community push, so passing it through as the link was a
+  // no-op at best — the explicit `webLink` is what the web client navigates to.
+  const webClickLink = [webLink, deepLink].find((url) =>
+    /^https?:\/\//i.test(url ?? "")
+  );
 
   try {
     const messageId = await sendWithRetry({
@@ -284,7 +305,7 @@ export async function sendPush({
               },
             }),
         fcmOptions: {
-          ...(deepLink ? { link: deepLink } : {}),
+          ...(webClickLink ? { link: webClickLink } : {}),
         },
         headers: {
           Urgency: webUrgency,
@@ -304,7 +325,14 @@ export async function sendPush({
       ...(Object.keys(enrichedData).length > 0 ? { data: enrichedData } : {}),
     });
 
-    logger.info("Push delivered:", messageId);
+    // One line per delivery, carrying the platform and event type: without
+    // them a tray notification that never arrives is indistinguishable in the
+    // logs from one that was never sent, and a platform-wide outage (e.g. a
+    // missing APNs key, which fails ONLY iOS) looks like scattered noise.
+    logger.info(
+      `[push:fcm] ok platform=${platform ?? "?"} type=${enrichedData.type ?? "-"} ` +
+        `token=${tokenTail(token)} dataOnly=${omitNotification} id=${messageId}`
+    );
     return { messageId, invalidToken: false };
   } catch (error) {
     const code =
@@ -312,8 +340,11 @@ export async function sendPush({
         ? String((error as { code?: unknown }).code)
         : "";
     const invalidToken = INVALID_TOKEN_CODES.has(code);
-    logger.error("FCM send failed — invalidToken:", invalidToken);
-    logger.error(error);
+    const detail = error instanceof Error ? error.message : String(error);
+    logger.error(
+      `[push:fcm] FAIL platform=${platform ?? "?"} type=${enrichedData.type ?? "-"} ` +
+        `token=${tokenTail(token)} code=${code || "unknown"} invalidToken=${invalidToken} — ${detail}`
+    );
     return { messageId: null, invalidToken };
   }
 }

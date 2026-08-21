@@ -161,11 +161,15 @@ export {
 
 export {
   createAnnouncementSchema,
+  updateAnnouncementSchema,
   listAnnouncementsQuerySchema,
   announcementIdParamSchema,
   announcementTargetEnum,
   announcementStatusEnum,
+  announcementDeviceTypeEnum,
+  announcementTypeEnum,
   type CreateAnnouncementInput,
+  type UpdateAnnouncementInput,
   type ListAnnouncementsQueryInput,
   type AnnouncementIdParam,
 } from "./announcement.validator.js";

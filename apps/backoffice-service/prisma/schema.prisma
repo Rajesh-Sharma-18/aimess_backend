@@ -259,6 +259,18 @@ enum AnnouncementStatus {
   PROCESSING // claimed for delivery, batches are being enqueued
   SENT // all batches enqueued successfully
   FAILED // delivery exhausted retries
+  CANCELLED // admin cancelled it before the poller claimed it
+}
+
+// Which device sessions an announcement is delivered to. Matched against the
+// PLATFORM of each recipient's live device-token rows in notifications-service
+// (a token row exists only while its auth session does), never against any
+// stored profile/device preference.
+enum AnnouncementDeviceType {
+  ALL
+  ANDROID
+  IOS
+  WEB
 }
 
 enum AnnouncementKind {
@@ -273,6 +285,7 @@ model Announcement {
   description    String
   target         AnnouncementTarget
   kind           AnnouncementKind   @default(ANNOUNCEMENT)
+  deviceType     AnnouncementDeviceType @default(ALL)
   communityId    String?            @db.Uuid // required iff target == COMMUNITY
   status         AnnouncementStatus @default(SCHEDULED)
   scheduledAt    DateTime?          @db.Timestamptz(3) // null = deliver immediately
@@ -282,6 +295,7 @@ model Announcement {
   createdAt      DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
   sentAt         DateTime?          @db.Timestamptz(3)
+  cancelledAt    DateTime?          @db.Timestamptz(3)
 
   @@index([status, scheduledAt]) // poller claim query
   @@index([target, status]) // list filter

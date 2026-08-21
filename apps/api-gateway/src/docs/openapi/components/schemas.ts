@@ -3307,8 +3307,8 @@ export const openApiSchemas = {
   // ---- Announcements ----
   // Source of truth: apps/backoffice-service/src/types/announcement.types.ts +
   // src/api/validators/announcement.validator.ts. NOTE: there is NO i18n
-  // (single flat title/description strings) and NO update endpoint — only
-  // create + read + list exist.
+  // (single flat title/description strings). SCHEDULED announcements can be
+  // edited (PUT) or cancelled (POST /cancel); everything else is create-only.
   AdminAnnouncementTarget: {
     type: "string",
     enum: ["ALL", "COMMUNITY"],
@@ -3316,8 +3316,24 @@ export const openApiSchemas = {
   },
   AdminAnnouncementStatus: {
     type: "string",
-    enum: ["SCHEDULED", "PROCESSING", "SENT", "FAILED"],
+    enum: ["SCHEDULED", "PROCESSING", "SENT", "FAILED", "CANCELLED"],
     example: "SENT",
+  },
+  AdminAnnouncementDeviceType: {
+    type: "string",
+    enum: ["ALL", "ANDROID", "IOS", "WEB"],
+    description:
+      "Which device sessions receive the push. Matched against each recipient's LIVE " +
+      "device registrations (one per signed-in session), never a stored profile preference: " +
+      "ANDROID reaches a user's Android sessions and leaves their iOS/Web sessions alone.",
+    example: "ALL",
+  },
+  AdminAnnouncementType: {
+    type: "string",
+    enum: ["IMMEDIATE", "SCHEDULED"],
+    description:
+      "SCHEDULED requires scheduledAt (future). IMMEDIATE ignores scheduledAt.",
+    example: "IMMEDIATE",
   },
   AdminAnnouncementListItem: {
     type: "object",
@@ -3326,8 +3342,10 @@ export const openApiSchemas = {
       title: { type: "string", example: "Scheduled maintenance" },
       target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
       communityId: { type: "string", nullable: true },
+      deviceType: { $ref: "#/components/schemas/AdminAnnouncementDeviceType" },
       recipientCount: { type: "integer", example: 12000 },
       status: { $ref: "#/components/schemas/AdminAnnouncementStatus" },
+      scheduledAt: { type: "string", format: "date-time", nullable: true },
       announcedAt: {
         type: "string",
         format: "date-time",
@@ -3355,6 +3373,7 @@ export const openApiSchemas = {
         example: "We will be down 02:00-03:00 UTC.",
       },
       target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      deviceType: { $ref: "#/components/schemas/AdminAnnouncementDeviceType" },
       communityId: {
         type: "string",
         nullable: true,
@@ -3366,6 +3385,7 @@ export const openApiSchemas = {
         description:
           "SCHEDULED: not yet due. PROCESSING: in-flight delivery (poll to observe). " +
           "SENT: fully delivered, recipientCount finalized. FAILED: gave up after 3 retries, see failureReason. " +
+          "CANCELLED: an admin cancelled it before the poller claimed it — never delivered. " +
           "No socket/webhook push exists for status changes — poll GET /announcements/{id} or the list.",
       },
       scheduledAt: { type: "string", format: "date-time", nullable: true },
@@ -3375,12 +3395,14 @@ export const openApiSchemas = {
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
       sentAt: { type: "string", format: "date-time", nullable: true },
+      cancelledAt: { type: "string", format: "date-time", nullable: true },
     },
     required: [
       "id",
       "title",
       "description",
       "target",
+      "deviceType",
       "status",
       "recipientCount",
       "createdAt",
@@ -3393,6 +3415,15 @@ export const openApiSchemas = {
       title: { type: "string", minLength: 1, maxLength: 200 },
       description: { type: "string", minLength: 1, maxLength: 5000 },
       target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      deviceType: {
+        allOf: [{ $ref: "#/components/schemas/AdminAnnouncementDeviceType" }],
+        description: "Defaults to ALL.",
+      },
+      announcementType: {
+        allOf: [{ $ref: "#/components/schemas/AdminAnnouncementType" }],
+        description:
+          "Optional. Defaults to SCHEDULED when scheduledAt is present, else IMMEDIATE.",
+      },
       communityId: {
         type: "string",
         format: "uuid",
@@ -3405,7 +3436,24 @@ export const openApiSchemas = {
         format: "date-time",
         nullable: true,
         description:
-          "Must be strictly in the future. Omit for immediate delivery (status becomes PROCESSING right away, never SENT immediately).",
+          "Must be strictly in the future. Required when announcementType=SCHEDULED; ignored (dropped) when announcementType=IMMEDIATE. Omit for immediate delivery (status becomes PROCESSING right away, never SENT immediately).",
+      },
+    },
+  },
+  AdminAnnouncementUpdateRequest: {
+    type: "object",
+    description:
+      "Edits a SCHEDULED announcement in place (same row, same id — the poller reads the new " +
+      "scheduledAt on its next tick). target/kind/communityId are immutable.",
+    required: ["title", "description", "deviceType", "scheduledAt"],
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      description: { type: "string", minLength: 1, maxLength: 5000 },
+      deviceType: { $ref: "#/components/schemas/AdminAnnouncementDeviceType" },
+      scheduledAt: {
+        type: "string",
+        format: "date-time",
+        description: "Must be strictly in the future.",
       },
     },
   },

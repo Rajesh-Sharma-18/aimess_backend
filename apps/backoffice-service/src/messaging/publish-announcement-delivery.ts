@@ -3,6 +3,7 @@ import amqp from "amqplib";
 
 import { env } from "../config/env.js";
 import type {
+  AnnouncementDeviceType,
   AnnouncementKind,
   AnnouncementTarget,
 } from "../types/announcement.types.js";
@@ -26,6 +27,7 @@ export type AnnouncementDeliverMessage = {
   description: string;
   target: AnnouncementTarget;
   kind: AnnouncementKind;
+  deviceType: AnnouncementDeviceType;
   communityId: string | null;
   cursor: number;
   limit: number;

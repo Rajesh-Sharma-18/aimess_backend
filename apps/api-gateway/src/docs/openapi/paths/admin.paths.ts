@@ -2974,6 +2974,51 @@ export const adminPaths = {
       },
       "x-implementation-status": "implemented",
     },
+    put: {
+      tags: [adminTags.announcements],
+      operationId: "adminUpdateAnnouncement",
+      summary: "Edit a scheduled announcement",
+      description:
+        "Updates title/description/deviceType/scheduledAt of an announcement that is still " +
+        "SCHEDULED — same row, no duplicate is created, and the poller picks up the new time " +
+        "on its next tick. Returns 409 once the announcement has been claimed for delivery " +
+        "(PROCESSING), sent, failed, or cancelled. Audited. Requires `announcements.manage`.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminAnnouncementUpdateRequest"
+      ),
+      responses: {
+        "200": okRes("Announcement", "#/components/schemas/AdminAnnouncement"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing announcements.manage"),
+        "404": errRes("Announcement not found"),
+        "409": errRes("Announcement is no longer SCHEDULED"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/announcements/{id}/cancel": {
+    post: {
+      tags: [adminTags.announcements],
+      operationId: "adminCancelAnnouncement",
+      summary: "Cancel a scheduled announcement",
+      description:
+        "Flips a still-SCHEDULED announcement to CANCELLED so the poller never claims it. " +
+        "Status-only — the row is kept for the audit trail, never deleted. Returns 409 once " +
+        "delivery has started. Audited. Requires `announcements.manage`.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      responses: {
+        "200": okRes("Announcement", "#/components/schemas/AdminAnnouncement"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing announcements.manage"),
+        "404": errRes("Announcement not found"),
+        "409": errRes("Announcement is no longer SCHEDULED"),
+      },
+      "x-implementation-status": "implemented",
+    },
   },
 
   // ===========================================================================

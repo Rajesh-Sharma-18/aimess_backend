@@ -4,6 +4,7 @@ import { type NotificationNavigation } from "@aimess/shared-types";
 
 import { redis } from "../config/redis.js";
 import { env } from "../config/env.js";
+import { deviceTokenRepository } from "../repositories/device-token.repository.js";
 import { pushToUsers } from "../services/push.service.js";
 
 /**
@@ -21,6 +22,13 @@ export interface NotificationAnnouncementBatchPayload {
   body: string;
   /** Defaults to "ANNOUNCEMENT" for backward compatibility with older publishers. */
   kind?: "ANNOUNCEMENT" | "MAINTENANCE" | "UPDATE_REQUIRED";
+  /**
+   * Which device platforms to deliver to. Resolved against the recipient's
+   * LIVE device-token rows (one per registered session, deleted on logout /
+   * session revoke), so "ANDROID" reaches a user's Android session and leaves
+   * their iOS and Web sessions alone. Defaults to "ALL" for older publishers.
+   */
+  deviceType?: "ALL" | "ANDROID" | "IOS" | "WEB";
   userIds: string[];
   batchId: string;
 }
@@ -47,11 +55,43 @@ export async function handleAnnouncementBatch(
   }
 
   const kind = data.kind ?? "ANNOUNCEMENT";
+  const deviceType = data.deviceType ?? "ALL";
 
-  await pushToUsers(data.userIds, (userId) => ({
+  // A device-targeted announcement is narrowed to the users who actually own a
+  // device of that type BEFORE anything is written. Filtering only inside
+  // `pushToUser` (where it gates the FCM send) still left a Notification-Center
+  // row for everyone else — the row is per-USER, not per-device, so an iOS-only
+  // announcement surfaced on those users' web and Android sessions and fired
+  // `notification:new` to every open socket. Narrowing here keeps the inbox row
+  // and the push describing the same audience, so tapping the notification and
+  // landing on the notifications list shows the announcement that was tapped.
+  const recipients =
+    deviceType === "ALL"
+      ? data.userIds
+      : await deviceTokenRepository.findUserIdsWithPlatform(
+          data.userIds,
+          deviceType
+        );
+
+  if (recipients.length === 0) {
+    logger.info(
+      `Announcement ${data.announcementId}: no ${deviceType} device among ${data.userIds.length} recipient(s) in batch ${data.batchId}`
+    );
+    return;
+  }
+
+  await pushToUsers(recipients, (userId) => ({
     userId,
     category: "systemEnabled",
     type: kind,
+    // Second gate, on the send itself: `recipients` says the user owns SOME
+    // device of this type, this says the push only goes to that device.
+    platforms: deviceType === "ALL" ? undefined : [deviceType],
+    // Clicking the announcement lands on the web app's notifications route —
+    // the same destination the native clients reach via `navigation.screen`.
+    ...(env.WEB_APP_BASE_URL
+      ? { webLink: `${env.WEB_APP_BASE_URL}/notifications` }
+      : {}),
     title: data.title,
     body: data.body,
     // Informational, not account-integrity: the System toggle and quiet hours
