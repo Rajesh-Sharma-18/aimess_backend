@@ -5,7 +5,6 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "prepare": "node scripts/prepare-husky.mjs",
     "dev": "turbo run dev --filter=./apps/*",
     "dev:all": "turbo run dev",
     "build": "turbo run build",
@@ -79,7 +78,6 @@
     "@types/supertest": "^7.2.0",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
-    "husky": "^9.1.7",
     "jest": "^30.4.2",
     "jest-environment-node": "^30.4.1",
     "lint-staged": "^17.0.4",
