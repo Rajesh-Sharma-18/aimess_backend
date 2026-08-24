@@ -8,7 +8,10 @@ import {
   buildGroupSearchFilter,
   normalizeForSearch,
 } from "../lib/group-search.util.js";
-import { newerSnapshotWhere } from "../lib/last-activity-guard.js";
+import {
+  newerSnapshotWhere,
+  sameSnapshotWhere,
+} from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import {
@@ -371,10 +374,19 @@ export class GroupRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
-    } | null
-  ): Promise<void> {
-    await this.prisma.groupRoom.update({
-      where: { roomId },
+    } | null,
+    /** See PrivateRoomRepository.setLastMessage — same compare-and-swap. */
+    opts?: { expectLastMessageId?: string | null }
+  ): Promise<boolean> {
+    const where =
+      opts && "expectLastMessageId" in opts
+        ? ({
+            roomId,
+            ...sameSnapshotWhere(opts.expectLastMessageId),
+          } as Prisma.GroupRoomWhereInput)
+        : ({ roomId } as Prisma.GroupRoomWhereInput);
+    const { count } = await this.prisma.groupRoom.updateMany({
+      where,
       data: message
         ? {
             lastMessageId: message.id,
@@ -398,6 +410,7 @@ export class GroupRoomRepository {
             lastMessagePreview: null as unknown as Prisma.InputJsonValue,
           },
     });
+    return count > 0;
   }
 
   /**

@@ -111,6 +111,11 @@ describe("POST /api/v1/media/confirm (CLAMAV_ENABLED=false)", () => {
     // REJECTED, not INFECTED: a malformed file is not a virus. The two labels
     // were previously swapped relative to their names.
     expect(res.body.data.scanStatus).toBe("REJECTED");
+    // The uploader gets the COARSE bucket, so the client can say something better
+    // than "this file could not be verified" — but never the detector verdict
+    // (SIGNATURE_MISMATCH, thresholds, offsets), which stays in the audit log.
+    expect(res.body.data.reason).toBe("FORMAT_MISMATCH");
+    expect(JSON.stringify(res.body)).not.toContain("SIGNATURE_MISMATCH");
     expect(mockedStatusSet).toHaveBeenCalledWith(ownKey(), "REJECTED");
     expect(mockedDelete).toHaveBeenCalledTimes(1);
     // Terminal rejection never reaches the AV enqueue/inline path.

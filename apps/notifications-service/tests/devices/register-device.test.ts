@@ -72,7 +72,67 @@ describe("POST /v1/devices", () => {
       tokenType: "FCM",
       deviceId: "device-001",
       sessionId: TEST_SESSION_ID,
+      locale: null,
     });
+  });
+
+  // --- POSITIVE: per-device push language -----------------------------------
+  //
+  // `locale` is what lets one account signed in on five devices receive five
+  // pushes in three languages. It is device-scoped precisely because
+  // AppSettings.language is a single account-wide column.
+  it.each([
+    ["th", "th"],
+    ["th-TH", "th"],
+    ["EN_us", "en"],
+    ["  vi  ", "vi"],
+  ])("stores lang %s as %s", async (lang, expected) => {
+    const res = await request(app)
+      .post("/v1/devices")
+      .set(bearer(makeAccessToken()))
+      .send({ ...validBody, lang });
+
+    expect(res.status).toBe(200);
+    expect(repo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: expected })
+    );
+  });
+
+  // An unsupported tag must NOT fail the registration (that would leave the
+  // device with no push at all) and must NOT be normalized to DEFAULT_LOCALE,
+  // which is "vi" in production — answering a French request in Vietnamese is
+  // the exact failure this rule exists to prevent. Null = "no opinion", and the
+  // send path falls back to the account language.
+  it.each(["fr", "hi", "zz-ZZ", "!!"])(
+    "ignores unsupported lang %s without failing the registration",
+    async (lang) => {
+      const res = await request(app)
+        .post("/v1/devices")
+        .set(bearer(makeAccessToken()))
+        .send({ ...validBody, lang });
+
+      expect(res.status).toBe(200);
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ locale: null })
+      );
+    }
+  );
+
+  // The column means "what the client that currently owns this token last
+  // said". An older build re-registering must clear it rather than leave a
+  // stale value behind — `token` is @unique, so re-registration is also how a
+  // token moves between ACCOUNTS, and a sticky locale would leak the previous
+  // owner's language.
+  it("clears the stored locale when a client re-registers without lang", async () => {
+    const res = await request(app)
+      .post("/v1/devices")
+      .set(bearer(makeAccessToken()))
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(repo.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: null })
+    );
   });
 
   it("stamps the JWT's sessionId, ignoring any sessionId in the body", async () => {

@@ -50,6 +50,17 @@ const envSchema = z.object({
   // is noise, so the push expires with the ringing window. Keep the two in sync.
   CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
 
+  // Public origin of the web app (no trailing slash), e.g.
+  // https://app.aimess.me. Used as the click target of a WEB push: Web Push
+  // opens `webpush.fcm_options.link` itself, with no service-worker code
+  // involved. Optional — unset simply means the notification has no link and
+  // the SW's own click handler decides, which is today's behaviour.
+  WEB_APP_BASE_URL: z
+    .string()
+    .url()
+    .optional()
+    .transform((v) => v?.replace(/\/+$/, "")),
+
   // JWT access secret — verifies device-registration requests.
   JWT_ACCESS_SECRET: z.string(),
 

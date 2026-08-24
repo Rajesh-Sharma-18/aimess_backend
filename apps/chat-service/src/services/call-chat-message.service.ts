@@ -73,8 +73,10 @@ export const readCallStatus = (content: unknown): string => {
  * across a lifecycle whose final actor is not known when the row is created.
  * Direction is carried explicitly in `content.call.callerId` instead, so the
  * client can render ↗ outgoing / ↙ incoming without guessing from `senderId`.
- * Unread is likewise explicit: only a MISSED call raises a badge, and only on
- * the transition INTO missed, so a ringing card never inflates a counter.
+ * Unread is likewise explicit, and the answer is always NO: no call state — a
+ * missed one included — raises the chat badge, because no recount of a room's
+ * unread total can ever see a call row. A missed call reaches the callee
+ * through its own push and notification-inbox row instead.
  *
  * This service is internal-only: callers cannot forge these records through the
  * public message send API (VOICE_CALL/VIDEO_CALL are not in the sendable
@@ -179,9 +181,21 @@ export class CallChatMessageService {
         calleeId: params.calleeId,
       },
     };
-    // Only a call the callee never answered raises a badge, and only once — on
-    // the transition into MISSED, never while it is merely ringing.
-    const countInUnread = status === "MISSED";
+    // NO call state raises the chat badge — MISSED included. A call row always
+    // carries a `systemEvent`, and every recount of a private room's unread
+    // total (PrivateRoomRepository.countRemainingUnread) excludes exactly those
+    // rows. So crediting the callee's counter for a MISSED call added a unit
+    // that no later recount could ever reproduce: reading the conversation
+    // either zeroed it (boundary advanced) or — the common case, because the
+    // callee had usually already read past the RINGING card that MISSED
+    // transitions in place — hit the forward-only early return and left the
+    // unit stuck forever. That is a nav badge with nothing behind it: the Unread
+    // tab filters on the same per-row count the recount produces, so it showed
+    // an empty list while the badge read 3. Missed calls still reach the user
+    // through their own push (`publishCallMissedSafe`) and the notification
+    // inbox row (`call.activity`) — the group call card already counts nothing
+    // (see tests/groups/group-call-card.test.ts); private now matches.
+    const countInUnread = false;
 
     return existing
       ? this.applyTransition({

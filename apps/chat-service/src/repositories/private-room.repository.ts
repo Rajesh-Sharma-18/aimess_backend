@@ -4,7 +4,10 @@
   Prisma,
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
-import { newerSnapshotMongoQuery } from "../lib/last-activity-guard.js";
+import {
+  newerSnapshotMongoQuery,
+  sameSnapshotWhere,
+} from "../lib/last-activity-guard.js";
 import { listRowIdentity } from "../lib/list-row-identity.js";
 import { buildRoomKeysetWhere } from "../lib/pagination.js";
 import { isObjectId } from "../lib/object-id.js";
@@ -507,7 +510,20 @@ export class PrivateRoomRepository {
           select: { sequenceNumber: true },
         })
       )?.sequenceNumber;
-      if (currentSeq != null && upToSeq <= currentSeq) return existing;
+      if (currentSeq != null && upToSeq <= currentSeq) {
+        // The POINTER stays put (forward-only), but the stored counter can
+        // still be stale: anything that credited it for a row at or below the
+        // pointer is unreachable by a recount that never runs. Re-deriving it
+        // here — from the pointer the reader already has, not from the
+        // requested boundary — is the only self-heal a repeat read can offer,
+        // and it is what stops a nav badge from outliving an empty Unread list.
+        return this.reconcileUnreadAtPointer(
+          existing,
+          roomId,
+          userId,
+          currentSeq
+        );
+      }
     }
 
     // Accurate remaining unread = inbound countable messages strictly newer
@@ -618,6 +634,68 @@ export class PrivateRoomRepository {
    * GeneralRoomMessageRepository.countUnreadAfter, including their
    * delete-for-me exclusion.
    */
+  /**
+   * Re-derive this user's unread counter from the read pointer they ALREADY
+   * hold, without moving any pointer or republishing a receipt. Writes only
+   * when the stored counter disagrees, so the common repeat-read (open a chat
+   * that is already fully read) stays a pure read.
+   */
+  private async reconcileUnreadAtPointer(
+    existing: PrivateRoom,
+    roomId: string,
+    userId: string,
+    pointerSeq: number
+  ): Promise<PrivateRoom> {
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    const stored = unreadCountByUser[userId] ?? 0;
+    if (stored === 0) return existing;
+    const remaining = await this.countRemainingUnread(
+      roomId,
+      userId,
+      pointerSeq
+    );
+    if (remaining === stored) return existing;
+
+    unreadCountByUser[userId] = remaining;
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[userId] = remaining > 0;
+    const data: Record<string, unknown> = {
+      unreadCountByUser: unreadCountByUser as unknown as Prisma.InputJsonValue,
+      hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+    };
+    if (remaining === 0) {
+      // Same cleanup the advancing path does — preview hints are only
+      // meaningful while unread remains.
+      const firstUnreadMessageIdByUser = (existing.firstUnreadMessageIdByUser ??
+        {}) as Record<string, string | null>;
+      const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+        {}) as Record<string, string | null>;
+      const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+        {}) as Record<string, unknown>;
+      firstUnreadMessageIdByUser[userId] = null;
+      lastUnreadMessageIdByUser[userId] = null;
+      lastUnreadPreviewByUser[userId] = null;
+      data.firstUnreadMessageIdByUser =
+        firstUnreadMessageIdByUser as unknown as Prisma.InputJsonValue;
+      data.lastUnreadMessageIdByUser =
+        lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue;
+      data.lastUnreadPreviewByUser =
+        lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue;
+    }
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: data as Parameters<
+        typeof this.prisma.privateRoom.update
+      >[0]["data"],
+    });
+  }
+
   private async countRemainingUnread(
     roomId: string,
     userId: string,
@@ -736,6 +814,13 @@ export class PrivateRoomRepository {
    * Overwrite the room's last-message snapshot after a delete-for-everyone
    * removes the current last message. Accepts null to clear (no visible messages
    * remain). Unlike updateRoomOnNewMessage, this does not touch unread counts.
+   *
+   * `expectLastMessageId` makes the write a compare-and-swap on the snapshot the
+   * caller resolved its replacement from (see lib/last-activity-guard.ts): the
+   * write is skipped, and `false` returned, when something else moved the
+   * snapshot in the meantime — a message that arrived while an auto-delete sweep
+   * was recalculating, or a second recalculation from the same bulk expiry.
+   * Omitted, the write is unconditional exactly as before.
    */
   async setLastMessage(
     roomId: string,
@@ -748,10 +833,18 @@ export class PrivateRoomRepository {
       clientMessageId?: string | null;
       sequenceNumber?: number | null;
       revision?: number | null;
-    } | null
-  ): Promise<void> {
-    await this.prisma.privateRoom.update({
-      where: { roomId },
+    } | null,
+    opts?: { expectLastMessageId?: string | null }
+  ): Promise<boolean> {
+    const where =
+      opts && "expectLastMessageId" in opts
+        ? ({
+            roomId,
+            ...sameSnapshotWhere(opts.expectLastMessageId),
+          } as Prisma.PrivateRoomWhereInput)
+        : ({ roomId } as Prisma.PrivateRoomWhereInput);
+    const { count } = await this.prisma.privateRoom.updateMany({
+      where,
       data: message
         ? {
             lastMessageId: message.id,
@@ -774,6 +867,7 @@ export class PrivateRoomRepository {
             lastMessage: null as unknown as Prisma.InputJsonValue,
           },
     });
+    return count > 0;
   }
 
   /**

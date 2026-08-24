@@ -15,6 +15,7 @@ jest.mock("../../src/grpc/community.client.js", () => ({
 }));
 jest.mock("../../src/repositories/announcement.repository.js", () => ({
   announcementRepository: {
+    getStatus: jest.fn(async () => "PROCESSING"),
     incrementRecipientCount: jest.fn(async () => undefined),
     markSent: jest.fn(async () => undefined),
     markFailed: jest.fn(async () => undefined),
@@ -59,6 +60,7 @@ function baseMessage(overrides: Partial<Record<string, unknown>> = {}) {
     description: "Body",
     target: "ALL" as const,
     kind: "ANNOUNCEMENT" as const,
+    deviceType: "ALL" as const,
     communityId: null,
     cursor: 0,
     limit: 100,
@@ -70,6 +72,7 @@ function baseMessage(overrides: Partial<Record<string, unknown>> = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   redisMock.set.mockResolvedValue("OK");
+  repo.getStatus.mockResolvedValue("PROCESSING");
 });
 
 describe("handleAnnouncementDeliverMessage", () => {
@@ -163,5 +166,14 @@ describe("handleAnnouncementDeliverMessage", () => {
     redisMock.incr.mockResolvedValueOnce(3);
     await handleAnnouncementDeliverMessage(baseMessage());
     expect(repo.markFailed).toHaveBeenCalledWith(AID, "gRPC outage");
+  });
+  it("cancelled between pages: stops the fan-out instead of delivering the rest", async () => {
+    repo.getStatus.mockResolvedValue("CANCELLED");
+
+    await handleAnnouncementDeliverMessage(baseMessage({ cursor: 100 }));
+
+    expect(publishBatch).not.toHaveBeenCalled();
+    expect(publishCursor).not.toHaveBeenCalled();
+    expect(repo.markSent).not.toHaveBeenCalled();
   });
 });

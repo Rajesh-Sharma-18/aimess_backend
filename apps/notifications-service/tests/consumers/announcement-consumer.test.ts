@@ -27,14 +27,20 @@ jest.mock("../../src/config/redis.js", () => ({
   redis: { set: jest.fn(async () => "OK") },
 }));
 
+jest.mock("../../src/repositories/device-token.repository.js", () => ({
+  deviceTokenRepository: { findUserIdsWithPlatform: jest.fn(async () => []) },
+}));
+
 import {
   startAnnouncementConsumer,
   handleAnnouncementBatch,
 } from "../../src/consumers/announcement.consumer.js";
 import { pushToUsers } from "../../src/services/push.service.js";
+import { deviceTokenRepository } from "../../src/repositories/device-token.repository.js";
 import { redis } from "../../src/config/redis.js";
 
 const pushMany = pushToUsers as jest.Mock;
+const tokenRepo = deviceTokenRepository as unknown as Record<string, jest.Mock>;
 const redisMock = redis as unknown as { set: jest.Mock };
 
 type ConsumeCallback = (msg: { content: Buffer } | null) => void;
@@ -87,6 +93,56 @@ describe("handleAnnouncementBatch", () => {
     expect(built.category).toBe("systemEnabled");
     expect(built.title).toBe(BASE.title);
     expect(built.body).toBe(BASE.body);
+  });
+
+  it("deviceType=ANDROID: restricts the push to Android sessions", async () => {
+    tokenRepo.findUserIdsWithPlatform.mockResolvedValue(["u1"]);
+
+    await handleAnnouncementBatch({ ...BASE, deviceType: "ANDROID" });
+
+    const build = pushMany.mock.calls[0][1] as (id: string) => {
+      platforms?: string[];
+    };
+    expect(build("u1").platforms).toEqual(["ANDROID"]);
+  });
+
+  it("deviceType=ALL (or absent): sends to every platform", async () => {
+    await handleAnnouncementBatch({ ...BASE, deviceType: "ALL" });
+
+    const build = pushMany.mock.calls[0][1] as (id: string) => {
+      platforms?: string[];
+    };
+    expect(build("u1").platforms).toBeUndefined();
+  });
+
+  // The Notification-Center row is per-user, so a device-targeted announcement
+  // must narrow the AUDIENCE, not just the send — otherwise it shows up on the
+  // very sessions the device filter excluded.
+  it("device-targeted: notifies only users who own a device of that type", async () => {
+    tokenRepo.findUserIdsWithPlatform.mockResolvedValue(["u2"]);
+
+    await handleAnnouncementBatch({ ...BASE, deviceType: "IOS" });
+
+    expect(tokenRepo.findUserIdsWithPlatform).toHaveBeenCalledWith(
+      BASE.userIds,
+      "IOS"
+    );
+    expect(pushMany.mock.calls[0][0]).toEqual(["u2"]);
+  });
+
+  it("device-targeted with no matching device: sends nothing at all", async () => {
+    tokenRepo.findUserIdsWithPlatform.mockResolvedValue([]);
+
+    await handleAnnouncementBatch({ ...BASE, deviceType: "ANDROID" });
+
+    expect(pushMany).not.toHaveBeenCalled();
+  });
+
+  it("deviceType=ALL: keeps the full audience and never queries tokens", async () => {
+    await handleAnnouncementBatch({ ...BASE, deviceType: "ALL" });
+
+    expect(tokenRepo.findUserIdsWithPlatform).not.toHaveBeenCalled();
+    expect(pushMany.mock.calls[0][0]).toEqual(BASE.userIds);
   });
 
   it("duplicate execution prevention: second call with the same batchId is a no-op", async () => {

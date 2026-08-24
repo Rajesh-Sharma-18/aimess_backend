@@ -720,10 +720,18 @@ export function applyReactionOverlay(
       userId: null,
       username: null,
       preview,
-      dateTime: reactionAt,
+      // Timestamps deliberately keep the base (canonical) value: the overlay
+      // replaces the row's PREVIEW TEXT and nothing else — the same rule
+      // chat-service's GroupRoomService.applyReactionOverlay already states.
+      // `lastActivityAt` is what the community list is ordered and time-stamped
+      // by, and a reaction is not conversation activity, so advancing it moved
+      // the row on every reaction (and again on every refetch after one).
+      // `reactionAt` still gates VISIBILITY above — only the reported time is
+      // the base's.
+      dateTime: base.lastActivity.dateTime,
       ...EMPTY_ACTIVITY_IDENTITY,
     },
-    lastActivityAt: reactionAt,
+    lastActivityAt: base.lastActivityAt,
   };
 }
 

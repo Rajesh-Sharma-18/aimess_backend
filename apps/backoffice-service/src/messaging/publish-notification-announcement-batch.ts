@@ -2,7 +2,10 @@ import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
-import type { AnnouncementKind } from "../types/announcement.types.js";
+import type {
+  AnnouncementDeviceType,
+  AnnouncementKind,
+} from "../types/announcement.types.js";
 
 /**
  * Queue 2 — one resolved batch of recipient userIds (max 100), consumed by
@@ -17,6 +20,8 @@ export type NotificationAnnouncementBatchMessage = {
   title: string;
   body: string;
   kind: AnnouncementKind;
+  /** Which device platforms notifications-service may deliver to. */
+  deviceType: AnnouncementDeviceType;
   userIds: string[];
   batchId: string;
 };

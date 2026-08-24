@@ -35,6 +35,16 @@ model DeviceToken {
   // revocation (logout, "Logout Device", sign-out-all) deletes by this field.
   // Nullable for rows registered before this field existed.
   sessionId  String?
+  // Delivery locale for THIS device's push tray ("en" | "vi" | "th").
+  // Session-scoped on purpose: one account can be signed in on five devices in
+  // three languages, and AppSettings.language is a single account-wide slot
+  // that the last session to change it overwrites for everyone. Written by the
+  // owning client at registration; re-registration overwrites it
+  // unconditionally, so a token that moves to another account cannot carry the
+  // previous owner's language.
+  // Null = this client never sent one (older build) -> fall back to the
+  // account language, which is exactly the pre-existing behaviour.
+  locale     String?
   lastSeenAt DateTime @default(now())
   createdAt  DateTime @default(now())
 

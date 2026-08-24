@@ -279,8 +279,9 @@ The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "P
 - \`CLEAN\` — all checks passed; file is downloadable.
 - \`PENDING\` — structural checks passed; AV scan in progress (poll /media/scan-status).
 - \`SKIPPED\` — scanner disabled (dev mode); file accessible but unscanned.
-- \`INFECTED\` — structural reject (magic-byte mismatch, ZIP bomb, nested archive, OOXML type mismatch). File deleted; not downloadable.
-- \`QUARANTINED\` — virus detected by the AV scanner. File deleted; not downloadable.
+- \`REJECTED\` — structural reject (magic-byte mismatch, ZIP bomb, nested archive, OOXML type mismatch, over a structural limit). File deleted; not downloadable. \`data.reason\` carries the coarse, user-showable cause.
+- \`INFECTED\` — malware found by the AV scanner. File deleted; not downloadable.
+- \`QUARANTINED\` — isolated after a terminal reject/infect. File deleted; not downloadable.
 - \`ERROR\` — scanner error; retry /confirm.
 
 \`403\` (\`MEDIA_CONFIRM_FORBIDDEN\`) is returned only when the caller does not own the object.`,
@@ -335,19 +336,34 @@ The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "P
                       enum: [
                         "CLEAN",
                         "PENDING",
+                        "SCANNING",
                         "SKIPPED",
                         "ERROR",
+                        "REJECTED",
                         "INFECTED",
                         "QUARANTINED",
                       ],
                       example: "CLEAN",
                       description:
-                        "Terminal verdict in a uniform HTTP 200 body. CLEAN/SKIPPED = downloadable. PENDING = AV scan in progress (poll /media/scan-status). INFECTED = structural reject (magic-byte/ZIP/OOXML), file deleted. QUARANTINED = virus found, file deleted. ERROR = scanner down; retry /confirm.",
+                        "Terminal verdict in a uniform HTTP 200 body. CLEAN/SKIPPED = downloadable. PENDING = AV scan in progress (poll /media/scan-status). REJECTED = structural reject (magic-byte/ZIP/OOXML/structural limit), file deleted — see `reason`. INFECTED = malware found, file deleted. QUARANTINED = isolated after a terminal verdict, file deleted. ERROR = scanner down; retry /confirm.",
                     },
                     fileSize: {
                       type: "integer" as const,
                       example: 204800,
                       description: "Actual file size in bytes from storage.",
+                    },
+                    reason: {
+                      type: "string" as const,
+                      enum: [
+                        "FORMAT_MISMATCH",
+                        "FILE_DAMAGED",
+                        "TOO_LARGE",
+                        "UNSAFE_CONTENT",
+                        "FILE_EMPTY",
+                      ],
+                      example: "FORMAT_MISMATCH",
+                      description:
+                        "Present on REJECTED only. The coarse, user-showable cause, safe to render directly: FORMAT_MISMATCH = the bytes are not the declared type; FILE_DAMAGED = truncated or structurally broken; TOO_LARGE = over a byte/dimension/pixel/frame/duration limit; UNSAFE_CONTENT = refused on safety grounds; FILE_EMPTY = no bytes. The precise detector verdict is never returned.",
                     },
                   },
                 },

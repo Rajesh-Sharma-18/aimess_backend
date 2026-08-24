@@ -44,7 +44,10 @@ describe("publishConvUpdated — unread on a sender-less call row", () => {
         contentType: "VOICE_CALL",
         text: "Voice call was not answered",
       },
-      countInUnread: true, // MISSED is the one call state that raises a badge
+      // Call rows no longer set this (see call-chat-message.service.ts) — kept
+      // true here on purpose: this test pins the PUBLISHER's sender-less rule,
+      // i.e. that even a countable row never flags its own author unread.
+      countInUnread: true,
       unreadCountByRecipient: { caller: 0, callee: 1 },
     });
 

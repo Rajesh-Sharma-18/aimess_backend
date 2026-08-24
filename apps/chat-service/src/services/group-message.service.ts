@@ -6,6 +6,8 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+
+import { RECALC_CAS_ATTEMPTS } from "../lib/last-activity-guard.js";
 import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
@@ -1051,57 +1053,75 @@ export class GroupMessageService {
     sequenceNumber: number;
     revision: number;
   } | null> {
-    const [room, prev] = await Promise.all([
-      this.roomRepo.findByRoomId(roomId),
-      this.messageRepo.findPreviousVisible(roomId),
-    ]);
-    if (!room) return null;
-    if (
-      room.lastMessageId !== deletedMessageId &&
-      room.lastMessageId === (prev?.id ?? null)
-    ) {
-      return null;
-    }
-    if (prev) {
-      const prevContent = (prev.content ?? { text: "" }) as { text?: string };
-      await this.roomRepo.setLastMessage(roomId, {
-        id: prev.id,
-        senderId: prev.senderId ?? null,
-        senderName: prev.senderName ?? "",
-        content: { text: prevContent.text ?? "" },
-        messageType: prev.messageType,
-        createdAt: prev.createdAt,
-        clientMessageId: prev.clientMessageId,
-        sequenceNumber: prev.sequenceNumber,
-        revision: prev.revision,
+    for (let attempt = 0; attempt < RECALC_CAS_ATTEMPTS; attempt++) {
+      const [room, prev] = await Promise.all([
+        this.roomRepo.findByRoomId(roomId),
+        this.messageRepo.findPreviousVisible(roomId),
+      ]);
+      if (!room) return null;
+      if (
+        room.lastMessageId !== deletedMessageId &&
+        room.lastMessageId === (prev?.id ?? null)
+      ) {
+        return null;
+      }
+      const expectLastMessageId = room.lastMessageId ?? null;
+      if (prev) {
+        const prevContent = (prev.content ?? { text: "" }) as { text?: string };
+        const applied = await this.roomRepo.setLastMessage(
+          roomId,
+          {
+            id: prev.id,
+            senderId: prev.senderId ?? null,
+            senderName: prev.senderName ?? "",
+            content: { text: prevContent.text ?? "" },
+            messageType: prev.messageType,
+            createdAt: prev.createdAt,
+            clientMessageId: prev.clientMessageId,
+            sequenceNumber: prev.sequenceNumber,
+            revision: prev.revision,
+          },
+          { expectLastMessageId }
+        );
+        // Strict `=== false`: only an explicit CAS refusal re-runs the pass.
+        if (applied === false) continue;
+        return {
+          prevMessageId: prev.id,
+          messageType: prev.messageType,
+          content: prev.content,
+          senderId: prev.senderId ?? null,
+          senderName: prev.senderName ?? "",
+          createdAt: prev.createdAt,
+          hasLastMessage: true,
+          clientMessageId: prev.clientMessageId ?? null,
+          sequenceNumber: prev.sequenceNumber,
+          revision: prev.revision,
+        };
+      }
+
+      const cleared = await this.roomRepo.setLastMessage(roomId, null, {
+        expectLastMessageId,
       });
+      if (cleared === false) continue;
       return {
-        prevMessageId: prev.id,
-        messageType: prev.messageType,
-        content: prev.content,
-        senderId: prev.senderId ?? null,
-        senderName: prev.senderName ?? "",
-        createdAt: prev.createdAt,
-        hasLastMessage: true,
-        clientMessageId: prev.clientMessageId ?? null,
-        sequenceNumber: prev.sequenceNumber,
-        revision: prev.revision,
+        prevMessageId: null,
+        messageType: "",
+        content: null,
+        senderId: null,
+        senderName: "",
+        createdAt: new Date(0),
+        hasLastMessage: false,
+        clientMessageId: null,
+        sequenceNumber: 0,
+        revision: 0,
       };
     }
-
-    await this.roomRepo.setLastMessage(roomId, null);
-    return {
-      prevMessageId: null,
-      messageType: "",
-      content: null,
-      senderId: null,
-      senderName: "",
-      createdAt: new Date(0),
-      hasLastMessage: false,
-      clientMessageId: null,
-      sequenceNumber: 0,
-      revision: 0,
-    };
+    // See PrivateMessageService.recalculateLastMessageAfterDelete — contended
+    // past the retry budget, so no bump is published from this stale read.
+    logger.warn(
+      `GroupMessageService|last-message recalculation contended out room=${roomId} message=${deletedMessageId}`
+    );
+    return null;
   }
 
   /**
@@ -1438,21 +1458,27 @@ export class GroupMessageService {
       if (!room || room.lastMessageId !== updated.id) return;
       const senderName =
         (updated as unknown as { senderName?: string }).senderName ?? "";
-      await this.roomRepo.setLastMessage(updated.roomId, {
-        id: updated.id,
-        senderId: updated.senderId ?? "",
-        senderName,
-        content: {
-          text:
-            ((updated.content as Record<string, unknown> | null)
-              ?.text as string) ?? "",
+      // See PrivateMessageService.refreshListPreviewAfterEdit — CAS so a message
+      // arriving after the check above is not rewound to the edited one.
+      await this.roomRepo.setLastMessage(
+        updated.roomId,
+        {
+          id: updated.id,
+          senderId: updated.senderId ?? "",
+          senderName,
+          content: {
+            text:
+              ((updated.content as Record<string, unknown> | null)
+                ?.text as string) ?? "",
+          },
+          messageType: updated.messageType,
+          createdAt: updated.createdAt,
+          clientMessageId: updated.clientMessageId,
+          sequenceNumber: updated.sequenceNumber,
+          revision: updated.revision,
         },
-        messageType: updated.messageType,
-        createdAt: updated.createdAt,
-        clientMessageId: updated.clientMessageId,
-        sequenceNumber: updated.sequenceNumber,
-        revision: updated.revision,
-      });
+        { expectLastMessageId: updated.id }
+      );
       publishConvUpdatedSafe({
         redis,
         type: "GROUP",

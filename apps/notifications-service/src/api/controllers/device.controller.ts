@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 
+import { parseSupportedLocale } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import { deviceTokenService } from "../../services/device-token.service.js";
@@ -31,6 +32,17 @@ export const registerDevice = asyncHandler(
       // revocation (logout / "Logout Device" / sign-out-all) delete exactly
       // this row instead of guessing from the client's opaque deviceId.
       sessionId: req.auth.sessionId,
+      // The DEVICE's push language, declared by the client rather than read off
+      // this request's `x-lang`. Identical values today, but the two answer
+      // different questions: `x-lang` is the language of this one call, while
+      // the column is the standing language of a device that will be pushed to
+      // while asleep. Reading the header here would silently drift the day
+      // registration moves behind a retry queue or a background worker.
+      //
+      // Unsupported tags land as null (never normalized to DEFAULT_LOCALE,
+      // which is `vi` in production) and the send path falls back to the
+      // account setting.
+      locale: parseSupportedLocale(body.lang),
     });
 
     return res.status(200).json(new ApiResponse(null, "Device registered"));
