@@ -767,6 +767,28 @@ export class CommunityMessageController {
       );
     }
 
+    // Keep pin state consistent with the delete: forEveryone unpins for the
+    // whole community, forMe only for the deleting user. See lib/pin-after-delete.
+    //
+    // AWAITED, and BEFORE the lastActivity recalculation below: the hook can
+    // RETRACT the "<actor> pinned a message" system line, which is itself a room
+    // message and is very often the room's current last one. A recalc that ran
+    // first (or raced this) would re-point lastActivity at a line that is about
+    // to be tombstoned, and the community list would preview a deleted message
+    // forever. `unpinAfterDelete` never throws, so this cannot fail the delete.
+    if (result.roomId) {
+      await unpinAfterDelete({
+        redis: this.redis,
+        pinService: this.pinService,
+        kind: "COMMUNITY",
+        roomId: result.roomId,
+        communityId: result.roomId,
+        messageId,
+        userId,
+        scope: type === "forEveryone" ? "forEveryone" : "forMe",
+      });
+    }
+
     // lastActivity recalculation MUST complete (including the synchronous
     // community-service confirmation below) BEFORE the response — mirrors
     // reactToMessage's guaranteed-before-response pattern. Previously this
@@ -840,21 +862,6 @@ export class CommunityMessageController {
           `deleteMessage|recalculateForMe failed roomId=${result.roomId}: ${String(err)}`
         );
       }
-    }
-
-    // Keep pin state consistent with the delete: forEveryone unpins for the
-    // whole community, forMe only for the deleting user. See lib/pin-after-delete.
-    if (result.roomId) {
-      void unpinAfterDelete({
-        redis: this.redis,
-        pinService: this.pinService,
-        kind: "COMMUNITY",
-        roomId: result.roomId,
-        communityId: result.roomId,
-        messageId,
-        userId,
-        scope: type === "forEveryone" ? "forEveryone" : "forMe",
-      });
     }
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
@@ -1091,6 +1098,16 @@ export class CommunityMessageController {
             pinnedCount: result.pinnedCount,
           },
         })
+      );
+    }
+    // Switching pins retracted the REPLACED pin's "X pinned a message" line
+    // (best-effort, inside pinService.pin). Same reason as unpinMessage below:
+    // that line may have been the room's last message, so lastActivity has to
+    // be recalculated or the community list previews a removed line.
+    if (result.replacedPin?.pinSystemMessageId) {
+      await this.recalcAndBroadcastLastMessageAfterDelete(
+        roomId,
+        result.replacedPin.pinSystemMessageId
       );
     }
     res

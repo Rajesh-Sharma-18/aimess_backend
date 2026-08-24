@@ -3825,8 +3825,15 @@ export function createCommunityImpl(
           // Keep pin state consistent with the delete — the same hook the REST
           // delete controller runs, so the socket path can't leave a pin behind
           // that REST would have cleared. See lib/pin-after-delete.
+          //
+          // AWAITED, and BEFORE the lastActivity recalculation below: the hook
+          // can RETRACT the "<actor> pinned a message" system line, which is
+          // itself a room message and is very often the room's current last
+          // one. A recalc that raced it would re-point lastActivity at a line
+          // about to be tombstoned, and the community list would preview a
+          // deleted message forever. `unpinAfterDelete` never throws.
           if (result?.roomId) {
-            void unpinAfterDelete({
+            await unpinAfterDelete({
               redis,
               pinService: deps.communityPinService,
               kind: "COMMUNITY",

@@ -302,3 +302,84 @@ describe("ChatMessageOrchestrator.pinDirect / unpinDirect", () => {
     );
   });
 });
+
+describe("pin-line retraction keeps the last-message snapshot honest", () => {
+  const SYS_PIN = "s".repeat(24);
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("deleteDirect forEveryone recalculates only AFTER the pin hook has retracted the pin line", async () => {
+    const { orchestrator, groupMessageService, groupPinService } =
+      buildOrchestrator();
+    const order: string[] = [];
+    groupMessageService.deleteMessage.mockResolvedValue({
+      id: MSG_ID,
+      roomId: ROOM_ID,
+      sequenceNumber: 5,
+      createdAt: new Date(),
+      deletedType: "ADMIN_DELETE",
+    });
+    // The retraction is a DB round trip — it must not be raced by the recalc,
+    // or the snapshot is re-pinned to a line that is about to be tombstoned.
+    groupPinService.unpinDeletedMessage.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      order.push("retract");
+      return { roomId: ROOM_ID, pinnedCount: 0 };
+    });
+    groupMessageService.recalculateLastMessageAfterDelete.mockImplementation(
+      async () => {
+        order.push("recalc");
+        return null;
+      }
+    );
+
+    await orchestrator.deleteDirect({
+      conversationType: "GROUP",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+      scope: "forEveryone",
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(order).toEqual(["retract", "recalc"]);
+  });
+
+  it("unpinDirect repairs the snapshot when the unpin retracted a pin line", async () => {
+    const { orchestrator, groupMessageService, groupPinService } =
+      buildOrchestrator();
+    groupPinService.unpin.mockResolvedValue({
+      pinnedCount: 0,
+      retractedSystemMessageId: SYS_PIN,
+    });
+
+    await orchestrator.unpinDirect({
+      conversationType: "GROUP",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+    });
+    await settle();
+
+    expect(
+      groupMessageService.recalculateLastMessageAfterDelete
+    ).toHaveBeenCalledWith(ROOM_ID, SYS_PIN);
+  });
+
+  it("unpinDirect does NOT touch the snapshot when nothing was retracted", async () => {
+    const { orchestrator, groupMessageService, groupPinService } =
+      buildOrchestrator();
+    groupPinService.unpin.mockResolvedValue({ pinnedCount: 0 });
+
+    await orchestrator.unpinDirect({
+      conversationType: "GROUP",
+      roomId: ROOM_ID,
+      messageId: MSG_ID,
+      userId: USER_ID,
+    });
+    await settle();
+
+    expect(
+      groupMessageService.recalculateLastMessageAfterDelete
+    ).not.toHaveBeenCalled();
+  });
+});
