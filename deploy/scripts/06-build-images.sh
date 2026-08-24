@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# FIRST-TIME PROVISIONING ONLY. To update a service that is already running,
+# use deploy.sh — it builds before it swaps, verifies /health, rolls back on
+# failure and reclaims disk afterwards. None of which this script does:
+#
+#   bash deploy/scripts/deploy.sh <service|all-backend|website|admin> --pull
+#
+# This script builds nine images back to back with no disk preflight and no
+# cleanup between them. Each builder stage is a full 993-package workspace
+# install, and BuildKit keeps a separate copy per service, so one pass can
+# leave ~30 GB of cache behind. On 2026-08-24 that filled the disk and every
+# build died with ENOSPC. Run 10-docker-gc-setup.sh before using this.
+#
 # Build the application images ON THE SERVER from checked-out source.
 #
 #   bash 06-build-images.sh dev02 /opt/aimess/aimess_backend
