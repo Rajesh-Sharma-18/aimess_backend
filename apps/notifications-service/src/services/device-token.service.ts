@@ -1,3 +1,5 @@
+import type { SupportedLocale } from "@aimess/constants";
+
 import {
   deviceTokenRepository,
   type DeviceTokenPlatform,
@@ -13,6 +15,8 @@ export const deviceTokenService = {
     tokenType: DeviceTokenType;
     deviceId?: string | null;
     sessionId?: string | null;
+    /** This device's push language; null falls back to the account setting. */
+    locale?: SupportedLocale | null;
   }): Promise<void> {
     return deviceTokenRepository.upsert(input);
   },

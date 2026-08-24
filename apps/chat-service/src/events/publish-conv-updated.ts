@@ -162,6 +162,24 @@ interface PublishConvUpdatedParams {
    * message and therefore goes backwards with it.
    */
   projectionRevision?: number;
+  /**
+   * This bump changes the row's PREVIEW ONLY — never its position in the list,
+   * never its badge.
+   *
+   * Reactions are the one activity that is published as a bump but is not
+   * conversation activity: "You reacted 🔥 to 'hi'" is an overlay line the
+   * actor (and the reacted-to message's owner) see in place of the real last
+   * message, while the canonical `lastMessageAt` the list SORTS on is
+   * deliberately never touched (see `setReactionActivity`). The bump has to
+   * carry `lastMessageAt: now` anyway so the overlay's own timestamp is
+   * expressible — which is exactly what made every client re-sort the row to
+   * the top and blink. This flag says "paint the preview, leave the row where
+   * it is", so a reaction can update the subtitle without reordering.
+   *
+   * Additive: a client that does not know the field keeps its previous
+   * behavior, so no client is broken by shipping this ahead of them.
+   */
+  activityOnly?: boolean;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -260,6 +278,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       unreadCountByRecipient,
       deleteRecalc: p.deleteRecalc,
       projectionRevision: p.projectionRevision,
+      activityOnly: p.activityOnly,
     });
   })().catch((error) => {
     logger.warn(
@@ -353,7 +372,7 @@ export async function publishConvUpdated(
       // never gets `unread: true`. It can only ever turn the flag off, so rows
       // without absolute counts keep their existing behavior exactly.
       const unread =
-        override === undefined && !p.deleteRecalc
+        override === undefined && !p.deleteRecalc && !p.activityOnly
           ? (p.countInUnread ?? !isSystem) &&
             recipientId !== effectiveSenderId &&
             absoluteUnread !== 0
@@ -405,6 +424,7 @@ export async function publishConvUpdated(
               ? { unreadCount: Math.max(0, absoluteUnread) }
               : {}),
             ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
+            ...(p.activityOnly ? { activityOnly: true } : {}),
             ...(isOffline !== undefined ? { isOffline } : {}),
           },
         })
@@ -469,6 +489,8 @@ interface PublishCommunityUpdatedParams {
    * applies `max(0, prev + delta)`. Members absent from the map are unaffected.
    */
   unreadDeltaByMember?: Record<string, number>;
+  /** See `PublishConvUpdatedParams.activityOnly` — same contract, same reason. */
+  activityOnly?: boolean;
 }
 
 export async function publishCommunityUpdated(
@@ -518,6 +540,7 @@ export async function publishCommunityUpdated(
       if (unreadDelta !== 0) notifyUnreadChanged(memberId);
       const deleteFields = {
         ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
+        ...(p.activityOnly ? { activityOnly: true } : {}),
         ...(unreadDelta !== 0
           ? {
               unreadDelta,
@@ -561,7 +584,9 @@ export async function publishCommunityUpdated(
       // A delete recalc is never new activity — it must not raise a badge even
       // for members who have no personal preview override.
       const unread =
-        isSystem || p.deleteRecalc ? false : memberId !== p.senderId;
+        isSystem || p.deleteRecalc || p.activityOnly
+          ? false
+          : memberId !== p.senderId;
       // Nav-badge total changed for this member — see unread-summary-bridge.ts.
       if (unread) notifyUnreadChanged(memberId);
       pipeline.publish(
@@ -664,6 +689,7 @@ export function publishCommunityUpdatedSafe(
       deleteRecalc: p.deleteRecalc,
       deleteRecalcId: p.deleteRecalcId,
       unreadDeltaByMember,
+      activityOnly: p.activityOnly,
     });
   })().catch((error) => {
     logger.warn(

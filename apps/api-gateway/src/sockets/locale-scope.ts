@@ -1,7 +1,7 @@
 import type { Socket } from "socket.io";
 import {
   DEFAULT_LOCALE,
-  isSupportedLocale,
+  parseSupportedLocale,
   runWithLocale,
   SOCKET_IN,
   type SupportedLocale,
@@ -29,7 +29,7 @@ export function scopeSocketLocale(socket: Socket): void {
   });
 
   socket.on(SOCKET_IN.LOCALE_SET, (payload: unknown, ack?: unknown) => {
-    const next = parseClientLocale(payload);
+    const next = parseSupportedLocale(payload);
     // Unknown/unsupported values are IGNORED, not normalized. Passing them
     // through `resolveLocale` would map anything unrecognized onto
     // `DEFAULT_LOCALE` ("vi" in production) — i.e. a client sending a language
@@ -44,26 +44,4 @@ export function scopeSocketLocale(socket: Socket): void {
       });
     }
   });
-}
-
-/**
- * Accepts `"th"`, `"th-TH"`, `{ lang }` or `{ locale }` — clients differ, and a
- * language tag legitimately arrives with a region subtag. Returns null for
- * anything outside `SUPPORTED_LOCALES` so the caller can keep what it had.
- *
- * Locale is presentation context only and is never consulted for authorization,
- * so an untrusted value here can at worst render the wrong language back to the
- * sender's own socket.
- */
-function parseClientLocale(payload: unknown): SupportedLocale | null {
-  const raw =
-    typeof payload === "string"
-      ? payload
-      : typeof payload === "object" && payload !== null
-        ? ((payload as { lang?: unknown }).lang ??
-          (payload as { locale?: unknown }).locale)
-        : undefined;
-  if (typeof raw !== "string") return null;
-  const base = raw.trim().toLowerCase().split(/[-_]/)[0];
-  return isSupportedLocale(base) ? base : null;
 }

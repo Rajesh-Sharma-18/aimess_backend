@@ -73,6 +73,8 @@ export {
 } from "./groups.controller.js";
 export {
   createAnnouncement,
+  updateAnnouncement,
+  cancelAnnouncement,
   listAnnouncements,
   getAnnouncementDetails,
 } from "./announcement.controller.js";

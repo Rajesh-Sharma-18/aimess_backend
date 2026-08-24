@@ -66,13 +66,19 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
       hasLastMessage: true,
       senderId: "peer-1",
     });
-    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, {
-      id: "msg-prev",
-      senderId: "peer-1",
-      content: { text: "hello" },
-      messageType: "TEXT",
-      createdAt: prev.createdAt,
-    });
+    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({
+        id: "msg-prev",
+        senderId: "peer-1",
+        content: { text: "hello" },
+        messageType: "TEXT",
+        createdAt: prev.createdAt,
+      }),
+      // Compare-and-swap on the snapshot this pass read — see
+      // lib/last-activity-guard.ts and auto-delete-last-activity-recalc.test.ts.
+      { expectLastMessageId: DELETED_ID }
+    );
   });
 
   it("deleting a MIDDLE message (not the room's current last): no-op — returns null, never touches the room snapshot", async () => {
@@ -120,7 +126,9 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
       prevMessageId: null,
       hasLastMessage: false,
     });
-    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, null);
+    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, null, {
+      expectLastMessageId: DELETED_ID,
+    });
   });
 
   it("SYSTEM MESSAGE edge case: a system-event message is a valid previous-visible candidate (system messages are allowed to become the preview, matching the send-path business rule)", async () => {
@@ -155,7 +163,8 @@ describe("PrivateMessageService.recalculateLastMessageAfterDelete (forEveryone)"
     });
     expect(roomRepo.setLastMessage).toHaveBeenCalledWith(
       ROOM,
-      expect.objectContaining({ id: "msg-system", messageType: "SYSTEM" })
+      expect.objectContaining({ id: "msg-system", messageType: "SYSTEM" }),
+      { expectLastMessageId: DELETED_ID }
     );
   });
 

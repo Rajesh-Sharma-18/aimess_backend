@@ -42,9 +42,11 @@ import {
 } from "../lib/scanner.js";
 import { logger } from "@aimess/logger";
 import {
+  PUBLIC_REJECT_REASON,
   RESOURCE_OWNER_TYPE,
   isDownloadableScanStatus,
   isMediaScanStatus,
+  type MediaPublicRejectReason,
 } from "@aimess/constants";
 import { mediaFileRepository } from "../repositories/media-file.repository.js";
 import { resolveResourceType } from "../lib/resource-type.js";
@@ -113,6 +115,12 @@ export type ConfirmUploadResult = {
   scanStatus: MediaScanStatus;
   /** Populated on CLEAN — clients can store this to reference the file. */
   fileSize?: number;
+  /**
+   * Populated on REJECTED only: the coarse, client-safe bucket the uploader is
+   * shown ("this file is damaged", "this file is not the type it claims"). The
+   * precise detector verdict stays in the audit log — see PUBLIC_REJECT_REASON.
+   */
+  reason?: MediaPublicRejectReason;
 };
 
 export type GetScanStatusParams = {
@@ -382,6 +390,9 @@ export const mediaService = {
         objectKey: params.objectKey,
         scanStatus: "REJECTED",
         fileSize: result.fileSize,
+        reason: result.rejectCode
+          ? PUBLIC_REJECT_REASON[result.rejectCode]
+          : undefined,
       };
     }
 

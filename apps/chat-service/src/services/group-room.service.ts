@@ -596,6 +596,9 @@ export class GroupRoomService {
       const isActor = room.reactionActivityActorId === userId;
       const isTarget = room.reactionActivityTargetId === userId;
       if (!isActor && !isTarget) return room;
+      const prev = room.lastMessagePreview as {
+        createdAt?: string | Date;
+      } | null;
       return {
         ...room,
         lastMessagePreview: {
@@ -605,7 +608,14 @@ export class GroupRoomService {
           senderId: "",
           senderName: "",
           messageType: "SYSTEM",
-          createdAt: room.reactionActivityAt,
+          // The canonical time, NOT `reactionActivityAt`. `buildGroupLastActivity`
+          // reads this into `lastActivity.dateTime`, which the inbox exposes as
+          // `lastActivityAt` and both the server and the client sort the list on —
+          // so stamping the reaction's own time here re-sorted the row to the top
+          // for a reaction, which is not conversation activity. Visibility is
+          // still gated on `reactionActivityAt` above; only the reported time is
+          // the room's own.
+          createdAt: prev?.createdAt ?? room.lastMessageAt,
         },
       } as T;
     });

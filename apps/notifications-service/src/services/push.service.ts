@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 import {
   DEFAULT_LOCALE,
+  parseSupportedLocale,
   runWithLocale,
   t,
   type SupportedLocale,
@@ -179,6 +180,13 @@ export interface PushInput {
 
   /** Canonical deep-link for navigation on notification click. */
   deepLink?: string;
+  /**
+   * Absolute https URL opened when a WEB notification is clicked. Separate from
+   * `deepLink` on purpose: `deepLink` is the `aimess://` scheme the native apps
+   * consume, and Web Push's `fcm_options.link` only accepts http(s) — handing it
+   * a custom scheme means the click goes nowhere.
+   */
+  webLink?: string;
   /** FCM collapse key — collapse multiple notifs for same conversation. */
   collapseKey?: string;
   /**
@@ -193,6 +201,16 @@ export interface PushInput {
    * duplicate banners when user is already viewing the conversation.
    */
   chatType?: "PERSONAL" | "GROUP" | "COMMUNITY";
+  /**
+   * Restrict delivery to these device platforms. Filters the recipient's LIVE
+   * device-token rows (one row per registered session, removed on logout /
+   * session revoke), so this targets active SESSIONS — not any stored profile
+   * or "primary device" preference. Omit for every platform.
+   *
+   * Push-only: the Notification-Center row is per-user, not per-device, and is
+   * still written.
+   */
+  platforms?: ("ANDROID" | "IOS" | "WEB")[];
   /** FCM message TTL in seconds (default 86400 = 24h). */
   ttl?: number;
   /** FCM delivery priority. Calls use 'high', messages 'normal'. */
@@ -297,6 +315,20 @@ export interface PushInput {
 }
 
 /**
+ * One notification rendered into ONE language, ready for a provider call.
+ *
+ * The unit of rendering is the DEVICE, not the user: `DeviceToken.locale` says
+ * what language the client owning that token last asked for, and five devices
+ * of one account do not have to agree. Built by `viewFor` inside `pushToUser`.
+ */
+interface PushView {
+  title: string;
+  /** Already preview-masked — never send the raw body to a provider. */
+  body: string;
+  data?: Record<string, string>;
+}
+
+/**
  * Keep only the newest VoIP token per device.
  *
  * PushKit tokens are long-lived and, unlike FCM registration tokens, a
@@ -364,8 +396,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
     actorId,
     data: rawData,
     deepLink,
+    webLink,
     collapseKey,
     apnsThreadId,
+    platforms,
     ttl,
     priority,
     bypassSettings = false,
@@ -379,9 +413,17 @@ export async function pushToUser(input: PushInput): Promise<void> {
     apnsCategory,
   } = input;
 
-  // Resolve the RECIPIENT's language before any copy is materialized. Cached in
-  // Redis alongside their notification settings, so this is the same round-trip
-  // the settings gate below already pays.
+  // The recipient's ACCOUNT language. Cached in Redis alongside their
+  // notification settings, so this is the same round-trip the settings gate
+  // below already pays.
+  //
+  // It renders the inbox row (whose stored text is only a fallback — the
+  // Notification Center re-renders from the replay ticket at read time) and it
+  // is the fallback for a device that has never told us its own language. It is
+  // NOT what the push tray uses: one account can be signed in on five devices
+  // in three languages, and this is a single account-wide column that the last
+  // session to change it overwrites for everyone. Per-device rendering happens
+  // in `viewFor` below, off `DeviceToken.locale`.
   const locale = await getUserLocale(userId).catch(() => DEFAULT_LOCALE);
   const rendered = input.copy?.(locale);
   const title = rendered?.title ?? input.title ?? "";
@@ -488,15 +530,43 @@ export async function pushToUser(input: PushInput): Promise<void> {
     }
   }
 
-  // Preview masking is a lock-screen concern — it hides the message from
-  // whoever is looking over the user's shoulder. The Notification Center is
-  // already behind the app's own auth, so the inbox row keeps the real body and
-  // only the provider payload below is masked. Title is left unchanged either way.
-  const pushBody = showPreview
-    ? body
-    : typeof showPreviewOverride === "function"
-      ? showPreviewOverride(locale)
-      : (showPreviewOverride ?? t("NOTIF_CHAT_NEW_MESSAGE", locale));
+  // One rendering of this notification, for ONE language.
+  //
+  // The tray text of a sleeping device is the only surface with no request and
+  // no socket to read a language off, so it reads `DeviceToken.locale` — the
+  // language the client that owns that token last declared. Rendering once per
+  // user (which is what this used to do) meant five sessions of one account
+  // shared whichever language was written to `AppSettings` last.
+  //
+  // Memoized because `copy` is a pure thunk over the arguments it closed over:
+  // a user with fifty devices still renders at most once per language, and
+  // `SUPPORTED_LOCALES` has three entries.
+  //
+  // Preview masking belongs in here too — it is a lock-screen concern (it hides
+  // the message from whoever is looking over the user's shoulder), and its
+  // placeholder is product copy that localizes like any other. The inbox row
+  // above keeps the real body; it is already behind the app's own auth. Title
+  // is left unmasked either way.
+  const views = new Map<SupportedLocale, PushView>();
+  const viewFor = (viewLocale: SupportedLocale): PushView => {
+    const cached = views.get(viewLocale);
+    if (cached) return cached;
+    const localized = input.copy?.(viewLocale);
+    const fullBody = localized?.body ?? input.body ?? "";
+    const view: PushView = {
+      title: localized?.title ?? input.title ?? "",
+      body: showPreview
+        ? fullBody
+        : typeof showPreviewOverride === "function"
+          ? showPreviewOverride(viewLocale)
+          : (showPreviewOverride ?? t("NOTIF_CHAT_NEW_MESSAGE", viewLocale)),
+      data: input.localizedData
+        ? { ...(rawData ?? {}), ...input.localizedData(viewLocale) }
+        : rawData,
+    };
+    views.set(viewLocale, view);
+    return view;
+  };
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
   // for chat-activity pushes (skipInbox) and for any type not on the
@@ -592,7 +662,12 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const visible = deduped.filter(
     (t) =>
       !(excludeDeviceId && t.deviceId === excludeDeviceId) &&
-      !(excludeSessionId && t.sessionId === excludeSessionId)
+      !(excludeSessionId && t.sessionId === excludeSessionId) &&
+      // Platform-targeted send (announcements): keep only the sessions running
+      // on a requested platform. Exact match, so a row with an unrecognized
+      // platform string is excluded rather than delivered to by accident.
+      (!platforms ||
+        platforms.includes(t.platform as "ANDROID" | "IOS" | "WEB"))
   );
 
   // Last line of defence against the reported symptom: a device whose session
@@ -625,8 +700,16 @@ export async function pushToUser(input: PushInput): Promise<void> {
     );
     return;
   }
+  // `locales` is the adoption meter for per-device language: `device` means the
+  // client declared one, `account` means it has not yet (older build) and fell
+  // back to the account-wide setting. A "why is this push in Vietnamese?"
+  // report is answered by this one line — no repro needed.
+  const localeSources = tokens.map((row) =>
+    parseSupportedLocale(row.locale) ? "device" : "account"
+  );
   logger.info(
-    `[push:deliver] user=${userId} type=${type} tokens=${tokens.length}`
+    `[push:deliver] user=${userId} type=${type} tokens=${tokens.length} ` +
+      `locales=${localeSources.join(",")}`
   );
 
   // If there is at least one VoIP token, CallKit will handle the call ring on
@@ -635,7 +718,14 @@ export async function pushToUser(input: PushInput): Promise<void> {
   const hasVoipToken = tokens.some((t) => t.tokenType === "VOIP");
 
   await Promise.all(
-    tokens.map(async ({ token, tokenType, platform }) => {
+    tokens.map(async ({ token, tokenType, platform, locale: deviceLocale }) => {
+      // THIS device's language, not the account's. A null column (older client)
+      // or an unsupported tag falls back to the account setting rather than to
+      // DEFAULT_LOCALE, which is `vi` in production — a fallback that flipped
+      // every pre-upgrade device to Vietnamese would be a worse bug than the
+      // one this fixes.
+      const view = viewFor(parseSupportedLocale(deviceLocale) ?? locale);
+
       // VOIP tokens are iOS PushKit tokens registered only for call ringing —
       // they must go over raw APNs, never FCM (FCM doesn't reach PushKit), and
       // ONLY for an event explicitly marked allowVoip (see PushInput docs).
@@ -659,7 +749,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
         tokenType === "VOIP"
           ? await sendVoipPush({
               token,
-              data: data ?? {},
+              data: view.data ?? {},
               ttl,
               // The VoIP channel was the one delivery path with no collapse
               // semantics at all, so a re-published ring could never replace
@@ -668,10 +758,11 @@ export async function pushToUser(input: PushInput): Promise<void> {
             })
           : await sendPush({
               token,
-              title,
-              body: pushBody,
-              data,
+              title: view.title,
+              body: view.body,
+              data: view.data,
               deepLink,
+              webLink,
               // The notification represents the CONVERSATION/COMMUNITY, so the
               // tray image is the entity's own avatar — never the actor's.
               // `communityAvatarUrl` is what community.* events carry;
@@ -696,9 +787,9 @@ export async function pushToUser(input: PushInput): Promise<void> {
               // icon, while the very same push already carried the avatar in
               // its data map for the in-app UI to use.
               imageUrl:
-                data?.communityAvatarUrl ||
-                data?.conversationAvatar ||
-                data?.callerAvatar,
+                view.data?.communityAvatarUrl ||
+                view.data?.conversationAvatar ||
+                view.data?.callerAvatar,
               collapseKey,
               apnsThreadId,
               ttl,

@@ -1,3 +1,5 @@
+import type { SupportedLocale } from "@aimess/constants";
+
 import { prisma } from "../config/prisma.js";
 
 export type DeviceTokenPlatform = "ANDROID" | "IOS" | "WEB";
@@ -11,6 +13,12 @@ export interface UpsertDeviceTokenInput {
   deviceId?: string | null;
   /** auth-service session the registering JWT belongs to (see schema.prisma). */
   sessionId?: string | null;
+  /**
+   * Push-tray language for this device, already validated against
+   * `SUPPORTED_LOCALES`. Null when the client sent nothing (older build) or an
+   * unsupported tag — the send path then falls back to the account language.
+   */
+  locale?: SupportedLocale | null;
 }
 
 export interface DeviceTokenRow {
@@ -20,6 +28,12 @@ export interface DeviceTokenRow {
   deviceId: string | null;
   /** auth-service session that registered this row; null for legacy rows. */
   sessionId: string | null;
+  /**
+   * This device's own push language. The send path renders per token from it,
+   * so five sessions of one account in three languages get three different
+   * pushes. Null = fall back to the account language (see schema.prisma).
+   */
+  locale: string | null;
   /**
    * Bumped on every re-registration and (throttled) on every accepted push, so
    * among several rows for the SAME device the largest value is the current
@@ -46,7 +60,15 @@ const TOUCH_THROTTLE_MS = 24 * 60 * 60 * 1000;
 export const deviceTokenRepository = {
   /**
    * Upsert by unique `token`. Re-registering an existing token refreshes its
-   * owner/platform/deviceId and bumps lastSeenAt (token may move between users).
+   * owner/platform/deviceId/locale and bumps lastSeenAt (token may move
+   * between users).
+   *
+   * `locale` is written UNCONDITIONALLY, including when the caller has none.
+   * The column means "what the client that currently owns this token last
+   * said", and only overwriting when a value is present would leave a previous
+   * OWNER's language on a token that moved accounts — `token` is `@unique`, so
+   * re-registration is exactly how ownership moves. A cross-user language leak
+   * is worse than an older build falling back to the account language.
    */
   async upsert(input: UpsertDeviceTokenInput): Promise<void> {
     await prisma.deviceToken.upsert({
@@ -57,6 +79,7 @@ export const deviceTokenRepository = {
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
         sessionId: input.sessionId ?? null,
+        locale: input.locale ?? null,
         lastSeenAt: new Date(),
       },
       create: {
@@ -66,6 +89,7 @@ export const deviceTokenRepository = {
         tokenType: input.tokenType,
         deviceId: input.deviceId ?? null,
         sessionId: input.sessionId ?? null,
+        locale: input.locale ?? null,
       },
     });
 
@@ -100,9 +124,31 @@ export const deviceTokenRepository = {
         platform: true,
         deviceId: true,
         sessionId: true,
+        locale: true,
         lastSeenAt: true,
       },
     });
+  },
+
+  /**
+   * Of the given users, those who have at least one live FCM registration on
+   * `platform`. A token row exists only while its session does, so this is the
+   * set of users actually reachable on that device type right now.
+   *
+   * VOIP rows are excluded: an iOS PushKit token is registered for call
+   * ringing only and can never carry a normal notification.
+   */
+  async findUserIdsWithPlatform(
+    userIds: string[],
+    platform: DeviceTokenPlatform
+  ): Promise<string[]> {
+    if (userIds.length === 0) return [];
+    const rows = await prisma.deviceToken.findMany({
+      where: { userId: { in: userIds }, platform, tokenType: "FCM" },
+      select: { userId: true },
+      distinct: ["userId"],
+    });
+    return rows.map((row) => row.userId);
   },
 
   /**

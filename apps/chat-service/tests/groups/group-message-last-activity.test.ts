@@ -69,14 +69,20 @@ describe("GroupMessageService.recalculateLastMessageAfterDelete (forEveryone)", 
       senderId: "member-1",
       senderName: "Alice",
     });
-    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, {
-      id: "msg-prev",
-      senderId: "member-1",
-      senderName: "Alice",
-      content: { text: "hello group" },
-      messageType: "TEXT",
-      createdAt: prev.createdAt,
-    });
+    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(
+      ROOM,
+      expect.objectContaining({
+        id: "msg-prev",
+        senderId: "member-1",
+        senderName: "Alice",
+        content: { text: "hello group" },
+        messageType: "TEXT",
+        createdAt: prev.createdAt,
+      }),
+      // Compare-and-swap on the snapshot this pass read — see
+      // lib/last-activity-guard.ts and auto-delete-last-activity-recalc.test.ts.
+      { expectLastMessageId: DELETED_ID }
+    );
   });
 
   it("deleting a MIDDLE message (not the room's current last): no-op — returns null, never touches the room snapshot", async () => {
@@ -122,7 +128,9 @@ describe("GroupMessageService.recalculateLastMessageAfterDelete (forEveryone)", 
       prevMessageId: null,
       hasLastMessage: false,
     });
-    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, null);
+    expect(roomRepo.setLastMessage).toHaveBeenCalledWith(ROOM, null, {
+      expectLastMessageId: DELETED_ID,
+    });
   });
 
   it("SYSTEM MESSAGE edge case: a system-event message (e.g. 'member joined') is a valid previous-visible candidate — group system lines ARE allowed to become the preview, matching the send-path business rule (GroupSystemMessageService bumps lastMessage on post)", async () => {
@@ -158,7 +166,8 @@ describe("GroupMessageService.recalculateLastMessageAfterDelete (forEveryone)", 
     });
     expect(roomRepo.setLastMessage).toHaveBeenCalledWith(
       ROOM,
-      expect.objectContaining({ id: "msg-system", messageType: "SYSTEM" })
+      expect.objectContaining({ id: "msg-system", messageType: "SYSTEM" }),
+      { expectLastMessageId: DELETED_ID }
     );
   });
 

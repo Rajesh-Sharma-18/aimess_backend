@@ -120,3 +120,63 @@ export const MEDIA_REJECT_CODES = [
   "OOXML_TYPE_MISMATCH",
 ] as const;
 export type MediaRejectCode = (typeof MEDIA_REJECT_CODES)[number];
+
+/**
+ * The CLIENT-SAFE half of the rejection vocabulary.
+ *
+ * A rejected upload used to reach the uploader as nothing but `REJECTED`, which
+ * every client can only render as "this file could not be verified" — true, and
+ * useless: the person cannot tell a renamed screenshot from a half-finished
+ * download from a file that is simply too long. These five buckets say what the
+ * user has to DO about it while still telling an attacker nothing they did not
+ * already know by submitting the file: which detector fired, at what threshold,
+ * at which offset, and under which engine all stay in {@link MediaRejectCode},
+ * the audit log, and `MediaFile.scanDetail`.
+ *
+ *   FORMAT_MISMATCH — the bytes are not the type the file claims to be.
+ *   FILE_DAMAGED    — right type, but truncated or structurally broken.
+ *   TOO_LARGE       — over a limit: bytes, dimensions, pixels, frames, duration.
+ *   UNSAFE_CONTENT  — refused on safety grounds (archive tricks, hidden payload).
+ *   FILE_EMPTY      — no bytes at all.
+ */
+export const MEDIA_PUBLIC_REJECT_REASONS = [
+  "FORMAT_MISMATCH",
+  "FILE_DAMAGED",
+  "TOO_LARGE",
+  "UNSAFE_CONTENT",
+  "FILE_EMPTY",
+] as const;
+export type MediaPublicRejectReason =
+  (typeof MEDIA_PUBLIC_REJECT_REASONS)[number];
+
+/**
+ * Internal reject code → the bucket the uploader is told about. Exhaustive by
+ * type: a new {@link MediaRejectCode} does not compile until it is classified,
+ * so nothing can silently fall back to the vague verdict this table exists to
+ * replace.
+ */
+export const PUBLIC_REJECT_REASON: Record<
+  MediaRejectCode,
+  MediaPublicRejectReason
+> = {
+  SIGNATURE_MISMATCH: "FORMAT_MISMATCH",
+  OOXML_TYPE_MISMATCH: "FORMAT_MISMATCH",
+  MALFORMED_CONTAINER: "FILE_DAMAGED",
+  TRUNCATED: "FILE_DAMAGED",
+  ZIP_INVALID_STRUCTURE: "FILE_DAMAGED",
+  SIZE_EXCEEDED: "TOO_LARGE",
+  DIMENSIONS_EXCEEDED: "TOO_LARGE",
+  PIXELS_EXCEEDED: "TOO_LARGE",
+  FRAMES_EXCEEDED: "TOO_LARGE",
+  DURATION_EXCEEDED: "TOO_LARGE",
+  ZIP_ENTRY_COUNT_EXCEEDED: "TOO_LARGE",
+  // Bytes after the format's own end marker are how a polyglot hides a second
+  // file inside a valid one — a safety verdict, not a damaged-file verdict.
+  TRAILING_DATA: "UNSAFE_CONTENT",
+  SUSPICIOUS_CONTENT: "UNSAFE_CONTENT",
+  ZIP_BOMB_DETECTED: "UNSAFE_CONTENT",
+  ZIP_NESTED_ARCHIVE: "UNSAFE_CONTENT",
+  ZIP_PATH_TRAVERSAL: "UNSAFE_CONTENT",
+  ZIP_ENCRYPTED_ENTRY: "UNSAFE_CONTENT",
+  EMPTY: "FILE_EMPTY",
+};

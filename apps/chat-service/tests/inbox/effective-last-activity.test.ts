@@ -145,7 +145,7 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
     expect(row.lastActivityAt).toBe(0);
   });
 
-  it("a reaction made AFTER the clear still previews (the row has genuinely new activity)", async () => {
+  it("a reaction made AFTER the clear still previews, but never advances the row's timestamp", async () => {
     const reactedAt = new Date("2026-08-10T10:12:00.000Z");
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       privateRoom({
@@ -166,7 +166,13 @@ describe("PRIVATE conversation list — effective lastActivity", () => {
 
     const row = res.body.data.data[0];
     expect(row.lastActivity.preview).toBe('You reacted 🔥 to "How are you?"');
-    expect(row.lastActivity.dateTime).toBe(reactedAt.getTime());
+    // The overlay replaces the PREVIEW TEXT and nothing else. `dateTime` is what
+    // the inbox exposes as `lastActivityAt` and what both the server and the
+    // client order the list by, so a reaction — which is not conversation
+    // activity — must leave it exactly where it was. Here the viewer cleared the
+    // chat, so "where it was" is 0.
+    expect(row.lastActivity.dateTime).toBe(0);
+    expect(reactedAt.getTime()).toBeGreaterThan(0);
   });
 
   it("viewer hid EVERY message: lastActivityAt 0, empty preview", async () => {

@@ -1015,7 +1015,12 @@ export class PrivateRoomService {
           lastActivity.preview = isActor
             ? (room.reactionActivityActorPreview ?? "")
             : (room.reactionActivityTargetPreview ?? "");
-          lastActivity.dateTime = room.reactionActivityAt.getTime();
+          // `dateTime` deliberately keeps the canonical value: the overlay
+          // replaces the row's PREVIEW TEXT and nothing else (the same rule
+          // GroupRoomService.applyReactionOverlay already states). The inbox is
+          // ordered off this timestamp, and a reaction is not conversation
+          // activity — advancing it re-sorted the row to the top of the list on
+          // every reaction and on every refetch after one.
           // The overlay is an ACTIVITY LINE, not a message — clear the message
           // identity so a client merging by identity never mistakes it for an
           // edit of whatever message it is temporarily covering.
