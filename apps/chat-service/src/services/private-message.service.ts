@@ -82,6 +82,7 @@ import {
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
 import {
   resolveForEveryoneOverrides,
+  resolveEffectiveLastLosers,
   deletedWasEffectiveLast,
   type RecipientOverride,
 } from "./last-visible-resolver.js";
@@ -1285,6 +1286,27 @@ export class PrivateMessageService {
       privateVisibilitySource(this.messageRepo),
       roomId,
       sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
+  /**
+   * Counterpart of {@link resolveForEveryoneOverrides} for the case where the
+   * delete-for-everyone did NOT move the shared snapshot: the participant whose own
+   * effective last visible message was nonetheless the removed one (they had
+   * hidden everything newer). See `resolveEffectiveLastLosers`.
+   */
+  async resolveEffectiveLastLosers(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    return resolveEffectiveLastLosers(
+      privateVisibilitySource(this.messageRepo),
+      roomId,
+      room?.lastMessageId ?? null,
+      deletedMessageCreatedAt,
       recipientIds
     );
   }

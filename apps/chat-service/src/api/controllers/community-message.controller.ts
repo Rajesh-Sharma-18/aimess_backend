@@ -30,6 +30,7 @@ import {
   bumpTimestampAfterDelete,
 } from "../../events/community-last-activity.js";
 import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
+import { publishCommunityEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
 import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
 import { getCommunityReconcileClient } from "../../grpc/community.client.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
@@ -885,7 +886,25 @@ export class CommunityMessageController {
         roomId,
         deletedMessageId
       );
-      if (recalc === null) return;
+      if (recalc === null) {
+        // The SHARED snapshot did not move — but a member who had personally
+        // hidden everything newer than the removed message was previewing IT.
+        // See events/publish-effective-last-loss.ts. (`removedAt` is absent only
+        // for the pin-retraction caller, which has no per-member window.)
+        if (removedAt) {
+          await publishCommunityEffectiveLastLoss({
+            redis: this.redis,
+            communityId: roomId,
+            roomId,
+            memberIds: () => this.service.getActiveMemberIds(roomId),
+            deletedMessageId,
+            deletedMessageCreatedAt: removedAt,
+            resolveLosers: (rid, at, ids) =>
+              this.service.resolveEffectiveLastLosers(rid, at, ids),
+          });
+        }
+        return;
+      }
 
       // Persist the ROLLED-BACK activity (previous visible message's own
       // timestamp, or the empty state) — see events/community-last-activity.ts.

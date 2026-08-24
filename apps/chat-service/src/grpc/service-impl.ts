@@ -28,6 +28,7 @@ import {
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
+import { publishCommunityEffectiveLastLoss } from "../events/publish-effective-last-loss.js";
 import {
   convertMessageToPreview,
   buildPushPreview,
@@ -3870,6 +3871,26 @@ export function createCommunityImpl(
                 communityId: req.communityId,
                 recalc: forEveryoneRecalc,
                 removedAt: result?.createdAt,
+              });
+            } else if (result?.createdAt) {
+              // The SHARED snapshot did not move — but a member who had hidden
+              // everything newer than the removed message was previewing IT.
+              // See events/publish-effective-last-loss.ts.
+              const lRoomId = result.roomId;
+              await publishCommunityEffectiveLastLoss({
+                redis,
+                communityId: req.communityId,
+                roomId: lRoomId,
+                memberIds: () =>
+                  deps.communityMessageService.getActiveMemberIds(lRoomId),
+                deletedMessageId: req.messageId,
+                deletedMessageCreatedAt: result.createdAt,
+                resolveLosers: (rid, at, ids) =>
+                  deps.communityMessageService.resolveEffectiveLastLosers(
+                    rid,
+                    at,
+                    ids
+                  ),
               });
             }
           }

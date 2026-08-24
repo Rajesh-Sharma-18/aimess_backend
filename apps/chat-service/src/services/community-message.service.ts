@@ -77,6 +77,7 @@ import {
 import {
   resolveVisibleLastBulk,
   resolveForEveryoneOverrides,
+  resolveEffectiveLastLosers,
   deletedWasEffectiveLast,
   type VisibilitySource,
   type RecipientOverride,
@@ -915,6 +916,27 @@ export class CommunityMessageService {
       this.visibilitySource(),
       roomId,
       sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
+  /**
+   * Counterpart of {@link resolveForEveryoneOverrides} for the case where the
+   * delete-for-everyone did NOT move the shared snapshot: the members whose own
+   * effective last visible message was nonetheless the removed one (they had
+   * hidden everything newer). See `resolveEffectiveLastLosers`.
+   */
+  async resolveEffectiveLastLosers(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    const room = await this.roomRepo.findRoomById(roomId);
+    return resolveEffectiveLastLosers(
+      this.visibilitySource(),
+      roomId,
+      room?.lastMessageId ?? null,
+      deletedMessageCreatedAt,
       recipientIds
     );
   }

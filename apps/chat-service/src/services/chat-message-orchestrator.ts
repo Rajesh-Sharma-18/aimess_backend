@@ -15,6 +15,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishConvEffectiveLastLoss } from "../events/publish-effective-last-loss.js";
 import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
@@ -1082,7 +1083,39 @@ export class ChatMessageOrchestrator {
             );
       void recalcPromise
         .then((recalc) => {
-          if (recalc === null) return; // not the last message — no-op
+          if (recalc === null) {
+            // The SHARED snapshot did not move — but a member who had hidden
+            // everything newer than the removed message was previewing IT.
+            // See events/publish-effective-last-loss.ts.
+            return publishConvEffectiveLastLoss({
+              redis: this.redis,
+              type: conversationType,
+              roomId: rId,
+              recipientIds: () =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.getActiveMemberIds(rId)
+                  : Promise.resolve(
+                      [
+                        result.senderId ?? params.userId,
+                        result.receiverId ?? "",
+                      ].filter(Boolean) as string[]
+                    ),
+              deletedMessageCreatedAt: result.createdAt,
+              resolveLosers: (rid, at, ids) =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.resolveEffectiveLastLosers(
+                      rid,
+                      at,
+                      ids
+                    )
+                  : this.privateMessageService.resolveEffectiveLastLosers(
+                      rid,
+                      at,
+                      ids
+                    ),
+              projectionRevision: result.revision ?? 0,
+            });
+          }
           const preview = buildMessagePreview(
             recalc.messageType,
             recalc.content

@@ -15,6 +15,7 @@ import {
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
+import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
 import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
 import {
   autoDeleteWireFields,
@@ -524,7 +525,20 @@ export class GroupMessageController {
       void this.messageService
         .recalculateLastMessageAfterDelete(rId, messageId)
         .then((recalc) => {
-          if (recalc === null) return; // not the last message — no-op
+          if (recalc === null) {
+            // The SHARED snapshot did not move — but a member who had hidden
+            // everything newer than the removed message was previewing IT.
+            // See events/publish-effective-last-loss.ts.
+            return publishConvEffectiveLastLoss({
+              redis: this.redis,
+              type: "GROUP",
+              roomId: rId,
+              recipientIds: () => this.messageService.getActiveMemberIds(rId),
+              deletedMessageCreatedAt: result.createdAt,
+              resolveLosers: (rid, at, ids) =>
+                this.messageService.resolveEffectiveLastLosers(rid, at, ids),
+            });
+          }
           const preview = buildMessagePreview(
             recalc.messageType,
             recalc.content
