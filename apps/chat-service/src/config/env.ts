@@ -117,7 +117,7 @@ const envSchema = z.object({
     .string()
     .min(1)
     .default("devsecretchangeme_at_least_32_chars_long"),
-  LIVEKIT_TOKEN_TTL: z.coerce.number().positive().default(3600),
+  LIVEKIT_TOKEN_TTL: z.coerce.number().positive().default(10800),
 
   // Ringing timeout: a Call left in RINGING for longer than this flips to
   // MISSED via a periodic sweep. Multi-node safe (atomic updateMany).
@@ -189,7 +189,7 @@ const envSchema = z.object({
   // sending `call:end` (crash, force-kill, dead network) leaves the row active
   // forever and BOTH participants are permanently "busy" — no future call can
   // be placed. Defaults to LIVEKIT_TOKEN_TTL: media cannot outlive its token.
-  CALL_MAX_DURATION_SEC: z.coerce.number().positive().default(3600),
+  CALL_MAX_DURATION_SEC: z.coerce.number().positive().default(10800),
 });
 
 const parsed = envSchema.safeParse(process.env);
