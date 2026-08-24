@@ -206,9 +206,20 @@ export async function sendPush({
         priority: androidPriority,
         ttl: ttl * 1000,
         ...(collapseKey ? { collapseKey } : {}),
-        ...(omitNotification || !image
+        // OS-drawn Android card MUST name its channel. Without `channelId` FCM
+        // falls back to `fcm_fallback_notification_channel` (low importance,
+        // silent) — a CALL_MISSED banner then never surfaces. The only
+        // OS-drawn call push today is CALL_MISSED (carved out above), which
+        // belongs on the CALLS channel; every other call-related push is
+        // data-only and rendered by the app on its own channel.
+        ...(omitNotification
           ? {}
-          : { notification: { imageUrl: image } }),
+          : {
+              notification: {
+                ...(kind === "CALL_MISSED" ? { channelId: "calls" } : {}),
+                ...(image ? { imageUrl: image } : {}),
+              },
+            }),
       },
 
       // ── APNs (iOS) ───────────────────────────────────────────────────────

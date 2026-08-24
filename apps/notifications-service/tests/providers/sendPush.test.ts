@@ -110,6 +110,37 @@ describe("sendPush — platform collapse/grouping headers", () => {
     expect(arg.webpush.headers.Topic).toBe(oversized);
   });
 
+  // Regression guard for the Android missed-call: without `channelId`, FCM falls
+  // back to the silent low-importance channel and the user never sees or hears it.
+  it("stamps channelId=calls on the CALL_MISSED Android notification block", async () => {
+    await sendPush({
+      token: "tok1",
+      title: "Missed call",
+      body: "from Alice",
+      platform: "ANDROID",
+      collapseKey: "call:missed:call123",
+      data: { type: "CALL_MISSED", callId: "call123" },
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.android.notification.channelId).toBe("calls");
+  });
+
+  it("does not stamp channelId on non-CALL_MISSED Android notifications", async () => {
+    await sendPush({
+      token: "tok1",
+      title: "Alice",
+      body: "hi",
+      platform: "ANDROID",
+      // A generic MESSAGE goes data-only on Android (androidOwnsRendering), so
+      // notification block is omitted entirely — no channelId to check.
+      data: { type: "MESSAGE" },
+    });
+
+    const arg = sendMock.mock.calls[0][0];
+    expect(arg.android.notification).toBeUndefined();
+  });
+
   it("keeps a key exactly at the 64-byte boundary", async () => {
     const exact = "y".repeat(64);
 
