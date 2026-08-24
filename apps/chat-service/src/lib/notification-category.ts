@@ -74,6 +74,38 @@ const SYSTEM_VERBATIM = [
   "UPDATE_REQUIRED",
 ] as const;
 
+/**
+ * Super-Admin announcement. ONE verbatim type, published by
+ * `notifications-service/consumers/announcement.consumer.ts` from the
+ * backoffice announcement pipeline (`kind: "ANNOUNCEMENT"`).
+ */
+export const ANNOUNCEMENT_TYPE = "ANNOUNCEMENT";
+
+/**
+ * Explicit row category on the wire (`NotificationDTO.category`).
+ *
+ * This is a SUPERSET of the tab enum: an announcement is reported as
+ * "Announcement" so clients pick its glyph from an explicit server field
+ * instead of pattern-matching the title/body. Tab FILTERING and the per-tab
+ * counts still run off `categoryWhere()`, which is keyed on `type` — an
+ * announcement therefore still lists and counts under the SYSTEM tab.
+ */
+export const ANNOUNCEMENT_ROW_CATEGORY = "Announcement";
+
+export type NotificationRowCategory =
+  | Exclude<NotificationCategory, "ALL">
+  | typeof ANNOUNCEMENT_ROW_CATEGORY;
+
+/**
+ * Wire category for a stored row. Announcements are named explicitly; every
+ * other type falls through to the tab bucket, unchanged.
+ */
+export function rowCategory(type: string): NotificationRowCategory {
+  return type === ANNOUNCEMENT_TYPE
+    ? ANNOUNCEMENT_ROW_CATEGORY
+    : categorize(type);
+}
+
 export function parseCategory(raw: unknown): NotificationCategory {
   if (typeof raw !== "string") return "ALL";
   const up = raw.toUpperCase();

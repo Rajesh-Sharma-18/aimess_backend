@@ -54,6 +54,11 @@ message NotificationDto {
   int64  updated_at         = 10;
   int32  version            = 11;
   string group_key          = 12;
+  // Explicit row category (serializeNotification DTO): FRIENDS | COMMUNITIES |
+  // MENTIONS | CALLS | SYSTEM | Announcement. Declared here because proto drops
+  // unknown fields — without it the socket `notifications:fetch` ack served a
+  // row with no category while REST and `notification:new` both carried one.
+  string category           = 14;
 }
 message MarkNotificationsReadRequest {
   string          user_id          = 1;

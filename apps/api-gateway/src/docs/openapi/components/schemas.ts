@@ -9573,6 +9573,24 @@ export const openApiSchemas = {
       "Notification Center tab. ALL means no filter (also the default). " +
       "The non-ALL buckets are disjoint, so their unread counts sum to ALL's.",
   },
+  NotificationRowCategory: {
+    type: "string",
+    enum: [
+      "FRIENDS",
+      "COMMUNITIES",
+      "MENTIONS",
+      "CALLS",
+      "SYSTEM",
+      "Announcement",
+    ],
+    description:
+      "Explicit category of a notification ROW (response only — not accepted " +
+      "as a filter value). A superset of the tab enum: a Super-Admin " +
+      "announcement (`type: ANNOUNCEMENT`) reports `Announcement` so clients " +
+      "select its icon from this field instead of inspecting the title/body. " +
+      "Tab filtering and the per-tab counts are keyed on `type`, so an " +
+      "announcement is still listed and counted under the SYSTEM tab.",
+  },
   NotificationActorBlock: {
     type: "object",
     properties: {
@@ -9624,7 +9642,7 @@ export const openApiSchemas = {
     properties: {
       id: { type: "string" },
       type: { $ref: "#/components/schemas/NotificationType" },
-      category: { $ref: "#/components/schemas/NotificationCategory" },
+      category: { $ref: "#/components/schemas/NotificationRowCategory" },
       title: { type: "string" },
       body: { type: "string" },
       isRead: { type: "boolean" },

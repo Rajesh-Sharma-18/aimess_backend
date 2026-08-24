@@ -12,9 +12,9 @@ import {
 import type { Notification } from "../generated/prisma/index.js";
 
 import {
-  categorize,
   LOGIN_DETECTED_TYPE,
-  type NotificationCategory,
+  rowCategory,
+  type NotificationRowCategory,
 } from "./notification-category.js";
 import {
   resolveNotificationFriendship,
@@ -35,10 +35,14 @@ export interface NotificationDTO {
   id: string;
   type: string;
   /**
-   * Derived from `type` by `categorize()` — never stored. Typed off that
-   * function so a new tab cannot be added without this DTO following it.
+   * Explicit row category, derived from `type` by `rowCategory()` — never
+   * stored. A superset of the tab enum: a Super-Admin announcement reports
+   * "Announcement" so clients can pick its glyph from this field instead of
+   * pattern-matching the title/body. Tab filtering and the per-tab counts run
+   * off `categoryWhere()` (keyed on `type`), so an announcement still lists
+   * and counts under SYSTEM.
    */
-  category: Exclude<NotificationCategory, "ALL">;
+  category: NotificationRowCategory;
   /** Null when the body already carries the subject — the client renders no heading. */
   title: string | null;
   body: string;
@@ -459,7 +463,7 @@ export async function serializeNotification(
   return {
     id: row.id,
     type: row.type,
-    category: categorize(row.type),
+    category: rowCategory(row.type),
     title,
     body,
     isRead: row.isRead,
