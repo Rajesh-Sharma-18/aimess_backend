@@ -8937,6 +8937,53 @@ export const communityService = {
       logger.info(
         `Community moderation status changed: community=${communityId} status=${String(target)} actor=${actorAdminId ?? "unknown"}`
       );
+
+      // Broadcast to connected clients so the closed/reopened banner flips
+      // without a refresh — same pattern the owner-close/reopen paths use.
+      // Fire-and-forget; a broadcast failure must not roll back the DB write.
+      void (async () => {
+        try {
+          const memberIds =
+            await communityRepository.findActiveMemberIds(communityId);
+          if (target === CommunityModerationStatus.SUSPENDED) {
+            const payload: CommunityClosedPayload = {
+              communityId,
+              status: "CLOSED",
+              closedAt: result.closedAt || Date.now(),
+              reason: reasonCode ?? "ADMIN_SUSPENDED",
+            };
+            await publishCommunityRoomEvent(
+              redis,
+              communityId,
+              "community:closed",
+              payload
+            );
+            await Promise.allSettled(
+              memberIds.map((mid) =>
+                publishChatUserEvent(redis, mid, "community:closed", payload)
+              )
+            );
+          } else {
+            const payload = { communityId };
+            await publishCommunityRoomEvent(
+              redis,
+              communityId,
+              "community:reopened",
+              payload
+            );
+            await Promise.allSettled(
+              memberIds.map((mid) =>
+                publishChatUserEvent(redis, mid, "community:reopened", payload)
+              )
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `community:${target === CommunityModerationStatus.SUSPENDED ? "closed" : "reopened"} broadcast failed for community=${communityId}: ${String(err)}`
+          );
+        }
+      })();
+
       // Force-end every live stream in this community on suspension. Same
       // rationale as the owner-triggered close/delete paths — a live broadcast
       // in a suspended community would keep publishing on a still-valid token.

@@ -693,57 +693,15 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       req.userIds = reportedIds;
     }
 
-    // 2b. Status filter (admin_db-aware). auth-service's own `AuthUser.status`
-    //    column is authoritative ONLY for ACTIVE/DELETED — no admin flow (ban,
-    //    suspend, unban) ever writes BANNED/SUSPENDED there (see
-    //    resolveModerationStatus). Forwarding a BANNED/SUSPENDED filter straight
-    //    through would either match nothing (auth never sets it) or, for
-    //    ACTIVE, silently include mirror-banned users whose live status is
-    //    still ACTIVE — exactly the reported bug. Resolve against the
-    //    UserIndex mirror instead of trusting the live column for that case.
-    let statusPostFilter: Set<UserStatus> | null = null;
+    // 2b. Status filter. auth-service's `AuthUser.status` is the source of
+    //     truth — the ban/suspend/unban flows in account-ban.service write
+    //     it directly. Just forward. BANNED implies SUSPENDED too (UI ban
+    //     filter covers both, matching deriveModerationStatus).
     if (query.status && query.status.length > 0) {
-      const wantsBanned = query.status.some(
-        (s) => s === "BANNED" || s === "SUSPENDED"
-      );
-      const reliable = query.status.filter(
-        (s) => s === "ACTIVE" || s === "DELETED"
-      );
-
-      if (wantsBanned && reliable.length === 0) {
-        // BANNED-only filter: the mirror is the only place this is ever true.
-        const bannedIds = await this.mirrorIdsByStatus(["BANNED", "SUSPENDED"]);
-        const constrained = req.userIds
-          ? bannedIds.filter((id) => req.userIds!.includes(id))
-          : bannedIds;
-        if (constrained.length === 0) {
-          // No user matches this filter → empty page (skip the auth round-trip).
-          return {
-            data: [],
-            pagination: this.offsetMeta(page, limit, 0, 0, offset),
-          };
-        }
-        req.userIds = constrained;
-        // Deliberately NOT forwarding status=BANNED/SUSPENDED to auth — its own
-        // status column would never match and zero out this otherwise-correct
-        // id constraint.
-      } else if (!wantsBanned && reliable.length > 0) {
-        req.status = reliable;
-        if (reliable.includes("ACTIVE")) {
-          const bannedIds = await this.mirrorIdsByStatus([
-            "BANNED",
-            "SUSPENDED",
-          ]);
-          if (bannedIds.length > 0) req.excludeUserIds = bannedIds;
-        }
-      } else {
-        // Mixed selection (e.g. ACTIVE+BANNED together) — auth's status column
-        // can't express that combination reliably in one query. Leave it
-        // unfiltered upstream and narrow the page after resolving each row's
-        // true (mirror-aware) status below — bounded to this page, not the
-        // whole table, same documented approximation as reports=none above.
-        statusPostFilter = new Set(query.status);
-      }
+      const expanded = query.status.includes("BANNED")
+        ? [...new Set([...query.status, "SUSPENDED" as UserStatus])]
+        : query.status;
+      req.status = expanded;
     }
 
     // 3. Identity list from auth-service.
@@ -793,18 +751,7 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       };
     });
 
-    // 5. Mixed status selection (see 2b): narrow to the resolved status set.
-    if (statusPostFilter) {
-      const before = data.length;
-      data = data.filter((d) => statusPostFilter!.has(d.status));
-      if (data.length !== before) {
-        logger.warn(
-          "status: mixed selection narrowed client-side; pagination total is approximate"
-        );
-      }
-    }
-
-    // 6. `none` bucket: drop rows that actually have reports (see note above).
+    // 5. `none` bucket: drop rows that actually have reports (see note above).
     const pageTotal = total;
     if (query.reports === "none") {
       const before = data.length;

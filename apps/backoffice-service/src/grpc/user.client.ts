@@ -59,6 +59,8 @@ const notFoundIsBenign = {
 };
 
 // Admin Panel: batch profile enrichment + single-profile fetch from user-service.
+// Batch calls resolve many user IDs in one DB round-trip; the default 2s breaker
+// timeout is too tight for pages with dozens of distinct actors — bump to 8s.
 export const adminGetProfilesByIdsBreaker: Breaker<
   { userIds: string[] },
   RawAdminProfilesResponse
@@ -66,7 +68,8 @@ export const adminGetProfilesByIdsBreaker: Breaker<
   call<{ userIds: string[] }, RawAdminProfilesResponse>(
     "adminGetProfilesByIds",
     args
-  )
+  ),
+  { timeout: 8000 }
 );
 
 export const adminGetProfileBreaker: Breaker<

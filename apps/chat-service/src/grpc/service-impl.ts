@@ -2354,8 +2354,15 @@ export function createMessagingImpl(
               const content = (m.content ?? {}) as {
                 text?: string;
                 files?: unknown[];
+                sticker?: Record<string, unknown>;
               };
-              const files = Array.isArray(content.files) ? content.files : [];
+              const baseFiles = Array.isArray(content.files) ? content.files : [];
+              // Stickers live in content.sticker (outside files[]) — fold it in
+              // so the admin transcript can render it via the shared attachment
+              // view; presign URL is already resolved on read.
+              const files = content.sticker
+                ? [...baseFiles, content.sticker]
+                : baseFiles;
               const firstFile = files[0] as Record<string, unknown> | undefined;
               const str = (v: unknown): string =>
                 typeof v === "string" ? v : "";
@@ -3229,8 +3236,25 @@ export function createCommunityImpl(
           const nextCursor = page.nextCursor ?? "";
           const hasMore = page.hasMore;
 
+          // content.sticker is not resolved by community toWire (unlike group's
+          // enrichForWire path); presign each here so the admin panel gets a
+          // usable download URL alongside the folded attachments entry.
+          const stickerFor = async (
+            m: Record<string, unknown>,
+          ): Promise<Record<string, unknown> | null> => {
+            const raw = (m.content as { sticker?: Record<string, unknown> } | undefined)
+              ?.sticker;
+            if (!raw || typeof raw !== "object") return null;
+            const key = fileMediaKey(raw as MediaFileLike);
+            const url = key ? await resolveMediaUrl(key) : "";
+            return url ? { ...raw, url } : raw;
+          };
+          const stickers = await Promise.all(
+            messages.map((m) => stickerFor(m as unknown as Record<string, unknown>)),
+          );
+
           callback(null, {
-            messages: messages.map((m) => ({
+            messages: messages.map((m, idx) => ({
               messageId: m.id,
               roomId: m.roomId,
               senderId: m.sentBy,
@@ -3246,9 +3270,12 @@ export function createCommunityImpl(
                   : undefined;
                 return (att?.url as string) ?? (att?.objectKey as string) ?? "";
               })(),
-              attachmentsJson: Array.isArray(m.attachments)
-                ? JSON.stringify(m.attachments)
-                : "[]",
+              attachmentsJson: (() => {
+                const base = Array.isArray(m.attachments) ? m.attachments : [];
+                const sticker = stickers[idx];
+                const merged = sticker ? [...base, sticker] : base;
+                return JSON.stringify(merged);
+              })(),
               reactionsJson: JSON.stringify(m.reactions ?? []),
               quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:

@@ -289,7 +289,14 @@ export function startUserGrpcServer(): grpc.Server {
     ) => {
       void (async () => {
         try {
-          const { userIds } = call.request;
+          // Callers batch ids straight off their own rows, and not every one is
+          // a user id: `user.login_failed` audit rows carry the attempted
+          // USERNAME as targetId. `userId` is a uuid column, so a single
+          // non-uuid entry fails the whole `IN (…)` query and every profile in
+          // the batch comes back unresolved. Drop them here instead.
+          const userIds = [...new Set(call.request.userIds ?? [])].filter(
+            (id) => UUID_RE.test(id)
+          );
           const rows =
             await userProfileRepository.adminGetProfilesByIds(userIds);
           callback(null, { profiles: rows.map(toAdminProfileRecord) });

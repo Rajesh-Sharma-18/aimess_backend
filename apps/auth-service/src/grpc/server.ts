@@ -175,6 +175,36 @@ const authImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Admin Panel: users with a live session on the given device type(s).
+  adminListUserIdsByDeviceType: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          deviceTypes?: string[];
+          limit?: number;
+          offset?: number;
+        };
+
+        const { userIds, total } =
+          await adminUsersRepository.adminListUserIdsByDeviceType({
+            deviceTypes: req.deviceTypes ?? [],
+            limit: req.limit ?? 0,
+            offset: req.offset ?? 0,
+          });
+
+        callback(null, { userIds, total });
+      } catch (err) {
+        logger.error(
+          `gRPC adminListUserIdsByDeviceType error: ${String(err)}`
+        );
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
   // Admin Panel: fetch a single real user by id.
   adminGetUser: (
     call: grpc.ServerUnaryCall<unknown, unknown>,

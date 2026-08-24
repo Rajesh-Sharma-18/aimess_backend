@@ -143,6 +143,19 @@ export const adminListUsersBreaker: Breaker<
   call<AdminListUsersRequest, RawAdminListUsersResponse>("adminListUsers", args)
 );
 
+// Announcements: users holding a live session on the targeted device type(s).
+export const adminListUserIdsByDeviceTypeBreaker: Breaker<
+  { deviceTypes: string[]; limit: number; offset: number },
+  { userIds?: string[]; total?: string | number }
+> = makeBreaker(
+  "auth.adminListUserIdsByDeviceType",
+  (args: { deviceTypes: string[]; limit: number; offset: number }) =>
+    call<
+      { deviceTypes: string[]; limit: number; offset: number },
+      { userIds?: string[]; total?: string | number }
+    >("adminListUserIdsByDeviceType", args)
+);
+
 // Treat gRPC NOT_FOUND as benign so opossum re-throws the original ServiceError
 // (with `.code`) instead of masking it via the makeBreaker fallback — lets the
 // repo map a missing user to null (→ 404) rather than a generic 5xx. A real
@@ -235,6 +248,19 @@ export const authClient = {
   ): Promise<{ users: AdminUserRecord[]; total: number }> {
     const r = await adminListUsersBreaker.fire(req);
     return { users: r.users ?? [], total: Number(r.total) };
+  },
+  /**
+   * Users with at least one live (non-revoked) session on the given device
+   * types. Empty `deviceTypes` means every type. Used to resolve the audience
+   * of a device-targeted announcement.
+   */
+  async adminListUserIdsByDeviceType(args: {
+    deviceTypes: string[];
+    limit: number;
+    offset: number;
+  }): Promise<{ userIds: string[]; total: number }> {
+    const r = await adminListUserIdsByDeviceTypeBreaker.fire(args);
+    return { userIds: r.userIds ?? [], total: Number(r.total ?? 0) };
   },
   // NOT_FOUND rejects the breaker; the repo layer catches and maps to null.
   async adminGetUser(userId: string): Promise<AdminUserRecord> {

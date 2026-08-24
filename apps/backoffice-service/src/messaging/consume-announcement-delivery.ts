@@ -33,6 +33,21 @@ async function fetchRecipientPage(
   data: AnnouncementDeliverMessage
 ): Promise<string[]> {
   if (data.target === "ALL") {
+    // Device-targeted: the audience IS the set of people signed in on that
+    // device type right now, resolved from auth-service's `sessions` table —
+    // the same source GET /auth/sessions renders for the user. Filtering the
+    // whole user base later (by push-token platform) is not equivalent: it
+    // reaches only users who registered a push token, and it still hands the
+    // announcement to everyone else's Notification Center.
+    if (data.deviceType !== "ALL") {
+      const { userIds } = await authClient.adminListUserIdsByDeviceType({
+        deviceTypes: [data.deviceType],
+        limit: data.limit,
+        offset: data.cursor,
+      });
+      return userIds;
+    }
+
     const { users } = await authClient.adminListUsers({
       status: ["ACTIVE"],
       limit: data.limit,

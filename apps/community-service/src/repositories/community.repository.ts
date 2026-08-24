@@ -26,6 +26,7 @@ import {
   buildCommunitySearchFilter,
   normalizeForSearch,
 } from "../lib/community-search.util.js";
+import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
 
 /**
  * A rejoin deletes the previous cycle's `CommunityMemberMute` row, but that row
@@ -412,8 +413,14 @@ export const communityRepository = {
    * a slug must be resolved before filtering. Returns null when no match.
    */
   async findActiveCategoryBySlugOrId(slugOrId: string) {
+    // Mongo `id` is ObjectId — passing a non-24-hex string throws
+    // "Malformed ObjectID". Only include the id branch when the token
+    // is actually an ObjectId; otherwise slug-only.
+    const isObjectId = /^[a-f0-9]{24}$/i.test(slugOrId);
     const row = await prisma.communityCategory.findFirst({
-      where: { OR: [{ id: slugOrId }, { slug: slugOrId }] },
+      where: isObjectId
+        ? { OR: [{ id: slugOrId }, { slug: slugOrId }] }
+        : { slug: slugOrId },
       select: { id: true },
     });
     return row?.id ?? null;
@@ -2036,15 +2043,27 @@ export const communityRepository = {
       where.type = params.type;
     }
 
-    // moderationStatus is unset on legacy rows → treat missing as ACTIVE. The
-    // generated enum filter has no `isSet` (the field is non-optional with a
-    // default), so we match "ACTIVE-or-missing" as `not: SUSPENDED` — Mongo's
-    // `$ne` matches absent fields too, so this also covers legacy rows. CLOSED is
-    // the exact SUSPENDED match.
+    // ACTIVE-or-missing → `not: SUSPENDED` (Mongo `$ne` also matches unset
+    // legacy rows). Owner-banned close leaves moderationStatus=ACTIVE and only
+    // writes statusClosedReasonCode=ADMIN_BANNED — the admin UI renders those
+    // as Closed, so filter both axes. Top-level NOT is the reliable Prisma
+    // Mongo form for "!= X including unset"; positional `{ not: X }` on
+    // optional scalars has edge cases. Wrapped in AND so it composes with the
+    // search OR below without colliding.
     if (params.status === "ACTIVE") {
-      where.moderationStatus = { not: CommunityModerationStatus.SUSPENDED };
+      where.AND = [
+        { moderationStatus: { not: CommunityModerationStatus.SUSPENDED } },
+        { NOT: { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED } },
+      ];
     } else if (params.status === "CLOSED") {
-      where.moderationStatus = CommunityModerationStatus.SUSPENDED;
+      where.AND = [
+        {
+          OR: [
+            { moderationStatus: CommunityModerationStatus.SUSPENDED },
+            { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED },
+          ],
+        },
+      ];
     }
 
     // Category filter accepts slug OR id; resolve to the stored categoryId.
