@@ -1,6 +1,7 @@
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError } from "@aimess/errors";
+import { inviteLinkExpiresAt, isInviteLinkExpired } from "@aimess/constants";
 
 import {
   CommunityMemberRole,
@@ -902,7 +903,16 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                   linkStatus = "REVOKED";
                 else linkStatus = "ACTIVE";
               } else if (community.invitationCode === code) {
-                linkStatus = "ACTIVE"; // permanent code — never expires
+                // LEGACY permanent code: nothing mints these any more, and they
+                // are held to the same 1-hour window as every other link,
+                // measured from when the code was allocated.
+                linkStatus = isInviteLinkExpired(
+                  inviteLinkExpiresAt(
+                    community.invitationCodeCreatedAt ?? community.createdAt
+                  )
+                )
+                  ? "EXPIRED"
+                  : "ACTIVE";
               } else {
                 linkStatus = "REVOKED"; // no longer matches anything live
               }

@@ -13,8 +13,11 @@ import {
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
 import {
+  clampInviteLinkExpiry,
   currentLocale,
+  inviteLinkExpiresAt,
   isHiddenSystemMessage,
+  isInviteLinkExpired,
   localizeMessagePreview,
   personalizeCommunitySystemMessageForViewer,
   STORED_TEXT_LOCALE,
@@ -1420,7 +1423,7 @@ function assertInviteLinkActive(link: {
 }): void {
   if (link.revokedAt)
     throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
-  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
+  if (isInviteLinkExpired(link.expiresAt))
     throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
@@ -1553,32 +1556,51 @@ function toInviteLinkData(
 }
 
 /**
- * Build a `PermanentInvitationLinkData` DTO from a community that already has
- * its `invitationCode` set. Throws if called before the code is allocated
- * (guards against logic bugs — callers in this file always check first).
+ * Build a `PermanentInvitationLinkData` DTO from the community's CURRENT
+ * shareable invite-link row. The response shape is unchanged, but the link it
+ * describes is no longer permanent: every invite link now dies 1 hour after it
+ * was created (see `INVITE_LINK_TTL_MS`), so `expiresAt` is always set.
  */
-function toPermanentInvitationLinkData(community: {
-  id: string;
-  name: string;
-  invitationCode: string | null;
-  invitationCodeCreatedAt: Date | null;
-  createdAt: Date;
-}): PermanentInvitationLinkData {
-  if (!community.invitationCode) {
-    throw new Error(
-      `toPermanentInvitationLinkData called on community ${community.id} with no invitationCode`
-    );
-  }
+function toInvitationLinkData(
+  community: { id: string; name: string },
+  link: { code: string; createdAt: Date; expiresAt: Date | null }
+): PermanentInvitationLinkData {
   return {
     communityId: community.id,
     communityName: community.name,
-    invitationCode: community.invitationCode,
-    invitationLink: buildInviteUrl(community.invitationCode),
-    appDeepLink: buildInviteDeepLink(community.invitationCode),
-    createdAt: (
-      community.invitationCodeCreatedAt ?? community.createdAt
-    ).getTime(),
+    invitationCode: link.code,
+    invitationLink: buildInviteUrl(link.code),
+    appDeepLink: buildInviteDeepLink(link.code),
+    createdAt: link.createdAt.getTime(),
+    expiresAt: (link.expiresAt ?? inviteLinkExpiresAt(link.createdAt)).getTime(),
   };
+}
+
+/**
+ * Expiry instant of a LEGACY permanent invitation code (the `invitationCode`
+ * column). Nothing mints these any more, but codes already shared are still
+ * resolvable — and they are held to the same 1-hour window, measured from when
+ * the code was allocated, so an old link reports EXPIRED rather than living
+ * forever. `invitationCodeCreatedAt` is null only for rows written before that
+ * column existed; those fall back to the community's own creation date, i.e.
+ * long expired.
+ */
+function permanentCodeExpiresAt(community: {
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): Date {
+  return inviteLinkExpiresAt(
+    community.invitationCodeCreatedAt ?? community.createdAt
+  );
+}
+
+function assertPermanentCodeActive(community: {
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): void {
+  if (isInviteLinkExpired(permanentCodeExpiresAt(community))) {
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
+  }
 }
 
 /**
@@ -1587,14 +1609,18 @@ function toPermanentInvitationLinkData(community: {
  * can return a consistent response shape for both regular links AND the
  * permanent community link without duplicating the rest of the join logic.
  *
+ * LEGACY: no path mints a permanent code any more — every invite link now
+ * expires 1 hour after creation — but codes already shared still resolve, so
+ * this shape is still produced for them.
+ *
  * Key invariants for permanent links:
  *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
  *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
  *  - `maxUses: null` → unlimited
- *  - `expiresAt: null` → never expires
+ *  - `expiresAt` / `isActive` → the 1-hour window measured from
+ *    `invitationCodeCreatedAt` (see {@link permanentCodeExpiresAt})
  *  - `revokedAt: null` → never revoked
  *  - `autoApprove: false` → request-to-join (PRIVATE default)
- *  - `isActive: true` → always active (lifecycle managed on the Community row)
  */
 function toPermanentLinkAsInviteLinkData(community: {
   id: string;
@@ -1617,12 +1643,12 @@ function toPermanentLinkAsInviteLinkData(community: {
     maxUses: null,
     usedCount: 0,
     autoApprove: false,
-    expiresAt: null,
+    expiresAt: permanentCodeExpiresAt(community).toISOString(),
     revokedAt: null,
     createdAt: (
       community.invitationCodeCreatedAt ?? community.createdAt
     ).toISOString(),
-    isActive: true,
+    isActive: !isInviteLinkExpired(permanentCodeExpiresAt(community)),
     isPermanent: true,
   };
 }
@@ -1752,11 +1778,6 @@ async function fetchCommunityLiveStreams(
 ): Promise<LiveStreamSummary[]> {
   return getStreamClient().getLiveStreamsByCommunity(communityId);
 }
-
-/** A fully-loaded Community row as returned by the repository (never null). */
-type CommunityRow = NonNullable<
-  Awaited<ReturnType<typeof communityRepository.findById>>
->;
 
 /** One `/mine` page row — the shared `mineActivitySelect` shape. */
 type MineActivityRow = Awaited<
@@ -7564,21 +7585,18 @@ export const communityService = {
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
     communityAccessPolicy.assertWritable(community);
 
-    // Batch fetch existing memberships, invite rows AND recipient-account
-    // eligibility in parallel. The eligibility gate is the SAME helper the
-    // invite-link bulk-share uses: without it this endpoint happily created
-    // invite rows (and DM cards) for deleted, suspended and blocked users.
-    const [existingMembers, existingInvites, ineligible] = await Promise.all([
-      communityRepository.findMembersByUserIds(communityId, userIds),
+    // Batch fetch invite rows AND recipient-account eligibility in parallel. The
+    // eligibility gate is the SAME helper the invite-link bulk-share uses:
+    // without it this endpoint happily created invite rows (and DM cards) for
+    // deleted, suspended and blocked users. Memberships are deliberately NOT
+    // fetched: neither an ACTIVE nor a BANNED membership blocks an invite here.
+    const [existingInvites, ineligible] = await Promise.all([
       communityRepository.findInvitesByUserIds(communityId, userIds),
       fetchInviteIneligibility(callerId, [
         ...new Set(userIds.filter((id) => id !== callerId)),
       ]),
     ]);
 
-    const membershipByUserId = new Map(
-      existingMembers.map((m) => [m.userId, m])
-    );
     const inviteByUserId = new Map(
       existingInvites.map((inv) => [inv.inviteeId, inv])
     );
@@ -7607,11 +7625,14 @@ export const communityService = {
       // inviting someone who was banned is a deliberate act of re-admission. The
       // invite row created below is the ban waiver (see findPendingInvite) —
       // accepting it lifts the ban; ignoring it leaves the ban fully in force.
-      const member = membershipByUserId.get(userId);
-      if (member?.status === CommunityMemberStatus.ACTIVE) {
-        results.push({ userId, outcome: "ALREADY_MEMBER" });
-        continue;
-      }
+      //
+      // An ACTIVE member is NOT skipped either: a moderator re-sending an
+      // invitation to someone already in the community is a deliberate act
+      // (re-surfacing the community in their DMs), and it creates no membership
+      // row of its own — `acceptInvite` short-circuits on an ACTIVE membership,
+      // and the invitation card resolves `alreadyJoined` at read time so it
+      // renders as "Open", not "Join". The ALREADY_MEMBER outcome is kept in the
+      // response contract for clients that still branch on it.
 
       const existing = inviteByUserId.get(userId);
       if (!existing) {
@@ -9000,21 +9021,19 @@ export const communityService = {
   },
 
   // ---------------------------------------------------------------------------
-  // Permanent invitation link (PRIVATE communities only)
+  // Shareable invitation link (PRIVATE communities only)
   // ---------------------------------------------------------------------------
 
   /**
-   * Return — or lazily generate — the community's PERMANENT invitation code.
+   * Return — or mint — the community's CURRENT shareable invitation link.
    *
-   * Behaviour contract (Telegram-like):
-   *  - Code generated on the **first call** and persisted forever.
-   *  - **Every subsequent call returns the identical code** — no new code is ever
-   *    generated unless an admin explicitly calls a future "regenerate" endpoint.
-   *  - Updating the community name / avatar / description / settings does NOT
-   *    affect the code.
-   *  - Closing and reopening the community does NOT affect the code.
-   *  - 100 concurrent callers on a brand-new community collapse onto one winner
-   *    via the `setInvitationCodeOnce` atomic guard and all receive the same code.
+   * Behaviour contract:
+   *  - Every invite link expires 1 hour after it was created
+   *    (`INVITE_LINK_TTL_MS`), so "permanent" is now a 1-hour window: repeated
+   *    calls inside it return the identical code, and the first call after it
+   *    mints a fresh one.
+   *  - Updating the community, or closing and reopening it, does not affect the
+   *    live link.
    *
    * Authorization: any ACTIVE community member may retrieve the link.
    */
@@ -9037,63 +9056,8 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
 
-    const withCode = await this.ensurePermanentInvitationCode(community);
-    return toPermanentInvitationLinkData(withCode);
-  },
-
-  /**
-   * Internal: ensure a PRIVATE community has its permanent `invitationCode`
-   * allocated, returning the community row with a guaranteed non-null code.
-   *
-   * This is the SINGLE source of the get-or-create logic — both the dedicated
-   * `GET /communities/:id/invitation-link` endpoint and the bare
-   * `POST /communities/:id/invite-links` SSOT short-circuit funnel through here,
-   * so there is exactly one place that can ever mint a permanent code.
-   *
-   *  - **Fast path:** code already set → returns the row unchanged (zero writes).
-   *  - **Slow path (first call only):** generate a 128-bit base64url candidate,
-   *    persist it via the atomic `setInvitationCodeOnce` guard
-   *    (updateMany WHERE invitationCode IS NULL — no transaction, works on
-   *    standalone Mongo), and retry up to 3× on a lost race / unique collision.
-   *    A losing concurrent caller re-reads and returns the winner's code, so
-   *    100 simultaneous first-callers all converge on ONE code.
-   */
-  async ensurePermanentInvitationCode(
-    community: CommunityRow
-  ): Promise<CommunityRow> {
-    // Fast path — already allocated. Pure read, no write.
-    if (community.invitationCode) {
-      return community;
-    }
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const candidate = generateInviteCode();
-      const result = await communityRepository.setInvitationCodeOnce(
-        community.id,
-        candidate
-      );
-
-      if (result.count === 1) {
-        // We won — re-read to return the fully populated row.
-        const updated = await communityRepository.findById(community.id);
-        return updated!;
-      }
-
-      // Another concurrent request beat us (or a DB-level collision on the
-      // sparse unique index). Re-read to pick up the winning code.
-      const refreshed = await communityRepository.findById(community.id);
-      if (refreshed?.invitationCode) {
-        return refreshed;
-      }
-      // invitationCode still null — extremely unlikely. Loop with a new candidate.
-    }
-
-    // Last-resort re-read before giving up (covers the pathological 3-collision case).
-    const final = await communityRepository.findById(community.id);
-    if (final?.invitationCode) {
-      return final;
-    }
-    throw new Error("Failed to allocate permanent invitation code");
+    const link = await this.resolveOrCreateShareableLink(community.id, callerId);
+    return toInvitationLinkData(community, link);
   },
 
   /**
@@ -9131,6 +9095,9 @@ export const communityService = {
     request?: CommunityJoinRequestData;
     member?: CommunityMemberData;
   }> {
+    // Legacy codes are held to the same 1-hour window as every other link, so an
+    // expired one cannot be redeemed by calling the API directly.
+    assertPermanentCodeActive(community);
     communityAccessPolicy.assertWritable(community);
 
     const existing = await communityRepository.findMemberByUserId(
@@ -9236,13 +9203,11 @@ export const communityService = {
 
     // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
     // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
-    // expiresInMinutes / autoApprove, the caller wants THE community's canonical
-    // invite link — not a fresh throwaway link. For PRIVATE communities we return
-    // the PERMANENT, never-changing code (lazily minted once via the shared
-    // `ensurePermanentInvitationCode` helper) shaped as a `CommunityInviteLinkData`
-    // so the response contract is unchanged. This is idempotent: repeated bare
-    // calls return the identical code with NO new rows, NO rate-limit consumption,
-    // and NO active-link-cap usage.
+    // expiresInMinutes / autoApprove, the caller wants THE community's current
+    // invite link — not a fresh throwaway link per click. For PRIVATE communities
+    // we hand back the caller's live link, reused for as long as it is valid and
+    // re-minted once it expires (1 hour), with NO rate-limit consumption and NO
+    // active-link-cap usage.
     //
     // PUBLIC communities fall through to the legacy path: their share URL is
     // handle-based and code-independent (already deterministic), so there is no
@@ -9250,17 +9215,18 @@ export const communityService = {
     //
     // A PARAMETERIZED call (any of maxUses / expiresInMinutes / autoApprove
     // present) is an explicit request for a custom temporary link and keeps the
-    // full legacy multi-link behavior below — preserving Expiring / Limited-use /
-    // Auto-approve links untouched.
+    // full legacy multi-link behavior below — preserving Limited-use /
+    // Auto-approve links untouched (their expiry is still capped at 1 hour).
     const isDefaultCall =
       input.maxUses == null &&
       input.expiresInMinutes == null &&
       input.autoApprove == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
-      const withCode = await this.ensurePermanentInvitationCode(community);
-      return toPermanentLinkAsInviteLinkData(
-        withCode as CommunityRow & { invitationCode: string }
+      const link = await this.resolveOrCreateShareableLink(
+        community.id,
+        callerId
       );
+      return toInviteLinkData(link, community);
     }
 
     // Abuse guards (now that every member can create links):
@@ -9276,9 +9242,13 @@ export const communityService = {
       throw new ForbiddenError("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
     }
 
-    const expiresAt = input.expiresInMinutes
-      ? new Date(Date.now() + input.expiresInMinutes * 60_000)
-      : null;
+    // Clamped, never null: a link that outlives the 1-hour rule cannot be minted,
+    // and a shorter caller-supplied expiry is still honoured.
+    const expiresAt = clampInviteLinkExpiry(
+      input.expiresInMinutes
+        ? new Date(Date.now() + input.expiresInMinutes * 60_000)
+        : null
+    );
     const maxUses = input.maxUses ?? null;
     // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,
     // flow F5: a private link's primary path is "Request to Join" with moderator
@@ -9405,24 +9375,28 @@ export const communityService = {
   },
 
   /**
-   * The community's shareable invite link: the first ACTIVE link if one exists,
-   * otherwise a freshly minted permanent (never-expiring, unlimited-use) one.
+   * The community's shareable invite link: the caller's newest still-live link
+   * if they have one, otherwise a freshly minted unlimited-use link that expires
+   * 1 hour from now (`INVITE_LINK_TTL_MS`).
    *
-   * Shared by every path that needs a code to put on an invitation card — the
-   * invite-link Bulk Send and the direct member-invite fan-out — so both hand
-   * chat-service a link that resolves identically on the receiving end.
+   * Shared by EVERY path that needs a code to put on an invitation card — the
+   * bare `POST /:id/invite-links`, `GET /:id/invitation-link`, invite-link Bulk
+   * Send and the direct member-invite fan-out — so they all hand out the same
+   * code inside the same hour, and all roll over to a new one after it.
+   *
+   * Reuse deliberately ignores limited-use and auto-approve links: those are
+   * explicit throwaways, and handing one back here would let an exhausted or
+   * queue-skipping link masquerade as the community's own invite.
    */
   async resolveOrCreateShareableLink(
     communityId: string,
     callerId: string
   ): Promise<CommunityInviteLink> {
-    const { rows } = await communityRepository.listInviteLinks({
+    const live = await communityRepository.findLatestReusableInviteLink(
       communityId,
-      status: "active",
-      page: 1,
-      limit: 1,
-    });
-    if (rows.length > 0) return rows[0]!;
+      callerId
+    );
+    if (live) return live;
 
     let created: CommunityInviteLink | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -9433,7 +9407,7 @@ export const communityService = {
           createdBy: callerId,
           maxUses: null,
           autoApprove: false,
-          expiresAt: null,
+          expiresAt: inviteLinkExpiresAt(),
         });
         break;
       } catch (err) {
@@ -9529,7 +9503,7 @@ export const communityService = {
             maxUses: null,
             usedCount: 0,
             autoApprove: false,
-            expiresAt: null,
+            expiresAt: permanentCodeExpiresAt(community),
             revokedAt: null,
             createdAt: community.invitationCodeCreatedAt ?? community.createdAt,
           } as CommunityInviteLink;
@@ -9587,8 +9561,9 @@ export const communityService = {
     const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
       callerId
     );
-    const isPermanentLink =
-      linkRow.expiresAt === null && linkRow.maxUses === null;
+    // Every link now carries an expiry, so "permanent" can only mean the LEGACY
+    // community-row code, whose synthesized sentinel row uses the community id.
+    const isPermanentLink = linkRow.id === communityId;
 
     for (const recipientId of candidateIds) {
       // Recipient-account gate (deleted / suspended / blocked / missing). One
@@ -9614,16 +9589,13 @@ export const communityService = {
         });
         continue;
       }
-      if (member?.status === CommunityMemberStatus.ACTIVE) {
-        failures.push({
-          userId: recipientId,
-          code: "ALREADY_MEMBER",
-          message: "User is already a member of this community",
-        });
-        continue;
-      }
+      // An ACTIVE member is NOT refused: re-sharing the link with someone who
+      // already joined is a deliberate, harmless act (the card resolves
+      // `alreadyJoined` at read time and renders "Open", and redeeming is
+      // idempotent — it returns ALREADY_MEMBER with no write). Only a ban
+      // stops the send.
 
-      // Eligible (new, or a previously-LEFT member who may rejoin) → fan out.
+      // Eligible (new, already ACTIVE, or a previously-LEFT member) → fan out.
       // Existing fields are UNCHANGED; the enrichment fields are additive so the
       // chat-service consumer can render a rich card + push with no extra lookup.
       publishCommunityInviteLinkSharedForChatSafe({
@@ -9848,13 +9820,14 @@ export const communityService = {
 
     // Permanent-code fallback: if no CommunityInviteLink row owns this code,
     // check whether it is the community's permanent invitation code instead.
-    // Permanent codes are never revoked/expired/exhausted, so assertInviteLinkActive
-    // is intentionally skipped.
+    // Permanent codes are never revoked or exhausted (no row, no usage counter),
+    // so only the 1-hour expiry applies — see `assertPermanentCodeActive`.
     if (!link) {
       const communityByCode =
         await communityRepository.findCommunityByInvitationCode(code);
       if (!communityByCode)
         throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+      assertPermanentCodeActive(communityByCode);
 
       const membership = await communityRepository.findMemberByUserId(
         communityByCode.id,
@@ -9901,7 +9874,8 @@ export const communityService = {
         invitationCode: code,
         inviteUrl: buildInviteUrl(code),
         appDeepLink: buildInviteDeepLink(code),
-        expiresAt: null, // permanent links never expire
+        // Legacy permanent code: the 1-hour window runs from when it was minted.
+        expiresAt: permanentCodeExpiresAt(communityByCode).getTime(),
         creatorId: communityByCode.adminId,
       };
     }

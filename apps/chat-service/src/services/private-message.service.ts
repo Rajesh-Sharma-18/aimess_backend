@@ -114,6 +114,7 @@ import {
   currentLocale,
   isCallContentType,
   inviteContentType,
+  isInviteLinkExpired,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
@@ -2545,11 +2546,16 @@ export class PrivateMessageService {
         const link = token
           ? await this.groupInviteLinkRepo?.findActiveByToken(token)
           : null;
+        // `findActiveByToken` filters on the row's `status` column only, so an
+        // expired link still comes back — the 1-hour expiry is a timestamp check,
+        // and without it the card kept offering a link the join endpoint refuses.
         const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
           ? "DELETED"
           : token && !link
             ? "REVOKED"
-            : "ACTIVE";
+            : isInviteLinkExpired(link?.expiresAt)
+              ? "EXPIRED"
+              : "ACTIVE";
 
         invitationByMessageId.set(
           m.id,

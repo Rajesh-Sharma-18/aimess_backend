@@ -28,7 +28,8 @@ export class GroupInviteLinkController {
 
   preview = asyncHandler(async (req: Request, res: Response) => {
     const token = req.params.token as string;
-    const result = await this.service.preview(token);
+    // Optional-auth route: `req.auth` is unset for an anonymous preview.
+    const result = await this.service.preview(token, req.auth?.userId);
     res
       .status(HTTP_STATUS.OK)
       .json(
