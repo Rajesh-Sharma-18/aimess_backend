@@ -203,6 +203,11 @@ export const ADMIN_MESSAGES = {
     en: "Cannot deactivate the last remaining Super Admin.",
     th: "ไม่สามารถปิดใช้งานผู้ดูแลระบบสูงสุดคนสุดท้ายได้",
   },
+  ADMIN_MUST_DEACTIVATE_BEFORE_DELETE: {
+    vi: "Vui lòng vô hiệu hóa tài khoản trước khi xóa",
+    en: "Deactivate the account before deleting it.",
+    th: "โปรดปิดใช้งานบัญชีก่อนลบ",
+  },
 
   // ── Success: admin accounts & permissions ────────────────────────────────
   // Backoffice was the one service that never adopted `ApiResponse`: its 86
@@ -238,6 +243,11 @@ export const ADMIN_MESSAGES = {
     vi: "Đã vô hiệu hóa tài khoản quản trị",
     en: "Admin account deactivated",
     th: "ปิดใช้งานบัญชีผู้ดูแลระบบแล้ว",
+  },
+  ADMIN_ACCOUNT_DELETE_SUCCESS: {
+    vi: "Đã xóa tài khoản quản trị",
+    en: "Admin account deleted",
+    th: "ลบบัญชีผู้ดูแลระบบแล้ว",
   },
   ADMIN_ACCOUNT_STATUS_UPDATED: {
     vi: "Đã cập nhật trạng thái tài khoản quản trị",

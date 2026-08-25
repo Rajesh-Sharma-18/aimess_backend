@@ -190,6 +190,8 @@ export const adminUserRepository = {
     if (opts.excludeSuperAdmins) {
       and.push({ role: { key: { not: ROLE_KEYS.SUPER_ADMIN } } });
     }
+    // Soft-deleted admins are gone — never surface them, even under a status filter.
+    and.push({ status: { not: "DELETED" } });
     if (and.length > 0) {
       where.AND = and;
     }
