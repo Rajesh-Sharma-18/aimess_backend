@@ -135,3 +135,51 @@ export function localizedActivityPreview(
   );
   return String(rebuilt?.text ?? preview);
 }
+
+/**
+ * Backfill `systemData.actorName` from the row's DURABLE sender id.
+ *
+ * Every SYSTEM/invite row's sentence is rebuilt per reader from `systemData`
+ * (see `buildPrivateSystemFallbackText`), so the stored `actorName` is the only
+ * thing standing between the row and its neutral "Someone shared a … invite"
+ * fallback. A writer that stamped an empty name — community-service resolved
+ * the inviter through `displayName`, which user-service builds from
+ * firstName+lastName alone — condemns that row to "Someone" on every future
+ * read, in both directions and after every refresh.
+ *
+ * The id IS on the row (`actorId`/`inviterId`, written by both invite writers),
+ * so the name is recoverable from IDENTITY at read time. `nameOf` returns the
+ * live name for an id or `""` when there is none to show; friendship is not
+ * consulted here and must not be — the sender is the same person whether or not
+ * the two are still friends.
+ *
+ * Returns the input by REFERENCE when nothing changed, so callers can cheaply
+ * detect a no-op. A name already on the row always wins: this repairs gaps, it
+ * never rewrites history with a since-renamed identity.
+ */
+export function resolveSystemActorName(
+  systemData: unknown,
+  nameOf: (userId: string) => string
+): unknown {
+  if (!systemData || typeof systemData !== "object") return systemData;
+  const data = systemData as Record<string, unknown>;
+  const stored = String(data.actorName ?? data.inviterName ?? "").trim();
+  if (stored) return systemData;
+  const actorId = String(data.actorId ?? data.inviterId ?? "").trim();
+  if (!actorId) return systemData;
+  const name = nameOf(actorId).trim();
+  if (!name) return systemData;
+  return { ...data, actorName: name };
+}
+
+/** {@link resolveSystemActorName} applied to a whole message/preview row. */
+export function withResolvedSystemActor<T>(
+  row: T,
+  nameOf: (userId: string) => string
+): T {
+  if (!row || typeof row !== "object") return row;
+  const current = (row as { systemData?: unknown }).systemData;
+  const resolved = resolveSystemActorName(current, nameOf);
+  if (resolved === current) return row;
+  return { ...(row as object), systemData: resolved } as T;
+}

@@ -7737,6 +7737,16 @@ export const communityService = {
         const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
           callerId
         );
+        // user-service builds `displayName` from firstName+lastName ONLY, so a
+        // profile that never filled those in resolves to "" — and an empty
+        // `inviterName` is what makes the recipient's chat-list row re-render as
+        // "Someone shared a community invite" forever (the sentence is rebuilt per
+        // reader from `systemData.actorName`). Fall back to the handle, exactly as
+        // chat-service's `resolveDisplayName` does for the group-invite twin. Left
+        // undefined only when the identity lookup itself found nothing, so the
+        // reader-side "Someone" stays reserved for a sender we genuinely cannot name.
+        const inviterDisplayName =
+          inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
         for (const { inviteeId } of allInvited) {
           publishCommunityInviteLinkSharedForChatSafe({
             communityId,
@@ -7754,7 +7764,7 @@ export const communityService = {
             inviteDeepLink: shareLinkData.appDeepLink,
             isPermanent:
               shareLink.expiresAt === null && shareLink.maxUses === null,
-            inviterName: inviterSnapshot?.displayName,
+            inviterName: inviterDisplayName,
             inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
           });
         }
@@ -9561,6 +9571,10 @@ export const communityService = {
     const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
       callerId
     );
+    // See `inviteMembers`: `displayName` alone is empty for a profile with no
+    // first/last name, which is what leaves the invite row saying "Someone".
+    const inviterDisplayName =
+      inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
     // Every link now carries an expiry, so "permanent" can only mean the LEGACY
     // community-row code, whose synthesized sentinel row uses the community id.
     const isPermanentLink = linkRow.id === communityId;
@@ -9611,7 +9625,7 @@ export const communityService = {
         inviteUrl: linkData.url,
         inviteDeepLink: linkData.appDeepLink,
         isPermanent: isPermanentLink,
-        inviterName: inviterSnapshot?.displayName,
+        inviterName: inviterDisplayName,
         inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
       });
       sentUserIds.push(recipientId);

@@ -109,7 +109,11 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveRealDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
+import { resolveSystemActorName } from "../lib/localize-system-preview.js";
 import {
   currentLocale,
   isCallContentType,
@@ -2628,10 +2632,15 @@ export class PrivateMessageService {
         isPersonalizableSystemContentType(String(wire.contentType)) &&
         message.systemEvent
       ) {
-        const systemData = (message.systemData ?? {}) as Record<
-          string,
-          unknown
-        >;
+        // Same identity-based repair the list row does: a row whose writer
+        // stamped no `actorName` still carries the sender id, and `snapshot` IS
+        // that sender's. Without it the transcript and the list would also
+        // disagree — one says "Someone", the other the real name.
+        const systemData = (resolveSystemActorName(
+          message.systemData ?? {},
+          (id) =>
+            id === message.senderId ? resolveRealDisplayName(snapshot) : ""
+        ) ?? {}) as Record<string, unknown>;
         const thirdPersonText = String(content?.text ?? "");
         const personalized = personalizePrivateSystemMessageForViewer(
           message.systemEvent,
