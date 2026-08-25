@@ -115,7 +115,7 @@ describe("group invite DM — message contract", () => {
     );
   });
 
-  it("skips a recipient who is already a member (no DM written)", async () => {
+  it("still delivers the DM to a recipient who is already a member", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
@@ -123,9 +123,9 @@ describe("group invite DM — message contract", () => {
     const res = await bulkSend();
     expect(res.status).toBe(200);
     expect(res.body.data.results).toEqual([
-      { userId: RECIPIENT, status: "SKIPPED_ALREADY_MEMBER" },
+      { userId: RECIPIENT, status: "SENT" },
     ]);
-    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalled();
   });
 
   it("NEGATIVE: 404 for a token that does not belong to the room", async () => {

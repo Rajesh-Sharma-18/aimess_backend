@@ -525,7 +525,8 @@ export const CHAT_MESSAGES = {
   },
   CHAT_INVITE_LINK_EXPIRED: {
     vi: "Liên kết mời đã hết hạn",
-    en: "Invite link has expired",
+    // Product-fixed copy — the client shows this verbatim on the invite screen.
+    en: "Invitation link expired",
     th: "ลิงก์เชิญหมดอายุแล้ว",
   },
   CHAT_INVITE_LINK_USAGE_LIMIT: {

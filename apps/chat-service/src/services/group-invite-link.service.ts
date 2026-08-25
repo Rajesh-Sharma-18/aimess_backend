@@ -13,7 +13,11 @@ import {
   assertGroupRoomWritable,
 } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
-import { inviteContentType } from "@aimess/constants";
+import {
+  clampInviteLinkExpiry,
+  inviteContentType,
+  isInviteLinkExpired,
+} from "@aimess/constants";
 import {
   buildGroupInvitationAction,
   buildChatMessageEvent,
@@ -107,7 +111,9 @@ export class GroupInviteLinkService {
       roomId: params.roomId,
       token,
       createdBy: params.userId,
-      expiresAt: params.expiresAt || null,
+      // Clamped, never null: every invite link expires 1 hour after it is
+      // created. A shorter caller-supplied expiry is still honoured.
+      expiresAt: clampInviteLinkExpiry(params.expiresAt),
       maxUses: params.maxUses || null,
       shareName: params.shareName || "",
     });
@@ -128,7 +134,18 @@ export class GroupInviteLinkService {
     return this.inviteLinkRepo.revoke(token, userId);
   }
 
-  async preview(token: string): Promise<{
+  /**
+   * Invite landing screen payload. `callerId` is optional — the route takes an
+   * OPTIONAL bearer token so the unauthenticated link-preview card still works —
+   * and drives `isJoined`, which is what decides "Join Group" vs "View Group" on
+   * the client. It is read live from the membership table on every call, so a
+   * user who left the group sees the CTA flip back to "Join Group" on the next
+   * fetch without needing a new link.
+   */
+  async preview(
+    token: string,
+    callerId?: string
+  ): Promise<{
     token: string;
     groupId: string;
     groupName: string;
@@ -137,12 +154,14 @@ export class GroupInviteLinkService {
     memberCount: number;
     memberLimit: number;
     invitedByName: string;
+    expiresAt: string | null;
+    isJoined: boolean;
   }> {
     const link = await this.inviteLinkRepo.findActiveByToken(token);
     if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
 
     // Check expiry
-    if (link.expiresAt && new Date() > new Date(link.expiresAt)) {
+    if (isInviteLinkExpired(link.expiresAt)) {
       throw new BadRequestError("CHAT_INVITE_LINK_EXPIRED");
     }
 
@@ -166,6 +185,11 @@ export class GroupInviteLinkService {
           ).get(link.createdBy)
         : null;
 
+    // Live membership read — never a cached/derived flag (see the doc above).
+    const membership = callerId
+      ? await this.memberRepo.findActiveByRoomAndUser(link.roomId, callerId)
+      : null;
+
     return {
       token: link.token,
       groupId: room.roomId,
@@ -175,6 +199,8 @@ export class GroupInviteLinkService {
       memberCount: room.memberCount,
       memberLimit: room.memberLimit,
       invitedByName: inviterSnapshot ? resolveDisplayName(inviterSnapshot) : "",
+      expiresAt: link.expiresAt ? new Date(link.expiresAt).toISOString() : null,
+      isJoined: !!membership,
     };
   }
 
@@ -186,7 +212,7 @@ export class GroupInviteLinkService {
     const link = await this.inviteLinkRepo.findActiveByToken(token);
     if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
 
-    if (link.expiresAt && new Date() > new Date(link.expiresAt)) {
+    if (isInviteLinkExpired(link.expiresAt)) {
       throw new BadRequestError("CHAT_INVITE_LINK_EXPIRED");
     }
     if (link.maxUses && link.usedCount >= link.maxUses) {
@@ -227,11 +253,12 @@ export class GroupInviteLinkService {
    * 2. Resolves the link to share — a specific `token`, the room's first
    *    active link, or auto-creates one (respecting the same
    *    `allowMemberInviteLink` gate as {@link create}).
-   * 3. For each requested recipient (deduped, self excluded): skips users
-   *    already an ACTIVE member, otherwise inserts a SYSTEM/GROUP_INVITE
-   *    message into their private room with the inviter and runs the same
-   *    live side-effects as a normal DM (message:new, conv:updated bump,
-   *    offline push).
+   * 3. For each requested recipient (deduped, self excluded): inserts a
+   *    SYSTEM/GROUP_INVITE message into their private room with the inviter and
+   *    runs the same live side-effects as a normal DM (message:new,
+   *    conv:updated bump, offline push). Existing ACTIVE members are NOT
+   *    skipped — only the recipient-account gate (deleted / suspended /
+   *    blocked / missing) refuses a send.
    */
   async bulkSend(params: {
     roomId: string;
@@ -307,14 +334,11 @@ export class GroupInviteLinkService {
         continue;
       }
 
-      const alreadyMember = await this.memberRepo.findActiveByRoomAndUser(
-        roomId,
-        recipientId
-      );
-      if (alreadyMember) {
-        results.push({ userId: recipientId, status: "SKIPPED_ALREADY_MEMBER" });
-        continue;
-      }
+      // An ACTIVE member is NOT skipped: an admin/moderator re-sending the
+      // invite to someone already in the group is deliberate, and it creates no
+      // membership row — the card resolves `alreadyJoined` at read time (see
+      // `private-message.service#enrichMessages`) so it renders "Open", and
+      // joining by token again is refused as CHAT_ALREADY_MEMBER.
       await this.deliverInviteDm({
         roomId,
         inviterId: callerId,

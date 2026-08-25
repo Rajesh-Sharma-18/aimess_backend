@@ -139,13 +139,20 @@ export class AdminGroupService {
     const roomIds = rows.map((r) => r.roomId);
     const ownerMap = await this.groupMemberRepo.findOwnersForRooms(roomIds);
     const ownerIds = rows.map((r) => ownerMap.get(r.roomId) ?? r.createdBy);
+    // Denormalized row.memberCount drifts (counts LEFT/KICKED members); count
+    // the live roster (ACTIVE + BANNED) per room in one batched query so the
+    // list Members column matches the detail header and the roster list.
+    const memberCountMap =
+      await this.groupMemberRepo.countRosterMembersForRooms(roomIds);
 
     const { snapshots, authMap } = await this.resolveIdentities(ownerIds);
     const urlMap = await this.resolveAvatarUrls(rows, snapshots);
 
     const groups = rows.map((row) => {
       const ownerId = ownerMap.get(row.roomId) ?? row.createdBy;
-      return this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
+      const group = this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
+      group.memberCount = memberCountMap.get(row.roomId) ?? 0;
+      return group;
     });
 
     return { groups, total };
@@ -164,10 +171,14 @@ export class AdminGroupService {
     const { snapshots, authMap } = await this.resolveIdentities([ownerId]);
     const urlMap = await this.resolveAvatarUrls([row], snapshots);
 
-    return {
-      found: true,
-      group: this.toGroupRow(row, ownerId, snapshots, authMap, urlMap),
-    };
+    const group = this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
+    // Denormalized row.memberCount drifts (counts LEFT/KICKED members); the
+    // detail header must match the roster list, so report the live count.
+    group.memberCount = await this.groupMemberRepo.countRosterMembers(
+      row.roomId
+    );
+
+    return { found: true, group };
   }
 
   async listGroupMembers(req: AdminListGroupMembersRequest): Promise<{

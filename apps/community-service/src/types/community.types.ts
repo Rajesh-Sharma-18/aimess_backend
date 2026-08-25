@@ -775,6 +775,8 @@ export type PermanentInvitationLinkData = {
   appDeepLink: string;
   /** Epoch ms — when the code was first generated. */
   createdAt: number;
+  /** Epoch ms — when the link stops working (always `createdAt + 1h`). */
+  expiresAt: number;
 };
 
 /** Liked/favorited community record. */

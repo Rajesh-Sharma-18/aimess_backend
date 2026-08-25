@@ -639,15 +639,28 @@ describe("unbanMember — real-time broadcast", () => {
     expect(pubRoomEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("posts a MEMBER_UNBANNED chat system message (visible moderation — Telegram parity)", async () => {
+  it("posts NO chat system message — unban is as silent as the ban it lifts", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    // MEMBER_UNBANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES — lifting a ban is
-    // shown in the chat timeline to all members (Telegram parity).
+    // Deliberate, and the mirror image of MEMBER_BANNED (which IS in
+    // HIDDEN_SYSTEM_MESSAGE_TYPES): emitting only the unban half would show
+    // remaining members "{name} was unbanned" with no preceding ban line, about
+    // someone an unban does not even re-add to the community (BANNED → LEFT).
+    // The lift still reaches the target out-of-band —
+    // `community:membership:restricted` with the post-unban membership block,
+    // the `community.member_unbanned` domain event, and `isBanned:false` on the
+    // community detail/list.
+    //
+    // Note this is an EMISSION policy, not a visibility one: MEMBER_UNBANNED is
+    // intentionally still absent from HIDDEN_SYSTEM_MESSAGE_TYPES, so lines
+    // persisted before this policy stay readable in history rather than being
+    // retroactively erased (chat-service `community-read-access.test.ts` pins
+    // that half).
     const postedTypes = pubSysMsg.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).toContain("MEMBER_UNBANNED");
+    expect(postedTypes).not.toContain("MEMBER_UNBANNED");
+    expect(postedTypes).not.toContain("MEMBER_BANNED");
   });
 });
 

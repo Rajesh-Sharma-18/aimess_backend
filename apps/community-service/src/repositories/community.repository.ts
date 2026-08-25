@@ -133,6 +133,15 @@ function mineActivitySelect(userId: string) {
   } satisfies Prisma.CommunitySelect;
 }
 
+/**
+ * "Not revoked" for an OPTIONAL Mongo column: `revokedAt: null` alone matches
+ * only rows where the field EXISTS and is null, and Prisma omits untouched
+ * optional fields on insert — so every never-revoked link was invisible to it.
+ */
+const NOT_REVOKED: Prisma.CommunityInviteLinkWhereInput = {
+  OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }],
+};
+
 export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Categories
@@ -3475,7 +3484,7 @@ export const communityRepository = {
       where: {
         communityId,
         createdBy,
-        revokedAt: null,
+        ...NOT_REVOKED,
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
     });
@@ -3483,6 +3492,36 @@ export const communityRepository = {
 
   findInviteLinkByCode(code: string) {
     return prisma.communityInviteLink.findUnique({ where: { code } });
+  },
+
+  /**
+   * The caller's newest still-usable "share this community" link: not revoked,
+   * not expired, and unlimited-use / request-to-join (i.e. NOT one of the custom
+   * limited-use or auto-approve links, which are deliberate throwaways and must
+   * never be handed back by the plain Invite button).
+   *
+   * Returns null when the caller has none — the caller then mints a fresh one,
+   * which is what makes the link roll over automatically once the 1-hour window
+   * closes.
+   */
+  findLatestReusableInviteLink(communityId: string, createdBy: string) {
+    return prisma.communityInviteLink.findFirst({
+      where: {
+        communityId,
+        createdBy,
+        autoApprove: false,
+        expiresAt: { gt: new Date() },
+        // Both fields are OPTIONAL, so an untouched row simply omits them — and
+        // on Mongo `field: null` matches only documents where the field EXISTS
+        // and is null. Each needs its own `isSet: false` alternative, ANDed so
+        // the two OR groups don't collapse into one.
+        AND: [
+          { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
+          { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+    });
   },
 
   /**
@@ -3532,11 +3571,14 @@ export const communityRepository = {
     if (params.status === "revoked") {
       where.revokedAt = { not: null };
     } else if (params.status === "expired") {
-      where.revokedAt = null;
+      where.AND = [NOT_REVOKED];
       where.expiresAt = { lt: now };
     } else if (params.status === "active") {
-      where.revokedAt = null;
-      where.OR = [{ expiresAt: null }, { expiresAt: { gt: now } }];
+      // ANDed, not two `OR` keys — the second would overwrite the first.
+      where.AND = [
+        NOT_REVOKED,
+        { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      ];
     }
     const [rows, total] = await Promise.all([
       prisma.communityInviteLink.findMany({

@@ -117,6 +117,7 @@ export const AUDIT_ACTIONS = {
   ADMIN_UPDATED: "admin.updated",
   ADMIN_ACTIVATED: "admin.activated",
   ADMIN_DEACTIVATED: "admin.deactivated",
+  ADMIN_DELETED: "admin.deleted",
   ADMIN_PERMISSIONS_UPDATED: "admin.permissions_updated",
   ADMIN_PROFILE_UPDATED: "admin.profile_updated",
   ADMIN_PASSWORD_CHANGED: "admin.password_changed",

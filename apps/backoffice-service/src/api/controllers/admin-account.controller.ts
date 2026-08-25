@@ -135,6 +135,25 @@ export const deactivateAdminAccount: RequestHandler = (req, res, next) => {
   })();
 };
 
+/** DELETE /v1/admin-accounts/:adminId — soft-delete a deactivated account. */
+export const deleteAdminAccount: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const adminId = req.params.adminId as string;
+      const result = await adminAccountService.deleteAdminAccount(
+        adminId,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_ACCOUNT_DELETE_SUCCESS", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
 /** PATCH /v1/admin-accounts/:adminId/status — unified activate/deactivate. */
 export const updateAdminAccountStatus: RequestHandler = (req, res, next) => {
   void (async () => {

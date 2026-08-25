@@ -99,6 +99,7 @@ export {
   updateAdminAccount,
   activateAdminAccount,
   deactivateAdminAccount,
+  deleteAdminAccount,
   updateAdminAccountStatus,
   listPermissions,
   getAdminPermissions,

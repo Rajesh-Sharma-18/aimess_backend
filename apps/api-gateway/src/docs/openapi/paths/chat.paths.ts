@@ -1897,7 +1897,10 @@ const inviteLinkPreview = {
     tags: ["Chat — Groups"],
     operationId: "previewGroupInviteLink",
     summary: "Preview invite link",
-    description: "Public endpoint — no auth required.",
+    description:
+      "Public endpoint — auth is OPTIONAL. Send the caller's bearer token to " +
+      "receive `isJoined` (View Group vs Join Group). Returns 400 " +
+      "CHAT_INVITE_LINK_EXPIRED once the link's 1-hour lifetime has passed.",
     parameters: [
       {
         name: "token",

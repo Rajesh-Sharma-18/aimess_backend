@@ -598,7 +598,8 @@ export const COMMUNITY_MESSAGES = {
   },
   COMMUNITY_INVITE_LINK_EXPIRED: {
     vi: "Liên kết mời đã hết hạn",
-    en: "Invite link has expired",
+    // Product-fixed copy — the client shows this verbatim on the invite screen.
+    en: "Invitation link expired",
     th: "ลิงก์เชิญหมดอายุแล้ว",
   },
   COMMUNITY_INVITE_LINK_EXHAUSTED: {

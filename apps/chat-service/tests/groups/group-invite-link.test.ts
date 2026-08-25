@@ -430,11 +430,20 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
     expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
   });
 
-  it("EDGE: skips a recipient who is already an active member", async () => {
+  it("EDGE: still invites a recipient who is already an active member", async () => {
     mockGroupAndCaller();
     // Both the caller AND the recipient are active members this time.
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
+    });
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+    mocks.privateRoomRepo.create.mockResolvedValue({ roomId: "prv_1" });
+    mocks.privateRoomRepo.allocateSequence.mockResolvedValue(1);
+    mocks.privateMessageRepo.findByClientMessageId.mockResolvedValue(null);
+    mocks.privateMessageRepo.createMessage.mockResolvedValue({
+      id: "msg-1",
+      createdAt: new Date(),
+      countInUnread: true,
     });
 
     const res = await request(app)
@@ -444,9 +453,9 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.results).toEqual([
-      { userId: RECIPIENT, status: "SKIPPED_ALREADY_MEMBER" },
+      { userId: RECIPIENT, status: "SENT" },
     ]);
-    expect(mocks.privateMessageRepo.createMessage).not.toHaveBeenCalled();
+    expect(mocks.privateMessageRepo.createMessage).toHaveBeenCalled();
   });
 
   it("SECURITY: 403 when the caller is not a group member", async () => {
@@ -476,5 +485,167 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
       .send({ userIds: [RECIPIENT] });
 
     expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1-hour expiry + membership-driven CTA ("Join Group" vs "View Group")
+// ---------------------------------------------------------------------------
+
+const HOUR_MS = 60 * 60 * 1000;
+
+describe("invite-link lifetime — every link dies 1 hour after creation", () => {
+  beforeEach(() => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      settings: {},
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "ADMIN",
+    });
+    mocks.groupInviteLinkRepo.create.mockImplementation(
+      async (data: Record<string, unknown>) => data
+    );
+  });
+
+  it("a bare create stamps expiresAt exactly 1 hour out", async () => {
+    const before = Date.now();
+    const res = await request(app)
+      .post("/api/chat/invite-links")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM });
+    const after = Date.now();
+
+    expect(res.status).toBe(201);
+    const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
+    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + HOUR_MS
+    );
+    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(after + HOUR_MS);
+  });
+
+  it("a caller-supplied expiry LONGER than an hour is clamped", async () => {
+    const before = Date.now();
+    await request(app)
+      .post("/api/chat/invite-links")
+      .set(bearer(makeAccessToken()))
+      .send({
+        roomId: ROOM,
+        expiresAt: new Date(Date.now() + 7 * 24 * HOUR_MS).toISOString(),
+      });
+
+    const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
+    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(
+      Date.now() + HOUR_MS
+    );
+    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + HOUR_MS - 1000
+    );
+  });
+
+  it("a caller-supplied SHORTER expiry is honoured", async () => {
+    const shortExpiry = new Date(Date.now() + 5 * 60_000);
+    await request(app)
+      .post("/api/chat/invite-links")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, expiresAt: shortExpiry.toISOString() });
+
+    const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
+    expect(written.expiresAt.getTime()).toBe(shortExpiry.getTime());
+  });
+
+  it("an expired link cannot be joined through the API (400, no membership write)", async () => {
+    mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
+      token: TOKEN,
+      roomId: ROOM,
+      createdBy: "u_inviter",
+      expiresAt: new Date(Date.now() - 1000),
+      maxUses: null,
+      usedCount: 0,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/invite-links/join")
+      .set(bearer(makeAccessToken()))
+      .send({ token: TOKEN });
+
+    expect(res.status).toBe(400);
+    expect(mocks.groupInviteLinkRepo.incrementUsedCount).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET preview — isJoined drives Join Group vs View Group", () => {
+  const liveLink = {
+    token: TOKEN,
+    roomId: ROOM,
+    createdBy: "u_inviter",
+    expiresAt: new Date(Date.now() + HOUR_MS),
+    maxUses: null,
+    usedCount: 0,
+  };
+  const room = {
+    roomId: ROOM,
+    name: "Devs",
+    avatar: "",
+    description: "",
+    memberCount: 3,
+    memberLimit: 50,
+  };
+
+  beforeEach(() => {
+    mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue(liveLink);
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(room);
+  });
+
+  it("isJoined=false for an authenticated NON-member", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`/api/chat/invite-links/preview/${TOKEN}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isJoined).toBe(false);
+    expect(res.body.data.expiresAt).toBe(liveLink.expiresAt.toISOString());
+  });
+
+  it("isJoined=true for an ACTIVE member of any role", async () => {
+    for (const role of ["MEMBER", "MODERATOR", "ADMIN"]) {
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({ role });
+
+      const res = await request(app)
+        .get(`/api/chat/invite-links/preview/${TOKEN}`)
+        .set(bearer(makeAccessToken()));
+
+      expect(res.body.data.isJoined).toBe(true);
+    }
+  });
+
+  it("flips back to isJoined=false once the user has left — same link, no new token", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    const joined = await request(app)
+      .get(`/api/chat/invite-links/preview/${TOKEN}`)
+      .set(bearer(makeAccessToken()));
+    expect(joined.body.data.isJoined).toBe(true);
+
+    // The user leaves: the membership row is no longer ACTIVE.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    const left = await request(app)
+      .get(`/api/chat/invite-links/preview/${TOKEN}`)
+      .set(bearer(makeAccessToken()));
+
+    expect(left.status).toBe(200);
+    expect(left.body.data.isJoined).toBe(false);
+  });
+
+  it("isJoined=false for an anonymous preview (no membership to read)", async () => {
+    const res = await request(app).get(
+      `/api/chat/invite-links/preview/${TOKEN}`
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isJoined).toBe(false);
   });
 });

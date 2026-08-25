@@ -7183,7 +7183,7 @@ export const openApiSchemas = {
         type: "string",
         enum: ["INVITED", "ALREADY_INVITED", "ALREADY_MEMBER", "FAILED"],
         description:
-          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = user is already an ACTIVE member; FAILED = banned, self-invite, or other error.",
+          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = retained for back-compat, no longer emitted (an ACTIVE member is invited again — accepting is a no-op); FAILED = self-invite or an ineligible recipient account (deleted / suspended / blocked).",
       },
       inviteId: {
         type: "string",
@@ -8273,7 +8273,10 @@ export const openApiSchemas = {
         format: "int64",
         nullable: true,
         description:
-          "Invite-link expiry as epoch milliseconds; null = no expiry.",
+          "Invite-link expiry as epoch milliseconds — always 1 hour after the " +
+          "link was created. Past it, preview and redeem both fail with 410 " +
+          "COMMUNITY_INVITE_LINK_EXPIRED, so the client shows " +
+          "\"Invitation link expired\" instead of a join CTA.",
         example: 1785000000000,
       },
       creatorId: {
@@ -9471,12 +9474,34 @@ export const openApiSchemas = {
   },
   ChatInviteLinkPreview: {
     type: "object",
-    description: "Public preview of a group invite link.",
+    description:
+      "Preview of a group invite link. Optional auth: send the caller's bearer " +
+      "token to get `isJoined`, which decides whether the client shows " +
+      "\"View Group\" (already a member) or \"Join Group\".",
     properties: {
       token: { type: "string" },
+      groupId: { type: "string" },
       groupName: { type: "string" },
       groupAvatar: { type: "string" },
+      description: { type: "string" },
       memberCount: { type: "integer" },
+      memberLimit: { type: "integer" },
+      invitedByName: { type: "string" },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the link stops working — always 1 hour after it was created. " +
+          "Past this instant preview and join both fail with " +
+          "CHAT_INVITE_LINK_EXPIRED (400).",
+      },
+      isJoined: {
+        type: "boolean",
+        description:
+          "Whether the CALLER is an ACTIVE member right now. Always false for " +
+          "an anonymous preview. Read live per request — never cache it.",
+      },
       shareName: { type: "string" },
     },
     required: ["token", "groupName", "memberCount"],
@@ -9489,7 +9514,9 @@ export const openApiSchemas = {
         type: "string",
         format: "date-time",
         nullable: true,
-        description: "Optional expiry (ISO 8601).",
+        description:
+          "Optional expiry (ISO 8601). Clamped server-side to at most 1 hour " +
+          "from creation; omitted means exactly 1 hour.",
       },
       maxUses: {
         type: "integer",

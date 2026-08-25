@@ -69,9 +69,12 @@ export class GroupRoomRepository {
     });
   }
 
-  /** Count of active group rooms — admin dashboard aggregate. */
+  /**
+   * Total group rooms (all statuses — open + closed) — admin dashboard aggregate.
+   * Dashboard `totalGroups` wants every group, not only ACTIVE ones.
+   */
   async countActive(): Promise<number> {
-    return this.prisma.groupRoom.count({ where: { status: "ACTIVE" } });
+    return this.prisma.groupRoom.count();
   }
 
   async allocateSequence(roomId: string): Promise<number> {

@@ -287,6 +287,13 @@ export function registerAdminNamespace(
   admin.on("connection", (socket: Socket) => {
     const { adminId } = socket.data;
     void socket.join(`admin:${adminId}`);
+    // Shared broadcast room for panel-wide list bumps (currently: the livestream
+    // datatable). No permission gate here because the payloads are empty by
+    // contract — the client refetches on receipt, and REST enforces its own
+    // permissions on the refetch, so an admin without livestreams.read receives
+    // a bump they do nothing with. Publishers: any service that redis.publish
+    // to channel "admin:broadcast" with the standard `{event, data}` envelope.
+    void socket.join("admin:broadcast");
     logger.debug(`/admin connected adminId=${String(adminId)}`);
 
     // Communities this socket currently WANTS to watch. The permission check is

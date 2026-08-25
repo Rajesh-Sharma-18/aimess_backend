@@ -13,7 +13,10 @@ import {
   normalizeMessageType,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
-import { localizedActivityPreview } from "../lib/localize-system-preview.js";
+import {
+  localizedActivityPreview,
+  withResolvedSystemActor,
+} from "../lib/localize-system-preview.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { env } from "../config/env.js";
@@ -47,6 +50,7 @@ import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
   resolveDisplayName,
+  resolveRealDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import type { PresenceService, PresenceView } from "./presence.service.js";
@@ -902,7 +906,17 @@ export class PrivateRoomService {
         | Date
         | undefined;
       const hiddenByCutoff = isHiddenByCutoff(rawLmDate, cutoff);
-      const visibleRawLm = hiddenByCutoff ? null : rawLm;
+      // Recover the actor NAME on a SYSTEM/invite row that was written without
+      // one (see `resolveSystemActorName`). A private room has exactly one
+      // peer, so the sender id already on the row resolves against the snapshot
+      // this loop is holding — no extra lookup, and no dependence on whether
+      // the two are still friends. This repairs rows persisted before the
+      // writer-side fix, on both this preview and the `lastMessage` snapshot
+      // the unified inbox re-renders from.
+      const visibleRawLm = withResolvedSystemActor(
+        hiddenByCutoff ? null : rawLm,
+        (id) => (id === peerId ? resolveRealDisplayName(snapshot) : "")
+      );
       // "This viewer has NOTHING visible left in this room" — either their
       // clear/delete-conversation cutoff swallowed the last message, or the
       // per-user resolver walked back and found no previous-visible message.
