@@ -5,6 +5,7 @@ import {
   activateAdminAccount,
   createAdminAccount,
   deactivateAdminAccount,
+  deleteAdminAccount,
   getAdminAccountDetails,
   getAdminPermissions,
   listAdminAccounts,
@@ -75,6 +76,13 @@ adminAccountRoutes.patch(
   validateParams(adminAccountIdParamSchema),
   validateBody(updateAdminAccountSchema),
   updateAdminAccount
+);
+// Soft-delete a deactivated account (permanent, row retained for audit/FK).
+adminAccountRoutes.delete(
+  "/admin-accounts/:adminId",
+  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  validateParams(adminAccountIdParamSchema),
+  deleteAdminAccount
 );
 adminAccountRoutes.post(
   "/admin-accounts/:adminId/activate",
