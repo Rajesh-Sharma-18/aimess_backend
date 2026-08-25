@@ -297,7 +297,9 @@ describe("CallService — redialling settles the abandoned ring honestly", () =>
     expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
   });
 
-  it("a ring abandoned INSIDE the grace window stays a cancel, with no push", async () => {
+  it("a ring abandoned after only a second still becomes MISSED, with the push", async () => {
+    // No misdial grace (CALL_CANCEL_GRACE_SEC is 0): redialling away from a ring
+    // the callee never took leaves them a missed call however briefly it rang.
     const { service, stubs } = buildService();
     stubs.callRepo.findCallerRinging.mockResolvedValue([staleRing(1)]);
 
@@ -306,12 +308,12 @@ describe("CallService — redialling settles the abandoned ring honestly", () =>
     expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
       "stale-1",
       "RINGING",
-      expect.objectContaining({ status: "ENDED" })
+      expect.objectContaining({ status: "MISSED" })
     );
     expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
-      expect.objectContaining({ callId: "stale-1", outcome: "CANCELLED" })
+      expect.objectContaining({ callId: "stale-1", outcome: "MISSED" })
     );
-    expect(publishCallMissedSafe as jest.Mock).not.toHaveBeenCalled();
+    expect(publishCallMissedSafe as jest.Mock).toHaveBeenCalledTimes(1);
   });
 
   it("NO GROUPING: two redials leave two separate call rows, each settled on its own", async () => {

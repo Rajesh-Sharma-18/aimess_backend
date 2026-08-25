@@ -293,4 +293,21 @@ export class CallRepository {
       },
     });
   }
+
+  async findRingingForCallee(
+    calleeId: string,
+    freshCutoff: Date
+  ): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: {
+        OR: [
+          { calleeId },
+          { calleeIds: { has: calleeId } },
+        ],
+        status: CallStatus.RINGING,
+        initiatedAt: { gte: freshCutoff },
+      },
+      orderBy: { initiatedAt: "desc" },
+    });
+  }
 }

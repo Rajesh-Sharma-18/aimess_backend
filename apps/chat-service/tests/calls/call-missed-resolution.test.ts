@@ -111,7 +111,6 @@ const ringingFor = (ringSec: number) => ({
 });
 
 const PAST_GRACE = CALL_CANCEL_GRACE_SEC + 25;
-const INSIDE_GRACE = Math.max(0, CALL_CANCEL_GRACE_SEC - 3);
 
 const cardStatuses = (stubs: ReturnType<typeof buildService>["stubs"]) =>
   stubs.callChatMessages.post.mock.calls.map(
@@ -160,16 +159,26 @@ describe("generic call:end — the path most missed calls actually take", () => 
     });
   });
 
-  it("still treats a hangup INSIDE the grace window as a cancel, with no missed push", async () => {
+  it("resolves an unanswered ring the caller cut immediately as MISSED, with a missed push", async () => {
+    // No misdial grace: a caller hanging up in the first second still leaves the
+    // callee a missed call. Regression guard for the "ends quickly → no missed
+    // notification" bug (CALL_CANCEL_GRACE_SEC is 0).
     const { service, stubs } = buildService();
-    stubs.callRepo.findByCallId.mockResolvedValue(ringingFor(INSIDE_GRACE));
+    stubs.callRepo.findByCallId.mockResolvedValue(ringingFor(0));
 
     const result = await service.endCall({ callId: "call-1", userId: CALLER });
 
-    expect(result.status).toBe(CallStatus.ENDED);
-    expect(cardStatuses(stubs)).toEqual(["CANCELLED"]);
-    expect(publishedEvents(stubs)).toContain("call:cancelled");
-    expect(missedPush).not.toHaveBeenCalled();
+    expect(result.status).toBe(CallStatus.MISSED);
+    expect(claimedStatus(stubs)).toBe(CallStatus.MISSED);
+    expect(cardStatuses(stubs)).toEqual(["MISSED"]);
+    expect(publishedEvents(stubs)).toContain("call:missed");
+    expect(publishedEvents(stubs)).not.toContain("call:cancelled");
+    expect(missedPush).toHaveBeenCalledTimes(1);
+    expect(missedPush.mock.calls[0][0]).toMatchObject({
+      callId: "call-1",
+      calleeId: CALLEE,
+      callerId: CALLER,
+    });
   });
 
   it("keeps honouring an explicit reason=NO_ANSWER regardless of ring length", async () => {
@@ -274,8 +283,8 @@ describe("server-driven teardown of a ring nobody took", () => {
   // paths that legitimately settle a ring: `endCall` above (which is what the
   // gateway's socket-drop cleanup invokes) and `endCallsBetween` below.
   for (const [label, ringSec] of [
-    ["past the grace window", PAST_GRACE],
-    ["inside the grace window", INSIDE_GRACE],
+    ["after a long ring", PAST_GRACE],
+    ["after a short ring", 1],
   ] as const) {
     it(`LiveKit room_finished ${label} leaves the ring alone`, async () => {
       const { service, stubs } = buildService();

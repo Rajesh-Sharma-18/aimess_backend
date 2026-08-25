@@ -114,6 +114,8 @@ interface CallActivityPayload {
   callerAvatar: string;
   calleeName: string;
   calleeAvatar: string;
+  /** Callee session that settled the ring (end/decline) — excluded from the missed push. */
+  excludeSessionId?: string;
 }
 
 /**
@@ -279,16 +281,34 @@ async function handleCallIncoming(data: CallIncomingPayload): Promise<void> {
   });
 }
 
-async function handleCallMissed(data: CallMissedPayload): Promise<void> {
-  logger.info(
-    `[push:consume] call.missed callId=${data.callId} callee=${data.calleeId} ` +
-      `caller=${data.callerId} type=${data.callType}`
-  );
-  if (!data.calleeId || !data.callId) {
-    logger.warn("[push:consume] dropped — missing calleeId/callId");
-    return;
-  }
-
+/**
+ * Send the "Missed call from X" push to one callee — the ONE place this push is
+ * built, so every path that resolves an unanswered ring produces an identical
+ * banner. Two producers reach it:
+ *
+ *   - `call.missed` (handleCallMissed) — the caller cut the ring, the caller's
+ *     client reported NO_ANSWER, or the server timeout sweep reaped it.
+ *   - `call.activity` (handleCallActivity) — every OTHER terminal settle of an
+ *     unanswered ring: the callee ended it, or declined it. These never emit a
+ *     `call.missed`, so before this they created the badged history row with no
+ *     push. Now the same predicate that badges the row (`isUnreadCallActivity`)
+ *     also fires this.
+ *
+ * The shared `claimPushOnce("call.missed", …)` claim makes the two idempotent
+ * against EACH OTHER: on the caller-cut path both events arrive, and whichever
+ * lands first sends the single push. `excludeSessionId` skips the callee device
+ * that just ended/declined the ring — present only on the `call.activity` path.
+ */
+async function sendMissedCallPush(data: {
+  callId: string;
+  calleeId: string;
+  callerId: string;
+  callerName?: string;
+  callerAvatar?: string;
+  callType: string;
+  missedAt: number;
+  excludeSessionId?: string;
+}): Promise<void> {
   if (
     !(await claimPushOnce(
       "call.missed",
@@ -298,7 +318,7 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     ))
   ) {
     logger.warn(
-      `[push:consume] call.missed callId=${data.callId} callee=${data.calleeId} suppressed — already pushed (redelivery)`
+      `[push:consume] missed push callId=${data.callId} callee=${data.calleeId} suppressed — already pushed (redelivery or other producer)`
     );
     return;
   }
@@ -321,11 +341,15 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
     // Distinct from the ring's `call:<id>` collapse key — the ring is long over
     // by the time this fires, no need to share/replace it.
     collapseKey: `call:missed:${data.callId}`,
+    // The device that just ended/declined the ring already knows it is over;
+    // re-buzzing it is the stale-ring-resurfacing wake the cancel push also
+    // guards against. Absent on the caller-cut/sweep path (no callee actor).
+    excludeSessionId: data.excludeSessionId,
     // Not time-critical — the moment already passed. Default priority/TTL (24h)
     // is fine, unlike the ring which had to be immediate and short-lived.
     //
     // Push ONLY. The Notification-Center card for a missed call is written by
-    // the `call.activity` projection below, which covers every outcome (missed,
+    // the `call.activity` projection, which covers every outcome (missed,
     // declined, cancelled, completed, failed) with one consistent line and one
     // row per call. Two writers for the same call produced two cards.
     skipInbox: true,
@@ -345,6 +369,27 @@ async function handleCallMissed(data: CallMissedPayload): Promise<void> {
       idempotencyKey: data.callId,
       deepLink,
     },
+  });
+}
+
+async function handleCallMissed(data: CallMissedPayload): Promise<void> {
+  logger.info(
+    `[push:consume] call.missed callId=${data.callId} callee=${data.calleeId} ` +
+      `caller=${data.callerId} type=${data.callType}`
+  );
+  if (!data.calleeId || !data.callId) {
+    logger.warn("[push:consume] dropped — missing calleeId/callId");
+    return;
+  }
+
+  await sendMissedCallPush({
+    callId: data.callId,
+    calleeId: data.calleeId,
+    callerId: data.callerId,
+    callerName: data.callerName,
+    callerAvatar: data.callerAvatar,
+    callType: data.callType,
+    missedAt: data.missedAt,
   });
 }
 
@@ -604,6 +649,30 @@ export async function handleCallActivity(
       })
     )
   );
+
+  // The missed-call PUSH lives here too, keyed on the SAME predicate that badges
+  // the callee's row (`isUnreadCallActivity`), so a badged "Missed call" entry
+  // and its push can never drift apart again. This covers every settle path that
+  // does NOT emit a `call.missed`: the callee ended an unanswered ring, or
+  // declined it. On the caller-cut/sweep paths `call.missed` also arrives, and
+  // the shared `claimPushOnce("call.missed", …)` keeps it to one push total.
+  //
+  // Only the callee's INCOMING side can badge missed (isUnreadCallActivity is
+  // false for OUTGOING), so the caller never gets a missed push. Fired
+  // independently of the inbox rows above: pushToUser swallows its own failures,
+  // and the dedup claim makes a redelivery after the throw below a no-op.
+  if (isUnreadCallActivity(status, "INCOMING", ringDurationSec)) {
+    await sendMissedCallPush({
+      callId: data.callId,
+      calleeId: data.calleeId,
+      callerId: data.callerId,
+      callerName: data.callerName,
+      callerAvatar: data.callerAvatar,
+      callType,
+      missedAt: data.endedAt,
+      excludeSessionId: data.excludeSessionId,
+    });
+  }
 
   // A row that never got written is a hole in someone's call history, and
   // pushToUser swallows its own failures — so name the recipient here or it is

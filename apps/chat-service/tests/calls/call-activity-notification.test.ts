@@ -261,11 +261,14 @@ describe("isUnreadCallActivity", () => {
     expect(isUnreadCallActivity("FAILED", "OUTGOING")).toBe(false);
   });
 
-  it("does not badge a cancel the caller took back inside the grace window", () => {
-    expect(
-      isUnreadCallActivity("CANCELLED", "INCOMING", CALL_CANCEL_GRACE_SEC - 1)
-    ).toBe(false);
-    expect(isUnreadCallActivity("CANCELLED", "INCOMING", 0)).toBe(false);
+  it("badges a cancelled ring whatever its length — there is no misdial grace", () => {
+    // CALL_CANCEL_GRACE_SEC is 0: any ring the caller gave up on before it was
+    // answered is a missed call for the callee, even one cut in the first second.
+    for (const ringDurationSec of [0, 1, CALL_CANCEL_GRACE_SEC, 60]) {
+      expect(
+        isUnreadCallActivity("CANCELLED", "INCOMING", ringDurationSec)
+      ).toBe(true);
+    }
   });
 
   it("never badges your own outgoing call", () => {

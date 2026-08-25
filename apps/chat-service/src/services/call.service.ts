@@ -1209,34 +1209,27 @@ export class CallService {
       "DECLINED",
       endedAt,
       0,
-      params.calleeId
+      params.calleeId,
+      // A declined ring badges as missed on the callee's OTHER devices (they did
+      // not act there); the missed push now follows that same row. The declining
+      // device is excluded so it is not re-buzzed for a call it just dismissed.
+      params.sessionId
     );
 
-    // NO missed-call push here, on either decline path. A decline is the
-    // callee ACTING on the ring, not missing it: the dismissal published just
-    // above (reason "declined") is what clears it from their other devices, and
-    // the Notification-Center row comes from the DECLINED card projection —
-    // which `isUnreadCallActivity` already badges. Pushing "Missed call from X"
-    // on top buzzed the very device that had just tapped Decline (the missed
-    // producer takes no session exclusion), immediately after telling it the
-    // ring was handled.
-    // NO missed-call push on a decline. A declined call is not a missed one,
-    // and `call.missed` is a plain banner-with-sound addressed to the CALLEE —
-    // the person who just declined. It carries no acting-device exclusion (only
-    // `CallCancelPayload` has one), and its `call:missed:<id>` collapse key
-    // differs from the ring's `call:<id>`, so it does not replace the ring: it
-    // stacks a fresh "Missed call from X" alert seconds after the user
-    // deliberately dismissed the call. With no TTL it inherits the 24 h
-    // default, so a device offline at decline time can surface it hours later.
+    // The missed-call push for a decline is now owned by the `call.activity`
+    // projection above, NOT emitted inline here. That projection fires on every
+    // terminal transition and pushes to the callee whenever the row badges as
+    // missed (`isUnreadCallActivity`), with the acting device excluded — so the
+    // decliner's OTHER devices get the "Missed call from X" banner that matches
+    // the DECLINED history row, while the device that tapped Decline is not
+    // re-buzzed. Consolidating the push there is what keeps the badge and the
+    // push in lockstep across every settle path (decline, callee-ended ring,
+    // caller cut, timeout sweep); emitting a second `call.missed` here would
+    // double-push on the paths where the fan-out already fires one.
     //
-    // Nothing is lost by omitting it. The push writes no history (`skipInbox`);
-    // the ONE call-history row comes from the `call.activity` projection, which
-    // fires on every terminal transition and already marks a DECLINED call
-    // unread for the callee — so the decliner's other devices still get the row
-    // surfaced. Their ring is dismissed by the `call.cancelled` push above.
-    //
-    // The genuine missed-call push stays where it belongs: `fanOutUnansweredRing`,
-    // the ring that really was never answered.
+    // The ring on the callee's other devices is still dismissed by the
+    // `call.cancelled` push above (reason "declined"), which shares the ring's
+    // collapse key and replaces it — the missed banner then lands after it.
 
     return updated;
   }
@@ -1444,7 +1437,11 @@ export class CallService {
         "CANCELLED",
         endedAt,
         0,
-        params.userId
+        params.userId,
+        // The callee ending an unanswered ring is still a call they missed (the
+        // CANCELLED row badges as such). Push it to their other devices, but
+        // skip the one that just hung up.
+        params.sessionId
       );
     } else {
       await this.publishToCallAndParticipants(
@@ -1672,6 +1669,50 @@ export class CallService {
         ? page[page.length - 1]!.initiatedAt.toISOString()
         : null;
     return { calls: page, nextCursor, hasMore };
+  }
+
+  async getActiveIncoming(calleeId: string): Promise<
+    {
+      callId: string;
+      callerId: string;
+      callerName: string;
+      callerAvatarUrl: string;
+      callType: string;
+      livekitUrl: string;
+      token: string;
+    }[]
+  > {
+    const now = new Date();
+    const freshCutoff = new Date(
+      now.getTime() - env.CALL_RINGING_TIMEOUT_SEC * 1000
+    );
+    const ringing = await this.callRepo.findRingingForCallee(
+      calleeId,
+      freshCutoff
+    );
+    if (ringing.length === 0) return [];
+
+    const results = await Promise.all(
+      ringing.map(async (call) => {
+        const [snapshot, creds] = await Promise.all([
+          this.getUserSnapshot(call.callerId).catch(() => ({
+            displayName: "",
+            avatarUrl: "",
+          })),
+          this.livekit.mintToken(call.callId, calleeId),
+        ]);
+        return {
+          callId: call.callId,
+          callerId: call.callerId,
+          callerName: snapshot.displayName,
+          callerAvatarUrl: snapshot.avatarUrl,
+          callType: call.type,
+          livekitUrl: creds.url,
+          token: creds.token,
+        };
+      })
+    );
+    return results;
   }
 
   /**
@@ -2111,7 +2152,11 @@ export class CallService {
     outcome: CallChatMessageOutcome,
     endedAt: Date,
     durationSec: number,
-    endedBy: string
+    endedBy: string,
+    // Session of the callee device that settled an unanswered ring (end/decline),
+    // so the missed-call push skips it and buzzes only their other devices. Only
+    // the callee-driven call sites pass it; server/caller settlements omit it.
+    endedBySessionId?: string
   ): Promise<void> {
     // GROUP calls land in the GroupMessage timeline instead — CallChatMessageService
     // is built around a single caller/callee pair and writes PrivateMessage rows.
@@ -2131,7 +2176,13 @@ export class CallService {
     // `callChatMessages` guard below: the history row does not depend on the
     // chat timeline row having been written.
     if (isTerminalCallStatus(outcome)) {
-      await this.projectCallActivitySafe(call, outcome, endedAt, durationSec);
+      await this.projectCallActivitySafe(
+        call,
+        outcome,
+        endedAt,
+        durationSec,
+        endedBySessionId
+      );
     }
 
     if (!this.callChatMessages) return;
@@ -2176,7 +2227,8 @@ export class CallService {
     call: Call,
     outcome: CallChatMessageOutcome,
     endedAt: Date,
-    durationSec: number
+    durationSec: number,
+    endedBySessionId?: string
   ): Promise<void> {
     if (call.groupId) return;
     const empty = { displayName: "", avatarUrl: "" };
@@ -2216,6 +2268,7 @@ export class CallService {
       callerAvatar: caller.avatarUrl ?? "",
       calleeName: callee.displayName ?? "",
       calleeAvatar: callee.avatarUrl ?? "",
+      excludeSessionId: endedBySessionId,
     });
   }
 

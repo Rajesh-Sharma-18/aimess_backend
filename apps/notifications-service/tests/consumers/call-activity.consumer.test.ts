@@ -5,11 +5,24 @@
  * rows must be independent: a failure writing the caller's history is not a
  * reason for the callee to lose theirs. A failure must also surface (throw)
  * so the message is redelivered rather than silently dropped.
+ *
+ * The projection ALSO owns the missed-call push now: whenever the callee's row
+ * badges as missed (`isUnreadCallActivity`), it fires the same "Missed call
+ * from X" banner as `call.missed`, so every settle path that never emits a
+ * `call.missed` (callee ended / declined the ring) still notifies. The two
+ * artifacts are distinguishable: inbox rows carry `skipPush: true` and
+ * `type: "call.activity"`; the missed push carries `skipInbox: true` and
+ * `type: "CALL_MISSED"`.
  */
 const pushToUser = jest.fn();
 jest.mock("../../src/services/push.service.js", () => ({
   pushToUser: (...args: unknown[]) => pushToUser(...args),
 }));
+
+const redisMock = {
+  set: jest.fn(async () => "OK" as string | null),
+};
+jest.mock("../../src/config/redis.js", () => ({ redis: redisMock }));
 
 import { handleCallActivity } from "../../src/consumers/call.consumer.js";
 
@@ -32,19 +45,37 @@ const payload = {
   calleeAvatar: "",
 };
 
+type PushInput = {
+  userId: string;
+  type: string;
+  skipPush?: boolean;
+  skipInbox?: boolean;
+  excludeSessionId?: string;
+  collapseKey?: string;
+  data: Record<string, string>;
+};
+
+const inputs = (): PushInput[] =>
+  pushToUser.mock.calls.map(([input]) => input as PushInput);
+const inboxRows = (): PushInput[] =>
+  inputs().filter((i) => i.type === "call.activity");
+const missedPushes = (): PushInput[] =>
+  inputs().filter((i) => i.type === "CALL_MISSED");
+
 beforeEach(() => {
   jest.clearAllMocks();
   pushToUser.mockResolvedValue(undefined);
+  redisMock.set.mockResolvedValue("OK");
 });
 
 describe("handleCallActivity", () => {
   it("writes one row for each participant, with per-side direction", async () => {
     await handleCallActivity(payload);
 
-    expect(pushToUser).toHaveBeenCalledTimes(2);
-    const calls = pushToUser.mock.calls.map(([input]) => input);
-    const caller = calls.find((c) => c.userId === CALLER);
-    const callee = calls.find((c) => c.userId === CALLEE);
+    const rows = inboxRows();
+    expect(rows).toHaveLength(2);
+    const caller = rows.find((c) => c.userId === CALLER)!;
+    const callee = rows.find((c) => c.userId === CALLEE)!;
 
     expect(caller.data.callDirection).toBe("OUTGOING");
     expect(callee.data.callDirection).toBe("INCOMING");
@@ -54,17 +85,58 @@ describe("handleCallActivity", () => {
     // Only the side that missed the call is badged.
     expect(caller.data.markRead).toBe("true");
     expect(callee.data.markRead).toBeUndefined();
-    // History only — the ring and the missed-call alert are pushed elsewhere.
+    // The rows are history only — the push is the separate CALL_MISSED below.
     expect(caller.skipPush).toBe(true);
     expect(callee.skipPush).toBe(true);
+  });
+
+  it("pushes the missed-call banner to the callee whose row badges as missed", async () => {
+    await handleCallActivity(payload);
+
+    const missed = missedPushes();
+    expect(missed).toHaveLength(1);
+    const push = missed[0]!;
+    // Only the callee (INCOMING) is ever badged missed — never the caller.
+    expect(push.userId).toBe(CALLEE);
+    expect(push.skipInbox).toBe(true);
+    expect(push.collapseKey).toBe("call:missed:call-1");
+    expect(push.data).toMatchObject({
+      type: "CALL_MISSED",
+      callId: "call-1",
+      callerId: CALLER,
+      callType: "AUDIO",
+    });
+    // Claimed on the shared missed key, so a `call.missed` for the same call
+    // (caller-cut path) does not double-push.
+    expect(redisMock.set.mock.calls[0][0]).toBe(
+      "push:sent:call.missed:call-1:" + CALLEE
+    );
+  });
+
+  it("excludes the settling device from the missed push", async () => {
+    await handleCallActivity({ ...payload, excludeSessionId: "sess-9" });
+
+    const push = missedPushes()[0]!;
+    expect(push.excludeSessionId).toBe("sess-9");
+  });
+
+  it("does NOT push for a connected call — an answered ENDED call is history only", async () => {
+    await handleCallActivity({
+      ...payload,
+      status: "ENDED",
+      durationSec: 120,
+    });
+
+    expect(inboxRows()).toHaveLength(2);
+    expect(missedPushes()).toHaveLength(0);
   });
 
   it("gives each side a navigation target instead of making the client infer one", async () => {
     await handleCallActivity(payload);
 
-    const calls = pushToUser.mock.calls.map(([input]) => input);
-    const caller = calls.find((c) => c.userId === CALLER);
-    const callee = calls.find((c) => c.userId === CALLEE);
+    const rows = inboxRows();
+    const caller = rows.find((c) => c.userId === CALLER)!;
+    const callee = rows.find((c) => c.userId === CALLEE)!;
 
     // The PEER's conversation on each side — the same destination the
     // missed-call push already deep-links to, and where the call card and the
@@ -81,7 +153,7 @@ describe("handleCallActivity", () => {
     });
   });
 
-  it("emits every data value as a string — the FCM data map takes nothing else", async () => {
+  it("emits every inbox data value as a string — the FCM data map takes nothing else", async () => {
     // `durationSec` and `endedAt` are the ones that arrive as numbers from the
     // AMQP payload, so they are the ones that would slip through.
     await handleCallActivity({
@@ -90,7 +162,7 @@ describe("handleCallActivity", () => {
       endedAt: 1_700_000_000_123,
     });
 
-    for (const [input] of pushToUser.mock.calls) {
+    for (const input of inboxRows()) {
       for (const [key, value] of Object.entries(input.data)) {
         expect(typeof value).toBe(`string` as const);
         expect(key).toBeTruthy();
@@ -102,10 +174,10 @@ describe("handleCallActivity", () => {
 
   it("is replay-safe: a redelivered event carries the same identity, never a second card", async () => {
     await handleCallActivity(payload);
-    const first = pushToUser.mock.calls.map(([input]) => input);
+    const first = inboxRows();
     pushToUser.mockClear();
     await handleCallActivity(payload);
-    const second = pushToUser.mock.calls.map(([input]) => input);
+    const second = inboxRows();
 
     // Dedupe is STRUCTURAL, not a guard here: the same groupKey plus
     // `resurface: "false"` makes the downstream write transition the same row
@@ -125,10 +197,10 @@ describe("handleCallActivity", () => {
 
     await expect(handleCallActivity(payload)).rejects.toThrow(/callId=call-1/);
 
-    // Both were attempted — the caller's failure did not abort the callee's.
-    expect(pushToUser).toHaveBeenCalledTimes(2);
-    expect(
-      pushToUser.mock.calls.some(([input]) => input.userId === CALLEE)
-    ).toBe(true);
+    // Both inbox rows were attempted — the caller's failure did not abort the
+    // callee's — and the callee's missed push still fired.
+    expect(inboxRows()).toHaveLength(2);
+    expect(inputs().some((input) => input.userId === CALLEE)).toBe(true);
+    expect(missedPushes()).toHaveLength(1);
   });
 });

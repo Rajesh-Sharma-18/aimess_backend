@@ -128,6 +128,15 @@ export interface CallActivityPayload {
   callerAvatar: string;
   calleeName: string;
   calleeAvatar: string;
+  /**
+   * Auth session of the device that settled this call (the callee who ended or
+   * declined an unanswered ring). The consumer sends the missed-call push to
+   * every OTHER device of the callee but skips this one — it already knows the
+   * ring is over and re-buzzing it is exactly the stale-ring-resurfacing wake
+   * that {@link CallCancelPayload.excludeSessionId} guards against. Absent for
+   * server-driven or caller-driven settlements (no callee acting device).
+   */
+  excludeSessionId?: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;
