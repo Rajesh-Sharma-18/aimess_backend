@@ -237,8 +237,15 @@ export function isPersonalJoinSessionType(
  *                    history is unchanged. Moderation history lives in the audit
  *                    log and backoffice panel.
  *
- * MEMBER_UNBANNED is NOT hidden: it's an informational action that members may
- * legitimately see in context. MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
+ * MEMBER_UNBANNED is deliberately NOT in this set, but for a read-side reason
+ * rather than a write-side one: no call site emits it any more (community-service
+ * `unbanMember` posts no chat line, mirroring the silent MEMBER_BANNED policy —
+ * showing "{name} was unbanned" with no preceding ban line, about someone an
+ * unban does not re-add to the community, is worse than showing nothing). Keeping
+ * the type OUT of the set means lines persisted before that policy stay readable
+ * in history instead of being retroactively erased. Do not "tidy" it into the set.
+ *
+ * MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
  * (Telegram parity: only the affected member ever sees "You are muted…" /
  * "You were unmuted" — never broadcast, never visible to other members), and
  * persist exactly like any other PERSONAL line (COMMUNITY_JOINED):
@@ -252,6 +259,7 @@ export function isPersonalJoinSessionType(
  * | Member joined           | No (HIDDEN)     | Yes (COMMUNITY_JOINED PERSONAL) | No    |
  * | Member removed by admin | No (HIDDEN)     | No (socket only)     | No                 |
  * | Member banned           | No (HIDDEN)     | No (socket + push only) | No            |
+ * | Member unbanned         | No (not emitted)| No (socket only)     | No                 |
  * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
  * | Member muted/unmuted    | No (COMMUNITY)  | Yes (MEMBER_MUTED/UNMUTED PERSONAL) | No |
