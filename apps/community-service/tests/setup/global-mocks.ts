@@ -122,6 +122,10 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     upsertMemberMute: jest.fn(),
     deleteMemberMute: jest.fn(),
     findMemberMute: jest.fn(),
+    // The caller's OWN moderation mute, resolved on every community read so the
+    // detail payload can carry isMemberMuted/memberMutedUntil.
+    findActiveMemberMute: jest.fn().mockResolvedValue(null),
+    findMuteByUserAndCommunity: jest.fn().mockResolvedValue(null),
     findCategories: jest.fn().mockResolvedValue([]),
     findCategory: jest.fn(),
     createCategory: jest.fn(),
@@ -304,6 +308,7 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
 jest.mock("../../src/grpc/stream.client.js", () => ({
   getStreamClient: jest.fn().mockReturnValue({
     getActiveCommunityIds: jest.fn().mockResolvedValue(new Set()),
+    checkCreatorHasActiveStream: jest.fn().mockResolvedValue(false),
     getActiveStreamCounts: jest.fn().mockResolvedValue(new Map()),
     getLiveStreamsByCommunity: jest.fn().mockResolvedValue([]),
     notifyMemberMuteStatus: jest.fn().mockResolvedValue(undefined),
