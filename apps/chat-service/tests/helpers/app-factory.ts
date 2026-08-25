@@ -44,6 +44,7 @@ import { UnreadSummaryService } from "../../src/services/unread-summary.service.
 import { CommunityRoomService } from "../../src/services/community-room.service.js";
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
+import { CommunitySystemMessageService } from "../../src/services/community-system-message.service.js";
 import { ChatMessageOrchestrator } from "../../src/services/chat-message-orchestrator.js";
 import { UserSnapshotService } from "../../src/services/user-snapshot.service.js";
 import { CallService } from "../../src/services/call.service.js";
@@ -503,12 +504,23 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService
   );
+  // Real system-message service: the pin lifecycle RETRACTS its
+  // "<actor> pinned a message" line, so a `undefined` here silently skipped
+  // that half of pin/unpin/delete in every test.
+  const communitySystemMessageService = new CommunitySystemMessageService(
+    generalRoomMessageRepo,
+    generalRoomRepo,
+    cacheRepo,
+    userSnapshotService,
+    redis,
+    roomMemberRepo
+  );
   const communityPinService = new CommunityPinService(
     communityMessagePinRepo,
     generalRoomMessageRepo,
     generalRoomRepo,
     roomMemberRepo,
-    undefined,
+    communitySystemMessageService,
     userSnapshotService,
     cacheRepo
   );

@@ -22,7 +22,8 @@ export const adminStatsRepository = {
     );
 
     const [totalUsers, newUsersToday, bannedUsers] = await Promise.all([
-      prisma.authUser.count({ where: { deletedAt: null } }),
+      // Every row in the table — active, banned, suspended, deleted included.
+      prisma.authUser.count(),
       prisma.authUser.count({ where: { createdAt: { gte: startOfUtcDay } } }),
       prisma.authUser.count({ where: { status: AccountStatus.BANNED } }),
     ]);

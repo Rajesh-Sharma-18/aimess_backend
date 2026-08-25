@@ -1,7 +1,12 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import { resolvePinsMedia, type MediaFileLike } from "../lib/media-resolve.js";
+import {
+  resolvePinsMedia,
+  resolveContentFiles,
+  resolveMediaUrl,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 import { getPrivateDeletionCutoff } from "../lib/deletion-cutoff.js";
 import { isHiddenForUser } from "../lib/message-hidden-for-user.js";
 import { SystemEvent } from "../types/enums.js";
@@ -392,7 +397,25 @@ export class PrivatePinService {
     const snapshot = (pin.contentPinned ?? {}) as {
       text?: string;
       files?: MediaFileLike[];
+      sticker?: MediaFileLike;
     };
+    // A sticker/GIF lives at `content.sticker`, outside `files[]` — without it the
+    // banner has no thumbnail for the one type that is nothing BUT a thumbnail.
+    const snapshotFiles = Array.isArray(snapshot.files) ? snapshot.files : [];
+    const pinnedFiles =
+      snapshotFiles.length > 0
+        ? snapshotFiles
+        : snapshot.sticker && typeof snapshot.sticker === "object"
+          ? [snapshot.sticker]
+          : [];
+    // Resolve-on-read: the snapshot keeps raw object keys, but the banner renders
+    // the thumbnail straight from this summary (the pinned message is usually
+    // outside the loaded page), so it must receive full URLs — same boundary the
+    // pin LIST already crosses via resolvePinsMedia.
+    const [media, senderAvatar] = await Promise.all([
+      resolveContentFiles(pinnedFiles),
+      resolveMediaUrl(pin.senderAvatar),
+    ]);
     return {
       messageId: pin.messageId,
       roomId: pin.roomId,
@@ -400,10 +423,10 @@ export class PrivatePinService {
       senderId: pin.senderId,
       senderName: pin.senderDisplayName || "",
       senderHandle: "",
-      senderAvatar: pin.senderAvatar || "",
+      senderAvatar,
       messageType: (live?.messageType as string) || "TEXT",
       text: liveContent.text ?? snapshot.text ?? "",
-      media: Array.isArray(snapshot.files) ? snapshot.files : [],
+      media,
       createdAt: pin.messageCreatedAt.getTime(),
       pinnedAt: pin.pinnedAt.getTime(),
       pinnedBy: pin.pinnedBy,

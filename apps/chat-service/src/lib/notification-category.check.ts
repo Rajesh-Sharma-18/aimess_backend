@@ -8,6 +8,7 @@ import {
   categorize,
   categoryWhere,
   parseCategory,
+  rowCategory,
 } from "./notification-category.js";
 
 assert.equal(categorize("friend.requested"), "FRIENDS");
@@ -23,6 +24,18 @@ assert.equal(categorize("auth.security_new_login"), "SYSTEM");
 assert.equal(categorize("session.created"), "SYSTEM");
 assert.equal(categorize("user.registered"), "SYSTEM");
 assert.equal(categorize("something.brand_new"), "SYSTEM");
+
+// Explicit announcement category on the wire. The TAB it lists/counts under
+// is still SYSTEM (categoryWhere is keyed on `type`), which is what keeps the
+// per-tab counts and the Announcement glyph from contradicting each other.
+assert.equal(categorize("ANNOUNCEMENT"), "SYSTEM");
+assert.equal(rowCategory("ANNOUNCEMENT"), "Announcement");
+assert.equal(rowCategory("MAINTENANCE"), "SYSTEM");
+assert.equal(rowCategory("UPDATE_REQUIRED"), "SYSTEM");
+assert.equal(rowCategory("friend.requested"), "FRIENDS");
+assert.equal(rowCategory("call.activity"), "CALLS");
+// "Announcement" is a RESPONSE value only — it must never become a filter.
+assert.equal(parseCategory("Announcement"), "ALL");
 
 assert.equal(parseCategory(undefined), "ALL");
 assert.equal(parseCategory("friends"), "FRIENDS");

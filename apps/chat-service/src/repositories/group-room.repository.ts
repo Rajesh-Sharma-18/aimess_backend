@@ -234,7 +234,13 @@ export class GroupRoomRepository {
 
     const and: Array<Record<string, unknown>> = [];
     const statusFilter = (status || "ACTIVE").toUpperCase();
-    if (statusFilter !== "ALL") and.push({ status: statusFilter });
+    if (statusFilter === "CLOSED") {
+      // Panel superset: DISBANDED (admin-disbanded) + CLOSED (owner system-banned)
+      // — both render as red "Closed*" pills, so the filter treats them as one.
+      and.push({ status: { in: ["DISBANDED", "CLOSED"] } });
+    } else if (statusFilter !== "ALL") {
+      and.push({ status: statusFilter });
+    }
 
     if (fromDate || toDate) {
       const createdAt: Record<string, Date> = {};

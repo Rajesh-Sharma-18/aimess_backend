@@ -15,6 +15,7 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishConvEffectiveLastLoss } from "../events/publish-effective-last-loss.js";
 import { publishConversationReadSafe } from "../events/publish-conversation-read.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
@@ -56,6 +57,7 @@ import { resolveConversationType } from "../lib/conversation-type.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { PresenceService } from "./presence.service.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
+import { recalcConvAfterSystemLineRetraction } from "../events/recalc-conv-after-retraction.js";
 import { unpinAfterDelete } from "../lib/pin-after-delete.js";
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
@@ -214,10 +216,14 @@ export interface PinDirectParams {
 export interface PinDirectResult {
   pin: Record<string, unknown>;
   pinnedCount: number;
+  /** Present on a pin SWITCH — its `pinSystemMessageId` line was retracted. */
+  replacedPin?: { pinSystemMessageId?: string | null } | null;
 }
 
 export interface UnpinDirectResult {
   pinnedCount: number;
+  /** The "pinned a message" SYSTEM line this unpin retracted, if any. */
+  retractedSystemMessageId?: string | null;
 }
 
 export interface MarkReadDirectParams {
@@ -1053,8 +1059,14 @@ export class ChatMessageOrchestrator {
     // controllers run, so the socket/gRPC path can't leave a pin behind that
     // REST would have cleared. forEveryone unpins for the whole room, forMe
     // only for the deleting user. See lib/pin-after-delete.
+    // The pin hook can RETRACT the "<actor> pinned a message" system line, which
+    // is itself a room message and is very often the room's current last one.
+    // The last-message recalculation below must therefore run AFTER it — a
+    // recalc racing the retraction re-pins the snapshot to a line that is about
+    // to be tombstoned, and the list then previews a deleted message forever.
+    let pinCleanup: Promise<void> = Promise.resolve();
     if (result.roomId) {
-      void unpinAfterDelete({
+      pinCleanup = unpinAfterDelete({
         redis: this.redis,
         pinService:
           conversationType === "GROUP"
@@ -1070,7 +1082,10 @@ export class ChatMessageOrchestrator {
 
     if (params.scope === "forEveryone" && result.roomId) {
       const rId = result.roomId;
-      const recalcPromise =
+      // `async` (not a bare arrow): a plain callback returning
+      // `Promise<Group…> | Promise<Private…>` is not assignable to `.then`'s
+      // single PromiseLike; awaiting inside collapses it to one union promise.
+      const recalcPromise = pinCleanup.then(async () =>
         conversationType === "GROUP"
           ? this.groupMessageService.recalculateLastMessageAfterDelete(
               rId,
@@ -1079,10 +1094,43 @@ export class ChatMessageOrchestrator {
           : this.privateMessageService.recalculateLastMessageAfterDelete(
               rId,
               params.messageId
-            );
+            )
+      );
       void recalcPromise
         .then((recalc) => {
-          if (recalc === null) return; // not the last message — no-op
+          if (recalc === null) {
+            // The SHARED snapshot did not move — but a member who had hidden
+            // everything newer than the removed message was previewing IT.
+            // See events/publish-effective-last-loss.ts.
+            return publishConvEffectiveLastLoss({
+              redis: this.redis,
+              type: conversationType,
+              roomId: rId,
+              recipientIds: () =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.getActiveMemberIds(rId)
+                  : Promise.resolve(
+                      [
+                        result.senderId ?? params.userId,
+                        result.receiverId ?? "",
+                      ].filter(Boolean) as string[]
+                    ),
+              deletedMessageCreatedAt: result.createdAt,
+              resolveLosers: (rid, at, ids) =>
+                conversationType === "GROUP"
+                  ? this.groupMessageService.resolveEffectiveLastLosers(
+                      rid,
+                      at,
+                      ids
+                    )
+                  : this.privateMessageService.resolveEffectiveLastLosers(
+                      rid,
+                      at,
+                      ids
+                    ),
+              projectionRevision: result.revision ?? 0,
+            });
+          }
           const preview = buildMessagePreview(
             recalc.messageType,
             recalc.content
@@ -1283,7 +1331,44 @@ export class ChatMessageOrchestrator {
       })
     );
 
+    // Switching pins retracts the REPLACED pin's "pinned a message" system
+    // line, which is an ordinary room message and often the room's last one —
+    // repair the snapshot, exactly as the REST pin controllers do.
+    await this.recalcAfterPinLineRetraction(
+      conversationType,
+      params.roomId,
+      result.replacedPin?.pinSystemMessageId ?? null
+    );
+
     return result as unknown as PinDirectResult;
+  }
+
+  /**
+   * Shared tail of {@link pinDirect} / {@link unpinDirect}: after the pin
+   * lifecycle has retracted a "pinned a message" SYSTEM line, recalculate the
+   * room's last-message snapshot so no list keeps previewing the tombstone.
+   * No-op when nothing was retracted. Best-effort — never throws.
+   */
+  private async recalcAfterPinLineRetraction(
+    conversationType: "PRIVATE" | "GROUP",
+    roomId: string,
+    retractedMessageId: string | null
+  ): Promise<void> {
+    if (!retractedMessageId) return;
+    await recalcConvAfterSystemLineRetraction({
+      redis: this.redis,
+      type: conversationType,
+      roomId,
+      retractedMessageId,
+      messageService:
+        conversationType === "GROUP"
+          ? this.groupMessageService
+          : this.privateMessageService,
+      fetchRecipients: () =>
+        conversationType === "GROUP"
+          ? this.groupMessageService.getActiveMemberIds(roomId)
+          : this.privateMessageService.getParticipants(roomId),
+    });
   }
 
   async unpinDirect(params: PinDirectParams): Promise<UnpinDirectResult> {
@@ -1314,6 +1399,13 @@ export class ChatMessageOrchestrator {
           pinnedCount: result.pinnedCount,
         },
       })
+    );
+
+    // The unpin retracted the "pinned a message" system line — see pinDirect.
+    await this.recalcAfterPinLineRetraction(
+      conversationType,
+      params.roomId,
+      result.retractedSystemMessageId ?? null
     );
 
     return result;

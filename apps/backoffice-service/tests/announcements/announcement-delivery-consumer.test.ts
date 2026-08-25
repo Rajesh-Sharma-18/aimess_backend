@@ -8,7 +8,10 @@ jest.mock("../../src/config/redis.js", () => ({
   redis: { set: jest.fn(), incr: jest.fn(), expire: jest.fn() },
 }));
 jest.mock("../../src/grpc/auth.client.js", () => ({
-  authClient: { adminListUsers: jest.fn() },
+  authClient: {
+    adminListUsers: jest.fn(),
+    adminListUserIdsByDeviceType: jest.fn(),
+  },
 }));
 jest.mock("../../src/grpc/community.client.js", () => ({
   communityClient: { adminListCommunityMembers: jest.fn() },
@@ -175,5 +178,35 @@ describe("handleAnnouncementDeliverMessage", () => {
     expect(publishBatch).not.toHaveBeenCalled();
     expect(publishCursor).not.toHaveBeenCalled();
     expect(repo.markSent).not.toHaveBeenCalled();
+  });
+
+  it("device-targeted: resolves the audience from live sessions, not the whole user base", async () => {
+    auth.adminListUserIdsByDeviceType.mockResolvedValue({
+      userIds: ["ios-user-1", "ios-user-2"],
+      total: 2,
+    });
+
+    await handleAnnouncementDeliverMessage(baseMessage({ deviceType: "IOS" }));
+
+    expect(auth.adminListUserIdsByDeviceType).toHaveBeenCalledWith({
+      deviceTypes: ["IOS"],
+      limit: 100,
+      offset: 0,
+    });
+    // The all-users listing must NOT be consulted for a device-targeted send.
+    expect(auth.adminListUsers).not.toHaveBeenCalled();
+    expect(publishBatch.mock.calls[0][0].userIds).toEqual([
+      "ios-user-1",
+      "ios-user-2",
+    ]);
+  });
+
+  it("deviceType=ALL: still uses the full active-user listing", async () => {
+    auth.adminListUsers.mockResolvedValue({ users: [{ id: "u1" }], total: 1 });
+
+    await handleAnnouncementDeliverMessage(baseMessage({ deviceType: "ALL" }));
+
+    expect(auth.adminListUserIdsByDeviceType).not.toHaveBeenCalled();
+    expect(publishBatch.mock.calls[0][0].userIds).toEqual(["u1"]);
   });
 });

@@ -127,7 +127,7 @@ async function buildRowResolver(rows: ResolvableRow[]): Promise<{
     userIds.length
       ? userClient.adminGetProfilesByIds(userIds).catch((error: unknown) => {
           logger.warn(
-            `Audit log performer lookup failed (user-service): ${String(error)}`
+            `Audit log performer lookup failed (user-service, ${userIds.length} ids): ${String(error)}`
           );
           return [];
         })

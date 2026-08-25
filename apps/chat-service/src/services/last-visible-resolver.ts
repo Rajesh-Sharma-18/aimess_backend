@@ -180,6 +180,73 @@ export interface RecipientOverride {
  * a personal message gets their own; here we only special-case the hiders since a
  * null shared preview already renders as the empty state for everyone.
  */
+/** RecipientOverride from a normalized VisibleLast (shared by both fan-outs). */
+function toRecipientOverride(v: VisibleLast): RecipientOverride {
+  return {
+    lastMessageId: v.messageId,
+    lastMessageAt: v.createdAt.getTime(),
+    senderId: v.senderId,
+    senderName: v.senderName,
+    messageType: v.messageType,
+    content: v.content,
+    clientMessageId: v.clientMessageId ?? null,
+    sequenceNumber: v.sequenceNumber ?? 0,
+    revision: v.revision ?? 0,
+  };
+}
+
+/**
+ * The OTHER half of the delete-for-everyone fan-out: a message that was NOT the
+ * room's shared last one can still have been the EFFECTIVE last message of a
+ * member who had personally hidden (delete-for-me) everything newer than it.
+ *
+ * The shared recalculation returns null in that case — correctly, the shared
+ * snapshot did not move — so nothing used to be published at all and those
+ * members kept previewing a message that no longer exists for anyone. Reproduce:
+ * A sends "Hey" then "Hello", A hides "Hello" for themselves (their row now
+ * previews "Hey"), an admin deletes "Hey" for everyone. "Hey" was never the
+ * shared last message, so A's row stayed on "Hey" until a refetch.
+ *
+ * Cost is the same bounded shape as {@link resolveForEveryoneOverrides}: ONE
+ * `hidersAmong` over the member list — the members who cannot see the shared
+ * last message, virtually always zero — then `findPreviousVisibleForUser` for
+ * only those. Members who CAN see the shared last message are provably
+ * unaffected: it is newer than the removed one, so it was, and remains, their
+ * effective last.
+ *
+ * Returns ONLY the members whose effective last visible message was the removed
+ * one (`deletedWasEffectiveLast`), keyed by userId; value null = nothing visible
+ * remains for them (empty state). Empty map = nobody was affected, publish
+ * nothing.
+ */
+export async function resolveEffectiveLastLosers(
+  source: VisibilitySource,
+  roomId: string,
+  sharedLastMessageId: string | null,
+  deletedMessageCreatedAt: Date,
+  recipientIds: string[]
+): Promise<Map<string, RecipientOverride | null>> {
+  const losers = new Map<string, RecipientOverride | null>();
+  if (!sharedLastMessageId || !recipientIds.length) return losers;
+
+  const hiders =
+    (await source.hidersAmong(sharedLastMessageId, recipientIds)) ??
+    new Set<string>();
+  if (!hiders.size) return losers;
+
+  const hiderList = [...hiders];
+  const resolved = await Promise.all(
+    hiderList.map((uid) => source.findPreviousVisibleForUser(roomId, uid))
+  );
+  hiderList.forEach((uid, i) => {
+    const v = resolved[i] ?? null;
+    if (!deletedWasEffectiveLast(v?.createdAt ?? null, deletedMessageCreatedAt))
+      return; // something newer is still visible to them — nothing changed
+    losers.set(uid, v ? toRecipientOverride(v) : null);
+  });
+  return losers;
+}
+
 export async function resolveForEveryoneOverrides(
   source: VisibilitySource,
   roomId: string,
@@ -202,19 +269,8 @@ export async function resolveForEveryoneOverrides(
     const v = resolved[i];
     overrides.set(
       uid,
-      v
-        ? {
-            lastMessageId: v.messageId,
-            lastMessageAt: v.createdAt.getTime(),
-            senderId: v.senderId,
-            senderName: v.senderName,
-            messageType: v.messageType,
-            content: v.content,
-            clientMessageId: v.clientMessageId ?? null,
-            sequenceNumber: v.sequenceNumber ?? 0,
-            revision: v.revision ?? 0,
-          }
-        : null // the recipient has hidden everything → empty preview for them
+      // null = the recipient has hidden everything → empty preview for them
+      v ? toRecipientOverride(v) : null
     );
   });
   return overrides;

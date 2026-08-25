@@ -3,6 +3,7 @@ import {
   AccountStatus,
   Prisma,
   type AuthUser,
+  type DeviceType,
 } from "../generated/prisma/client.js";
 
 /**
@@ -63,6 +64,48 @@ export const adminUsersRepository = {
    * Filterable, sortable, offset-paginated user list. Returns the page plus the
    * total count matching the same filter (for pagination).
    */
+  /**
+   * Distinct users holding at least one NON-REVOKED session whose deviceType is
+   * in `deviceTypes` (empty = any type). This is the audience resolver behind
+   * device-targeted announcements: "send to iOS" means the people who are
+   * signed in on iOS right now, which is exactly what GET /auth/sessions shows
+   * the user themselves.
+   *
+   * Ordered by userId (not by recency) so offset paging over a live table stays
+   * stable — a session touched mid-fan-out must not shuffle users between pages
+   * and cause one to be skipped.
+   */
+  async adminListUserIdsByDeviceType(params: {
+    deviceTypes: string[];
+    limit: number;
+    offset: number;
+  }): Promise<{ userIds: string[]; total: number }> {
+    const valid = params.deviceTypes.filter((t): t is DeviceType =>
+      ["ANDROID", "IOS", "WEB", "DESKTOP"].includes(t)
+    );
+    const where: Prisma.SessionWhereInput = {
+      revokedAt: null,
+      ...(valid.length > 0 ? { deviceType: { in: valid } } : {}),
+    };
+
+    const limit = Math.min(Math.max(params.limit || 100, 1), 500);
+    const offset = Math.max(params.offset || 0, 0);
+
+    const [rows, grouped] = await Promise.all([
+      prisma.session.findMany({
+        where,
+        select: { userId: true },
+        distinct: ["userId"],
+        orderBy: { userId: "asc" },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.session.groupBy({ by: ["userId"], where }),
+    ]);
+
+    return { userIds: rows.map((r) => r.userId), total: grouped.length };
+  },
+
   async adminListUsers(
     params: AdminListUsersParams
   ): Promise<{ users: AuthUser[]; total: number }> {

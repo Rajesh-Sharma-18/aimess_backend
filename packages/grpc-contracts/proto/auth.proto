@@ -7,6 +7,10 @@ service AuthService {
   rpc GetActiveUserSeries (ActiveUserSeriesRequest) returns (ActiveUserSeries);
   rpc AdminListUsers (AdminListUsersRequest) returns (AdminListUsersResponse);
   rpc AdminGetUser (AdminGetUserRequest) returns (AdminUserRecord);
+  // Admin Panel announcements: the users who currently hold a live session on
+  // one of the given device types. Sessions — not device tokens, not a stored
+  // profile preference — are what "this user is on iOS right now" means.
+  rpc AdminListUserIdsByDeviceType (AdminListUserIdsByDeviceTypeRequest) returns (AdminListUserIdsByDeviceTypeResponse);
   rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
   rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
   // The ONLY mutation on this service. backoffice-service calls it
@@ -80,6 +84,16 @@ message AdminListUsersResponse {
   int64 total = 2;              // total matching the filter (for pagination)
 }
 message AdminGetUserRequest { string user_id = 1; }
+
+message AdminListUserIdsByDeviceTypeRequest {
+  repeated string device_types = 1; // ANDROID|IOS|WEB|DESKTOP — empty means every type
+  int32  limit  = 2;                // page size (clamped 1..500)
+  int32  offset = 3;                // offset pagination over DISTINCT user ids
+}
+message AdminListUserIdsByDeviceTypeResponse {
+  repeated string user_ids = 1;     // distinct, ordered by id so paging is stable
+  int64  total = 2;                 // distinct users matching, for pagination
+}
 
 // Permanent ban / reinstatement. There is deliberately no duration field:
 // a ban lasts until a Super Admin explicitly sets the status back to ACTIVE.
