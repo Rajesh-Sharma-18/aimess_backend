@@ -767,11 +767,11 @@ export const SYSTEM_MESSAGES = {
     en: "You created an invite link",
     th: "คุณสร้างลิงก์เชิญ",
   },
-  SYS_COMMUNITY_JOIN_REQUEST_APPROVED: {
-    vi: "Yêu cầu tham gia của bạn đã được chấp thuận",
-    en: "Your request to join was approved",
-    th: "คำขอเข้าร่วมของคุณได้รับการอนุมัติ",
-  },
+  // SYS_COMMUNITY_JOIN_REQUEST_APPROVED ("Your request to join was approved")
+  // was retired: an approved join request now renders the same
+  // SYS_COMMUNITY_MEMBER_JOINED_SELF line as every other join, because what the
+  // requester experienced is becoming a member — the admin's decision reaches
+  // them as the separate join-request-approved notification instead.
   SYS_COMMUNITY_MEMBER_ADDED_SELF: {
     vi: "{{actor}} đã thêm bạn vào cộng đồng",
     en: "{{actor}} added you to the community",

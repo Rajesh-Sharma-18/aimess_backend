@@ -42,13 +42,19 @@ export const CommunitySystemMessageType = {
 
   // --- Personal (visible ONLY to the affected user) ---------------------------
   COMMUNITY_JOINED: "COMMUNITY_JOINED",
+  /** @deprecated RETIRED — an approved join request now posts COMMUNITY_JOINED
+   *  ("You joined the community"): the line must state the membership outcome
+   *  the user experienced, not the admin's decision (the decision reaches them
+   *  as the separate `community.join_request_approved` notification). Kept only
+   *  so rows persisted before the change still resolve; they re-render as the
+   *  COMMUNITY_JOINED sentence. Nothing writes this any more. */
   JOIN_REQUEST_APPROVED: "JOIN_REQUEST_APPROVED",
   JOIN_REQUEST_REJECTED: "JOIN_REQUEST_REJECTED",
   /** An admin/moderator added this member directly (Add Member), rather than
    *  the member joining or a join request being approved. PERSONAL: only the
    *  added member reads "{admin} added you to the community". Distinct from
-   *  COMMUNITY_JOINED ("You joined…") and JOIN_REQUEST_APPROVED ("Your request
-   *  … was approved") so the line always matches what actually happened. */
+   *  COMMUNITY_JOINED ("You joined…") so the line always matches what actually
+   *  happened. */
   MEMBER_ADDED: "MEMBER_ADDED",
   /** Personal counterpart to ROLE_CHANGED — delivered only to the user whose
    *  role changed so they see "You are now a moderator" while everyone else
@@ -191,8 +197,10 @@ export function isEligibleForLastActivity(
 
 /**
  * PERSONAL onboarding lines that are bound to the user's CURRENT membership
- * session (Telegram-style): "You joined the community" / "Your request to join
- * was approved". They must NOT accumulate across join→leave→rejoin cycles — when
+ * session (Telegram-style): "You joined the community" / "{admin} added you to
+ * the community" (plus the retired JOIN_REQUEST_APPROVED, still listed so
+ * legacy rows are purged by the same sweep). They must NOT accumulate across
+ * join→leave→rejoin cycles — when
  * a membership goes inactive (left / removed / banned) every prior-session copy
  * for that (community, user) is purged, and a fresh one is created on rejoin. A
  * user must never see more than the current session's line.

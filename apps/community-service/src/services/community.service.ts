@@ -336,19 +336,26 @@ const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
  * ACTUALLY happened — an admin adding someone is not that someone joining, and
  * it is certainly not their request being accepted:
  *
- *   add_members           → MEMBER_ADDED           "{admin} added you to the community"
- *   join_request_approved → JOIN_REQUEST_APPROVED  "Your request to join was approved"
- *   self_join / invite /  → COMMUNITY_JOINED       "You joined the community"
+ *   add_members           → MEMBER_ADDED     "{admin} added you to the community"
+ *   join_request_approved → COMMUNITY_JOINED "You joined the community"
+ *   self_join / invite /  → COMMUNITY_JOINED "You joined the community"
  *   invite_link_redeem
  *
- * All three are PERSONAL + non-bumping + members of PERSONAL_JOIN_SESSION_TYPES,
+ * An approval is the ADMIN's action; what happened to the requester is that
+ * they became a member, so their own line reads like every other join. The
+ * retired JOIN_REQUEST_APPROVED subtype is still resolvable for rows persisted
+ * before this (it re-renders as the COMMUNITY_JOINED sentence) — nothing writes
+ * it any more. The approval itself still reaches the requester as its own push
+ * / in-app notification (community.join_request_approved); only the chat line
+ * and the list preview changed.
+ *
+ * Both are PERSONAL + non-bumping + members of PERSONAL_JOIN_SESSION_TYPES,
  * so they behave identically everywhere except in the sentence they render.
  */
 const JOIN_LINE_TYPE_BY_VIA: Partial<
   Record<CommunityMemberAddedPayload["via"], CommunitySystemMessageType>
 > = {
   add_members: "MEMBER_ADDED",
-  join_request_approved: "JOIN_REQUEST_APPROVED",
 };
 
 /**
@@ -360,10 +367,6 @@ const JOIN_LINE_TYPE_BY_VIA: Partial<
  */
 const JOIN_ACTIVITY_PREVIEW_BY_TYPE: Record<string, string> = {
   MEMBER_ADDED: t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", STORED_TEXT_LOCALE),
-  JOIN_REQUEST_APPROVED: t(
-    "SYS_COMMUNITY_JOIN_REQUEST_APPROVED",
-    STORED_TEXT_LOCALE
-  ),
 };
 
 /**

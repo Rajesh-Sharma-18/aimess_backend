@@ -340,8 +340,10 @@ describe("B. other membership paths and their request handling", () => {
       ADMIN
     );
     expect(pubApproved).toHaveBeenCalledTimes(1);
-    // C1: the accept path keeps the "request approved" wording.
-    expect(systemMessageTypesFor(B)).toEqual(["JOIN_REQUEST_APPROVED"]);
+    // C1: the chat line describes the membership outcome, not the decision —
+    // the approval itself still reaches the requester as its own notification
+    // (pubApproved above).
+    expect(systemMessageTypesFor(B)).toEqual(["COMMUNITY_JOINED"]);
   });
 
   it("B2: a concurrent accept that wins the unique index degrades Add Member to a skip, not an error storm", async () => {
@@ -460,7 +462,7 @@ describe("B. other membership paths and their request handling", () => {
 // C. System messages & notifications
 // ===========================================================================
 describe("C. copy per path", () => {
-  it("C1: add → MEMBER_ADDED, approve → JOIN_REQUEST_APPROVED, self-join → COMMUNITY_JOINED", async () => {
+  it("C1: add → MEMBER_ADDED; approve / self-join / invite-link → COMMUNITY_JOINED", async () => {
     const base = {
       community: privateCommunity as never,
       member: memberRow(B) as never,
@@ -482,7 +484,7 @@ describe("C. copy per path", () => {
 
     expect(systemMessageTypesFor(B)).toEqual([
       "MEMBER_ADDED",
-      "JOIN_REQUEST_APPROVED",
+      "COMMUNITY_JOINED",
       "COMMUNITY_JOINED",
       "COMMUNITY_JOINED",
     ]);

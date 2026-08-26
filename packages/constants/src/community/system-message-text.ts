@@ -308,15 +308,18 @@ export function buildCommunitySystemFallbackText(
       if (isActor) return t("SYS_COMMUNITY_INVITE_CREATED_SELF", locale);
       return t("SYS_COMMUNITY_INVITE_CREATED", locale, { actor });
 
+    // JOIN_REQUEST_APPROVED is no longer written (the approval path now posts
+    // COMMUNITY_JOINED — the line must describe the membership outcome, not the
+    // admin's decision), but rows persisted before that change still exist and
+    // must re-render as the current copy rather than the retired sentence.
     case "COMMUNITY_JOINED":
+    case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
     // PERSONAL — only the added member reads it, so it is always second-person.
     // Names the admin who added them; `actor` falls back to "Someone" when the
     // snapshot is unresolved, same as every other actor-bearing line here.
     case "MEMBER_ADDED":
       return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
-    case "JOIN_REQUEST_APPROVED":
-      return t("SYS_COMMUNITY_JOIN_REQUEST_APPROVED", locale);
     case "JOIN_REQUEST_REJECTED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_REJECTED", locale);
 

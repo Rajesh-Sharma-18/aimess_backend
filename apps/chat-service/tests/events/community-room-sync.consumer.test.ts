@@ -3,7 +3,7 @@
  *
  * When `community.member.synced` reports a membership going INACTIVE (LEFT /
  * BANNED), the consumer hard-deletes the user's PERSONAL join-session onboarding
- * lines ("You joined the community" / "Your request to join was approved") so
+ * lines ("You joined the community" / "{admin} added you to the community") so
  * they never accumulate across join→leave→rejoin cycles (Telegram parity). The
  * delete is bounded by the event's `eventAt` so a redelivered stale "left" can't
  * purge a fresher rejoin line. ACTIVE syncs must NOT purge.

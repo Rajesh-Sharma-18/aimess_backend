@@ -254,7 +254,9 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
   it("community:added lastActivity is present for all via values, worded per path", async () => {
     const expectedPreview: Record<string, string> = {
       add_members: "You were added to the community",
-      join_request_approved: "Your request to join was approved",
+      // The approval is the admin's action; what the requester experiences is
+      // becoming a member, so their row reads like every other join.
+      join_request_approved: "You joined the community",
       join_request_auto_accept: "You joined the community",
       invite_auto_approve: "You joined the community",
       invite_link_redeem: "You joined the community",

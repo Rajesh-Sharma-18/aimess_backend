@@ -1199,7 +1199,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
         "Bob is now the community admin",
       ],
       ["COMMUNITY_JOINED", {}, "You joined the community"],
-      ["JOIN_REQUEST_APPROVED", {}, "Your request to join was approved"],
+      // Retired subtype — nothing writes it any more, but rows persisted before
+      // the change must re-render as the current join copy, not the old
+      // "Your request to join was approved" sentence.
+      ["JOIN_REQUEST_APPROVED", {}, "You joined the community"],
       ["JOIN_REQUEST_REJECTED", {}, "Your request to join was declined"],
     ];
 

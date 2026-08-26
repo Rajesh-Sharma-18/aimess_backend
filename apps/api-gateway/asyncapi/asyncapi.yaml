@@ -6856,19 +6856,24 @@ components:
               PINNED_MESSAGE (actor)        → "You pinned a message"
               PINNED_MESSAGE (bystander)    → "{{actorName}} pinned a message"
               COMMUNITY_JOINED              → "You joined the community" (PERSONAL)
-              JOIN_REQUEST_APPROVED         → "Your request to join was approved" (PERSONAL)
+              JOIN_REQUEST_APPROVED         → "You joined the community" (PERSONAL, RETIRED —
+                                              never written any more; legacy rows only)
               JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
               MEMBER_ADDED                  → "{{actorName}} added you to the community" (PERSONAL)
 
-            Exactly ONE of COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / MEMBER_ADDED
-            is posted per membership activation, chosen by HOW the membership was
-            created — self-join, invite accept and invite-link redeem post
-            COMMUNITY_JOINED; a moderator approving the user's own join request
-            posts JOIN_REQUEST_APPROVED; a moderator adding the user through Add
-            Member posts MEMBER_ADDED. They are mutually exclusive, so a member
-            added by an admin never sees a "request approved" line, and vice
-            versa. All three are also join-SESSION lines: a previous cycle's copy
-            is purged when the user rejoins.
+            Exactly ONE of COMMUNITY_JOINED / MEMBER_ADDED is posted per
+            membership activation, chosen by HOW the membership was created —
+            self-join, invite accept, invite-link redeem AND a moderator
+            approving the user's own join request all post COMMUNITY_JOINED
+            ("You joined the community": the line states the membership outcome,
+            not the admin's decision — the approval itself is delivered as the
+            separate community.join_request_approved notification); a moderator
+            adding the user through Add Member posts MEMBER_ADDED. They are
+            mutually exclusive, so a member added by an admin never sees a
+            "you joined" line, and vice versa. Both are also join-SESSION lines:
+            a previous cycle's copy is purged when the user rejoins.
+            JOIN_REQUEST_APPROVED is RETIRED — still accepted on read (legacy
+            rows render as "You joined the community"), never written.
 
             Hidden in chat timeline (never returned in history, to anyone —
             including the affected user): MEMBER_LEFT, MEMBER_JOINED,

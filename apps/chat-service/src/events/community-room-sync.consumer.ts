@@ -316,7 +316,7 @@ export class CommunityRoomSyncConsumer {
           // Membership-lifecycle cleanup (Telegram parity): when a membership
           // goes INACTIVE (left / removed / banned), hard-delete the user's
           // PERSONAL join-session onboarding lines ("You joined the community",
-          // "Your request to join was approved") so they never accumulate across
+          // "{admin} added you to the community") so they never accumulate across
           // join→leave→rejoin cycles. No community-wide socket emit (other
           // members never saw this PERSONAL line), but the affected user's OWN
           // already-connected client DID render it before leaving — publish a
