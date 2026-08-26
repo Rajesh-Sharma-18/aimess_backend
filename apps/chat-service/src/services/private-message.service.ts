@@ -114,7 +114,11 @@ import {
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import { resolveSystemActorName } from "../lib/localize-system-preview.js";
-import { resolveGroupInviteState } from "../lib/group-invite-state.js";
+import {
+  isDeadLinkState,
+  isGroupGoneState,
+  loadGroupInviteState,
+} from "../lib/group-invite-state.js";
 import {
   currentLocale,
   isCallContentType,
@@ -2535,36 +2539,34 @@ export class PrivateMessageService {
           stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
         );
 
-        const room = groupId
-          ? await this.groupRoomRepo.findActiveByRoomId(groupId)
-          : null;
-        // ANY status: an ACTIVE row means "View Group", a KICKED/BANNED row is
-        // what makes this viewer rejoin-blocked. Filtering to ACTIVE here would
-        // make a removed user indistinguishable from someone who never joined.
-        const membership =
-          room && viewerId
-            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
-            : null;
-        // ANY status too — a REVOKED row must reach the state machine.
-        const link = token
-          ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
-          : null;
-        const state = resolveGroupInviteState({
-          room,
-          link,
-          membership,
-          hasToken: Boolean(token),
-        });
+        // The SAME loader the invite preview and the join endpoint use, so a
+        // card and the screen it links to can never disagree. `roomId` is passed
+        // explicitly: a card whose token was revoked still knows which group it
+        // points at, which is what keeps "View Group" working for a member.
+        const { state, room } = await loadGroupInviteState<
+          { roomId: string; name: string; avatar: string; memberCount: number },
+          { roomId: string },
+          { status?: string | null }
+        >(
+          {
+            inviteLinkRepo: this.groupInviteLinkRepo ?? null,
+            roomRepo: this.groupRoomRepo,
+            memberRepo: this.groupMemberRepo,
+          },
+          { token, roomId: groupId, viewerId }
+        );
         const alreadyJoined = state === "ALREADY_MEMBER";
-        // Legacy LINK-only status, kept for clients that predate `state`. A
-        // revoked/expired/exhausted link all read EXPIRED on the wire now:
-        // the product shows one sentence for every dead link, and REVOKED was
-        // never rendered by any client.
-        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
-          ? "DELETED"
-          : state === "LINK_EXPIRED"
-            ? "EXPIRED"
-            : "ACTIVE";
+        // Legacy LINK-only status, kept for clients that predate `state`. It
+        // cannot express the group/capacity/block cases at all — that is exactly
+        // why `state` exists — so it reports only what it can.
+        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
+          isGroupGoneState(state)
+            ? "DELETED"
+            : state === "LINK_REVOKED"
+              ? "REVOKED"
+              : isDeadLinkState(state)
+                ? "EXPIRED"
+                : "ACTIVE";
 
         invitationByMessageId.set(
           m.id,

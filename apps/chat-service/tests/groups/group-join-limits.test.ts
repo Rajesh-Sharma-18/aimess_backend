@@ -10,7 +10,10 @@ import request from "supertest";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
-import { resolveGroupInviteState } from "../../src/lib/group-invite-state.js";
+import {
+  resolveGroupInviteState,
+  type GroupInviteStateInput,
+} from "../../src/lib/group-invite-state.js";
 import { MAX_GROUP_MEMBERS } from "@aimess/constants";
 
 let app: import("express").Express;
@@ -74,7 +77,7 @@ const join = () =>
 // ---------------------------------------------------------------------------
 describe("resolveGroupInviteState — priority table", () => {
   const base = {
-    room: { memberCount: 3, memberLimit: MAX_GROUP_MEMBERS },
+    room: { status: "ACTIVE", memberCount: 3, memberLimit: MAX_GROUP_MEMBERS },
     link: { status: "ACTIVE", expiresAt: null, maxUses: null, usedCount: 0 },
     membership: null as { status?: string } | null,
     hasToken: true,
@@ -96,33 +99,98 @@ describe("resolveGroupInviteState — priority table", () => {
     ).toBe("ALREADY_MEMBER");
   });
 
-  it("a dead link outranks capacity and the block", () => {
-    for (const link of [
-      { status: "REVOKED", expiresAt: null, maxUses: null, usedCount: 0 },
-      {
-        status: "ACTIVE",
-        expiresAt: new Date(Date.now() - 1000),
-        maxUses: null,
-        usedCount: 0,
-      },
-      { status: "ACTIVE", expiresAt: null, maxUses: 5, usedCount: 5 },
-    ]) {
+  it("a dead link outranks capacity and the block, and names its OWN cause", () => {
+    const cases: Array<[GroupInviteStateInput["link"], string]> = [
+      [
+        { status: "REVOKED", expiresAt: null, maxUses: null, usedCount: 0 },
+        "LINK_REVOKED",
+      ],
+      [
+        {
+          status: "ACTIVE",
+          expiresAt: new Date(Date.now() - 1000),
+          maxUses: null,
+          usedCount: 0,
+        },
+        "LINK_EXPIRED",
+      ],
+      [
+        { status: "ACTIVE", expiresAt: null, maxUses: 5, usedCount: 5 },
+        "LINK_USED_UP",
+      ],
+      [null, "LINK_NOT_FOUND"],
+    ];
+    for (const [link, expected] of cases) {
       expect(
         resolveGroupInviteState({
           ...base,
           link,
-          room: { memberCount: 256, memberLimit: 256 },
+          room: { status: "ACTIVE", memberCount: 256, memberLimit: 256 },
           membership: { status: "BANNED" },
         })
-      ).toBe("LINK_EXPIRED");
+      ).toBe(expected);
     }
+  });
+
+  it("the GROUP outranks the link — a dead group is not a link problem", () => {
+    const dead = {
+      status: "REVOKED",
+      expiresAt: null,
+      maxUses: null,
+      usedCount: 0,
+    };
+    expect(resolveGroupInviteState({ ...base, link: dead, room: null })).toBe(
+      "GROUP_NOT_FOUND"
+    );
+    expect(
+      resolveGroupInviteState({
+        ...base,
+        link: dead,
+        room: { status: "DISBANDED", memberCount: 3 },
+      })
+    ).toBe("GROUP_DISBANDED");
+    expect(
+      resolveGroupInviteState({
+        ...base,
+        link: dead,
+        room: { status: "CLOSED", memberCount: 3 },
+      })
+    ).toBe("GROUP_CLOSED");
+    expect(
+      resolveGroupInviteState({ ...base, link: dead, activeAdminCount: 0 })
+    ).toBe("GROUP_NO_ADMIN");
+  });
+
+  it("a member still opens their group when the link is dead or the group is closed", () => {
+    for (const room of [
+      { status: "ACTIVE", memberCount: 256, memberLimit: 256 },
+      { status: "CLOSED", memberCount: 3 },
+    ]) {
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          room,
+          link: null,
+          hasToken: false,
+          membership: { status: "ACTIVE" },
+        })
+      ).toBe("ALREADY_MEMBER");
+    }
+    // ...but a DISBANDED group is gone for its members too.
+    expect(
+      resolveGroupInviteState({
+        ...base,
+        room: { status: "DISBANDED", memberCount: 3 },
+        membership: { status: "ACTIVE" },
+      })
+    ).toBe("GROUP_DISBANDED");
   });
 
   it("capacity outranks the block, and both outrank CAN_JOIN", () => {
     expect(
       resolveGroupInviteState({
         ...base,
-        room: { memberCount: 256, memberLimit: 256 },
+        room: { status: "ACTIVE", memberCount: 256, memberLimit: 256 },
         membership: { status: "KICKED" },
       })
     ).toBe("GROUP_FULL");
@@ -143,14 +211,18 @@ describe("resolveGroupInviteState — priority table", () => {
     expect(
       resolveGroupInviteState({
         ...base,
-        room: { memberCount: MAX_GROUP_MEMBERS, memberLimit: 5000 },
+        room: {
+          status: "ACTIVE",
+          memberCount: MAX_GROUP_MEMBERS,
+          memberLimit: 5000,
+        },
       })
     ).toBe("GROUP_FULL");
     // A deliberately smaller group is still honoured.
     expect(
       resolveGroupInviteState({
         ...base,
-        room: { memberCount: 10, memberLimit: 10 },
+        room: { status: "ACTIVE", memberCount: 10, memberLimit: 10 },
       })
     ).toBe("GROUP_FULL");
   });
@@ -313,23 +385,41 @@ describe("B. rejoin block (removed / banned)", () => {
 describe("C. link revocation", () => {
   const revoked = { ...liveLink, status: "REVOKED", revokedAt: new Date() };
 
-  it("C2/C3: an old token reports the dead-link state, not a generic 404", async () => {
+  // THE REGRESSION THIS FILE EXISTS FOR: a revoked link used to answer the
+  // preview with an ERROR, so the client had a failure and no state and could
+  // only send the user to the expired-link screen. It is a 200 + state now, and
+  // the group is still named, so the reason renders on the screen the user is
+  // already on.
+  it("C2/C3: a revoked token is a 200 STATE, and its own state at that", async () => {
     mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(revoked);
 
     const res = await preview();
-    expect(res.status).toBe(400);
-    // This exact code is what the client turns into the "Invitation link
-    // expired" toast / button text.
-    expect(res.body.code).toBe("CHAT_INVITE_LINK_EXPIRED");
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("LINK_REVOKED");
+    expect(res.body.data.groupName).toBe("Devs");
   });
 
-  it("C4/C5/E3: joining with a revoked token is refused, expiry and uses untouched", async () => {
+  it("C4/C5/E3: joining with a revoked token is refused with its OWN code", async () => {
     mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(revoked);
 
     const res = await join();
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("CHAT_INVITE_LINK_EXPIRED");
+    // Not the generic CHAT_INVITE_LINK_EXPIRED any more.
+    expect(res.body.code).toBe("CHAT_INVITE_LINK_REVOKED");
     expect(mocks.groupMemberRepo.upsert).not.toHaveBeenCalled();
+  });
+
+  it("C3b: a MEMBER holding a revoked link still gets ALREADY_MEMBER", async () => {
+    mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(revoked);
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "ACTIVE",
+      role: "MEMBER",
+    });
+
+    const res = await preview();
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("ALREADY_MEMBER");
+    expect(res.body.data.groupId).toBe(ROOM);
   });
 
   it("C6: revoke kills a brand-new link and mints a replacement immediately", async () => {
@@ -352,15 +442,29 @@ describe("C. link revocation", () => {
     expect(mocks.groupInviteLinkRepo.revokeAllForRoom).toHaveBeenCalled();
   });
 
-  it("C10: time-expired and uses-exhausted read exactly like revoked", async () => {
-    for (const dead of [
-      { ...liveLink, expiresAt: new Date(Date.now() - 1000) },
-      { ...liveLink, maxUses: 3, usedCount: 3 },
-    ]) {
+  it("C10: every dead-link cause gets its own state and its own join code", async () => {
+    const cases: Array<[Record<string, unknown>, string, string]> = [
+      [
+        { ...liveLink, expiresAt: new Date(Date.now() - 1000) },
+        "LINK_EXPIRED",
+        "CHAT_INVITE_LINK_EXPIRED",
+      ],
+      [
+        { ...liveLink, maxUses: 3, usedCount: 3 },
+        "LINK_USED_UP",
+        "CHAT_INVITE_LINK_USAGE_LIMIT",
+      ],
+      [revoked, "LINK_REVOKED", "CHAT_INVITE_LINK_REVOKED"],
+    ];
+    for (const [dead, state, code] of cases) {
       mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(dead);
-      const res = await preview();
-      expect(res.status).toBe(400);
-      expect(res.body.code).toBe("CHAT_INVITE_LINK_EXPIRED");
+      const shown = await preview();
+      expect(shown.status).toBe(200);
+      expect(shown.body.data.state).toBe(state);
+
+      const attempted = await join();
+      expect(attempted.status).toBe(400);
+      expect(attempted.body.code).toBe(code);
     }
   });
 
@@ -465,5 +569,137 @@ describe("D. cross-session membership events", () => {
 
     const removed = publishes().filter((p) => p.event === "group:removed");
     expect(removed[0]!.data.reason).toBe("LEAVE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. Group lifecycle and ownership — the states that used to be reported as
+//    "invitation link expired" because nothing else could express them.
+// ---------------------------------------------------------------------------
+describe("G. group existence, lifecycle and ownership", () => {
+  it("G1: no group row → GROUP_NOT_FOUND on preview, 404 on join", async () => {
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue(null);
+
+    const shown = await preview();
+    expect(shown.status).toBe(200);
+    expect(shown.body.data.state).toBe("GROUP_NOT_FOUND");
+
+    const attempted = await join();
+    expect(attempted.status).toBe(404);
+    expect(attempted.body.code).toBe("CHAT_GROUP_NO_LONGER_EXISTS");
+  });
+
+  it("G2: a DISBANDED group is its own state, not a dead link", async () => {
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      ...roomAt(3),
+      status: "DISBANDED",
+    });
+
+    const shown = await preview();
+    expect(shown.body.data.state).toBe("GROUP_DISBANDED");
+
+    const attempted = await join();
+    expect(attempted.status).toBe(404);
+    expect(attempted.body.code).toBe("CHAT_GROUP_DISBANDED");
+    expect(mocks.groupMemberRepo.upsert).not.toHaveBeenCalled();
+  });
+
+  it("G3: a CLOSED group (owner banned) is refused with its own code", async () => {
+    // `findActiveByRoomId` lets CLOSED through, which is exactly why the state
+    // has to read the row at ANY status — before this, a closed group previewed
+    // as perfectly joinable and only failed at the write.
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      ...roomAt(3),
+      status: "CLOSED",
+    });
+
+    const shown = await preview();
+    expect(shown.body.data.state).toBe("GROUP_CLOSED");
+
+    const attempted = await join();
+    expect(attempted.status).toBe(403);
+    expect(attempted.body.code).toBe("CHAT_GROUP_CLOSED_ADMIN_BANNED");
+  });
+
+  it("G4: a group with no ACTIVE admin left admits nobody", async () => {
+    mocks.groupMemberRepo.countActiveByRole.mockResolvedValue(0);
+
+    const shown = await preview();
+    expect(shown.body.data.state).toBe("GROUP_NO_ADMIN");
+    expect(mocks.groupMemberRepo.countActiveByRole).toHaveBeenCalledWith(
+      ROOM,
+      "ADMIN"
+    );
+
+    const attempted = await join();
+    expect(attempted.status).toBe(404);
+    expect(attempted.body.code).toBe("CHAT_GROUP_NO_ACTIVE_ADMIN");
+  });
+
+  it("G5: the admin check is skipped for an already-disqualified group", async () => {
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      ...roomAt(3),
+      status: "DISBANDED",
+    });
+
+    await preview();
+
+    expect(mocks.groupMemberRepo.countActiveByRole).not.toHaveBeenCalled();
+  });
+
+  it("G6: the preview NEVER errors on a state — every outcome is a 200", async () => {
+    const outcomes: Array<[() => void, string]> = [
+      [
+        () => mocks.groupRoomRepo.findByRoomId.mockResolvedValue(null),
+        "GROUP_NOT_FOUND",
+      ],
+      [
+        () =>
+          mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+            ...roomAt(3),
+            status: "DISBANDED",
+          }),
+        "GROUP_DISBANDED",
+      ],
+      [
+        () => mocks.groupMemberRepo.countActiveByRole.mockResolvedValue(0),
+        "GROUP_NO_ADMIN",
+      ],
+      [
+        () =>
+          mocks.groupInviteLinkRepo.findByToken.mockResolvedValue({
+            ...liveLink,
+            status: "REVOKED",
+          }),
+        "LINK_REVOKED",
+      ],
+      [
+        () => mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(null),
+        "LINK_NOT_FOUND",
+      ],
+      [
+        () => mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(roomAt(256)),
+        "GROUP_FULL",
+      ],
+      [
+        () =>
+          mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+            status: "BANNED",
+          }),
+        "JOIN_BLOCKED",
+      ],
+    ];
+
+    for (const [arrange, expected] of outcomes) {
+      ({ app, mocks } = buildApp());
+      mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+      mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(liveLink);
+      mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(roomAt(3));
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+      arrange();
+
+      const res = await preview();
+      expect([res.status, res.body.data?.state]).toEqual([200, expected]);
+    }
   });
 });

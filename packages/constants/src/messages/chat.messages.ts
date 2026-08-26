@@ -466,6 +466,13 @@ export const CHAT_MESSAGES = {
     en: "Group not found",
     th: "ไม่พบกลุ่ม",
   },
+  /** Every ADMIN left, was removed or was banned — the group has no owner, so
+   *  nobody can admit a new member or moderate the room. */
+  CHAT_GROUP_NO_ACTIVE_ADMIN: {
+    vi: "Nhóm này không còn quản trị viên hoạt động",
+    en: "This group no longer has an active admin",
+    th: "กลุ่มนี้ไม่มีผู้ดูแลที่ใช้งานอยู่แล้ว",
+  },
   CHAT_GROUP_NO_LONGER_EXISTS: {
     vi: "Nhóm không còn tồn tại",
     en: "Group no longer exists",
@@ -539,6 +546,17 @@ export const CHAT_MESSAGES = {
     vi: "Bạn không thể tham gia nhóm này",
     en: "You can't join this group",
     th: "คุณไม่สามารถเข้าร่วมกลุ่มนี้ได้",
+  },
+  /**
+   * An admin killed this link. Deliberately its OWN code even though it renders
+   * the same sentence as CHAT_INVITE_LINK_EXPIRED: a client that cannot tell a
+   * revoked link from a lapsed one cannot decide what to DO about it, which is
+   * how every revocation ended up routed to the expired-link screen.
+   */
+  CHAT_INVITE_LINK_REVOKED: {
+    vi: "Liên kết mời đã hết hạn",
+    en: "Invitation link expired",
+    th: "ลิงก์เชิญหมดอายุแล้ว",
   },
   CHAT_INVITE_LINK_USAGE_LIMIT: {
     vi: "Liên kết mời đã đạt giới hạn sử dụng",

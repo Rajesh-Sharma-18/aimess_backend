@@ -15,11 +15,13 @@ import {
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import {
   clampInviteLinkExpiry,
+  effectiveGroupMemberLimit,
   inviteContentType,
+  MAX_GROUP_MEMBERS,
 } from "@aimess/constants";
 import {
   assertJoinableState,
-  resolveGroupInviteState,
+  loadGroupInviteState,
   type GroupInviteState,
 } from "../lib/group-invite-state.js";
 import {
@@ -164,12 +166,19 @@ export class GroupInviteLinkService {
    * Invite landing screen payload. `callerId` is optional — the route takes an
    * OPTIONAL bearer token so the unauthenticated link-preview card still works.
    *
-   * `state` is the authoritative button state, produced by the SAME
-   * {@link resolveGroupInviteState} the in-chat invitation card and the join
-   * endpoint use, so the landing screen and the card can never disagree. Every
-   * input to it (membership row, live member count, link status/expiry/uses) is
-   * read fresh on each call — nothing is cached and nothing is taken from the
-   * client. `isJoined` is kept as a derived mirror for older clients.
+   * ALWAYS 200, for every outcome. It used to throw for a dead link and for a
+   * missing group, which left the client with an error and no state — so the
+   * only thing it could do was show the expired-link screen, whatever had
+   * actually gone wrong. Now `state` names the reason
+   * (LINK_REVOKED / LINK_EXPIRED / GROUP_DISBANDED / GROUP_FULL / …) and the
+   * client renders it in place. Only a transport/server failure is an error.
+   *
+   * `state` comes from the SAME {@link loadGroupInviteState} the in-chat
+   * invitation card and the join endpoint use, so no two surfaces can disagree.
+   * Every input to it (group row and its status, live member count, active-admin
+   * count, membership row, link status/expiry/uses) is read fresh on each call —
+   * nothing is cached and nothing is taken from the client. `isJoined` is kept
+   * as a derived mirror for older clients.
    */
   async preview(
     token: string,
@@ -187,38 +196,26 @@ export class GroupInviteLinkService {
     isJoined: boolean;
     state: GroupInviteState;
   }> {
-    // ANY status — a revoked link must reach the state machine so it answers
-    // "Invitation link expired" instead of the generic not-found for a token
-    // that never existed.
-    const link = await this.inviteLinkRepo.findByToken(token);
-    if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
+    const { state, room, link } = await loadGroupInviteState<
+      GroupRoom,
+      GroupInviteLink,
+      { status?: string | null }
+    >(
+      {
+        inviteLinkRepo: this.inviteLinkRepo,
+        roomRepo: this.roomRepo,
+        memberRepo: this.memberRepo,
+      },
+      { token, viewerId: callerId }
+    );
 
-    const room = await this.roomRepo.findActiveByRoomId(link.roomId);
-    // ANY status too: a KICKED/BANNED row is what makes the caller blocked.
-    const membership = callerId
-      ? await this.memberRepo.findByRoomAndUser(link.roomId, callerId)
-      : null;
-    const state = resolveGroupInviteState({
-      room,
-      link,
-      membership,
-      hasToken: true,
-    });
-    if (state === "GROUP_DELETED") {
-      throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
-    }
-    // A dead link has no landing screen to render — the client shows the toast
-    // ("Invitation link expired") off this error. A member is exempt: their
-    // access never depended on the link, so they still get the screen.
-    if (state === "LINK_EXPIRED") {
-      throw new BadRequestError("CHAT_INVITE_LINK_EXPIRED");
-    }
-    if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
-
-    // Who is inviting — the preview screen names them. Same snapshot chokepoint every other name goes through, so a deleted inviter reads "Deleted Account" here too.
-    // The snapshot service is an optional dependency (see the constructor), so an empty name is a valid answer, not a failure — the client falls back to a generic line.
+    // Who is inviting — the preview screen names them. Same snapshot chokepoint
+    // every other name goes through, so a deleted inviter reads "Deleted
+    // Account" here too. The snapshot service is an optional dependency (see the
+    // constructor), so an empty name is a valid answer, not a failure — the
+    // client falls back to a generic line.
     const inviterSnapshot =
-      this.userSnapshotService && this.cacheRepo
+      link && this.userSnapshotService && this.cacheRepo
         ? (
             await this.userSnapshotService.getUserSnapshotsMap(
               [link.createdBy],
@@ -227,16 +224,24 @@ export class GroupInviteLinkService {
           ).get(link.createdBy)
         : null;
 
+    // Group identity is filled in whenever the row still exists — including for
+    // a dead link or a full group, so the screen can show WHICH group it is
+    // talking about instead of a bare error. It is not a leak: the caller holds
+    // a token minted for exactly this group.
     return {
-      token: link.token,
-      groupId: room.roomId,
-      groupName: room.name,
-      groupAvatar: await resolveMediaUrl(room.avatar),
-      description: room.description,
-      memberCount: room.memberCount,
-      memberLimit: room.memberLimit,
+      token,
+      groupId: room?.roomId ?? "",
+      groupName: room?.name ?? "",
+      groupAvatar: room ? await resolveMediaUrl(room.avatar) : "",
+      description: room?.description ?? "",
+      memberCount: room?.memberCount ?? 0,
+      memberLimit: room
+        ? effectiveGroupMemberLimit(room.memberLimit)
+        : MAX_GROUP_MEMBERS,
       invitedByName: inviterSnapshot ? resolveDisplayName(inviterSnapshot) : "",
-      expiresAt: link.expiresAt ? new Date(link.expiresAt).toISOString() : null,
+      expiresAt: link?.expiresAt
+        ? new Date(link.expiresAt).toISOString()
+        : null,
       isJoined: state === "ALREADY_MEMBER",
       state,
     };
@@ -247,23 +252,27 @@ export class GroupInviteLinkService {
     userId: string,
     memberService: GroupMemberService
   ): Promise<{ room: GroupRoom }> {
-    const link = await this.inviteLinkRepo.findByToken(token);
-    if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
-
-    const room = await this.roomRepo.findActiveByRoomId(link.roomId);
-    const membership = await this.memberRepo.findByRoomAndUser(
-      link.roomId,
-      userId
+    // Same loader the card and the preview render from, so the refusal the
+    // client gets always matches the button it just showed — and names the same
+    // cause. `addMember` below is still the enforcement layer (it re-checks the
+    // block and claims the capacity slot atomically); this decides WHICH error
+    // is reported, and it covers the disbanded/closed room too, so no separate
+    // writable guard is needed here any more.
+    const { state, room, link } = await loadGroupInviteState<
+      GroupRoom,
+      GroupInviteLink,
+      { status?: string | null }
+    >(
+      {
+        inviteLinkRepo: this.inviteLinkRepo,
+        roomRepo: this.roomRepo,
+        memberRepo: this.memberRepo,
+      },
+      { token, viewerId: userId }
     );
-    // Same function the card and the preview render from, so the refusal the
-    // client gets always matches the button it just showed. `addMember` below is
-    // still the enforcement layer (it re-checks the block and claims the
-    // capacity slot atomically) — this only decides WHICH error is reported.
-    assertJoinableState(
-      resolveGroupInviteState({ room, link, membership, hasToken: true })
-    );
-    if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
-    assertGroupRoomWritable(room);
+    assertJoinableState(state);
+    // CAN_JOIN implies both, but narrow for the type checker.
+    if (!room || !link) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
 
     await memberService.addMember(
       {

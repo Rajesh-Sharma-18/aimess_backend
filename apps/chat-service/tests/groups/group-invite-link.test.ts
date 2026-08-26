@@ -199,30 +199,47 @@ describe("GET /api/chat/invite-links/preview/:token (public)", () => {
     );
   });
 
-  it("NEGATIVE: 404 for an unknown/revoked token", async () => {
-    mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue(null);
+  // The preview answers 200 for EVERY outcome now. It used to throw, which left
+  // the client with an error and no state — so the only thing it could do with a
+  // revoked link, a dead group or a full group was show the expired-link screen.
+  it("NEGATIVE: an unknown token is a STATE, not an error", async () => {
+    mocks.groupInviteLinkRepo.findByToken.mockResolvedValue(null);
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue(null);
 
     const res = await request(app).get(
       `/api/chat/invite-links/preview/${TOKEN}`
     );
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("LINK_NOT_FOUND");
   });
 
-  it("EDGE: 400 for an expired link", async () => {
-    mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
+  it("EDGE: an expired link is reported as LINK_EXPIRED on a 200", async () => {
+    mocks.groupInviteLinkRepo.findByToken.mockResolvedValue({
       token: TOKEN,
       roomId: ROOM,
+      status: "ACTIVE",
       expiresAt: new Date(Date.now() - 60_000),
       maxUses: null,
       usedCount: 0,
+    });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Devs",
+      status: "ACTIVE",
+      memberCount: 3,
+      memberLimit: 50,
     });
 
     const res = await request(app).get(
       `/api/chat/invite-links/preview/${TOKEN}`
     );
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("LINK_EXPIRED");
+    // Group identity still comes back, so the screen can name the group it is
+    // talking about instead of showing a bare error.
+    expect(res.body.data.groupName).toBe("Devs");
   });
 });
 

@@ -5589,6 +5589,11 @@ export const openApiSchemas = {
         nullable: true,
         description: "Present when relationshipStatus is FRIEND or PENDING_*.",
       },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "userId",
@@ -5600,6 +5605,7 @@ export const openApiSchemas = {
       "avatarUrlExpiresIn",
       "avatar",
       "isOnline",
+      "canSendRequest",
     ],
   },
   UserDiscoverySplitData: {
@@ -9516,8 +9522,14 @@ export const openApiSchemas = {
         type: "string",
         enum: [
           "ALREADY_MEMBER",
-          "GROUP_DELETED",
+          "GROUP_NOT_FOUND",
+          "GROUP_DISBANDED",
+          "GROUP_CLOSED",
+          "GROUP_NO_ADMIN",
+          "LINK_NOT_FOUND",
+          "LINK_REVOKED",
           "LINK_EXPIRED",
+          "LINK_USED_UP",
           "GROUP_FULL",
           "JOIN_BLOCKED",
           "CAN_JOIN",
@@ -9525,13 +9537,16 @@ export const openApiSchemas = {
         description:
           "The authoritative button state, resolved server-side on every read " +
           "and identical to the `state` on a GROUP_INVITE message card, so the " +
-          "landing screen and the in-chat card never disagree. Render text from " +
-          "it and nothing else: ALREADY_MEMBER = \"View Group\", CAN_JOIN = " +
-          "\"Join Group\", GROUP_FULL = \"Group full\" (256-member cap), " +
-          "JOIN_BLOCKED = removed/banned by staff (its own message), " +
-          "LINK_EXPIRED = revoked, time-expired or out of uses. A dead link " +
-          "returns 400 CHAT_INVITE_LINK_EXPIRED instead of a body, unless the " +
-          "caller is already a member.",
+          "landing screen and the in-chat card never disagree. Render from it " +
+          "and nothing else. ALREADY_MEMBER = \"View Group\"; CAN_JOIN = " +
+          "\"Join Group\"; GROUP_FULL = the 256-member cap; JOIN_BLOCKED = " +
+          "removed or banned by staff; GROUP_NOT_FOUND / GROUP_DISBANDED / " +
+          "GROUP_CLOSED / GROUP_NO_ADMIN = the group itself is gone or " +
+          "unowned; LINK_NOT_FOUND / LINK_REVOKED / LINK_EXPIRED / " +
+          "LINK_USED_UP = the token is dead, one state per cause. " +
+          "This endpoint answers 200 for EVERY state — group identity is filled " +
+          "in whenever the row still exists — so a client renders the reason in " +
+          "place instead of treating each one as an error.",
       },
       shareName: { type: "string" },
     },
@@ -12222,6 +12237,11 @@ export const openApiSchemas = {
       canAccept: { type: "boolean" },
       canReject: { type: "boolean" },
       canCancel: { type: "boolean" },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Clients MUST render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "friendshipId",
@@ -12230,6 +12250,7 @@ export const openApiSchemas = {
       "canAccept",
       "canReject",
       "canCancel",
+      "canSendRequest",
     ],
   },
   PublicUserProfileData: {

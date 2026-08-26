@@ -1915,9 +1915,10 @@ const inviteLinkPreview = {
     description:
       "Public endpoint — auth is OPTIONAL. Send the caller's bearer token to " +
       "receive `state` (and its legacy mirror `isJoined`), which is what decides " +
-      "the button: View Group / Join Group / Group full / blocked. Returns 400 " +
-      "CHAT_INVITE_LINK_EXPIRED for a link that is revoked, past its 1-hour " +
-      "lifetime, or out of uses — one dead-link answer for all three.",
+      "the button. ALWAYS 200: a revoked or expired link, a disbanded group and " +
+      "a full group are all reported as a `state`, not as an error, so the " +
+      "client can render the reason on the screen the user is already on. Only " +
+      "a transport or server failure is an error here.",
     parameters: [
       {
         name: "token",
@@ -1928,7 +1929,6 @@ const inviteLinkPreview = {
     ],
     responses: {
       ...successResponse("Link preview", "ChatInviteLinkPreview"),
-      "404": notFound,
     },
   },
 };
@@ -1948,9 +1948,13 @@ const inviteLinkJoin = {
       },
     },
     responses: {
-      // 400 CHAT_INVITE_LINK_EXPIRED (dead link) or
+      // One code per cause, never a generic "expired" for all of them:
+      // 400 CHAT_INVITE_LINK_REVOKED / _EXPIRED / _USAGE_LIMIT (dead link),
       //     CHAT_GROUP_MEMBER_LIMIT_REACHED (group at the 256 cap);
-      // 403 CHAT_JOIN_BLOCKED (removed or banned by staff);
+      // 403 CHAT_JOIN_BLOCKED (removed or banned by staff),
+      //     CHAT_GROUP_CLOSED_ADMIN_BANNED (owner permanently banned);
+      // 404 CHAT_INVITE_LINK_NOT_FOUND, CHAT_GROUP_NO_LONGER_EXISTS,
+      //     CHAT_GROUP_DISBANDED, CHAT_GROUP_NO_ACTIVE_ADMIN;
       // 409 CHAT_ALREADY_MEMBER.
       ...successResponse("Joined group"),
       "400": badRequest,

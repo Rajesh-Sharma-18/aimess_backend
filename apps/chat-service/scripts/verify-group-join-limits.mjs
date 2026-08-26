@@ -200,19 +200,39 @@ async function main() {
     revoke.status === 200 && revoke.body?.data?.link?.token && revoke.body.data.link.token !== freshToken,
     `new=${revoke.body?.data?.link?.token}`
   );
+  // THE REGRESSION: the preview must report a revoked link as a STATE on a 200,
+  // not as an error — an error is all the client had, and all it could do with
+  // one was send the user to the expired-link screen.
   const deadPreview = await call("GET", `/invite-links/preview/${freshToken}`, outsiderTok);
   check(
-    "C2-old-link-expired",
-    deadPreview.status === 400 && deadPreview.body?.code === "CHAT_INVITE_LINK_EXPIRED",
-    `status=${deadPreview.status} code=${deadPreview.body?.code} msg=${deadPreview.body?.message}`
+    "C2-old-link-is-a-200-state",
+    deadPreview.status === 200 && deadPreview.body?.data?.state === "LINK_REVOKED",
+    `status=${deadPreview.status} state=${deadPreview.body?.data?.state}`
+  );
+  check(
+    "C2-old-link-still-names-the-group",
+    Boolean(deadPreview.body?.data?.groupName),
+    `groupName=${deadPreview.body?.data?.groupName}`
   );
   const deadJoin = await call("POST", "/invite-links/join", outsiderTok, {
     token: freshToken,
   });
   check(
-    "C5-old-link-join-refused",
-    deadJoin.status === 400 && deadJoin.body?.code === "CHAT_INVITE_LINK_EXPIRED",
+    "C5-old-link-join-refused-with-own-code",
+    deadJoin.status === 400 && deadJoin.body?.code === "CHAT_INVITE_LINK_REVOKED",
     `status=${deadJoin.status} code=${deadJoin.body?.code}`
+  );
+  // A MEMBER holding the revoked link still gets "View Group" — their access
+  // never depended on the link.
+  const memberOnDeadLink = await call(
+    "GET",
+    `/invite-links/preview/${freshToken}`,
+    adminTok
+  );
+  check(
+    "C3b-member-keeps-view-group",
+    memberOnDeadLink.body?.data?.state === "ALREADY_MEMBER",
+    `state=${memberOnDeadLink.body?.data?.state}`
   );
   const newToken = revoke.body.data.link.token;
   const newPreview = await call("GET", `/invite-links/preview/${newToken}`, outsiderTok);
@@ -286,6 +306,57 @@ async function main() {
     "A4/A5-reverts-to-can-join",
     freedPreview.body?.data?.state === "CAN_JOIN",
     `state=${freedPreview.body?.data?.state} count=${freedPreview.body?.data?.memberCount} (winner idx ${winnerIdx})`
+  );
+
+  // -------------------------------------------------------------------------
+  // G. Group lifecycle — states that used to be reported as "link expired".
+  // -------------------------------------------------------------------------
+  const doomed = await call("POST", "/groups", adminTok, {
+    name: `live-doomed-${Date.now()}`,
+  });
+  const doomedRoom = doomed.body.data.roomId ?? doomed.body.data.room?.roomId;
+  const doomedToken = (
+    await call("POST", "/invite-links", adminTok, { roomId: doomedRoom })
+  ).body.data.token;
+  const outsider2 = tok(randomUUID());
+  const beforeDisband = await call(
+    "GET",
+    `/invite-links/preview/${doomedToken}`,
+    outsider2
+  );
+  check(
+    "G0-live-group-can-join",
+    beforeDisband.body?.data?.state === "CAN_JOIN",
+    `state=${beforeDisband.body?.data?.state}`
+  );
+
+  const disband = await call("POST", `/groups/rooms/${doomedRoom}/disband`, adminTok);
+  check("G2-disband", disband.status === 200, `status=${disband.status}`);
+  const afterDisband = await call(
+    "GET",
+    `/invite-links/preview/${doomedToken}`,
+    outsider2
+  );
+  check(
+    "G2-disbanded-is-its-own-state",
+    afterDisband.status === 200 &&
+      afterDisband.body?.data?.state === "GROUP_DISBANDED",
+    `status=${afterDisband.status} state=${afterDisband.body?.data?.state}`
+  );
+  const disbandedJoin = await call("POST", "/invite-links/join", outsider2, {
+    token: doomedToken,
+  });
+  check(
+    "G2-disbanded-join-refused-with-own-code",
+    disbandedJoin.body?.code === "CHAT_GROUP_DISBANDED",
+    `status=${disbandedJoin.status} code=${disbandedJoin.body?.code}`
+  );
+
+  const unknown = await call("GET", "/invite-links/preview/totally-unknown-token", outsider2);
+  check(
+    "G7-unknown-token-is-a-state",
+    unknown.status === 200 && unknown.body?.data?.state === "LINK_NOT_FOUND",
+    `status=${unknown.status} state=${unknown.body?.data?.state}`
   );
 
   await subA.quit();
