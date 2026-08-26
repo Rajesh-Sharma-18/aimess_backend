@@ -22,7 +22,7 @@ export type RelationshipStatus = "FRIEND" | "PENDING" | "NONE";
 export type UserDiscoveryResult = {
   userId: string;
   username: string;
-  /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+  /** Always the real name — identity is not viewer-scoped (`visibleIdentity`). */
   firstName: string | null;
   lastName: string | null;
   bio: string | null;
@@ -200,8 +200,8 @@ export const userDiscoveryService = {
           isFriend,
           isFriendOfFriend: fofIds.has(p.userId),
         };
-        const identity = visibleIdentity(p, relation);
-        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const identity = visibleIdentity(p);
+        const storedAvatar = p.avatarUrl;
         const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
         const avatar = await resolveAvatarMedia(storedAvatar);
         const base = {
@@ -311,9 +311,8 @@ export const userDiscoveryService = {
 
     const users = await Promise.all(
       profiles.map(async (p) => {
-        // NO_ONE applies even to accepted friends — name and avatar go with it.
-        const identity = visibleIdentity(p, { isFriend: true });
-        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const identity = visibleIdentity(p);
+        const storedAvatar = p.avatarUrl;
         const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {
@@ -413,8 +412,8 @@ export const userDiscoveryService = {
           isFriend: false,
           isFriendOfFriend: fofIds.has(p.userId),
         };
-        const identity = visibleIdentity(p, relation);
-        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const identity = visibleIdentity(p);
+        const storedAvatar = p.avatarUrl;
         const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {
@@ -488,8 +487,8 @@ export const userDiscoveryService = {
           isFriend,
           isFriendOfFriend: fofIds.has(p.userId),
         };
-        const identity = visibleIdentity(p, relation);
-        const storedAvatar = identity.avatarAllowed ? p.avatarUrl : null;
+        const identity = visibleIdentity(p);
+        const storedAvatar = p.avatarUrl;
         const { url, expiresIn } = await resolveAvatarUrl(storedAvatar);
         const avatar = await resolveAvatarMedia(storedAvatar);
         return {

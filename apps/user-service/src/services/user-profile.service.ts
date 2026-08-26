@@ -314,12 +314,11 @@ export const userProfileService = {
     const canViewProfile =
       !isDeletedUser && scopeAdmits(viewProfileScope, relation);
 
-    // Name + avatar are the most identifying parts of the profile, so NO_ONE
-    // has to cover them too — masking only bio/cover/counts left the card fully
-    // recognizable. `username` survives so the row stays addressable. Resolving
-    // a null key yields the same "no avatar" shape as a user who never set one,
-    // so a denied viewer cannot tell the two apart.
-    const identity = visibleIdentity(profile, relation);
+    // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
+    // to stay recognizable for the strangers who are allowed to find it. Only a
+    // DELETED account is blanked, and resolving its avatar key as null yields
+    // the same "no avatar" shape as a user who never set one.
+    const identity = visibleIdentity(profile, { anonymize: isDeletedUser });
     const [avatarView, avatar] = await Promise.all([
       avatarService.resolveViewUrlForClient(
         identity.avatarAllowed ? profile.avatarUrl : null

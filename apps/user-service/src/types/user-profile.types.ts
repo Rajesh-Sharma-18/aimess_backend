@@ -74,9 +74,10 @@ export type PublicUserProfileData = {
   userId: string;
   username: string;
   /**
-   * Null when the target's `whoCanViewProfile` excludes this viewer — the
-   * handle (`username`) and `userId` still resolve so the profile stays
-   * addressable and actionable.
+   * The real name for every viewer — identity is not gated by
+   * `whoCanViewProfile` (see `visibleIdentity`). Null only for a DELETED
+   * account, where the handle (`username`) and `userId` still resolve so
+   * history rows stay addressable.
    */
   displayName: string | null;
   firstName: string | null;

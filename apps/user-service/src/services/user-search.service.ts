@@ -36,7 +36,7 @@ export type SearchUserItem = {
   type: "USER";
   userId: string;
   username: string;
-  /** Null when `whoCanViewProfile` denies this viewer — see `visibleIdentity`. */
+  /** Always the real name — identity is not viewer-scoped (`visibleIdentity`). */
   firstName: string | null;
   lastName: string | null;
   fullName: string | null;
@@ -144,13 +144,13 @@ async function toUserItem(
   friendOfFriendIds: ReadonlySet<string>,
   blockedByMe: ReadonlySet<string>
 ): Promise<SearchUserItem> {
-  // `whoCanViewProfile` — a denied viewer keeps the handle (the row must stay
-  // actionable) but gets no real name and no photo.
+  // Identity (name + photo) is not viewer-scoped — see `visibleIdentity`.
+  // `whoCanViewProfile` gates the profile CONTENT, not who the row is.
   const relation = {
     isFriend: relationship.isFriend,
     isFriendOfFriend: friendOfFriendIds.has(profile.userId),
   };
-  const identity = visibleIdentity(profile, relation);
+  const identity = visibleIdentity(profile);
   // `whoCanSendFriendRequests` — same gate `friendshipService.sendRequest`
   // enforces, so the row never offers an action the API would reject. Blocks
   // count in EITHER direction: users who blocked the viewer never reach this
@@ -159,9 +159,7 @@ async function toUserItem(
     status: relationship.relationshipStatus,
     isBlockedEitherWay: blockedByMe.has(profile.userId),
   });
-  const { url, expiresIn, avatar } = await resolveAvatar(
-    identity.avatarAllowed ? profile.avatarUrl : null
-  );
+  const { url, expiresIn, avatar } = await resolveAvatar(profile.avatarUrl);
   return {
     type: "USER",
     userId: profile.userId,
@@ -263,8 +261,8 @@ export const userSearchService = {
       viewerId,
       viewerFriendIds
     );
-    // Reused for `whoCanViewProfile` masking on every row below — the same
-    // one-hop set discovery already paid for, never a second traversal.
+    // Reused for the `whoCanSendFriendRequests` gate on every row below — the
+    // same one-hop set discovery already paid for, never a second traversal.
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
@@ -363,7 +361,7 @@ export const userSearchService = {
       viewerId,
       friendIds
     );
-    // Reused for `whoCanViewProfile` masking on every row below.
+    // Reused for the `whoCanSendFriendRequests` gate on every row below.
     const fofIds = new Set(viewerGraph.friendOfFriendIds);
 
     // ---------------------------------------------------------------------

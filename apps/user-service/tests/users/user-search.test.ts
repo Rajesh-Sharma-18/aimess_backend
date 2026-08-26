@@ -38,6 +38,7 @@ import { recentUserSearchRepository } from "../../src/repositories/recent-user-s
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { friendshipRepository } from "../../src/repositories/friendship.repository.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
+import { avatarService } from "../../src/services/avatar.service.js";
 import {
   TEST_USER_ID,
   bearer,
@@ -696,6 +697,40 @@ describe("GET /api/v1/users/search", () => {
     ]);
 
     expect((await searchOther()).canSendRequest).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // `whoCanViewProfile` gates the profile CONTENT (bio/cover/counts), never
+  // the identity: a stranger's row used to collapse to "@handle" + the letter
+  // avatar, which is unusable to the very viewer `whoCanFindMe` let through.
+  // ---------------------------------------------------------------------
+  it("keeps the real name and avatar for a stranger under whoCanViewProfile=FRIENDS", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(OTHER_ID, {
+        avatarUrl: "avatars/jane.jpg",
+        privacySettings: {
+          whoCanViewProfile: "FRIENDS",
+          whoCanSeeOnlineStatus: "FRIENDS",
+          whoCanSendFriendRequests: "EVERYONE",
+        },
+      }),
+    ]);
+
+    const row = await searchOther();
+
+    expect(row).toMatchObject({
+      firstName: "Jane",
+      lastName: "Doe",
+      fullName: "Jane Doe",
+      username: "janedoe",
+    });
+    // The stored key reaches the resolver rather than being swapped for null —
+    // the row renders the real photo, not the "never set one" shape.
+    expect(avatarService.resolveViewUrlForClient).toHaveBeenCalledWith(
+      "avatars/jane.jpg"
+    );
+    // Presence keeps its own scope — a stranger still sees `false`.
+    expect(row.isOnline).toBe(false);
   });
 
   it("never leaks the target's raw privacy scope in a search row", async () => {
