@@ -215,6 +215,24 @@ export function buildApp(): BuiltApp {
   const groupMessageRepo = repoMock();
   const groupMemberRepo = repoMock();
   const groupInviteLinkRepo = repoMock();
+  // Capacity is claimed with an atomic conditional update in production
+  // (`reserveMemberSlot`). The mock reproduces its DECISION off the same room
+  // the spec already programs, so a capacity spec keeps working by setting
+  // `memberCount`/`memberLimit` — no spec has to know the primitive exists.
+  // A concurrency spec overrides this to script the race.
+  groupRoomRepo.reserveMemberSlot = jest.fn(
+    async (roomId: string, limit: number) => {
+      const room = await groupRoomRepo.findActiveByRoomId(roomId);
+      if (!room) return false;
+      return (room.memberCount ?? 0) < limit;
+    }
+  );
+  // `findByToken` (ANY status) is what the invite state machine reads. Specs
+  // predating it stub only the ACTIVE-filtered lookup, so fall back to that —
+  // a spec exercising a revoked/expired token overrides `findByToken` directly.
+  groupInviteLinkRepo.findByToken = jest.fn((token: string) =>
+    groupInviteLinkRepo.findActiveByToken(token)
+  );
   const groupMessagePinRepo = repoMock();
   const communityMessagePinRepo = repoMock();
   // CommunityPinService.pin() runs its switch-pin logic inside

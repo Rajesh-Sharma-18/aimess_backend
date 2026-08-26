@@ -114,11 +114,11 @@ import {
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import { resolveSystemActorName } from "../lib/localize-system-preview.js";
+import { resolveGroupInviteState } from "../lib/group-invite-state.js";
 import {
   currentLocale,
   isCallContentType,
   inviteContentType,
-  isInviteLinkExpired,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
@@ -2538,28 +2538,33 @@ export class PrivateMessageService {
         const room = groupId
           ? await this.groupRoomRepo.findActiveByRoomId(groupId)
           : null;
-        const alreadyJoined =
-          Boolean(room) && viewerId
-            ? Boolean(
-                await this.groupMemberRepo.findActiveByRoomAndUser(
-                  groupId,
-                  viewerId
-                )
-              )
-            : false;
+        // ANY status: an ACTIVE row means "View Group", a KICKED/BANNED row is
+        // what makes this viewer rejoin-blocked. Filtering to ACTIVE here would
+        // make a removed user indistinguishable from someone who never joined.
+        const membership =
+          room && viewerId
+            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
+            : null;
+        // ANY status too — a REVOKED row must reach the state machine.
         const link = token
-          ? await this.groupInviteLinkRepo?.findActiveByToken(token)
+          ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
           : null;
-        // `findActiveByToken` filters on the row's `status` column only, so an
-        // expired link still comes back — the 1-hour expiry is a timestamp check,
-        // and without it the card kept offering a link the join endpoint refuses.
+        const state = resolveGroupInviteState({
+          room,
+          link,
+          membership,
+          hasToken: Boolean(token),
+        });
+        const alreadyJoined = state === "ALREADY_MEMBER";
+        // Legacy LINK-only status, kept for clients that predate `state`. A
+        // revoked/expired/exhausted link all read EXPIRED on the wire now:
+        // the product shows one sentence for every dead link, and REVOKED was
+        // never rendered by any client.
         const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
           ? "DELETED"
-          : token && !link
-            ? "REVOKED"
-            : isInviteLinkExpired(link?.expiresAt)
-              ? "EXPIRED"
-              : "ACTIVE";
+          : state === "LINK_EXPIRED"
+            ? "EXPIRED"
+            : "ACTIVE";
 
         invitationByMessageId.set(
           m.id,
@@ -2569,11 +2574,15 @@ export class PrivateMessageService {
             groupAvatarUrl: room
               ? await resolveMediaUrl(room.avatar)
               : groupAvatarUrl,
+            // Live roster size, re-read on every fetch — never the count frozen
+            // into the message when it was sent (that is only the fallback for a
+            // group that no longer exists).
             memberCount: room?.memberCount ?? memberCount,
             inviteToken: token,
             deepLink,
             alreadyJoined,
             status,
+            state,
           })
         );
       }

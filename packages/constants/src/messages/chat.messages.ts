@@ -529,6 +529,17 @@ export const CHAT_MESSAGES = {
     en: "Invitation link expired",
     th: "ลิงก์เชิญหมดอายุแล้ว",
   },
+  /**
+   * A user removed (kicked) or banned by group staff who tries to come back
+   * through an invite link. Deliberately distinct from
+   * CHAT_GROUP_MEMBER_LIMIT_REACHED and CHAT_INVITE_LINK_EXPIRED — the three
+   * refusals must never be confusable on the button or in a toast.
+   */
+  CHAT_JOIN_BLOCKED: {
+    vi: "Bạn không thể tham gia nhóm này",
+    en: "You can't join this group",
+    th: "คุณไม่สามารถเข้าร่วมกลุ่มนี้ได้",
+  },
   CHAT_INVITE_LINK_USAGE_LIMIT: {
     vi: "Liên kết mời đã đạt giới hạn sử dụng",
     en: "Invite link usage limit reached",

@@ -18,6 +18,7 @@ import {
   t,
   type SupportedLocale,
 } from "@aimess/constants";
+import type { GroupInviteState } from "./group-invite-state.js";
 
 export type ConversationKind = "PRIVATE" | "GROUP" | "COMMUNITY";
 
@@ -540,6 +541,14 @@ export interface GroupInvitationSystemAction {
   deepLink: string;
   alreadyJoined: boolean;
   status: GroupInvitationStatus;
+  /**
+   * The authoritative button state — what the card must render, decided by the
+   * server. `status` describes only the LINK; `state` folds in membership,
+   * capacity and the rejoin block too, and is the field clients should switch
+   * on. See `lib/group-invite-state.ts`. Optional so the live send path (which
+   * has no viewer to resolve it for) can omit it.
+   */
+  state?: GroupInviteState;
   canOpen: boolean;
 }
 
@@ -571,6 +580,7 @@ export function buildGroupInvitationAction(params: {
   deepLink: string;
   alreadyJoined: boolean;
   status: GroupInvitationStatus;
+  state?: GroupInviteState;
 }): GroupInvitationSystemAction {
   const {
     groupId,
@@ -581,6 +591,7 @@ export function buildGroupInvitationAction(params: {
     deepLink,
     alreadyJoined,
     status,
+    state,
   } = params;
   const canOpen =
     status !== "DELETED" && (alreadyJoined || status === "ACTIVE");
@@ -594,6 +605,7 @@ export function buildGroupInvitationAction(params: {
     deepLink,
     alreadyJoined,
     status,
+    ...(state ? { state } : {}),
     canOpen,
   };
 }

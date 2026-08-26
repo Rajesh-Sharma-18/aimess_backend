@@ -25,6 +25,15 @@ const forbidden = {
   },
 };
 
+const conflict = {
+  description: "Conflict — the state already changed (e.g. already a member)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 const notFound = {
   description: "Resource not found",
   content: {
@@ -1874,6 +1883,12 @@ const inviteLinkRevoke = {
     tags: ["Chat — Groups"],
     operationId: "revokeGroupInviteLink",
     summary: "Revoke group invite link",
+    description:
+      "ADMIN only. Kills the token permanently (it is never reissued) AND every " +
+      "other active link for the room, then mints a replacement and returns " +
+      "`{ revoked, link }` — so the admin always has a working link. Works " +
+      "regardless of remaining expiry or uses. Afterwards the old token answers " +
+      "400 CHAT_INVITE_LINK_EXPIRED on both preview and join.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -1899,8 +1914,10 @@ const inviteLinkPreview = {
     summary: "Preview invite link",
     description:
       "Public endpoint — auth is OPTIONAL. Send the caller's bearer token to " +
-      "receive `isJoined` (View Group vs Join Group). Returns 400 " +
-      "CHAT_INVITE_LINK_EXPIRED once the link's 1-hour lifetime has passed.",
+      "receive `state` (and its legacy mirror `isJoined`), which is what decides " +
+      "the button: View Group / Join Group / Group full / blocked. Returns 400 " +
+      "CHAT_INVITE_LINK_EXPIRED for a link that is revoked, past its 1-hour " +
+      "lifetime, or out of uses — one dead-link answer for all three.",
     parameters: [
       {
         name: "token",
@@ -1931,10 +1948,16 @@ const inviteLinkJoin = {
       },
     },
     responses: {
+      // 400 CHAT_INVITE_LINK_EXPIRED (dead link) or
+      //     CHAT_GROUP_MEMBER_LIMIT_REACHED (group at the 256 cap);
+      // 403 CHAT_JOIN_BLOCKED (removed or banned by staff);
+      // 409 CHAT_ALREADY_MEMBER.
       ...successResponse("Joined group"),
       "400": badRequest,
       "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
+      "409": conflict,
     },
   },
 };

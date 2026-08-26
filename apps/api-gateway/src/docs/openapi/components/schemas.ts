@@ -9338,7 +9338,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000, default: 50 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256, default: 256 },
     },
     required: ["name"],
   },
@@ -9348,7 +9348,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256 },
     },
   },
 
@@ -9509,7 +9509,29 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "Whether the CALLER is an ACTIVE member right now. Always false for " +
-          "an anonymous preview. Read live per request — never cache it.",
+          "an anonymous preview. Read live per request — never cache it. " +
+          "Derived from `state === \"ALREADY_MEMBER\"`; prefer `state`.",
+      },
+      state: {
+        type: "string",
+        enum: [
+          "ALREADY_MEMBER",
+          "GROUP_DELETED",
+          "LINK_EXPIRED",
+          "GROUP_FULL",
+          "JOIN_BLOCKED",
+          "CAN_JOIN",
+        ],
+        description:
+          "The authoritative button state, resolved server-side on every read " +
+          "and identical to the `state` on a GROUP_INVITE message card, so the " +
+          "landing screen and the in-chat card never disagree. Render text from " +
+          "it and nothing else: ALREADY_MEMBER = \"View Group\", CAN_JOIN = " +
+          "\"Join Group\", GROUP_FULL = \"Group full\" (256-member cap), " +
+          "JOIN_BLOCKED = removed/banned by staff (its own message), " +
+          "LINK_EXPIRED = revoked, time-expired or out of uses. A dead link " +
+          "returns 400 CHAT_INVITE_LINK_EXPIRED instead of a body, unless the " +
+          "caller is already a member.",
       },
       shareName: { type: "string" },
     },
