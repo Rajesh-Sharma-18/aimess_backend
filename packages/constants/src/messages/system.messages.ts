@@ -772,6 +772,19 @@ export const SYSTEM_MESSAGES = {
     en: "Your request to join was approved",
     th: "คำขอเข้าร่วมของคุณได้รับการอนุมัติ",
   },
+  SYS_COMMUNITY_MEMBER_ADDED_SELF: {
+    vi: "{{actor}} đã thêm bạn vào cộng đồng",
+    en: "{{actor}} added you to the community",
+    th: "{{actor}}เพิ่มคุณเข้าคอมมูนิตี้",
+  },
+  /** Actor-less variant for the community-LIST preview, which is built by
+   *  community-service where the adding admin's display name is not resolved
+   *  (only chat-service hydrates user snapshots for system lines). */
+  SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT: {
+    vi: "Bạn đã được thêm vào cộng đồng",
+    en: "You were added to the community",
+    th: "คุณถูกเพิ่มเข้าคอมมูนิตี้",
+  },
   SYS_COMMUNITY_JOIN_REQUEST_REJECTED: {
     vi: "Yêu cầu tham gia của bạn đã bị từ chối",
     en: "Your request to join was declined",

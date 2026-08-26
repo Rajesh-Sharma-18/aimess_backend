@@ -44,6 +44,12 @@ export const CommunitySystemMessageType = {
   COMMUNITY_JOINED: "COMMUNITY_JOINED",
   JOIN_REQUEST_APPROVED: "JOIN_REQUEST_APPROVED",
   JOIN_REQUEST_REJECTED: "JOIN_REQUEST_REJECTED",
+  /** An admin/moderator added this member directly (Add Member), rather than
+   *  the member joining or a join request being approved. PERSONAL: only the
+   *  added member reads "{admin} added you to the community". Distinct from
+   *  COMMUNITY_JOINED ("You joined…") and JOIN_REQUEST_APPROVED ("Your request
+   *  … was approved") so the line always matches what actually happened. */
+  MEMBER_ADDED: "MEMBER_ADDED",
   /** Personal counterpart to ROLE_CHANGED — delivered only to the user whose
    *  role changed so they see "You are now a moderator" while everyone else
    *  sees the community-wide "X is now a moderator" line. */
@@ -101,6 +107,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_JOINED: "PERSONAL",
   JOIN_REQUEST_APPROVED: "PERSONAL",
   JOIN_REQUEST_REJECTED: "PERSONAL",
+  MEMBER_ADDED: "PERSONAL",
   ROLE_CHANGED_SELF: "PERSONAL",
   MEMBER_ROLE_CHANGED: "COMMUNITY",
 };
@@ -141,6 +148,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_JOINED: false,
   JOIN_REQUEST_APPROVED: false,
   JOIN_REQUEST_REJECTED: false,
+  MEMBER_ADDED: false,
   ROLE_CHANGED_SELF: false,
   MEMBER_ROLE_CHANGED: true,
 };
@@ -192,6 +200,7 @@ export function isEligibleForLastActivity(
 export const PERSONAL_JOIN_SESSION_TYPES = [
   "COMMUNITY_JOINED",
   "JOIN_REQUEST_APPROVED",
+  "MEMBER_ADDED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** Membership test for a readonly subtype tuple (handles null/undefined). */

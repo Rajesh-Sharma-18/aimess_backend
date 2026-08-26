@@ -310,6 +310,11 @@ export function buildCommunitySystemFallbackText(
 
     case "COMMUNITY_JOINED":
       return t("SYS_COMMUNITY_MEMBER_JOINED_SELF", locale);
+    // PERSONAL — only the added member reads it, so it is always second-person.
+    // Names the admin who added them; `actor` falls back to "Someone" when the
+    // snapshot is unresolved, same as every other actor-bearing line here.
+    case "MEMBER_ADDED":
+      return t("SYS_COMMUNITY_MEMBER_ADDED_SELF", locale, { actor });
     case "JOIN_REQUEST_APPROVED":
       return t("SYS_COMMUNITY_JOIN_REQUEST_APPROVED", locale);
     case "JOIN_REQUEST_REJECTED":

@@ -65,11 +65,21 @@ export interface CommunityMemberJoinedSocketPayload {
 export interface CommunityJoinRequestUpdatedSocketPayload {
   communityId: string;
   requestId: string;
-  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    /** The requester became a member through another path (Add Member, invite,
+     *  invite-link redeem, public self-join) while this request was still
+     *  PENDING, so the server resolved it. Admin clients must DROP the row —
+     *  there is no accept/decline action for a user who is already a member. */
+    | "AUTO_RESOLVED";
   /** The requester whose request changed status. */
   userId: string;
   /** Who acted: the requester themself for PENDING/CANCELLED, the
-   *  approving/rejecting admin for APPROVED/REJECTED. */
+   *  approving/rejecting admin for APPROVED/REJECTED, the admin/member whose
+   *  action created the membership for AUTO_RESOLVED. */
   actorId?: string;
   updatedAt: number; // epoch ms
 }
