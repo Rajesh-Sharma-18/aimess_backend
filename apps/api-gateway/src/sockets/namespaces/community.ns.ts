@@ -20,8 +20,10 @@ import {
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import {
+  personalizeCommunityAddedPreview,
   personalizeCommunitySocketMessage,
   personalizeCommunityUpdatedPreview,
+  personalizeStreamDuration,
 } from "../system-message-personalize.js";
 import {
   emitPersonalizedSender,
@@ -317,7 +319,9 @@ export function registerCommunityNamespace(
                 ? personalizeCommunitySocketMessage
                 : parsed.event === "community:updated"
                   ? personalizeCommunityUpdatedPreview
-                  : undefined
+                  : parsed.event === "community:added"
+                    ? personalizeCommunityAddedPreview
+                    : undefined
             );
 
             // Auto-join the typing room when the user is added to a new community
@@ -386,6 +390,12 @@ export function registerCommunityNamespace(
         let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "community:message:new") {
           personalizeFn = personalizeCommunitySocketMessage;
+        }
+        // The stream's runtime ships as a rendered string; every member of the
+        // room reads it, and they do not share a language. Re-derived per
+        // socket from `durationSeconds`, which rides along for that purpose.
+        if (parsed.event === "community:stream:ended") {
+          personalizeFn = personalizeStreamDuration;
         }
 
         const TYPING_ROOM_BROADCAST_EVENTS = new Set([

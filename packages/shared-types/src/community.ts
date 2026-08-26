@@ -26,6 +26,24 @@ export type CommunityLastActivity =
       userId: null;
       username: null;
       preview: string;
+      /**
+       * The `@aimess/constants` message key `preview` was rendered from, when
+       * this row's sentence is pure product copy with no parameters.
+       *
+       * `preview` itself is baked once, by the producer, and one row is read by
+       * members in three languages — so the string alone can only ever be right
+       * for whoever the producer happened to render for. The key is the same
+       * sentence with the language factored out: the gateway re-renders it per
+       * receiving socket, and a client that carries its own catalog SHOULD
+       * prefer it over `preview` so a language change re-renders history with no
+       * refetch.
+       *
+       * Optional and additive. Absent means "no key to render from" — a user
+       * message preview, or a row published before this field existed — and
+       * `preview` is then the only answer. An unknown key must fall back to
+       * `preview` too, never be shown raw.
+       */
+      previewKey?: string;
       /** Epoch milliseconds. */
       dateTime: number;
     };

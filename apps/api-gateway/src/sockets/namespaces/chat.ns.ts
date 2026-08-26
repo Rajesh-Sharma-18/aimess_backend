@@ -7,6 +7,7 @@ import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import {
+  personalizeAutoDeleteLabel,
   personalizeConvUpdatedPreview,
   personalizeGroupSocketMessage,
 } from "../system-message-personalize.js";
@@ -532,6 +533,22 @@ export function registerChatNamespace(
         // write-time English.
         if (parsed.event === "conv:updated" && pattern === "user:*") {
           personalizeFn = personalizeConvUpdatedPreview;
+        }
+        // `group:added` is the group twin of `community:added`: a full inbox row
+        // pushed to the NEW member (who is not in `conv:<roomId>` yet), whose
+        // `lastMessage` is the room's stored preview snapshot — normally the
+        // very "{admin} added {member}" SYSTEM line this add just wrote, baked
+        // English. It is the same rebuild `conv:updated` gets, on the same
+        // `{ type, lastMessage }` shape, so it reuses the same function rather
+        // than shipping the row in a language the recipient never chose.
+        if (parsed.event === "group:added" && pattern === "user:*") {
+          personalizeFn = personalizeConvUpdatedPreview;
+        }
+        // One timer, one payload, two participants who need not share a
+        // language — the duration label is re-derived from `ttlSeconds` per
+        // socket instead of being shipped in the setter's language.
+        if (parsed.event === "conv:auto_delete:updated") {
+          personalizeFn = personalizeAutoDeleteLabel;
         }
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(

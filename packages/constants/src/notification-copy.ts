@@ -709,6 +709,32 @@ export const callCopy = register("call", {
     }),
 });
 
+/**
+ * Account status set by a platform admin (ban / suspend / reinstate).
+ *
+ * These are the one class of notification a user cannot switch off — they are
+ * exempt from the category toggles and from quiet hours — which makes them the
+ * worst possible place to hard-code English, and where it stayed longest: the
+ * copy lived as string literals in auth-service's admin-user consumer, so a
+ * Vietnamese user learned they were banned in English and no read-time replay
+ * could recover it. Registered here like every other builder, so the row's
+ * ticket re-renders it per reader and per device.
+ */
+export const accountCopy = register("account", {
+  banned: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_BANNED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_BANNED_BODY", locale),
+  }),
+  suspended: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_SUSPENDED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_SUSPENDED_BODY", locale),
+  }),
+  reinstated: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_REINSTATED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_REINSTATED_BODY", locale),
+  }),
+});
+
 export const authCopy = register("auth", {
   newLogin:
     (browser?: string | null, location?: string | null): LocalizedCopy =>

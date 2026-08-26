@@ -6145,7 +6145,20 @@ export const openApiSchemas = {
       },
       preview: {
         type: "string",
-        description: "Short human-readable preview of the activity.",
+        description:
+          "Short human-readable preview of the activity, rendered in the " +
+          "caller's language (`x-lang`) for REST, and in the receiving " +
+          "socket's language for `community:added` / `community:updated`.",
+      },
+      previewKey: {
+        type: "string",
+        description:
+          "Message-catalog key `preview` was rendered from, for the " +
+          "parameter-less lifecycle sentences (join / added / created). " +
+          "OPTIONAL and additive. A client carrying its own catalog SHOULD " +
+          "prefer this over `preview`, so switching language re-renders " +
+          "history with no refetch; fall back to `preview` when it is absent " +
+          "or names a key the client does not have. Never display the key.",
       },
       dateTime: {
         type: "integer",

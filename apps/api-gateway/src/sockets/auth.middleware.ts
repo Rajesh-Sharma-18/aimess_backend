@@ -9,6 +9,7 @@ import {
 import { getActiveSessionFromCache, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
+import { resolveAccountLocale } from "./account-locale.js";
 import { env } from "../config/env.js";
 import type { SocketUserDetails } from "./user-details.js";
 
@@ -64,11 +65,24 @@ declare module "socket.io" {
  * messages in Vietnamese, while the same room's REST history (which does send
  * `x-lang`) came back in English.
  */
-export function resolveHandshakeLocale(handshake: {
+export interface HandshakeLocaleSource {
   auth?: unknown;
   query?: unknown;
   headers: Record<string, string | string[] | undefined>;
-}): SupportedLocale {
+}
+
+/**
+ * The language THIS CONNECTION explicitly asked for, or null.
+ *
+ * Split out from the chain below because the account language sits between the
+ * two halves: a declared value is this session speaking and outranks
+ * everything, while `Accept-Language` is the device/OS and must NOT outrank a
+ * language the user actually picked in the app. Only a null here lets the
+ * account rung run.
+ */
+export function declaredHandshakeLocale(
+  handshake: HandshakeLocaleSource
+): { locale: SupportedLocale; source: string } | null {
   const { auth, query, headers } = handshake;
   const a = auth as Record<string, unknown> | undefined;
   const q = query as Record<string, unknown> | undefined;
@@ -86,8 +100,17 @@ export function resolveHandshakeLocale(handshake: {
     ["x-lang", firstString(headers["x-lang"])],
   ];
   const found = declared.find(([, value]) => value !== undefined);
+  if (!found) return null;
+  return { locale: resolveLocale(null, found[1]), source: found[0] };
+}
+
+export function resolveHandshakeLocale(
+  handshake: HandshakeLocaleSource
+): SupportedLocale {
+  const { headers } = handshake;
+  const found = declaredHandshakeLocale(handshake);
   const acceptLanguage = firstString(headers["accept-language"]);
-  const locale = resolveLocale(acceptLanguage, found?.[1]);
+  const locale = found?.locale ?? resolveLocale(acceptLanguage, null);
   // The one fact needed to tell a gateway bug from a client that sends nothing:
   // WHICH rung answered. `source=default` on a session that shows the wrong
   // language means the client declared no locale on this connection, not that
@@ -95,7 +118,7 @@ export function resolveHandshakeLocale(handshake: {
   // user, only by socket.
   logger.debug(
     `[socket:locale] resolved=${locale} source=${
-      found?.[0] ?? (acceptLanguage ? "accept-language" : "default")
+      found?.source ?? (acceptLanguage ? "accept-language" : "default")
     }`
   );
   return locale;
@@ -157,6 +180,21 @@ export function createGatewaySocketAuthMiddleware(
         socket.data.userId = verified.userId;
         socket.data.sessionId = verified.sessionId;
         socket.data.accessToken = token;
+
+        // A connection that declared no language used to land on
+        // `DEFAULT_LOCALE` — "vi" in production — so a client that has not been
+        // taught to send `lang` yet was answered in Vietnamese while its REST
+        // calls (which do send `x-lang`) came back correct. That split is what
+        // made one add arrive as an English list row and a Vietnamese system
+        // line on the same screen. The account's saved language is a language
+        // this user actually chose, so it is a strictly better last resort than
+        // the server default; it stays BELOW anything the connection declared,
+        // because it is account-wide and five sessions overwrite each other in
+        // it. Only paid on the handshake, and only when the client said nothing.
+        if (!declaredHandshakeLocale(socket.handshake)) {
+          const accountLocale = await resolveAccountLocale(verified.userId);
+          if (accountLocale) socket.data.locale = accountLocale;
+        }
 
         // Decode (not verify — already verified above) to extract expiry for session:expired warnings.
         const decoded = jwt.decode(token) as { exp?: number } | null;

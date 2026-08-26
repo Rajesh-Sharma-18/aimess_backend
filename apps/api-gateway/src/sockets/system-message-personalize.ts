@@ -1,5 +1,8 @@
 import {
+  formatStreamDuration,
+  formatTtlDuration,
   localizeMessagePreview,
+  renderMessageKey,
   personalizeCommunitySystemMessageForViewer,
   personalizeGroupSystemMessageForViewer,
   personalizePrivateSystemMessageForViewer,
@@ -19,6 +22,14 @@ import {
  */
 interface BumpedPreview {
   contentType?: string;
+  /**
+   * The DB snapshot (`GroupRoom.lastMessagePreview`) spells the same field
+   * `messageType`; only the `conv:updated` bump normalizes it to `contentType`.
+   * `group:added` publishes the snapshot verbatim, so both spellings have to be
+   * read or every group SYSTEM row arriving that way is mistaken for a media
+   * label and never rebuilt.
+   */
+  messageType?: string;
   text?: string;
   systemEvent?: string;
   systemData?: Record<string, unknown>;
@@ -155,7 +166,9 @@ function withRebuiltPreviewText(
 ): unknown {
   const preview = d.lastMessage as BumpedPreview | null | undefined;
   if (!preview || typeof preview !== "object") return d;
-  const contentType = String(preview.contentType ?? "").toUpperCase();
+  const contentType = String(
+    preview.contentType ?? preview.messageType ?? ""
+  ).toUpperCase();
   const storedText = String(preview.text ?? "");
   // A media/structured row previews as a LABEL ("🎤 Voice Message"), baked in
   // English by the publisher for the same reason a SYSTEM sentence is: one
@@ -228,4 +241,88 @@ export function personalizeGroupSocketMessage(
         ? { ...(content as object), text: personalized }
         : { text: personalized, urls: [], files: [] },
   };
+}
+
+/**
+ * Per-viewer translation of the `community:added` onboarding row's preview.
+ *
+ * `community:added` is the ONE community event whose text is not a bumped
+ * message: it carries the recipient's own "You joined the community" /
+ * "You were added to the community" list row, baked English by community-service
+ * (which runs inside the ADDING ADMIN's request and therefore must not use that
+ * request's language for another member's device). The sentence has no
+ * parameters, so the row ships the catalog key it was rendered from and this
+ * re-renders it for the socket that is about to receive it.
+ *
+ * Without this the same add produced two languages on one device — an English
+ * `community:added.lastActivity.preview` next to a `community:message:new`
+ * rendered per socket — which is the mismatch this whole path exists to close.
+ * An absent or unknown key keeps the baked sentence: a real sentence in the
+ * fallback language beats showing a raw key.
+ */
+export function personalizeCommunityAddedPreview(
+  data: unknown,
+  _viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): unknown {
+  const d = data as Record<string, unknown>;
+  const activity = d.lastActivity as
+    | { preview?: string; previewKey?: string }
+    | null
+    | undefined;
+  if (!activity || typeof activity !== "object") return data;
+  const rendered = renderMessageKey(activity.previewKey, locale);
+  if (rendered === null || rendered === activity.preview) return data;
+  return { ...d, lastActivity: { ...activity, preview: rendered } };
+}
+
+/**
+ * Per-viewer render of the `conv:auto_delete:updated` duration label.
+ *
+ * The timer belongs to the CONVERSATION, so one payload is published to both
+ * participants — but `label` was rendered by `buildAutoDeleteWire` inside the
+ * PUT request of whoever changed it, in that person's language. A Thai user
+ * turning on a 24-hour timer therefore pushed a Thai "24 ชั่วโมง" onto their
+ * English peer's gear menu. `ttlSeconds` is right there in the same payload and
+ * is the only input the label has, so it is re-derived per receiving socket
+ * instead of being carried as text.
+ *
+ * `self` mirrors the flat fields and carries no label of its own, so there is
+ * nothing else on this payload to translate.
+ */
+export function personalizeAutoDeleteLabel(
+  data: unknown,
+  _viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): unknown {
+  if (!data || typeof data !== "object") return data;
+  const d = data as Record<string, unknown>;
+  if (typeof d.label !== "string") return data;
+  const ttlSeconds =
+    typeof d.ttlSeconds === "number" ? d.ttlSeconds : Number(d.ttlSeconds ?? 0);
+  const label = formatTtlDuration(ttlSeconds, locale);
+  return label === d.label ? data : { ...d, label };
+}
+
+/**
+ * Per-viewer render of the `community:stream:ended` runtime ("1h 24m").
+ *
+ * One stream ends once and the event is broadcast to the whole community room,
+ * so the string could only ever be baked in ONE language — `STORED_TEXT_LOCALE`
+ * — and every non-English member read an English runtime under a system line
+ * that had already been translated for them. `durationSeconds` travels in the
+ * same payload for exactly this reason, so the label is re-derived per socket.
+ */
+export function personalizeStreamDuration(
+  data: unknown,
+  _viewerUserId: string,
+  locale: SupportedLocale = STORED_TEXT_LOCALE
+): unknown {
+  if (!data || typeof data !== "object") return data;
+  const d = data as Record<string, unknown>;
+  if (typeof d.duration !== "string" || typeof d.durationSeconds !== "number") {
+    return data;
+  }
+  const duration = formatStreamDuration(d.durationSeconds, locale);
+  return duration === d.duration ? data : { ...d, duration };
 }

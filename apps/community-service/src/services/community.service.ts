@@ -23,6 +23,7 @@ import {
   STORED_TEXT_LOCALE,
   t,
   type CommunitySystemMessageType,
+  type MessageKey,
   type SupportedLocale,
 } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
