@@ -532,7 +532,7 @@ describe("POST /api/chat/invite-links/room/:roomId/bulk-send", () => {
 
 const HOUR_MS = 60 * 60 * 1000;
 
-describe("invite-link lifetime — every link dies 1 hour after creation", () => {
+describe("invite-link lifetime — a link lives until it is revoked", () => {
   beforeEach(() => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
@@ -546,39 +546,25 @@ describe("invite-link lifetime — every link dies 1 hour after creation", () =>
     );
   });
 
-  it("a bare create stamps expiresAt exactly 1 hour out", async () => {
-    const before = Date.now();
+  it("a bare create stamps NO expiry — the link lives until revoked", async () => {
     const res = await request(app)
       .post("/api/chat/invite-links")
       .set(bearer(makeAccessToken()))
       .send({ roomId: ROOM });
-    const after = Date.now();
 
     expect(res.status).toBe(201);
-    const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
-      before + HOUR_MS
-    );
-    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(after + HOUR_MS);
+    expect(mocks.groupInviteLinkRepo.create.mock.calls[0][0].expiresAt).toBeNull();
   });
 
-  it("a caller-supplied expiry LONGER than an hour is clamped", async () => {
-    const before = Date.now();
+  it("a caller-supplied expiry LONGER than an hour is honoured verbatim", async () => {
+    const asked = new Date(Date.now() + 7 * 24 * HOUR_MS);
     await request(app)
       .post("/api/chat/invite-links")
       .set(bearer(makeAccessToken()))
-      .send({
-        roomId: ROOM,
-        expiresAt: new Date(Date.now() + 7 * 24 * HOUR_MS).toISOString(),
-      });
+      .send({ roomId: ROOM, expiresAt: asked.toISOString() });
 
     const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(
-      Date.now() + HOUR_MS
-    );
-    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
-      before + HOUR_MS - 1000
-    );
+    expect(written.expiresAt.getTime()).toBe(asked.getTime());
   });
 
   it("a caller-supplied SHORTER expiry is honoured", async () => {

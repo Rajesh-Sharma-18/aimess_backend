@@ -8301,8 +8301,10 @@ export const openApiSchemas = {
         format: "int64",
         nullable: true,
         description:
-          "Invite-link expiry as epoch milliseconds — always 1 hour after the " +
-          "link was created. Past it, preview and redeem both fail with 410 " +
+          "Invite-link expiry as epoch milliseconds, or null — the default — " +
+          "when the link never expires on its own. A link stays usable until " +
+          "an admin revokes it or its maxUses is spent; past an expiry that " +
+          "was explicitly asked for, preview and redeem both fail with 410 " +
           "COMMUNITY_INVITE_LINK_EXPIRED, so the client shows " +
           "\"Invitation link expired\" instead of a join CTA.",
         example: 1785000000000,

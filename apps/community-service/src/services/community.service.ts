@@ -15,7 +15,6 @@ import {
 import {
   clampInviteLinkExpiry,
   currentLocale,
-  inviteLinkExpiresAt,
   isHiddenSystemMessage,
   isInviteLinkExpired,
   localizeMessagePreview,
@@ -1611,9 +1610,9 @@ function toInviteLinkData(
 
 /**
  * Build a `PermanentInvitationLinkData` DTO from the community's CURRENT
- * shareable invite-link row. The response shape is unchanged, but the link it
- * describes is no longer permanent: every invite link now dies 1 hour after it
- * was created (see `INVITE_LINK_TTL_MS`), so `expiresAt` is always set.
+ * shareable invite-link row. `expiresAt` is whatever the row carries — null for
+ * the links every mint path produces, which stay valid until an admin revokes
+ * them, exactly like a group link.
  */
 function toInvitationLinkData(
   community: { id: string; name: string },
@@ -1626,35 +1625,22 @@ function toInvitationLinkData(
     invitationLink: buildInviteUrl(link.code),
     appDeepLink: buildInviteDeepLink(link.code),
     createdAt: link.createdAt.getTime(),
-    expiresAt: (link.expiresAt ?? inviteLinkExpiresAt(link.createdAt)).getTime(),
+    expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
   };
 }
 
 /**
- * Expiry instant of a LEGACY permanent invitation code (the `invitationCode`
- * column). Nothing mints these any more, but codes already shared are still
- * resolvable — and they are held to the same 1-hour window, measured from when
- * the code was allocated, so an old link reports EXPIRED rather than living
- * forever. `invitationCodeCreatedAt` is null only for rows written before that
- * column existed; those fall back to the community's own creation date, i.e.
- * long expired.
+ * LEGACY permanent invitation codes (the `invitationCode` column) are minted by
+ * nothing any more, but codes already shared stay resolvable — and, like every
+ * other link, they now expire only when someone revokes them. Nothing revokes a
+ * permanent code, so it has no expiry instant at all.
  */
-function permanentCodeExpiresAt(community: {
-  invitationCodeCreatedAt: Date | null;
-  createdAt: Date;
-}): Date {
-  return inviteLinkExpiresAt(
-    community.invitationCodeCreatedAt ?? community.createdAt
-  );
+function permanentCodeExpiresAt(): null {
+  return null;
 }
 
-function assertPermanentCodeActive(community: {
-  invitationCodeCreatedAt: Date | null;
-  createdAt: Date;
-}): void {
-  if (isInviteLinkExpired(permanentCodeExpiresAt(community))) {
-    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
-  }
+function assertPermanentCodeActive(): void {
+  // Nothing to assert: a permanent code has no expiry and no revoke path.
 }
 
 /**
@@ -1671,8 +1657,8 @@ function assertPermanentCodeActive(community: {
  *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
  *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
  *  - `maxUses: null` → unlimited
- *  - `expiresAt` / `isActive` → the 1-hour window measured from
- *    `invitationCodeCreatedAt` (see {@link permanentCodeExpiresAt})
+ *  - `expiresAt: null` / `isActive: true` → nothing expires or revokes a
+ *    permanent code (see {@link permanentCodeExpiresAt})
  *  - `revokedAt: null` → never revoked
  *  - `autoApprove: false` → request-to-join (PRIVATE default)
  */
@@ -1697,12 +1683,12 @@ function toPermanentLinkAsInviteLinkData(community: {
     maxUses: null,
     usedCount: 0,
     autoApprove: false,
-    expiresAt: permanentCodeExpiresAt(community).toISOString(),
+    expiresAt: null,
     revokedAt: null,
     createdAt: (
       community.invitationCodeCreatedAt ?? community.createdAt
     ).toISOString(),
-    isActive: !isInviteLinkExpired(permanentCodeExpiresAt(community)),
+    isActive: true,
     isPermanent: true,
   };
 }
@@ -9538,7 +9524,7 @@ export const communityService = {
   }> {
     // Legacy codes are held to the same 1-hour window as every other link, so an
     // expired one cannot be redeemed by calling the API directly.
-    assertPermanentCodeActive(community);
+    assertPermanentCodeActive();
     communityAccessPolicy.assertWritable(community);
 
     const existing = await communityRepository.findMemberByUserId(
@@ -9848,7 +9834,7 @@ export const communityService = {
           createdBy: callerId,
           maxUses: null,
           autoApprove: false,
-          expiresAt: inviteLinkExpiresAt(),
+          expiresAt: null,
         });
         break;
       } catch (err) {
@@ -9944,7 +9930,7 @@ export const communityService = {
             maxUses: null,
             usedCount: 0,
             autoApprove: false,
-            expiresAt: permanentCodeExpiresAt(community),
+            expiresAt: null,
             revokedAt: null,
             createdAt: community.invitationCodeCreatedAt ?? community.createdAt,
           } as CommunityInviteLink;
@@ -10267,13 +10253,13 @@ export const communityService = {
     // Permanent-code fallback: if no CommunityInviteLink row owns this code,
     // check whether it is the community's permanent invitation code instead.
     // Permanent codes are never revoked or exhausted (no row, no usage counter),
-    // so only the 1-hour expiry applies — see `assertPermanentCodeActive`.
+    // and nothing expires it — see `assertPermanentCodeActive`.
     if (!link) {
       const communityByCode =
         await communityRepository.findCommunityByInvitationCode(code);
       if (!communityByCode)
         throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
-      assertPermanentCodeActive(communityByCode);
+      assertPermanentCodeActive();
 
       const membership = await communityRepository.findMemberByUserId(
         communityByCode.id,
@@ -10321,7 +10307,7 @@ export const communityService = {
         inviteUrl: buildInviteUrl(code),
         appDeepLink: buildInviteDeepLink(code),
         // Legacy permanent code: the 1-hour window runs from when it was minted.
-        expiresAt: permanentCodeExpiresAt(communityByCode).getTime(),
+        expiresAt: null,
         creatorId: communityByCode.adminId,
       };
     }

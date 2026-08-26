@@ -1,33 +1,29 @@
 /**
  * Invitation-link lifetime — shared by BOTH invite mechanisms so a group link
- * and a community link expire on exactly the same clock:
- *  • chat-service    `GroupInviteLink.expiresAt`
+ * and a community link live on exactly the same clock:
+ *  • chat-service      `GroupInviteLink.expiresAt`
  *  • community-service `CommunityInviteLink.expiresAt`
  *
- * Product rule: every invitation link expires 1 hour after it is created, and
- * expiry is enforced server-side on preview AND on join/redeem.
+ * Product rule: an invitation link does NOT expire on its own. It stays usable
+ * until an authorized admin revokes it (or its `maxUses` is spent). A caller may
+ * still ask for an expiry when minting one — that is honoured verbatim — but no
+ * code path stamps one on a link that was minted without it.
+ *
+ * This replaces the earlier blanket 1-hour TTL, which killed links nobody had
+ * revoked: a card shared in chat went dead an hour later even though the join
+ * request, the approval and the membership behind it were all still live.
  */
-export const INVITE_LINK_TTL_MS = 60 * 60 * 1000;
-
-/** Expiry instant for a link minted at `createdAt` (defaults to now). */
-export function inviteLinkExpiresAt(createdAt: Date = new Date()): Date {
-  return new Date(createdAt.getTime() + INVITE_LINK_TTL_MS);
-}
 
 /**
- * Clamp a caller-supplied expiry to the 1-hour ceiling. A shorter custom expiry
- * is honoured; a longer one (or none at all) collapses to `now + 1h`, so no code
- * path can mint a link that outlives the rule.
+ * Normalize a caller-supplied expiry: a real date is kept, anything absent or
+ * unparseable means "never expires". No ceiling is applied.
  */
 export function clampInviteLinkExpiry(
-  requested?: Date | string | null,
-  now: Date = new Date()
-): Date {
-  const ceiling = inviteLinkExpiresAt(now);
-  if (!requested) return ceiling;
+  requested?: Date | string | null
+): Date | null {
+  if (!requested) return null;
   const asked = requested instanceof Date ? requested : new Date(requested);
-  if (Number.isNaN(asked.getTime())) return ceiling;
-  return asked.getTime() < ceiling.getTime() ? asked : ceiling;
+  return Number.isNaN(asked.getTime()) ? null : asked;
 }
 
 /** Single expiry predicate for both services (expiry is inclusive: `<= now`). */

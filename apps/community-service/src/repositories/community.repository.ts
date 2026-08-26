@@ -3612,12 +3612,21 @@ export const communityRepository = {
         communityId,
         createdBy,
         autoApprove: false,
-        expiresAt: { gt: new Date() },
-        // Both fields are OPTIONAL, so an untouched row simply omits them — and
-        // on Mongo `field: null` matches only documents where the field EXISTS
-        // and is null. Each needs its own `isSet: false` alternative, ANDed so
-        // the two OR groups don't collapse into one.
+        // All three fields are OPTIONAL, so an untouched row simply omits them —
+        // and on Mongo `field: null` matches only documents where the field
+        // EXISTS and is null. Each needs its own `isSet: false` alternative,
+        // ANDed so the OR groups don't collapse into one. A link with no expiry
+        // (the default now that links live until they are revoked) is reusable:
+        // matching only `expiresAt > now` skipped every one of them and minted a
+        // fresh link on every share.
         AND: [
+          {
+            OR: [
+              { expiresAt: { gt: new Date() } },
+              { expiresAt: null },
+              { expiresAt: { isSet: false } },
+            ],
+          },
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
         ],

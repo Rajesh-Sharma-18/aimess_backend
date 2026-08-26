@@ -4,16 +4,15 @@
  * original endpoint name).
  *
  * Contract under test:
- *  - EVERY invite link expires 1 hour after it is created (`INVITE_LINK_TTL_MS`),
- *    so the link is stable within that window and rolls over after it.
- *  - Repeated calls inside the window reuse the caller's live link — no new row,
- *    no rate-limit / cap consumption.
+ *  - A minted link carries NO expiry: it lives until an admin revokes it, the
+ *    same rule a group link follows.
+ *  - Repeated calls reuse the caller's live link — no new row, no rate-limit /
+ *    cap consumption.
  *  - PRIVATE communities only; PUBLIC → COMMUNITY_NOT_PRIVATE.
  *  - The URL scheme is the established Telegram-style `<base>/+<code>` +
  *    `aimess://join?code=<code>`.
- *  - LEGACY permanent codes on the Community row still resolve, but are held to
- *    the same 1-hour window measured from `invitationCodeCreatedAt` — an old one
- *    is refused with COMMUNITY_INVITE_LINK_EXPIRED, not silently honoured.
+ *  - LEGACY permanent codes on the Community row still resolve, and no clock
+ *    kills them either — nothing mints them any more, and nothing revokes them.
  *
  * Only the I/O boundary is mocked (repository, user-client, storage, publishers).
  * The per-user Redis rate limit fails open under test (cache not ready).
@@ -102,7 +101,7 @@ const community = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-/** An invite-link row with the standard 1-hour expiry. */
+/** An invite-link row: no expiry, exactly as every mint path writes one. */
 const linkRow = (over: Record<string, unknown> = {}) => {
   const createdAt = (over.createdAt as Date) ?? new Date();
   return {
@@ -113,7 +112,7 @@ const linkRow = (over: Record<string, unknown> = {}) => {
     maxUses: null,
     usedCount: 0,
     autoApprove: false,
-    expiresAt: new Date(createdAt.getTime() + HOUR_MS),
+    expiresAt: null,
     revokedAt: null,
     ...over,
     createdAt,
@@ -126,37 +125,27 @@ beforeEach(() => {
   repo.findLatestReusableInviteLink.mockResolvedValue(null);
   repo.createInviteLink.mockImplementation(
     async (data: Record<string, unknown>) =>
-      // Mongo stamps `createdAt` itself; mirror the service's own clock rather
-      // than re-reading `new Date()`, which drifts a millisecond off the expiry.
-      linkRow({
-        ...data,
-        createdAt: new Date((data.expiresAt as Date).getTime() - HOUR_MS),
-      })
+      // Mongo stamps `createdAt` itself.
+      linkRow({ ...data, createdAt: new Date() })
   );
 });
 
 // ---------------------------------------------------------------------------
-// Minting: a fresh link that expires in exactly 1 hour
+// Minting: a fresh link with no expiry
 // ---------------------------------------------------------------------------
 
 describe("getOrCreatePermanentInvitationLink — minting", () => {
-  it("mints a link expiring exactly 1 hour after creation when none is live", async () => {
+  it("mints a link with no expiry when none is live", async () => {
     repo.findById.mockResolvedValue(community());
 
-    const before = Date.now();
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
       CALLER
     );
-    const after = Date.now();
 
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
-    const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
-      before + HOUR_MS
-    );
-    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(after + HOUR_MS);
-    expect(res.expiresAt - res.createdAt).toBe(HOUR_MS);
+    expect(repo.createInviteLink.mock.calls[0][0].expiresAt).toBeNull();
+    expect(res.expiresAt).toBeNull();
   });
 
   it("mints a code with sufficient entropy (>= 20 url-safe chars)", async () => {
@@ -253,7 +242,7 @@ describe("getOrCreatePermanentInvitationLink — reuse within the window", () =>
     );
 
     expect(res.createdAt).toBe(CREATED_AT.getTime());
-    expect(res.expiresAt).toBe(CREATED_AT.getTime() + HOUR_MS);
+    expect(res.expiresAt).toBeNull();
     expect(Number.isInteger(res.createdAt)).toBe(true);
   });
 
@@ -338,32 +327,33 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
     expect(res.member?.userId).toBe(CALLER);
   });
 
-  it("refuses a permanent code older than 1 hour with COMMUNITY_INVITE_LINK_EXPIRED", async () => {
+  it("still honours an ancient permanent code — age alone never kills a link", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(null);
     repo.findCommunityByInvitationCode.mockResolvedValue(
       community({
-        invitationCodeCreatedAt: new Date(Date.now() - HOUR_MS - 1000),
+        invitationCodeCreatedAt: new Date(Date.now() - 30 * 24 * HOUR_MS),
       })
     );
     repo.findMemberByUserId.mockResolvedValue(null);
 
+    // Age is the only thing under test: whatever the join path does next, it
+    // must not be refused as an expired link.
     await expect(
       communityService.redeemInviteLink(STORED_CODE, CALLER)
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+    ).rejects.not.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
   });
 
-  it("refuses an expired permanent code even for an ACTIVE member (no idempotent bypass)", async () => {
+  it("an ACTIVE member re-tapping an ancient permanent code is still idempotent", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(null);
     repo.findCommunityByInvitationCode.mockResolvedValue(
       community({
-        invitationCodeCreatedAt: new Date(Date.now() - HOUR_MS - 1000),
+        invitationCodeCreatedAt: new Date(Date.now() - 30 * 24 * HOUR_MS),
       })
     );
     repo.findMemberByUserId.mockResolvedValue(member);
 
-    await expect(
-      communityService.redeemInviteLink(STORED_CODE, CALLER)
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+    const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
+    expect(res.member).toBeDefined();
   });
 
   it("throws COMMUNITY_INVITE_LINK_NOT_FOUND when neither a link row nor a permanent code matches", async () => {
@@ -394,7 +384,7 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
 // ---------------------------------------------------------------------------
 
 describe("createInviteLink — bare PRIVATE call returns the live link", () => {
-  it("a bare {} call mints a 1-hour link shaped as CommunityInviteLinkData", async () => {
+  it("a bare {} call mints a never-expiring link shaped as CommunityInviteLinkData", async () => {
     repo.findById.mockResolvedValue(community());
 
     const link = await communityService.createInviteLink(CID, CALLER, {});
@@ -406,11 +396,7 @@ describe("createInviteLink — bare PRIVATE call returns the live link", () => {
     expect(link.revokedAt).toBeNull();
     expect(link.autoApprove).toBe(false);
     expect(link.isActive).toBe(true);
-    expect(link.expiresAt).not.toBeNull();
-    expect(
-      new Date(link.expiresAt as string).getTime() -
-        new Date(link.createdAt).getTime()
-    ).toBe(HOUR_MS);
+    expect(link.expiresAt).toBeNull();
   });
 
   it("repeated bare calls return the SAME code and create NO extra rows", async () => {
@@ -463,18 +449,15 @@ describe("createInviteLink — parameterized call still creates a CUSTOM link", 
     expect(written.expiresAt.getTime()).toBeLessThan(before + 11 * 60_000);
   });
 
-  it("a LONGER expiresInMinutes is clamped to the 1-hour ceiling", async () => {
+  it("a LONGER expiresInMinutes is honoured verbatim — no ceiling", async () => {
     const before = Date.now();
     await communityService.createInviteLink(CID, CALLER, {
       expiresInMinutes: 60 * 24 * 7,
     });
 
     const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeLessThanOrEqual(
-      Date.now() + HOUR_MS
-    );
     expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
-      before + HOUR_MS - 1000
+      before + 7 * 24 * HOUR_MS - 1000
     );
   });
 });
