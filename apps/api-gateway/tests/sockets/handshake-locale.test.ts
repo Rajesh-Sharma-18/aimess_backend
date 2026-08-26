@@ -40,6 +40,20 @@ describe("resolveHandshakeLocale", () => {
     );
   });
 
+  it("accepts every spelling of the field in BOTH channels", () => {
+    // A client that declares its language and is ignored is indistinguishable
+    // from one that never declared it — and the cost is the production default.
+    expect(
+      resolveHandshakeLocale(handshake({ auth: { language: "th" } }))
+    ).toBe("th");
+    expect(resolveHandshakeLocale(handshake({ query: { locale: "th" } }))).toBe(
+      "th"
+    );
+    expect(
+      resolveHandshakeLocale(handshake({ query: { language: "th" } }))
+    ).toBe("th");
+  });
+
   it("still honours x-lang, then Accept-Language, for clients that send neither", () => {
     expect(
       resolveHandshakeLocale(

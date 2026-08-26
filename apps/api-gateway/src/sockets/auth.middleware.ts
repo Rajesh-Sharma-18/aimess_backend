@@ -70,12 +70,35 @@ export function resolveHandshakeLocale(handshake: {
   headers: Record<string, string | string[] | undefined>;
 }): SupportedLocale {
   const { auth, query, headers } = handshake;
-  const explicit =
-    firstString((auth as Record<string, unknown> | undefined)?.lang) ??
-    firstString((auth as Record<string, unknown> | undefined)?.locale) ??
-    firstString((query as Record<string, unknown> | undefined)?.lang) ??
-    firstString(headers["x-lang"]);
-  return resolveLocale(firstString(headers["accept-language"]), explicit);
+  const a = auth as Record<string, unknown> | undefined;
+  const q = query as Record<string, unknown> | undefined;
+  // All three spellings of the same field, in both channels. A client that
+  // declares its language and has it ignored is indistinguishable, from the
+  // user's seat, from a client that never declared one — and the cost of the
+  // difference is being answered in the production default ("vi") forever.
+  const declared: [string, string | undefined][] = [
+    ["auth.lang", firstString(a?.lang)],
+    ["auth.locale", firstString(a?.locale)],
+    ["auth.language", firstString(a?.language)],
+    ["query.lang", firstString(q?.lang)],
+    ["query.locale", firstString(q?.locale)],
+    ["query.language", firstString(q?.language)],
+    ["x-lang", firstString(headers["x-lang"])],
+  ];
+  const found = declared.find(([, value]) => value !== undefined);
+  const acceptLanguage = firstString(headers["accept-language"]);
+  const locale = resolveLocale(acceptLanguage, found?.[1]);
+  // The one fact needed to tell a gateway bug from a client that sends nothing:
+  // WHICH rung answered. `source=default` on a session that shows the wrong
+  // language means the client declared no locale on this connection, not that
+  // some other session's language leaked into it — nothing here is keyed by
+  // user, only by socket.
+  logger.debug(
+    `[socket:locale] resolved=${locale} source=${
+      found?.[0] ?? (acceptLanguage ? "accept-language" : "default")
+    }`
+  );
+  return locale;
 }
 
 function firstString(value: unknown): string | undefined {
