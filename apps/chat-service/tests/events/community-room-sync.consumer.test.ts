@@ -494,6 +494,11 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       inviteCode: LINK_CODE,
       deepLink: "aimess://join?code=abc123",
       alreadyJoined: false,
+      // The live send path knows neither: the event carried no community type
+      // (this fixture predates it) and bulk-send never reads join requests.
+      // A historical read re-resolves both — see `enrichMessages`.
+      communityType: null,
+      joinRequestPending: false,
       status: "ACTIVE",
       canOpen: true,
     });

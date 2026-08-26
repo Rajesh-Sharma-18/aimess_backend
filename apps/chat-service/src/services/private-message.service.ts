@@ -2497,6 +2497,18 @@ export class PrivateMessageService {
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
                 alreadyJoined: ctx.isMember,
+                // Resolved per read alongside membership, so the card's button
+                // is right after a join, a cancel, an approval OR an admin
+                // "Add Member" — including on a cold reload.
+                communityType:
+                  ctx.found && ctx.communityType === "PRIVATE"
+                    ? "PRIVATE"
+                    : ctx.found && ctx.communityType === "PUBLIC"
+                      ? "PUBLIC"
+                      : null,
+                joinRequestPending: ctx.found
+                  ? Boolean(ctx.joinRequestPending)
+                  : false,
                 status: ctx.found ? ctx.linkStatus : "DELETED",
               })
             : // gRPC unresolved/unavailable — fail open using the message's own

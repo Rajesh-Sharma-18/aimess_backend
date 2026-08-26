@@ -465,6 +465,7 @@ export class CommunityRoomSyncConsumer {
             communityId: cId,
             communityName,
             communityHandle,
+            communityType,
             communityAvatarUrl,
             memberCount,
             inviteUrl,
@@ -487,6 +488,7 @@ export class CommunityRoomSyncConsumer {
             communityId: cId,
             communityName: communityName ?? "",
             communityHandle: communityHandle ?? null,
+            communityType: communityType ?? null,
             communityAvatarUrl: communityAvatarUrl ?? null,
             memberCount,
             inviteUrl,
@@ -580,6 +582,7 @@ export class CommunityRoomSyncConsumer {
     communityId: string;
     communityName: string;
     communityHandle?: string | null;
+    communityType?: string | null;
     communityAvatarUrl?: string | null;
     memberCount?: number;
     inviteUrl?: string;
@@ -596,6 +599,7 @@ export class CommunityRoomSyncConsumer {
       communityId,
       communityName,
       communityHandle = null,
+      communityType = null,
       communityAvatarUrl = null,
       memberCount,
       inviteUrl,
@@ -665,6 +669,16 @@ export class CommunityRoomSyncConsumer {
       inviteCode: linkCode,
       deepLink: inviteDeepLink ?? inviteUrl ?? "",
       alreadyJoined: false,
+      communityType:
+        communityType === "PRIVATE"
+          ? "PRIVATE"
+          : communityType === "PUBLIC"
+            ? "PUBLIC"
+            : null,
+      // Unknowable here (bulk-send does not read join requests) and cheap to be
+      // wrong about: redeem is idempotent for an existing PENDING request, so a
+      // tap resolves the card into "Cancel Request" rather than duplicating it.
+      joinRequestPending: false,
       status: "ACTIVE",
     });
     const content = buildInvitationContent(previewText, invitation);

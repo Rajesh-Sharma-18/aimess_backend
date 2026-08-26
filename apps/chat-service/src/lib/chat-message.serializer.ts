@@ -452,6 +452,21 @@ export interface CommunityInvitationSystemAction {
   inviteCode?: string | null;
   deepLink: string;
   alreadyJoined: boolean;
+  /**
+   * PUBLIC | PRIVATE. A PRIVATE community's card offers "Request to Join"
+   * instead of an outright join, so the client cannot draw the button without
+   * it. Optional: the live send path may not know it, and a card without it
+   * keeps the pre-state behaviour (open the invite screen).
+   */
+  communityType?: "PUBLIC" | "PRIVATE" | null;
+  /**
+   * The viewer holds a PENDING join request → the card offers "Cancel Request".
+   * Resolved per read together with `alreadyJoined`, and NEVER true alongside
+   * it: an ACTIVE membership outranks a request that is still open (which is
+   * exactly the state admin Add Member leaves behind until the AUTO_RESOLVED
+   * write lands).
+   */
+  joinRequestPending?: boolean;
   status: CommunityInvitationStatus;
   canOpen: boolean;
 }
@@ -492,6 +507,8 @@ export function buildCommunityInvitationAction(params: {
   inviteCode?: string | null;
   deepLink: string;
   alreadyJoined: boolean;
+  communityType?: "PUBLIC" | "PRIVATE" | null;
+  joinRequestPending?: boolean;
   status: CommunityInvitationStatus;
 }): CommunityInvitationSystemAction {
   const {
@@ -503,6 +520,8 @@ export function buildCommunityInvitationAction(params: {
     inviteCode = null,
     deepLink,
     alreadyJoined,
+    communityType = null,
+    joinRequestPending = false,
     status,
   } = params;
   // A deleted community can never be opened. Otherwise the viewer can open it
@@ -520,6 +539,9 @@ export function buildCommunityInvitationAction(params: {
     inviteCode,
     deepLink,
     alreadyJoined,
+    // Membership wins, always — the one rule the card's button order rests on.
+    joinRequestPending: alreadyJoined ? false : joinRequestPending,
+    communityType,
     status,
     canOpen,
   };

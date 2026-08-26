@@ -4,6 +4,7 @@ import { isAppError } from "@aimess/errors";
 import { inviteLinkExpiresAt, isInviteLinkExpired } from "@aimess/constants";
 
 import {
+  CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
   CommunityModerationStatus,
@@ -856,6 +857,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityHandle: "",
                 isMember: false,
                 linkStatus: "DELETED",
+                communityType: "",
+                joinRequestPending: false,
               };
             }
 
@@ -868,6 +871,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityHandle: "",
                 isMember: false,
                 linkStatus: "DELETED",
+                communityType: "",
+                joinRequestPending: false,
               };
             }
 
@@ -881,6 +886,21 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             ]);
             const isMember =
               membership?.status === CommunityMemberStatus.ACTIVE;
+
+            // Membership outranks the request: an ACTIVE member is never
+            // reported as pending, so a card can never fall back to "Cancel
+            // Request" for someone who is already in the community (admin Add
+            // Member leaves exactly that pair behind until the AUTO_RESOLVED
+            // write lands). Only read the request when it can still matter.
+            const joinRequest =
+              userId && !isMember
+                ? await communityRepository.findJoinRequestByCommunityAndUser(
+                    communityId,
+                    userId
+                  )
+                : null;
+            const joinRequestPending =
+              joinRequest?.status === CommunityJoinReqStatus.PENDING;
 
             // Same three checks as `assertInviteLinkActive`/`toInviteLinkData`'s
             // `isActive` in community.service.ts, expressed as a status string
@@ -925,6 +945,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               communityHandle: community.handle,
               isMember,
               linkStatus,
+              communityType: community.type,
+              joinRequestPending,
             };
           })
         );

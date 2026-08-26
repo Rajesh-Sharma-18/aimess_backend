@@ -5682,7 +5682,8 @@ export const communityService = {
    * at an arbitrary hour (Telegram parity, product decision):
    *   - audit MEMBER_UNMUTED (metadata.source = "auto")
    *   - mirror the unmute into chat-service + emit `community:member:unmuted`
-   *   - post the "X was unmuted" system message
+   *   - retract the PERSONAL "You are muted until …" line and post the PERSONAL
+   *     "You were unmuted" line, exactly as a manual unmute does
    *
    * Note: enforcement correctness does NOT depend on this sweep — chat-service
    * applies lazy local expiry the instant `mutedUntil` passes. The sweep exists
@@ -5732,6 +5733,28 @@ export const communityService = {
           isMuted: false,
           mutedUntil: null,
           actorId: "",
+        });
+
+        // A lapsed timer IS an unmute, so the member's history must end up in
+        // the same state a moderator unmute leaves it in: retract the now-false
+        // "You are muted until …" line, then post the PERSONAL "You were
+        // unmuted" line. Without this the member was left staring at a mute
+        // notice for a mute that no longer exists, and only ever saw "You were
+        // unmuted" when a human happened to press the button. Push stays
+        // suppressed above — the LINE is history, not a ping.
+        publishCommunityMemberMuteRetractedForChatSafe({
+          communityId: row.communityId,
+          userId: row.userId,
+        });
+        this.emitMemberSystemMessage({
+          communityId: row.communityId,
+          systemMessageType: "MEMBER_UNMUTED",
+          // No human acted; the audit row above records the same actor. The
+          // target-facing sentence never names an actor, so this only ever
+          // reaches the client as metadata.actorUserId.
+          actorId: "system",
+          targetUserId: row.userId,
+          visibleToUserId: row.userId,
         });
       } catch (err) {
         // The row is already deleted (claim won), so the mute IS lifted and the
@@ -8100,6 +8123,7 @@ export const communityService = {
             communityId,
             communityName: community.name,
             communityHandle: community.handle,
+            communityType: community.type,
             linkCode: shareLink.code,
             inviterId: callerId,
             recipientId: inviteeId,
@@ -9964,6 +9988,7 @@ export const communityService = {
         communityId,
         communityName: community.name,
         communityHandle: community.handle,
+        communityType: community.type,
         linkCode: linkRow.code,
         inviterId: callerId,
         recipientId,
