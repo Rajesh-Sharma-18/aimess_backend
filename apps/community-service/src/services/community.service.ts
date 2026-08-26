@@ -328,7 +328,14 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
  */
 const LAST_ACTIVITY_INELIGIBLE_TYPES = new Set(["removal"]);
 
-const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
+/** Catalog key behind {@link SELF_JOIN_ACTIVITY_PREVIEW} — rides on the wire so
+ *  every reader re-renders it in their own language (CommunityLastActivity.previewKey). */
+const SELF_JOIN_ACTIVITY_PREVIEW_KEY = "SYS_COMMUNITY_MEMBER_JOINED_SELF";
+
+const SELF_JOIN_ACTIVITY_PREVIEW = t(
+  SELF_JOIN_ACTIVITY_PREVIEW_KEY,
+  STORED_TEXT_LOCALE
+);
 
 /**
  * The PERSONAL chat SYSTEM line posted to a user the moment their membership
@@ -365,8 +372,8 @@ const JOIN_LINE_TYPE_BY_VIA: Partial<
  * line), and a preview reading "Someone added you…" is worse than the neutral
  * passive form. Stored/wire text stays English; readers localize.
  */
-const JOIN_ACTIVITY_PREVIEW_BY_TYPE: Record<string, string> = {
-  MEMBER_ADDED: t("SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT", STORED_TEXT_LOCALE),
+const JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE: Record<string, MessageKey> = {
+  MEMBER_ADDED: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
 };
 
 /**
@@ -538,6 +545,7 @@ export function buildLastActivity(community: {
       // source of truth, and rendered in the READER's language like every other
       // system line rather than the English the column was seeded with.
       preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
+      previewKey: "SYS_COMMUNITY_CREATED",
       dateTime: community.createdAt.getTime(),
       ...EMPTY_ACTIVITY_IDENTITY,
     };
@@ -592,6 +600,12 @@ export function buildLastActivity(community: {
       (systemType === "created"
         ? t("SYS_COMMUNITY_CREATED", currentLocale())
         : ""),
+    // Only the no-stored-preview fallback has a key to offer; a persisted
+    // preview is rebuilt from `lastActivitySystemType` by localizeSystemPreview
+    // above, which is a different (parameterized) mechanism.
+    ...(community.lastActivityPreview == null && systemType === "created"
+      ? { previewKey: "SYS_COMMUNITY_CREATED" as const }
+      : {}),
     dateTime,
     ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
@@ -2515,7 +2529,11 @@ export const communityService = {
         type: "created",
         userId: null,
         username: null,
-        preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
+        // Wire text is English + a key, not `currentLocale()`: this payload is
+        // delivered over a SOCKET, and the creator's other devices may be in
+        // other languages than the one that issued this POST.
+        preview: t("SYS_COMMUNITY_CREATED", STORED_TEXT_LOCALE),
+        previewKey: "SYS_COMMUNITY_CREATED",
         dateTime: community.createdAt.getTime(),
       },
     };
@@ -4129,6 +4147,9 @@ export const communityService = {
 
     // Which "you are now a member" line this path posts — see JOIN_LINE_TYPE_BY_VIA.
     const joinLineType = JOIN_LINE_TYPE_BY_VIA[via] ?? "COMMUNITY_JOINED";
+    const joinPreviewKey =
+      JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE[joinLineType] ??
+      SELF_JOIN_ACTIVITY_PREVIEW_KEY;
 
     const moderatorRecipientIds =
       args.moderatorRecipientIds ??
@@ -4213,9 +4234,12 @@ export const communityService = {
         // Must match the chat line this same call posts below, or the new
         // member's list row reads "You joined…" while their timeline reads
         // "{admin} added you…".
-        preview:
-          JOIN_ACTIVITY_PREVIEW_BY_TYPE[joinLineType] ??
-          SELF_JOIN_ACTIVITY_PREVIEW,
+        // English on the wire, ALWAYS — `previewKey` is what makes it readable
+        // in the recipient's language. Rendering here in the ADDING ADMIN's
+        // request locale (this runs inside their POST) would ship one member's
+        // language to another member's device, which is the bug this pair fixes.
+        preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
+        previewKey: joinPreviewKey,
         dateTime: new Date(args.eventAt).getTime(),
       };
       const addedAt = Date.now();
@@ -5046,10 +5070,41 @@ export const communityService = {
 
       const membership = membershipMap.get(communityId);
       if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+        // Not ACTIVE, but the row may still be SHOWING in the caller's list: a
+        // BANNED membership, or a LEFT one an admin unbanned, both stay visible
+        // until the caller dismisses them. Rejecting those with NOT_MEMBER left
+        // the only UI that can dismiss them (the list's own delete action)
+        // unable to, so the entry was stuck in the list forever. Route them
+        // through the same self-removal resolver the singular delete endpoint
+        // uses, which dismisses exactly those two and is idempotent otherwise.
+        // ponytail: one membership read per non-active id — the set is the
+        // handful of rows a user actually deletes, not the whole page.
+        const selfMembership = await communityRepository.findMemberByUserId(
+          communityId,
+          callerId
+        );
+        const outcome = await this.resolveSelfRemoval(
+          callerId,
+          communityMap.get(communityId),
+          selfMembership,
+          eventAt
+        );
+
+        if (outcome === "REMOVED" || outcome === "ALREADY_REMOVED") {
+          // Gone from the caller's list either way — the same success the
+          // ACTIVE path reports.
+          results.push({ communityId, status: "LEFT" });
+          leftCount++;
+          continue;
+        }
+
         results.push({
           communityId,
           status: "FAILED",
-          errorCode: "NOT_MEMBER",
+          errorCode:
+            outcome === "OWNER_CANNOT_DELETE"
+              ? "ADMIN_CANNOT_LEAVE"
+              : "NOT_MEMBER",
         });
         failedCount++;
         continue;
