@@ -348,6 +348,12 @@ export const SOCKET_MESSAGES = {
     th: "ลบการแจ้งเตือนแล้ว",
   },
 
+  SOCKET_ERR_STREAM_COMMENT_TOO_LONG: {
+    vi: "Bình luận không được vượt quá 500 ký tự",
+    en: "Comment must be 500 characters or fewer",
+    th: "ความคิดเห็นต้องไม่เกิน 500 ตัวอักษร",
+  },
+
   // ── Error acks — one default sentence per AckErrorCode ───────────────────
   SOCKET_ERR_INVALID_PAYLOAD: {
     vi: "Dữ liệu yêu cầu không hợp lệ",
