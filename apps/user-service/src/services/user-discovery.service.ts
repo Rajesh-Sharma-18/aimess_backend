@@ -4,6 +4,7 @@ import type { MediaObject } from "@aimess/shared-types";
 import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import {
+  canSendFriendRequest,
   canViewProfile,
   visibleIdentity,
   visibleIsOnline,
@@ -40,6 +41,13 @@ export type UserDiscoveryResult = {
    */
   isBlockedByMe?: boolean;
   relationshipStatus?: RelationshipStatus;
+  /**
+   * Effective add-friend eligibility for this viewer — the target's
+   * `whoCanSendFriendRequests` scope plus the self/block/friend/pending
+   * preconditions (`canSendFriendRequest`), never the raw scope. Same field
+   * user search and the public profile return; clients branch on it alone.
+   */
+  canSendRequest: boolean;
   friendshipId?: string | null;
   /** Who sent the PENDING request; null/absent when FRIEND/NONE. */
   requesterId?: string | null;
@@ -214,17 +222,24 @@ export const userDiscoveryService = {
             ...base,
             isFriend: true,
             relationshipStatus: "FRIEND" as RelationshipStatus,
+            canSendRequest: false,
             friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
             requesterId: null,
           };
         }
         const pending = pendingRelMap.get(p.userId);
+        const relationshipStatus = (pending
+          ? "PENDING"
+          : "NONE") as RelationshipStatus;
         return {
           ...base,
           isFriend: false,
-          relationshipStatus: (pending
-            ? "PENDING"
-            : "NONE") as RelationshipStatus,
+          relationshipStatus,
+          // Same gate `friendshipService.sendRequest` enforces.
+          canSendRequest: canSendFriendRequest(p, relation, {
+            status: relationshipStatus,
+            isBlockedEitherWay: blockedByMe.has(p.userId),
+          }),
           friendshipId: pending?.friendshipId ?? null,
           requesterId: pending
             ? pending.isRequester
@@ -312,6 +327,8 @@ export const userDiscoveryService = {
           avatar,
           isOnline: visibleIsOnline(p, { isFriend: true }),
           relationshipStatus: "FRIEND" as RelationshipStatus,
+          // Already friends — there is nothing to request.
+          canSendRequest: false,
           friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
           requesterId: null,
         };
@@ -412,6 +429,11 @@ export const userDiscoveryService = {
           isOnline: visibleIsOnline(p, { isFriend: false }),
           isBlockedByMe: blockedByMe.has(p.userId),
           relationshipStatus,
+          // Same gate `friendshipService.sendRequest` enforces.
+          canSendRequest: canSendFriendRequest(p, relation, {
+            status: relationshipStatus,
+            isBlockedEitherWay: blockedByMe.has(p.userId),
+          }),
           friendshipId,
           requesterId,
         };
@@ -481,6 +503,13 @@ export const userDiscoveryService = {
           avatar,
           isOnline: visibleIsOnline(p, { isFriend }),
           isBlockedByMe: blockedByMe.has(p.userId),
+          // This bucket carries no relationshipStatus, so PENDING is unknown
+          // here — the flag answers the privacy half only, and the profile /
+          // search response is authoritative once a row is opened.
+          canSendRequest: canSendFriendRequest(p, relation, {
+            status: isFriend ? "FRIEND" : "NONE",
+            isBlockedEitherWay: blockedByMe.has(p.userId),
+          }),
         };
       })
     );

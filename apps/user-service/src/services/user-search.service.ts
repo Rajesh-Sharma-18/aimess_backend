@@ -9,7 +9,11 @@ import {
   type PeerRelationship,
   type RelationshipStatus,
 } from "../lib/relationship-lookup.js";
-import { visibleIdentity, visibleIsOnline } from "../lib/privacy-scope.js";
+import {
+  canSendFriendRequest,
+  visibleIdentity,
+  visibleIsOnline,
+} from "../lib/privacy-scope.js";
 import { splitBlocks } from "../lib/block-visibility.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { recentUserSearchRepository } from "../repositories/recent-user-search.repository.js";
@@ -63,6 +67,14 @@ export type SearchUserItem = {
   /** Who sent the PENDING request; null when FRIEND/NONE. */
   requesterId: string | null;
   /**
+   * Effective "may this viewer send an add-friend request" — the target's
+   * `whoCanSendFriendRequests` scope AND the self/block/friend/pending
+   * preconditions, resolved server-side by `canSendFriendRequest`. The raw
+   * scope is never exposed: a denied viewer cannot tell NO_ONE from FRIENDS
+   * from a block. The client renders the action from this flag alone.
+   */
+  canSendRequest: boolean;
+  /**
    * Normalized relationship the FE merges live `friend:*` socket updates
    * into by `userId` — status/direction/action flags, never re-derived
    * client-side. Additive alongside the legacy flat fields above.
@@ -73,6 +85,7 @@ export type SearchUserItem = {
     canAccept: boolean;
     canReject: boolean;
     canCancel: boolean;
+    canSendRequest: boolean;
   };
 };
 
@@ -105,6 +118,7 @@ type BasicProfile = {
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
     whoCanViewProfile?: string | null;
+    whoCanSendFriendRequests?: string | null;
   } | null;
 };
 
@@ -132,9 +146,18 @@ async function toUserItem(
 ): Promise<SearchUserItem> {
   // `whoCanViewProfile` — a denied viewer keeps the handle (the row must stay
   // actionable) but gets no real name and no photo.
-  const identity = visibleIdentity(profile, {
+  const relation = {
     isFriend: relationship.isFriend,
     isFriendOfFriend: friendOfFriendIds.has(profile.userId),
+  };
+  const identity = visibleIdentity(profile, relation);
+  // `whoCanSendFriendRequests` — same gate `friendshipService.sendRequest`
+  // enforces, so the row never offers an action the API would reject. Blocks
+  // count in EITHER direction: users who blocked the viewer never reach this
+  // mapper, so only the viewer's own block is checkable here.
+  const canSendRequest = canSendFriendRequest(profile, relation, {
+    status: relationship.relationshipStatus,
+    isBlockedEitherWay: blockedByMe.has(profile.userId),
   });
   const { url, expiresIn, avatar } = await resolveAvatar(
     identity.avatarAllowed ? profile.avatarUrl : null
@@ -153,6 +176,7 @@ async function toUserItem(
     // from genuinely offline. Never leak the real flag here.
     isOnline: visibleIsOnline(profile, { isFriend: relationship.isFriend }),
     roomId,
+    canSendRequest,
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
     isBlockedByMe: blockedByMe.has(profile.userId),
@@ -164,6 +188,7 @@ async function toUserItem(
       canAccept: relationship.canAccept,
       canReject: relationship.canReject,
       canCancel: relationship.canCancel,
+      canSendRequest,
     },
   };
 }

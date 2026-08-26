@@ -106,6 +106,13 @@ beforeEach(() => {
   pRepo.findUsersNotInList.mockResolvedValue([]);
   friendRepo.findAllBlocks.mockResolvedValue([]);
   friendRepo.findAllForUser.mockResolvedValue([]);
+  // `clearAllMocks` clears calls, NOT implementations — without an explicit
+  // reset a `mockResolvedValue` set by one test leaks into every later one.
+  friendRepo.resolveViewerGraph.mockResolvedValue({
+    friendIds: [],
+    friendOfFriendIds: [],
+  });
+  friendRepo.hasMutualFriend.mockResolvedValue(false);
   grpc.resolvePrivateRooms.mockResolvedValue([]);
   grpc.listPrivateRoomPeers.mockResolvedValue([]);
   grpc.listActiveGroups.mockResolvedValue([]);
@@ -613,5 +620,93 @@ describe("GET /api/v1/users/search", () => {
   it("returns 401 without token", async () => {
     const res = await request(app).get("/api/v1/users/search");
     expect(res.status).toBe(401);
+  });
+
+  // -------------------------------------------------------------------------
+  // `whoCanSendFriendRequests` — the row stays discoverable, the ACTION does
+  // not. Decided by `canSendFriendRequest` (see
+  // tests/friendship/friend-request-eligibility.test.ts for the full matrix);
+  // this pins that user search actually carries the answer.
+  // -------------------------------------------------------------------------
+  const withRequestScope = (scope: string) =>
+    profile(OTHER_ID, {
+      privacySettings: {
+        whoCanViewProfile: "EVERYONE",
+        whoCanSeeOnlineStatus: "EVERYONE",
+        whoCanSendFriendRequests: scope,
+      },
+    });
+
+  const searchOther = async () => {
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+    return res.body.data.other[0];
+  };
+
+  it("EVERYONE → the stranger row offers the add action", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([withRequestScope("EVERYONE")]);
+
+    const row = await searchOther();
+
+    expect(row).toMatchObject({
+      userId: OTHER_ID,
+      relationshipStatus: "NONE",
+      canSendRequest: true,
+    });
+    expect(row.relationship.canSendRequest).toBe(true);
+  });
+
+  it("NO_ONE → the row is still returned, without the add action", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([withRequestScope("NO_ONE")]);
+
+    const row = await searchOther();
+
+    // Still discoverable — `whoCanFindMe` governs that, not this scope.
+    expect(row.userId).toBe(OTHER_ID);
+    expect(row.username).toBe("janedoe");
+    expect(row.canSendRequest).toBe(false);
+    expect(row.relationship.canSendRequest).toBe(false);
+  });
+
+  it("FRIENDS → a stranger gets no add action", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([withRequestScope("FRIENDS")]);
+
+    expect((await searchOther()).canSendRequest).toBe(false);
+  });
+
+  it("FRIENDS_OF_FRIENDS → admits a viewer sharing a mutual friend", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      withRequestScope("FRIENDS_OF_FRIENDS"),
+    ]);
+    // The one-hop set the search already resolves for `whoCanFindMe` is reused
+    // here — no second traversal, no per-row query.
+    friendRepo.resolveViewerGraph.mockResolvedValue({
+      friendIds: [],
+      friendOfFriendIds: [OTHER_ID],
+    });
+
+    expect((await searchOther()).canSendRequest).toBe(true);
+  });
+
+  it("FRIENDS_OF_FRIENDS → refuses a viewer with no mutual friend", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      withRequestScope("FRIENDS_OF_FRIENDS"),
+    ]);
+
+    expect((await searchOther()).canSendRequest).toBe(false);
+  });
+
+  it("never leaks the target's raw privacy scope in a search row", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([withRequestScope("NO_ONE")]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(JSON.stringify(res.body)).not.toContain("whoCanSendFriendRequests");
+    expect(JSON.stringify(res.body)).not.toContain("NO_ONE");
   });
 });

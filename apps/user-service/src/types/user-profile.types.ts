@@ -109,5 +109,12 @@ export type PublicUserProfileData = {
     canAccept: boolean;
     canReject: boolean;
     canCancel: boolean;
+    /**
+     * Effective add-friend eligibility for THIS viewer — the target's
+     * `whoCanSendFriendRequests` scope plus the self/block/friend/pending
+     * preconditions, resolved by `canSendFriendRequest`. The raw scope is
+     * never returned; clients render the action from this flag alone.
+     */
+    canSendRequest: boolean;
   };
 };

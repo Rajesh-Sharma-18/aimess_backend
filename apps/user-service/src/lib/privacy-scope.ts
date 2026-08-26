@@ -123,15 +123,71 @@ export function discoverableWhere(
 
 /** Prisma select fragment pulling the scopes list surfaces need to mask by. */
 export const PRIVACY_SCOPE_SELECT = {
-  select: { whoCanSeeOnlineStatus: true, whoCanViewProfile: true },
+  select: {
+    whoCanSeeOnlineStatus: true,
+    whoCanViewProfile: true,
+    // Not a masking scope — it decides whether the row may offer an "Add
+    // Friend" action at all (see `canSendFriendRequest`). Carried on the same
+    // select so no list surface needs a second query to answer that.
+    whoCanSendFriendRequests: true,
+  },
 } as const;
 
 type ScopeCarrier = {
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
     whoCanViewProfile?: string | null;
+    whoCanSendFriendRequests?: string | null;
   } | null;
 };
+
+/**
+ * How the viewer relates to the target, as far as the friend-request action is
+ * concerned. Mirrors the preconditions `friendshipService.sendRequest` throws
+ * on, in the same order.
+ */
+export type FriendRequestContext = {
+  /** Search vocabulary. BLOCKED may also arrive from the chat/profile view. */
+  status: "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
+  /** A block in EITHER direction — both refuse the write with FRIEND_BLOCKED. */
+  isBlockedEitherWay?: boolean;
+};
+
+/**
+ * May this viewer send THIS target a friend request right now?
+ *
+ * The read-side mirror of the `friendshipService.sendRequest` gate: same
+ * `scopeAdmits` primitive, same self/block/friend/pending preconditions. Every
+ * surface that renders an "Add Friend" affordance (user search, discovery,
+ * public profile, private-chat peer) answers from HERE, so the button can
+ * never offer an action the write path refuses with
+ * `FRIEND_REQUEST_NOT_ALLOWED`.
+ *
+ * PENDING is false in BOTH directions on purpose — an outstanding request is
+ * cancelled or accepted (`canCancel` / `canAccept`), never re-sent. That also
+ * keeps a `whoCanSendFriendRequests: NO_ONE` target's own outgoing request
+ * answerable: the write path exempts that mutual-accept case, and the read
+ * side surfaces it as `canAccept`, not as a second send.
+ *
+ * Returns only an effective yes/no — the target's raw scope is never exposed,
+ * so a denied viewer cannot tell NO_ONE from FRIENDS from "blocked me".
+ */
+export function canSendFriendRequest(
+  profile: ScopeCarrier,
+  relation: ViewerRelation,
+  ctx: FriendRequestContext
+): boolean {
+  if (relation.isSelf) return false;
+  if (ctx.isBlockedEitherWay || ctx.status === "BLOCKED") return false;
+  if (ctx.status === "FRIEND" || ctx.status === "PENDING") return false;
+  return scopeAdmits(
+    profile.privacySettings?.whoCanSendFriendRequests ??
+      SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests,
+    // `isSelf` is settled above; passing it on would make `scopeAdmits` short
+    // -circuit to true.
+    { isFriend: relation.isFriend, isFriendOfFriend: relation.isFriendOfFriend }
+  );
+}
 
 /**
  * `isOnline` as this viewer is allowed to see it. List surfaces (search,
