@@ -79,7 +79,7 @@ export function registerNotifyNamespace(
 
   notify.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
-    scopeSocketLocale(socket);
+    scopeSocketLocale(socket, redisPub);
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/notify connected userId=${userId}`);

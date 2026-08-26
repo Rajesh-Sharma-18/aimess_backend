@@ -112,6 +112,32 @@ export const deviceTokenRepository = {
   },
 
   /**
+   * Re-point this SESSION's tokens at the language it is now reading in.
+   *
+   * `upsert` above writes the locale the owning client declared when it
+   * registered, which is right until the user changes language — after that the
+   * token keeps the old value until the client happens to re-register, and the
+   * push tray disagrees with every other surface on that same device. The
+   * gateway publishes the change the moment a socket sends `locale:set`; this
+   * applies it.
+   *
+   * Scoped to `(userId, sessionId)` — one session is one sign-in on one device,
+   * so this can never move another device's language. Returns how many rows
+   * moved (0 is normal: a session with no push token registered).
+   */
+  async updateLocaleBySession(
+    userId: string,
+    sessionId: string,
+    locale: SupportedLocale
+  ): Promise<number> {
+    const { count } = await prisma.deviceToken.updateMany({
+      where: { userId, sessionId },
+      data: { locale },
+    });
+    return count;
+  },
+
+  /**
    * All active tokens for a user (used to fan a push out across devices).
    * Includes `tokenType` so callers can branch VoIP (APNs) vs FCM delivery.
    */

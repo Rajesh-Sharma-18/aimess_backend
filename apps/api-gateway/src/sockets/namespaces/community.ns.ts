@@ -549,7 +549,7 @@ export function registerCommunityNamespace(
 
   community.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
-    scopeSocketLocale(socket);
+    scopeSocketLocale(socket, redisPub);
     bindSocketAuditContext(socket);
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);

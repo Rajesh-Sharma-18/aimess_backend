@@ -1057,7 +1057,7 @@ export function registerChatNamespace(
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
-    scopeSocketLocale(socket);
+    scopeSocketLocale(socket, redisPub);
     bindSocketAuditContext(socket);
     const deviceId = sessionId ?? socket.id;
     // One socket is one call leg. `deviceId` is only session-granular (two tabs

@@ -26,6 +26,9 @@ import type { PersonalizeFn } from "./emit-personalized.js";
  * returned as-is).
  *
  * Names are never touched: they are arguments to the builder, not part of it.
+ *
+ * Both the envelope `title`/`body` and the legacy nested `payload.title`/`body`
+ * are written from the SAME render — see the note at the payload block below.
  */
 export const localizeNotificationFrame: PersonalizeFn = (
   data: unknown,
@@ -53,8 +56,39 @@ export const localizeNotificationFrame: PersonalizeFn = (
     typeof frameData?.inboxTitle === "string" && frameData.inboxTitle !== "";
   const headingIsCopy =
     typeof frame.title === "string" && frame.title !== "" && !hasInboxTitle;
+
+  // `payload` is the STORED row, rendered once at write time in the account's
+  // language (`getUserLocale` in push.service.ts) — a single account-wide slot.
+  // The envelope is rendered here, per socket. Two independent resolutions of
+  // "what language is this person reading in" for ONE object is how a frame
+  // ended up with a Vietnamese `title` above an English `payload.title`: the
+  // account said English and the connection said Vietnamese, and both were
+  // telling the truth about different things.
+  //
+  // The fix is not to pick a winner but to stop resolving twice: the same
+  // `copy` is written into both, under the SAME `headingIsCopy` rule, so the
+  // two halves cannot disagree — not about language, and not about whether the
+  // heading is a name or a sentence. Only the prose is touched; `payload.data`
+  // carries ids and codes and is passed through.
+  const payload = frame.payload as Record<string, unknown> | undefined;
+  const localizedPayload =
+    copy && payload && typeof payload === "object"
+      ? {
+          payload: {
+            ...payload,
+            ...(copy.title && headingIsCopy && typeof payload.title === "string"
+              ? { title: copy.title }
+              : {}),
+            ...(copy.body && typeof payload.body === "string"
+              ? { body: copy.body }
+              : {}),
+          },
+        }
+      : {};
+
   return {
     ...frame,
+    ...localizedPayload,
     ...(copy?.title && headingIsCopy ? { title: copy.title } : {}),
     ...(copy?.body ? { body: copy.body } : {}),
     ...(extra?.resolution ? { resolution: extra.resolution } : {}),

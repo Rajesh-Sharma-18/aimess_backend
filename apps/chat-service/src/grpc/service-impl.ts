@@ -14,7 +14,7 @@ import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
-import { buildReactionActivityText } from "@aimess/constants";
+import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
@@ -2356,7 +2356,9 @@ export function createMessagingImpl(
                 files?: unknown[];
                 sticker?: Record<string, unknown>;
               };
-              const baseFiles = Array.isArray(content.files) ? content.files : [];
+              const baseFiles = Array.isArray(content.files)
+                ? content.files
+                : [];
               // Stickers live in content.sticker (outside files[]) — fold it in
               // so the admin transcript can render it via the shared attachment
               // view; presign URL is already resolved on read.
@@ -3240,17 +3242,20 @@ export function createCommunityImpl(
           // enrichForWire path); presign each here so the admin panel gets a
           // usable download URL alongside the folded attachments entry.
           const stickerFor = async (
-            m: Record<string, unknown>,
+            m: Record<string, unknown>
           ): Promise<Record<string, unknown> | null> => {
-            const raw = (m.content as { sticker?: Record<string, unknown> } | undefined)
-              ?.sticker;
+            const raw = (
+              m.content as { sticker?: Record<string, unknown> } | undefined
+            )?.sticker;
             if (!raw || typeof raw !== "object") return null;
             const key = fileMediaKey(raw as MediaFileLike);
             const url = key ? await resolveMediaUrl(key) : "";
             return url ? { ...raw, url } : raw;
           };
           const stickers = await Promise.all(
-            messages.map((m) => stickerFor(m as unknown as Record<string, unknown>)),
+            messages.map((m) =>
+              stickerFor(m as unknown as Record<string, unknown>)
+            )
           );
 
           callback(null, {
@@ -4793,6 +4798,7 @@ export function createNotificationImpl(
             const payloadObj = (updated.payload ?? {}) as {
               title?: string;
               body?: string;
+              data?: Record<string, string>;
             };
             try {
               await publishUserSocketEvent(
@@ -4812,6 +4818,14 @@ export function createNotificationImpl(
                   data: {
                     actionTaken: req.action ?? "",
                     sessionId: req.sessionId,
+                    // Forward the row's replay tickets, exactly as
+                    // `notification:new` does. `title`/`body` above are the
+                    // account-language text baked at write time; without the
+                    // tickets the gateway has nothing to re-render from, so
+                    // tapping "It's Me" on a login alert rewrote the card in
+                    // the account's language on every session — including the
+                    // one that was reading it in another.
+                    ...copyTickets(payloadObj.data),
                   },
                 }
               );

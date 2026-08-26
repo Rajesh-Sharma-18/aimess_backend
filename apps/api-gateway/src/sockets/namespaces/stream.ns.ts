@@ -464,7 +464,7 @@ export function registerStreamNamespace(
 
   streamNs.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
-    scopeSocketLocale(socket);
+    scopeSocketLocale(socket, redisPub);
     bindSocketAuditContext(socket);
     // Session room, as /chat, /community and /notify all do. This is what the
     // shared `session-revoke:*` listener targets, so without it a revoked
