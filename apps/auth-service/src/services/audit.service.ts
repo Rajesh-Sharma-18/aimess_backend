@@ -23,6 +23,10 @@ export type AuthAuditEvent =
   | "LINKED_DEVICE_CREATED"
   | "LINKED_DEVICE_REVOKED"
   | "ACCOUNT_DELETED"
+  // Super Admin reactivation of a soft-deleted account (the inverse of
+  // ACCOUNT_DELETED). Distinct from ACCOUNT_UNBANNED: an unban lifts a
+  // restriction, this un-deletes the account itself.
+  | "ACCOUNT_RESTORED"
   // Permanent Super Admin ban. auth-service's own trail — backoffice's AuditLog
   // is the canonical admin-facing record, but its actorId is an FK to AdminUser
   // so it cannot express what happened to the end-user account itself.

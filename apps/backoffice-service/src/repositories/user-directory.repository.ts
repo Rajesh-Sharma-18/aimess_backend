@@ -241,8 +241,32 @@ function buildOrderBy(
  * never silently downgrade a permanent ban (BANNED→SUSPENDED is rejected; the
  * admin must unban first).
  */
-export function assertTransition(current: UserStatus, next: UserStatus): void {
-  // DELETED is a tombstone — nothing can be modified afterwards.
+export function assertTransition(
+  current: UserStatus,
+  next: UserStatus,
+  fromDeleted = false
+): void {
+  // The reactivate path is the one legitimate way out of the tombstone, and it
+  // is authorized by the status RESOLVED FROM auth-service — the only source of
+  // truth for deletion — not by this column. `current` here is the admin_db
+  // mirror, which holds whatever moderation state was last written and is
+  // routinely stale for a deleted user: a lapsed SUSPENDED is never reset, and
+  // a mirror that still says BANNED outlives the ban once the account is
+  // deleted. Letting that stale value veto the restore would 409 the request
+  // AFTER auth-service has already reactivated the account — precisely the
+  // half-restored state the feature must never produce. So the flag permits
+  // ACTIVE from any current value, and clears bannedAt/banReason/
+  // suspendedUntil with it (the caller passes them as null), which is also what
+  // auth-service does on its side by dropping the Redis ban flag.
+  if (fromDeleted) {
+    if (next !== "ACTIVE") {
+      throw new ConflictError("USER_DELETED");
+    }
+    return;
+  }
+
+  // DELETED is a tombstone for every ordinary moderation action — a ban,
+  // suspend or unban must never touch a deleted account.
   if (current === "DELETED") {
     throw new ConflictError("USER_DELETED");
   }
@@ -401,7 +425,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
       };
     }
 
-    assertTransition(current.status, change.status);
+    assertTransition(current.status, change.status, change.fromDeleted);
 
     const data: Prisma.UserIndexUpdateInput = {
       status: change.status,

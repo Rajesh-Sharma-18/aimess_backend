@@ -8,6 +8,7 @@ import {
 import type {
   UserCreatedPayload,
   UserDeletedPayload,
+  UserRestoredPayload,
 } from "@aimess/shared-types";
 
 import type { UpdateProfileInput } from "../api/validators/profile.validator.js";
@@ -546,6 +547,79 @@ export const userProfileService = {
     });
 
     logger.info(`User profile soft-deleted for userId=${data.userId}`);
+  },
+
+  /**
+   * Exact inverse of {@link softDeleteFromUserDeletedEvent}, driven by the
+   * `user.restored` event auth-service publishes when a Super Admin
+   * reactivates a soft-deleted account.
+   *
+   * This one method is the whole platform-wide restore, for the same reason
+   * deletion was one method: the delete never destroyed anything. It set
+   * `deletedAt` + `status` on this row and left every other column alone, and
+   * the anonymized identity the rest of the platform shows is produced from
+   * those flags at read time (the BulkGetUserSnapshots RPC in grpc/server.ts)
+   * or persisted as a denormalized copy of that read-time value
+   * (community-service member snapshots, chat-service's `user:snapshot:<id>`
+   * Redis entry). Nothing else in the system consumes `user.deleted` at all —
+   * chats, messages, attachments, group and community memberships,
+   * friendships, notifications and media were never touched.
+   *
+   * So clearing the two flags restores every server-side read path, and
+   * re-publishing `user.profile_updated` with the REAL identity and
+   * `isDeleted` absent walks the same fanout the deletion used, in reverse:
+   *   - chat-service   → drops `user:snapshot:<userId>`, so DM lists, group
+   *                      rosters and message headers re-pull the real name and
+   *                      avatar, and emits `user:profile_updated` to the user's
+   *                      peers and every active group room instead of the
+   *                      `user:account_deleted` it emitted on delete;
+   *   - community-service → overwrites every "Deleted Account" member snapshot
+   *                      and `lastActivityUsername` with the real values and
+   *                      re-broadcasts `community:member:updated` into each of
+   *                      the user's communities, refreshing live member lists;
+   *   - auth-service   → mirrors isProfileCompleted only (unchanged).
+   *
+   * Idempotent: a redelivered event finds the profile already ACTIVE and exits
+   * without republishing.
+   */
+  async restoreFromUserRestoredEvent(
+    data: UserRestoredPayload
+  ): Promise<void> {
+    const profile = await userProfileRepository.findByUserId(data.userId);
+
+    if (!profile) {
+      logger.warn(
+        `User profile missing for userId=${data.userId}, cannot restore`
+      );
+      return;
+    }
+
+    if (!profile.deletedAt && profile.status !== ProfileStatus.DELETED) {
+      logger.info(
+        `User profile already active for userId=${data.userId}, skipping`
+      );
+      return;
+    }
+
+    const restored = await userProfileRepository.restore(data.userId);
+
+    await userCache.invalidateProfile(data.userId);
+    // Symmetric to the `onUsernameReleased` the delete performed: the username
+    // is in use again, so the availability cache must stop offering it.
+    await userCache.onUsernameClaimed(restored.username);
+
+    publishProfileUpdatedSafe({
+      userId: data.userId,
+      username: restored.username,
+      displayName: buildDisplayName(restored.firstName, restored.lastName),
+      avatarObjectKey: restored.avatarUrl ?? null,
+      isProfileCompleted: isProfileComplete(restored),
+      updatedAt: data.restoredAt,
+      // Absent, not `false`: consumers branch on `=== true`, and an ordinary
+      // identity-change event is exactly what a restore is to them.
+    });
+
+    logger.info(`User profile restored for userId=${data.userId}`);
   },
 
   /**

@@ -258,6 +258,13 @@ export type StatusChange = {
    * leaves this unset and keeps its strict 409 behavior.
    */
   idempotentActive?: boolean;
+  /**
+   * Lifts the DELETED tombstone for this one write. DELETED normally rejects
+   * every transition so a ban/suspend/unban can never touch a deleted account;
+   * reactivation is the single legitimate DELETED → ACTIVE transition, and it
+   * only ever runs AFTER auth-service has already restored the account.
+   */
+  fromDeleted?: boolean;
 };
 
 /** Result of a single status mutation (echoed to the client). */

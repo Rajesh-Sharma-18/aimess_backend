@@ -213,6 +213,35 @@ export const adminSetAccountStatusBreaker: Breaker<
     )
 );
 
+export interface AdminRestoreAccountResult {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+interface RawAdminRestoreAccountResponse {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+// Same rule as adminSetAccountStatusBreaker: no fallback-on-failure. A restore
+// that did not reach auth-service has not happened, so the caller must abort
+// rather than mark the user reactivated in the mirror.
+export const adminRestoreAccountBreaker: Breaker<
+  { userId: string; actorAdminId: string },
+  RawAdminRestoreAccountResponse
+> = makeBreaker(
+  "auth.adminRestoreAccount",
+  (args: { userId: string; actorAdminId: string }) =>
+    call<typeof args, RawAdminRestoreAccountResponse>(
+      "adminRestoreAccount",
+      args
+    )
+);
+
 export const authClient = {
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
@@ -284,6 +313,18 @@ export const authClient = {
       ok: r.ok,
       status: r.status,
       revokedSessions: Number(r.revokedSessions),
+      errorCode: r.errorCode,
+    };
+  },
+  async adminRestoreAccount(args: {
+    userId: string;
+    actorAdminId: string;
+  }): Promise<AdminRestoreAccountResult> {
+    const r = await adminRestoreAccountBreaker.fire(args);
+    return {
+      ok: r.ok,
+      status: r.status,
+      restoredAt: r.restoredAt,
       errorCode: r.errorCode,
     };
   },

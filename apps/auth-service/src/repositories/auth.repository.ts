@@ -335,6 +335,38 @@ export const authRepository = {
     });
   },
 
+  /**
+   * Exact inverse of {@link softDeleteUser}: clears the three deletion markers
+   * and puts the account back to ACTIVE.
+   *
+   * There is nothing else to undo. The soft delete removed no row — sessions and
+   * refresh tokens were revoked in place (and stay revoked; the user signs in
+   * fresh, exactly as after an unban) and the Google/Apple links were kept, so
+   * password login AND every linked provider start working again the moment
+   * these columns are cleared, via the same `deletedAt`/`status` guards that
+   * were blocking them.
+   *
+   * Idempotent: restoring an account that is not deleted writes the same ACTIVE
+   * row, so a retried admin request (or a redelivered event) cannot corrupt it.
+   */
+  restoreUser(userId: string) {
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      await tx.authUser.update({
+        where: { id: userId },
+        data: {
+          status: AccountStatus.ACTIVE,
+          deletionRequestedAt: null,
+          scheduledDeletionAt: null,
+          deletedAt: null,
+        },
+      });
+
+      return { restoredAt: now };
+    });
+  },
+
   findByAccount(account: string) {
     return prisma.authUser.findUnique({ where: { account } });
   },

@@ -46,6 +46,7 @@ export {
   banUser,
   suspendUser,
   unbanUser,
+  reactivateUser,
   bulkBanUsers,
   bulkActivateUsers,
 } from "./users.controller.js";

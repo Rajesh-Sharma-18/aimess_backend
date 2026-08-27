@@ -64,6 +64,7 @@ export const AUDIT_ACTIONS = {
   USER_BANNED: "user.banned",
   USER_SUSPENDED: "user.suspended",
   USER_UNBANNED: "user.unbanned",
+  USER_REACTIVATED: "user.reactivated",
   USER_BULK_BANNED: "user.bulk_banned",
   USER_BULK_ACTIVATED: "user.bulk_activated",
   USER_COMMUNITIES_VIEWED: "user.communities_viewed",

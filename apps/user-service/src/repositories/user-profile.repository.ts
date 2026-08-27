@@ -371,6 +371,19 @@ export const userProfileRepository = {
   },
 
   /**
+   * Exact inverse of {@link softDelete}. Only the two markers are written —
+   * `softDelete` overwrote nothing else, so username, names, bio, avatar,
+   * date of birth and every other column are still the values the account had
+   * before deletion and simply become visible again.
+   */
+  restore(userId: string) {
+    return prisma.userProfile.update({
+      where: { userId },
+      data: { deletedAt: null, status: ProfileStatus.ACTIVE },
+    });
+  },
+
+  /**
    * Admin Panel: enrich a user list with display profile data.
    * Returns rows for the subset of `userIds` that exist (no order guarantee).
    * Guards empty input to avoid an unnecessary query.
