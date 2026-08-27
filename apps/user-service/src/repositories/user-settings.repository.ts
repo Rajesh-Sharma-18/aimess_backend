@@ -250,6 +250,23 @@ export const userSettingsRepository = {
   },
 
   /**
+   * `whoCanSendFriendRequests` for many users at once — backs the bulk gRPC
+   * `checkFriendships` relationship map, which has to answer add-friend
+   * eligibility for a whole candidate list in one round-trip. Users absent
+   * from the result have no settings row (→ the schema default, EVERYONE).
+   */
+  async findFriendRequestScopes(
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await prisma.privacySettings.findMany({
+      where: { userId: { in: userIds } },
+      select: { userId: true, whoCanSendFriendRequests: true },
+    });
+    return new Map(rows.map((r) => [r.userId, r.whoCanSendFriendRequests]));
+  },
+
+  /**
    * `whoCanSeeOnlineStatus` for many users at once — backs the socket
    * `presence:subscribe` gate, which filters a whole peer list per call.
    * Users absent from the result have no settings row (→ EVERYONE).

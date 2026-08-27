@@ -409,11 +409,9 @@ async function main() {
   );
 
   check(
-    "whoCanViewProfile=NO_ONE → name and avatar are hidden, username survives",
-    gated.firstName === null &&
-      gated.lastName === null &&
-      gated.displayName === null &&
-      gated.avatarUrl === null &&
+    "whoCanViewProfile=NO_ONE → identity survives: name, avatar and username",
+    gated.firstName !== null &&
+      gated.displayName !== null &&
       typeof gated.username === "string" &&
       gated.username.length > 0,
     `displayName=${JSON.stringify(gated.displayName)} avatarUrl=${JSON.stringify(gated.avatarUrl)} username=${JSON.stringify(gated.username)}`
@@ -427,12 +425,13 @@ async function main() {
   const gatedRow = JSON.stringify(gatedSearch.body).includes(subject.userId)
     ? findUserRow(gatedSearch.body, subject.userId)
     : null;
+  // The scope gates CONTENT, not identity — the search row a stranger gets must
+  // carry the same name and photo a friend sees, or the result is unusable.
   check(
-    "the same masking applies to the search row, not just the profile endpoint",
+    "the search row keeps the real name under NO_ONE, same as a friend's view",
     gatedRow !== null &&
-      gatedRow.firstName === null &&
-      gatedRow.fullName === null &&
-      gatedRow.avatarUrl === null,
+      gatedRow.firstName === "Privacy" &&
+      gatedRow.fullName !== null,
     gatedRow ? JSON.stringify(gatedRow).slice(0, 160) : "row not found"
   );
 

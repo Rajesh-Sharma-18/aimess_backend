@@ -297,6 +297,10 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
     repo.findById.mockResolvedValue(community);
     repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
     repo.findJoinRequestById.mockResolvedValue(pendingRequest);
+    // The requester is NOT a member — declining a request from someone who is
+    // already in the community is a no-op by design (see the D2 rule in
+    // member-activation-resolves-requests.test.ts), so this must be explicit.
+    repo.findMemberByUserId.mockResolvedValue(null);
     repo.updateJoinRequest.mockResolvedValue({
       ...pendingRequest,
       status: "REJECTED",
@@ -372,6 +376,9 @@ describe("bulkRejectJoinRequests — emits one rejected event per pending reques
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
     repo.createAuditLog.mockResolvedValue(undefined);
     repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
+    // Neither requester is a member — a bulk decline never touches a request
+    // from someone already in the community (D2).
+    repo.findMembersByUserIds.mockResolvedValue([]);
   });
 
   it("fans a rejected event to every requester, none skipped", async () => {

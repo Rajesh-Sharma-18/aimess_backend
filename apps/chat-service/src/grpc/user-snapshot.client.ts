@@ -97,6 +97,14 @@ export interface ChatFriendshipInfo {
    * Read by action gates — invite sending — never by relationship rendering.
    */
   blockedEitherWay?: boolean;
+  /**
+   * Effective add-friend eligibility for the caller, decided by user-service
+   * (`canSendFriendRequest`): the peer's `whoCanSendFriendRequests` scope plus
+   * the self/block/friend/pending preconditions. The raw scope never crosses
+   * the wire. Fails CLOSED — absent means `false`, so a transport blip hides
+   * the action rather than offering one the write path would reject.
+   */
+  canSendRequest?: boolean;
 }
 
 interface FriendshipInfoRecord {
@@ -109,6 +117,7 @@ interface FriendshipInfoRecord {
   canReject?: boolean;
   canCancel?: boolean;
   blockedEitherWay?: boolean;
+  canSendRequest?: boolean;
 }
 
 interface CheckFriendshipsResult {
@@ -326,6 +335,7 @@ export const userGrpcClient = {
             canReject: r.canReject ?? false,
             canCancel: r.canCancel ?? false,
             blockedEitherWay: r.blockedEitherWay ?? false,
+            canSendRequest: r.canSendRequest ?? false,
           },
         ])
       );

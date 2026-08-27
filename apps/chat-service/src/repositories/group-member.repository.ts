@@ -469,6 +469,17 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * How many ACTIVE members hold `role` — used to answer "does this group still
+   * have an owner?" before letting anyone join it. Served by the existing
+   * `[roomId, status, role]` index, so it is one cheap count, not a scan.
+   */
+  async countActiveByRole(roomId: string, role: string): Promise<number> {
+    return this.prisma.groupMember.count({
+      where: { roomId, status: "ACTIVE", role },
+    });
+  }
+
   async countActiveMembers(roomId: string): Promise<number> {
     return this.prisma.groupMember.count({
       where: { roomId, status: "ACTIVE" },

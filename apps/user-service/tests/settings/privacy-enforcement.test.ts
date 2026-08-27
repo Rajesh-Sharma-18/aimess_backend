@@ -171,8 +171,12 @@ describe("visibleIdentity — name + avatar on profile-card surfaces", () => {
     privacySettings: { whoCanViewProfile },
   });
 
-  it("returns the real name and allows the avatar when the scope admits", () => {
-    expect(visibleIdentity(scoped("EVERYONE"), stranger)).toEqual({
+  // Identity is NOT viewer-scoped: a search hit that degrades to a bare handle
+  // is unusable to the very stranger `whoCanFindMe` let through, so the scope
+  // gates the profile CONTENT (bio/cover/counts/presence) and never the name
+  // or the photo. Friend and stranger must see the identical identity.
+  it("returns the real name and allows the avatar for a stranger", () => {
+    expect(visibleIdentity(scoped("EVERYONE"))).toEqual({
       avatarAllowed: true,
       firstName: "Ada",
       lastName: "Lovelace",
@@ -180,42 +184,32 @@ describe("visibleIdentity — name + avatar on profile-card surfaces", () => {
     });
   });
 
-  it("NO_ONE hides the name AND the avatar, even from a friend", () => {
-    expect(visibleIdentity(scoped("NO_ONE"), friend)).toEqual({
+  it("keeps name and avatar even under NO_ONE — that scope gates content", () => {
+    expect(visibleIdentity(scoped("NO_ONE"))).toEqual({
+      avatarAllowed: true,
+      firstName: "Ada",
+      lastName: "Lovelace",
+      fullName: "Ada Lovelace",
+    });
+    expect(canViewProfile(scoped("NO_ONE"), stranger)).toBe(false);
+  });
+
+  it("renders identically for a friend and for a stranger", () => {
+    expect(visibleIdentity(scoped("FRIENDS"))).toEqual(
+      visibleIdentity(scoped("EVERYONE"))
+    );
+  });
+
+  it("no settings row still yields the real name", () => {
+    expect(visibleIdentity(named).fullName).toBe("Ada Lovelace");
+  });
+
+  it("anonymize blanks name and avatar — the deleted-account case", () => {
+    expect(visibleIdentity(named, { anonymize: true })).toEqual({
       avatarAllowed: false,
       firstName: null,
       lastName: null,
       fullName: null,
     });
-  });
-
-  it("FRIENDS hides both from a stranger and shows both to a friend", () => {
-    expect(visibleIdentity(scoped("FRIENDS"), stranger).fullName).toBeNull();
-    expect(visibleIdentity(scoped("FRIENDS"), stranger).avatarAllowed).toBe(
-      false
-    );
-    expect(visibleIdentity(scoped("FRIENDS"), friend).fullName).toBe(
-      "Ada Lovelace"
-    );
-  });
-
-  it("FRIENDS_OF_FRIENDS admits one hop but not a stranger", () => {
-    expect(
-      visibleIdentity(scoped("FRIENDS_OF_FRIENDS"), friendOfFriend).fullName
-    ).toBe("Ada Lovelace");
-    expect(
-      visibleIdentity(scoped("FRIENDS_OF_FRIENDS"), stranger).fullName
-    ).toBeNull();
-  });
-
-  it("the owner always sees their own name", () => {
-    expect(
-      visibleIdentity(scoped("NO_ONE"), { isSelf: true, isFriend: false })
-        .fullName
-    ).toBe("Ada Lovelace");
-  });
-
-  it("no settings row falls back to EVERYONE, not to hidden", () => {
-    expect(visibleIdentity(named, stranger).fullName).toBe("Ada Lovelace");
   });
 });

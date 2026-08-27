@@ -198,7 +198,7 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
     );
   });
 
-  it("community:added payload includes lastActivity with preview 'You joined the community'", async () => {
+  it("community:added payload includes lastActivity whose preview matches the path", async () => {
     await communityService.notifyMemberJoined({
       ...BASE_ARGS,
       via: "add_members",
@@ -213,7 +213,9 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
       type: "system",
       userId: null,
       username: null,
-      preview: "You joined the community",
+      // An admin adding someone is not that someone joining — the list preview
+      // says what happened, matching the MEMBER_ADDED line posted to them.
+      preview: "You were added to the community",
     });
   });
 
@@ -249,19 +251,24 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
     expect(lastActivity.username).toBeNull();
   });
 
-  it("community:added lastActivity is present for all via values", async () => {
-    const viaValues = [
-      "add_members",
-      "join_request_approved",
-      "join_request_auto_accept",
-      "invite_auto_approve",
-      "invite_link_redeem",
-      "self_join",
-    ] as const;
+  it("community:added lastActivity is present for all via values, worded per path", async () => {
+    const expectedPreview: Record<string, string> = {
+      add_members: "You were added to the community",
+      // The approval is the admin's action; what the requester experiences is
+      // becoming a member, so their row reads like every other join.
+      join_request_approved: "You joined the community",
+      join_request_auto_accept: "You joined the community",
+      invite_auto_approve: "You joined the community",
+      invite_link_redeem: "You joined the community",
+      self_join: "You joined the community",
+    };
 
-    for (const via of viaValues) {
+    for (const [via, preview] of Object.entries(expectedPreview)) {
       publishUserEvent.mockClear();
-      await communityService.notifyMemberJoined({ ...BASE_ARGS, via });
+      await communityService.notifyMemberJoined({
+        ...BASE_ARGS,
+        via: via as (typeof BASE_ARGS)["via"],
+      });
       const call = publishUserEvent.mock.calls.find(
         ([, , event]) => event === "community:added"
       );
@@ -269,7 +276,7 @@ describe("notifyMemberJoined — community:added lastActivity (Test 1: Admin add
       const lastActivity = (call![3] as Record<string, unknown>)
         .lastActivity as Record<string, unknown>;
       expect(lastActivity).toBeDefined();
-      expect(lastActivity.preview).toBe("You joined the community");
+      expect(lastActivity.preview).toBe(preview);
     }
   });
 });
@@ -394,10 +401,11 @@ describe("notifyMemberJoined — retry idempotency (Test 4)", () => {
     }
   });
 
-  it("retry does not duplicate COMMUNITY_JOINED system messages (idempotency guard is eventAt-keyed)", async () => {
+  it("retry does not duplicate the membership system message (idempotency guard is eventAt-keyed)", async () => {
     // The service emits the RabbitMQ message; chat-service deduplicates by
-    // sys:COMMUNITY_JOINED:{eventAt}:u:{userId}. The service itself does not
-    // guard — verify the publish is called once per notifyMemberJoined call.
+    // sys:{TYPE}:{eventAt}:u:{userId}. The service itself does not guard —
+    // verify the publish is called once per notifyMemberJoined call. The Add
+    // Member path posts MEMBER_ADDED, not COMMUNITY_JOINED.
     const eventAt = "2026-06-25T09:00:00.000Z";
     await communityService.notifyMemberJoined({
       ...BASE_ARGS,
@@ -405,13 +413,12 @@ describe("notifyMemberJoined — retry idempotency (Test 4)", () => {
       via: "add_members",
     });
 
-    const joined = (
+    const lines = (
       publishSystemMessage as jest.MockedFunction<
         typeof publishCommunitySystemMessageForChatSafe
       >
-    ).mock.calls.filter(
-      (call) => call[0]?.systemMessageType === "COMMUNITY_JOINED"
-    );
-    expect(joined).toHaveLength(1);
+    ).mock.calls.filter((call) => call[0]?.visibleToUserId === member.userId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0][0].systemMessageType).toBe("MEMBER_ADDED");
   });
 });

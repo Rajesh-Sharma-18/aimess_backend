@@ -19,6 +19,7 @@ import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 import { createCommunityClient } from "../grpc/clients/community.client.js";
 import { createNotificationClient } from "../grpc/clients/notification.client.js";
 import { createUserClient } from "../grpc/clients/user.client.js";
+import { setAccountLocaleResolver } from "./account-locale.js";
 import type { MediaClient } from "../grpc/clients/media.client.js";
 import { createStreamClient } from "../grpc/clients/stream.client.js";
 
@@ -78,6 +79,13 @@ export async function setupSockets(
   const notificationClient = createNotificationClient();
   const userClient = createUserClient();
   const streamClient = createStreamClient();
+  // Before any namespace registers its handshake middleware — see
+  // account-locale.ts for why this is a registry and not a parameter.
+  setAccountLocaleResolver(
+    userClient.getAppLanguage
+      ? (userId) => userClient.getAppLanguage!(userId)
+      : null
+  );
 
   registerChatNamespace(
     io,

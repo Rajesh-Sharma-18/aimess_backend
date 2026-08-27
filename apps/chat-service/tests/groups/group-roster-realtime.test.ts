@@ -172,12 +172,39 @@ describe("POST /api/chat/group-members/add", () => {
     expect(channelsFor("group:added")).toEqual([`user:${TARGET}`]);
   });
 
-  it("RE-ADD: a BANNED row is refused — the ban outlives the invite", async () => {
+  it("RE-ADD: a BANNED row is lifted by an ADMIN's manual add — the ONE key to the block", async () => {
     mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
       userId: TARGET,
       status: "BANNED",
       bannedAt: new Date(),
       bannedBy: TEST_USER_ID,
+    });
+
+    const res = await request(app)
+      .post("/api/chat/group-members/add")
+      .set(bearer(makeAccessToken()))
+      .send({ roomId: ROOM, userId: TARGET });
+
+    expect(res.status).toBe(201);
+    // The ban is cleared in the SAME write that re-activates the row, so no
+    // stale bannedAt survives to block the next read.
+    expect(mocks.groupMemberRepo.upsert.mock.calls[0][2]).toMatchObject({
+      status: "ACTIVE",
+      bannedAt: null,
+      bannedBy: null,
+    });
+  });
+
+  it("RE-ADD: a MODERATOR cannot launder a ban into a plain add", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      userId: TEST_USER_ID,
+      role: "MODERATOR",
+      status: "ACTIVE",
+    });
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      userId: TARGET,
+      status: "BANNED",
+      bannedAt: new Date(),
     });
 
     const res = await request(app)

@@ -1183,7 +1183,14 @@ export const communityPaths = {
       operationId: "addCommunityMembers",
       summary: "Add members",
       description:
-        "Moderator or admin only. Adds 1–100 users as ACTIVE members and recomputes memberCount. Users already ACTIVE are skipped (`ALREADY_MEMBER`); BANNED users are skipped (`BANNED`, unban first); previously-LEFT users are reactivated as MEMBER; the rest are created as MEMBER. The response lists `added` and `skipped`.",
+        "Moderator or admin only. Adds 1–100 users as ACTIVE members and recomputes memberCount. Users already ACTIVE are skipped (`ALREADY_MEMBER`); BANNED users are skipped (`BANNED`, unban first); previously-LEFT users are reactivated as MEMBER; the rest are created as MEMBER. The response lists `added` and `skipped`. " +
+        "Adding a user who has an open join request for this community resolves " +
+        "that request (status `AUTO_RESOLVED`) in the SAME transaction as the " +
+        "membership write, and broadcasts `community:join_request:updated` so " +
+        "open admin lists drop the row live — a current member can never be left " +
+        "with an acceptable request. Each added user gets the `MEMBER_ADDED` " +
+        "system line (\"{admin} added you to the community\"), never the " +
+        "\"request approved\" one.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3121,7 +3128,11 @@ export const communityPaths = {
       operationId: "listCommunityJoinRequests",
       summary: "List a community's join requests",
       description:
-        "Moderator or admin only. Default `status=PENDING`. Each row embeds a `user` snapshot.",
+        "Moderator or admin only. Default `status=PENDING`. Each row embeds a " +
+        "`user` snapshot. The PENDING list is DERIVED server-side and never " +
+        "contains a request from a current ACTIVE member — any such row is " +
+        "filtered out and resolved on the spot — so every row it returns has a " +
+        "workable Accept/Decline. Do not re-implement that filter client-side.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3150,7 +3161,13 @@ export const communityPaths = {
           required: false,
           schema: {
             type: "string",
-            enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+            enum: [
+              "PENDING",
+              "APPROVED",
+              "REJECTED",
+              "CANCELLED",
+              "AUTO_RESOLVED",
+            ],
             default: "PENDING",
           },
         },
@@ -3200,7 +3217,13 @@ export const communityPaths = {
       operationId: "approveJoinRequest",
       summary: "Approve a join request",
       description:
-        "Moderator or admin only. Creates an ACTIVE member (or reactivates a LEFT row), marks the request APPROVED. Idempotent on already-APPROVED.",
+        "Moderator or admin only. Creates an ACTIVE member (or reactivates a " +
+        "LEFT row), marks the request APPROVED. Idempotent on already-APPROVED. " +
+        "If the requester is ALREADY an ACTIVE member (added directly, invited, " +
+        "self-joined, or accepted by another admin a moment earlier) this is a " +
+        "200 no-op: membership is untouched, no join notification or system " +
+        "message is re-sent, and the request comes back AUTO_RESOLVED rather " +
+        "than APPROVED — this admin granted nothing.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3276,7 +3299,11 @@ export const communityPaths = {
       operationId: "rejectJoinRequest",
       summary: "Reject a join request",
       description:
-        "Moderator or admin only. PENDING-only — fails with 400 otherwise.",
+        "Moderator or admin only. PENDING-only — fails with 400 otherwise. " +
+        "A decline that arrives after the requester already became a member is " +
+        "a 200 no-op returning the AUTO_RESOLVED request: declining decides a " +
+        "REQUEST and can never revoke a membership (use the remove-member " +
+        "endpoint for that).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

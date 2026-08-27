@@ -172,6 +172,11 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
         communityName: "Mighty Raju",
         communityHandle: "mighty-raju",
         isMember: false,
+        // Resolved per read alongside membership — the pair the card's button
+        // is drawn from (PRIVATE + a request of this viewer's own → "Cancel
+        // Request", not "Request to Join").
+        communityType: "PRIVATE",
+        joinRequestPending: true,
         linkStatus: "ACTIVE",
       },
     ]);
@@ -196,6 +201,8 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       inviteCode: "abc123",
       deepLink: "aimess://join?code=abc123",
       alreadyJoined: false,
+      joinRequestPending: true,
+      communityType: "PRIVATE",
       status: "ACTIVE",
       canOpen: true,
     };

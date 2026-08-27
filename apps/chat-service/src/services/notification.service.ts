@@ -1,4 +1,5 @@
 import type { Redis, Cluster } from "ioredis";
+import { copyTickets } from "@aimess/constants";
 import { publishUserSocketEvent } from "@aimess/redis";
 
 import type { NotificationRepository } from "../repositories/notification.repository.js";
@@ -352,6 +353,19 @@ export class NotificationService {
           ...(updated.loginSessionId
             ? { sessionId: updated.loginSessionId }
             : {}),
+          // The row's replay tickets, forwarded verbatim.
+          //
+          // `title`/`body` above are the row's STORED text, baked once in the
+          // account's language at write time. This frame used to rebuild `data`
+          // from scratch, which dropped the tickets — and the gateway localizes
+          // a `/notify` frame only when it can find one. So a resolved login
+          // alert was the one notification event that reached every session in
+          // the account's language, no matter what language that session was
+          // reading in, and no refetch could fix it because the next REST read
+          // localized correctly and disagreed with the card already on screen.
+          //
+          // Same tickets `notification:new` already carries, from the same row.
+          ...copyTickets(payloadObj.data),
         },
       });
     } catch {

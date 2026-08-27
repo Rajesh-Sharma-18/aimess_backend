@@ -397,7 +397,7 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     );
   });
 
-  it("permanent link sentinel older than 1 hour → COMMUNITY_INVITE_LINK_INACTIVE", async () => {
+  it("an ancient permanent link sentinel still sends — age alone never kills a link", async () => {
     repo.findById.mockResolvedValue({
       ...community,
       invitationCode: "perm_stale",
@@ -406,13 +406,13 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     });
     repo.findInviteLinkById.mockResolvedValue(null);
 
-    await expect(
-      communityService.bulkSendInviteLink(CID, CALLER, {
-        userIds: [UID_A],
-        linkId: CID,
-      })
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_INACTIVE");
-    expect(publishInvite).not.toHaveBeenCalled();
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: CID,
+    });
+
+    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(publishInvite).toHaveBeenCalledTimes(1);
   });
 
   it("permanent link sentinel but community has no invitationCode → COMMUNITY_INVITE_LINK_NOT_FOUND", async () => {

@@ -215,6 +215,26 @@ export function buildApp(): BuiltApp {
   const groupMessageRepo = repoMock();
   const groupMemberRepo = repoMock();
   const groupInviteLinkRepo = repoMock();
+  // Capacity is claimed with an atomic conditional update in production
+  // (`reserveMemberSlot`). The mock reproduces its DECISION off the same room
+  // the spec already programs, so a capacity spec keeps working by setting
+  // `memberCount`/`memberLimit` — no spec has to know the primitive exists.
+  // A concurrency spec overrides this to script the race.
+  groupRoomRepo.reserveMemberSlot = jest.fn(
+    async (roomId: string, limit: number) => {
+      const room = await groupRoomRepo.findActiveByRoomId(roomId);
+      if (!room) return false;
+      return (room.memberCount ?? 0) < limit;
+    }
+  );
+  // `findByToken` (ANY status) is what the invite state machine reads. Specs
+  // predating it stub only the ACTIVE-filtered lookup, so fall back to that —
+  // a spec exercising a revoked/expired token overrides `findByToken` directly.
+  groupInviteLinkRepo.findByToken = jest.fn((token: string) =>
+    groupInviteLinkRepo.findActiveByToken(token)
+  );
+  // Groups have an owner unless a spec says otherwise.
+  groupMemberRepo.countActiveByRole = jest.fn(async () => 1);
   const groupMessagePinRepo = repoMock();
   const communityMessagePinRepo = repoMock();
   // CommunityPinService.pin() runs its switch-pin logic inside
@@ -256,9 +276,13 @@ export function buildApp(): BuiltApp {
   // loads the room on send/edit/delete/react/pin/forward, so without this every
   // group write spec would 404 on CHAT_GROUP_NOT_FOUND. A spec exercising a
   // DISBANDED / CLOSED group overrides this with its own status.
-  groupRoomRepo.findByRoomId.mockResolvedValue({
-    roomId: "grp_room",
-    status: "ACTIVE",
+  // The invite state machine also reads the room at ANY status (only that can
+  // tell "disbanded" from "never existed"), and most specs program the room they
+  // care about on the visible-status lookup — so prefer that answer when there
+  // is one, and fall back to the generic live row otherwise.
+  groupRoomRepo.findByRoomId.mockImplementation(async (roomId: string) => {
+    const visible = await groupRoomRepo.findActiveByRoomId(roomId);
+    return visible ?? { roomId: "grp_room", status: "ACTIVE" };
   });
   // Every timeline page probes one row beyond each seq edge for the bidirectional
   // continuation block and reads the room's change high-water. Default both so a

@@ -4,6 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { env } from "../../config/env.js";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
+import { parseSupportedLocale, type SupportedLocale } from "@aimess/constants";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -59,6 +60,20 @@ export type UserClient = {
    * freshness, never correctness (the TTL still expires).
    */
   invalidateChatFlags?(userId: string): void;
+  /**
+   * The account's saved app language, or null when the user never picked one
+   * (or user-service is unreachable).
+   *
+   * ONLY a fallback for a socket handshake that declared no language of its
+   * own. It is account-wide and last-writer-wins across sessions, so it can
+   * never outrank a client-declared value — but it is a language this user
+   * actually chose, which beats `DEFAULT_LOCALE` ("vi" in production) being
+   * handed to a client that simply has not been taught to send `lang` yet.
+   *
+   * Optional so the hand-rolled `userClient` stubs across the socket suites
+   * keep compiling: a missing resolver costs the fallback, never correctness.
+   */
+  getAppLanguage?(userId: string): Promise<SupportedLocale | null>;
 };
 
 export interface ChatFlags {
@@ -113,6 +128,17 @@ export function createUserClient(): UserClient {
         "filterVisiblePresence",
         p
       ).then((r) => r.visiblePeerIds ?? [])
+  );
+
+  // GetNotificationSettings is the RPC that already carries `language` (it is
+  // read per push for exactly this reason), so the account language needs no new
+  // contract — see user.proto's NotificationSettings.language.
+  const appLanguageBreaker = makeBreaker(
+    "user.getAppLanguage",
+    (p: { userId: string }) =>
+      call<typeof p, { language?: string }>("getNotificationSettings", p).then(
+        (r) => parseSupportedLocale(r.language)
+      )
   );
 
   const chatSettingsBreaker = makeBreaker(
@@ -182,6 +208,14 @@ export function createUserClient(): UserClient {
     },
     invalidateChatFlags: (userId) => {
       chatFlags.delete(userId);
+    },
+    getAppLanguage: (userId) => {
+      if (!UUID_RE.test(userId)) return Promise.resolve(null);
+      // Uncached on purpose: this runs once per socket handshake, and ONLY for
+      // a connection that declared no language — not per message, per receipt
+      // or per emit. A cache here would buy nothing and could serve a language
+      // the user changed between two logins.
+      return appLanguageBreaker.fire({ userId }).catch(() => null);
     },
     filterVisiblePresence: (viewerId, peerIds) => {
       if (!UUID_RE.test(viewerId)) return Promise.resolve([]);

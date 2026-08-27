@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@aimess/logger";
+import { DEFAULT_LOCALE, t, type SupportedLocale } from "@aimess/constants";
 
 /** Every namespace a user's device might be connected to, all joined via `user:<userId>` + `session:<sessionId>`. */
 export const LIVE_NAMESPACES = [
@@ -62,19 +63,29 @@ export function registerSessionRevokeListener(
         const ns = io.of(nsName);
         const sessionRoom = `session:${sessionId}`;
 
-        if (!selfInitiated) {
-          ns.to(sessionRoom).emit("auth:session_terminated", {
-            sessionId,
-            reason: "terminated",
-            message: "Your session has been terminated.",
-          });
-        }
-
         void ns
           .in(sessionRoom)
           .fetchSockets()
           .then((sockets) => {
-            for (const socket of sockets) socket.disconnect(true);
+            for (const socket of sockets) {
+              // Emitted per socket rather than to the room, for the same reason
+              // every other server-rendered sentence is: the sockets in here
+              // may be a phone in Thai and a laptop in English, and one
+              // pre-translated room broadcast would hand both the same
+              // language. Same loop that was already fetching them to hang up,
+              // so this costs no extra round trip.
+              if (!selfInitiated) {
+                const locale =
+                  (socket.data.locale as SupportedLocale | undefined) ??
+                  DEFAULT_LOCALE;
+                socket.emit("auth:session_terminated", {
+                  sessionId,
+                  reason: "terminated",
+                  message: t("SOCKET_SESSION_TERMINATED", locale),
+                });
+              }
+              socket.disconnect(true);
+            }
           })
           .catch((err: unknown) =>
             logger.warn(

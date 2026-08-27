@@ -468,6 +468,42 @@ export const NOTIFICATION_MESSAGES = {
     th: "หากคุณไม่ได้ร้องขอ สามารถเพิกเฉยต่ออีเมลนี้ได้ อีเมลบัญชีของคุณจะไม่ถูกเปลี่ยน",
   },
 
+  // ── Account status, set by a platform admin ──────────────────────────────
+  // Exempt from the notification toggles and from quiet hours (see
+  // NON_SUPPRESSIBLE_TYPES): a banned user must always be told. Which is
+  // precisely why the copy has to be localized — it is the one notification the
+  // user cannot have opted out of.
+  NOTIF_ACCOUNT_BANNED_TITLE: {
+    vi: "Tài khoản đã bị cấm",
+    en: "Account banned",
+    th: "บัญชีถูกแบน",
+  },
+  NOTIF_ACCOUNT_BANNED_BODY: {
+    vi: "Tài khoản của bạn đã bị cấm. Hãy liên hệ bộ phận hỗ trợ nếu bạn cho rằng đây là nhầm lẫn.",
+    en: "Your account has been banned. Reach out to support if you think this is a mistake.",
+    th: "บัญชีของคุณถูกแบน หากคุณคิดว่าเป็นความผิดพลาด โปรดติดต่อฝ่ายสนับสนุน",
+  },
+  NOTIF_ACCOUNT_SUSPENDED_TITLE: {
+    vi: "Tài khoản đã bị tạm khóa",
+    en: "Account suspended",
+    th: "บัญชีถูกระงับชั่วคราว",
+  },
+  NOTIF_ACCOUNT_SUSPENDED_BODY: {
+    vi: "Tài khoản của bạn đang bị tạm khóa",
+    en: "Your account is temporarily suspended",
+    th: "บัญชีของคุณถูกระงับชั่วคราว",
+  },
+  NOTIF_ACCOUNT_REINSTATED_TITLE: {
+    vi: "Chào mừng trở lại",
+    en: "Welcome back",
+    th: "ยินดีต้อนรับกลับมา",
+  },
+  NOTIF_ACCOUNT_REINSTATED_BODY: {
+    vi: "Tài khoản của bạn đã được khôi phục",
+    en: "Your account has been reinstated",
+    th: "บัญชีของคุณได้รับการคืนสถานะแล้ว",
+  },
+
   NOTIF_AUTH_PASSWORD_CHANGED_TITLE: {
     vi: "Đã đổi mật khẩu",
     en: "Password changed",

@@ -152,6 +152,8 @@ const NONE_RELATIONSHIP: ChatFriendshipInfo = {
   canAccept: false,
   canReject: false,
   canCancel: false,
+  // Fails CLOSED: a peer we could not resolve gets no add-friend action.
+  canSendRequest: false,
 };
 
 /**
@@ -164,6 +166,13 @@ export type WireFriendship = {
   direction: "OUTGOING" | "INCOMING" | null;
 };
 
+/**
+ * Deliberately still {status, direction} only. Add-friend eligibility
+ * (`canSendRequest`) rides the nested `relationship` object built by
+ * {@link toPeerFriendshipRelationship} — the user-search-shaped contract that
+ * already owns every action flag — rather than being mirrored here. This field
+ * is the legacy send-gate shape and stays frozen.
+ */
 function toWireFriendship(info: ChatFriendshipInfo): WireFriendship {
   return { status: info.status, direction: info.direction };
 }
@@ -186,6 +195,13 @@ export type PeerFriendshipRelationship = {
     canAccept: boolean;
     canReject: boolean;
     canCancel: boolean;
+    /**
+     * Effective add-friend eligibility, decided by user-service — the peer's
+     * `whoCanSendFriendRequests` scope plus the self/block/friend/pending
+     * preconditions. The client renders the action from this alone; the raw
+     * privacy scope is never exposed.
+     */
+    canSendRequest: boolean;
   };
 };
 
@@ -215,6 +231,7 @@ export function toPeerFriendshipRelationship(
       canAccept: info.canAccept ?? false,
       canReject: info.canReject ?? false,
       canCancel: info.canCancel ?? false,
+      canSendRequest: info.canSendRequest ?? false,
     },
   };
 }
@@ -1100,6 +1117,7 @@ export class PrivateRoomService {
               canAccept: false,
               canReject: false,
               canCancel: false,
+              canSendRequest: false,
             }
           : (friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,

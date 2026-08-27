@@ -123,15 +123,71 @@ export function discoverableWhere(
 
 /** Prisma select fragment pulling the scopes list surfaces need to mask by. */
 export const PRIVACY_SCOPE_SELECT = {
-  select: { whoCanSeeOnlineStatus: true, whoCanViewProfile: true },
+  select: {
+    whoCanSeeOnlineStatus: true,
+    whoCanViewProfile: true,
+    // Not a masking scope — it decides whether the row may offer an "Add
+    // Friend" action at all (see `canSendFriendRequest`). Carried on the same
+    // select so no list surface needs a second query to answer that.
+    whoCanSendFriendRequests: true,
+  },
 } as const;
 
 type ScopeCarrier = {
   privacySettings?: {
     whoCanSeeOnlineStatus?: string | null;
     whoCanViewProfile?: string | null;
+    whoCanSendFriendRequests?: string | null;
   } | null;
 };
+
+/**
+ * How the viewer relates to the target, as far as the friend-request action is
+ * concerned. Mirrors the preconditions `friendshipService.sendRequest` throws
+ * on, in the same order.
+ */
+export type FriendRequestContext = {
+  /** Search vocabulary. BLOCKED may also arrive from the chat/profile view. */
+  status: "FRIEND" | "PENDING" | "NONE" | "BLOCKED";
+  /** A block in EITHER direction — both refuse the write with FRIEND_BLOCKED. */
+  isBlockedEitherWay?: boolean;
+};
+
+/**
+ * May this viewer send THIS target a friend request right now?
+ *
+ * The read-side mirror of the `friendshipService.sendRequest` gate: same
+ * `scopeAdmits` primitive, same self/block/friend/pending preconditions. Every
+ * surface that renders an "Add Friend" affordance (user search, discovery,
+ * public profile, private-chat peer) answers from HERE, so the button can
+ * never offer an action the write path refuses with
+ * `FRIEND_REQUEST_NOT_ALLOWED`.
+ *
+ * PENDING is false in BOTH directions on purpose — an outstanding request is
+ * cancelled or accepted (`canCancel` / `canAccept`), never re-sent. That also
+ * keeps a `whoCanSendFriendRequests: NO_ONE` target's own outgoing request
+ * answerable: the write path exempts that mutual-accept case, and the read
+ * side surfaces it as `canAccept`, not as a second send.
+ *
+ * Returns only an effective yes/no — the target's raw scope is never exposed,
+ * so a denied viewer cannot tell NO_ONE from FRIENDS from "blocked me".
+ */
+export function canSendFriendRequest(
+  profile: ScopeCarrier,
+  relation: ViewerRelation,
+  ctx: FriendRequestContext
+): boolean {
+  if (relation.isSelf) return false;
+  if (ctx.isBlockedEitherWay || ctx.status === "BLOCKED") return false;
+  if (ctx.status === "FRIEND" || ctx.status === "PENDING") return false;
+  return scopeAdmits(
+    profile.privacySettings?.whoCanSendFriendRequests ??
+      SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests,
+    // `isSelf` is settled above; passing it on would make `scopeAdmits` short
+    // -circuit to true.
+    { isFriend: relation.isFriend, isFriendOfFriend: relation.isFriendOfFriend }
+  );
+}
 
 /**
  * `isOnline` as this viewer is allowed to see it. List surfaces (search,
@@ -167,41 +223,38 @@ export function canViewProfile(
 }
 
 /**
- * Real name + avatar as this viewer may see them, for the surfaces that serve a
- * PROFILE CARD: the profile endpoint, search results, discovery lists and
- * recent searches. `NO_ONE` there means "only the owner sees the complete
- * profile", and a name and photo are the most identifying parts of it — masking
- * only bio/cover/counts left the card recognizable, which is the whole thing
- * the setting is meant to prevent.
+ * Real name + avatar for a PROFILE-CARD surface: the profile endpoint, search
+ * results, discovery lists and recent searches.
  *
- * `userId` and `username` deliberately survive: the row must stay actionable
- * (send a request, block, open the chat) and the handle is already public
- * everywhere the user is addressable. Presence is masked separately by
- * {@link visibleIsOnline} — it has its own scope.
+ * Identity is deliberately NOT viewer-scoped. `whoCanViewProfile` gates the
+ * profile CONTENT — bio, cover image, friend/group/community counts and (via
+ * `canViewProfile`) presence — but never the name and photo: a person must be
+ * recognizable wherever they are addressable, or a search hit degrades to a
+ * bare handle and the row is unusable to the very stranger who is allowed to
+ * find them and send a request. Identity presentation is therefore identical
+ * for friends and strangers; only the actions and the gated fields differ.
  *
- * NOT applied to conversation surfaces (chat headers, group/community member
- * lists, mentions, message senders). Those show who you are already talking to,
- * and blanking them would render existing chats nameless rather than private.
- * See `avatarAllowed` for the avatar: call sites resolve the stored key through
- * their own media resolver with `null` so a denied viewer gets the identical
- * "no avatar" shape as a user who never set one.
+ * `anonymize` is the one case that still blanks it: a DELETED account, whose
+ * row is scrubbed at read time rather than at write time (see the
+ * `BulkGetUserSnapshots` RPC, which does the same at the identity source).
+ * Callers resolve the stored avatar key with `null` when `avatarAllowed` is
+ * false, so such a viewer gets the identical "no avatar" shape as a user who
+ * never set one.
  */
 export function visibleIdentity(
-  profile: ScopeCarrier & { firstName: string; lastName: string },
-  relation: ViewerRelation
+  profile: { firstName: string; lastName: string },
+  opts?: { anonymize?: boolean }
 ): {
   avatarAllowed: boolean;
   firstName: string | null;
   lastName: string | null;
   fullName: string | null;
 } {
-  const allowed = canViewProfile(profile, relation);
+  const allowed = !opts?.anonymize;
   return {
     avatarAllowed: allowed,
     firstName: allowed ? profile.firstName : null,
     lastName: allowed ? profile.lastName : null,
-    fullName: allowed
-      ? `${profile.firstName} ${profile.lastName}`.trim()
-      : null,
+    fullName: allowed ? `${profile.firstName} ${profile.lastName}`.trim() : null,
   };
 }

@@ -40,6 +40,20 @@ describe("resolveHandshakeLocale", () => {
     );
   });
 
+  it("accepts every spelling of the field in BOTH channels", () => {
+    // A client that declares its language and is ignored is indistinguishable
+    // from one that never declared it — and the cost is the production default.
+    expect(
+      resolveHandshakeLocale(handshake({ auth: { language: "th" } }))
+    ).toBe("th");
+    expect(resolveHandshakeLocale(handshake({ query: { locale: "th" } }))).toBe(
+      "th"
+    );
+    expect(
+      resolveHandshakeLocale(handshake({ query: { language: "th" } }))
+    ).toBe("th");
+  });
+
   it("still honours x-lang, then Accept-Language, for clients that send neither", () => {
     expect(
       resolveHandshakeLocale(
@@ -75,7 +89,11 @@ describe("locale:set — retargeting an open connection", () => {
   const fakeSocket = () => {
     const handlers = new Map<string, (...args: unknown[]) => void>();
     return {
-      data: { locale: "vi" as string },
+      data: {
+        locale: "vi" as string,
+        userId: "user-1",
+        sessionId: "sess-1",
+      },
       use: jest.fn(),
       on: jest.fn((event: string, fn: (...args: unknown[]) => void) => {
         handlers.set(event, fn);
@@ -129,5 +147,79 @@ describe("locale:set — retargeting an open connection", () => {
       success: false,
       data: { locale: "en" },
     });
+  });
+});
+
+describe("locale:set — telling the push side, which cannot see this packet", () => {
+  const fakeSocket = (over: Record<string, unknown> = {}) => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    return {
+      data: { locale: "vi", userId: "user-1", sessionId: "sess-1", ...over },
+      use: jest.fn(),
+      on: jest.fn((event: string, fn: (...args: unknown[]) => void) => {
+        handlers.set(event, fn);
+      }),
+      fire: (event: string, ...args: unknown[]) =>
+        handlers.get(event)?.(...args),
+    };
+  };
+  const fakeRedis = () => ({ publish: jest.fn().mockResolvedValue(1) });
+
+  it("publishes the session's new language so the push tray can follow it", () => {
+    const socket = fakeSocket();
+    const redis = fakeRedis();
+    scopeSocketLocale(socket as never, redis as never);
+
+    socket.fire("locale:set", { lang: "th" });
+
+    expect(redis.publish).toHaveBeenCalledTimes(1);
+    const [channel, body] = redis.publish.mock.calls[0] as [string, string];
+    expect(channel).toBe("session:locale");
+    expect(JSON.parse(body)).toEqual({
+      userId: "user-1",
+      sessionId: "sess-1",
+      locale: "th",
+    });
+  });
+
+  it("says nothing when the language did not actually change to a supported one", () => {
+    const socket = fakeSocket();
+    const redis = fakeRedis();
+    scopeSocketLocale(socket as never, redis as never);
+
+    socket.fire("locale:set", { lang: "hi" });
+
+    expect(redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("still moves the socket when there is no publisher wired (unit suites)", () => {
+    const socket = fakeSocket();
+    scopeSocketLocale(socket as never);
+
+    socket.fire("locale:set", { lang: "en" });
+
+    expect(socket.data.locale).toBe("en");
+  });
+
+  it("never lets a failed publish break the packet that expressed the change", () => {
+    const socket = fakeSocket();
+    const redis = { publish: jest.fn().mockRejectedValue(new Error("down")) };
+    scopeSocketLocale(socket as never, redis as never);
+    const ack = jest.fn();
+
+    expect(() => socket.fire("locale:set", { lang: "en" }, ack)).not.toThrow();
+    expect(socket.data.locale).toBe("en");
+    expect(ack).toHaveBeenCalledWith({ success: true, data: { locale: "en" } });
+  });
+
+  it("cannot publish for a socket with no session to name", () => {
+    const socket = fakeSocket({ sessionId: "" });
+    const redis = fakeRedis();
+    scopeSocketLocale(socket as never, redis as never);
+
+    socket.fire("locale:set", { lang: "th" });
+
+    expect(redis.publish).not.toHaveBeenCalled();
+    expect(socket.data.locale).toBe("th");
   });
 });

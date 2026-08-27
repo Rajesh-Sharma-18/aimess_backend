@@ -115,10 +115,14 @@ import {
 } from "./user-snapshot.service.js";
 import { resolveSystemActorName } from "../lib/localize-system-preview.js";
 import {
+  isDeadLinkState,
+  isGroupGoneState,
+  loadGroupInviteState,
+} from "../lib/group-invite-state.js";
+import {
   currentLocale,
   isCallContentType,
   inviteContentType,
-  isInviteLinkExpired,
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
@@ -2502,6 +2506,18 @@ export class PrivateMessageService {
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
                 alreadyJoined: ctx.isMember,
+                // Resolved per read alongside membership, so the card's button
+                // is right after a join, a cancel, an approval OR an admin
+                // "Add Member" — including on a cold reload.
+                communityType:
+                  ctx.found && ctx.communityType === "PRIVATE"
+                    ? "PRIVATE"
+                    : ctx.found && ctx.communityType === "PUBLIC"
+                      ? "PUBLIC"
+                      : null,
+                joinRequestPending: ctx.found
+                  ? Boolean(ctx.joinRequestPending)
+                  : false,
                 status: ctx.found ? ctx.linkStatus : "DELETED",
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
@@ -2544,31 +2560,34 @@ export class PrivateMessageService {
           stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
         );
 
-        const room = groupId
-          ? await this.groupRoomRepo.findActiveByRoomId(groupId)
-          : null;
-        const alreadyJoined =
-          Boolean(room) && viewerId
-            ? Boolean(
-                await this.groupMemberRepo.findActiveByRoomAndUser(
-                  groupId,
-                  viewerId
-                )
-              )
-            : false;
-        const link = token
-          ? await this.groupInviteLinkRepo?.findActiveByToken(token)
-          : null;
-        // `findActiveByToken` filters on the row's `status` column only, so an
-        // expired link still comes back — the 1-hour expiry is a timestamp check,
-        // and without it the card kept offering a link the join endpoint refuses.
-        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
-          ? "DELETED"
-          : token && !link
-            ? "REVOKED"
-            : isInviteLinkExpired(link?.expiresAt)
-              ? "EXPIRED"
-              : "ACTIVE";
+        // The SAME loader the invite preview and the join endpoint use, so a
+        // card and the screen it links to can never disagree. `roomId` is passed
+        // explicitly: a card whose token was revoked still knows which group it
+        // points at, which is what keeps "View Group" working for a member.
+        const { state, room } = await loadGroupInviteState<
+          { roomId: string; name: string; avatar: string; memberCount: number },
+          { roomId: string },
+          { status?: string | null }
+        >(
+          {
+            inviteLinkRepo: this.groupInviteLinkRepo ?? null,
+            roomRepo: this.groupRoomRepo,
+            memberRepo: this.groupMemberRepo,
+          },
+          { token, roomId: groupId, viewerId }
+        );
+        const alreadyJoined = state === "ALREADY_MEMBER";
+        // Legacy LINK-only status, kept for clients that predate `state`. It
+        // cannot express the group/capacity/block cases at all — that is exactly
+        // why `state` exists — so it reports only what it can.
+        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
+          isGroupGoneState(state)
+            ? "DELETED"
+            : state === "LINK_REVOKED"
+              ? "REVOKED"
+              : isDeadLinkState(state)
+                ? "EXPIRED"
+                : "ACTIVE";
 
         invitationByMessageId.set(
           m.id,
@@ -2578,11 +2597,15 @@ export class PrivateMessageService {
             groupAvatarUrl: room
               ? await resolveMediaUrl(room.avatar)
               : groupAvatarUrl,
+            // Live roster size, re-read on every fetch — never the count frozen
+            // into the message when it was sent (that is only the fallback for a
+            // group that no longer exists).
             memberCount: room?.memberCount ?? memberCount,
             inviteToken: token,
             deepLink,
             alreadyJoined,
             status,
+            state,
           })
         );
       }
