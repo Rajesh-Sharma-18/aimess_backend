@@ -30,12 +30,16 @@ export const FriendSocketEvents = {
   UNBLOCKED: "friend:unblocked",
   /**
    * "Your relationship with this peer changed — re-read it." Carries only
-   * `{ peerId }`: no verb, no status. Sent to the OTHER party on block/unblock,
-   * where naming the change would tell them they were blocked — a thing this
-   * codebase deliberately never reveals (see `blockUser`, and the identical
-   * FRIEND_BLOCKED / FRIEND_REQUEST_NOT_ALLOWED copy). The client just refetches
-   * and renders whatever it can now see, so a block, an unblock, and a deleted
-   * account are indistinguishable from the receiving side.
+   * `{ peerId }`: no verb, no status. Sent to the OTHER party on block/unblock.
+   *
+   * The event stays verbless because the EVENT is not the place that decides
+   * what the recipient may learn — the pair-state resolver is. A recipient who
+   * shares a conversation with the blocker refetches and is told
+   * BLOCKED_BY_PEER, because that pair is already in their inbox and the
+   * composer has to say why it is shut. A recipient with no conversation
+   * refetches and finds the peer simply gone (404), exactly as before. One
+   * event, one refetch, and the visibility rule lives in one place instead of
+   * being half-encoded in the wire format.
    *
    * Delivered on `self:<userId>`, NOT `user:<userId>` — the latter is joinable
    * by any presence watcher.

@@ -5,6 +5,15 @@ import { userGrpcClient } from "./user-snapshot.client.js";
 export interface UserServiceClient {
   checkFriendship(userA: string, userB: string): Promise<boolean>;
   isFriendshipBlocked(userA: string, userB: string): Promise<boolean>;
+  /**
+   * Is EITHER party blocking the other? A block is stored one-way, but its
+   * effect on a DM is mutual — neither side may write into the conversation
+   * afterwards. The write gate needs this rather than the directional check
+   * above, or the BLOCKED party's refusal falls through to the friendship
+   * branch and is reported as a plain "you are not friends", which is a
+   * different situation with different copy and a different way out.
+   */
+  isBlockedEitherWay(userA: string, userB: string): Promise<boolean>;
   getFriendshipStatus(userA: string, userB: string): Promise<string | null>;
 }
 
@@ -126,6 +135,22 @@ export function createUserServiceClient(): UserServiceClient {
       } catch (err) {
         logger.error(
           `Error checking friendship block for ${userA} ↔ ${userB}`,
+          err instanceof Error ? err.message : String(err)
+        );
+        return false;
+      }
+    },
+
+    // Block in EITHER direction — see the interface doc.
+    isBlockedEitherWay: async (
+      userA: string,
+      userB: string
+    ): Promise<boolean> => {
+      try {
+        return await friendshipRepo.isBlockedEitherWay(userA, userB);
+      } catch (err) {
+        logger.error(
+          `Error checking either-way block for ${userA} ↔ ${userB}`,
           err instanceof Error ? err.message : String(err)
         );
         return false;

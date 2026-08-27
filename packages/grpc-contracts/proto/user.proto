@@ -195,6 +195,21 @@ message FriendshipInfo {
   // The raw scope is deliberately NOT on the wire: a denied caller must not be
   // able to tell NO_ONE from FRIENDS from a block.
   bool   can_send_request = 10;
+  // TRUE when the CANDIDATE blocks the CALLER (the incoming direction), which
+  // `status` can never report — it collapses an incoming block to NONE so a
+  // "was I blocked" probe cannot be answered from relationship rendering
+  // alone. `blocked_either_way` above cannot substitute for it either: under a
+  // mutual block both directions are live, and a caller that only sees
+  // "either way" plus its own OUTGOING BLOCKED would wrongly conclude the peer
+  // does not block it back.
+  //
+  // The single consumer is the private-chat pair-state resolver, which must
+  // decide between "you blocked them" (offer Unblock) and "they blocked you"
+  // (disable the composer). It is NOT a discovery field: whether a surface may
+  // act on it is that surface's decision — user-service still hides a blocker
+  // from the blocked user everywhere except a pair that already has a
+  // conversation.
+  bool   blocked_by_peer = 11;
 }
 
 message GetFriendshipViewRequest {

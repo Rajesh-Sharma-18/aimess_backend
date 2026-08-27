@@ -97,12 +97,21 @@ export type PublicUserProfileData = {
   isDeletedUser: boolean;
   /**
    * The VIEWER blocked this user. Blocks are one-way, so the blocker still
-   * resolves the profile; the reverse direction 404s before this is built, so
-   * it never reports the target's block. `relationship.status` collapses BLOCKED
-   * to NONE (search vocabulary), so this is the flag clients branch on to show
+   * resolves the profile. `relationship.status` collapses BLOCKED to NONE
+   * (search vocabulary), so this is the flag clients branch on to show
    * "Unblock" instead of "Add friend".
    */
   isBlockedByMe: boolean;
+  /**
+   * This user blocked the VIEWER. True only when the pair already has a private
+   * conversation — that is the one case where the profile stays reachable, so
+   * that every door into the pair (chat list, search, recent, profile, deep
+   * link) lands on the same screen. Every other blocked-by pair still 404s and
+   * this is never observable.
+   *
+   * Both flags are true under a mutual block.
+   */
+  isBlockedByPeer: boolean;
   relationship: {
     friendshipId: string | null;
     status: string;

@@ -65,6 +65,7 @@ function buildService() {
   const userServiceClient = {
     checkFriendship: jest.fn(async () => true),
     isFriendshipBlocked: jest.fn(async () => false),
+    isBlockedEitherWay: jest.fn(async () => false),
   };
   const reportRepo = {};
 

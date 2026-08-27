@@ -62,6 +62,18 @@ export type SearchUserItem = {
    * the other direction.
    */
   isBlockedByMe: boolean;
+  /**
+   * This user blocked the VIEWER. Normally such a user is subtracted from every
+   * result (`hiddenIds`) and never reaches the client — with ONE exception: a
+   * pair that already has a private conversation. That pair is already visible
+   * to this viewer from their own inbox, and hiding it here is what made the
+   * same pair open two different screens depending on the door: the chat list
+   * opened the conversation, search offered "Send Request" for it. Row stays,
+   * flagged, with every action off.
+   *
+   * Both flags are true under a mutual block.
+   */
+  isBlockedByPeer: boolean;
   /** Friendship row id when FRIEND/PENDING; null when NONE. */
   friendshipId: string | null;
   /** Who sent the PENDING request; null when FRIEND/NONE. */
@@ -142,7 +154,8 @@ async function toUserItem(
   roomId: string | null,
   relationship: PeerRelationship,
   friendOfFriendIds: ReadonlySet<string>,
-  blockedByMe: ReadonlySet<string>
+  blockedByMe: ReadonlySet<string>,
+  blockedByPeer: ReadonlySet<string>
 ): Promise<SearchUserItem> {
   // Identity (name + photo) is not viewer-scoped — see `visibleIdentity`.
   // `whoCanViewProfile` gates the profile CONTENT, not who the row is.
@@ -155,9 +168,10 @@ async function toUserItem(
   // enforces, so the row never offers an action the API would reject. Blocks
   // count in EITHER direction: users who blocked the viewer never reach this
   // mapper, so only the viewer's own block is checkable here.
+  const isBlockedByPeer = blockedByPeer.has(profile.userId);
   const canSendRequest = canSendFriendRequest(profile, relation, {
     status: relationship.relationshipStatus,
-    isBlockedEitherWay: blockedByMe.has(profile.userId),
+    isBlockedEitherWay: blockedByMe.has(profile.userId) || isBlockedByPeer,
   });
   const { url, expiresIn, avatar } = await resolveAvatar(profile.avatarUrl);
   return {
@@ -172,12 +186,18 @@ async function toUserItem(
     avatar,
     // `whoCanSeeOnlineStatus` — a denied viewer sees `false`, indistinguishable
     // from genuinely offline. Never leak the real flag here.
-    isOnline: visibleIsOnline(profile, { isFriend: relationship.isFriend }),
+    // A blocker's presence is never exposed to the person they blocked, whatever
+    // their `whoCanSeeOnlineStatus` says: the row survives only so the existing
+    // conversation stays openable, and it must not become a liveness probe.
+    isOnline:
+      !isBlockedByPeer &&
+      visibleIsOnline(profile, { isFriend: relationship.isFriend }),
     roomId,
     canSendRequest,
     isFriend: relationship.isFriend,
     relationshipStatus: relationship.relationshipStatus,
     isBlockedByMe: blockedByMe.has(profile.userId),
+    isBlockedByPeer,
     friendshipId: relationship.friendshipId,
     requesterId: relationship.requesterId,
     relationship: {
@@ -303,19 +323,25 @@ export const userSearchService = {
       if (recent.length >= RECENT_LIMIT) break;
       if (row.targetType === RecentSearchTargetType.USER) {
         const profile = recentProfileById.get(row.targetId);
-        // Only users who blocked the VIEWER drop out — a user the viewer
-        // blocked stays in their own Recent list (they can still open and
-        // unblock them).
-        if (!profile || hiddenIds.has(profile.userId)) continue;
+        if (!profile) continue;
+        const roomId =
+          recentRoomByUserId.get(profile.userId) ??
+          peerRoomByUserId.get(profile.userId) ??
+          null;
+        // A user the viewer blocked stays in their own Recent list (they can
+        // still open and unblock them). A user who blocked the VIEWER normally
+        // drops out — unless the pair already has a conversation, which the
+        // viewer can open from their inbox anyway; dropping the row there is
+        // what made Recent and the chat list disagree about the same pair.
+        if (hiddenIds.has(profile.userId) && !roomId) continue;
         recent.push(
           await toUserItem(
             profile,
-            recentRoomByUserId.get(profile.userId) ??
-              peerRoomByUserId.get(profile.userId) ??
-              null,
+            roomId,
             relationshipOf(profile.userId),
             fofIds,
-            blockedByMe
+            blockedByMe,
+            hiddenIds
           )
         );
       } else {
@@ -352,8 +378,15 @@ export const userSearchService = {
       peers.map((p) => [p.peerUserId, p.roomId])
     );
     const roomOrderIndex = new Map(peers.map((p, idx) => [p.peerUserId, idx]));
+    // Users who blocked the viewer are subtracted from discovery EXCEPT where
+    // the pair already has a private room — see `isBlockedByPeer`. A block
+    // unfriends, so in practice this set is only non-empty for a stale replica;
+    // computing it once keeps the two buckets on one rule.
+    const hiddenWithoutRoom = new Set(
+      [...hiddenIds].filter((id) => !peerRoomByUserId.has(id))
+    );
     const friendIds = getFriendPeerIds(viewerId, relationships).filter(
-      (id) => !hiddenIds.has(id)
+      (id) => !hiddenWithoutRoom.has(id)
     );
     // Resolved once and reused by both buckets — a FRIENDS_OF_FRIENDS target is
     // discoverable when the viewer shares at least one mutual friend with them.
@@ -399,7 +432,8 @@ export const userSearchService = {
           peerRoomByUserId.get(p.userId) ?? null,
           relationshipOf(p.userId),
           fofIds,
-          blockedByMe
+          blockedByMe,
+          hiddenIds
         )
       );
     }
@@ -424,10 +458,11 @@ export const userSearchService = {
     // ---------------------------------------------------------------------
     const excludeUserIds = [
       viewerId,
-      // Blocks are one-way: only users who blocked the VIEWER are removed.
-      // Users the viewer blocked stay searchable to their own blocker, carrying
-      // `isBlockedByMe` so the row renders as blocked rather than addable.
-      ...hiddenIds,
+      // Blocks are one-way: only users who blocked the VIEWER are removed, and
+      // then only when the pair has no conversation to open. Users the viewer
+      // blocked stay searchable to their own blocker, carrying `isBlockedByMe`
+      // so the row renders as blocked rather than addable.
+      ...hiddenWithoutRoom,
       ...friendIds, // only accepted friends are excluded from "other"
     ];
     const excludeGroupIds = [...chatGroupIdSet];
@@ -457,7 +492,8 @@ export const userSearchService = {
           peerRoomByUserId.get(p.userId) ?? null,
           relationshipOf(p.userId),
           fofIds,
-          blockedByMe
+          blockedByMe,
+          hiddenIds
         )
       );
     }

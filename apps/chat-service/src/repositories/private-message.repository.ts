@@ -197,6 +197,27 @@ export class PrivateMessageRepository {
     });
   }
 
+  /**
+   * "Did two people actually talk in this room?" — true when at least one
+   * non-SYSTEM row exists.
+   *
+   * SYSTEM rows do not count: an auto-delete setting change, a ban notice or a
+   * "now friends" bubble are all things the app wrote into an otherwise silent
+   * chat, and counting them makes an empty conversation look like a real one.
+   *
+   * Deliberately NOT filtered by `isDeleted`/`deletedFor`/`clearFor`:
+   * delete-for-me, clear-conversation and delete-for-everyone all keep the row,
+   * and the question here is "did they talk", never "is anything visible now".
+   * Matched on the `[roomId, messageType, createdAt]` index.
+   */
+  async hasHumanMessage(roomId: string): Promise<boolean> {
+    const human = await this.prisma.privateMessage.findFirst({
+      where: { roomId, messageType: { not: "SYSTEM" } },
+      select: { id: true },
+    });
+    return human !== null;
+  }
+
   async findByRoomIdWithTime(
     userId: string,
     room: { roomId: string },

@@ -133,6 +133,9 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
     mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
       roomId: "prv_existing",
       participants: [TEST_USER_ID, "peer-1"],
+      createdAt: new Date(1000),
+      updatedAt: new Date(2000),
+      lastSequence: 0,
     });
 
     const res = await request(app)
@@ -151,6 +154,9 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
     mocks.privateRoomRepo.create.mockResolvedValue({
       roomId: "prv_new",
       participants: [TEST_USER_ID, "peer-1"],
+      createdAt: new Date(1000),
+      updatedAt: new Date(2000),
+      lastSequence: 0,
     });
 
     const res = await request(app)
@@ -162,7 +168,10 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
     expect(mocks.privateRoomRepo.create).toHaveBeenCalled();
   });
 
-  it("NEGATIVE/SECURITY: 403 when the two users are not friends", async () => {
+  // Strangers used to get a 403 here, which is what pushed every entry point
+  // into guessing the pair's state from whatever partial data it held. The
+  // answer is now the pair state itself — still NO room minted for a non-friend.
+  it("NEGATIVE/SECURITY: non-friends get NO_RELATIONSHIP and no room is created", async () => {
     mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
     mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
 
@@ -170,8 +179,15 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
       .post("/api/chat/private/rooms/peer-1")
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(403);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBeNull();
+    expect(res.body.data.pairState).toMatchObject({
+      state: "NO_RELATIONSHIP",
+      conversationId: null,
+      hasHistory: false,
+      canSendMessage: false,
+      restriction: "NOT_FRIENDS",
+    });
     expect(mocks.privateRoomRepo.create).not.toHaveBeenCalled();
   });
 
@@ -303,7 +319,7 @@ describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
     expect(res.body.data.isOffline).toBe(true);
   });
 
-  it("NEGATIVE/SECURITY: 403 when the two users are not friends and no room exists yet", async () => {
+  it("NEGATIVE/SECURITY: non-friends with no room get NO_RELATIONSHIP, not a 403", async () => {
     mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
     mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
 
@@ -311,7 +327,10 @@ describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
       .get("/api/chat/private/rooms/peer-1")
       .set(bearer(makeAccessToken()));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.body.data.roomId).toBeNull();
+    expect(res.body.data.pairState.state).toBe("NO_RELATIONSHIP");
+    expect(mocks.privateRoomRepo.create).not.toHaveBeenCalled();
   });
 
   it("SECURITY: 401 without a token", async () => {

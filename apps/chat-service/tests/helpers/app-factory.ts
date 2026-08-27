@@ -353,6 +353,9 @@ export function buildApp(): BuiltApp {
     // The send path gates on friendship AND on the block list; without this the
     // happy path threw "isFriendshipBlocked is not a function" → 500.
     isFriendshipBlocked: jest.fn(async () => false),
+    // The gate reads the EITHER-WAY block (a one-way block closes the DM for
+    // both parties), so this is the one the write path actually calls.
+    isBlockedEitherWay: jest.fn(async () => false),
   };
   // Live gRPC friendship lookup for private-room list/details responses (the
   // `friendship` field) — distinct from userServiceClient's local send-gate

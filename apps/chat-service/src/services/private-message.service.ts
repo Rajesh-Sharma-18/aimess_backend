@@ -469,7 +469,12 @@ export class PrivateMessageService {
   ): Promise<void> {
     const [friends, blocked, banned] = await Promise.all([
       this.userServiceClient.checkFriendship(userId, peerId),
-      this.userServiceClient.isFriendshipBlocked(userId, peerId),
+      // EITHER direction. A one-way block still closes the DM for both, and
+      // asking only about the caller's own outgoing block let the BLOCKED
+      // party's refusal fall through to the friendship branch below — so the
+      // person who was blocked was told "you are not friends", the same
+      // sentence a plain unfriend produces.
+      this.userServiceClient.isBlockedEitherWay(userId, peerId),
       // Read straight off the ban key, never the user snapshot: that cache has
       // a 1h TTL and would keep answering "not banned" long after the ban.
       // Both parties, because a banned user's DM is inert in both directions.

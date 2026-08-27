@@ -537,6 +537,13 @@ export function startUserGrpcServer(): grpc.Server {
               // ways, e.g. sending a group/community invite DM.
               blockedEitherWay:
                 blockedIds.has(userId) || blockedByIds.has(userId),
+              // The incoming direction on its own — `status` hides it and
+              // `blockedEitherWay` cannot separate it from the caller's own
+              // block under a mutual block. Consumed only by chat-service's
+              // pair-state resolver, which has to tell "you blocked them" from
+              // "they blocked you" to pick between an Unblock action and a
+              // disabled composer.
+              blockedByPeer: blockedByIds.has(userId),
               // Same gate `friendshipService.sendRequest` enforces, so a
               // private-chat / inbox peer never renders an Add Friend action
               // the write path would reject.

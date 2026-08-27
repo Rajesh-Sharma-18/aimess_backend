@@ -52,6 +52,7 @@ import {
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
+import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -278,7 +279,22 @@ export const userProfileService = {
     // has to be able to open the profile of someone they blocked to review and
     // undo it. `blockedByViewer` is still carried into the relationship view
     // below so the client renders "Blocked" instead of an add-friend action.
-    if (blockedByTarget) throw notFound();
+    //
+    // ONE exception, and it is the reason this whole audit happened: a pair
+    // that already has a private conversation. Hiding the blocker made that
+    // pair resolve to a DIFFERENT screen depending on the door — the chat list
+    // opened the conversation (it holds a roomId and never asks about
+    // friendship), while search and the profile 404'd or reported NONE and
+    // offered "Send Request" for a chat with years of history in it. The
+    // conversation is already visible to this viewer from their own inbox, so
+    // the block hides nothing here that they cannot already see; it only made
+    // the surfaces disagree. Pairs with NO conversation keep the 404 — there
+    // the block still genuinely removes the blocker from the viewer's world.
+    const conversationWithBlocker =
+      blockedByTarget &&
+      (await messagingGrpcClient.resolvePrivateRooms(viewerId, [targetUserId]))
+        .length > 0;
+    if (blockedByTarget && !conversationWithBlocker) throw notFound();
 
     const isSelf = viewerId === targetUserId;
     const friendshipRow = isSelf
@@ -311,8 +327,14 @@ export const userProfileService = {
         : false;
     const relation = { isSelf, isFriend, isFriendOfFriend };
 
+    // A blocker's profile CONTENT stays closed to the person they blocked even
+    // when the card itself is now reachable: the exception above exists to keep
+    // the conversation openable, not to hand back a profile the block took
+    // away.
     const canViewProfile =
-      !isDeletedUser && scopeAdmits(viewProfileScope, relation);
+      !isDeletedUser &&
+      !blockedByTarget &&
+      scopeAdmits(viewProfileScope, relation);
 
     // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
     // to stay recognizable for the strangers who are allowed to find it. Only a
@@ -367,6 +389,15 @@ export const userProfileService = {
       communitiesCount: canViewProfile ? profile.communitiesCount : null,
       isDeletedUser,
       isBlockedByMe: Boolean(blockedByViewer),
+      /**
+       * The TARGET blocks the VIEWER. Only ever true on the reachable-because-
+       * a-conversation-exists path above; otherwise this endpoint 404s and the
+       * question never arises. The client needs it to render the conversation's
+       * disabled composer with the right reason — "you can't send messages to
+       * this user" is a different situation, and a different way out, from a
+       * declined friend request.
+       */
+      isBlockedByPeer: Boolean(blockedByTarget),
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {
@@ -379,9 +410,11 @@ export const userProfileService = {
           !isDeletedUser &&
           canSendFriendRequest(profile, relation, {
             status: searchRelationship.status,
-            // A block by the TARGET already 404'd above, so only the viewer's
-            // own block can still be live here.
-            isBlockedEitherWay: Boolean(blockedByViewer),
+            // BOTH directions. A block by the target no longer always 404s —
+            // a pair with a conversation resolves — and `sendRequest` refuses
+            // either direction with FRIEND_BLOCKED, so offering the action here
+            // would put a button on a call the API rejects.
+            isBlockedEitherWay: Boolean(blockedByViewer || blockedByTarget),
           }),
       },
     };

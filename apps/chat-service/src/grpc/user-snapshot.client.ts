@@ -98,6 +98,14 @@ export interface ChatFriendshipInfo {
    */
   blockedEitherWay?: boolean;
   /**
+   * TRUE when the PEER blocks the caller. `status` deliberately collapses an
+   * incoming block to NONE and `blockedEitherWay` cannot separate the two
+   * directions under a mutual block, so this is the only field that answers
+   * "did they block me". Read by the pair-state resolver to choose between an
+   * Unblock action and a disabled composer — never by discovery surfaces.
+   */
+  blockedByPeer?: boolean;
+  /**
    * Effective add-friend eligibility for the caller, decided by user-service
    * (`canSendFriendRequest`): the peer's `whoCanSendFriendRequests` scope plus
    * the self/block/friend/pending preconditions. The raw scope never crosses
@@ -117,6 +125,7 @@ interface FriendshipInfoRecord {
   canReject?: boolean;
   canCancel?: boolean;
   blockedEitherWay?: boolean;
+  blockedByPeer?: boolean;
   canSendRequest?: boolean;
 }
 
@@ -335,6 +344,7 @@ export const userGrpcClient = {
             canReject: r.canReject ?? false,
             canCancel: r.canCancel ?? false,
             blockedEitherWay: r.blockedEitherWay ?? false,
+            blockedByPeer: r.blockedByPeer ?? false,
             canSendRequest: r.canSendRequest ?? false,
           },
         ])
