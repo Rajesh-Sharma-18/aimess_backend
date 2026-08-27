@@ -77,6 +77,7 @@ import {
 import {
   resolveVisibleLastBulk,
   resolveForEveryoneOverrides,
+  resolveEffectiveLastLosers,
   deletedWasEffectiveLast,
   type VisibilitySource,
   type RecipientOverride,
@@ -915,6 +916,27 @@ export class CommunityMessageService {
       this.visibilitySource(),
       roomId,
       sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
+  /**
+   * Counterpart of {@link resolveForEveryoneOverrides} for the case where the
+   * delete-for-everyone did NOT move the shared snapshot: the members whose own
+   * effective last visible message was nonetheless the removed one (they had
+   * hidden everything newer). See `resolveEffectiveLastLosers`.
+   */
+  async resolveEffectiveLastLosers(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    const room = await this.roomRepo.findRoomById(roomId);
+    return resolveEffectiveLastLosers(
+      this.visibilitySource(),
+      roomId,
+      room?.lastMessageId ?? null,
+      deletedMessageCreatedAt,
       recipientIds
     );
   }
@@ -3169,9 +3191,10 @@ export class CommunityMessageService {
     // rejected promise is only half the risk (an absent repo method throws synchronously).
     let unreadAfterRead = 0;
     try {
+      // Recount at the message the pointer actually landed on, NOT at wall-clock `now`. Thresholding on `now` means "everything sent before I clicked is read", so acknowledging a message in the MIDDLE of the backlog reported 0 unread while every message after it was still unread. Harmless while rooms only ever opened at the tail (the two dates coincide there); reachable the moment a client opens on the unread divider.
       const counts = await this.messageRepo.countUnreadBulk({
         userId: params.readerId,
-        thresholds: [{ roomId: params.communityId, afterDate: now }],
+        thresholds: [{ roomId: params.communityId, afterDate: message.createdAt }],
       });
       unreadAfterRead = counts[params.communityId]?.count ?? 0;
     } catch (err: unknown) {

@@ -26,6 +26,24 @@ export type CommunityLastActivity =
       userId: null;
       username: null;
       preview: string;
+      /**
+       * The `@aimess/constants` message key `preview` was rendered from, when
+       * this row's sentence is pure product copy with no parameters.
+       *
+       * `preview` itself is baked once, by the producer, and one row is read by
+       * members in three languages — so the string alone can only ever be right
+       * for whoever the producer happened to render for. The key is the same
+       * sentence with the language factored out: the gateway re-renders it per
+       * receiving socket, and a client that carries its own catalog SHOULD
+       * prefer it over `preview` so a language change re-renders history with no
+       * refetch.
+       *
+       * Optional and additive. Absent means "no key to render from" — a user
+       * message preview, or a row published before this field existed — and
+       * `preview` is then the only answer. An unknown key must fall back to
+       * `preview` too, never be shown raw.
+       */
+      previewKey?: string;
       /** Epoch milliseconds. */
       dateTime: number;
     };
@@ -65,11 +83,21 @@ export interface CommunityMemberJoinedSocketPayload {
 export interface CommunityJoinRequestUpdatedSocketPayload {
   communityId: string;
   requestId: string;
-  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    /** The requester became a member through another path (Add Member, invite,
+     *  invite-link redeem, public self-join) while this request was still
+     *  PENDING, so the server resolved it. Admin clients must DROP the row —
+     *  there is no accept/decline action for a user who is already a member. */
+    | "AUTO_RESOLVED";
   /** The requester whose request changed status. */
   userId: string;
   /** Who acted: the requester themself for PENDING/CANCELLED, the
-   *  approving/rejecting admin for APPROVED/REJECTED. */
+   *  approving/rejecting admin for APPROVED/REJECTED, the admin/member whose
+   *  action created the membership for AUTO_RESOLVED. */
   actorId?: string;
   updatedAt: number; // epoch ms
 }
@@ -384,6 +412,14 @@ export interface CommunityAddedPayload {
     | "self_join";
   joinedAt: number; // epoch ms
   addedAt: number; // epoch ms — idempotency key
+  /**
+   * The invite CODE this membership came through, when a link was involved
+   * (absent/null for an admin add, a plain self-join, or a legacy row). An
+   * invitation card speaks for one code, so a session watching one can tell
+   * whether THIS card is the invitation that just admitted them — without it,
+   * one join flips every card the community ever sent.
+   */
+  joinedViaInviteCode?: string | null;
   /**
    * The recipient's personal last-activity preview — always their private
    * "You joined the community" system message at join time.

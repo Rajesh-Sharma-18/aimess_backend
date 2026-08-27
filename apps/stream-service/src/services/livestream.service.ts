@@ -2629,6 +2629,22 @@ export class LivestreamService {
         `status broadcast failed for stream=${streamId}: ${String(error)}`
       );
     }
+    // Bump the admin livestream list. Every status transition (LIVE, ENDED,
+    // CANCELLED, RECONNECTING) may change what the panel's datatable shows, so
+    // the single choke point publishStatus is the right place. Payload is empty
+    // by contract — the panel refetches on receipt, so the refetch is the source
+    // of truth and no field can drift. Fanned out to EVERY /admin socket via a
+    // shared `admin:broadcast` room; safe because no data leaves the gateway.
+    try {
+      await this.redis.publish(
+        "admin:broadcast",
+        JSON.stringify({ event: "admin:livestreams:changed", data: {} })
+      );
+    } catch (error) {
+      logger.warn(
+        `admin livestreams broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
   }
 
   /**

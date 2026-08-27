@@ -1,4 +1,4 @@
-import { currentLocale } from "@aimess/constants";
+import { currentLocale, MAX_GROUP_MEMBERS } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -216,6 +216,8 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
    *    up to the last message's sequenceNumber.
    */
   lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
+  /** Caller's own GroupMember.lastReadMessageId — the unread-divider anchor. Optional so non-list producers of this type keep compiling. */
+  lastReadMessageId?: string | null;
 };
 
 export class GroupRoomService {
@@ -637,7 +639,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || 256,
+      memberLimit: params.memberLimit || MAX_GROUP_MEMBERS,
       memberCount: 1,
     });
 
@@ -1334,6 +1336,7 @@ export class GroupRoomService {
             : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
+        lastReadMessageId: membership?.lastReadMessageId ?? null,
         role: membership?.role ?? "MEMBER",
         isJoined,
         hasLeft,

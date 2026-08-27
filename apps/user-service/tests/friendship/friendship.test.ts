@@ -75,7 +75,10 @@ import {
   publishFriendUnfriendedSafe,
   publishFriendshipCreatedSafe,
 } from "../../src/messaging/publish-friendship.js";
-import { emitFriendEventSafe } from "../../src/lib/friend-socket.js";
+import {
+  emitFriendEventSafe,
+  emitFriendSelfEventSafe,
+} from "../../src/lib/friend-socket.js";
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
 import {
   TEST_USER_ID,
@@ -94,6 +97,7 @@ const accepted = publishFriendAcceptedSafe as unknown as jest.Mock;
 const unfriended = publishFriendUnfriendedSafe as unknown as jest.Mock;
 const created = publishFriendshipCreatedSafe as unknown as jest.Mock;
 const emitSafe = emitFriendEventSafe as unknown as jest.Mock;
+const emitSelfSafe = emitFriendSelfEventSafe as unknown as jest.Mock;
 const grpc = messagingGrpcClient as unknown as {
   getOrCreatePrivateRooms: jest.Mock;
 };
@@ -751,6 +755,45 @@ describe("DELETE /api/v1/users/friends/block/:userId", () => {
 
     expect(res.status).toBe(200);
     expect(fRepo.deleteBlock).toHaveBeenCalledWith(ME, OTHER);
+  });
+
+  // Regression: the unblocked party's clients used to stay on the restricted
+  // state until a hard reload. Both halves have to go out — the unblocker's own
+  // devices on `user:<id>`, and the unblocked user on the private `self:<id>`
+  // room, whose payload deliberately names no verb or status (blocking is
+  // silent, so the receiver only learns "re-read this relationship").
+  it("notifies BOTH parties — unblocker and unblocked user", async () => {
+    fRepo.findBlock.mockImplementation(
+      async (blockerId: string, blockedId: string) =>
+        blockerId === ME && blockedId === OTHER
+          ? { id: "block-1", blockerId: ME, blockedId: OTHER, createdAt: new Date() }
+          : null
+    );
+    fRepo.findByPair.mockResolvedValue(null);
+
+    const res = await request(app)
+      .delete(`/api/v1/users/friends/block/${OTHER}`)
+      .set(auth());
+
+    expect(res.status).toBe(200);
+
+    expect(emitSafe).toHaveBeenCalledWith(
+      ME,
+      "friend:unblocked",
+      expect.objectContaining({ peerId: OTHER, targetUserId: OTHER })
+    );
+
+    expect(emitSelfSafe).toHaveBeenCalledWith(
+      OTHER,
+      "friend:relationship:sync",
+      { peerId: ME }
+    );
+
+    // Nobody else hears about it: exactly one recipient per channel.
+    expect(emitSelfSafe).toHaveBeenCalledTimes(1);
+    for (const [recipientId] of emitSafe.mock.calls) {
+      expect(recipientId).toBe(ME);
+    }
   });
 
   it("returns 404 when not blocked", async () => {

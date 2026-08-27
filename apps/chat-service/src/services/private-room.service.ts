@@ -13,7 +13,10 @@ import {
   normalizeMessageType,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
-import { localizedActivityPreview } from "../lib/localize-system-preview.js";
+import {
+  localizedActivityPreview,
+  withResolvedSystemActor,
+} from "../lib/localize-system-preview.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { env } from "../config/env.js";
@@ -38,6 +41,10 @@ import {
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { foldTickStatus } from "../lib/tick-status.js";
 import {
+  resolvePairState,
+  type PrivatePairStateInfo,
+} from "../lib/pair-state.js";
+import {
   privateReceiptCursorOf,
   receiptVisibleToViewer,
 } from "../lib/read-receipts.js";
@@ -47,6 +54,7 @@ import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import {
   resolveDisplayName,
+  resolveRealDisplayName,
   type UserSnapshotService,
 } from "./user-snapshot.service.js";
 import type { PresenceService, PresenceView } from "./presence.service.js";
@@ -148,6 +156,8 @@ const NONE_RELATIONSHIP: ChatFriendshipInfo = {
   canAccept: false,
   canReject: false,
   canCancel: false,
+  // Fails CLOSED: a peer we could not resolve gets no add-friend action.
+  canSendRequest: false,
 };
 
 /**
@@ -160,6 +170,13 @@ export type WireFriendship = {
   direction: "OUTGOING" | "INCOMING" | null;
 };
 
+/**
+ * Deliberately still {status, direction} only. Add-friend eligibility
+ * (`canSendRequest`) rides the nested `relationship` object built by
+ * {@link toPeerFriendshipRelationship} — the user-search-shaped contract that
+ * already owns every action flag — rather than being mirrored here. This field
+ * is the legacy send-gate shape and stays frozen.
+ */
 function toWireFriendship(info: ChatFriendshipInfo): WireFriendship {
   return { status: info.status, direction: info.direction };
 }
@@ -182,6 +199,13 @@ export type PeerFriendshipRelationship = {
     canAccept: boolean;
     canReject: boolean;
     canCancel: boolean;
+    /**
+     * Effective add-friend eligibility, decided by user-service — the peer's
+     * `whoCanSendFriendRequests` scope plus the self/block/friend/pending
+     * preconditions. The client renders the action from this alone; the raw
+     * privacy scope is never exposed.
+     */
+    canSendRequest: boolean;
   };
 };
 
@@ -211,6 +235,7 @@ export function toPeerFriendshipRelationship(
       canAccept: info.canAccept ?? false,
       canReject: info.canReject ?? false,
       canCancel: info.canCancel ?? false,
+      canSendRequest: info.canSendRequest ?? false,
     },
   };
 }
@@ -405,6 +430,41 @@ export interface PrivateRoomDetailsData extends PeerFriendshipRelationship {
   friendship: WireFriendship;
   /** Auto-delete (disappearing messages) state — see lib/auto-delete.ts#buildAutoDeleteWire. */
   autoDelete: Record<string, unknown>;
+  /**
+   * The pair verdict every entry point renders from — see lib/pair-state.ts.
+   * Read this FIRST: `friendship`/`relationship` describe one axis each, and a
+   * client that picks its screen from either alone is exactly how a blocked
+   * pair with history ended up being offered "Send Request".
+   */
+  pairState: PrivatePairStateInfo;
+}
+
+/**
+ * `GET /chat/private/rooms/{peerId}` when the pair has NO room — the same
+ * `pairState` verdict plus enough peer identity to render a contact card,
+ * without a room's fields.
+ *
+ * This used to be a 403 (`CHAT_FRIENDSHIP_REQUIRED`), which forced every caller
+ * to guess the pair's real state from whatever else it had lying around. A
+ * question about a pair now always gets an answer.
+ */
+export interface PrivatePairStateData extends PeerFriendshipRelationship {
+  id: null;
+  roomId: null;
+  participants: string[];
+  peerId: string;
+  user: {
+    id: string;
+    displayName: string;
+    memberId: string;
+    isDeletedUser: boolean;
+    isBanned: boolean;
+  };
+  avatar: MediaObject;
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  friendship: WireFriendship;
+  pairState: PrivatePairStateInfo;
 }
 
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
@@ -480,25 +540,165 @@ export class PrivateRoomService {
   }
 
   /**
-   * `GET /chat/private/rooms/{peerId}` — room details, community-`getById`-aligned.
-   * Reuses `getOrCreateRoom` (get-or-create + friendship gate) and `enrichConversations`
-   * (peer snapshot, avatar, presence) rather than duplicating either.
+   * `GET`/`POST /chat/private/rooms/{peerId}` — THE pair-state resolver. Given a
+   * viewer and a peer it answers, in one response, every axis an entry point
+   * could otherwise get wrong on its own: the conversation (id + whether anyone
+   * ever spoke in it), the block in each direction, the friend-request state,
+   * and the peer's availability — folded into a single `pairState` verdict by
+   * lib/pair-state.ts. Every door into a DM is meant to render from this, so
+   * the same pair can never resolve to two different screens.
    *
-   * NOTE: this get-or-CREATES. Friendship is only ever checked here, at
-   * first-contact room creation — see {@link getOrCreateRoom}. Once a room
-   * exists, {@link toRoomDetailsData}/{@link enrichConversations} never
-   * re-check it: private room and friendship are independent concepts, so an
-   * existing room + its history survive unfriend/reject/cancel/block. Use
-   * {@link getRoomDetailsById} for a pure, non-creating lookup by the room's
-   * own id.
+   * Still get-or-CREATES, and friendship is still only checked at first-contact
+   * creation. Once a room exists, {@link toRoomDetailsData}/{@link
+   * enrichConversations} never re-check it: private room and friendship are
+   * independent concepts, so an existing room + its history survive
+   * unfriend/reject/cancel/block. Use {@link getRoomDetailsById} for a lookup
+   * by the room's own id.
+   *
+   * A pair with no room and no friendship no longer 403s — it returns
+   * {@link PrivatePairStateData}, the same verdict without a room's fields.
    */
   async getRoomDetails(
     userId: string,
     peerId: string
-  ): Promise<PrivateRoomDetailsData> {
-    const room = await this.getOrCreateRoom(userId, peerId);
-    const [enriched] = await this.enrichConversations([room], userId);
-    return this.toRoomDetailsData(enriched, userId);
+  ): Promise<PrivateRoomDetailsData | PrivatePairStateData> {
+    if (userId === peerId) {
+      throw new BadRequestError("CHAT_CANNOT_MESSAGE_SELF");
+    }
+    const existing = await this.privateRoomRepo.findByParticipantsKey(
+      buildParticipantsKey(userId, peerId)
+    );
+    if (existing) {
+      const [enriched] = await this.enrichConversations([existing], userId);
+      return this.toRoomDetailsData(enriched!, userId);
+    }
+
+    // No room. Friends still get one minted, off the SAME local read-model
+    // check `getOrCreateRoom` uses — deliberately not the gRPC relationship
+    // resolved below. That check fails OPEN on an upstream blip, and a friend
+    // who cannot open their own chat because a lookup flickered is a worse
+    // outcome than a room created a moment early.
+    const friends = await this.userServiceClient.checkFriendship(
+      userId,
+      peerId
+    );
+    if (friends) {
+      const room = await ensurePrivateRoom(
+        {
+          privateRoomRepo: this.privateRoomRepo,
+          userSnapshotService: this.userSnapshotService,
+          cacheRepo: this.cacheRepo,
+          redis: this.redis,
+        },
+        userId,
+        peerId
+      );
+      const [enriched] = await this.enrichConversations([room], userId);
+      return this.toRoomDetailsData(enriched!, userId);
+    }
+
+    // Everyone else used to get a 403 (`CHAT_FRIENDSHIP_REQUIRED`), which is
+    // what pushed every entry point into deriving the pair's state for itself
+    // from whatever partial data it held. A strangers-with-no-room pair is a
+    // perfectly ordinary answer, so answer it.
+    return this.toPairStateData(
+      userId,
+      peerId,
+      await this.resolvePeerFriendship(userId, peerId)
+    );
+  }
+
+  /** One peer's live friendship+block state from user-service, NONE on failure. */
+  private async resolvePeerFriendship(
+    userId: string,
+    peerId: string
+  ): Promise<ChatFriendshipInfo> {
+    if (!this.friendshipGrpcClient) return NONE_RELATIONSHIP;
+    const map = await this.friendshipGrpcClient
+      .checkFriendships(userId, [peerId])
+      .catch(() => new Map<string, ChatFriendshipInfo>());
+    return map.get(peerId) ?? NONE_RELATIONSHIP;
+  }
+
+  /**
+   * The pair verdict — see lib/pair-state.ts for the precedence it encodes.
+   * Both room-bearing entry points and the roomless one build it here so a pair
+   * can never be described two different ways depending on which was called.
+   */
+  private async buildPairState(params: {
+    roomId: string | null;
+    lastSequence: number;
+    peerUnavailable: boolean;
+    friendship: ChatFriendshipInfo;
+  }): Promise<PrivatePairStateInfo> {
+    // `lastSequence <= 0` means nothing was ever written to the room, so the
+    // message probe is skipped entirely for every silent room.
+    const hasHistory =
+      params.roomId !== null &&
+      params.lastSequence > 0 &&
+      (await this.privateMessageRepo
+        .hasHumanMessage(params.roomId)
+        // Fail toward "there is history": a transient read error must not
+        // downgrade a real conversation into a fresh-contact card.
+        .catch(() => true));
+
+    return resolvePairState({
+      peerUnavailable: params.peerUnavailable,
+      blockedByMe: params.friendship.status === "BLOCKED",
+      blockedByPeer: params.friendship.blockedByPeer ?? false,
+      conversationId: params.roomId,
+      hasHistory,
+      isFriend: params.friendship.status === "FRIEND",
+      isPending: params.friendship.status === "PENDING",
+      canSendRequest: params.friendship.canSendRequest ?? false,
+    });
+  }
+
+  /** Roomless pair response — peer identity + the same `pairState` verdict. */
+  private async toPairStateData(
+    userId: string,
+    peerId: string,
+    friendship: ChatFriendshipInfo
+  ): Promise<PrivatePairStateData> {
+    const [snapshots, banned] = await Promise.all([
+      this.userSnapshotService
+        .getUserSnapshotsMap([peerId], this.cacheRepo)
+        .catch(() => new Map<string, Record<string, unknown>>()),
+      filterBannedUserIds(this.redis, [peerId]).catch(() => new Set<string>()),
+    ]);
+    const snap = snapshots.get(peerId) as Record<string, unknown> | undefined;
+    const isDeletedUser = Boolean(snap?.isDeletedUser);
+    const isBanned = banned.has(peerId);
+    const storedAvatar = snap?.avatar as string | undefined;
+    const [avatar, avatarUrls] = await Promise.all([
+      buildAvatarMedia(storedAvatar),
+      resolveMediaUrlMap([storedAvatar as string]),
+    ]);
+
+    return {
+      id: null,
+      roomId: null,
+      participants: [userId, peerId].sort(),
+      peerId,
+      user: {
+        id: peerId,
+        displayName: resolveDisplayName(snap),
+        memberId: (snap?.memberId as string) || "",
+        isDeletedUser,
+        isBanned,
+      },
+      avatar,
+      avatarUrl: urlFromMap(avatarUrls, storedAvatar) ?? null,
+      avatarUrlExpiresIn: null,
+      friendship: toWireFriendship(friendship),
+      pairState: await this.buildPairState({
+        roomId: null,
+        lastSequence: 0,
+        peerUnavailable: isDeletedUser || isBanned,
+        friendship,
+      }),
+      ...toPeerFriendshipRelationship(friendship),
+    };
   }
 
   /**
@@ -576,6 +776,13 @@ export class PrivateRoomService {
       createdAt: enriched.createdAt.getTime(),
       updatedAt: enriched.updatedAt.getTime(),
       friendship: toWireFriendship(enriched.friendship),
+      pairState: await this.buildPairState({
+        roomId: enriched.roomId,
+        lastSequence: enriched.lastSequence,
+        // Same two conditions the write path refuses with CHAT_PEER_BANNED.
+        peerUnavailable: enriched.peer.isDeletedUser || enriched.peer.isBanned,
+        friendship: enriched.friendship,
+      }),
       autoDelete: buildAutoDeleteWire(readRoomAutoDelete(enriched), {
         conversationType: "PRIVATE",
         policyVersion: readPolicyVersion(enriched),
@@ -902,7 +1109,17 @@ export class PrivateRoomService {
         | Date
         | undefined;
       const hiddenByCutoff = isHiddenByCutoff(rawLmDate, cutoff);
-      const visibleRawLm = hiddenByCutoff ? null : rawLm;
+      // Recover the actor NAME on a SYSTEM/invite row that was written without
+      // one (see `resolveSystemActorName`). A private room has exactly one
+      // peer, so the sender id already on the row resolves against the snapshot
+      // this loop is holding — no extra lookup, and no dependence on whether
+      // the two are still friends. This repairs rows persisted before the
+      // writer-side fix, on both this preview and the `lastMessage` snapshot
+      // the unified inbox re-renders from.
+      const visibleRawLm = withResolvedSystemActor(
+        hiddenByCutoff ? null : rawLm,
+        (id) => (id === peerId ? resolveRealDisplayName(snapshot) : "")
+      );
       // "This viewer has NOTHING visible left in this room" — either their
       // clear/delete-conversation cutoff swallowed the last message, or the
       // per-user resolver walked back and found no previous-visible message.
@@ -1086,6 +1303,7 @@ export class PrivateRoomService {
               canAccept: false,
               canReject: false,
               canCancel: false,
+              canSendRequest: false,
             }
           : (friendshipByPeer.get(peerId) ?? NONE_RELATIONSHIP),
         lastMessageReadStatus: readStatusByRoom.get(room.roomId) ?? null,

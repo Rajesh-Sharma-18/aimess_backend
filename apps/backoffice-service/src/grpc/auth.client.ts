@@ -143,6 +143,19 @@ export const adminListUsersBreaker: Breaker<
   call<AdminListUsersRequest, RawAdminListUsersResponse>("adminListUsers", args)
 );
 
+// Announcements: users holding a live session on the targeted device type(s).
+export const adminListUserIdsByDeviceTypeBreaker: Breaker<
+  { deviceTypes: string[]; limit: number; offset: number },
+  { userIds?: string[]; total?: string | number }
+> = makeBreaker(
+  "auth.adminListUserIdsByDeviceType",
+  (args: { deviceTypes: string[]; limit: number; offset: number }) =>
+    call<
+      { deviceTypes: string[]; limit: number; offset: number },
+      { userIds?: string[]; total?: string | number }
+    >("adminListUserIdsByDeviceType", args)
+);
+
 // Treat gRPC NOT_FOUND as benign so opossum re-throws the original ServiceError
 // (with `.code`) instead of masking it via the makeBreaker fallback — lets the
 // repo map a missing user to null (→ 404) rather than a generic 5xx. A real
@@ -200,6 +213,45 @@ export const adminSetAccountStatusBreaker: Breaker<
     )
 );
 
+export interface AdminRestoreAccountResult {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+interface RawAdminRestoreAccountResponse {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+// Same rule as adminSetAccountStatusBreaker: no fallback-on-failure. A restore
+// that did not reach auth-service has not happened, so the caller must abort
+// rather than mark the user reactivated in the mirror.
+export const adminRestoreAccountBreaker: Breaker<
+  { userId: string; actorAdminId: string },
+  RawAdminRestoreAccountResponse
+> = makeBreaker(
+  "auth.adminRestoreAccount",
+  (args: { userId: string; actorAdminId: string }) =>
+    call<typeof args, RawAdminRestoreAccountResponse>(
+      "adminRestoreAccount",
+      args
+    )
+);
+
+// No fallback-on-failure either: a uniqueness check that never reached
+// auth-service proves nothing, and the two identity stores share no index that
+// would catch the duplicate afterwards. The caller must fail closed.
+export const isUserEmailTakenBreaker: Breaker<
+  { email: string },
+  { taken: boolean }
+> = makeBreaker("auth.isUserEmailTaken", (args: { email: string }) =>
+  call<typeof args, { taken: boolean }>("isUserEmailTaken", args)
+);
+
 export const authClient = {
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
@@ -236,6 +288,19 @@ export const authClient = {
     const r = await adminListUsersBreaker.fire(req);
     return { users: r.users ?? [], total: Number(r.total) };
   },
+  /**
+   * Users with at least one live (non-revoked) session on the given device
+   * types. Empty `deviceTypes` means every type. Used to resolve the audience
+   * of a device-targeted announcement.
+   */
+  async adminListUserIdsByDeviceType(args: {
+    deviceTypes: string[];
+    limit: number;
+    offset: number;
+  }): Promise<{ userIds: string[]; total: number }> {
+    const r = await adminListUserIdsByDeviceTypeBreaker.fire(args);
+    return { userIds: r.userIds ?? [], total: Number(r.total ?? 0) };
+  },
   // NOT_FOUND rejects the breaker; the repo layer catches and maps to null.
   async adminGetUser(userId: string): Promise<AdminUserRecord> {
     return adminGetUserBreaker.fire({ userId });
@@ -258,6 +323,23 @@ export const authClient = {
       ok: r.ok,
       status: r.status,
       revokedSessions: Number(r.revokedSessions),
+      errorCode: r.errorCode,
+    };
+  },
+  /** True when an end-user account already owns this email. Throws when auth-service is unreachable. */
+  async isUserEmailTaken(email: string): Promise<boolean> {
+    const r = await isUserEmailTakenBreaker.fire({ email });
+    return r.taken === true;
+  },
+  async adminRestoreAccount(args: {
+    userId: string;
+    actorAdminId: string;
+  }): Promise<AdminRestoreAccountResult> {
+    const r = await adminRestoreAccountBreaker.fire(args);
+    return {
+      ok: r.ok,
+      status: r.status,
+      restoredAt: r.restoredAt,
       errorCode: r.errorCode,
     };
   },

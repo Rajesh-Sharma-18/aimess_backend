@@ -55,6 +55,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     createInvite: jest.fn(),
     recycleManyPendingInvites: jest.fn(),
     listInviteLinks: jest.fn(),
+    findLatestReusableInviteLink: jest.fn(),
     createInviteLink: jest.fn(),
     createAuditLog: jest.fn(),
   },
@@ -101,9 +102,10 @@ const link = {
   maxUses: null,
   usedCount: 0,
   autoApprove: false,
-  expiresAt: null,
+  // Live link: every invite link expires 1 hour after it is created.
+  expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   revokedAt: null,
-  createdAt: new Date("2026-06-23T00:00:00.000Z"),
+  createdAt: new Date(),
 };
 
 beforeEach(() => {
@@ -121,7 +123,7 @@ beforeEach(() => {
       status: "PENDING",
     })
   );
-  repo.listInviteLinks.mockResolvedValue({ rows: [link], total: 1 });
+  repo.findLatestReusableInviteLink.mockResolvedValue(link);
 });
 
 describe("bulkCreateInvites — 1:1 chat invitation card fan-out", () => {
@@ -175,7 +177,7 @@ describe("bulkCreateInvites — 1:1 chat invitation card fan-out", () => {
   });
 
   it("mints a shareable link when the community has none, so the card always has a code", async () => {
-    repo.listInviteLinks.mockResolvedValue({ rows: [], total: 0 });
+    repo.findLatestReusableInviteLink.mockResolvedValue(null);
     repo.createInviteLink.mockResolvedValue({ ...link, code: "fresh1" });
 
     await communityService.bulkCreateInvites(CID, CALLER, [UID_A]);
@@ -195,20 +197,22 @@ describe("bulkCreateInvites — 1:1 chat invitation card fan-out", () => {
     expect(dmAt).toBe(sentAt);
   });
 
-  it("skips users who are already ACTIVE members — no invite, no DM", async () => {
+  it("still invites + DMs a user who is already an ACTIVE member", async () => {
     repo.findMembersByUserIds.mockResolvedValue([
       { userId: UID_A, status: "ACTIVE", role: "MEMBER" },
     ]);
 
     const res = await communityService.bulkCreateInvites(CID, CALLER, [UID_A]);
 
-    expect(res.alreadyMembers).toBe(1);
-    expect(res.invited).toBe(0);
-    expect(publishDm).not.toHaveBeenCalled();
+    expect(res.alreadyMembers).toBe(0);
+    expect(res.invited).toBe(1);
+    expect(publishDm).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientId: UID_A })
+    );
   });
 
   it("a link-resolution failure does NOT fail the invite itself", async () => {
-    repo.listInviteLinks.mockRejectedValue(new Error("db down"));
+    repo.findLatestReusableInviteLink.mockRejectedValue(new Error("db down"));
 
     const res = await communityService.bulkCreateInvites(CID, CALLER, [UID_A]);
 

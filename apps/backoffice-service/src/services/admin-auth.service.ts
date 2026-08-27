@@ -16,6 +16,7 @@ import {
   parseExpiresInSeconds,
   signAdminAccessToken,
 } from "../lib/admin-jwt.js";
+import { assertAdminEmailAvailable } from "../lib/admin-email-availability.js";
 import { assertAdminAccountAccessible } from "../lib/admin-status-guard.js";
 import {
   markAdminSessionActive,
@@ -377,11 +378,9 @@ export const adminAuthService = {
         throw new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID");
       }
 
-      // Case-insensitive email uniqueness — validator lowercases before we get here.
-      const clash = await adminUserRepository.findByEmail(newEmail);
-      if (clash && clash.id !== adminId) {
-        throw new ConflictError("ADMIN_EMAIL_TAKEN");
-      }
+      // Case-insensitive email uniqueness — validator lowercases before we get
+      // here. Also rejects an email an end user already owns (different DB).
+      await assertAdminEmailAvailable(newEmail, adminId);
     }
 
     let updated;

@@ -15,13 +15,13 @@ export type CallActivityDirection = "INCOMING" | "OUTGOING";
  * CALLEE, as a call they missed.
  *
  * A cancel and a timeout are indistinguishable from the callee's seat — both
- * are "it rang and nobody picked up" — so a long ring the caller gave up on IS
- * a missed call and must badge. A cancel inside this window is the caller
- * catching a misdial before the callee could plausibly react, and badging that
- * is noise. The threshold is the ONLY thing separating the two, which is why it
+ * are "it rang and nobody picked up" — so ANY ring the caller gave up on before
+ * it was answered IS a missed call and must badge, no matter how briefly it
+ * rang. There is deliberately no misdial grace: a caller who hangs up in the
+ * first second still leaves the callee a missed-call notification. The threshold
  * lives here next to the readers of it rather than in either service.
  */
-export const CALL_CANCEL_GRACE_SEC = 5;
+export const CALL_CANCEL_GRACE_SEC = 0;
 
 /**
  * True when a CANCELLED ring lasted long enough that the callee genuinely

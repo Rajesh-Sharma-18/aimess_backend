@@ -397,6 +397,13 @@ model GroupMember {
   status               String    @default("ACTIVE")
   joinedAt             DateTime  @default(now())
   invitedBy            String?
+  // The invite-link TOKEN this membership was obtained with, when it came from
+  // a link at all (null for a direct admin add, and for every row written
+  // before this field existed). An invitation card is a record of ONE link, so
+  // this is what lets a card say "View Group" only for the invitation actually
+  // used — a later reset mints a new token, and the old card must not start
+  // speaking for it. Never a permission: nothing reads it to authorize.
+  joinedViaToken       String?
   leftAt               DateTime?
   kickedAt             DateTime?
   kickedBy             String?

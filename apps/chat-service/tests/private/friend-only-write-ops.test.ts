@@ -77,15 +77,16 @@ beforeEach(() => {
 /** The four states user-service can report for a pair. */
 const NOT_FRIENDS = () => {
   mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
-  mocks.userServiceClient.isFriendshipBlocked.mockResolvedValue(false);
+  mocks.userServiceClient.isBlockedEitherWay.mockResolvedValue(false);
 };
+/** Either direction — the gate cannot tell blocker from blocked, by design. */
 const BLOCKED = () => {
   mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
-  mocks.userServiceClient.isFriendshipBlocked.mockResolvedValue(true);
+  mocks.userServiceClient.isBlockedEitherWay.mockResolvedValue(true);
 };
 const FRIENDS = () => {
   mocks.userServiceClient.checkFriendship.mockResolvedValue(true);
-  mocks.userServiceClient.isFriendshipBlocked.mockResolvedValue(false);
+  mocks.userServiceClient.isBlockedEitherWay.mockResolvedValue(false);
 };
 
 describe("private react — friend-only", () => {

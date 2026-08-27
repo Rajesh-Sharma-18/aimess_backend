@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
+import { optionalAuthenticate } from "../../middleware/optional-authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
   createInviteLinkSchema,
@@ -27,7 +28,9 @@ export function createGroupInviteLinkRoutes(
     validateBody(revokeInviteLinkSchema),
     ctrl.revoke
   );
-  router.get("/preview/:token", ctrl.preview);
+  // Optional auth: the preview is public (link-preview cards have no session),
+  // but a signed-in caller gets `isJoined` so the client can show View vs Join.
+  router.get("/preview/:token", optionalAuthenticate, ctrl.preview);
   router.post(
     "/join",
     authenticate,

@@ -25,6 +25,15 @@ const forbidden = {
   },
 };
 
+const conflict = {
+  description: "Conflict — the state already changed (e.g. already a member)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 const notFound = {
   description: "Resource not found",
   content: {
@@ -1874,6 +1883,12 @@ const inviteLinkRevoke = {
     tags: ["Chat — Groups"],
     operationId: "revokeGroupInviteLink",
     summary: "Revoke group invite link",
+    description:
+      "ADMIN only. Kills the token permanently (it is never reissued) AND every " +
+      "other active link for the room, then mints a replacement and returns " +
+      "`{ revoked, link }` — so the admin always has a working link. Works " +
+      "regardless of remaining expiry or uses. Afterwards the old token answers " +
+      "400 CHAT_INVITE_LINK_EXPIRED on both preview and join.",
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -1897,7 +1912,13 @@ const inviteLinkPreview = {
     tags: ["Chat — Groups"],
     operationId: "previewGroupInviteLink",
     summary: "Preview invite link",
-    description: "Public endpoint — no auth required.",
+    description:
+      "Public endpoint — auth is OPTIONAL. Send the caller's bearer token to " +
+      "receive `state` (and its legacy mirror `isJoined`), which is what decides " +
+      "the button. ALWAYS 200: a revoked or expired link, a disbanded group and " +
+      "a full group are all reported as a `state`, not as an error, so the " +
+      "client can render the reason on the screen the user is already on. Only " +
+      "a transport or server failure is an error here.",
     parameters: [
       {
         name: "token",
@@ -1908,7 +1929,6 @@ const inviteLinkPreview = {
     ],
     responses: {
       ...successResponse("Link preview", "ChatInviteLinkPreview"),
-      "404": notFound,
     },
   },
 };
@@ -1928,10 +1948,20 @@ const inviteLinkJoin = {
       },
     },
     responses: {
+      // One code per cause, never a generic "expired" for all of them:
+      // 400 CHAT_INVITE_LINK_REVOKED / _EXPIRED / _USAGE_LIMIT (dead link),
+      //     CHAT_GROUP_MEMBER_LIMIT_REACHED (group at the 256 cap);
+      // 403 CHAT_JOIN_BLOCKED (removed or banned by staff),
+      //     CHAT_GROUP_CLOSED_ADMIN_BANNED (owner permanently banned);
+      // 404 CHAT_INVITE_LINK_NOT_FOUND, CHAT_GROUP_NO_LONGER_EXISTS,
+      //     CHAT_GROUP_DISBANDED, CHAT_GROUP_NO_ACTIVE_ADMIN;
+      // 409 CHAT_ALREADY_MEMBER.
       ...successResponse("Joined group"),
       "400": badRequest,
       "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
+      "409": conflict,
     },
   },
 };

@@ -197,7 +197,7 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(publishInvite).not.toHaveBeenCalled();
   });
 
-  it("already-member recipient → ALREADY_MEMBER failure, NO event", async () => {
+  it("already-member recipient → still invited (event published)", async () => {
     repo.findMembersByUserIds.mockResolvedValue([member(UID_A, "ACTIVE")]);
 
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
@@ -205,10 +205,9 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
       linkId: LINK_ID,
     });
 
-    expect(res.failures).toEqual([
-      { userId: UID_A, code: "ALREADY_MEMBER", message: expect.any(String) },
-    ]);
-    expect(publishInvite).not.toHaveBeenCalled();
+    expect(res.failures).toEqual([]);
+    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(publishInvite).toHaveBeenCalledTimes(1);
   });
 
   it("banned recipient → USER_BANNED failure, NO event", async () => {
@@ -281,7 +280,7 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     );
   });
 
-  it("one valid + one already-member → sent=1, failed=1", async () => {
+  it("one valid + one already-member → both sent", async () => {
     repo.findMembersByUserIds.mockResolvedValue([member(UID_B, "ACTIVE")]);
 
     const res = await communityService.bulkSendInviteLink(CID, CALLER, {
@@ -289,12 +288,25 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
       linkId: LINK_ID,
     });
 
-    expect(res.summary).toMatchObject({ sent: 1, failed: 1 });
-    expect(res.sentUserIds).toEqual([UID_A]);
-    expect(res.failures[0]).toMatchObject({
-      userId: UID_B,
-      code: "ALREADY_MEMBER",
+    expect(res.summary).toMatchObject({ sent: 2, failed: 0 });
+    expect(res.sentUserIds).toEqual([UID_A, UID_B]);
+  });
+
+  it("a banned recipient is STILL refused when mixed with an active member", async () => {
+    repo.findMembersByUserIds.mockResolvedValue([
+      member(UID_A, "ACTIVE"),
+      member(UID_B, "BANNED"),
+    ]);
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A, UID_B],
+      linkId: LINK_ID,
     });
+
+    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(res.failures).toEqual([
+      { userId: UID_B, code: "USER_BANNED", message: expect.any(String) },
+    ]);
   });
 
   it("the caller themselves is skipped, not failed", async () => {
@@ -361,7 +373,8 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     repo.findById.mockResolvedValue({
       ...community,
       invitationCode: PERM_CODE,
-      invitationCodeCreatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      // Inside its 1-hour window — an older code is refused (see the case below).
+      invitationCodeCreatedAt: new Date(),
       createdAt: new Date("2026-05-01T00:00:00.000Z"),
     });
     repo.findInviteLinkById.mockResolvedValue(null);
@@ -382,6 +395,24 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
         isPermanent: true,
       })
     );
+  });
+
+  it("an ancient permanent link sentinel still sends — age alone never kills a link", async () => {
+    repo.findById.mockResolvedValue({
+      ...community,
+      invitationCode: "perm_stale",
+      invitationCodeCreatedAt: new Date(Date.now() - 61 * 60 * 1000),
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    repo.findInviteLinkById.mockResolvedValue(null);
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: CID,
+    });
+
+    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(publishInvite).toHaveBeenCalledTimes(1);
   });
 
   it("permanent link sentinel but community has no invitationCode → COMMUNITY_INVITE_LINK_NOT_FOUND", async () => {
@@ -502,14 +533,16 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
         memberCount: 5,
         inviteUrl: res.link.url,
         inviteDeepLink: res.link.appDeepLink,
-        isPermanent: true, // link() has maxUses:null + expiresAt:null
+        // No link is permanent any more (every one expires in 1 hour) — the flag
+        // is true only for the LEGACY community-row code sentinel.
+        isPermanent: false,
         inviterName: "John",
         inviterAvatarUrl: "avatars/john.jpg",
       })
     );
   });
 
-  it("isPermanent=false when the link has a use cap or an expiry", async () => {
+  it("isPermanent=false for an ordinary invite-link row", async () => {
     repo.findInviteLinkById.mockResolvedValue(link({ maxUses: 10 }));
 
     await communityService.bulkSendInviteLink(CID, CALLER, {
@@ -582,8 +615,8 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
         metadata: expect.objectContaining({
           linkId: LINK_ID,
           requested: 3, // UID_A + UID_B + CALLER (unique count, pre-self-skip)
-          sent: 1, // UID_A
-          failed: 1, // UID_B (already a member)
+          sent: 2, // UID_A + UID_B (an ACTIVE member is invited again)
+          failed: 0,
           skipped: 1, // CALLER (self)
         }),
       })

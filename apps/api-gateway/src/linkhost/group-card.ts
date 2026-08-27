@@ -18,8 +18,28 @@ interface GroupPreviewResponse {
     groupAvatar?: string;
     description?: string;
     memberCount?: number;
+    /** chat-service `GroupInviteState` — see its `lib/group-invite-state.ts`. */
+    state?: string;
   };
 }
+
+/**
+ * States that must NOT produce a rich preview card. The preview endpoint now
+ * answers 200 for every outcome (so an app client can render the reason in
+ * place), which means `res.ok` alone no longer means "this invite is usable" —
+ * without this the public link page would advertise a group behind a revoked or
+ * expired token.
+ */
+const UNPRESENTABLE_STATES = new Set([
+  "GROUP_NOT_FOUND",
+  "GROUP_DISBANDED",
+  "GROUP_CLOSED",
+  "GROUP_NO_ADMIN",
+  "LINK_NOT_FOUND",
+  "LINK_REVOKED",
+  "LINK_EXPIRED",
+  "LINK_USED_UP",
+]);
 
 /**
  * Server-to-server lookup of a group invite card for the unauthenticated
@@ -49,6 +69,7 @@ export async function fetchGroupInviteCard(
     const body = (await res.json()) as GroupPreviewResponse;
     const preview = body?.data;
     if (!preview?.groupName) return null;
+    if (preview.state && UNPRESENTABLE_STATES.has(preview.state)) return null;
 
     return {
       groupId: preview.groupId ?? "",

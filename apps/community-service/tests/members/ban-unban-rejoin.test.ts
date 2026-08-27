@@ -471,7 +471,10 @@ describe("Full ban/unban cycle never restores a previous MODERATOR/ADMIN role (r
     expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
       CID,
       TARGET,
-      expect.anything()
+      expect.anything(),
+      // The adding admin — stamped on any join request this reactivation
+      // resolves inside the same transaction.
+      ADMIN
     );
   });
 });

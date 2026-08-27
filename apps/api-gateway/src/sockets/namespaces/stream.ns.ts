@@ -464,7 +464,7 @@ export function registerStreamNamespace(
 
   streamNs.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
-    scopeSocketLocale(socket);
+    scopeSocketLocale(socket, redisPub);
     bindSocketAuditContext(socket);
     // Session room, as /chat, /community and /notify all do. This is what the
     // shared `session-revoke:*` listener targets, so without it a revoked
@@ -799,7 +799,13 @@ export function registerStreamNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = StreamCommentSchema.safeParse(payload);
         if (!r.success) {
-          ackError(callback, "INVALID_PAYLOAD", locale);
+          const rawMessage = (payload as { message?: unknown } | null)
+            ?.message;
+          const detailKey =
+            typeof rawMessage === "string" && rawMessage.length > MAX_MESSAGE_LEN
+              ? "SOCKET_ERR_STREAM_COMMENT_TOO_LONG"
+              : undefined;
+          ackError(callback, "INVALID_PAYLOAD", locale, detailKey);
           return;
         }
         const { streamId, message, clientCommentId } = r.data;

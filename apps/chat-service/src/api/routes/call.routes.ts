@@ -16,6 +16,7 @@ export function createCallRoutes(ctrl: CallController): Router {
     validateQuery(callHistoryQuerySchema),
     ctrl.getCallHistory
   );
+  router.get("/active-incoming", authenticate, ctrl.getActiveIncoming);
   router.get("/:callId", authenticate, ctrl.getCallById);
   // Socket-free call control — see CallController for why these exist. Same
   // service methods as the `/chat` socket events, so state stays single-sourced.

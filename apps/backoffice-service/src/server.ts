@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 
+import type * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 
 import { app } from "./app.js";
@@ -7,12 +8,14 @@ import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectBackofficeRedis, redis } from "./config/redis.js";
 import { startAnnouncementScheduler } from "./lib/announcement-scheduler.js";
+import { startBackofficeGrpcServer } from "./grpc/server.js";
 import { startAdminActivityIngestConsumer } from "./messaging/consume-admin-activity-ingest.js";
 import { startAdminReportIngestConsumer } from "./messaging/consume-admin-report-ingest.js";
 import { startAnnouncementDeliveryConsumer } from "./messaging/consume-announcement-delivery.js";
 import { startStreamLifecycleConsumer } from "./messaging/consume-stream-lifecycle.js";
 
 let httpServer: Server | undefined;
+let grpcServer: grpc.Server | undefined;
 
 const startServer = async (): Promise<void> => {
   logger.info("Backoffice service starting…");
@@ -136,6 +139,8 @@ const startServer = async (): Promise<void> => {
       logger.warn(error);
     }
 
+    grpcServer = startBackofficeGrpcServer();
+
     httpServer = app.listen(env.BACKOFFICE_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(
         `Backoffice service listening on port ${String(env.BACKOFFICE_SERVICE_PORT)}`
@@ -159,6 +164,10 @@ async function shutdown(signal: string): Promise<void> {
     }
     httpServer.close(() => resolve());
   });
+
+  if (grpcServer) {
+    grpcServer.forceShutdown();
+  }
 
   try {
     await prisma.$disconnect();

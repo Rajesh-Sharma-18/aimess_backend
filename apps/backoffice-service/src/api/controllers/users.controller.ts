@@ -7,7 +7,11 @@ import { userManagementService } from "../../services/index.js";
 import { paginated } from "../lib/respond.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
-import { moderationReasonEnum, unbanUserSchema } from "../validators/index.js";
+import {
+  moderationReasonEnum,
+  reactivateUserSchema,
+  unbanUserSchema,
+} from "../validators/index.js";
 import type {
   BanUserInput,
   BulkActivateInput,
@@ -15,6 +19,7 @@ import type {
   ListOtherMembersQueryInput,
   ListUserCommunitiesQueryInput,
   ListUsersQueryInput,
+  ReactivateUserInput,
   SuspendUserInput,
   UnbanUserInput,
   UserReportsQueryInput,
@@ -249,6 +254,37 @@ export const unbanUser: RequestHandler = (req, res, next) => {
       res
         .status(HTTP_STATUS.OK)
         .json(new ApiResponse(result, t("ADMIN_USER_UNBANNED", req.locale)));
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * POST /v1/users/:userId/reactivate — restore a soft-deleted account.
+ *
+ * Body-less by default (an optional `note`), so it is parsed here rather than
+ * with `validateBody`, for the same reason as `unbanUser` above: a request
+ * with no Content-Type leaves `req.body` undefined and Express would 400
+ * before the schema ran.
+ * TODO (Phase 2): Add step-up TOTP auth validation via X-Totp-Code header.
+ */
+export const reactivateUser: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const body = reactivateUserSchema.parse(
+        req.body ?? {}
+      ) as ReactivateUserInput;
+      const result = await userManagementService.reactivateUser(
+        userId,
+        body,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("ADMIN_USER_REACTIVATED", req.locale)));
     } catch (error) {
       next(error);
     }

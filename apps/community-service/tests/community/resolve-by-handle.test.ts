@@ -15,6 +15,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findById: jest.fn(),
     countActiveInviteLinksByCreator: jest.fn(async () => 0),
     createInviteLink: jest.fn(),
+    findLatestReusableInviteLink: jest.fn(async () => null),
     createAuditLog: jest.fn(),
     // The atomic first-writer guard behind `ensurePermanentInvitationCode`
     // (updateMany WHERE invitationCode IS NULL). It was missing from this
@@ -203,19 +204,22 @@ describe("createInviteLink — request-to-join default", () => {
   };
 
   // The assertion moved, the intent did not: a bare call must never silently
-  // auto-approve. A parameterless call on a PRIVATE community now returns that
-  // community's PERMANENT invite link instead of minting a throwaway row, so
-  // there is no `createInviteLink` call left to inspect — the guarantee lives
-  // in the returned link. The legacy row-creating path is still asserted by the
-  // explicit-autoApprove case below.
+  // auto-approve. A parameterless call on a PRIVATE community returns that
+  // community's live (1-hour) invite link — reused when one is still valid,
+  // minted as a plain request-to-join link otherwise. The legacy row-creating
+  // path is still asserted by the explicit-autoApprove case below.
   it("defaults autoApprove=false for a PRIVATE community when not specified", async () => {
     repo.findById.mockResolvedValue({ ...publicCommunity, type: "PRIVATE" });
     repo.findMembership.mockResolvedValue({ status: "ACTIVE", role: "ADMIN" });
+    repo.findLatestReusableInviteLink.mockResolvedValue({
+      ...linkRow,
+      autoApprove: false,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
 
     const link = await communityService.createInviteLink(CID, CALLER, {});
 
     expect(link.autoApprove).toBe(false);
-    expect(link.isPermanent).toBe(true);
     // Idempotent by construction: a bare call consumes no link quota.
     expect(repo.createInviteLink).not.toHaveBeenCalled();
   });

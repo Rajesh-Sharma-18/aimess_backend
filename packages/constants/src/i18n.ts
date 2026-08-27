@@ -65,3 +65,24 @@ export function t(
   const text = entry[locale] ?? entry[DEFAULT_LOCALE] ?? entry.en ?? key;
   return interpolate(text, params);
 }
+
+/**
+ * Render a key that arrived over the wire, or null when this build does not
+ * carry it.
+ *
+ * {@link t} answers an unknown key with the key ITSELF, which is the right
+ * answer for a compile-checked call site (a typo is loud) and the wrong one for
+ * a string that crossed a service boundary: a client would be shown
+ * `SYS_COMMUNITY_JOINED` verbatim. Returning null instead lets the caller keep
+ * the sentence the producer already baked in, which is a real sentence in the
+ * fallback language rather than an identifier.
+ */
+export function renderMessageKey(
+  key: unknown,
+  locale: SupportedLocale = DEFAULT_LOCALE,
+  params?: MessageParams
+): string | null {
+  if (typeof key !== "string" || !key) return null;
+  if (!Object.prototype.hasOwnProperty.call(MESSAGES, key)) return null;
+  return t(key as MessageKey, locale, params);
+}

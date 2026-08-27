@@ -21,6 +21,7 @@ import {
   publishGroupMemberMuteSafe,
 } from "../events/publish-group-member-added.js";
 import { ChatEvents } from "@aimess/shared-types";
+import { effectiveGroupMemberLimit } from "@aimess/constants";
 import { publishUserReport } from "../lib/report-user.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -80,6 +81,13 @@ export class GroupMemberService {
       userId: string;
       invitedBy?: string;
       role?: string;
+      /**
+       * The invite-link token this join came through, when it came through one.
+       * Recorded, never checked: it is what lets ONE invitation card claim the
+       * membership it produced, so a later reset cannot make an older card
+       * speak for a link it was never sent with.
+       */
+      joinedViaToken?: string | null;
     },
     opts?: {
       systemEvent?: SystemEvent;
@@ -110,11 +118,12 @@ export class GroupMemberService {
     // authenticated user could inject themselves or others into a private group
     // (AUDIT H3). MODERATOR is included — adding is a growth action, not a
     // destructive one, so it stays below the updateRole bar (ADMIN only).
+    let actor: GroupMember | null = null;
     if (!opts?.skipActorAuthz) {
       if (!params.invitedBy) {
         throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
-      await assertGroupMember(
+      actor = await assertGroupMember(
         this.memberRepo,
         params.roomId,
         params.invitedBy,
@@ -136,14 +145,38 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
-    // A ban must survive a re-invite: re-adding a BANNED row is refused, and
-    // the upsert below no longer clears bannedAt/bannedBy. Lifting a ban is
-    // `unban()`'s job, which is role-gated — an add is not.
-    if (existing && existing.status === "BANNED") {
-      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
+    // REJOIN BLOCK. A member removed (KICKED) or banned (BANNED) by staff does
+    // not come back on their own — not with this link, not with a freshly minted
+    // one, not after re-login. The block lives on the member row, so it survives
+    // everything a token can be rotated through.
+    //
+    // The ONLY key is a manual add by the group ADMIN, which is exactly this
+    // branch: an authorized ADMIN add re-activates the row (and, for a ban,
+    // clears bannedAt/bannedBy below). MODERATOR keeps the old rule for bans —
+    // lifting one stays an ADMIN action (or `unban()`) — but may re-add a
+    // plain removal, the same bar as any other add.
+    const blocked =
+      existing?.status === "KICKED" || existing?.status === "BANNED";
+    if (blocked) {
+      if (opts?.skipActorAuthz) {
+        // Self-join through an invite link — never a way back in.
+        throw new ForbiddenError("CHAT_JOIN_BLOCKED");
+      }
+      if (existing?.status === "BANNED" && actor?.role !== "ADMIN") {
+        throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
+      }
     }
 
-    if (room.memberCount >= room.memberLimit) {
+    // CAPACITY. Claimed atomically (filter + $inc in one document update) so
+    // concurrent joiners at the last slot cannot both pass a read-then-check and
+    // push the roster past the cap. `effectiveGroupMemberLimit` clamps the room's
+    // own limit to MAX_GROUP_MEMBERS, so a legacy room storing a larger limit
+    // still stops at 256. Every add path funnels through here.
+    const reserved = await this.roomRepo.reserveMemberSlot(
+      params.roomId,
+      effectiveGroupMemberLimit(room.memberLimit)
+    );
+    if (!reserved) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");
     }
 
@@ -163,18 +196,32 @@ export class GroupMemberService {
       if (!isFriend) throw new ForbiddenError("CHAT_ADD_MEMBER_NOT_FRIEND");
     }
 
-    const member = await this.memberRepo.upsert(params.roomId, params.userId, {
-      role: params.role || "MEMBER",
-      status: "ACTIVE",
-      joinedAt: new Date(),
-      invitedBy: params.invitedBy || null,
-      leftAt: null,
-      kickedAt: null,
-      kickedBy: null,
-      kickReason: null,
-    });
-
-    await this.roomRepo.incMemberCount(params.roomId, 1);
+    let member: GroupMember;
+    try {
+      member = await this.memberRepo.upsert(params.roomId, params.userId, {
+        role: params.role || "MEMBER",
+        status: "ACTIVE",
+        joinedAt: new Date(),
+        invitedBy: params.invitedBy || null,
+        joinedViaToken: params.joinedViaToken || null,
+        leftAt: null,
+        kickedAt: null,
+        kickedBy: null,
+        kickReason: null,
+        // An ADMIN re-add is what lifts a ban (see the rejoin-block gate above);
+        // any other path never reaches here with a BANNED row.
+        ...(existing?.status === "BANNED"
+          ? { bannedAt: null, bannedBy: null }
+          : {}),
+      });
+    } catch (err) {
+      // The slot was already claimed — hand it back so a failed write cannot
+      // shrink the room's real capacity.
+      await this.roomRepo
+        .incMemberCount(params.roomId, -1)
+        .catch(() => undefined);
+      throw err;
+    }
 
     const systemEvent = opts?.systemEvent ?? SystemEvent.MEMBER_ADDED;
     if (!opts?.deferAnnouncements) {
@@ -333,6 +380,10 @@ export class GroupMemberService {
         role: member.role,
         isJoined: true,
         addedAt: member.joinedAt,
+        // Which invitation admitted them, so a session watching an invitation
+        // card can tell whether THIS card is the one that just worked (null =
+        // no link was involved, e.g. a direct admin add).
+        joinedViaToken: member.joinedViaToken ?? null,
       });
     })().catch((err: unknown) => {
       logger.warn(

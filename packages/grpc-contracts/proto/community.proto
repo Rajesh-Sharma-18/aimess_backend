@@ -687,6 +687,20 @@ message CommunityInviteContext {
   bool   is_member         = 5;
   // ACTIVE | EXPIRED | REVOKED | DELETED (DELETED mirrors `found=false`).
   string link_status      = 6;
+  // PUBLIC | PRIVATE — decides whether a non-member's card offers "Join" or
+  // "Request to Join". "" when `found=false`.
+  string community_type   = 7;
+  // True when `user_id` holds a PENDING join request here. Never true together
+  // with `is_member`: an ACTIVE membership outranks any request it left behind
+  // (admin Add Member resolves the request as AUTO_RESOLVED, but the card must
+  // be right even before that write lands).
+  bool   join_request_pending = 8;
+  // True when the membership above came through THIS query's `code` — either it
+  // is the code they joined/requested with, or it is still the community's live
+  // link. False for a member holding a card whose code has since been reset: an
+  // invitation card speaks for ONE code, so only the one that admitted them may
+  // turn into "View Community". Always false when `is_member` is false.
+  bool   membership_via_code = 9;
 }
 message GetCommunityInviteContextsResponse {
   repeated CommunityInviteContext contexts = 1;

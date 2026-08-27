@@ -13,7 +13,16 @@ import {
   assertGroupRoomWritable,
 } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
-import { inviteContentType } from "@aimess/constants";
+import {
+  effectiveGroupMemberLimit,
+  inviteContentType,
+  MAX_GROUP_MEMBERS,
+} from "@aimess/constants";
+import {
+  assertJoinableState,
+  loadGroupInviteState,
+  type GroupInviteState,
+} from "../lib/group-invite-state.js";
 import {
   buildGroupInvitationAction,
   buildChatMessageEvent,
@@ -80,7 +89,6 @@ export class GroupInviteLinkService {
   async create(params: {
     roomId: string;
     userId: string;
-    expiresAt?: Date | null;
     maxUses?: number | null;
     shareName?: string;
   }): Promise<GroupInviteLink> {
@@ -107,13 +115,28 @@ export class GroupInviteLinkService {
       roomId: params.roomId,
       token,
       createdBy: params.userId,
-      expiresAt: params.expiresAt || null,
+      // Always null: an invitation link does not expire on a clock. It stays
+      // usable until an admin revokes it (or spends its `maxUses`).
+      expiresAt: null,
       maxUses: params.maxUses || null,
       shareName: params.shareName || "",
     });
   }
 
-  async revoke(token: string, userId: string): Promise<GroupInviteLink | null> {
+  /**
+   * Kill the current link and hand back a fresh one in the same breath — the
+   * product rule is "revoke → the code gets changed", so an admin never lands on
+   * a group with no shareable link. The revoked token is dead permanently and is
+   * never reissued (`nanoid(24)`, `@unique`), independent of how much expiry or
+   * how many uses it had left.
+   *
+   * Every OTHER active link for the room is revoked too: leaving a sibling token
+   * alive would make "revoke" a no-op for anyone holding it.
+   */
+  async revoke(
+    token: string,
+    userId: string
+  ): Promise<{ revoked: GroupInviteLink; link: GroupInviteLink }> {
     const link = await this.inviteLinkRepo.findActiveByToken(token);
     if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
 
@@ -125,10 +148,40 @@ export class GroupInviteLinkService {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
-    return this.inviteLinkRepo.revoke(token, userId);
+    const revoked = await this.inviteLinkRepo.revoke(token, userId);
+    if (!revoked) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
+    await this.inviteLinkRepo.revokeAllForRoom(link.roomId, userId);
+
+    const replacement = await this.create({
+      roomId: link.roomId,
+      userId,
+      shareName: link.shareName,
+    });
+    return { revoked, link: replacement };
   }
 
-  async preview(token: string): Promise<{
+  /**
+   * Invite landing screen payload. `callerId` is optional — the route takes an
+   * OPTIONAL bearer token so the unauthenticated link-preview card still works.
+   *
+   * ALWAYS 200, for every outcome. It used to throw for a dead link and for a
+   * missing group, which left the client with an error and no state — so the
+   * only thing it could do was show the expired-link screen, whatever had
+   * actually gone wrong. Now `state` names the reason
+   * (LINK_REVOKED / LINK_EXPIRED / GROUP_DISBANDED / GROUP_FULL / …) and the
+   * client renders it in place. Only a transport/server failure is an error.
+   *
+   * `state` comes from the SAME {@link loadGroupInviteState} the in-chat
+   * invitation card and the join endpoint use, so no two surfaces can disagree.
+   * Every input to it (group row and its status, live member count, active-admin
+   * count, membership row, link status/expiry/uses) is read fresh on each call —
+   * nothing is cached and nothing is taken from the client. `isJoined` is kept
+   * as a derived mirror for older clients.
+   */
+  async preview(
+    token: string,
+    callerId?: string
+  ): Promise<{
     token: string;
     groupId: string;
     groupName: string;
@@ -137,27 +190,30 @@ export class GroupInviteLinkService {
     memberCount: number;
     memberLimit: number;
     invitedByName: string;
+    expiresAt: string | null;
+    isJoined: boolean;
+    state: GroupInviteState;
   }> {
-    const link = await this.inviteLinkRepo.findActiveByToken(token);
-    if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
+    const { state, room, link } = await loadGroupInviteState<
+      GroupRoom,
+      GroupInviteLink,
+      { status?: string | null }
+    >(
+      {
+        inviteLinkRepo: this.inviteLinkRepo,
+        roomRepo: this.roomRepo,
+        memberRepo: this.memberRepo,
+      },
+      { token, viewerId: callerId }
+    );
 
-    // Check expiry
-    if (link.expiresAt && new Date() > new Date(link.expiresAt)) {
-      throw new BadRequestError("CHAT_INVITE_LINK_EXPIRED");
-    }
-
-    // Check max uses
-    if (link.maxUses && link.usedCount >= link.maxUses) {
-      throw new BadRequestError("CHAT_INVITE_LINK_USAGE_LIMIT");
-    }
-
-    const room = await this.roomRepo.findActiveByRoomId(link.roomId);
-    if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
-
-    // Who is inviting — the preview screen names them. Same snapshot chokepoint every other name goes through, so a deleted inviter reads "Deleted Account" here too.
-    // The snapshot service is an optional dependency (see the constructor), so an empty name is a valid answer, not a failure — the client falls back to a generic line.
+    // Who is inviting — the preview screen names them. Same snapshot chokepoint
+    // every other name goes through, so a deleted inviter reads "Deleted
+    // Account" here too. The snapshot service is an optional dependency (see the
+    // constructor), so an empty name is a valid answer, not a failure — the
+    // client falls back to a generic line.
     const inviterSnapshot =
-      this.userSnapshotService && this.cacheRepo
+      link && this.userSnapshotService && this.cacheRepo
         ? (
             await this.userSnapshotService.getUserSnapshotsMap(
               [link.createdBy],
@@ -166,15 +222,26 @@ export class GroupInviteLinkService {
           ).get(link.createdBy)
         : null;
 
+    // Group identity is filled in whenever the row still exists — including for
+    // a dead link or a full group, so the screen can show WHICH group it is
+    // talking about instead of a bare error. It is not a leak: the caller holds
+    // a token minted for exactly this group.
     return {
-      token: link.token,
-      groupId: room.roomId,
-      groupName: room.name,
-      groupAvatar: await resolveMediaUrl(room.avatar),
-      description: room.description,
-      memberCount: room.memberCount,
-      memberLimit: room.memberLimit,
+      token,
+      groupId: room?.roomId ?? "",
+      groupName: room?.name ?? "",
+      groupAvatar: room ? await resolveMediaUrl(room.avatar) : "",
+      description: room?.description ?? "",
+      memberCount: room?.memberCount ?? 0,
+      memberLimit: room
+        ? effectiveGroupMemberLimit(room.memberLimit)
+        : MAX_GROUP_MEMBERS,
       invitedByName: inviterSnapshot ? resolveDisplayName(inviterSnapshot) : "",
+      // LEGACY field: always null now that links do not expire. Kept on the
+      // response so older clients that read it still parse the payload.
+      expiresAt: null,
+      isJoined: state === "ALREADY_MEMBER",
+      state,
     };
   }
 
@@ -183,25 +250,36 @@ export class GroupInviteLinkService {
     userId: string,
     memberService: GroupMemberService
   ): Promise<{ room: GroupRoom }> {
-    const link = await this.inviteLinkRepo.findActiveByToken(token);
-    if (!link) throw new NotFoundError("CHAT_INVITE_LINK_NOT_FOUND");
-
-    if (link.expiresAt && new Date() > new Date(link.expiresAt)) {
-      throw new BadRequestError("CHAT_INVITE_LINK_EXPIRED");
-    }
-    if (link.maxUses && link.usedCount >= link.maxUses) {
-      throw new BadRequestError("CHAT_INVITE_LINK_USAGE_LIMIT");
-    }
-
-    const room = await this.roomRepo.findActiveByRoomId(link.roomId);
-    if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
-    assertGroupRoomWritable(room);
+    // Same loader the card and the preview render from, so the refusal the
+    // client gets always matches the button it just showed — and names the same
+    // cause. `addMember` below is still the enforcement layer (it re-checks the
+    // block and claims the capacity slot atomically); this decides WHICH error
+    // is reported, and it covers the disbanded/closed room too, so no separate
+    // writable guard is needed here any more.
+    const { state, room, link } = await loadGroupInviteState<
+      GroupRoom,
+      GroupInviteLink,
+      { status?: string | null }
+    >(
+      {
+        inviteLinkRepo: this.inviteLinkRepo,
+        roomRepo: this.roomRepo,
+        memberRepo: this.memberRepo,
+      },
+      { token, viewerId: userId }
+    );
+    assertJoinableState(state);
+    // CAN_JOIN implies both, but narrow for the type checker.
+    if (!room || !link) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
 
     await memberService.addMember(
       {
         roomId: link.roomId,
         userId,
         invitedBy: link.createdBy,
+        // Stamp the invitation that admitted them — the card for THIS token is
+        // the only one that may turn into "View Group".
+        joinedViaToken: link.token,
       },
       {
         systemEvent: SystemEvent.MEMBER_JOINED,
@@ -227,11 +305,12 @@ export class GroupInviteLinkService {
    * 2. Resolves the link to share — a specific `token`, the room's first
    *    active link, or auto-creates one (respecting the same
    *    `allowMemberInviteLink` gate as {@link create}).
-   * 3. For each requested recipient (deduped, self excluded): skips users
-   *    already an ACTIVE member, otherwise inserts a SYSTEM/GROUP_INVITE
-   *    message into their private room with the inviter and runs the same
-   *    live side-effects as a normal DM (message:new, conv:updated bump,
-   *    offline push).
+   * 3. For each requested recipient (deduped, self excluded): inserts a
+   *    SYSTEM/GROUP_INVITE message into their private room with the inviter and
+   *    runs the same live side-effects as a normal DM (message:new,
+   *    conv:updated bump, offline push). Existing ACTIVE members are NOT
+   *    skipped — only the recipient-account gate (deleted / suspended /
+   *    blocked / missing) refuses a send.
    */
   async bulkSend(params: {
     roomId: string;
@@ -307,14 +386,11 @@ export class GroupInviteLinkService {
         continue;
       }
 
-      const alreadyMember = await this.memberRepo.findActiveByRoomAndUser(
-        roomId,
-        recipientId
-      );
-      if (alreadyMember) {
-        results.push({ userId: recipientId, status: "SKIPPED_ALREADY_MEMBER" });
-        continue;
-      }
+      // An ACTIVE member is NOT skipped: an admin/moderator re-sending the
+      // invite to someone already in the group is deliberate, and it creates no
+      // membership row — the card resolves `alreadyJoined` at read time (see
+      // `private-message.service#enrichMessages`) so it renders "Open", and
+      // joining by token again is refused as CHAT_ALREADY_MEMBER.
       await this.deliverInviteDm({
         roomId,
         inviterId: callerId,

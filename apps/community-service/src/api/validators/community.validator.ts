@@ -320,6 +320,9 @@ const joinRequestStatusEnum = z.enum([
   "APPROVED",
   "REJECTED",
   "CANCELLED",
+  // The requester became a member through another path while the request was
+  // still open (Add Member, invite, invite-link redeem, public self-join).
+  "AUTO_RESOLVED",
 ]);
 
 const inviteStatusEnum = z.enum(["PENDING", "ACCEPTED", "DECLINED", "EXPIRED"]);
@@ -717,9 +720,11 @@ export type BulkDeleteCommunityInput = z.infer<
 
 // --- Invite links ---------------------------------------------------------
 
+// No expiry input: an invitation link lives until it is revoked (or its
+// `maxUses` is spent). A client still sending `expiresInMinutes` is not
+// rejected — the key is simply stripped, as with any unknown field.
 export const createInviteLinkSchema = z.object({
   maxUses: z.number().int().min(1).max(1000).optional(),
-  expiresInMinutes: z.number().int().min(1).max(525_600).optional(),
   autoApprove: z.boolean().optional(),
 });
 export type CreateInviteLinkInput = z.infer<typeof createInviteLinkSchema>;

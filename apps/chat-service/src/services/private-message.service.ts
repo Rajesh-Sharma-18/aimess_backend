@@ -82,6 +82,7 @@ import {
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
 import {
   resolveForEveryoneOverrides,
+  resolveEffectiveLastLosers,
   deletedWasEffectiveLast,
   type RecipientOverride,
 } from "./last-visible-resolver.js";
@@ -108,7 +109,17 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveRealDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
+import { resolveSystemActorName } from "../lib/localize-system-preview.js";
+import {
+  isDeadLinkState,
+  isGroupGoneState,
+  groupMembershipAppliesToInvitation,
+  loadGroupInviteState,
+} from "../lib/group-invite-state.js";
 import {
   currentLocale,
   isCallContentType,
@@ -458,7 +469,12 @@ export class PrivateMessageService {
   ): Promise<void> {
     const [friends, blocked, banned] = await Promise.all([
       this.userServiceClient.checkFriendship(userId, peerId),
-      this.userServiceClient.isFriendshipBlocked(userId, peerId),
+      // EITHER direction. A one-way block still closes the DM for both, and
+      // asking only about the caller's own outgoing block let the BLOCKED
+      // party's refusal fall through to the friendship branch below — so the
+      // person who was blocked was told "you are not friends", the same
+      // sentence a plain unfriend produces.
+      this.userServiceClient.isBlockedEitherWay(userId, peerId),
       // Read straight off the ban key, never the user snapshot: that cache has
       // a 1h TTL and would keep answering "not banned" long after the ban.
       // Both parties, because a banned user's DM is inert in both directions.
@@ -1285,6 +1301,27 @@ export class PrivateMessageService {
       privateVisibilitySource(this.messageRepo),
       roomId,
       sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
+  /**
+   * Counterpart of {@link resolveForEveryoneOverrides} for the case where the
+   * delete-for-everyone did NOT move the shared snapshot: the participant whose own
+   * effective last visible message was nonetheless the removed one (they had
+   * hidden everything newer). See `resolveEffectiveLastLosers`.
+   */
+  async resolveEffectiveLastLosers(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    return resolveEffectiveLastLosers(
+      privateVisibilitySource(this.messageRepo),
+      roomId,
+      room?.lastMessageId ?? null,
+      deletedMessageCreatedAt,
       recipientIds
     );
   }
@@ -2157,6 +2194,15 @@ export class PrivateMessageService {
    * room. `params.roomId` used to be accepted and never read, which meant a bare
    * `messageId` from ANY private conversation returned its reactors.
    */
+  /**
+   * Current room CHANGE cursor (Telegram `pts`). Exposed so a LIVE emit can carry `revision`:
+   * without it a client applying a reaction event cannot advance its per-room cursor, and has to
+   * re-drain `/changes` from its old high-water to re-learn a change it already applied.
+   */
+  async getRoomRevision(roomId: string): Promise<number> {
+    return this.roomRepo.getRoomRevision(roomId);
+  }
+
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;
@@ -2450,6 +2496,10 @@ export class PrivateMessageService {
         const ctx = communityId
           ? contextByCommunityId.get(communityId)
           : undefined;
+        // What the row itself recorded about the link when the card was written.
+        // Rows from before invitations carried structured content have none —
+        // those were live links when they were sent, so they read as ACTIVE.
+        const storedStatus = stored?.status ?? "ACTIVE";
         const base = {
           communityId,
           communityAvatarUrl,
@@ -2465,8 +2515,34 @@ export class PrivateMessageService {
                 ...base,
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
-                alreadyJoined: ctx.isMember,
-                status: ctx.found ? ctx.linkStatus : "DELETED",
+                // Membership flips this card only when the membership belongs to
+                // THIS invitation — the code they were admitted with, or one
+                // that is still the community's live link. A card for a code
+                // that has since been reset keeps offering to join, so one join
+                // cannot rewrite every invitation ever sent for the community.
+                alreadyJoined: ctx.isMember && ctx.membershipViaCode !== false,
+                // Resolved per read alongside membership, so the card's button
+                // is right after a join, a cancel, an approval OR an admin
+                // "Add Member" — including on a cold reload.
+                communityType:
+                  ctx.found && ctx.communityType === "PRIVATE"
+                    ? "PRIVATE"
+                    : ctx.found && ctx.communityType === "PUBLIC"
+                      ? "PUBLIC"
+                      : null,
+                joinRequestPending: ctx.found
+                  ? Boolean(ctx.joinRequestPending)
+                  : false,
+                // The LINK verdict is the card's OWN, frozen when it was sent —
+                // an admin resetting the community's link must not rewrite every
+                // invitation already sitting in every conversation. Membership
+                // and the pending request above stay live, because those are
+                // what the reader can still act on. A tap still tells the truth:
+                // redeeming a revoked code answers
+                // COMMUNITY_INVITE_LINK_REVOKED_ERROR and the client raises the
+                // "this invite link was reset" dialog. A community that is GONE
+                // is not a link state, so it still overrides.
+                status: ctx.found ? storedStatus : "DELETED",
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
               // stored data rather than telling every past invite it's dead.
@@ -2475,7 +2551,7 @@ export class PrivateMessageService {
                 communityName,
                 communityHandle: storedHandle,
                 alreadyJoined: false,
-                status: "ACTIVE",
+                status: storedStatus,
               })
         );
       }
@@ -2508,26 +2584,65 @@ export class PrivateMessageService {
           stored?.deepLink ?? sd.inviteDeepLink ?? sd.inviteUrl ?? ""
         );
 
-        const room = groupId
-          ? await this.groupRoomRepo.findActiveByRoomId(groupId)
-          : null;
-        const alreadyJoined =
-          Boolean(room) && viewerId
-            ? Boolean(
-                await this.groupMemberRepo.findActiveByRoomAndUser(
-                  groupId,
-                  viewerId
-                )
-              )
-            : false;
-        const link = token
-          ? await this.groupInviteLinkRepo?.findActiveByToken(token)
-          : null;
-        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" = !room
-          ? "DELETED"
-          : token && !link
-            ? "REVOKED"
-            : "ACTIVE";
+        // The SAME loader the invite preview and the join endpoint use, so a
+        // card and the screen it links to can never disagree. `roomId` is passed
+        // explicitly: a card whose token was revoked still knows which group it
+        // points at, which is what keeps "View Group" working for a member.
+        //
+        // A card is a record of ONE share, not a live view of the link it names.
+        // Read as such (see `GroupInviteStateInput.card`): the reset that killed
+        // this token must not rewrite an invitation already delivered, and the
+        // rejoin block belongs in the dialog the join raises, not on the button.
+        // The group itself, its capacity and its roster count stay live.
+        //
+        // `membershipApplies` is what keeps one join from rewriting every card:
+        // "View Group" is offered only by the invitation this membership
+        // actually came through, or by one that is still the group's live link.
+        const deps = {
+          inviteLinkRepo: this.groupInviteLinkRepo ?? null,
+          roomRepo: this.groupRoomRepo,
+          memberRepo: this.groupMemberRepo,
+        };
+        const [linkRow, memberRow] = await Promise.all([
+          token
+            ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
+            : null,
+          groupId && viewerId
+            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
+            : null,
+        ]);
+        const { state, room } = await loadGroupInviteState<
+          { roomId: string; name: string; avatar: string; memberCount: number },
+          { roomId: string },
+          { status?: string | null }
+        >(deps, {
+          token,
+          roomId: groupId,
+          viewerId,
+          card: {
+            membershipApplies: groupMembershipAppliesToInvitation({
+              cardToken: token,
+              joinedViaToken: (
+                memberRow as { joinedViaToken?: string | null } | null
+              )?.joinedViaToken,
+              link: linkRow as {
+                status?: string | null;
+              } | null,
+            }),
+          },
+        });
+        const alreadyJoined = state === "ALREADY_MEMBER";
+        // Legacy LINK-only status, kept for clients that predate `state`. It
+        // cannot express the group/capacity/block cases at all — that is exactly
+        // why `state` exists — so it reports only what it can.
+        const status: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
+          isGroupGoneState(state)
+            ? "DELETED"
+            : state === "LINK_REVOKED"
+              ? "REVOKED"
+              : isDeadLinkState(state)
+                ? "EXPIRED"
+                : "ACTIVE";
 
         invitationByMessageId.set(
           m.id,
@@ -2537,11 +2652,15 @@ export class PrivateMessageService {
             groupAvatarUrl: room
               ? await resolveMediaUrl(room.avatar)
               : groupAvatarUrl,
+            // Live roster size, re-read on every fetch — never the count frozen
+            // into the message when it was sent (that is only the fallback for a
+            // group that no longer exists).
             memberCount: room?.memberCount ?? memberCount,
             inviteToken: token,
             deepLink,
             alreadyJoined,
             status,
+            state,
           })
         );
       }
@@ -2600,10 +2719,15 @@ export class PrivateMessageService {
         isPersonalizableSystemContentType(String(wire.contentType)) &&
         message.systemEvent
       ) {
-        const systemData = (message.systemData ?? {}) as Record<
-          string,
-          unknown
-        >;
+        // Same identity-based repair the list row does: a row whose writer
+        // stamped no `actorName` still carries the sender id, and `snapshot` IS
+        // that sender's. Without it the transcript and the list would also
+        // disagree — one says "Someone", the other the real name.
+        const systemData = (resolveSystemActorName(
+          message.systemData ?? {},
+          (id) =>
+            id === message.senderId ? resolveRealDisplayName(snapshot) : ""
+        ) ?? {}) as Record<string, unknown>;
         const thirdPersonText = String(content?.text ?? "");
         const personalized = personalizePrivateSystemMessageForViewer(
           message.systemEvent,

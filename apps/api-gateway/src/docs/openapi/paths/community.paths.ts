@@ -1183,7 +1183,14 @@ export const communityPaths = {
       operationId: "addCommunityMembers",
       summary: "Add members",
       description:
-        "Moderator or admin only. Adds 1–100 users as ACTIVE members and recomputes memberCount. Users already ACTIVE are skipped (`ALREADY_MEMBER`); BANNED users are skipped (`BANNED`, unban first); previously-LEFT users are reactivated as MEMBER; the rest are created as MEMBER. The response lists `added` and `skipped`.",
+        "Moderator or admin only. Adds 1–100 users as ACTIVE members and recomputes memberCount. Users already ACTIVE are skipped (`ALREADY_MEMBER`); BANNED users are skipped (`BANNED`, unban first); previously-LEFT users are reactivated as MEMBER; the rest are created as MEMBER. The response lists `added` and `skipped`. " +
+        "Adding a user who has an open join request for this community resolves " +
+        "that request (status `AUTO_RESOLVED`) in the SAME transaction as the " +
+        "membership write, and broadcasts `community:join_request:updated` so " +
+        "open admin lists drop the row live — a current member can never be left " +
+        "with an acceptable request. Each added user gets the `MEMBER_ADDED` " +
+        "system line (\"{admin} added you to the community\"), never the " +
+        "\"request approved\" one.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -2503,9 +2510,9 @@ export const communityPaths = {
       summary: "Unmute a member",
       description:
         "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`). " +
-        "Retracts (soft-deletes) the target's still-visible 'You are muted until …' PERSONAL line from their own history, and " +
-        "posts a PERSONAL `MEMBER_UNMUTED` system message ('You were unmuted') visible only to that member — silent for " +
-        "everyone else.",
+        "Retracts (soft-deletes) the target's still-visible 'You are muted until …' PERSONAL line from their own history. " +
+        "Unmute is SILENT in chat: no 'You were unmuted' bubble is posted (MEMBER_UNMUTED is a HIDDEN system type). The " +
+        "member's composer re-enables in real time via the `community:member:unmuted` socket event.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3121,7 +3128,11 @@ export const communityPaths = {
       operationId: "listCommunityJoinRequests",
       summary: "List a community's join requests",
       description:
-        "Moderator or admin only. Default `status=PENDING`. Each row embeds a `user` snapshot.",
+        "Moderator or admin only. Default `status=PENDING`. Each row embeds a " +
+        "`user` snapshot. The PENDING list is DERIVED server-side and never " +
+        "contains a request from a current ACTIVE member — any such row is " +
+        "filtered out and resolved on the spot — so every row it returns has a " +
+        "workable Accept/Decline. Do not re-implement that filter client-side.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3150,7 +3161,13 @@ export const communityPaths = {
           required: false,
           schema: {
             type: "string",
-            enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+            enum: [
+              "PENDING",
+              "APPROVED",
+              "REJECTED",
+              "CANCELLED",
+              "AUTO_RESOLVED",
+            ],
             default: "PENDING",
           },
         },
@@ -3200,7 +3217,13 @@ export const communityPaths = {
       operationId: "approveJoinRequest",
       summary: "Approve a join request",
       description:
-        "Moderator or admin only. Creates an ACTIVE member (or reactivates a LEFT row), marks the request APPROVED. Idempotent on already-APPROVED.",
+        "Moderator or admin only. Creates an ACTIVE member (or reactivates a " +
+        "LEFT row), marks the request APPROVED. Idempotent on already-APPROVED. " +
+        "If the requester is ALREADY an ACTIVE member (added directly, invited, " +
+        "self-joined, or accepted by another admin a moment earlier) this is a " +
+        "200 no-op: membership is untouched, no join notification or system " +
+        "message is re-sent, and the request comes back AUTO_RESOLVED rather " +
+        "than APPROVED — this admin granted nothing.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3276,7 +3299,11 @@ export const communityPaths = {
       operationId: "rejectJoinRequest",
       summary: "Reject a join request",
       description:
-        "Moderator or admin only. PENDING-only — fails with 400 otherwise.",
+        "Moderator or admin only. PENDING-only — fails with 400 otherwise. " +
+        "A decline that arrives after the requester already became a member is " +
+        "a 200 no-op returning the AUTO_RESOLVED request: declining decides a " +
+        "REQUEST and can never revoke a membership (use the remove-member " +
+        "endpoint for that).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3690,9 +3717,9 @@ export const communityPaths = {
                 message: "Invites processed",
                 data: {
                   totalRequested: 3,
-                  invited: 1,
+                  invited: 2,
                   alreadyInvited: 1,
-                  alreadyMembers: 1,
+                  alreadyMembers: 0,
                   failed: 0,
                   results: [
                     {
@@ -3707,7 +3734,8 @@ export const communityPaths = {
                     },
                     {
                       userId: "33333333-3333-4333-8333-333333333333",
-                      outcome: "ALREADY_MEMBER",
+                      outcome: "INVITED",
+                      inviteId: "cccccccccccccccccccccccc",
                     },
                   ],
                 },
@@ -4811,7 +4839,7 @@ export const communityPaths = {
     },
   },
 
-  // --- Permanent invitation link (PRIVATE communities) --------------------
+  // --- Shareable invitation link (PRIVATE communities) --------------------
 
   "/communities/{id}/invitation-link": {
     get: {
@@ -4834,8 +4862,8 @@ export const communityPaths = {
         "`GET /communities/invite-links/{invitationCode}` (preview) then " +
         "`POST /communities/invite-links/{invitationCode}/redeem` (join/request). " +
         "Default join mode is **request-to-join** (requires moderator approval).\n\n" +
-        "**Future:** a separate `POST /communities/:id/regenerate-invitation` endpoint " +
-        "(not yet implemented) will allow admins to intentionally rotate the code.",
+        "**Rotation** needs no separate endpoint: the code rotates by itself once " +
+        "the hour is up.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4850,7 +4878,7 @@ export const communityPaths = {
       responses: {
         "200": {
           description:
-            "Permanent invitation link. The code is stable — cache this response indefinitely.",
+            "The community's invitation link. Stable until `expiresAt` (1 hour after creation) — never cache it beyond that.",
           content: {
             "application/json": {
               schema: {
@@ -4868,6 +4896,7 @@ export const communityPaths = {
                           "invitationLink",
                           "appDeepLink",
                           "createdAt",
+                          "expiresAt",
                         ],
                         properties: {
                           communityId: {
@@ -4881,7 +4910,7 @@ export const communityPaths = {
                           invitationCode: {
                             type: "string",
                             description:
-                              "22-character base64url code (128-bit entropy). Permanent — never changes unless explicitly regenerated by an admin.",
+                              "22-character base64url code (128-bit entropy). Stable while the link is live; a new code is minted on the first call after it expires.",
                             example: "abc123XYZ-UVWxyz789AB",
                           },
                           invitationLink: {
@@ -4900,8 +4929,15 @@ export const communityPaths = {
                             type: "integer",
                             format: "int64",
                             description:
-                              "Epoch milliseconds when the code was first generated.",
+                              "Epoch milliseconds when the code was generated.",
                             example: 1750000000000,
+                          },
+                          expiresAt: {
+                            type: "integer",
+                            format: "int64",
+                            description:
+                              "Epoch milliseconds when the link stops working — always `createdAt + 3600000`. After it, preview/redeem fail with 410 COMMUNITY_INVITE_LINK_EXPIRED.",
+                            example: 1750003600000,
                           },
                         },
                       },
@@ -4914,7 +4950,7 @@ export const communityPaths = {
         },
         "400": {
           description:
-            "Community is not PRIVATE — only PRIVATE communities have permanent invitation codes",
+            "Community is not PRIVATE — only PRIVATE communities have code-based invitation links",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -5035,7 +5071,7 @@ export const communityPaths = {
       tags: ["Communities"],
       operationId: "createCommunityInviteLink",
       summary:
-        "Get the permanent link (default) or create a custom temporary link",
+        "Get the community's live link (default) or create a custom one",
       description:
         "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
         "Required state: the caller must have an ACTIVE membership in this community. " +
@@ -5052,11 +5088,12 @@ export const communityPaths = {
         "already stable; the code never appears in the share URL.\n\n" +
         "2. **Parameterized call (any of `maxUses` / `expiresInMinutes` / `autoApprove` present)** — creates a NEW " +
         "**temporary** invite-link row (multi-use / expiring / auto-approve), the legacy behavior. " +
-        "`maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires; " +
+        "`maxUses` null/omitted → unlimited; `expiresInMinutes` is clamped to at most 60 and defaults to 60 — " +
+        "no link can outlive the 1-hour rule; " +
         "`autoApprove: false` (default) keeps moderator approval. Abuse-protected: per-user create rate limit (429) " +
         "and a per-member cap on simultaneously-active links (403). Use this for one-off or time-boxed invites.\n\n" +
-        "The permanent link is ALSO available at the dedicated, richer `GET /communities/:id/invitation-link` " +
-        "(returns `invitationCode` / `invitationLink` / `createdAt` epoch-ms). Both are backed by the same stored code.",
+        "The same link is ALSO available at the dedicated, richer `GET /communities/:id/invitation-link` " +
+        "(returns `invitationCode` / `invitationLink` / `createdAt` / `expiresAt` epoch-ms). Both resolve the same link.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -5457,7 +5494,6 @@ export const communityPaths = {
                                     "INVITE_RECIPIENT_DELETED",
                                     "INVITE_RECIPIENT_SUSPENDED",
                                     "INVITE_RECIPIENT_BLOCKED",
-                                    "ALREADY_MEMBER",
                                     "USER_BANNED",
                                   ],
                                   description:
@@ -5466,9 +5502,10 @@ export const communityPaths = {
                                     "INVITE_RECIPIENT_DELETED = the account was deleted; " +
                                     "INVITE_RECIPIENT_SUSPENDED = the account is admin-suspended/banned; " +
                                     "INVITE_RECIPIENT_BLOCKED = a block exists in either direction. " +
-                                    "Community-scoped outcomes: " +
-                                    "ALREADY_MEMBER = already an ACTIVE member of this community; " +
+                                    "Community-scoped outcome: " +
                                     "USER_BANNED = banned from this community. " +
+                                    "An ACTIVE member is NOT refused — the invite is delivered again " +
+                                    "and the card renders as \"Open\". " +
                                     "The code is also the i18n message key of `message`.",
                                 },
                                 message: {
@@ -5539,8 +5576,8 @@ export const communityPaths = {
                       failures: [
                         {
                           userId: "33333333-3333-4333-8333-333333333333",
-                          code: "ALREADY_MEMBER",
-                          message: "User is already a member of this community",
+                          code: "USER_BANNED",
+                          message: "User is banned from this community",
                         },
                       ],
                       queued: 1,

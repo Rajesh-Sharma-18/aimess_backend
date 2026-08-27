@@ -8,6 +8,7 @@ import {
 import type {
   UserCreatedPayload,
   UserDeletedPayload,
+  UserRestoredPayload,
 } from "@aimess/shared-types";
 
 import type { UpdateProfileInput } from "../api/validators/profile.validator.js";
@@ -34,6 +35,7 @@ import type {
 import { isProfileComplete } from "../lib/profile-completion.util.js";
 import {
   SCHEMA_DEFAULT_SCOPE,
+  canSendFriendRequest,
   scopeAdmits,
   visibleIdentity,
 } from "../lib/privacy-scope.js";
@@ -51,6 +53,7 @@ import {
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
+import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -277,7 +280,22 @@ export const userProfileService = {
     // has to be able to open the profile of someone they blocked to review and
     // undo it. `blockedByViewer` is still carried into the relationship view
     // below so the client renders "Blocked" instead of an add-friend action.
-    if (blockedByTarget) throw notFound();
+    //
+    // ONE exception, and it is the reason this whole audit happened: a pair
+    // that already has a private conversation. Hiding the blocker made that
+    // pair resolve to a DIFFERENT screen depending on the door — the chat list
+    // opened the conversation (it holds a roomId and never asks about
+    // friendship), while search and the profile 404'd or reported NONE and
+    // offered "Send Request" for a chat with years of history in it. The
+    // conversation is already visible to this viewer from their own inbox, so
+    // the block hides nothing here that they cannot already see; it only made
+    // the surfaces disagree. Pairs with NO conversation keep the 404 — there
+    // the block still genuinely removes the blocker from the viewer's world.
+    const conversationWithBlocker =
+      blockedByTarget &&
+      (await messagingGrpcClient.resolvePrivateRooms(viewerId, [targetUserId]))
+        .length > 0;
+    if (blockedByTarget && !conversationWithBlocker) throw notFound();
 
     const isSelf = viewerId === targetUserId;
     const friendshipRow = isSelf
@@ -294,24 +312,36 @@ export const userProfileService = {
     const viewProfileScope =
       profile.privacySettings?.whoCanViewProfile ??
       SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
-    // Only `whoCanViewProfile` offers FRIENDS_OF_FRIENDS here, and the lookup
-    // is two indexed queries — so resolve the mutual-friend edge only when that
-    // exact scope is set and the cheaper isSelf/isFriend answers do not settle it.
+    const friendRequestScope =
+      profile.privacySettings?.whoCanSendFriendRequests ??
+      SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests;
+    // `whoCanViewProfile` and `whoCanSendFriendRequests` both offer
+    // FRIENDS_OF_FRIENDS, and the lookup is two indexed queries — so resolve
+    // the mutual-friend edge once, only when EITHER scope actually depends on
+    // it and the cheaper isSelf/isFriend answers do not settle it.
+    const needsMutualFriend =
+      viewProfileScope === "FRIENDS_OF_FRIENDS" ||
+      friendRequestScope === "FRIENDS_OF_FRIENDS";
     const isFriendOfFriend =
-      viewProfileScope === "FRIENDS_OF_FRIENDS" && !isSelf && !isFriend
+      needsMutualFriend && !isSelf && !isFriend
         ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
         : false;
     const relation = { isSelf, isFriend, isFriendOfFriend };
 
+    // A blocker's profile CONTENT stays closed to the person they blocked even
+    // when the card itself is now reachable: the exception above exists to keep
+    // the conversation openable, not to hand back a profile the block took
+    // away.
     const canViewProfile =
-      !isDeletedUser && scopeAdmits(viewProfileScope, relation);
+      !isDeletedUser &&
+      !blockedByTarget &&
+      scopeAdmits(viewProfileScope, relation);
 
-    // Name + avatar are the most identifying parts of the profile, so NO_ONE
-    // has to cover them too — masking only bio/cover/counts left the card fully
-    // recognizable. `username` survives so the row stays addressable. Resolving
-    // a null key yields the same "no avatar" shape as a user who never set one,
-    // so a denied viewer cannot tell the two apart.
-    const identity = visibleIdentity(profile, relation);
+    // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
+    // to stay recognizable for the strangers who are allowed to find it. Only a
+    // DELETED account is blanked, and resolving its avatar key as null yields
+    // the same "no avatar" shape as a user who never set one.
+    const identity = visibleIdentity(profile, { anonymize: isDeletedUser });
     const [avatarView, avatar] = await Promise.all([
       avatarService.resolveViewUrlForClient(
         identity.avatarAllowed ? profile.avatarUrl : null
@@ -323,6 +353,10 @@ export const userProfileService = {
         strategy: mediaUrlStrategy,
       }),
     ]);
+
+    // BLOCKED collapses to NONE in this vocabulary — `isBlockedByMe` below and
+    // the explicit block flag passed to `canSendFriendRequest` carry that state.
+    const searchRelationship = toSearchRelationship(view);
 
     const canSeePresence =
       canViewProfile &&
@@ -356,11 +390,33 @@ export const userProfileService = {
       communitiesCount: canViewProfile ? profile.communitiesCount : null,
       isDeletedUser,
       isBlockedByMe: Boolean(blockedByViewer),
+      /**
+       * The TARGET blocks the VIEWER. Only ever true on the reachable-because-
+       * a-conversation-exists path above; otherwise this endpoint 404s and the
+       * question never arises. The client needs it to render the conversation's
+       * disabled composer with the right reason — "you can't send messages to
+       * this user" is a different situation, and a different way out, from a
+       * declined friend request.
+       */
+      isBlockedByPeer: Boolean(blockedByTarget),
       // Search vocabulary (FRIEND/PENDING/NONE), not the raw ACCEPTED/... view —
       // it is what every existing client relationship parser already speaks.
       relationship: {
         friendshipId: friendshipRow?.id ?? null,
-        ...toSearchRelationship(view),
+        ...searchRelationship,
+        // Same gate `friendshipService.sendRequest` enforces — the profile
+        // screen renders "Add Friend" from this and nothing else. A deleted
+        // account can never receive one, whatever its stored scope says.
+        canSendRequest:
+          !isDeletedUser &&
+          canSendFriendRequest(profile, relation, {
+            status: searchRelationship.status,
+            // BOTH directions. A block by the target no longer always 404s —
+            // a pair with a conversation resolves — and `sendRequest` refuses
+            // either direction with FRIEND_BLOCKED, so offering the action here
+            // would put a button on a call the API rejects.
+            isBlockedEitherWay: Boolean(blockedByViewer || blockedByTarget),
+          }),
       },
     };
   },
@@ -524,6 +580,79 @@ export const userProfileService = {
     });
 
     logger.info(`User profile soft-deleted for userId=${data.userId}`);
+  },
+
+  /**
+   * Exact inverse of {@link softDeleteFromUserDeletedEvent}, driven by the
+   * `user.restored` event auth-service publishes when a Super Admin
+   * reactivates a soft-deleted account.
+   *
+   * This one method is the whole platform-wide restore, for the same reason
+   * deletion was one method: the delete never destroyed anything. It set
+   * `deletedAt` + `status` on this row and left every other column alone, and
+   * the anonymized identity the rest of the platform shows is produced from
+   * those flags at read time (the BulkGetUserSnapshots RPC in grpc/server.ts)
+   * or persisted as a denormalized copy of that read-time value
+   * (community-service member snapshots, chat-service's `user:snapshot:<id>`
+   * Redis entry). Nothing else in the system consumes `user.deleted` at all —
+   * chats, messages, attachments, group and community memberships,
+   * friendships, notifications and media were never touched.
+   *
+   * So clearing the two flags restores every server-side read path, and
+   * re-publishing `user.profile_updated` with the REAL identity and
+   * `isDeleted` absent walks the same fanout the deletion used, in reverse:
+   *   - chat-service   → drops `user:snapshot:<userId>`, so DM lists, group
+   *                      rosters and message headers re-pull the real name and
+   *                      avatar, and emits `user:profile_updated` to the user's
+   *                      peers and every active group room instead of the
+   *                      `user:account_deleted` it emitted on delete;
+   *   - community-service → overwrites every "Deleted Account" member snapshot
+   *                      and `lastActivityUsername` with the real values and
+   *                      re-broadcasts `community:member:updated` into each of
+   *                      the user's communities, refreshing live member lists;
+   *   - auth-service   → mirrors isProfileCompleted only (unchanged).
+   *
+   * Idempotent: a redelivered event finds the profile already ACTIVE and exits
+   * without republishing.
+   */
+  async restoreFromUserRestoredEvent(
+    data: UserRestoredPayload
+  ): Promise<void> {
+    const profile = await userProfileRepository.findByUserId(data.userId);
+
+    if (!profile) {
+      logger.warn(
+        `User profile missing for userId=${data.userId}, cannot restore`
+      );
+      return;
+    }
+
+    if (!profile.deletedAt && profile.status !== ProfileStatus.DELETED) {
+      logger.info(
+        `User profile already active for userId=${data.userId}, skipping`
+      );
+      return;
+    }
+
+    const restored = await userProfileRepository.restore(data.userId);
+
+    await userCache.invalidateProfile(data.userId);
+    // Symmetric to the `onUsernameReleased` the delete performed: the username
+    // is in use again, so the availability cache must stop offering it.
+    await userCache.onUsernameClaimed(restored.username);
+
+    publishProfileUpdatedSafe({
+      userId: data.userId,
+      username: restored.username,
+      displayName: buildDisplayName(restored.firstName, restored.lastName),
+      avatarObjectKey: restored.avatarUrl ?? null,
+      isProfileCompleted: isProfileComplete(restored),
+      updatedAt: data.restoredAt,
+      // Absent, not `false`: consumers branch on `=== true`, and an ordinary
+      // identity-change event is exactly what a restore is to them.
+    });
+
+    logger.info(`User profile restored for userId=${data.userId}`);
   },
 
   /**

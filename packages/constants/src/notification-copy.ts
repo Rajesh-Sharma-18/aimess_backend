@@ -183,6 +183,31 @@ export function renderNotificationData(
 export const COPY_REF_KEY = "copyRef";
 export const DATA_REF_KEY = "dataRef";
 
+/**
+ * The replay tickets carried by a stored notification row's `data`, ready to be
+ * spread into an outgoing socket frame's own `data`.
+ *
+ * Every realtime frame that carries a row's prose must carry its tickets too,
+ * or the gateway has nothing to re-render from and the frame reaches every
+ * session in whatever language the row was WRITTEN in. Publishers that rebuild
+ * `data` from scratch (the two `notification:updated` paths) silently dropped
+ * them; this exists so forwarding is one call rather than a shape each of them
+ * remembers to get right.
+ *
+ * Returns an empty object for a row with no tickets — authored content
+ * (announcements, ban notices) has none by design and must never be
+ * re-rendered.
+ */
+export function copyTickets(
+  data: Record<string, string> | null | undefined
+): Record<string, string> {
+  if (!data) return {};
+  return {
+    ...(data[COPY_REF_KEY] ? { [COPY_REF_KEY]: data[COPY_REF_KEY] } : {}),
+    ...(data[DATA_REF_KEY] ? { [DATA_REF_KEY]: data[DATA_REF_KEY] } : {}),
+  };
+}
+
 /** Communities are named whenever the payload carries the name; several legacy events don't. */
 const named = (
   name: string | null | undefined,
@@ -707,6 +732,32 @@ export const callCopy = register("call", {
         locale,
       }),
     }),
+});
+
+/**
+ * Account status set by a platform admin (ban / suspend / reinstate).
+ *
+ * These are the one class of notification a user cannot switch off — they are
+ * exempt from the category toggles and from quiet hours — which makes them the
+ * worst possible place to hard-code English, and where it stayed longest: the
+ * copy lived as string literals in auth-service's admin-user consumer, so a
+ * Vietnamese user learned they were banned in English and no read-time replay
+ * could recover it. Registered here like every other builder, so the row's
+ * ticket re-renders it per reader and per device.
+ */
+export const accountCopy = register("account", {
+  banned: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_BANNED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_BANNED_BODY", locale),
+  }),
+  suspended: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_SUSPENDED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_SUSPENDED_BODY", locale),
+  }),
+  reinstated: (): LocalizedCopy => (locale) => ({
+    title: t("NOTIF_ACCOUNT_REINSTATED_TITLE", locale),
+    body: t("NOTIF_ACCOUNT_REINSTATED_BODY", locale),
+  }),
 });
 
 export const authCopy = register("auth", {

@@ -53,7 +53,8 @@ Verified in the current tree. These paths are already per-session correct:
 | Surface                                | Mechanism                                                                                                                                                                                                          | Code                                                                                  |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | REST, all services                     | `localeMiddleware` reads `x-lang`, publishes it on an `AsyncLocalStorage` ambient context that serializers and outgoing gRPC calls both read                                                                       | `packages/utils/src/locale-middleware.ts`, `packages/constants/src/locale-context.ts` |
-| Socket handshake                       | `resolveHandshakeLocale` reads `auth.lang` → `auth.locale` → `query.lang` → `x-lang` → `Accept-Language`. Client-sent values win over headers **on purpose** — a browser cannot set headers on a websocket upgrade | `apps/api-gateway/src/sockets/auth.middleware.ts:67`                                  |
+| Socket handshake                       | `resolveHandshakeLocale` reads `lang`/`locale`/`language` from `auth`, then the same three from `query`, then `x-lang` → `Accept-Language`. Client-sent values win over headers **on purpose** — a browser cannot set headers on a websocket upgrade. Logs `[socket:locale] source=…` naming the rung that answered | `apps/api-gateway/src/sockets/auth.middleware.ts:67`                                  |
+| Socket **ack** copy                    | `ackOk`/`ackError` render against the per-packet ambient locale (which `scopeSocketLocale` reads live off `socket.data.locale`), so a `locale:set` mid-connection moves ack copy too — the namespaces' connect-time `locale` is only the out-of-packet fallback | `apps/api-gateway/src/sockets/ack.ts`                                                 |
 | Live language switch on an open socket | `locale:set` packet mutates `socket.data.locale` in place; installed once in `scopeSocketLocale`, so all four namespaces (`/chat`, `/community`, `/notify`, `/stream`) get it                                      | `apps/api-gateway/src/sockets/locale-scope.ts`                                        |
 | Per-packet ambient locale              | `socket.use()` wraps every inbound packet in `runWithLocale`, so gRPC calls made by a socket handler forward `x-lang` too                                                                                          | `apps/api-gateway/src/sockets/locale-scope.ts:24`                                     |
 | Per-recipient socket fan-out           | `emitPersonalizedSender` walks the room's sockets and re-renders per socket instead of broadcasting one frame                                                                                                      | `apps/api-gateway/src/sockets/emit-personalized.ts`                                   |
@@ -296,6 +297,25 @@ All five read **one** persisted per-install value. Nothing may read the OS local
 C5 is what makes this robust rather than merely correct — it converges without depending on the
 change-time call landing. It is cheap: registration is an idempotent upsert keyed on the token, so a
 redundant call is a no-op row-touch.
+
+### Diagnosing C2 in production
+
+The gateway logs one line per handshake naming the rung that answered:
+
+```
+[socket:locale] resolved=vi source=default
+```
+
+`source=default` means **this connection declared no language at all** — the socket is now on
+`DEFAULT_LOCALE` (`vi` in production) and every ack and live frame it receives will be Vietnamese no
+matter what the account, the other sessions, or the REST calls from the same device say. It is a
+client-side finding, not a gateway one: nothing in the delivery path is keyed by user, so no other
+session's language can reach this socket. `source=auth.lang` / `query.lang` / `x-lang` /
+`accept-language` name the channel that did supply it.
+
+The field is accepted as `lang`, `locale` **or** `language`, in either `auth` or `query` — a client
+that spells it any of those six ways is honoured. Anything outside `en|vi|th` is ignored (never
+normalized onto the default).
 
 Both `auth` **and** `query` in C2 are required: which one survives depends on the negotiated
 transport, and browsers ignore `extraHeaders` on a websocket upgrade.

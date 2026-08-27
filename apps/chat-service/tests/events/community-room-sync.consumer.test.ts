@@ -3,7 +3,7 @@
  *
  * When `community.member.synced` reports a membership going INACTIVE (LEFT /
  * BANNED), the consumer hard-deletes the user's PERSONAL join-session onboarding
- * lines ("You joined the community" / "Your request to join was approved") so
+ * lines ("You joined the community" / "{admin} added you to the community") so
  * they never accumulate across join→leave→rejoin cycles (Telegram parity). The
  * delete is bounded by the event's `eventAt` so a redelivered stale "left" can't
  * purge a fresher rejoin line. ACTIVE syncs must NOT purge.
@@ -494,6 +494,11 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
       inviteCode: LINK_CODE,
       deepLink: "aimess://join?code=abc123",
       alreadyJoined: false,
+      // The live send path knows neither: the event carried no community type
+      // (this fixture predates it) and bulk-send never reads join requests.
+      // A historical read re-resolves both — see `enrichMessages`.
+      communityType: null,
+      joinRequestPending: false,
       status: "ACTIVE",
       canOpen: true,
     });

@@ -299,6 +299,15 @@ export type CommunityLastActivity =
       userId: null;
       username: null;
       preview: string;
+      /**
+       * The `@aimess/constants` message key `preview` was rendered from, for the
+       * parameter-less lifecycle sentences. Lets a reader (the gateway per
+       * socket, a client per language switch) re-render the row instead of
+       * displaying whichever language the producer happened to bake in. Absent
+       * = nothing to render from; `preview` is then the only answer. Mirrors
+       * `@aimess/shared-types`' CommunityLastActivity.
+       */
+      previewKey?: string;
       dateTime: number;
       /**
        * Offline-first identity of the message behind this activity. ADDITIVE:
@@ -719,10 +728,11 @@ export type CommunityInviteLinkData = {
   usedCount: number;
   /** When true, redeeming this link directly adds the member instead of creating a join request. */
   autoApprove: boolean;
+  /** LEGACY, always null: a link lives until it is revoked or spent. */
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
-  /** Computed: not revoked, not expired, not exhausted. */
+  /** Computed: not revoked and not exhausted. Links do not expire on a clock. */
   isActive: boolean;
   /** True when this represents the community's permanent invitation code (stored on the Community row, not a CommunityInviteLink row). */
   isPermanent: boolean;
@@ -775,6 +785,8 @@ export type PermanentInvitationLinkData = {
   appDeepLink: string;
   /** Epoch ms — when the code was first generated. */
   createdAt: number;
+  /** LEGACY, always null: a link lives until an admin revokes it. */
+  expiresAt: number | null;
 };
 
 /** Liked/favorited community record. */

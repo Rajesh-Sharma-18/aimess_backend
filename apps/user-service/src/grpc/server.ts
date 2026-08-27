@@ -13,7 +13,11 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 import { friendshipService } from "../services/friendship.service.js";
 import { buildDisplayName } from "../lib/profile-fields.util.js";
-import { SCHEMA_DEFAULT_SCOPE, scopeAdmits } from "../lib/privacy-scope.js";
+import {
+  SCHEMA_DEFAULT_SCOPE,
+  canSendFriendRequest,
+  scopeAdmits,
+} from "../lib/privacy-scope.js";
 import { avatarService } from "../services/avatar.service.js";
 import {
   buildFriendshipView,
@@ -289,7 +293,14 @@ export function startUserGrpcServer(): grpc.Server {
     ) => {
       void (async () => {
         try {
-          const { userIds } = call.request;
+          // Callers batch ids straight off their own rows, and not every one is
+          // a user id: `user.login_failed` audit rows carry the attempted
+          // USERNAME as targetId. `userId` is a uuid column, so a single
+          // non-uuid entry fails the whole `IN (…)` query and every profile in
+          // the batch comes back unresolved. Drop them here instead.
+          const userIds = [...new Set(call.request.userIds ?? [])].filter(
+            (id) => UUID_RE.test(id)
+          );
           const rows =
             await userProfileRepository.adminGetProfilesByIds(userIds);
           callback(null, { profiles: rows.map(toAdminProfileRecord) });
@@ -468,7 +479,7 @@ export function startUserGrpcServer(): grpc.Server {
             callback(null, { friendIds: [], relationships: [] });
             return;
           }
-          const [friendIds, { rows, blockedIds, blockedByIds }] =
+          const [friendIds, { rows, blockedIds, blockedByIds }, scopeByUser] =
             await Promise.all([
               friendshipRepository.findAcceptedFriendIdsForUser(
                 callerId,
@@ -478,7 +489,24 @@ export function startUserGrpcServer(): grpc.Server {
                 callerId,
                 candidateIds
               ),
+              // Add-friend eligibility for the whole candidate list in one
+              // query — see `canSendFriendRequest`.
+              userSettingsRepository.findFriendRequestScopes(candidateIds),
             ]);
+          // FRIENDS_OF_FRIENDS is the only scope needing the mutual-friend
+          // graph. Resolving it is one extra query for the WHOLE list (never
+          // per candidate, which would be an N+1), so only pay it when some
+          // candidate actually selected that scope.
+          const needsMutualFriends = candidateIds.some(
+            (id) => scopeByUser.get(id) === "FRIENDS_OF_FRIENDS"
+          );
+          const friendOfFriendIds = needsMutualFriends
+            ? new Set(
+                (await friendshipRepository.resolveViewerGraph(callerId))
+                  .friendOfFriendIds
+              )
+            : new Set<string>();
+          const friendIdSet = new Set(friendIds);
           const rowByPeer = new Map(
             rows.map((r) => [
               r.requesterId === callerId ? r.addresseeId : r.requesterId,
@@ -509,6 +537,33 @@ export function startUserGrpcServer(): grpc.Server {
               // ways, e.g. sending a group/community invite DM.
               blockedEitherWay:
                 blockedIds.has(userId) || blockedByIds.has(userId),
+              // The incoming direction on its own — `status` hides it and
+              // `blockedEitherWay` cannot separate it from the caller's own
+              // block under a mutual block. Consumed only by chat-service's
+              // pair-state resolver, which has to tell "you blocked them" from
+              // "they blocked you" to pick between an Unblock action and a
+              // disabled composer.
+              blockedByPeer: blockedByIds.has(userId),
+              // Same gate `friendshipService.sendRequest` enforces, so a
+              // private-chat / inbox peer never renders an Add Friend action
+              // the write path would reject.
+              canSendRequest: canSendFriendRequest(
+                {
+                  privacySettings: {
+                    whoCanSendFriendRequests: scopeByUser.get(userId) ?? null,
+                  },
+                },
+                {
+                  isSelf: userId === callerId,
+                  isFriend: friendIdSet.has(userId),
+                  isFriendOfFriend: friendOfFriendIds.has(userId),
+                },
+                {
+                  status: relationship.status,
+                  isBlockedEitherWay:
+                    blockedIds.has(userId) || blockedByIds.has(userId),
+                }
+              ),
             };
           });
           callback(null, { friendIds, relationships });

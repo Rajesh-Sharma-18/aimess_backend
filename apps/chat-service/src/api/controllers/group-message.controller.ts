@@ -15,6 +15,8 @@ import {
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import { renderConvOverrides } from "../../lib/recipient-override-render.js";
+import { recalcConvAfterSystemLineRetraction } from "../../events/recalc-conv-after-retraction.js";
+import { publishConvEffectiveLastLoss } from "../../events/publish-effective-last-loss.js";
 import { unpinAfterDelete } from "../../lib/pin-after-delete.js";
 import {
   autoDeleteWireFields,
@@ -504,8 +506,14 @@ export class GroupMessageController {
 
     // Keep pin state consistent with the delete: forEveryone unpins for the
     // whole room, forMe only for the deleting user. See lib/pin-after-delete.
+    // The pin hook can RETRACT the "<actor> pinned a message" system line, which
+    // is itself a room message and is very often the room's current last one.
+    // The recalculation below must therefore run AFTER it — a recalc racing the
+    // retraction re-points the snapshot at a line that is about to be
+    // tombstoned, and the list then previews a deleted message forever.
+    let pinCleanup: Promise<void> = Promise.resolve();
     if (result?.roomId) {
-      void unpinAfterDelete({
+      pinCleanup = unpinAfterDelete({
         redis: this.redis,
         pinService: this.pinService,
         kind: "DIRECT",
@@ -521,10 +529,25 @@ export class GroupMessageController {
     // who personally hid the new previous-visible message never sees it.
     if (result?.roomId && scope === "forEveryone") {
       const rId = result.roomId;
-      void this.messageService
-        .recalculateLastMessageAfterDelete(rId, messageId)
+      void pinCleanup
+        .then(() =>
+          this.messageService.recalculateLastMessageAfterDelete(rId, messageId)
+        )
         .then((recalc) => {
-          if (recalc === null) return; // not the last message — no-op
+          if (recalc === null) {
+            // The SHARED snapshot did not move — but a member who had hidden
+            // everything newer than the removed message was previewing IT.
+            // See events/publish-effective-last-loss.ts.
+            return publishConvEffectiveLastLoss({
+              redis: this.redis,
+              type: "GROUP",
+              roomId: rId,
+              recipientIds: () => this.messageService.getActiveMemberIds(rId),
+              deletedMessageCreatedAt: result.createdAt,
+              resolveLosers: (rid, at, ids) =>
+                this.messageService.resolveEffectiveLastLosers(rid, at, ids),
+            });
+          }
           const preview = buildMessagePreview(
             recalc.messageType,
             recalc.content
@@ -684,6 +707,19 @@ export class GroupMessageController {
         })
       );
     }
+    // Switching pins retracts the REPLACED pin's "pinned a message" system
+    // line. That line is an ordinary room message and is often the room's last
+    // one, so the snapshot must be repaired or the list previews a tombstone.
+    if (result.replacedPin?.pinSystemMessageId) {
+      await recalcConvAfterSystemLineRetraction({
+        redis: this.redis,
+        type: "GROUP",
+        roomId,
+        retractedMessageId: result.replacedPin.pinSystemMessageId,
+        messageService: this.messageService,
+        fetchRecipients: () => this.messageService.getActiveMemberIds(roomId),
+      });
+    }
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
@@ -708,6 +744,18 @@ export class GroupMessageController {
         },
       })
     );
+    // The unpin retracted the "pinned a message" system line — see the pin
+    // handler above for why the room snapshot has to be repaired after it.
+    if (result.retractedSystemMessageId) {
+      await recalcConvAfterSystemLineRetraction({
+        redis: this.redis,
+        type: "GROUP",
+        roomId,
+        retractedMessageId: result.retractedSystemMessageId,
+        messageService: this.messageService,
+        fetchRecipients: () => this.messageService.getActiveMemberIds(roomId),
+      });
+    }
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));

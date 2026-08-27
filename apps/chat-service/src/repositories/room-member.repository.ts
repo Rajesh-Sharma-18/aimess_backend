@@ -17,6 +17,7 @@ export class RoomMemberRepository {
     userId: string,
     data: Record<string, unknown>
   ): Promise<RoomMember> {
+    const joinedAt = (data.joinedAt as Date) ?? new Date();
     return this.prisma.roomMember.upsert({
       where: { roomId_userId: { roomId, userId } },
       create: {
@@ -24,7 +25,15 @@ export class RoomMemberRepository {
         userId,
         status: (data.status as string) ?? "active",
         role: (data.role as string) ?? "member",
-        joinedAt: (data.joinedAt as Date) ?? new Date(),
+        joinedAt,
+        // Seed the read pointer to the join time so a fresh member's derived
+        // unread window starts at "now", not epoch 0. Without this, a null
+        // lastReadAt makes countUnreadBulk treat EVERY community-wide message
+        // ever sent (all pre-join history) as unread — a phantom badge the
+        // moment you join. Only the CREATE branch sets it; updates (role change,
+        // mute, ban, rejoin) never touch lastReadAt (data never carries it), so
+        // a real read pointer is never clobbered.
+        lastReadAt: (data.lastReadAt as Date) ?? joinedAt,
         leftAt: (data.leftAt as Date) ?? null,
         bannedAt: (data.bannedAt as Date) ?? null,
         banInfo: (data.banInfo as object) ?? null,

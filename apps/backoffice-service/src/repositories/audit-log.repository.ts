@@ -16,6 +16,7 @@ import type {
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import { communityClient } from "../grpc/community.client.js";
 import { userClient } from "../grpc/user.client.js";
+import { streamClient } from "../grpc/stream.client.js";
 import { logger } from "@aimess/logger";
 import {
   MANDATORY_AUDIT_ACTIONS,
@@ -86,9 +87,18 @@ type ResolvableRow = Pick<
  * column was printing a bare uuid for every row, so a reader could not tell who
  * was banned without pasting the id into another screen. These are the target
  * types whose display name is resolvable from a service backoffice already talks
- * to; anything else (session, report, livestream, …) keeps showing its id.
+ * to; anything else (report, announcement, …) keeps showing its id.
  */
-const NAMED_TARGET_TYPES = new Set(["user", "admin", "community", "session"]);
+const NAMED_TARGET_TYPES = new Set([
+  "user",
+  "admin",
+  "community",
+  "session",
+  // stream (host-ended, from stream-service) and livestream (admin actions) both
+  // name the stream's creator — a bare stream id is meaningless in the UI.
+  "stream",
+  "livestream",
+]);
 
 /**
  * Resolves every row's performer AND target display name in ONE batch per source.
@@ -114,8 +124,38 @@ async function buildRowResolver(rows: ResolvableRow[]): Promise<{
   const adminIds = [
     ...new Set([...actorIdsOf("ADMIN"), ...targetIdsOf("admin")]),
   ];
-  const userIds = [...new Set([...actorIdsOf("USER"), ...targetIdsOf("user")])];
   const communityIds = [...new Set(targetIdsOf("community"))];
+  const streamIds = [
+    ...new Set([...targetIdsOf("stream"), ...targetIdsOf("livestream")]),
+  ];
+
+  // Streams resolve first so their creator ids join the user-profile batch —
+  // the Target column names the host, not the opaque stream id.
+  const streamMap = streamIds.length
+    ? await streamClient
+        .adminListStreams({
+          restrictStreamIds: streamIds,
+          page: 1,
+          limit: streamIds.length,
+        })
+        .then(
+          (r) => new Map(r.streams.map((s) => [s.id, s]))
+        )
+        .catch((error: unknown) => {
+          logger.warn(
+            `Audit log target lookup failed (stream-service): ${String(error)}`
+          );
+          return new Map<string, { creatorId: string; title: string }>();
+        })
+    : new Map<string, { creatorId: string; title: string }>();
+
+  const userIds = [
+    ...new Set([
+      ...actorIdsOf("USER"),
+      ...targetIdsOf("user"),
+      ...[...streamMap.values()].map((s) => s.creatorId),
+    ]),
+  ];
 
   const [admins, profiles, communities] = await Promise.all([
     adminIds.length
@@ -127,7 +167,7 @@ async function buildRowResolver(rows: ResolvableRow[]): Promise<{
     userIds.length
       ? userClient.adminGetProfilesByIds(userIds).catch((error: unknown) => {
           logger.warn(
-            `Audit log performer lookup failed (user-service): ${String(error)}`
+            `Audit log performer lookup failed (user-service, ${userIds.length} ids): ${String(error)}`
           );
           return [];
         })
@@ -169,6 +209,12 @@ async function buildRowResolver(rows: ResolvableRow[]): Promise<{
       return row.actorType === "ADMIN"
         ? (adminMap.get(row.actorId)?.name ?? null)
         : displayNameOf(row.actorId);
+    }
+    if (row.targetType === "stream" || row.targetType === "livestream") {
+      const stream = streamMap.get(row.targetId);
+      if (!stream) return null;
+      // Host name preferred; stream title is the readable fallback.
+      return displayNameOf(stream.creatorId) ?? stream.title ?? null;
     }
     return communities.get(row.targetId)?.name ?? null;
   };

@@ -14,8 +14,7 @@ export class PrivateRoomController {
 
   // Same id-shape disambiguation as getRoomDetails below: a caller that POSTs
   // the room's OWN id here (rather than a peer's userId) almost certainly
-  // wants that room's details, not "create a room with peer <roomId>" (which
-  // would 403 CHAT_FRIENDSHIP_REQUIRED — a bogus id is never a real friend).
+  // wants that room's details, not "create a room with peer <roomId>".
   // Routes to the same read-only, friendship-independent lookup as the GET
   // handler so this endpoint can never misfire a friendship gate off a room id.
   getOrCreateRoom = asyncHandler(async (req: Request, res: Response) => {
@@ -30,12 +29,18 @@ export class PrivateRoomController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(details));
   });
 
+  // THE pair-state resolver — every entry point that can open a DM (chat list,
+  // search, recent searches, contact list, profile, group-member profile,
+  // notification tap, deep link, forward target) is meant to render from this
+  // one response, so the same pair cannot resolve to two different screens.
+  //
   // Accepts EITHER the room's own id (`prv_<id>` — see lib/room-id.ts, a pure
   // read, never creates, never friendship-gated) OR a peer's userId (get-or-
-  // create + friendship-gated on first contact) — same URL shape, disambiguated
-  // by the id's own format so existing peerId-based clients keep working
-  // unchanged. See PrivateRoomService.getRoomDetailsById's doc for why a room
-  // must be reachable by its own id independently of friendship state.
+  // create for friends; a `pairState` verdict for everyone else, where this
+  // used to 403) — same URL shape, disambiguated by the id's own format so
+  // existing peerId-based clients keep working unchanged. Both branches carry
+  // `pairState`; read that before `friendship`/`relationship`, which each
+  // describe one axis and cannot decide a screen on their own.
   getRoomDetails = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const idOrPeerId = req.params.peerId as string;

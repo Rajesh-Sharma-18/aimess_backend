@@ -20,6 +20,7 @@ import {
   STORED_TEXT_LOCALE,
   t,
   type CommunitySystemMessageType,
+  type MessageKey,
   type SupportedLocale,
 } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
@@ -325,7 +326,53 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
  */
 const LAST_ACTIVITY_INELIGIBLE_TYPES = new Set(["removal"]);
 
-const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
+/** Catalog key behind {@link SELF_JOIN_ACTIVITY_PREVIEW} — rides on the wire so
+ *  every reader re-renders it in their own language (CommunityLastActivity.previewKey). */
+const SELF_JOIN_ACTIVITY_PREVIEW_KEY = "SYS_COMMUNITY_MEMBER_JOINED_SELF";
+
+const SELF_JOIN_ACTIVITY_PREVIEW = t(
+  SELF_JOIN_ACTIVITY_PREVIEW_KEY,
+  STORED_TEXT_LOCALE
+);
+
+/**
+ * The PERSONAL chat SYSTEM line posted to a user the moment their membership
+ * goes ACTIVE, chosen by the path that created it. The copy must describe what
+ * ACTUALLY happened — an admin adding someone is not that someone joining, and
+ * it is certainly not their request being accepted:
+ *
+ *   add_members           → MEMBER_ADDED     "{admin} added you to the community"
+ *   join_request_approved → COMMUNITY_JOINED "You joined the community"
+ *   self_join / invite /  → COMMUNITY_JOINED "You joined the community"
+ *   invite_link_redeem
+ *
+ * An approval is the ADMIN's action; what happened to the requester is that
+ * they became a member, so their own line reads like every other join. The
+ * retired JOIN_REQUEST_APPROVED subtype is still resolvable for rows persisted
+ * before this (it re-renders as the COMMUNITY_JOINED sentence) — nothing writes
+ * it any more. The approval itself still reaches the requester as its own push
+ * / in-app notification (community.join_request_approved); only the chat line
+ * and the list preview changed.
+ *
+ * Both are PERSONAL + non-bumping + members of PERSONAL_JOIN_SESSION_TYPES,
+ * so they behave identically everywhere except in the sentence they render.
+ */
+const JOIN_LINE_TYPE_BY_VIA: Partial<
+  Record<CommunityMemberAddedPayload["via"], CommunitySystemMessageType>
+> = {
+  add_members: "MEMBER_ADDED",
+};
+
+/**
+ * English preview for the joiner's own community-LIST row, matched to the chat
+ * line above. Actor-less on purpose: community-service does not resolve the
+ * adding admin's display name (chat-service hydrates snapshots for the timeline
+ * line), and a preview reading "Someone added you…" is worse than the neutral
+ * passive form. Stored/wire text stays English; readers localize.
+ */
+const JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE: Record<string, MessageKey> = {
+  MEMBER_ADDED: "SYS_COMMUNITY_MEMBER_ADDED_SELF_SHORT",
+};
 
 /**
  * The single `buildLastActivityPreview()`-style helper for the community list:
@@ -496,6 +543,7 @@ export function buildLastActivity(community: {
       // source of truth, and rendered in the READER's language like every other
       // system line rather than the English the column was seeded with.
       preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
+      previewKey: "SYS_COMMUNITY_CREATED",
       dateTime: community.createdAt.getTime(),
       ...EMPTY_ACTIVITY_IDENTITY,
     };
@@ -550,6 +598,12 @@ export function buildLastActivity(community: {
       (systemType === "created"
         ? t("SYS_COMMUNITY_CREATED", currentLocale())
         : ""),
+    // Only the no-stored-preview fallback has a key to offer; a persisted
+    // preview is rebuilt from `lastActivitySystemType` by localizeSystemPreview
+    // above, which is a different (parameterized) mechanism.
+    ...(community.lastActivityPreview == null && systemType === "created"
+      ? { previewKey: "SYS_COMMUNITY_CREATED" as const }
+      : {}),
     dateTime,
     ...(systemType === "created" ? EMPTY_ACTIVITY_IDENTITY : identity),
   };
@@ -1411,17 +1465,19 @@ function generateInviteCode(): string {
   return randomBytes(16).toString("base64url");
 }
 
-/** Validates that an invite link is currently usable (not revoked, expired, or exhausted). */
+/**
+ * Validates that an invite link is currently usable: not revoked and not
+ * exhausted. A link never lapses on a clock — `expiresAt` is stamped by nothing
+ * and read by nobody — so a link shared months ago still works until an admin
+ * resets it.
+ */
 function assertInviteLinkActive(link: {
   revokedAt: Date | null;
-  expiresAt: Date | null;
   maxUses: number | null;
   usedCount: number;
 }): void {
   if (link.revokedAt)
     throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
-  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
-    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
 }
@@ -1527,11 +1583,8 @@ function toInviteLinkData(
   row: CommunityInviteLink,
   community: { type: CommunityType; handle: string }
 ): CommunityInviteLinkData {
-  const now = Date.now();
   const isActive =
-    !row.revokedAt &&
-    (!row.expiresAt || row.expiresAt.getTime() > now) &&
-    (row.maxUses === null || row.usedCount < row.maxUses);
+    !row.revokedAt && (row.maxUses === null || row.usedCount < row.maxUses);
   const share = resolveCommunityShareLink(community, row.code);
   return {
     linkId: row.id,
@@ -1544,7 +1597,9 @@ function toInviteLinkData(
     maxUses: row.maxUses,
     usedCount: row.usedCount,
     autoApprove: row.autoApprove,
-    expiresAt: row.expiresAt?.toISOString() ?? null,
+    // LEGACY field: nothing stamps an expiry any more. Kept on the response so
+    // older clients that read it still parse the payload.
+    expiresAt: null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isActive,
@@ -1553,33 +1608,32 @@ function toInviteLinkData(
 }
 
 /**
- * Build a `PermanentInvitationLinkData` DTO from a community that already has
- * its `invitationCode` set. Throws if called before the code is allocated
- * (guards against logic bugs — callers in this file always check first).
+ * Build a `PermanentInvitationLinkData` DTO from the community's CURRENT
+ * shareable invite-link row. `expiresAt` is always null: a link stays valid
+ * until an admin revokes it, exactly like a group link.
  */
-function toPermanentInvitationLinkData(community: {
-  id: string;
-  name: string;
-  invitationCode: string | null;
-  invitationCodeCreatedAt: Date | null;
-  createdAt: Date;
-}): PermanentInvitationLinkData {
-  if (!community.invitationCode) {
-    throw new Error(
-      `toPermanentInvitationLinkData called on community ${community.id} with no invitationCode`
-    );
-  }
+function toInvitationLinkData(
+  community: { id: string; name: string },
+  link: { code: string; createdAt: Date }
+): PermanentInvitationLinkData {
   return {
     communityId: community.id,
     communityName: community.name,
-    invitationCode: community.invitationCode,
-    invitationLink: buildInviteUrl(community.invitationCode),
-    appDeepLink: buildInviteDeepLink(community.invitationCode),
-    createdAt: (
-      community.invitationCodeCreatedAt ?? community.createdAt
-    ).getTime(),
+    invitationCode: link.code,
+    invitationLink: buildInviteUrl(link.code),
+    appDeepLink: buildInviteDeepLink(link.code),
+    createdAt: link.createdAt.getTime(),
+    expiresAt: null,
   };
 }
+
+/**
+ * LEGACY permanent invitation codes (the `invitationCode` column) are minted by
+ * nothing any more, but codes already shared stay resolvable — and, like every
+ * other link, they die only when someone revokes them. Nothing revokes a
+ * permanent code, so there is nothing here to assert.
+ */
+function assertPermanentCodeActive(): void {}
 
 /**
  * Synthesize a `CommunityInviteLinkData`-shaped object from a community's
@@ -1587,14 +1641,18 @@ function toPermanentInvitationLinkData(community: {
  * can return a consistent response shape for both regular links AND the
  * permanent community link without duplicating the rest of the join logic.
  *
+ * LEGACY: no path mints a permanent code any more — every invite link now
+ * — but codes already shared still resolve, so this shape is still produced
+ * for them.
+ *
  * Key invariants for permanent links:
  *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
  *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
  *  - `maxUses: null` → unlimited
- *  - `expiresAt: null` → never expires
+ *  - `expiresAt: null` / `isActive: true` → nothing expires or revokes a
+ *    permanent code
  *  - `revokedAt: null` → never revoked
  *  - `autoApprove: false` → request-to-join (PRIVATE default)
- *  - `isActive: true` → always active (lifecycle managed on the Community row)
  */
 function toPermanentLinkAsInviteLinkData(community: {
   id: string;
@@ -1752,11 +1810,6 @@ async function fetchCommunityLiveStreams(
 ): Promise<LiveStreamSummary[]> {
   return getStreamClient().getLiveStreamsByCommunity(communityId);
 }
-
-/** A fully-loaded Community row as returned by the repository (never null). */
-type CommunityRow = NonNullable<
-  Awaited<ReturnType<typeof communityRepository.findById>>
->;
 
 /** One `/mine` page row — the shared `mineActivitySelect` shape. */
 type MineActivityRow = Awaited<
@@ -2455,7 +2508,11 @@ export const communityService = {
         type: "created",
         userId: null,
         username: null,
-        preview: t("SYS_COMMUNITY_CREATED", currentLocale()),
+        // Wire text is English + a key, not `currentLocale()`: this payload is
+        // delivered over a SOCKET, and the creator's other devices may be in
+        // other languages than the one that issued this POST.
+        preview: t("SYS_COMMUNITY_CREATED", STORED_TEXT_LOCALE),
+        previewKey: "SYS_COMMUNITY_CREATED",
         dateTime: community.createdAt.getTime(),
       },
     };
@@ -4042,6 +4099,8 @@ export const communityService = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
+      /** The invite code that admitted them, when a link was involved. */
+      joinedViaInviteCode?: string | null;
     };
     memberCount: number;
     actorId: string;
@@ -4066,6 +4125,12 @@ export const communityService = {
     moderatorRecipientIds?: string[];
   }): Promise<void> {
     const { community, member, memberCount, actorId, via, requestId } = args;
+
+    // Which "you are now a member" line this path posts — see JOIN_LINE_TYPE_BY_VIA.
+    const joinLineType = JOIN_LINE_TYPE_BY_VIA[via] ?? "COMMUNITY_JOINED";
+    const joinPreviewKey =
+      JOIN_ACTIVITY_PREVIEW_KEY_BY_TYPE[joinLineType] ??
+      SELF_JOIN_ACTIVITY_PREVIEW_KEY;
 
     const moderatorRecipientIds =
       args.moderatorRecipientIds ??
@@ -4147,7 +4212,15 @@ export const communityService = {
         type: "system" as const,
         userId: null,
         username: null,
-        preview: SELF_JOIN_ACTIVITY_PREVIEW,
+        // Must match the chat line this same call posts below, or the new
+        // member's list row reads "You joined…" while their timeline reads
+        // "{admin} added you…".
+        // English on the wire, ALWAYS — `previewKey` is what makes it readable
+        // in the recipient's language. Rendering here in the ADDING ADMIN's
+        // request locale (this runs inside their POST) would ship one member's
+        // language to another member's device, which is the bug this pair fixes.
+        preview: t(joinPreviewKey, STORED_TEXT_LOCALE),
+        previewKey: joinPreviewKey,
         dateTime: new Date(args.eventAt).getTime(),
       };
       const addedAt = Date.now();
@@ -4171,6 +4244,9 @@ export const communityService = {
         via,
         joinedAt: member.joinedAt.getTime(),
         addedAt,
+        // Which invitation admitted them — lets a session flip only the card
+        // for THIS code instead of every card the community ever sent.
+        joinedViaInviteCode: member.joinedViaInviteCode ?? null,
         lastActivity: joinLastActivity,
       };
       await publishChatUserEvent(
@@ -4186,15 +4262,24 @@ export const communityService = {
       logger.warn(error);
     }
 
-    // Single shared activation side-effect: personal "You joined the community"
-    // system message, visible only to the joining user. Idempotent — the
-    // chat-service dedup key is `sys:COMMUNITY_JOINED:{eventAt}:u:{userId}`;
-    // RabbitMQ redeliveries and API retries with the same eventAt are no-ops.
+    // Single shared activation side-effect: the personal membership line,
+    // visible only to the joining user, worded per `via` (see
+    // JOIN_LINE_TYPE_BY_VIA). Idempotent — the chat-service dedup key is
+    // `sys:{TYPE}:{eventAt}[:{targetUserId}]:u:{userId}`; RabbitMQ redeliveries
+    // and API retries with the same eventAt are no-ops.
+    //
+    // MEMBER_ADDED names the admin, and chat-service resolves `actorName` from
+    // `triggeredByUserId` — so that one is triggered by the ACTOR. The other two
+    // are second-person, actor-less lines and stay triggered by the member (do
+    // not "tidy" them to actorId: it would change nothing they render but would
+    // change their dedup keys and their audit trail).
     publishCommunitySystemMessageForChatSafe({
       communityId: community.id,
-      systemMessageType: "COMMUNITY_JOINED",
-      metadata: {},
-      triggeredByUserId: member.userId,
+      systemMessageType: joinLineType,
+      metadata:
+        joinLineType === "MEMBER_ADDED" ? { targetUserId: member.userId } : {},
+      triggeredByUserId:
+        joinLineType === "MEMBER_ADDED" ? actorId : member.userId,
       eventAt: args.eventAt,
       visibleToUserId: member.userId,
     });
@@ -4204,9 +4289,13 @@ export const communityService = {
    * Fan out `community:join_request:updated` so every open admin/moderator
    * "Accept Requests" list adds, drops, or flips the affected request in real
    * time — no manual page reload. Reused by:
-   *   - createJoinRequest (status "PENDING" — a new request just landed), and
+   *   - createJoinRequest (status "PENDING" — a new request just landed),
    *   - approve/reject and their bulk variants (status "APPROVED"/"REJECTED"),
-   * so the realtime side-effect stays DRY across all five call sites.
+   *   - cancelJoinRequest (status "CANCELLED" — the requester withdrew), and
+   *   - every path that makes the requester a member some OTHER way (status
+   *     "AUTO_RESOLVED" — admin Add Member, and the approve/reject no-op guards),
+   * so the realtime side-effect stays DRY across all call sites. Clients treat
+   * every non-PENDING status identically: drop the row from the pending list.
    *
    * Dual delivery, mirroring `community:added`'s reasoning above: the
    * `community:<id>` room broadcast reaches admins who have the community
@@ -4217,7 +4306,7 @@ export const communityService = {
   async notifyJoinRequestDecided(args: {
     communityId: string;
     requestId: string;
-    status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+    status: CommunityJoinRequestUpdatedSocketPayload["status"];
     targetUserId: string;
     actorId: string;
     decidedAt: Date;
@@ -4311,7 +4400,7 @@ export const communityService = {
       joinedAt: Date;
       role: CommunityMemberRole;
     }[] = [];
-    const toCreate: string[] = [];
+    let toCreate: string[] = [];
 
     for (const userId of userIds) {
       // Caller is always ACTIVE in a community where they hold MODERATOR rank,
@@ -4345,12 +4434,27 @@ export const communityService = {
       }
     }
 
-    // Sequential single-collection writes — no $transaction (standalone Mongo).
     let added: CommunityMemberData[] = [];
 
     if (toReactivate.length > 0 || toCreate.length > 0) {
       const snapshotIds = [...toReactivate.map((m) => m.userId), ...toCreate];
       const snapshotMap = await fetchUserSnapshots(snapshotIds);
+
+      // THE FIX for "added while their join request was still pending": read the
+      // requests we are about to invalidate BEFORE the membership writes, so we
+      // can tell every open admin "Accept Requests" list exactly which rows to
+      // drop. The RESOLUTION itself is not done here — it rides inside each
+      // membership write's transaction (repository
+      // createMember / reactivateMemberWithSnapshot), so there is no window in
+      // which a member still holds an acceptable request. A request that lands
+      // between this read and the write is still resolved by that transaction;
+      // it just misses the socket nudge, and the server-side filter in
+      // listCommunityJoinRequests keeps it out of the admin list regardless.
+      const pendingToResolve =
+        await communityRepository.findPendingJoinRequestsForUsers(
+          communityId,
+          snapshotIds
+        );
 
       // Reactivation advances joinedAt to NOW (fresh membership). Capture the
       // persisted value so the response DTO + roster socket report the LATEST
@@ -4366,25 +4470,50 @@ export const communityService = {
               snapshotUsername: snap.username,
               snapshotDisplayName: snap.displayName,
               snapshotAvatarKey: snap.avatarObjectKey,
-            }
+            },
+            callerId
           );
           reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
       }
 
+      // Inserted one at a time rather than via createMany: a concurrent Accept
+      // on the same user's pending request can create the row between the
+      // partitioning read above and this write. Per-user inserts let that lose
+      // the race as a P2002 on the (communityId, userId) unique index — the
+      // loser drops to ALREADY_MEMBER instead of aborting the whole batch, so
+      // "admin A accepts while admin B adds" yields exactly one membership, one
+      // system message and one notification. Batches here are a handful of
+      // hand-picked users, so the extra round-trips are not a concern.
       if (toCreate.length > 0) {
-        const memberObjects = toCreate.map((userId) => {
+        const raced: string[] = [];
+        for (const userId of toCreate) {
           const snap = snapshotMap.get(userId)!;
-          return {
-            userId,
-            role: CommunityMemberRole.MEMBER,
-            status: CommunityMemberStatus.ACTIVE,
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-          };
-        });
-        await communityRepository.createManyMembers(communityId, memberObjects);
+          try {
+            await communityRepository.createMember(
+              {
+                communityId,
+                userId,
+                role: CommunityMemberRole.MEMBER,
+                status: CommunityMemberStatus.ACTIVE,
+                snapshotUsername: snap.username,
+                snapshotDisplayName: snap.displayName,
+                snapshotAvatarKey: snap.avatarObjectKey,
+              },
+              callerId
+            );
+          } catch (err) {
+            if (!isUniqueConstraintError(err)) throw err;
+            logger.info(
+              `addMembers: ${userId} already became a member of ${communityId} concurrently; skipping duplicate activation`
+            );
+            raced.push(userId);
+            skipped.push({ userId, reason: "ALREADY_MEMBER" });
+          }
+        }
+        if (raced.length > 0) {
+          toCreate = toCreate.filter((id) => !raced.includes(id));
+        }
       }
 
       const count = await communityRepository.countActiveMembers(communityId);
@@ -4461,6 +4590,26 @@ export const communityService = {
           actorId: callerId,
           via: "add_members",
           eventAt: new Date().toISOString(),
+          moderatorRecipientIds,
+        });
+      }
+
+      // Their pending join requests were resolved inside the membership
+      // transactions above; tell every open admin "Accept Requests" list to drop
+      // the rows so nobody is left staring at an Accept button for someone who
+      // is already a member. Only for users we actually activated — a candidate
+      // skipped as BANNED / NOT_FRIEND keeps their request. Best-effort, exactly
+      // like the approve/reject broadcasts.
+      const activatedUserIds = new Set(added.map((m) => m.userId));
+      for (const req of pendingToResolve) {
+        if (!activatedUserIds.has(req.userId)) continue;
+        await this.notifyJoinRequestDecided({
+          communityId,
+          requestId: req.id,
+          status: "AUTO_RESOLVED",
+          targetUserId: req.userId,
+          actorId: callerId,
+          decidedAt: new Date(),
           moderatorRecipientIds,
         });
       }
@@ -4905,10 +5054,41 @@ export const communityService = {
 
       const membership = membershipMap.get(communityId);
       if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+        // Not ACTIVE, but the row may still be SHOWING in the caller's list: a
+        // BANNED membership, or a LEFT one an admin unbanned, both stay visible
+        // until the caller dismisses them. Rejecting those with NOT_MEMBER left
+        // the only UI that can dismiss them (the list's own delete action)
+        // unable to, so the entry was stuck in the list forever. Route them
+        // through the same self-removal resolver the singular delete endpoint
+        // uses, which dismisses exactly those two and is idempotent otherwise.
+        // ponytail: one membership read per non-active id — the set is the
+        // handful of rows a user actually deletes, not the whole page.
+        const selfMembership = await communityRepository.findMemberByUserId(
+          communityId,
+          callerId
+        );
+        const outcome = await this.resolveSelfRemoval(
+          callerId,
+          communityMap.get(communityId),
+          selfMembership,
+          eventAt
+        );
+
+        if (outcome === "REMOVED" || outcome === "ALREADY_REMOVED") {
+          // Gone from the caller's list either way — the same success the
+          // ACTIVE path reports.
+          results.push({ communityId, status: "LEFT" });
+          leftCount++;
+          continue;
+        }
+
         results.push({
           communityId,
           status: "FAILED",
-          errorCode: "NOT_MEMBER",
+          errorCode:
+            outcome === "OWNER_CANNOT_DELETE"
+              ? "ADMIN_CANNOT_LEAVE"
+              : "NOT_MEMBER",
         });
         failedCount++;
         continue;
@@ -5544,7 +5724,8 @@ export const communityService = {
    * at an arbitrary hour (Telegram parity, product decision):
    *   - audit MEMBER_UNMUTED (metadata.source = "auto")
    *   - mirror the unmute into chat-service + emit `community:member:unmuted`
-   *   - post the "X was unmuted" system message
+   *   - retract the PERSONAL "You are muted until …" line and post the PERSONAL
+   *     "You were unmuted" line, exactly as a manual unmute does
    *
    * Note: enforcement correctness does NOT depend on this sweep — chat-service
    * applies lazy local expiry the instant `mutedUntil` passes. The sweep exists
@@ -5594,6 +5775,28 @@ export const communityService = {
           isMuted: false,
           mutedUntil: null,
           actorId: "",
+        });
+
+        // A lapsed timer IS an unmute, so the member's history must end up in
+        // the same state a moderator unmute leaves it in: retract the now-false
+        // "You are muted until …" line, then post the PERSONAL "You were
+        // unmuted" line. Without this the member was left staring at a mute
+        // notice for a mute that no longer exists, and only ever saw "You were
+        // unmuted" when a human happened to press the button. Push stays
+        // suppressed above — the LINE is history, not a ping.
+        publishCommunityMemberMuteRetractedForChatSafe({
+          communityId: row.communityId,
+          userId: row.userId,
+        });
+        this.emitMemberSystemMessage({
+          communityId: row.communityId,
+          systemMessageType: "MEMBER_UNMUTED",
+          // No human acted; the audit row above records the same actor. The
+          // target-facing sentence never names an actor, so this only ever
+          // reaches the client as metadata.actorUserId.
+          actorId: "system",
+          targetUserId: row.userId,
+          visibleToUserId: row.userId,
         });
       } catch (err) {
         // The row is already deleted (claim won), so the mute IS lifted and the
@@ -6699,7 +6902,9 @@ export const communityService = {
   async createJoinRequest(
     communityId: string,
     callerId: string,
-    message: string | null
+    message: string | null,
+    /** The invite code this request was raised from (invite-link redeem). */
+    inviteCode?: string | null
   ): Promise<CommunityJoinRequestData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -6745,6 +6950,7 @@ export const communityService = {
         communityId,
         userId: callerId,
         message,
+        inviteCode,
       });
       isNewOrRecycled = true;
     } else if (existingRequest.status === CommunityJoinReqStatus.PENDING) {
@@ -6752,7 +6958,8 @@ export const communityService = {
     } else {
       row = await communityRepository.recyclePendingJoinRequest(
         existingRequest.id,
-        message
+        message,
+        inviteCode
       );
       isNewOrRecycled = true;
     }
@@ -6836,17 +7043,81 @@ export const communityService = {
       }
     );
 
+    // SERVER-SIDE ENFORCEMENT (Section D4). The admin list is DERIVED, never a
+    // raw dump of the collection: a PENDING row belonging to a current member
+    // must not reach the client at all, or the client renders a working-looking
+    // Accept button for someone who is already in. The write paths make such a
+    // row impossible going forward (membership + resolution share a
+    // transaction), so anything caught here is a leftover from before that rule
+    // — resolve it on the spot so the row, and the count, correct themselves.
+    // Filtering only the PENDING page keeps this to one indexed lookup on a
+    // handful of ids, instead of a `notIn` over the whole roster.
+    let visibleRows = rows;
+    let visibleTotal = total;
+    if (rows.length > 0 && status === CommunityJoinReqStatus.PENDING) {
+      const members = await communityRepository.findMembersByUserIds(
+        communityId,
+        rows.map((r) => r.userId)
+      );
+      const activeMemberIds = new Set(
+        members
+          .filter((m) => m.status === CommunityMemberStatus.ACTIVE)
+          .map((m) => m.userId)
+      );
+      if (activeMemberIds.size > 0) {
+        const stale = rows.filter((r) => activeMemberIds.has(r.userId));
+        visibleRows = rows.filter((r) => !activeMemberIds.has(r.userId));
+        visibleTotal = Math.max(0, total - stale.length);
+        logger.warn(
+          `listCommunityJoinRequests: dropped ${stale.length} PENDING request(s) from current members of ${communityId}; repairing`
+        );
+        // Repair is best-effort and must never fail the read.
+        void communityRepository
+          .resolvePendingJoinRequests(
+            communityId,
+            stale.map((r) => r.userId),
+            callerId
+          )
+          .then(() =>
+            Promise.all(
+              stale.map((r) =>
+                this.notifyJoinRequestDecided({
+                  communityId,
+                  requestId: r.id,
+                  status: "AUTO_RESOLVED",
+                  targetUserId: r.userId,
+                  actorId: callerId,
+                  decidedAt: new Date(),
+                })
+              )
+            )
+          )
+          .catch((err: unknown) =>
+            logger.warn(
+              `listCommunityJoinRequests repair failed for ${communityId}: ${String(err)}`
+            )
+          );
+      }
+    }
+
     const items: CommunityJoinRequestWithUserData[] = [];
-    if (rows.length > 0) {
-      const snapshotMap = await fetchUserSnapshots(rows.map((r) => r.userId));
-      for (const row of rows) {
+    if (visibleRows.length > 0) {
+      const snapshotMap = await fetchUserSnapshots(
+        visibleRows.map((r) => r.userId)
+      );
+      for (const row of visibleRows) {
         const snap = snapshotMap.get(row.userId)!;
         const user = await buildUserSnapshotView(snap, row.userId);
         items.push({ ...toJoinRequestData(row), user });
       }
     }
 
-    return buildPaginatedResponse(items, total, params.page, params.limit);
+    return buildPaginatedResponse(
+      items,
+      visibleTotal,
+      params.page,
+      params.limit
+    );
   },
 
   async listMyJoinRequests(
@@ -6909,18 +7180,52 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
     }
 
-    // Idempotent: already-APPROVED requests return the existing member row.
-    if (request.status === CommunityJoinReqStatus.APPROVED) {
-      const existing = await communityRepository.findMemberByUserId(
-        communityId,
-        request.userId
-      );
-      if (existing) {
-        return {
-          request: toJoinRequestData(request),
-          member: await toMemberData(existing),
-        };
+    // Membership is read FIRST, before the request's own status, because the
+    // requester being a member already settles the call regardless of what the
+    // row says — see the no-op branch below.
+    const targetMember = await communityRepository.findMemberByUserId(
+      communityId,
+      request.userId
+    );
+
+    // SERVER-SIDE ENFORCEMENT (Section D1). A stale admin client can always hold
+    // a rendered Accept button for someone who has since become a member — added
+    // directly, invited, self-joined on a public community, or accepted by a
+    // second admin a moment earlier. Approving here must NOT create a second
+    // membership, must NOT re-announce a join, and must NOT resurrect the
+    // request. It is a graceful no-op that returns the current truth.
+    if (targetMember?.status === CommunityMemberStatus.ACTIVE) {
+      let settled = request;
+      if (request.status === CommunityJoinReqStatus.PENDING) {
+        // Self-heal a row left PENDING by a membership write that predates the
+        // atomic resolution (or by a request filed during the write). Resolved
+        // as AUTO_RESOLVED, never APPROVED: this admin did not grant it.
+        settled = await communityRepository.updateJoinRequest(requestId, {
+          status: CommunityJoinReqStatus.AUTO_RESOLVED,
+          decidedBy: callerId,
+          decidedAt: new Date(),
+        });
+        await this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt: new Date(),
+        });
       }
+      logger.info(
+        `approveJoinRequest no-op: ${request.userId} is already an ACTIVE member of ${communityId} (request=${requestId}, status=${settled.status})`
+      );
+      return {
+        request: toJoinRequestData(settled),
+        member: await toMemberData(targetMember),
+      };
+    }
+
+    // Not a member. An APPROVED row with no member row is a torn write — re-run
+    // the activation below rather than returning a lie.
+    if (request.status === CommunityJoinReqStatus.APPROVED) {
       logger.warn(
         `approveJoinRequest: APPROVED request ${requestId} has no member row; re-writing`
       );
@@ -6928,23 +7233,6 @@ export const communityService = {
       throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
     }
 
-    // A12 race: re-read member state.
-    const targetMember = await communityRepository.findMemberByUserId(
-      communityId,
-      request.userId
-    );
-    if (targetMember?.status === CommunityMemberStatus.ACTIVE) {
-      // Already a member — mark request APPROVED + return idempotently.
-      const updated = await communityRepository.updateJoinRequest(requestId, {
-        status: CommunityJoinReqStatus.APPROVED,
-        decidedBy: callerId,
-        decidedAt: new Date(),
-      });
-      return {
-        request: toJoinRequestData(updated),
-        member: await toMemberData(targetMember),
-      };
-    }
     if (targetMember?.status === CommunityMemberStatus.BANNED) {
       // Defensive: close the request out as REJECTED before throwing.
       try {
@@ -6973,18 +7261,58 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        }
+        },
+        callerId,
+        // The invitation that started this join, carried across the approval.
+        request.inviteCode
       );
     } else {
-      await communityRepository.createMember({
-        communityId,
-        userId: request.userId,
-        role: CommunityMemberRole.MEMBER,
-        status: CommunityMemberStatus.ACTIVE,
-        snapshotUsername: snap.username,
-        snapshotDisplayName: snap.displayName,
-        snapshotAvatarKey: snap.avatarObjectKey,
-      });
+      try {
+        await communityRepository.createMember(
+          {
+            communityId,
+            userId: request.userId,
+            role: CommunityMemberRole.MEMBER,
+            status: CommunityMemberStatus.ACTIVE,
+            snapshotUsername: snap.username,
+            snapshotDisplayName: snap.displayName,
+            snapshotAvatarKey: snap.avatarObjectKey,
+            joinedViaInviteCode: request.inviteCode,
+          },
+          callerId
+        );
+      } catch (err) {
+        // Lost the race to a concurrent Add Member / second approve on the same
+        // user (unique index on communityId+userId). The other path already
+        // activated them and posted their join line, so fall back to the same
+        // graceful no-op as the D1 branch above instead of a 500 — exactly one
+        // membership, one system message, one notification.
+        if (!isUniqueConstraintError(err)) throw err;
+        const winner = await communityRepository.findMemberByUserId(
+          communityId,
+          request.userId
+        );
+        const settled = await communityRepository.updateJoinRequest(requestId, {
+          status: CommunityJoinReqStatus.AUTO_RESOLVED,
+          decidedBy: callerId,
+          decidedAt: new Date(),
+        });
+        await this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt: new Date(),
+        });
+        logger.info(
+          `approveJoinRequest: ${request.userId} was activated concurrently in ${communityId}; request ${requestId} auto-resolved`
+        );
+        return {
+          request: toJoinRequestData(settled),
+          member: await toMemberData(winner!),
+        };
+      }
     }
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -7092,6 +7420,39 @@ export const communityService = {
     if (!request || request.communityId !== communityId) {
       throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
     }
+
+    // SERVER-SIDE ENFORCEMENT (Section D2). A decline that arrives after the
+    // user already became a member — a stale admin list, or the other half of an
+    // add/decline race — must NEVER revoke that membership. Declining is a
+    // decision about a REQUEST, not a removal tool; removal has its own
+    // permission-checked endpoint. No-op with the current truth.
+    const targetMember = await communityRepository.findMemberByUserId(
+      communityId,
+      request.userId
+    );
+    if (targetMember?.status === CommunityMemberStatus.ACTIVE) {
+      let settled = request;
+      if (request.status === CommunityJoinReqStatus.PENDING) {
+        settled = await communityRepository.updateJoinRequest(requestId, {
+          status: CommunityJoinReqStatus.AUTO_RESOLVED,
+          decidedBy: callerId,
+          decidedAt: new Date(),
+        });
+        await this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt: new Date(),
+        });
+      }
+      logger.info(
+        `rejectJoinRequest no-op: ${request.userId} is already an ACTIVE member of ${communityId} (request=${requestId}, status=${settled.status})`
+      );
+      return toJoinRequestData(settled);
+    }
+
     if (request.status !== CommunityJoinReqStatus.PENDING) {
       throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
     }
@@ -7196,6 +7557,11 @@ export const communityService = {
 
     const approved: string[] = [];
     const bannedSkipped: string[] = [];
+    // Section D1, bulk form: requests whose user is ALREADY a member. They are
+    // not approvals — nobody granted anything — so they must not create a second
+    // membership, emit a join line, or push "your request was approved". They
+    // are closed out as AUTO_RESOLVED and reported as skipped.
+    const autoResolved: string[] = [];
     const decidedAt = new Date();
 
     for (const requestId of pending) {
@@ -7204,6 +7570,10 @@ export const communityService = {
 
       if (existing?.status === CommunityMemberStatus.BANNED) {
         bannedSkipped.push(requestId);
+        continue;
+      }
+      if (existing?.status === CommunityMemberStatus.ACTIVE) {
+        autoResolved.push(requestId);
         continue;
       }
 
@@ -7218,22 +7588,50 @@ export const communityService = {
         await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           request.userId,
-          snapshotData
+          snapshotData,
+          callerId
         );
-      } else if (
-        !existing ||
-        existing.status !== CommunityMemberStatus.ACTIVE
-      ) {
-        await communityRepository.createMember({
-          communityId,
-          userId: request.userId,
-          role: CommunityMemberRole.MEMBER,
-          status: CommunityMemberStatus.ACTIVE,
-          ...snapshotData,
-        });
+      } else {
+        try {
+          await communityRepository.createMember(
+            {
+              communityId,
+              userId: request.userId,
+              role: CommunityMemberRole.MEMBER,
+              status: CommunityMemberStatus.ACTIVE,
+              ...snapshotData,
+            },
+            callerId
+          );
+        } catch (err) {
+          // Concurrent activation won the unique index — same no-op rule as the
+          // single-request path.
+          if (!isUniqueConstraintError(err)) throw err;
+          autoResolved.push(requestId);
+          continue;
+        }
       }
 
       approved.push(requestId);
+    }
+
+    if (autoResolved.length > 0) {
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        autoResolved,
+        CommunityJoinReqStatus.AUTO_RESOLVED,
+        callerId,
+        decidedAt
+      );
+      for (const requestId of autoResolved) {
+        void this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: rowMap.get(requestId)!.userId,
+          actorId: callerId,
+          decidedAt,
+        });
+      }
     }
 
     if (approved.length > 0) {
@@ -7327,11 +7725,14 @@ export const communityService = {
       }
 
       logger.info(
-        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length}`
+        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length + autoResolved.length}`
       );
     }
 
-    return { approved, skipped: [...skipped, ...bannedSkipped] };
+    return {
+      approved,
+      skipped: [...skipped, ...bannedSkipped, ...autoResolved],
+    };
   },
 
   async bulkRejectJoinRequests(
@@ -7351,7 +7752,7 @@ export const communityService = {
     const rows = await communityRepository.findJoinRequestsByIds(requestIds);
     const rowMap = new Map(rows.map((r) => [r.id, r]));
 
-    const pending = requestIds.filter((id) => {
+    const candidates = requestIds.filter((id) => {
       const r = rowMap.get(id);
       return (
         r &&
@@ -7359,7 +7760,47 @@ export const communityService = {
         r.status === CommunityJoinReqStatus.PENDING
       );
     });
-    const skipped = requestIds.filter((id) => !pending.includes(id));
+
+    // Section D2, bulk form: a decline can never revoke an existing membership,
+    // so any candidate whose user is already ACTIVE drops out of the reject set
+    // and is closed as AUTO_RESOLVED instead.
+    const activeMembers = await communityRepository.findMembersByUserIds(
+      communityId,
+      candidates.map((id) => rowMap.get(id)!.userId)
+    );
+    const activeMemberIds = new Set(
+      activeMembers
+        .filter((m) => m.status === CommunityMemberStatus.ACTIVE)
+        .map((m) => m.userId)
+    );
+    const alreadyMember = candidates.filter((id) =>
+      activeMemberIds.has(rowMap.get(id)!.userId)
+    );
+    const pending = candidates.filter((id) => !alreadyMember.includes(id));
+    const skipped = [
+      ...requestIds.filter((id) => !candidates.includes(id)),
+      ...alreadyMember,
+    ];
+
+    if (alreadyMember.length > 0) {
+      const resolvedAt = new Date();
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        alreadyMember,
+        CommunityJoinReqStatus.AUTO_RESOLVED,
+        callerId,
+        resolvedAt
+      );
+      for (const requestId of alreadyMember) {
+        void this.notifyJoinRequestDecided({
+          communityId,
+          requestId,
+          status: "AUTO_RESOLVED",
+          targetUserId: rowMap.get(requestId)!.userId,
+          actorId: callerId,
+          decidedAt: resolvedAt,
+        });
+      }
+    }
 
     if (pending.length > 0) {
       const decidedAt = new Date();
@@ -7564,21 +8005,18 @@ export const communityService = {
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
     communityAccessPolicy.assertWritable(community);
 
-    // Batch fetch existing memberships, invite rows AND recipient-account
-    // eligibility in parallel. The eligibility gate is the SAME helper the
-    // invite-link bulk-share uses: without it this endpoint happily created
-    // invite rows (and DM cards) for deleted, suspended and blocked users.
-    const [existingMembers, existingInvites, ineligible] = await Promise.all([
-      communityRepository.findMembersByUserIds(communityId, userIds),
+    // Batch fetch invite rows AND recipient-account eligibility in parallel. The
+    // eligibility gate is the SAME helper the invite-link bulk-share uses:
+    // without it this endpoint happily created invite rows (and DM cards) for
+    // deleted, suspended and blocked users. Memberships are deliberately NOT
+    // fetched: neither an ACTIVE nor a BANNED membership blocks an invite here.
+    const [existingInvites, ineligible] = await Promise.all([
       communityRepository.findInvitesByUserIds(communityId, userIds),
       fetchInviteIneligibility(callerId, [
         ...new Set(userIds.filter((id) => id !== callerId)),
       ]),
     ]);
 
-    const membershipByUserId = new Map(
-      existingMembers.map((m) => [m.userId, m])
-    );
     const inviteByUserId = new Map(
       existingInvites.map((inv) => [inv.inviteeId, inv])
     );
@@ -7607,11 +8045,14 @@ export const communityService = {
       // inviting someone who was banned is a deliberate act of re-admission. The
       // invite row created below is the ban waiver (see findPendingInvite) —
       // accepting it lifts the ban; ignoring it leaves the ban fully in force.
-      const member = membershipByUserId.get(userId);
-      if (member?.status === CommunityMemberStatus.ACTIVE) {
-        results.push({ userId, outcome: "ALREADY_MEMBER" });
-        continue;
-      }
+      //
+      // An ACTIVE member is NOT skipped either: a moderator re-sending an
+      // invitation to someone already in the community is a deliberate act
+      // (re-surfacing the community in their DMs), and it creates no membership
+      // row of its own — `acceptInvite` short-circuits on an ACTIVE membership,
+      // and the invitation card resolves `alreadyJoined` at read time so it
+      // renders as "Open", not "Join". The ALREADY_MEMBER outcome is kept in the
+      // response contract for clients that still branch on it.
 
       const existing = inviteByUserId.get(userId);
       if (!existing) {
@@ -7716,11 +8157,22 @@ export const communityService = {
         const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
           callerId
         );
+        // user-service builds `displayName` from firstName+lastName ONLY, so a
+        // profile that never filled those in resolves to "" — and an empty
+        // `inviterName` is what makes the recipient's chat-list row re-render as
+        // "Someone shared a community invite" forever (the sentence is rebuilt per
+        // reader from `systemData.actorName`). Fall back to the handle, exactly as
+        // chat-service's `resolveDisplayName` does for the group-invite twin. Left
+        // undefined only when the identity lookup itself found nothing, so the
+        // reader-side "Someone" stays reserved for a sender we genuinely cannot name.
+        const inviterDisplayName =
+          inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
         for (const { inviteeId } of allInvited) {
           publishCommunityInviteLinkSharedForChatSafe({
             communityId,
             communityName: community.name,
             communityHandle: community.handle,
+            communityType: community.type,
             linkCode: shareLink.code,
             inviterId: callerId,
             recipientId: inviteeId,
@@ -7731,9 +8183,8 @@ export const communityService = {
             memberCount: community.memberCount,
             inviteUrl: shareLinkData.url,
             inviteDeepLink: shareLinkData.appDeepLink,
-            isPermanent:
-              shareLink.expiresAt === null && shareLink.maxUses === null,
-            inviterName: inviterSnapshot?.displayName,
+            isPermanent: shareLink.maxUses === null,
+            inviterName: inviterDisplayName,
             inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
           });
         }
@@ -8937,6 +9388,53 @@ export const communityService = {
       logger.info(
         `Community moderation status changed: community=${communityId} status=${String(target)} actor=${actorAdminId ?? "unknown"}`
       );
+
+      // Broadcast to connected clients so the closed/reopened banner flips
+      // without a refresh — same pattern the owner-close/reopen paths use.
+      // Fire-and-forget; a broadcast failure must not roll back the DB write.
+      void (async () => {
+        try {
+          const memberIds =
+            await communityRepository.findActiveMemberIds(communityId);
+          if (target === CommunityModerationStatus.SUSPENDED) {
+            const payload: CommunityClosedPayload = {
+              communityId,
+              status: "CLOSED",
+              closedAt: result.closedAt || Date.now(),
+              reason: reasonCode ?? "ADMIN_SUSPENDED",
+            };
+            await publishCommunityRoomEvent(
+              redis,
+              communityId,
+              "community:closed",
+              payload
+            );
+            await Promise.allSettled(
+              memberIds.map((mid) =>
+                publishChatUserEvent(redis, mid, "community:closed", payload)
+              )
+            );
+          } else {
+            const payload = { communityId };
+            await publishCommunityRoomEvent(
+              redis,
+              communityId,
+              "community:reopened",
+              payload
+            );
+            await Promise.allSettled(
+              memberIds.map((mid) =>
+                publishChatUserEvent(redis, mid, "community:reopened", payload)
+              )
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `community:${target === CommunityModerationStatus.SUSPENDED ? "closed" : "reopened"} broadcast failed for community=${communityId}: ${String(err)}`
+          );
+        }
+      })();
+
       // Force-end every live stream in this community on suspension. Same
       // rationale as the owner-triggered close/delete paths — a live broadcast
       // in a suspended community would keep publishing on a still-valid token.
@@ -8953,21 +9451,18 @@ export const communityService = {
   },
 
   // ---------------------------------------------------------------------------
-  // Permanent invitation link (PRIVATE communities only)
+  // Shareable invitation link (PRIVATE communities only)
   // ---------------------------------------------------------------------------
 
   /**
-   * Return — or lazily generate — the community's PERMANENT invitation code.
+   * Return — or mint — the community's CURRENT shareable invitation link.
    *
-   * Behaviour contract (Telegram-like):
-   *  - Code generated on the **first call** and persisted forever.
-   *  - **Every subsequent call returns the identical code** — no new code is ever
-   *    generated unless an admin explicitly calls a future "regenerate" endpoint.
-   *  - Updating the community name / avatar / description / settings does NOT
-   *    affect the code.
-   *  - Closing and reopening the community does NOT affect the code.
-   *  - 100 concurrent callers on a brand-new community collapse onto one winner
-   *    via the `setInvitationCodeOnce` atomic guard and all receive the same code.
+   * Behaviour contract:
+   *  - An invite link does not expire: repeated calls return the identical
+   *    code until someone revokes it, and only then does the next call mint a
+   *    fresh one.
+   *  - Updating the community, or closing and reopening it, does not affect the
+   *    live link.
    *
    * Authorization: any ACTIVE community member may retrieve the link.
    */
@@ -8990,63 +9485,8 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
 
-    const withCode = await this.ensurePermanentInvitationCode(community);
-    return toPermanentInvitationLinkData(withCode);
-  },
-
-  /**
-   * Internal: ensure a PRIVATE community has its permanent `invitationCode`
-   * allocated, returning the community row with a guaranteed non-null code.
-   *
-   * This is the SINGLE source of the get-or-create logic — both the dedicated
-   * `GET /communities/:id/invitation-link` endpoint and the bare
-   * `POST /communities/:id/invite-links` SSOT short-circuit funnel through here,
-   * so there is exactly one place that can ever mint a permanent code.
-   *
-   *  - **Fast path:** code already set → returns the row unchanged (zero writes).
-   *  - **Slow path (first call only):** generate a 128-bit base64url candidate,
-   *    persist it via the atomic `setInvitationCodeOnce` guard
-   *    (updateMany WHERE invitationCode IS NULL — no transaction, works on
-   *    standalone Mongo), and retry up to 3× on a lost race / unique collision.
-   *    A losing concurrent caller re-reads and returns the winner's code, so
-   *    100 simultaneous first-callers all converge on ONE code.
-   */
-  async ensurePermanentInvitationCode(
-    community: CommunityRow
-  ): Promise<CommunityRow> {
-    // Fast path — already allocated. Pure read, no write.
-    if (community.invitationCode) {
-      return community;
-    }
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const candidate = generateInviteCode();
-      const result = await communityRepository.setInvitationCodeOnce(
-        community.id,
-        candidate
-      );
-
-      if (result.count === 1) {
-        // We won — re-read to return the fully populated row.
-        const updated = await communityRepository.findById(community.id);
-        return updated!;
-      }
-
-      // Another concurrent request beat us (or a DB-level collision on the
-      // sparse unique index). Re-read to pick up the winning code.
-      const refreshed = await communityRepository.findById(community.id);
-      if (refreshed?.invitationCode) {
-        return refreshed;
-      }
-      // invitationCode still null — extremely unlikely. Loop with a new candidate.
-    }
-
-    // Last-resort re-read before giving up (covers the pathological 3-collision case).
-    const final = await communityRepository.findById(community.id);
-    if (final?.invitationCode) {
-      return final;
-    }
-    throw new Error("Failed to allocate permanent invitation code");
+    const link = await this.resolveOrCreateShareableLink(community.id, callerId);
+    return toInvitationLinkData(community, link);
   },
 
   /**
@@ -9084,6 +9524,9 @@ export const communityService = {
     request?: CommunityJoinRequestData;
     member?: CommunityMemberData;
   }> {
+    // Nothing to assert: like every other link, a legacy permanent code stays
+    // usable until it is revoked — and nothing revokes one.
+    assertPermanentCodeActive();
     communityAccessPolicy.assertWritable(community);
 
     const existing = await communityRepository.findMemberByUserId(
@@ -9147,7 +9590,8 @@ export const communityService = {
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
-      null
+      null,
+      code
     );
 
     return {
@@ -9167,7 +9611,6 @@ export const communityService = {
     callerId: string,
     input: {
       maxUses?: number;
-      expiresInMinutes?: number;
       autoApprove?: boolean;
     }
   ): Promise<CommunityInviteLinkData> {
@@ -9189,49 +9632,33 @@ export const communityService = {
 
     // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
     // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
-    // expiresInMinutes / autoApprove, the caller wants THE community's canonical
-    // invite link — not a fresh throwaway link. For PRIVATE communities we return
-    // the PERMANENT, never-changing code (lazily minted once via the shared
-    // `ensurePermanentInvitationCode` helper) shaped as a `CommunityInviteLinkData`
-    // so the response contract is unchanged. This is idempotent: repeated bare
-    // calls return the identical code with NO new rows, NO rate-limit consumption,
-    // and NO active-link-cap usage.
+    // autoApprove, the caller wants THE community's current invite link — not a
+    // fresh throwaway link per click. For PRIVATE communities we hand back the
+    // caller's live link, which is reused until someone revokes it, with NO
+    // rate-limit consumption and NO active-link-cap usage.
     //
     // PUBLIC communities fall through to the legacy path: their share URL is
     // handle-based and code-independent (already deterministic), so there is no
     // "code changes every call" problem to fix for them.
     //
-    // A PARAMETERIZED call (any of maxUses / expiresInMinutes / autoApprove
-    // present) is an explicit request for a custom temporary link and keeps the
-    // full legacy multi-link behavior below — preserving Expiring / Limited-use /
-    // Auto-approve links untouched.
+    // A PARAMETERIZED call (maxUses / autoApprove present) is an explicit
+    // request for a custom link and keeps the full legacy multi-link behavior
+    // below — preserving Limited-use / Auto-approve links untouched.
     const isDefaultCall =
-      input.maxUses == null &&
-      input.expiresInMinutes == null &&
-      input.autoApprove == null;
+      input.maxUses == null && input.autoApprove == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
-      const withCode = await this.ensurePermanentInvitationCode(community);
-      return toPermanentLinkAsInviteLinkData(
-        withCode as CommunityRow & { invitationCode: string }
-      );
-    }
-
-    // Abuse guards (now that every member can create links):
-    //  1. Per-user create rate limit (429 when exceeded).
-    //  2. Cap on simultaneously-active links one member owns in this community.
-    await assertInviteCreateRateLimit(callerId);
-    const activeOwned =
-      await communityRepository.countActiveInviteLinksByCreator(
-        communityId,
+      const link = await this.resolveOrCreateShareableLink(
+        community.id,
         callerId
       );
-    if (activeOwned >= env.COMMUNITY_INVITE_MAX_ACTIVE_LINKS_PER_MEMBER) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
+      return toInviteLinkData(link, community);
     }
 
-    const expiresAt = input.expiresInMinutes
-      ? new Date(Date.now() + input.expiresInMinutes * 60_000)
-      : null;
+    // Abuse guard: per-user create rate limit (429 when exceeded). The former
+    // cap on simultaneously-active links per member has been removed — a member
+    // may now hold any number of active invite links at once.
+    await assertInviteCreateRateLimit(callerId);
+
     const maxUses = input.maxUses ?? null;
     // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,
     // flow F5: a private link's primary path is "Request to Join" with moderator
@@ -9263,7 +9690,8 @@ export const communityService = {
           createdBy: callerId,
           maxUses,
           autoApprove,
-          expiresAt,
+          // A link lives until it is revoked or spent — never on a clock.
+          expiresAt: null,
         });
         break;
       } catch (err) {
@@ -9276,11 +9704,7 @@ export const communityService = {
       communityId,
       actorId: callerId,
       action: "INVITE_LINK_CREATED",
-      metadata: {
-        linkId: row.id,
-        maxUses,
-        expiresAt: expiresAt?.toISOString() ?? null,
-      },
+      metadata: { linkId: row.id, maxUses },
     });
 
     return toInviteLinkData(row, community);
@@ -9358,24 +9782,28 @@ export const communityService = {
   },
 
   /**
-   * The community's shareable invite link: the first ACTIVE link if one exists,
-   * otherwise a freshly minted permanent (never-expiring, unlimited-use) one.
+   * The community's shareable invite link: the caller's newest still-live link
+   * if they have one, otherwise a freshly minted unlimited-use link that never
+   * expires.
    *
-   * Shared by every path that needs a code to put on an invitation card — the
-   * invite-link Bulk Send and the direct member-invite fan-out — so both hand
-   * chat-service a link that resolves identically on the receiving end.
+   * Shared by EVERY path that needs a code to put on an invitation card — the
+   * bare `POST /:id/invite-links`, `GET /:id/invitation-link`, invite-link Bulk
+   * Send and the direct member-invite fan-out — so they all hand out the same
+   * code, and all roll over together the moment an admin resets it.
+   *
+   * Reuse deliberately ignores limited-use and auto-approve links: those are
+   * explicit throwaways, and handing one back here would let an exhausted or
+   * queue-skipping link masquerade as the community's own invite.
    */
   async resolveOrCreateShareableLink(
     communityId: string,
     callerId: string
   ): Promise<CommunityInviteLink> {
-    const { rows } = await communityRepository.listInviteLinks({
+    const live = await communityRepository.findLatestReusableInviteLink(
       communityId,
-      status: "active",
-      page: 1,
-      limit: 1,
-    });
-    if (rows.length > 0) return rows[0]!;
+      callerId
+    );
+    if (live) return live;
 
     let created: CommunityInviteLink | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -9490,10 +9918,8 @@ export const communityService = {
           throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
         }
       }
-      const now = Date.now();
       const isActive =
         !linkRow.revokedAt &&
-        (!linkRow.expiresAt || linkRow.expiresAt.getTime() > now) &&
         (linkRow.maxUses === null || linkRow.usedCount < linkRow.maxUses);
       if (!isActive) {
         throw new ForbiddenError("COMMUNITY_INVITE_LINK_INACTIVE");
@@ -9540,8 +9966,13 @@ export const communityService = {
     const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
       callerId
     );
-    const isPermanentLink =
-      linkRow.expiresAt === null && linkRow.maxUses === null;
+    // See `inviteMembers`: `displayName` alone is empty for a profile with no
+    // first/last name, which is what leaves the invite row saying "Someone".
+    const inviterDisplayName =
+      inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
+    // Every link now carries an expiry, so "permanent" can only mean the LEGACY
+    // community-row code, whose synthesized sentinel row uses the community id.
+    const isPermanentLink = linkRow.id === communityId;
 
     for (const recipientId of candidateIds) {
       // Recipient-account gate (deleted / suspended / blocked / missing). One
@@ -9567,22 +9998,20 @@ export const communityService = {
         });
         continue;
       }
-      if (member?.status === CommunityMemberStatus.ACTIVE) {
-        failures.push({
-          userId: recipientId,
-          code: "ALREADY_MEMBER",
-          message: "User is already a member of this community",
-        });
-        continue;
-      }
+      // An ACTIVE member is NOT refused: re-sharing the link with someone who
+      // already joined is a deliberate, harmless act (the card resolves
+      // `alreadyJoined` at read time and renders "Open", and redeeming is
+      // idempotent — it returns ALREADY_MEMBER with no write). Only a ban
+      // stops the send.
 
-      // Eligible (new, or a previously-LEFT member who may rejoin) → fan out.
+      // Eligible (new, already ACTIVE, or a previously-LEFT member) → fan out.
       // Existing fields are UNCHANGED; the enrichment fields are additive so the
       // chat-service consumer can render a rich card + push with no extra lookup.
       publishCommunityInviteLinkSharedForChatSafe({
         communityId,
         communityName: community.name,
         communityHandle: community.handle,
+        communityType: community.type,
         linkCode: linkRow.code,
         inviterId: callerId,
         recipientId,
@@ -9592,7 +10021,7 @@ export const communityService = {
         inviteUrl: linkData.url,
         inviteDeepLink: linkData.appDeepLink,
         isPermanent: isPermanentLink,
-        inviterName: inviterSnapshot?.displayName,
+        inviterName: inviterDisplayName,
         inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
       });
       sentUserIds.push(recipientId);
@@ -9721,7 +10150,11 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          }
+          },
+          undefined,
+          // Stamp the invitation that admitted them: the card for THIS code is
+          // the only one that may become "View Community".
+          link.code
         );
       } else {
         member = await communityRepository.createMember({
@@ -9732,6 +10165,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
+          joinedViaInviteCode: link.code,
         });
       }
       const count = await communityRepository.countActiveMembers(community.id);
@@ -9774,10 +10208,14 @@ export const communityService = {
       await burnUsageSlot();
     }
 
+    // A PRIVATE link admits nobody by itself — the request it raises carries the
+    // code, so the approval (whenever it lands) still knows WHICH invitation
+    // this membership came from.
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
-      null
+      null,
+      link.code
     );
     const updatedLink = await communityRepository.findInviteLinkById(link.id);
 
@@ -9801,13 +10239,14 @@ export const communityService = {
 
     // Permanent-code fallback: if no CommunityInviteLink row owns this code,
     // check whether it is the community's permanent invitation code instead.
-    // Permanent codes are never revoked/expired/exhausted, so assertInviteLinkActive
-    // is intentionally skipped.
+    // Permanent codes are never revoked or exhausted (no row, no usage counter),
+    // and nothing expires it — see `assertPermanentCodeActive`.
     if (!link) {
       const communityByCode =
         await communityRepository.findCommunityByInvitationCode(code);
       if (!communityByCode)
         throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+      assertPermanentCodeActive();
 
       const membership = await communityRepository.findMemberByUserId(
         communityByCode.id,
@@ -9854,7 +10293,8 @@ export const communityService = {
         invitationCode: code,
         inviteUrl: buildInviteUrl(code),
         appDeepLink: buildInviteDeepLink(code),
-        expiresAt: null, // permanent links never expire
+        // Legacy permanent code: no expiry, same as every link minted today.
+        expiresAt: null,
         creatorId: communityByCode.adminId,
       };
     }
@@ -9912,7 +10352,8 @@ export const communityService = {
       invitationCode: code,
       inviteUrl: buildInviteUrl(code),
       appDeepLink: buildInviteDeepLink(code),
-      expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
+      // LEGACY field: links no longer expire, so this is always null.
+      expiresAt: null,
       creatorId: link.createdBy,
     };
   },

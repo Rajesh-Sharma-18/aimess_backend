@@ -13,6 +13,7 @@ import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startGroupConsumer } from "./consumers/group.consumer.js";
 import { startConsumer } from "./consumers/notification.consumer.js";
 import { startFriendConsumer } from "./consumers/friend.consumer.js";
+import { startSessionLocaleConsumer } from "./consumers/session-locale.consumer.js";
 import { startSettingsConsumer } from "./consumers/settings.consumer.js";
 import { startSessionConsumer } from "./consumers/session.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
@@ -64,6 +65,10 @@ async function start() {
     await startConsumerSafe("admin-user consumer", startAdminUserConsumer);
     await startConsumerSafe("announcement consumer", startAnnouncementConsumer);
     await startConsumerSafe("settings consumer", startSettingsConsumer);
+    await startConsumerSafe(
+      "session-locale consumer",
+      startSessionLocaleConsumer
+    );
     await startConsumerSafe("session consumer", startSessionConsumer);
 
     // Backstop for tokens no revocation event will ever name (naturally

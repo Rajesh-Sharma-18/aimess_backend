@@ -385,13 +385,18 @@ describe("gRPC deleteCommunityMessage — forEveryone", () => {
     );
   });
 
-  it("skips updateMessageActivity when recalc is null (deleted message wasn't the room's last)", async () => {
+  it("skips updateMessageActivity when recalc is null and nobody's effective last was hit", async () => {
     const deps = makeDeps({
       communityMessageService: {
         deleteForAll: jest
           .fn()
           .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
         recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue(null),
+        // recalc null no longer means "publish nothing": a member who had hidden
+        // everything newer was still previewing the removed message. Empty map =
+        // nobody did, the common path. See publish-effective-last-loss.ts.
+        getActiveMemberIds: jest.fn().mockResolvedValue([TEST_USER_ID]),
+        resolveEffectiveLastLosers: jest.fn().mockResolvedValue(new Map()),
       },
     });
     const impl = createCommunityImpl(deps);
@@ -856,13 +861,15 @@ describe("gRPC deleteCommunityMessage forEveryone — socket content", () => {
     );
   });
 
-  it("no publishCommunityUpdatedSafe when recalc is null (middle message deleted)", async () => {
+  it("no publishCommunityUpdatedSafe when recalc is null and no member lost their effective last", async () => {
     const deps = makeDeps({
       communityMessageService: {
         deleteForAll: jest
           .fn()
           .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
         recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue(null),
+        getActiveMemberIds: jest.fn().mockResolvedValue([TEST_USER_ID]),
+        resolveEffectiveLastLosers: jest.fn().mockResolvedValue(new Map()),
       },
     });
     const impl = createCommunityImpl(deps);
@@ -874,6 +881,45 @@ describe("gRPC deleteCommunityMessage forEveryone — socket content", () => {
     });
 
     expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+
+  it("bumps ONLY the member whose effective last was the removed middle message", async () => {
+    const losers = new Map([[TEST_USER_ID, null]]);
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForAll: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        // The SHARED snapshot did not move (the removed message was not the
+        // room's last) — but this member had hidden everything newer than it, so
+        // their list row was previewing the message just removed for everyone.
+        recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue(null),
+        getActiveMemberIds: jest
+          .fn()
+          .mockResolvedValue([TEST_USER_ID, "other-member"]),
+        resolveEffectiveLastLosers: jest.fn().mockResolvedValue(losers),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forEveryone",
+    });
+
+    // Persisted overlay corrected — this is what survives a reload.
+    expect(updateMessageActivity).toHaveBeenCalledWith({
+      communityId: ROOM,
+      selfUserId: TEST_USER_ID,
+      selfPreview: "",
+    });
+    // Realtime bump to that member ONLY, never to the member whose row is
+    // still correct.
+    expect(pubCommunityUpdated).toHaveBeenCalledTimes(1);
+    const published = pubCommunityUpdated.mock.calls[0][0];
+    await expect(published.fetchMembers()).resolves.toEqual([TEST_USER_ID]);
+    expect(published).toMatchObject({ deleteRecalc: true, lastMessageAt: 0 });
   });
 });
 

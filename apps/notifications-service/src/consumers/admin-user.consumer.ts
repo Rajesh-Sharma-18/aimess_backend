@@ -1,5 +1,7 @@
 import { logger } from "@aimess/logger";
+import { accountCopy, type LocalizedCopy } from "@aimess/constants";
 import {
+  AdminUserEvents,
   type AdminUserNotifyPayload,
   type NotificationNavigation,
 } from "@aimess/shared-types";
@@ -21,6 +23,22 @@ import { pushToUser } from "../services/push.service.js";
  */
 const ADMIN_USER_NOTIFY_QUEUE = "admin.user.notify.queue";
 
+/**
+ * The localized builder behind each admin action.
+ *
+ * auth-service still publishes a rendered `title`/`body`, and they are still
+ * used — as the LEGACY FALLBACK for a type this build does not recognize. The
+ * builder is what makes the row follow its reader: `pushToUser` renders it in
+ * the recipient's language for the stored row, attaches the replay ticket so
+ * the Notification Center can re-render it after a language change, and renders
+ * it once per device locale for the tray.
+ */
+const NOTIFY_COPY_BUILDER: Record<string, (() => LocalizedCopy) | undefined> = {
+  [AdminUserEvents.USER_BANNED]: accountCopy.banned,
+  [AdminUserEvents.USER_SUSPENDED]: accountCopy.suspended,
+  [AdminUserEvents.USER_UNBANNED]: accountCopy.reinstated,
+};
+
 async function handleAdminUserNotify(
   type: string,
   data: unknown
@@ -39,6 +57,7 @@ async function handleAdminUserNotify(
     category: "systemEnabled",
     type,
     actorId,
+    copy: NOTIFY_COPY_BUILDER[type]?.(),
     title: p.title,
     body: p.body,
     data: {

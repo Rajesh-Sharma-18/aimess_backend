@@ -12,7 +12,36 @@
  * one place (`@aimess/constants` SOCKET_MESSAGES) — callers pass a MessageKey +
  * the per-connection locale, never a raw string.
  */
-import { t, type MessageKey, type SupportedLocale } from "@aimess/constants";
+import {
+  currentLocale,
+  t,
+  type MessageKey,
+  type SupportedLocale,
+} from "@aimess/constants";
+
+/**
+ * The language to answer THIS packet in.
+ *
+ * Every namespace resolves `socket.data.locale` once, in its `connection`
+ * handler, and hands that copy to all ~180 ack sites below. `locale:set` moves
+ * the locale of an ALREADY-OPEN connection (Settings → Language, no reconnect),
+ * so the copy goes stale the moment a session switches language: the socket's
+ * broadcasts moved (they read `socket.data.locale` per emit — see
+ * `emit-personalized.ts`) while its acks kept answering in the language the
+ * connection had started in.
+ *
+ * `scopeSocketLocale` installs a `socket.use()` that runs for every INBOUND
+ * packet and publishes the LIVE `socket.data.locale` as the ambient locale for
+ * the whole handler, so inside a handler the ambient value is by definition
+ * this socket's current language — and it is per socket, never per user, so two
+ * sessions of one account answering at the same moment answer in their own.
+ *
+ * The argument stays as the fallback for the rare ack raised outside an inbound
+ * packet, where there is no ambient locale to read.
+ */
+function ackLocale(fallback: SupportedLocale): SupportedLocale {
+  return currentLocale(fallback);
+}
 
 // Richer ack error taxonomy so clients can distinguish permanent vs transient
 // failures (and whether a blind retry is safe).
@@ -97,7 +126,7 @@ export function ackOk(
   locale: SupportedLocale,
   data?: unknown
 ): void {
-  const message = t(messageKey, locale);
+  const message = t(messageKey, ackLocale(locale));
   const response: AckSuccess =
     data === undefined
       ? { success: true, message }
@@ -128,13 +157,14 @@ export function ackError(
   detailKey?: string,
   retryAfter?: number
 ): void {
+  const viewerLocale = ackLocale(locale);
   const resolvedDetail = detailKey
-    ? t(detailKey as MessageKey, locale)
+    ? t(detailKey as MessageKey, viewerLocale)
     : undefined;
   const message =
     resolvedDetail && resolvedDetail !== detailKey
       ? resolvedDetail
-      : t(ACK_ERROR_MESSAGE[code], locale);
+      : t(ACK_ERROR_MESSAGE[code], viewerLocale);
   const err: AckError = {
     success: false,
     error: code,

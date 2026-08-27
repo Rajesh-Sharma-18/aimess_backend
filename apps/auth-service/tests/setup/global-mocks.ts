@@ -42,6 +42,13 @@ jest.mock("../../src/grpc/notification.client.js", () => ({
   recordSessionActionSafe: jest.fn(),
 }));
 
+// --- backoffice-service gRPC client: same import.meta/native-module problem.
+//     Defaults to "no admin owns this email" so existing email specs keep
+//     exercising the AuthUser-side rules; specs that care re-mock it.
+jest.mock("../../src/grpc/backoffice.client.js", () => ({
+  isAdminEmailTaken: jest.fn(async () => false),
+}));
+
 // --- External identity verifiers (pull in ESM-only google-auth-library /
 //     jose). Empty module by default; social-login specs re-mock with fns.
 jest.mock("../../src/lib/google-id-token.js", () => ({

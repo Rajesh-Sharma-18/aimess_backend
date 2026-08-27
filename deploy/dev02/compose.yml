@@ -92,6 +92,7 @@ services:
       AUTH_GRPC_PORT: "4001"
       AUTH_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_auth
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3006
+      BACKOFFICE_GRPC_URL: backoffice-service:4010
       TRUST_PROXY_HOPS: "1"
 
   # ===========================================================================

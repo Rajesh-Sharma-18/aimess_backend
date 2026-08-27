@@ -14,7 +14,7 @@ import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
-import { buildReactionActivityText } from "@aimess/constants";
+import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
@@ -28,6 +28,7 @@ import {
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import { getCommunityReconcileClient } from "./community.client.js";
+import { publishCommunityEffectiveLastLoss } from "../events/publish-effective-last-loss.js";
 import {
   convertMessageToPreview,
   buildPushPreview,
@@ -2353,8 +2354,17 @@ export function createMessagingImpl(
               const content = (m.content ?? {}) as {
                 text?: string;
                 files?: unknown[];
+                sticker?: Record<string, unknown>;
               };
-              const files = Array.isArray(content.files) ? content.files : [];
+              const baseFiles = Array.isArray(content.files)
+                ? content.files
+                : [];
+              // Stickers live in content.sticker (outside files[]) — fold it in
+              // so the admin transcript can render it via the shared attachment
+              // view; presign URL is already resolved on read.
+              const files = content.sticker
+                ? [...baseFiles, content.sticker]
+                : baseFiles;
               const firstFile = files[0] as Record<string, unknown> | undefined;
               const str = (v: unknown): string =>
                 typeof v === "string" ? v : "";
@@ -3228,8 +3238,28 @@ export function createCommunityImpl(
           const nextCursor = page.nextCursor ?? "";
           const hasMore = page.hasMore;
 
+          // content.sticker is not resolved by community toWire (unlike group's
+          // enrichForWire path); presign each here so the admin panel gets a
+          // usable download URL alongside the folded attachments entry.
+          const stickerFor = async (
+            m: Record<string, unknown>
+          ): Promise<Record<string, unknown> | null> => {
+            const raw = (
+              m.content as { sticker?: Record<string, unknown> } | undefined
+            )?.sticker;
+            if (!raw || typeof raw !== "object") return null;
+            const key = fileMediaKey(raw as MediaFileLike);
+            const url = key ? await resolveMediaUrl(key) : "";
+            return url ? { ...raw, url } : raw;
+          };
+          const stickers = await Promise.all(
+            messages.map((m) =>
+              stickerFor(m as unknown as Record<string, unknown>)
+            )
+          );
+
           callback(null, {
-            messages: messages.map((m) => ({
+            messages: messages.map((m, idx) => ({
               messageId: m.id,
               roomId: m.roomId,
               senderId: m.sentBy,
@@ -3245,9 +3275,12 @@ export function createCommunityImpl(
                   : undefined;
                 return (att?.url as string) ?? (att?.objectKey as string) ?? "";
               })(),
-              attachmentsJson: Array.isArray(m.attachments)
-                ? JSON.stringify(m.attachments)
-                : "[]",
+              attachmentsJson: (() => {
+                const base = Array.isArray(m.attachments) ? m.attachments : [];
+                const sticker = stickers[idx];
+                const merged = sticker ? [...base, sticker] : base;
+                return JSON.stringify(merged);
+              })(),
               reactionsJson: JSON.stringify(m.reactions ?? []),
               quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:
@@ -3824,8 +3857,15 @@ export function createCommunityImpl(
           // Keep pin state consistent with the delete — the same hook the REST
           // delete controller runs, so the socket path can't leave a pin behind
           // that REST would have cleared. See lib/pin-after-delete.
+          //
+          // AWAITED, and BEFORE the lastActivity recalculation below: the hook
+          // can RETRACT the "<actor> pinned a message" system line, which is
+          // itself a room message and is very often the room's current last
+          // one. A recalc that raced it would re-point lastActivity at a line
+          // about to be tombstoned, and the community list would preview a
+          // deleted message forever. `unpinAfterDelete` never throws.
           if (result?.roomId) {
-            void unpinAfterDelete({
+            await unpinAfterDelete({
               redis,
               pinService: deps.communityPinService,
               kind: "COMMUNITY",
@@ -3870,6 +3910,26 @@ export function createCommunityImpl(
                 communityId: req.communityId,
                 recalc: forEveryoneRecalc,
                 removedAt: result?.createdAt,
+              });
+            } else if (result?.createdAt) {
+              // The SHARED snapshot did not move — but a member who had hidden
+              // everything newer than the removed message was previewing IT.
+              // See events/publish-effective-last-loss.ts.
+              const lRoomId = result.roomId;
+              await publishCommunityEffectiveLastLoss({
+                redis,
+                communityId: req.communityId,
+                roomId: lRoomId,
+                memberIds: () =>
+                  deps.communityMessageService.getActiveMemberIds(lRoomId),
+                deletedMessageId: req.messageId,
+                deletedMessageCreatedAt: result.createdAt,
+                resolveLosers: (rid, at, ids) =>
+                  deps.communityMessageService.resolveEffectiveLastLosers(
+                    rid,
+                    at,
+                    ids
+                  ),
               });
             }
           }
@@ -4738,6 +4798,7 @@ export function createNotificationImpl(
             const payloadObj = (updated.payload ?? {}) as {
               title?: string;
               body?: string;
+              data?: Record<string, string>;
             };
             try {
               await publishUserSocketEvent(
@@ -4757,6 +4818,14 @@ export function createNotificationImpl(
                   data: {
                     actionTaken: req.action ?? "",
                     sessionId: req.sessionId,
+                    // Forward the row's replay tickets, exactly as
+                    // `notification:new` does. `title`/`body` above are the
+                    // account-language text baked at write time; without the
+                    // tickets the gateway has nothing to re-render from, so
+                    // tapping "It's Me" on a login alert rewrote the card in
+                    // the account's language on every session — including the
+                    // one that was reading it in another.
+                    ...copyTickets(payloadObj.data),
                   },
                 }
               );

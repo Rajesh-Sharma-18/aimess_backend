@@ -59,7 +59,14 @@ export function isEffectivelyClosed(c: CommunityLifecycleState): boolean {
 export function deriveStatus(c: {
   status?: CommunityStatus | null;
   statusClosedReasonCode?: string | null;
+  moderationStatus?: CommunityModerationStatus | null;
 }): CommunityWireStatus {
+  // Platform-suspended (admin-close via backoffice) is non-writable — surface
+  // as CLOSED so clients render the closed banner instead of only toasting
+  // COMMUNITY_SUSPENDED on send.
+  if (c.moderationStatus === CommunityModerationStatus.SUSPENDED) {
+    return "CLOSED";
+  }
   if (!isOwnerClosed(c)) return "ACTIVE";
   // Wire-only distinction: the DB value stays CLOSED, so every guard below
   // (and everywhere else) keeps treating a ban-close as an ordinary close.

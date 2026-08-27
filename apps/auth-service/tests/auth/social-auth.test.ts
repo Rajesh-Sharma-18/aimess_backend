@@ -43,6 +43,7 @@ import { authRepository } from "../../src/repositories/auth.repository.js";
 import { linkedAccountRepository } from "../../src/repositories/linked-account.repository.js";
 import { issueAuthTokens } from "../../src/lib/token.js";
 import { publishUserCreatedSafe } from "../../src/messaging/publish-user-created.js";
+import { isAdminEmailTaken } from "../../src/grpc/backoffice.client.js";
 
 const publishCreated = publishUserCreatedSafe as unknown as jest.Mock;
 const verifyGoogle = verifyGoogleIdToken as unknown as jest.Mock;
@@ -53,6 +54,8 @@ const linkRepo = linkedAccountRepository as unknown as Record<
   jest.Mock
 >;
 const issue = issueAuthTokens as unknown as jest.Mock;
+// Stubbed globally in tests/setup/global-mocks.ts; defaults to "not taken".
+const adminEmailTaken = isAdminEmailTaken as unknown as jest.Mock;
 
 const TOKENS = {
   accessToken: "access.jwt.token",
@@ -104,6 +107,10 @@ beforeEach(() => {
   linkRepo.findByProvider.mockResolvedValue(null);
   linkRepo.create.mockResolvedValue(undefined);
   issue.mockResolvedValue({ tokens: TOKENS, sessionId: "sess-1" });
+  // mockReset, not mockClear: a rejection set by one spec would otherwise
+  // survive into the next (clearMocks only clears recorded calls).
+  adminEmailTaken.mockReset();
+  adminEmailTaken.mockResolvedValue(false);
 });
 
 describe("POST /api/auth/google", () => {
@@ -222,7 +229,10 @@ describe("POST /api/auth/google", () => {
     });
   });
 
-  it("does NOT auto-link when the provider email is unverified (creates new instead)", async () => {
+  // An unverified provider email must never merge into the account that owns
+  // it (takeover), and it cannot found a second account on it either —
+  // AuthUser.email is unique. So the signup is refused outright.
+  it("does NOT auto-link when the provider email is unverified — refuses instead", async () => {
     verifyGoogle.mockResolvedValue({
       sub: "google-sub-123",
       email: "john@example.com",
@@ -235,9 +245,34 @@ describe("POST /api/auth/google", () => {
       .post("/api/auth/google")
       .send({ idToken: "valid-google-token" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.isNewUser).toBe(true);
-    expect(repo.findByEmail).not.toHaveBeenCalled();
+    expect(res.status).toBe(409);
+    expect(linkRepo.create).not.toHaveBeenCalled();
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+  });
+
+  it("refuses to create an account on an email an admin already owns", async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    adminEmailTaken.mockResolvedValue(true);
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(409);
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when backoffice-service cannot answer the admin check", async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    adminEmailTaken.mockRejectedValue(new Error("breaker open"));
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.status).toBe(503);
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the provider returns no email for a new user", async () => {
@@ -333,7 +368,8 @@ describe("POST /api/auth/apple", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.isNewUser).toBe(true);
     // Client-supplied email is NOT trusted as verified → must not auto-link.
-    expect(repo.findByEmail).not.toHaveBeenCalled();
+    // (findByEmail still runs, as the availability gate before account creation.)
+    expect(linkRepo.create).not.toHaveBeenCalled();
   });
 
   // Test 3 — Apple's name arrives ONLY in the first authorization response.

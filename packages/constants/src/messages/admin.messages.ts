@@ -121,6 +121,17 @@ export const ADMIN_MESSAGES = {
     th: "ผู้ใช้รายนี้ไม่ได้ถูกแบนอยู่",
   },
 
+  USER_NOT_DELETED: {
+    vi: "Tài khoản người dùng này chưa bị xóa",
+    en: "This user account has not been deleted.",
+    th: "บัญชีผู้ใช้นี้ยังไม่ถูกลบ",
+  },
+  USER_REACTIVATE_NOT_APPLIED: {
+    vi: "Không thể kích hoạt lại tài khoản lúc này. Vui lòng thử lại.",
+    en: "The account could not be reactivated right now. Please try again.",
+    th: "ไม่สามารถเปิดใช้งานบัญชีอีกครั้งได้ในขณะนี้ กรุณาลองใหม่",
+  },
+
   // ── Report moderation ───────────────────────────────────────────────────────
   REPORT_NOT_FOUND: {
     vi: "Không tìm thấy báo cáo",
@@ -173,6 +184,11 @@ export const ADMIN_MESSAGES = {
     en: "This email is already used by another admin.",
     th: "อีเมลนี้ถูกใช้โดยผู้ดูแลระบบรายอื่นแล้ว",
   },
+  ADMIN_EMAIL_TAKEN_BY_USER: {
+    vi: "Email này đã được sử dụng bởi một tài khoản người dùng",
+    en: "This email is already used by an app user account.",
+    th: "อีเมลนี้ถูกใช้โดยบัญชีผู้ใช้แอปแล้ว",
+  },
   ADMIN_ROLE_NOT_FOUND: {
     vi: "Không tìm thấy vai trò",
     en: "Role not found.",
@@ -202,6 +218,11 @@ export const ADMIN_MESSAGES = {
     vi: "Không thể vô hiệu hóa Super Admin cuối cùng",
     en: "Cannot deactivate the last remaining Super Admin.",
     th: "ไม่สามารถปิดใช้งานผู้ดูแลระบบสูงสุดคนสุดท้ายได้",
+  },
+  ADMIN_MUST_DEACTIVATE_BEFORE_DELETE: {
+    vi: "Vui lòng vô hiệu hóa tài khoản trước khi xóa",
+    en: "Deactivate the account before deleting it.",
+    th: "โปรดปิดใช้งานบัญชีก่อนลบ",
   },
 
   // ── Success: admin accounts & permissions ────────────────────────────────
@@ -238,6 +259,11 @@ export const ADMIN_MESSAGES = {
     vi: "Đã vô hiệu hóa tài khoản quản trị",
     en: "Admin account deactivated",
     th: "ปิดใช้งานบัญชีผู้ดูแลระบบแล้ว",
+  },
+  ADMIN_ACCOUNT_DELETE_SUCCESS: {
+    vi: "Đã xóa tài khoản quản trị",
+    en: "Admin account deleted",
+    th: "ลบบัญชีผู้ดูแลระบบแล้ว",
   },
   ADMIN_ACCOUNT_STATUS_UPDATED: {
     vi: "Đã cập nhật trạng thái tài khoản quản trị",
@@ -560,6 +586,11 @@ export const ADMIN_MESSAGES = {
     vi: "Đã gỡ cấm người dùng",
     en: "User unbanned",
     th: "ยกเลิกการแบนผู้ใช้แล้ว",
+  },
+  ADMIN_USER_REACTIVATED: {
+    vi: "Đã kích hoạt lại người dùng",
+    en: "User reactivated",
+    th: "เปิดใช้งานผู้ใช้อีกครั้งแล้ว",
   },
   ADMIN_USERS_BULK_BANNED: {
     vi: "Đã xử lý yêu cầu cấm hàng loạt",

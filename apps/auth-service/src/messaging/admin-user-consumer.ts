@@ -29,7 +29,15 @@ const ADMIN_USER_DLQ_ROUTING_KEY = "admin.user.queue.dead";
 
 const PREFETCH = 10;
 
-/** Human-readable notification copy per admin action. */
+/**
+ * LEGACY FALLBACK copy per admin action, in `STORED_TEXT_LOCALE` (English).
+ *
+ * Do NOT localize these here: this consumer runs on an admin's action and has
+ * no idea what language the affected USER reads in. notifications-service picks
+ * the matching `accountCopy` builder off the event type and renders it per
+ * recipient and per device (`admin-user.consumer.ts`); these strings only
+ * answer for an event type that build does not recognize.
+ */
 const NOTIFY_COPY: Record<string, { title: string; body: string } | undefined> =
   {
     [AdminUserEvents.USER_BANNED]: {

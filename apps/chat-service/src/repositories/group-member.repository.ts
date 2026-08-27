@@ -134,6 +134,7 @@ export class GroupMemberRepository {
       kickedAt: Date | null;
       moderationMuted: boolean;
       moderationMutedUntil: Date | null;
+      lastReadMessageId: string | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -142,6 +143,8 @@ export class GroupMemberRepository {
         roomId: true,
         role: true,
         unreadCount: true,
+        // The caller's own read watermark — the anchor an unread divider opens on.
+        lastReadMessageId: true,
         notificationSettings: true,
         clearedAt: true,
         clearChatAt: true,
@@ -469,10 +472,51 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * How many ACTIVE members hold `role` — used to answer "does this group still
+   * have an owner?" before letting anyone join it. Served by the existing
+   * `[roomId, status, role]` index, so it is one cheap count, not a scan.
+   */
+  async countActiveByRole(roomId: string, role: string): Promise<number> {
+    return this.prisma.groupMember.count({
+      where: { roomId, status: "ACTIVE", role },
+    });
+  }
+
   async countActiveMembers(roomId: string): Promise<number> {
     return this.prisma.groupMember.count({
       where: { roomId, status: "ACTIVE" },
     });
+  }
+
+  /**
+   * Live roster size for the admin group detail — ACTIVE + BANNED, matching
+   * exactly what {@link adminListMembers} shows by default. The denormalized
+   * GroupRoom.memberCount drifts (a LEFT/KICKED owner is still counted), so the
+   * detail header must count the real rows instead of trusting that field.
+   */
+  async countRosterMembers(roomId: string): Promise<number> {
+    return this.prisma.groupMember.count({
+      where: { roomId, status: { in: ["ACTIVE", "BANNED"] } },
+    });
+  }
+
+  /**
+   * Batched {@link countRosterMembers} for the admin group list — one grouped
+   * query for a page of rooms. Rooms with no ACTIVE/BANNED rows are absent from
+   * the map (caller defaults to 0).
+   */
+  async countRosterMembersForRooms(
+    roomIds: string[]
+  ): Promise<Map<string, number>> {
+    const ids = [...new Set(roomIds.filter(Boolean))];
+    if (!ids.length) return new Map();
+    const grouped = await this.prisma.groupMember.groupBy({
+      by: ["roomId"],
+      where: { roomId: { in: ids }, status: { in: ["ACTIVE", "BANNED"] } },
+      _count: { _all: true },
+    });
+    return new Map(grouped.map((g) => [g.roomId, g._count._all]));
   }
 
   /**

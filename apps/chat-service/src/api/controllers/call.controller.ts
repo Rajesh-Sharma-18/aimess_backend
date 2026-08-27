@@ -19,6 +19,12 @@ export class CallController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  getActiveIncoming = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const calls = await this.callService.getActiveIncoming(userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(calls));
+  });
+
   getCallById = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const callId = req.params.callId as string;

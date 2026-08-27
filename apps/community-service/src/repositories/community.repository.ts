@@ -26,6 +26,49 @@ import {
   buildCommunitySearchFilter,
   normalizeForSearch,
 } from "../lib/community-search.util.js";
+import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
+
+/**
+ * THE invariant enforcer: a current member must never hold a PENDING join
+ * request for that community.
+ *
+ * Returns the (unawaited) Prisma operation that flips every PENDING request the
+ * given users hold in this community to AUTO_RESOLVED, so callers can hand it to
+ * the SAME `prisma.$transaction([...])` as the membership write. Membership and
+ * request resolution then commit together — there is no window in which a member
+ * has a live request an admin could still accept or decline.
+ *
+ * Every path that turns a `CommunityMember` row ACTIVE goes through one of the
+ * three writers below (`createMember`, `createManyMembers`,
+ * `reactivateMemberWithSnapshot`), so pairing the resolution with them here —
+ * rather than at each of the ~8 service call sites — leaves no side door for a
+ * future membership path to miss.
+ *
+ * `status: PENDING` in the WHERE makes it idempotent: a request already resolved
+ * by a concurrent path matches zero rows instead of being rewritten, so a race
+ * between Accept and Add Member collapses to exactly one outcome. Callers that
+ * legitimately decide the request themselves (approve → APPROVED, reject →
+ * REJECTED) write their own status AFTER this, which is why approve/reject still
+ * land the more specific value.
+ */
+function resolvePendingJoinRequestsOp(
+  communityId: string,
+  userIds: string[],
+  resolvedBy: string
+) {
+  return prisma.communityJoinRequest.updateMany({
+    where: {
+      communityId,
+      userId: { in: userIds },
+      status: CommunityJoinReqStatus.PENDING,
+    },
+    data: {
+      status: CommunityJoinReqStatus.AUTO_RESOLVED,
+      decidedBy: resolvedBy || null,
+      decidedAt: new Date(),
+    },
+  });
+}
 
 /**
  * A rejoin deletes the previous cycle's `CommunityMemberMute` row, but that row
@@ -131,6 +174,15 @@ function mineActivitySelect(userId: string) {
     },
   } satisfies Prisma.CommunitySelect;
 }
+
+/**
+ * "Not revoked" for an OPTIONAL Mongo column: `revokedAt: null` alone matches
+ * only rows where the field EXISTS and is null, and Prisma omits untouched
+ * optional fields on insert — so every never-revoked link was invisible to it.
+ */
+const NOT_REVOKED: Prisma.CommunityInviteLinkWhereInput = {
+  OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }],
+};
 
 export const communityRepository = {
   // ---------------------------------------------------------------------------
@@ -412,8 +464,14 @@ export const communityRepository = {
    * a slug must be resolved before filtering. Returns null when no match.
    */
   async findActiveCategoryBySlugOrId(slugOrId: string) {
+    // Mongo `id` is ObjectId — passing a non-24-hex string throws
+    // "Malformed ObjectID". Only include the id branch when the token
+    // is actually an ObjectId; otherwise slug-only.
+    const isObjectId = /^[a-f0-9]{24}$/i.test(slugOrId);
     const row = await prisma.communityCategory.findFirst({
-      where: { OR: [{ id: slugOrId }, { slug: slugOrId }] },
+      where: isObjectId
+        ? { OR: [{ id: slugOrId }, { slug: slugOrId }] }
+        : { slug: slugOrId },
       select: { id: true },
     });
     return row?.id ?? null;
@@ -586,16 +644,30 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Members
   // ---------------------------------------------------------------------------
-  async createMember(data: {
-    communityId: string;
-    userId: string;
-    role: CommunityMemberRole;
-    status: CommunityMemberStatus;
-    snapshotUsername: string;
-    snapshotDisplayName: string;
-    snapshotAvatarKey: string | null;
-  }) {
-    const row = await prisma.communityMember.create({ data });
+  async createMember(
+    data: {
+      communityId: string;
+      userId: string;
+      role: CommunityMemberRole;
+      status: CommunityMemberStatus;
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+      /** The invite code that admitted them, when a link was involved. */
+      joinedViaInviteCode?: string | null;
+    },
+    /** Who caused the membership — stamped on any join request this resolves.
+     *  Defaults to the member themself (self-join / invite-link redeem). */
+    resolvedBy?: string
+  ) {
+    const [row] = await prisma.$transaction([
+      prisma.communityMember.create({ data }),
+      resolvePendingJoinRequestsOp(
+        data.communityId,
+        [data.userId],
+        resolvedBy ?? data.userId
+      ),
+    ]);
     publishCommunityMemberSyncedForChatSafe({
       communityId: data.communityId,
       userId: data.userId,
@@ -605,7 +677,7 @@ export const communityRepository = {
     return row;
   },
 
-  /** Bulk insert members (single-collection — safe without a replica set). */
+  /** Bulk insert members, resolving their pending join requests in the same tx. */
   async createManyMembers(
     communityId: string,
     members: Array<{
@@ -615,11 +687,16 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }>
+    }>,
+    resolvedBy?: string
   ) {
-    const result = await prisma.communityMember.createMany({
-      data: members.map((m) => ({ communityId, ...m })),
-    });
+    const userIds = members.map((m) => m.userId);
+    const [result] = await prisma.$transaction([
+      prisma.communityMember.createMany({
+        data: members.map((m) => ({ communityId, ...m })),
+      }),
+      resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy ?? ""),
+    ]);
     for (const m of members) {
       publishCommunityMemberSyncedForChatSafe({
         communityId,
@@ -644,7 +721,15 @@ export const communityRepository = {
   findMembership(communityId: string, userId: string) {
     return prisma.communityMember.findFirst({
       where: { communityId, userId },
-      select: { role: true, status: true, removedAt: true },
+      // `joinedViaInviteCode` rides along for the invitation-card contexts RPC:
+      // it is what tells ONE card that it is the invitation this membership
+      // came through.
+      select: {
+        role: true,
+        status: true,
+        removedAt: true,
+        joinedViaInviteCode: true,
+      },
     });
   },
 
@@ -779,7 +864,14 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }
+    },
+    /** Who caused the reactivation — stamped on any join request it resolves.
+     *  Defaults to the member themself (self-rejoin / invite-link redeem). */
+    resolvedBy?: string,
+    /** The invite code that admitted them THIS cycle, when a link was involved.
+     *  Absent unsets it: a fresh membership never inherits the previous cycle's
+     *  invitation, exactly like the kick/ban markers cleared below. */
+    joinedViaInviteCode?: string | null
   ) {
     const [row, clearedMutes] = await prisma.$transaction([
       prisma.communityMember.update({
@@ -809,6 +901,9 @@ export const communityRepository = {
           bannedAt: { unset: true },
           bannedBy: { unset: true },
           banReason: { unset: true },
+          ...(joinedViaInviteCode
+            ? { joinedViaInviteCode }
+            : { joinedViaInviteCode: { unset: true } }),
           ...snapshot,
         },
         select: {
@@ -832,6 +927,12 @@ export const communityRepository = {
       prisma.communityMemberWarning.deleteMany({
         where: { communityId, userId },
       }),
+      // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
+      resolvePendingJoinRequestsOp(
+        communityId,
+        [userId],
+        resolvedBy ?? userId
+      ),
     ]);
     // Re-add of a previously-LEFT member: mirror the reactivation into
     // chat-service's RoomMember so they regain send/read in the general room.
@@ -2036,15 +2137,27 @@ export const communityRepository = {
       where.type = params.type;
     }
 
-    // moderationStatus is unset on legacy rows → treat missing as ACTIVE. The
-    // generated enum filter has no `isSet` (the field is non-optional with a
-    // default), so we match "ACTIVE-or-missing" as `not: SUSPENDED` — Mongo's
-    // `$ne` matches absent fields too, so this also covers legacy rows. CLOSED is
-    // the exact SUSPENDED match.
+    // ACTIVE-or-missing → `not: SUSPENDED` (Mongo `$ne` also matches unset
+    // legacy rows). Owner-banned close leaves moderationStatus=ACTIVE and only
+    // writes statusClosedReasonCode=ADMIN_BANNED — the admin UI renders those
+    // as Closed, so filter both axes. Top-level NOT is the reliable Prisma
+    // Mongo form for "!= X including unset"; positional `{ not: X }` on
+    // optional scalars has edge cases. Wrapped in AND so it composes with the
+    // search OR below without colliding.
     if (params.status === "ACTIVE") {
-      where.moderationStatus = { not: CommunityModerationStatus.SUSPENDED };
+      where.AND = [
+        { moderationStatus: { not: CommunityModerationStatus.SUSPENDED } },
+        { NOT: { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED } },
+      ];
     } else if (params.status === "CLOSED") {
-      where.moderationStatus = CommunityModerationStatus.SUSPENDED;
+      where.AND = [
+        {
+          OR: [
+            { moderationStatus: CommunityModerationStatus.SUSPENDED },
+            { statusClosedReasonCode: CLOSE_REASON_ADMIN_BANNED },
+          ],
+        },
+      ];
     }
 
     // Category filter accepts slug OR id; resolve to the stored categoryId.
@@ -2205,7 +2318,6 @@ export const communityRepository = {
     });
     if (!community) return null;
 
-    const now = new Date();
     const sevenDaysAgo = new Date(Date.now() - 7 * 864e5);
 
     const [
@@ -2245,11 +2357,7 @@ export const communityRepository = {
         where: { communityId, status: CommunityReportStatus.OPEN },
       }),
       prisma.communityInviteLink.count({
-        where: {
-          communityId,
-          revokedAt: null,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-        },
+        where: { communityId, revokedAt: null },
       }),
       prisma.communityMember.findFirst({
         where: { communityId, userId: community.adminId },
@@ -2669,6 +2777,8 @@ export const communityRepository = {
     communityId: string;
     userId: string;
     message: string | null;
+    /** The invite code this request was raised from, if any. */
+    inviteCode?: string | null;
   }) {
     return prisma.communityJoinRequest.create({
       data: {
@@ -2676,6 +2786,7 @@ export const communityRepository = {
         userId: data.userId,
         message: data.message,
         status: CommunityJoinReqStatus.PENDING,
+        inviteCode: data.inviteCode ?? null,
       },
     });
   },
@@ -2690,6 +2801,40 @@ export const communityRepository = {
     return prisma.communityJoinRequest.findUnique({
       where: { communityId_userId: { communityId, userId } },
     });
+  },
+
+  /**
+   * PENDING join requests held by any of `userIds` in this community. Read
+   * BEFORE a membership write so the caller knows which request ids the write's
+   * transaction is about to auto-resolve, and can broadcast their removal to
+   * every open admin "Accept Requests" list.
+   */
+  findPendingJoinRequestsForUsers(communityId: string, userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.communityJoinRequest.findMany({
+      where: {
+        communityId,
+        userId: { in: userIds },
+        status: CommunityJoinReqStatus.PENDING,
+      },
+      select: { id: true, userId: true },
+    });
+  },
+
+  /**
+   * Standalone (non-transactional) form of {@link resolvePendingJoinRequestsOp},
+   * for repair paths that have no membership write to ride along with — the
+   * admin-list read filter self-heals rows left over from before this rule
+   * existed. Membership-creating paths must NOT use this; they get the atomic
+   * version for free from createMember / createManyMembers / reactivate.
+   */
+  resolvePendingJoinRequests(
+    communityId: string,
+    userIds: string[],
+    resolvedBy: string
+  ) {
+    if (userIds.length === 0) return Promise.resolve({ count: 0 });
+    return resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy);
   },
 
   /** Single query returning the set of communityIds that the user has a PENDING join request for. */
@@ -2746,7 +2891,13 @@ export const communityRepository = {
    * Recycle a non-PENDING request row back to PENDING. Clears decidedBy/decidedAt
    * (re-uses the (communityId, userId) unique row instead of inserting a dup).
    */
-  recyclePendingJoinRequest(requestId: string, message: string | null) {
+  recyclePendingJoinRequest(
+    requestId: string,
+    message: string | null,
+    /** The invite code this new attempt came from — a recycled row starts a
+     *  fresh request, so it must not keep the previous attempt's invitation. */
+    inviteCode?: string | null
+  ) {
     return prisma.communityJoinRequest.update({
       where: { id: requestId },
       data: {
@@ -2754,6 +2905,7 @@ export const communityRepository = {
         decidedBy: null,
         decidedAt: null,
         message,
+        inviteCode: inviteCode ?? null,
       },
     });
   },
@@ -3443,27 +3595,40 @@ export const communityRepository = {
     return prisma.communityInviteLink.findUnique({ where: { id: linkId } });
   },
 
+  findInviteLinkByCode(code: string) {
+    return prisma.communityInviteLink.findUnique({ where: { code } });
+  },
+
   /**
-   * Count a member's currently-ACTIVE invite links in a community: not revoked
-   * and not past their expiry. Exhausted links (usedCount >= maxUses) are NOT
-   * filtered out here — that requires a field-to-field comparison Mongo can't do
-   * in a `count` predicate — so the cap is a slight over-count, which is the safe
-   * direction for an abuse guard.
+   * The caller's newest still-usable "share this community" link: not revoked,
+   * unlimited-use and request-to-join (i.e. NOT one of the custom limited-use or
+   * auto-approve links, which are deliberate throwaways and must never be handed
+   * back by the plain Invite button).
+   *
+   * `expiresAt` is deliberately NOT consulted: links do not lapse on a clock, so
+   * a row still carrying an expiry stamped by an older build stays reusable
+   * instead of silently minting a replacement on every share.
+   *
+   * Returns null when the caller has none — the caller then mints a fresh one,
+   * which is what makes the link roll over after a reset.
    */
-  countActiveInviteLinksByCreator(communityId: string, createdBy: string) {
-    const now = new Date();
-    return prisma.communityInviteLink.count({
+  findLatestReusableInviteLink(communityId: string, createdBy: string) {
+    return prisma.communityInviteLink.findFirst({
       where: {
         communityId,
         createdBy,
-        revokedAt: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        autoApprove: false,
+        // Both fields are OPTIONAL, so an untouched row simply omits them — and
+        // on Mongo `field: null` matches only documents where the field EXISTS
+        // and is null. Each needs its own `isSet: false` alternative, ANDed so
+        // the OR groups don't collapse into one.
+        AND: [
+          { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
+          { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
+        ],
       },
+      orderBy: { createdAt: "desc" },
     });
-  },
-
-  findInviteLinkByCode(code: string) {
-    return prisma.communityInviteLink.findUnique({ where: { code } });
   },
 
   /**
@@ -3512,12 +3677,18 @@ export const communityRepository = {
     };
     if (params.status === "revoked") {
       where.revokedAt = { not: null };
+      // LEGACY filter: nothing stamps an expiry any more, so this matches only
+      // rows written by an older build. Kept because it is part of the admin
+      // listing's query contract.
     } else if (params.status === "expired") {
-      where.revokedAt = null;
+      where.AND = [NOT_REVOKED];
       where.expiresAt = { lt: now };
     } else if (params.status === "active") {
-      where.revokedAt = null;
-      where.OR = [{ expiresAt: null }, { expiresAt: { gt: now } }];
+      // ANDed, not two `OR` keys — the second would overwrite the first.
+      where.AND = [
+        NOT_REVOKED,
+        { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      ];
     }
     const [rows, total] = await Promise.all([
       prisma.communityInviteLink.findMany({

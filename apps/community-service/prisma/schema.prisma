@@ -5,9 +5,13 @@
 // creatorId / adminId / userId here = auth-service AuthUser.id (UUID string,
 // no FK across DBs / services).
 //
-// NOTE: the local Mongo runs as a STANDALONE node (directConnection=true, no
-// replica set), so Prisma interactive `$transaction` fails at runtime. Service
-// code MUST use sequential writes + createMany + compensating cleanup instead.
+// NOTE: the local Mongo runs as a SINGLE-NODE REPLICA SET (rs0) reached with
+// directConnection=true (see docker-compose `mongod --replSet rs0`); production
+// uses a managed RS. Prisma `$transaction` therefore WORKS here — an earlier
+// version of this note claimed otherwise, which is why most write paths are
+// sequential. Prefer a transaction whenever two collections must move together
+// (see `reactivateMemberWithSnapshot` / `createMember` in the repository, which
+// pair a membership write with its join-request resolution).
 // =============================================================================
 
 generator client {
@@ -245,6 +249,14 @@ model CommunityMember {
   // (updateMemberStatus's resetRole/ban write), so it never leaks into an
   // unrelated later LEFT transition.
   unbannedAt DateTime?
+  // The invite-link CODE this membership came through, when it came through one
+  // (null for an admin add, a plain self-join, and every row written before this
+  // field existed). An invitation card speaks for ONE code, so this is what lets
+  // exactly that card say "View Community" — a reset mints a new code, and the
+  // cards already sent must not start speaking for it. Never a permission:
+  // nothing reads it to authorize anything. Cleared on a fresh membership cycle,
+  // like the other per-cycle markers above.
+  joinedViaInviteCode String?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -298,6 +310,11 @@ model CommunityJoinRequest {
   userId      String
   status      CommunityJoinReqStatus @default(PENDING)
   message     String?
+  // The invite-link code the request was raised from, carried to the member row
+  // when a moderator approves it — a PRIVATE community's link admits nobody by
+  // itself, so without this the invitation that started the join would be lost
+  // by the time it completes. Null for a request raised from anywhere else.
+  inviteCode  String?
   decidedBy   String?
   decidedAt   DateTime?
   createdAt   DateTime               @default(now())
@@ -513,6 +530,13 @@ enum CommunityJoinReqStatus {
   APPROVED
   REJECTED
   CANCELLED
+  // The requester became a member through a path OTHER than this request being
+  // approved (admin Add Member, invite accept, invite-link redeem, public
+  // self-join). Written in the SAME transaction as the membership row, so a
+  // current member can never hold a PENDING request. Distinct from APPROVED
+  // (the admin acted on the request) and CANCELLED (the user withdrew it), so
+  // the audit trail and the system-message copy stay truthful.
+  AUTO_RESOLVED
 }
 
 enum CommunityInviteStatus {

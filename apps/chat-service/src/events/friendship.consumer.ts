@@ -247,11 +247,7 @@ export class FriendshipEventConsumer {
         buildParticipantsKey(userA, userB)
       );
       if (!room || room.lastSequence <= 0) return false;
-      const human = await prisma.privateMessage.findFirst({
-        where: { roomId: room.roomId, messageType: { not: "SYSTEM" } },
-        select: { id: true },
-      });
-      return human !== null;
+      return await this.privateMessageRepo.hasHumanMessage(room.roomId);
     } catch (err) {
       // Unknown => treat as a fresh pair: a missing row is cheaper than a
       // stray "now friends" bubble at the top of an empty chat.

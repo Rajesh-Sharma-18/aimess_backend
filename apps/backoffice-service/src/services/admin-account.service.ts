@@ -7,6 +7,7 @@ import {
 
 import { AUDIT_ACTIONS, PERMISSIONS, ROLE_KEYS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
+import { assertAdminEmailAvailable } from "../lib/admin-email-availability.js";
 import { hashPassword } from "../lib/password.js";
 import { invalidateAdminPermissions } from "../lib/admin-perms-cache.js";
 import { publishAdminSocketEvent } from "../lib/admin-socket-events.js";
@@ -159,8 +160,7 @@ export const adminAccountService = {
   ): Promise<AdminAccountDetail> {
     assertCanManageRole(actor.role, input.roleKey);
 
-    const existing = await adminUserRepository.findByEmail(input.email);
-    if (existing) throw new ConflictError("ADMIN_EMAIL_TAKEN");
+    await assertAdminEmailAvailable(input.email);
 
     const existingByName = await adminUserRepository.findByName(input.name);
     if (existingByName) throw new ConflictError("ADMIN_USERNAME_TAKEN");
@@ -217,10 +217,7 @@ export const adminAccountService = {
     assertCanManageRole(actor.role, existing.role.key);
 
     if (input.email !== undefined && input.email !== existing.email) {
-      const emailOwner = await adminUserRepository.findByEmail(input.email);
-      if (emailOwner && emailOwner.id !== id) {
-        throw new ConflictError("ADMIN_EMAIL_TAKEN");
-      }
+      await assertAdminEmailAvailable(input.email, id);
     }
     if (input.name !== undefined && input.name !== existing.name) {
       const nameOwner = await adminUserRepository.findByName(input.name);
@@ -348,6 +345,52 @@ export const adminAccountService = {
       targetId: id,
       before: { status: existing.status },
       after: { status: "DISABLED" },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent ?? null,
+    });
+
+    return toListItem(updated);
+  },
+
+  /**
+   * Soft-delete a deactivated admin account: flips status to DELETED (the row
+   * stays for audit/FK integrity), leaves it out of the list, and — like
+   * deactivation — kills any lingering sessions. Only a DISABLED account can be
+   * deleted, so the panel funnels every delete through deactivate first.
+   */
+  async deleteAdminAccount(
+    id: string,
+    actor: RequestAdmin,
+    ctx: AdminAccountRequestContext
+  ): Promise<AdminAccountDetail> {
+    if (id === actor.id) {
+      throw new ForbiddenError("ADMIN_CANNOT_DEACTIVATE_SELF");
+    }
+
+    const existing = await adminUserRepository.findById(id);
+    if (!existing) throw new NotFoundError("ADMIN_NOT_FOUND");
+    assertNotDeleted(existing.status);
+    assertCanManageRole(actor.role, existing.role.key);
+
+    if (existing.status !== "DISABLED") {
+      throw new ConflictError("ADMIN_MUST_DEACTIVATE_BEFORE_DELETE");
+    }
+
+    await adminUserRepository.setStatus(id, "DELETED");
+    const updated = await adminUserRepository.findById(id);
+    if (!updated) throw new NotFoundError("ADMIN_NOT_FOUND");
+
+    const activeSessions = await adminSessionRepository.listActiveByAdmin(id);
+    await adminSessionRepository.revokeAllForAdmin(id);
+    await markAdminSessionsRevoked(activeSessions.map((s) => s.id));
+
+    await auditService.record({
+      actorId: actor.id,
+      action: AUDIT_ACTIONS.ADMIN_DELETED,
+      targetType: "admin",
+      targetId: id,
+      before: { status: existing.status },
+      after: { status: "DELETED" },
       ip: ctx.ip,
       userAgent: ctx.userAgent ?? null,
     });

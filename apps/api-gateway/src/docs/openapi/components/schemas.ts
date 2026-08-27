@@ -1145,6 +1145,14 @@ export const openApiSchemas = {
       note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
+  AdminReactivateRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/users/{userId}/reactivate. Only field accepted; the whole body is optional.",
+    properties: {
+      note: { type: "string", maxLength: 2000, nullable: true },
+    },
+  },
   AdminModerationResult: {
     type: "object",
     description:
@@ -5589,6 +5597,11 @@ export const openApiSchemas = {
         nullable: true,
         description: "Present when relationshipStatus is FRIEND or PENDING_*.",
       },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "userId",
@@ -5600,6 +5613,7 @@ export const openApiSchemas = {
       "avatarUrlExpiresIn",
       "avatar",
       "isOnline",
+      "canSendRequest",
     ],
   },
   UserDiscoverySplitData: {
@@ -6139,7 +6153,20 @@ export const openApiSchemas = {
       },
       preview: {
         type: "string",
-        description: "Short human-readable preview of the activity.",
+        description:
+          "Short human-readable preview of the activity, rendered in the " +
+          "caller's language (`x-lang`) for REST, and in the receiving " +
+          "socket's language for `community:added` / `community:updated`.",
+      },
+      previewKey: {
+        type: "string",
+        description:
+          "Message-catalog key `preview` was rendered from, for the " +
+          "parameter-less lifecycle sentences (join / added / created). " +
+          "OPTIONAL and additive. A client carrying its own catalog SHOULD " +
+          "prefer this over `preview`, so switching language re-renders " +
+          "history with no refetch; fall back to `preview` when it is absent " +
+          "or names a key the client does not have. Never display the key.",
       },
       dateTime: {
         type: "integer",
@@ -6939,7 +6966,16 @@ export const openApiSchemas = {
       userId: { type: "string", format: "uuid" },
       status: {
         type: "string",
-        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "AUTO_RESOLVED"],
+        description:
+          "PENDING — awaiting a moderator decision (the ONLY status the admin " +
+          "list returns). APPROVED — a moderator accepted it. REJECTED — a " +
+          "moderator declined it. CANCELLED — the requester withdrew it. " +
+          "AUTO_RESOLVED — the requester became a member some other way while " +
+          "this request was still open (admin Add Member, invite accepted, " +
+          "invite-link redeem, public self-join); the server closes the request " +
+          "in the same transaction as the membership write, so a current member " +
+          "never holds a PENDING request.",
       },
       message: { type: "string", nullable: true },
       decidedBy: { type: "string", format: "uuid", nullable: true },
@@ -7183,7 +7219,7 @@ export const openApiSchemas = {
         type: "string",
         enum: ["INVITED", "ALREADY_INVITED", "ALREADY_MEMBER", "FAILED"],
         description:
-          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = user is already an ACTIVE member; FAILED = banned, self-invite, or other error.",
+          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = retained for back-compat, no longer emitted (an ACTIVE member is invited again — accepting is a no-op); FAILED = self-invite or an ineligible recipient account (deleted / suspended / blocked).",
       },
       inviteId: {
         type: "string",
@@ -8120,8 +8156,10 @@ export const openApiSchemas = {
         type: "string",
         format: "date-time",
         nullable: true,
-        description: "ISO-8601 expiry timestamp; null = never expires.",
-        example: "2026-07-24T10:00:00.000Z",
+        description:
+          "LEGACY, always null: invitation links do not expire on a clock. " +
+          "A link stays usable until an admin revokes it or its maxUses is spent.",
+        example: null,
       },
       revokedAt: {
         type: "string",
@@ -8179,7 +8217,7 @@ export const openApiSchemas = {
       maxUses: 100,
       usedCount: 7,
       autoApprove: false,
-      expiresAt: "2026-07-24T10:00:00.000Z",
+      expiresAt: null,
       revokedAt: null,
       createdAt: "2026-06-24T10:00:00.000Z",
       isActive: true,
@@ -8273,8 +8311,9 @@ export const openApiSchemas = {
         format: "int64",
         nullable: true,
         description:
-          "Invite-link expiry as epoch milliseconds; null = no expiry.",
-        example: 1785000000000,
+          "LEGACY, always null: an invitation link never expires on its own. " +
+          "It stays usable until an admin revokes it or its maxUses is spent.",
+        example: null,
       },
       creatorId: {
         type: "string",
@@ -8316,7 +8355,7 @@ export const openApiSchemas = {
       invitationCode: "Zk9Qw2Lp7",
       inviteUrl: "https://aimess.me/+Zk9Qw2Lp7",
       appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
-      expiresAt: 1785000000000,
+      expiresAt: null,
       creatorId: "22222222-2222-4222-8222-222222222222",
     },
   },
@@ -8371,7 +8410,7 @@ export const openApiSchemas = {
   CreateInviteLinkRequest: {
     type: "object",
     description:
-      "All fields are optional. Omit a field to use its default: unlimited uses, never expires, requires moderator approval (autoApprove: false).",
+      "All fields are optional. Omit a field to use its default: unlimited uses, requires moderator approval (autoApprove: false). Invitation links never expire on their own — they stay usable until an admin revokes one.",
     properties: {
       maxUses: {
         type: "integer",
@@ -8380,14 +8419,6 @@ export const openApiSchemas = {
         description:
           "Maximum number of times this link can be redeemed. Omit for unlimited.",
         example: 50,
-      },
-      expiresInMinutes: {
-        type: "integer",
-        minimum: 1,
-        maximum: 525600,
-        description:
-          "Minutes from now until the link expires. 525600 = 1 year. Omit for no expiry.",
-        example: 10080,
       },
       autoApprove: {
         type: "boolean",
@@ -8399,7 +8430,6 @@ export const openApiSchemas = {
     },
     example: {
       maxUses: 50,
-      expiresInMinutes: 10080,
       autoApprove: false,
     },
   },
@@ -9326,7 +9356,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000, default: 50 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256, default: 256 },
     },
     required: ["name"],
   },
@@ -9336,7 +9366,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256 },
     },
   },
 
@@ -9471,12 +9501,64 @@ export const openApiSchemas = {
   },
   ChatInviteLinkPreview: {
     type: "object",
-    description: "Public preview of a group invite link.",
+    description:
+      "Preview of a group invite link. Optional auth: send the caller's bearer " +
+      "token to get `isJoined`, which decides whether the client shows " +
+      "\"View Group\" (already a member) or \"Join Group\".",
     properties: {
       token: { type: "string" },
+      groupId: { type: "string" },
       groupName: { type: "string" },
       groupAvatar: { type: "string" },
+      description: { type: "string" },
       memberCount: { type: "integer" },
+      memberLimit: { type: "integer" },
+      invitedByName: { type: "string" },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "LEGACY, always null: a group invite link does not expire on a " +
+          "clock. It stays usable until an admin resets (revokes) it.",
+      },
+      isJoined: {
+        type: "boolean",
+        description:
+          "Whether the CALLER is an ACTIVE member right now. Always false for " +
+          "an anonymous preview. Read live per request — never cache it. " +
+          "Derived from `state === \"ALREADY_MEMBER\"`; prefer `state`.",
+      },
+      state: {
+        type: "string",
+        enum: [
+          "ALREADY_MEMBER",
+          "GROUP_NOT_FOUND",
+          "GROUP_DISBANDED",
+          "GROUP_CLOSED",
+          "GROUP_NO_ADMIN",
+          "LINK_NOT_FOUND",
+          "LINK_REVOKED",
+          "LINK_EXPIRED",
+          "LINK_USED_UP",
+          "GROUP_FULL",
+          "JOIN_BLOCKED",
+          "CAN_JOIN",
+        ],
+        description:
+          "The authoritative button state, resolved server-side on every read " +
+          "and identical to the `state` on a GROUP_INVITE message card, so the " +
+          "landing screen and the in-chat card never disagree. Render from it " +
+          "and nothing else. ALREADY_MEMBER = \"View Group\"; CAN_JOIN = " +
+          "\"Join Group\"; GROUP_FULL = the 256-member cap; JOIN_BLOCKED = " +
+          "removed or banned by staff; GROUP_NOT_FOUND / GROUP_DISBANDED / " +
+          "GROUP_CLOSED / GROUP_NO_ADMIN = the group itself is gone or " +
+          "unowned; LINK_NOT_FOUND / LINK_REVOKED / LINK_EXPIRED / " +
+          "LINK_USED_UP = the token is dead, one state per cause. " +
+          "This endpoint answers 200 for EVERY state — group identity is filled " +
+          "in whenever the row still exists — so a client renders the reason in " +
+          "place instead of treating each one as an error.",
+      },
       shareName: { type: "string" },
     },
     required: ["token", "groupName", "memberCount"],
@@ -9485,12 +9567,6 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       roomId: { type: "string", minLength: 5 },
-      expiresAt: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-        description: "Optional expiry (ISO 8601).",
-      },
       maxUses: {
         type: "integer",
         minimum: 1,
@@ -9573,6 +9649,24 @@ export const openApiSchemas = {
       "Notification Center tab. ALL means no filter (also the default). " +
       "The non-ALL buckets are disjoint, so their unread counts sum to ALL's.",
   },
+  NotificationRowCategory: {
+    type: "string",
+    enum: [
+      "FRIENDS",
+      "COMMUNITIES",
+      "MENTIONS",
+      "CALLS",
+      "SYSTEM",
+      "Announcement",
+    ],
+    description:
+      "Explicit category of a notification ROW (response only — not accepted " +
+      "as a filter value). A superset of the tab enum: a Super-Admin " +
+      "announcement (`type: ANNOUNCEMENT`) reports `Announcement` so clients " +
+      "select its icon from this field instead of inspecting the title/body. " +
+      "Tab filtering and the per-tab counts are keyed on `type`, so an " +
+      "announcement is still listed and counted under the SYSTEM tab.",
+  },
   NotificationActorBlock: {
     type: "object",
     properties: {
@@ -9624,7 +9718,7 @@ export const openApiSchemas = {
     properties: {
       id: { type: "string" },
       type: { $ref: "#/components/schemas/NotificationType" },
-      category: { $ref: "#/components/schemas/NotificationCategory" },
+      category: { $ref: "#/components/schemas/NotificationRowCategory" },
       title: { type: "string" },
       body: { type: "string" },
       isRead: { type: "boolean" },
@@ -10001,12 +10095,11 @@ export const openApiSchemas = {
           "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
           "MEMBER_UNBANNED → '{{targetName}} was unbanned'; " +
           "MEMBER_MUTED (target only) → 'You are muted until {{date}}' or 'You are muted indefinitely' when no expiry; " +
-          "MEMBER_UNMUTED (target only) → 'You were unmuted'. " +
           "PERSONAL types (isPersonal=true, only ever returned to the target user): " +
           "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF / " +
-          "MEMBER_MUTED / MEMBER_UNMUTED. " +
+          "MEMBER_MUTED. " +
           "Hidden in chat timeline (never returned to anyone, including the affected user): MEMBER_LEFT, " +
-          "MEMBER_JOINED, MEMBER_REMOVED, MEMBER_BANNED — the removed/left member learns via the " +
+          "MEMBER_JOINED, MEMBER_REMOVED, MEMBER_BANNED, MEMBER_UNMUTED — the removed/left member learns via the " +
           "`community:membership:removed` socket event, and the banned member via " +
           "`community:membership:restricted` (isBanned: true) plus `isBanned` on the community detail/list, " +
           "which is what drives the sticky banned banner. No ban bubble is written to their history. " +
@@ -12146,6 +12239,11 @@ export const openApiSchemas = {
       canAccept: { type: "boolean" },
       canReject: { type: "boolean" },
       canCancel: { type: "boolean" },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Clients MUST render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "friendshipId",
@@ -12154,6 +12252,7 @@ export const openApiSchemas = {
       "canAccept",
       "canReject",
       "canCancel",
+      "canSendRequest",
     ],
   },
   PublicUserProfileData: {

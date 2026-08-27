@@ -1,15 +1,18 @@
 /**
- * Service-layer tests for the PERMANENT community invitation link
- * (`communityService.getOrCreatePermanentInvitationLink`).
+ * Service-layer tests for the community's shareable invitation link
+ * (`communityService.getOrCreatePermanentInvitationLink`, kept under its
+ * original endpoint name).
  *
- * Contract under test (single source of truth):
- *  - The invitation code lives on the Community row (`invitationCode`).
- *  - It is generated EXACTLY ONCE, on the first call, via the atomic
- *    `setInvitationCodeOnce` guard (updateMany WHERE invitationCode IS NULL).
- *  - Every subsequent call is a pure read — no write, same code, same URL.
+ * Contract under test:
+ *  - A minted link carries NO expiry: it lives until an admin revokes it, the
+ *    same rule a group link follows.
+ *  - Repeated calls reuse the caller's live link — no new row, no rate-limit /
+ *    cap consumption.
  *  - PRIVATE communities only; PUBLIC → COMMUNITY_NOT_PRIVATE.
  *  - The URL scheme is the established Telegram-style `<base>/+<code>` +
- *    `aimess://join?code=<code>` (NOT a per-call regenerated link).
+ *    `aimess://join?code=<code>`.
+ *  - LEGACY permanent codes on the Community row still resolve, and no clock
+ *    kills them either — nothing mints them any more, and nothing revokes them.
  *
  * Only the I/O boundary is mocked (repository, user-client, storage, publishers).
  * The per-user Redis rate limit fails open under test (cache not ready).
@@ -54,6 +57,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findById: jest.fn(),
     findMembership: jest.fn(),
     setInvitationCodeOnce: jest.fn(),
+    findLatestReusableInviteLink: jest.fn(),
     findInviteLinkByCode: jest.fn(),
     findCommunityByInvitationCode: jest.fn(),
     findMemberByUserId: jest.fn(),
@@ -75,9 +79,10 @@ const CID = "a".repeat(24);
 const CALLER = "99999999-9999-4999-8999-999999999999";
 const STORED_CODE = "AbCdEf123456GhIjKl7890";
 const CREATED_AT = new Date("2026-06-26T00:00:00.000Z");
+const HOUR_MS = 60 * 60 * 1000;
 
-/** A community that already has its permanent code persisted. */
-const withCode = (over: Record<string, unknown> = {}) => ({
+/** A PRIVATE community whose LEGACY permanent code was minted just now. */
+const community = (over: Record<string, unknown> = {}) => ({
   id: CID,
   name: "Tech Community",
   handle: "tech_community",
@@ -91,75 +96,87 @@ const withCode = (over: Record<string, unknown> = {}) => ({
   status: "ACTIVE",
   deletedAt: null,
   invitationCode: STORED_CODE,
-  invitationCodeCreatedAt: CREATED_AT,
+  invitationCodeCreatedAt: new Date(),
   createdAt: CREATED_AT,
   ...over,
 });
 
-/** A brand-new community with no permanent code yet. */
-const withoutCode = (over: Record<string, unknown> = {}) =>
-  withCode({ invitationCode: null, invitationCodeCreatedAt: null, ...over });
+/** An invite-link row: no expiry, exactly as every mint path writes one. */
+const linkRow = (over: Record<string, unknown> = {}) => {
+  const createdAt = (over.createdAt as Date) ?? new Date();
+  return {
+    id: "f".repeat(24),
+    code: STORED_CODE,
+    communityId: CID,
+    createdBy: CALLER,
+    maxUses: null,
+    usedCount: 0,
+    autoApprove: false,
+    expiresAt: null,
+    revokedAt: null,
+    ...over,
+    createdAt,
+  };
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
   repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
+  repo.findLatestReusableInviteLink.mockResolvedValue(null);
+  repo.createInviteLink.mockImplementation(
+    async (data: Record<string, unknown>) =>
+      // Mongo stamps `createdAt` itself.
+      linkRow({ ...data, createdAt: new Date() })
+  );
 });
 
 // ---------------------------------------------------------------------------
-// Generation: exactly once, on the first call
+// Minting: a fresh link with no expiry
 // ---------------------------------------------------------------------------
 
-describe("getOrCreatePermanentInvitationLink — first-call generation", () => {
-  it("generates and persists a code on the first call, then returns it", async () => {
-    // First findById → no code; setInvitationCodeOnce wins; re-read → code.
-    repo.findById
-      .mockResolvedValueOnce(withoutCode())
-      .mockResolvedValueOnce(withCode());
-    repo.setInvitationCodeOnce.mockResolvedValue({ count: 1 });
+describe("getOrCreatePermanentInvitationLink — minting", () => {
+  it("mints a link with no expiry when none is live", async () => {
+    repo.findById.mockResolvedValue(community());
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
       CALLER
     );
 
-    expect(repo.setInvitationCodeOnce).toHaveBeenCalledTimes(1);
-    expect(res.invitationCode).toBe(STORED_CODE);
-    expect(res.communityId).toBe(CID);
-    expect(res.communityName).toBe("Tech Community");
+    expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
+    expect(repo.createInviteLink.mock.calls[0][0].expiresAt).toBeNull();
+    expect(res.expiresAt).toBeNull();
   });
 
-  it("generates a code with sufficient entropy (>= 20 url-safe chars)", async () => {
-    let generated = "";
-    // setInvitationCodeOnce captures the candidate and reports a win.
-    repo.setInvitationCodeOnce.mockImplementation(
-      async (_id: string, code: string) => {
-        generated = code;
-        return { count: 1 };
-      }
-    );
-    // 1st findById → no code; 2nd findById (post-write re-read) → captured code.
-    repo.findById.mockImplementation(async () =>
-      generated ? withCode({ invitationCode: generated }) : withoutCode()
-    );
+  it("mints a code with sufficient entropy (>= 20 url-safe chars)", async () => {
+    repo.findById.mockResolvedValue(community());
 
-    const res = await communityService.getOrCreatePermanentInvitationLink(
-      CID,
-      CALLER
-    );
+    await communityService.getOrCreatePermanentInvitationLink(CID, CALLER);
 
-    // base64url, 16 bytes → ~22 chars, no '+' '/' '=' padding.
-    expect(generated).toMatch(/^[A-Za-z0-9_-]{20,}$/);
-    expect(res.invitationCode).toBe(generated);
+    expect(repo.createInviteLink.mock.calls[0][0].code).toMatch(
+      /^[A-Za-z0-9_-]{20,}$/
+    );
+  });
+
+  it("never mints a limited-use or auto-approve link", async () => {
+    repo.findById.mockResolvedValue(community());
+
+    await communityService.getOrCreatePermanentInvitationLink(CID, CALLER);
+
+    const written = repo.createInviteLink.mock.calls[0][0];
+    expect(written.maxUses).toBeNull();
+    expect(written.autoApprove).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Idempotency: same code forever, no extra writes (single source of truth)
+// Reuse inside the 1-hour window, rollover after it
 // ---------------------------------------------------------------------------
 
-describe("getOrCreatePermanentInvitationLink — idempotent reads", () => {
-  it("returns the existing code WITHOUT any write on subsequent calls", async () => {
-    repo.findById.mockResolvedValue(withCode());
+describe("getOrCreatePermanentInvitationLink — reuse within the window", () => {
+  it("returns the live link WITHOUT minting a new one", async () => {
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
@@ -167,12 +184,12 @@ describe("getOrCreatePermanentInvitationLink — idempotent reads", () => {
     );
 
     expect(res.invitationCode).toBe(STORED_CODE);
-    // The fast path must never touch the DB for writes.
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 
-  it("100 consecutive calls all return the SAME code and write zero times", async () => {
-    repo.findById.mockResolvedValue(withCode());
+  it("100 consecutive calls all return the SAME code and never mint", async () => {
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     const results = await Promise.all(
       Array.from({ length: 100 }, () =>
@@ -180,14 +197,29 @@ describe("getOrCreatePermanentInvitationLink — idempotent reads", () => {
       )
     );
 
-    const codes = new Set(results.map((r) => r.invitationCode));
-    expect(codes.size).toBe(1);
-    expect([...codes][0]).toBe(STORED_CODE);
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
+    expect(new Set(results.map((r) => r.invitationCode)).size).toBe(1);
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
+  });
+
+  it("mints a NEW code once the previous link has expired", async () => {
+    repo.findById.mockResolvedValue(community());
+    // The repository filters expired rows out, so an expired link reads as null.
+    repo.findLatestReusableInviteLink.mockResolvedValue(null);
+
+    const res = await communityService.getOrCreatePermanentInvitationLink(
+      CID,
+      CALLER
+    );
+
+    expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
+    expect(res.invitationCode).toBe(
+      repo.createInviteLink.mock.calls[0][0].code
+    );
   });
 
   it("the invitation URL is the established aimess.me/+<code> scheme", async () => {
-    repo.findById.mockResolvedValue(withCode());
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
@@ -198,8 +230,11 @@ describe("getOrCreatePermanentInvitationLink — idempotent reads", () => {
     expect(res.appDeepLink).toBe(`aimess://join?code=${STORED_CODE}`);
   });
 
-  it("returns createdAt as epoch milliseconds", async () => {
-    repo.findById.mockResolvedValue(withCode());
+  it("returns createdAt / expiresAt as epoch milliseconds", async () => {
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(
+      linkRow({ createdAt: CREATED_AT })
+    );
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
@@ -207,18 +242,13 @@ describe("getOrCreatePermanentInvitationLink — idempotent reads", () => {
     );
 
     expect(res.createdAt).toBe(CREATED_AT.getTime());
+    expect(res.expiresAt).toBeNull();
     expect(Number.isInteger(res.createdAt)).toBe(true);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Stability across community lifecycle (rename / avatar / close-open)
-// ---------------------------------------------------------------------------
-
-describe("getOrCreatePermanentInvitationLink — code is stable across mutations", () => {
-  it("a renamed community still returns the original code (no regeneration)", async () => {
-    // Simulate the community AFTER a rename — same stored code, new name.
-    repo.findById.mockResolvedValue(withCode({ name: "Renamed Community" }));
+  it("a renamed community still returns the live link (no regeneration)", async () => {
+    repo.findById.mockResolvedValue(community({ name: "Renamed Community" }));
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
       CID,
@@ -227,44 +257,7 @@ describe("getOrCreatePermanentInvitationLink — code is stable across mutations
 
     expect(res.invitationCode).toBe(STORED_CODE);
     expect(res.communityName).toBe("Renamed Community");
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
-  });
-
-  it("a CLOSED-then-reopened community still returns the original code", async () => {
-    repo.findById.mockResolvedValue(withCode({ status: "ACTIVE" }));
-
-    const res = await communityService.getOrCreatePermanentInvitationLink(
-      CID,
-      CALLER
-    );
-
-    expect(res.invitationCode).toBe(STORED_CODE);
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Concurrency: only one code wins the race
-// ---------------------------------------------------------------------------
-
-describe("getOrCreatePermanentInvitationLink — concurrent first-write race", () => {
-  it("a loser of the atomic guard re-reads and returns the winner's code", async () => {
-    // 1st findById: no code yet (both callers saw null).
-    // setInvitationCodeOnce: returns 0 — another caller already wrote.
-    // 2nd findById (re-read): the winner's code is now present.
-    repo.findById
-      .mockResolvedValueOnce(withoutCode())
-      .mockResolvedValueOnce(withCode({ invitationCode: "winner_code_xyz" }));
-    repo.setInvitationCodeOnce.mockResolvedValue({ count: 0 });
-
-    const res = await communityService.getOrCreatePermanentInvitationLink(
-      CID,
-      CALLER
-    );
-
-    expect(res.invitationCode).toBe("winner_code_xyz");
-    // We attempted the write once, lost, and did NOT loop-write again.
-    expect(repo.setInvitationCodeOnce).toHaveBeenCalledTimes(1);
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 });
 
@@ -274,12 +267,12 @@ describe("getOrCreatePermanentInvitationLink — concurrent first-write race", (
 
 describe("getOrCreatePermanentInvitationLink — guards", () => {
   it("rejects a PUBLIC community with COMMUNITY_NOT_PRIVATE", async () => {
-    repo.findById.mockResolvedValue(withCode({ type: "PUBLIC" }));
+    repo.findById.mockResolvedValue(community({ type: "PUBLIC" }));
 
     await expect(
       communityService.getOrCreatePermanentInvitationLink(CID, CALLER)
     ).rejects.toThrow("COMMUNITY_NOT_PRIVATE");
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 
   it("rejects a missing community with COMMUNITY_NOT_FOUND", async () => {
@@ -291,38 +284,38 @@ describe("getOrCreatePermanentInvitationLink — guards", () => {
   });
 
   it("rejects a non-member caller", async () => {
-    repo.findById.mockResolvedValue(withCode());
+    repo.findById.mockResolvedValue(community());
     repo.findMembership.mockResolvedValue(null);
 
     await expect(
       communityService.getOrCreatePermanentInvitationLink(CID, CALLER)
     ).rejects.toThrow();
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
+    expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Backward compatibility: redeem accepts the permanent code
+// Backward compatibility: redeem accepts a LEGACY permanent code, but only
+// inside its own 1-hour window.
 // ---------------------------------------------------------------------------
 
-describe("redeemInviteLink — permanent-code fallback", () => {
+describe("redeemInviteLink — legacy permanent-code fallback", () => {
+  const member = {
+    id: "m".repeat(24),
+    communityId: CID,
+    userId: CALLER,
+    role: "MEMBER",
+    status: "ACTIVE",
+    snapshotUsername: "alice",
+    snapshotDisplayName: "Alice",
+    snapshotAvatarKey: null,
+    joinedAt: CREATED_AT,
+  };
+
   it("consults the permanent-code table when no invite-link row exists, and is idempotent for an existing member", async () => {
-    // No CommunityInviteLink row for this code → fall through to the community.
     repo.findInviteLinkByCode.mockResolvedValue(null);
-    repo.findCommunityByInvitationCode.mockResolvedValue(withCode());
-    // Caller is ALREADY an active member → idempotent early-return (no join request,
-    // no usage burn), which keeps this test off the createJoinRequest machinery.
-    repo.findMemberByUserId.mockResolvedValue({
-      id: "m".repeat(24),
-      communityId: CID,
-      userId: CALLER,
-      role: "MEMBER",
-      status: "ACTIVE",
-      snapshotUsername: "alice",
-      snapshotDisplayName: "Alice",
-      snapshotAvatarKey: null,
-      joinedAt: CREATED_AT,
-    });
+    repo.findCommunityByInvitationCode.mockResolvedValue(community());
+    repo.findMemberByUserId.mockResolvedValue(member);
 
     const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
 
@@ -334,6 +327,35 @@ describe("redeemInviteLink — permanent-code fallback", () => {
     expect(res.member?.userId).toBe(CALLER);
   });
 
+  it("still honours an ancient permanent code — age alone never kills a link", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(null);
+    repo.findCommunityByInvitationCode.mockResolvedValue(
+      community({
+        invitationCodeCreatedAt: new Date(Date.now() - 30 * 24 * HOUR_MS),
+      })
+    );
+    repo.findMemberByUserId.mockResolvedValue(null);
+
+    // Age is the only thing under test: whatever the join path does next, it
+    // must not be refused as an expired link.
+    await expect(
+      communityService.redeemInviteLink(STORED_CODE, CALLER)
+    ).rejects.not.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+  });
+
+  it("an ACTIVE member re-tapping an ancient permanent code is still idempotent", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(null);
+    repo.findCommunityByInvitationCode.mockResolvedValue(
+      community({
+        invitationCodeCreatedAt: new Date(Date.now() - 30 * 24 * HOUR_MS),
+      })
+    );
+    repo.findMemberByUserId.mockResolvedValue(member);
+
+    const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
+    expect(res.member).toBeDefined();
+  });
+
   it("throws COMMUNITY_INVITE_LINK_NOT_FOUND when neither a link row nor a permanent code matches", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(null);
     repo.findCommunityByInvitationCode.mockResolvedValue(null);
@@ -342,38 +364,55 @@ describe("redeemInviteLink — permanent-code fallback", () => {
       communityService.redeemInviteLink("totally-unknown-code", CALLER)
     ).rejects.toThrow("COMMUNITY_INVITE_LINK_NOT_FOUND");
   });
+
+  // A link lives until it is revoked. Rows stamped with an expiry by an older
+  // build must therefore still redeem — the clock is not a reason any more.
+  it("redeems a row carrying a past expiresAt stamped by an older build", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(
+      linkRow({
+        createdAt: new Date(Date.now() - 2 * HOUR_MS),
+        expiresAt: new Date(Date.now() - HOUR_MS),
+      })
+    );
+
+    const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
+    expect(res.member ?? res.request).toBeDefined();
+  });
+
+  it("still refuses a REVOKED invite-link row", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(
+      linkRow({ revokedAt: new Date(Date.now() - 60_000) })
+    );
+
+    await expect(
+      communityService.redeemInviteLink(STORED_CODE, CALLER)
+    ).rejects.toThrow("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Hybrid POST /:id/invite-links — bare call = permanent SSOT, params = temp link
+// POST /:id/invite-links — bare call = the community's live link, params = custom
 // ---------------------------------------------------------------------------
 
-describe("createInviteLink — bare PRIVATE call returns the PERMANENT link (SSOT)", () => {
-  it("a bare {} call mints the permanent code and shapes it as CommunityInviteLinkData", async () => {
-    repo.findById
-      .mockResolvedValueOnce(withoutCode()) // initial load: no code yet
-      .mockResolvedValueOnce(withCode()); // post-write re-read: code present
-    repo.setInvitationCodeOnce.mockResolvedValue({ count: 1 });
+describe("createInviteLink — bare PRIVATE call returns the live link", () => {
+  it("a bare {} call mints a never-expiring link shaped as CommunityInviteLinkData", async () => {
+    repo.findById.mockResolvedValue(community());
 
     const link = await communityService.createInviteLink(CID, CALLER, {});
 
-    expect(link.code).toBe(STORED_CODE);
     expect(link.linkType).toBe("PRIVATE_INVITE");
-    expect(link.url).toBe(`${BASE}/+${STORED_CODE}`);
-    expect(link.appDeepLink).toBe(`aimess://join?code=${STORED_CODE}`);
-    // Permanent links use communityId as linkId (no real CommunityInviteLink row).
-    expect(link.linkId).toBe(CID);
-    expect(link.isPermanent).toBe(true);
-    // Permanent links are unlimited, never-expiring, never-revoked, request-to-join.
+    expect(link.url).toBe(`${BASE}/+${link.code}`);
+    expect(link.appDeepLink).toBe(`aimess://join?code=${link.code}`);
     expect(link.maxUses).toBeNull();
-    expect(link.expiresAt).toBeNull();
     expect(link.revokedAt).toBeNull();
     expect(link.autoApprove).toBe(false);
     expect(link.isActive).toBe(true);
+    expect(link.expiresAt).toBeNull();
   });
 
-  it("repeated bare calls return the SAME code and create NO invite-link rows", async () => {
-    repo.findById.mockResolvedValue(withCode()); // code already present every read
+  it("repeated bare calls return the SAME code and create NO extra rows", async () => {
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     const first = await communityService.createInviteLink(CID, CALLER, {});
     const second = await communityService.createInviteLink(CID, CALLER, {});
@@ -382,62 +421,39 @@ describe("createInviteLink — bare PRIVATE call returns the PERMANENT link (SSO
     expect(first.code).toBe(STORED_CODE);
     expect(second.code).toBe(STORED_CODE);
     expect(third.code).toBe(STORED_CODE);
-    // The legacy multi-link create path is never touched on the bare/default call.
     expect(repo.createInviteLink).not.toHaveBeenCalled();
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
   });
 
   it("the bare call does NOT consume the per-member active-link cap", async () => {
-    repo.findById.mockResolvedValue(withCode());
+    repo.findById.mockResolvedValue(community());
+    repo.findLatestReusableInviteLink.mockResolvedValue(linkRow());
 
     await communityService.createInviteLink(CID, CALLER, {});
 
-    // Rate-limit / cap guards live AFTER the SSOT short-circuit — never reached.
     expect(repo.countActiveInviteLinksByCreator).not.toHaveBeenCalled();
   });
 });
 
-describe("createInviteLink — parameterized call still creates a TEMPORARY link", () => {
+describe("createInviteLink — parameterized call still creates a CUSTOM link", () => {
   beforeEach(() => {
-    repo.findById.mockResolvedValue(withCode());
+    repo.findById.mockResolvedValue(community());
     repo.countActiveInviteLinksByCreator.mockResolvedValue(0);
-    repo.createInviteLink.mockImplementation(
-      async (data: Record<string, unknown>) => ({
-        id: "f".repeat(24),
-        code: data.code,
-        communityId: data.communityId,
-        createdBy: data.createdBy,
-        maxUses: data.maxUses ?? null,
-        usedCount: 0,
-        autoApprove: data.autoApprove ?? false,
-        expiresAt: data.expiresAt ?? null,
-        revokedAt: null,
-        createdAt: CREATED_AT,
-      })
-    );
   });
 
-  it("maxUses present → creates a fresh row (NOT the permanent code)", async () => {
+  it("maxUses present → creates a fresh row", async () => {
     const link = await communityService.createInviteLink(CID, CALLER, {
       maxUses: 5,
     });
 
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
-    expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
     expect(link.maxUses).toBe(5);
-    // A real row id — not the permanent link.
     expect(link.isPermanent).toBe(false);
-    // The temporary link's code is freshly generated, not the stored permanent one.
-    expect(link.code).not.toBe(STORED_CODE);
   });
 
-  it("expiresInMinutes present → creates an expiring row", async () => {
-    const link = await communityService.createInviteLink(CID, CALLER, {
-      expiresInMinutes: 60,
-    });
+  it("writes no expiry at all — a link dies only when it is revoked", async () => {
+    await communityService.createInviteLink(CID, CALLER, { maxUses: 5 });
 
-    expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
-    expect(link.expiresAt).not.toBeNull();
-    expect(link.isPermanent).toBe(false);
+    const written = repo.createInviteLink.mock.calls[0][0];
+    expect(written.expiresAt).toBeNull();
   });
 });

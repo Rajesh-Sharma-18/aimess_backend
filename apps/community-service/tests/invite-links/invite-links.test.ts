@@ -71,13 +71,26 @@ describe("POST /:id/invite-links (create)", () => {
     const res = await request(app)
       .post(`/api/v1/communities/${CID}/invite-links`)
       .set(auth())
-      .send({ maxUses: 10, expiresInMinutes: 60, autoApprove: true });
+      .send({ maxUses: 10, autoApprove: true });
     expect(res.status).toBe(201);
     expect(svc.createInviteLink.mock.calls[0][2]).toMatchObject({
       maxUses: 10,
-      expiresInMinutes: 60,
       autoApprove: true,
     });
+  });
+
+  // Links do not expire, so the field is no longer part of the contract: an
+  // older client still sending it is accepted, and the value is dropped rather
+  // than turning into a link that dies on a clock.
+  it("strips a legacy expiresInMinutes instead of rejecting it → 201", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/invite-links`)
+      .set(auth())
+      .send({ maxUses: 10, expiresInMinutes: 60 });
+    expect(res.status).toBe(201);
+    expect(svc.createInviteLink.mock.calls[0][2]).not.toHaveProperty(
+      "expiresInMinutes"
+    );
   });
 
   it("returns 400 for maxUses below 1", async () => {

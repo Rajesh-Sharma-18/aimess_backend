@@ -7,6 +7,10 @@ service AuthService {
   rpc GetActiveUserSeries (ActiveUserSeriesRequest) returns (ActiveUserSeries);
   rpc AdminListUsers (AdminListUsersRequest) returns (AdminListUsersResponse);
   rpc AdminGetUser (AdminGetUserRequest) returns (AdminUserRecord);
+  // Admin Panel announcements: the users who currently hold a live session on
+  // one of the given device types. Sessions — not device tokens, not a stored
+  // profile preference — are what "this user is on iOS right now" means.
+  rpc AdminListUserIdsByDeviceType (AdminListUserIdsByDeviceTypeRequest) returns (AdminListUserIdsByDeviceTypeResponse);
   rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
   rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
   // The ONLY mutation on this service. backoffice-service calls it
@@ -17,6 +21,17 @@ service AuthService {
   // session in the same call. The admin.user.queue RabbitMQ event stays as an
   // idempotent safety net, not the primary path.
   rpc AdminSetAccountStatus (AdminSetAccountStatusRequest) returns (AdminSetAccountStatusResponse);
+  // Super Admin reactivation of a soft-deleted account. Separate from
+  // AdminSetAccountStatus on purpose: that RPC routes to accountBanService,
+  // whose `lift` deliberately REFUSES a deleted account so an unban can never
+  // resurrect an account the user asked to remove. Un-deleting is its own
+  // decision, so it gets its own RPC, its own audit event and its own
+  // `user.restored` fanout.
+  rpc AdminRestoreAccount (AdminRestoreAccountRequest) returns (AdminRestoreAccountResponse);
+  // Mirror of backoffice's IsAdminEmailTaken: an email may belong to exactly
+  // one identity platform-wide, but end users and admins live in different
+  // databases, so neither side can enforce that with an index.
+  rpc IsUserEmailTaken (IsUserEmailTakenRequest) returns (IsUserEmailTakenResponse);
 }
 
 message GetUserCountsRequest {}
@@ -81,6 +96,16 @@ message AdminListUsersResponse {
 }
 message AdminGetUserRequest { string user_id = 1; }
 
+message AdminListUserIdsByDeviceTypeRequest {
+  repeated string device_types = 1; // ANDROID|IOS|WEB|DESKTOP — empty means every type
+  int32  limit  = 2;                // page size (clamped 1..500)
+  int32  offset = 3;                // offset pagination over DISTINCT user ids
+}
+message AdminListUserIdsByDeviceTypeResponse {
+  repeated string user_ids = 1;     // distinct, ordered by id so paging is stable
+  int64  total = 2;                 // distinct users matching, for pagination
+}
+
 // Permanent ban / reinstatement. There is deliberately no duration field:
 // a ban lasts until a Super Admin explicitly sets the status back to ACTIVE.
 message AdminSetAccountStatusRequest {
@@ -89,6 +114,17 @@ message AdminSetAccountStatusRequest {
   string reason         = 3; // free text, persisted on the account; "" allowed
   string actor_admin_id = 4; // backoffice AdminUser.id (NOT an AuthUser.id)
 }
+message AdminRestoreAccountRequest {
+  string user_id        = 1;
+  string actor_admin_id = 2; // backoffice AdminUser.id (NOT an AuthUser.id)
+}
+message AdminRestoreAccountResponse {
+  bool   ok         = 1;
+  string status     = 2;  // status after the write ("" when ok=false)
+  string restored_at = 3; // ISO-8601 ("" when ok=false)
+  string error_code = 4;  // "USER_NOT_FOUND" | "USER_NOT_DELETED" | "RESTORE_NOT_PUBLISHED" | ""
+}
+
 message AdminSetAccountStatusResponse {
   bool   ok               = 1;
   string status           = 2; // status after the write ("" when ok=false)
@@ -132,3 +168,8 @@ message AccountEntry {
 message BulkGetAccountsResponse {
   repeated AccountEntry accounts = 1;
 }
+
+// Internal: backoffice-service checks an email against AuthUser before creating
+// or renaming an admin account.
+message IsUserEmailTakenRequest { string email = 1; }
+message IsUserEmailTakenResponse { bool taken = 1; }

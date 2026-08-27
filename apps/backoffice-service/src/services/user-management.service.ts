@@ -37,6 +37,7 @@ import type {
   BanUserInput,
   BulkActivateInput,
   BulkBanInput,
+  ReactivateUserInput,
   SuspendUserInput,
   UnbanUserInput,
 } from "../api/validators/index.js";
@@ -799,6 +800,140 @@ export const userManagementService = {
       at: toIso(ref.at),
       banType: "SYSTEM",
     });
+    mirrorProfileStatus(userId, false);
+
+    return result;
+  },
+
+  /**
+   * Super Admin "Re-Activate": un-delete a soft-deleted account and restore
+   * every piece of data and every relationship it had before deletion.
+   *
+   * This is a genuinely complete restore rather than a profile-only one, and
+   * that is a property of how deletion was built, not something reconstructed
+   * here. `DELETE /auth/account` removes no row and overwrites no stored value
+   * anywhere on the platform: auth-service marks the AuthUser
+   * (deletedAt + PENDING_DELETION + scheduledDeletionAt, sessions revoked in
+   * place, Google/Apple links kept) and user-service marks the UserProfile
+   * (deletedAt + status DELETED) while leaving username, names, bio, avatar and
+   * every other column intact. No other service consumes `user.deleted` at all
+   * — communities, community and group memberships, 1-to-1 rooms, group chats,
+   * every sent and received message, attachments, receipts, reactions, pins,
+   * notifications, push history, friendships, roles and moderation records were
+   * never touched by the delete. The "Deleted Account" name and blank avatar
+   * seen platform-wide are a read-time projection of those two flags, or a
+   * denormalized copy of that projection. Nothing hard-purges an account:
+   * `scheduledDeletionAt` is recorded but no job reads it.
+   *
+   * So reactivation clears the two flags and re-broadcasts the real identity,
+   * and every relationship comes back with the same user id it always had. No
+   * new account is created.
+   *
+   * Ordering is the same rule the ban and unban follow, and it is what makes
+   * this atomic in the way that matters: auth-service is the source of truth
+   * and does its own half in a transaction, and it must succeed — including
+   * the awaited `user.restored` publish that un-deletes the profile — before
+   * this mirror is allowed to call the user reactivated. A failure anywhere in
+   * that chain leaves the panel still showing DELETED and the admin retries;
+   * every step is idempotent, so a retry converges rather than double-applying.
+   */
+  async reactivateUser(
+    userId: string,
+    input: ReactivateUserInput,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<UserStatusResult> {
+    const ref = buildActor(actor);
+    const before = await userDirectoryRepository.getById(userId);
+
+    if (!before) {
+      throw new NotFoundError("USER_NOT_FOUND");
+    }
+
+    // Rejects a BANNED or SUSPENDED account (unban is that account's remedy,
+    // and reactivation must not become a backdoor for it) but deliberately lets
+    // ACTIVE through alongside DELETED.
+    //
+    // ACTIVE is the RETRY case, and it has to be allowed here or the retry this
+    // endpoint's own 503 tells the admin to perform is impossible. auth-service
+    // commits its restore before publishing `user.restored`; if that publish
+    // fails, this method throws 503 and deliberately leaves the mirror showing
+    // DELETED — but the LIVE status the next request reads is now ACTIVE. A
+    // strict `!== "DELETED"` check would 409 that retry forever and strand the
+    // account able to log in with its profile still deleted. auth-service
+    // treats an already-ACTIVE account as a re-drive (republish, no rewrite),
+    // and it is the authoritative check either way.
+    if (before.status !== "DELETED" && before.status !== "ACTIVE") {
+      throw new ConflictError("USER_NOT_DELETED");
+    }
+
+    const restored = await authClient
+      .adminRestoreAccount({ userId, actorAdminId: ref.actorId })
+      .catch((err: unknown) => {
+        logger.error("auth-service refused the reactivation", { err });
+        throw new ServiceUnavailableError("USER_REACTIVATE_NOT_APPLIED");
+      });
+    if (!restored.ok) {
+      if (restored.errorCode === "USER_NOT_FOUND") {
+        throw new NotFoundError("USER_NOT_FOUND");
+      }
+      if (restored.errorCode === "USER_NOT_DELETED") {
+        throw new ConflictError("USER_NOT_DELETED");
+      }
+      // RESTORE_NOT_PUBLISHED — auth is ACTIVE but user-service was not told.
+      // Do NOT mirror: the panel keeps showing DELETED and the admin retries,
+      // which republishes and completes the restore.
+      throw new ServiceUnavailableError("USER_REACTIVATE_NOT_APPLIED");
+    }
+
+    const result = await userDirectoryRepository.setStatus(userId, {
+      status: "ACTIVE",
+      reason: null,
+      bannedAt: null,
+      suspendedUntil: null,
+      // Lifts the mirror's DELETED tombstone for this one write.
+      fromDeleted: true,
+      // The mirror row is self-healed from the LIVE source on first mutation
+      // (GrpcUserDirectoryRepository.ensureMirrored), and auth-service is
+      // already ACTIVE by this point — so a user with no prior mirror row
+      // arrives here as ACTIVE→ACTIVE. That is a completed restore, not a
+      // conflict, so let it be an idempotent no-op.
+      idempotentActive: true,
+    });
+
+    await moderationActionRepository.create({
+      actorId: ref.actorId,
+      type: "reactivate_user",
+      targetType: "user",
+      targetId: userId,
+      reason: input.note ?? "Account reactivated by admin",
+      metadata: buildMetadata(input.note ?? null),
+    });
+
+    await auditService.record({
+      actorId: ref.actorId,
+      action: AUDIT_ACTIONS.USER_REACTIVATED,
+      targetType: "user",
+      targetId: userId,
+      before: { status: before.status, deletedAt: before.since },
+      after: {
+        status: result.status,
+        note: input.note ?? null,
+        restoredAt: restored.restoredAt,
+        // The inverse of the unban's `membershipsRestored: false`. Nothing had
+        // to be re-created: the delete never removed a membership, a room, a
+        // message or a relationship, so all of it is simply visible again
+        // under the original user id.
+        dataRestored: true,
+        newAccountCreated: false,
+      },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+
+    // Puts the user-service profile status mirror back to ACTIVE. The
+    // `user.restored` event has already cleared the profile's own deletedAt;
+    // this is the same suspended/active mirror the ban and unban maintain.
     mirrorProfileStatus(userId, false);
 
     return result;

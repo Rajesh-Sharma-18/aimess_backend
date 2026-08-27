@@ -316,7 +316,7 @@ export class CommunityRoomSyncConsumer {
           // Membership-lifecycle cleanup (Telegram parity): when a membership
           // goes INACTIVE (left / removed / banned), hard-delete the user's
           // PERSONAL join-session onboarding lines ("You joined the community",
-          // "Your request to join was approved") so they never accumulate across
+          // "{admin} added you to the community") so they never accumulate across
           // join→leave→rejoin cycles. No community-wide socket emit (other
           // members never saw this PERSONAL line), but the affected user's OWN
           // already-connected client DID render it before leaving — publish a
@@ -465,6 +465,7 @@ export class CommunityRoomSyncConsumer {
             communityId: cId,
             communityName,
             communityHandle,
+            communityType,
             communityAvatarUrl,
             memberCount,
             inviteUrl,
@@ -487,6 +488,7 @@ export class CommunityRoomSyncConsumer {
             communityId: cId,
             communityName: communityName ?? "",
             communityHandle: communityHandle ?? null,
+            communityType: communityType ?? null,
             communityAvatarUrl: communityAvatarUrl ?? null,
             memberCount,
             inviteUrl,
@@ -580,6 +582,7 @@ export class CommunityRoomSyncConsumer {
     communityId: string;
     communityName: string;
     communityHandle?: string | null;
+    communityType?: string | null;
     communityAvatarUrl?: string | null;
     memberCount?: number;
     inviteUrl?: string;
@@ -596,6 +599,7 @@ export class CommunityRoomSyncConsumer {
       communityId,
       communityName,
       communityHandle = null,
+      communityType = null,
       communityAvatarUrl = null,
       memberCount,
       inviteUrl,
@@ -650,8 +654,10 @@ export class CommunityRoomSyncConsumer {
     //    the invite into existence right now: the recipient is guaranteed
     //    not-yet-a-member (bulk-send filters out ACTIVE members before
     //    publishing) and the code was just minted, so ACTIVE/false is the only
-    //    truthful answer. Historical reads (`enrichMessages`) re-resolve the
-    //    same object, since either fact can go stale later.
+    //    truthful answer. The `status` written here is the card's PERMANENT
+    //    record of the link it was sent with — `enrichMessages` re-resolves
+    //    membership on every historical read, but reads the link verdict back
+    //    off this row so a later reset cannot rewrite an invite already sent.
     const previewText = communityName
       ? `Invitation to join ${communityName}`
       : "Community invitation";
@@ -665,6 +671,16 @@ export class CommunityRoomSyncConsumer {
       inviteCode: linkCode,
       deepLink: inviteDeepLink ?? inviteUrl ?? "",
       alreadyJoined: false,
+      communityType:
+        communityType === "PRIVATE"
+          ? "PRIVATE"
+          : communityType === "PUBLIC"
+            ? "PUBLIC"
+            : null,
+      // Unknowable here (bulk-send does not read join requests) and cheap to be
+      // wrong about: redeem is idempotent for an existing PENDING request, so a
+      // tap resolves the card into "Cancel Request" rather than duplicating it.
+      joinRequestPending: false,
       status: "ACTIVE",
     });
     const content = buildInvitationContent(previewText, invitation);

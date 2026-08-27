@@ -96,8 +96,6 @@ describe("handleAnnouncementBatch", () => {
   });
 
   it("deviceType=ANDROID: restricts the push to Android sessions", async () => {
-    tokenRepo.findUserIdsWithPlatform.mockResolvedValue(["u1"]);
-
     await handleAnnouncementBatch({ ...BASE, deviceType: "ANDROID" });
 
     const build = pushMany.mock.calls[0][1] as (id: string) => {
@@ -118,31 +116,13 @@ describe("handleAnnouncementBatch", () => {
   // The Notification-Center row is per-user, so a device-targeted announcement
   // must narrow the AUDIENCE, not just the send — otherwise it shows up on the
   // very sessions the device filter excluded.
-  it("device-targeted: notifies only users who own a device of that type", async () => {
-    tokenRepo.findUserIdsWithPlatform.mockResolvedValue(["u2"]);
-
+  // The audience arrives already device-correct (backoffice resolved it from
+  // live sessions); this consumer must notify exactly who it was handed.
+  it("notifies exactly the audience it was given, without re-deciding it", async () => {
     await handleAnnouncementBatch({ ...BASE, deviceType: "IOS" });
 
-    expect(tokenRepo.findUserIdsWithPlatform).toHaveBeenCalledWith(
-      BASE.userIds,
-      "IOS"
-    );
-    expect(pushMany.mock.calls[0][0]).toEqual(["u2"]);
-  });
-
-  it("device-targeted with no matching device: sends nothing at all", async () => {
-    tokenRepo.findUserIdsWithPlatform.mockResolvedValue([]);
-
-    await handleAnnouncementBatch({ ...BASE, deviceType: "ANDROID" });
-
-    expect(pushMany).not.toHaveBeenCalled();
-  });
-
-  it("deviceType=ALL: keeps the full audience and never queries tokens", async () => {
-    await handleAnnouncementBatch({ ...BASE, deviceType: "ALL" });
-
-    expect(tokenRepo.findUserIdsWithPlatform).not.toHaveBeenCalled();
     expect(pushMany.mock.calls[0][0]).toEqual(BASE.userIds);
+    expect(tokenRepo.findUserIdsWithPlatform).not.toHaveBeenCalled();
   });
 
   it("duplicate execution prevention: second call with the same batchId is a no-op", async () => {

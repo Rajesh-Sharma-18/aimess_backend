@@ -84,9 +84,7 @@ export const userProfileRepository = {
         groupsCount: true,
         status: true,
         deletedAt: true,
-        privacySettings: {
-          select: { whoCanViewProfile: true, whoCanSeeOnlineStatus: true },
-        },
+        privacySettings: PRIVACY_SCOPE_SELECT,
       },
     });
   },
@@ -369,6 +367,19 @@ export const userProfileRepository = {
     return prisma.userProfile.update({
       where: { userId },
       data: { deletedAt, status: ProfileStatus.DELETED },
+    });
+  },
+
+  /**
+   * Exact inverse of {@link softDelete}. Only the two markers are written —
+   * `softDelete` overwrote nothing else, so username, names, bio, avatar,
+   * date of birth and every other column are still the values the account had
+   * before deletion and simply become visible again.
+   */
+  restore(userId: string) {
+    return prisma.userProfile.update({
+      where: { userId },
+      data: { deletedAt: null, status: ProfileStatus.ACTIVE },
     });
   },
 

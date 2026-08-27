@@ -46,6 +46,7 @@ export {
   banUser,
   suspendUser,
   unbanUser,
+  reactivateUser,
   bulkBanUsers,
   bulkActivateUsers,
 } from "./users.controller.js";
@@ -99,6 +100,7 @@ export {
   updateAdminAccount,
   activateAdminAccount,
   deactivateAdminAccount,
+  deleteAdminAccount,
   updateAdminAccountStatus,
   listPermissions,
   getAdminPermissions,

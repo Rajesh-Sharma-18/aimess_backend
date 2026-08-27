@@ -42,8 +42,20 @@ export const CommunitySystemMessageType = {
 
   // --- Personal (visible ONLY to the affected user) ---------------------------
   COMMUNITY_JOINED: "COMMUNITY_JOINED",
+  /** @deprecated RETIRED — an approved join request now posts COMMUNITY_JOINED
+   *  ("You joined the community"): the line must state the membership outcome
+   *  the user experienced, not the admin's decision (the decision reaches them
+   *  as the separate `community.join_request_approved` notification). Kept only
+   *  so rows persisted before the change still resolve; they re-render as the
+   *  COMMUNITY_JOINED sentence. Nothing writes this any more. */
   JOIN_REQUEST_APPROVED: "JOIN_REQUEST_APPROVED",
   JOIN_REQUEST_REJECTED: "JOIN_REQUEST_REJECTED",
+  /** An admin/moderator added this member directly (Add Member), rather than
+   *  the member joining or a join request being approved. PERSONAL: only the
+   *  added member reads "{admin} added you to the community". Distinct from
+   *  COMMUNITY_JOINED ("You joined…") so the line always matches what actually
+   *  happened. */
+  MEMBER_ADDED: "MEMBER_ADDED",
   /** Personal counterpart to ROLE_CHANGED — delivered only to the user whose
    *  role changed so they see "You are now a moderator" while everyone else
    *  sees the community-wide "X is now a moderator" line. */
@@ -101,6 +113,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_JOINED: "PERSONAL",
   JOIN_REQUEST_APPROVED: "PERSONAL",
   JOIN_REQUEST_REJECTED: "PERSONAL",
+  MEMBER_ADDED: "PERSONAL",
   ROLE_CHANGED_SELF: "PERSONAL",
   MEMBER_ROLE_CHANGED: "COMMUNITY",
 };
@@ -141,6 +154,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_JOINED: false,
   JOIN_REQUEST_APPROVED: false,
   JOIN_REQUEST_REJECTED: false,
+  MEMBER_ADDED: false,
   ROLE_CHANGED_SELF: false,
   MEMBER_ROLE_CHANGED: true,
 };
@@ -183,8 +197,10 @@ export function isEligibleForLastActivity(
 
 /**
  * PERSONAL onboarding lines that are bound to the user's CURRENT membership
- * session (Telegram-style): "You joined the community" / "Your request to join
- * was approved". They must NOT accumulate across join→leave→rejoin cycles — when
+ * session (Telegram-style): "You joined the community" / "{admin} added you to
+ * the community" (plus the retired JOIN_REQUEST_APPROVED, still listed so
+ * legacy rows are purged by the same sweep). They must NOT accumulate across
+ * join→leave→rejoin cycles — when
  * a membership goes inactive (left / removed / banned) every prior-session copy
  * for that (community, user) is purged, and a fresh one is created on rejoin. A
  * user must never see more than the current session's line.
@@ -192,6 +208,7 @@ export function isEligibleForLastActivity(
 export const PERSONAL_JOIN_SESSION_TYPES = [
   "COMMUNITY_JOINED",
   "JOIN_REQUEST_APPROVED",
+  "MEMBER_ADDED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** Membership test for a readonly subtype tuple (handles null/undefined). */
@@ -237,14 +254,24 @@ export function isPersonalJoinSessionType(
  *                    history is unchanged. Moderation history lives in the audit
  *                    log and backoffice panel.
  *
- * MEMBER_UNBANNED is NOT hidden: it's an informational action that members may
- * legitimately see in context. MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
- * (Telegram parity: only the affected member ever sees "You are muted…" /
- * "You were unmuted" — never broadcast, never visible to other members), and
- * persist exactly like any other PERSONAL line (COMMUNITY_JOINED):
- * delivered live to the affected member's socket AND returned by history/sync/
- * catch-up/list APIs for that same member on reload/reconnect.
- * Membership history also lives in the backoffice/audit log.
+ * MEMBER_UNBANNED is deliberately NOT in this set, but for a read-side reason
+ * rather than a write-side one: no call site emits it any more (community-service
+ * `unbanMember` posts no chat line, mirroring the silent MEMBER_BANNED policy —
+ * showing "{name} was unbanned" with no preceding ban line, about someone an
+ * unban does not re-add to the community, is worse than showing nothing). Keeping
+ * the type OUT of the set means lines persisted before that policy stay readable
+ * in history instead of being retroactively erased. Do not "tidy" it into the set.
+ *
+ * MEMBER_MUTED is PERSONAL (Telegram parity: only the affected member ever sees
+ * "You are muted…" — never broadcast, never visible to other members), and
+ * persists exactly like any other PERSONAL line (COMMUNITY_JOINED): delivered
+ * live to the affected member's socket AND returned by history/sync/catch-up/list
+ * APIs for that same member on reload/reconnect.
+ *
+ * MEMBER_UNMUTED is HIDDEN (never shown in chat): unmute posts no bubble — the
+ * composer re-enables via the separate `community:member:unmuted` socket event
+ * and the prior mute line is retracted, so an "You were unmuted" line carried no
+ * state. Membership history lives in the backoffice/audit log.
  *
  * SYSTEM-EVENT POLICY TABLE
  * | Membership event        | Chat system msg | Recipient-scoped msg | Bumps lastActivity |
@@ -252,15 +279,23 @@ export function isPersonalJoinSessionType(
  * | Member joined           | No (HIDDEN)     | Yes (COMMUNITY_JOINED PERSONAL) | No    |
  * | Member removed by admin | No (HIDDEN)     | No (socket only)     | No                 |
  * | Member banned           | No (HIDDEN)     | No (socket + push only) | No            |
+ * | Member unbanned         | No (not emitted)| No (socket only)     | No                 |
  * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
- * | Member muted/unmuted    | No (COMMUNITY)  | Yes (MEMBER_MUTED/UNMUTED PERSONAL) | No |
+ * | Member muted             | No (COMMUNITY)  | Yes (MEMBER_MUTED PERSONAL) | No |
+ * | Member unmuted           | No (HIDDEN)     | No (socket only: :unmuted)  | No |
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
   "MEMBER_JOINED",
   "MEMBER_REMOVED",
   "MEMBER_BANNED",
+  // MEMBER_UNMUTED: unmute is SILENT in chat. The composer re-enables via the
+  // separate `community:member:unmuted` socket event, and the stale "You are
+  // muted until …" line is retracted (publishCommunityMemberMuteRetractedForChat)
+  // — so a "You were unmuted" bubble was a redundant second line with no state
+  // to convey. MEMBER_MUTED stays visible (the member must see they can't post).
+  "MEMBER_UNMUTED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype must never appear in the chat timeline (see above). */

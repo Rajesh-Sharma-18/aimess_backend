@@ -12,9 +12,9 @@ import {
 import type { Notification } from "../generated/prisma/index.js";
 
 import {
-  categorize,
   LOGIN_DETECTED_TYPE,
-  type NotificationCategory,
+  rowCategory,
+  type NotificationRowCategory,
 } from "./notification-category.js";
 import {
   resolveNotificationFriendship,
@@ -35,10 +35,14 @@ export interface NotificationDTO {
   id: string;
   type: string;
   /**
-   * Derived from `type` by `categorize()` — never stored. Typed off that
-   * function so a new tab cannot be added without this DTO following it.
+   * Explicit row category, derived from `type` by `rowCategory()` — never
+   * stored. A superset of the tab enum: a Super-Admin announcement reports
+   * "Announcement" so clients can pick its glyph from this field instead of
+   * pattern-matching the title/body. Tab filtering and the per-tab counts run
+   * off `categoryWhere()` (keyed on `type`), so an announcement still lists
+   * and counts under SYSTEM.
    */
-  category: Exclude<NotificationCategory, "ALL">;
+  category: NotificationRowCategory;
   /** Null when the body already carries the subject — the client renders no heading. */
   title: string | null;
   body: string;
@@ -434,9 +438,25 @@ export async function serializeNotification(
     return out;
   };
 
-  const effectivePayload = stripInternalDirectives(
-    scrubbed?.payload ?? payloadObj
-  );
+  // The refreshed name has to land on BOTH halves of the object.
+  //
+  // `title`/`body` below and `payload.title`/`payload.body` are two renderings
+  // of one sentence, and every rewrite between the row and the wire has to
+  // touch both or the object contradicts itself — the deleted-actor scrub
+  // already returns a matching pair for exactly that reason, and the stale-name
+  // refresh was the one rewrite that reached the envelope only. A card could
+  // therefore read "Mohit accepted your request" above a payload still saying
+  // "Someone accepted your request".
+  const refreshedPayload = scrubbed?.payload ?? {
+    ...payloadObj,
+    ...(payloadObj.title !== undefined
+      ? { title: refreshName(payloadObj.title) }
+      : {}),
+    ...(payloadObj.body !== undefined
+      ? { body: refreshName(payloadObj.body) }
+      : {}),
+  };
+  const effectivePayload = stripInternalDirectives(refreshedPayload);
 
   const storedBody = scrubbed?.body ?? refreshName(payloadObj.body) ?? "";
   const body =
@@ -459,7 +479,7 @@ export async function serializeNotification(
   return {
     id: row.id,
     type: row.type,
-    category: categorize(row.type),
+    category: rowCategory(row.type),
     title,
     body,
     isRead: row.isRead,

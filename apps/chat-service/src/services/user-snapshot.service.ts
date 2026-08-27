@@ -57,6 +57,34 @@ export function resolveDisplayName(
 }
 
 /**
+ * The sender's REAL live name, or `""` when there is none to show.
+ *
+ * Same candidate chain as {@link resolveDisplayName} minus its placeholders: a
+ * deleted account and a profile that resolved to nothing both come back empty
+ * rather than as "Deleted Account" / "Unknown User". Callers that BACKFILL a
+ * name into a stored sentence need that distinction — writing a placeholder
+ * into `systemData.actorName` would bake "Unknown User shared a group invite"
+ * onto the row, where leaving the gap lets the renderer fall back to its own
+ * neutral "Someone …" wording.
+ */
+export function resolveRealDisplayName(
+  snapshot: Record<string, unknown> | null | undefined
+): string {
+  if (!snapshot || snapshot.isDeletedUser === true) return "";
+  for (const candidate of [
+    snapshot.fullName,
+    snapshot.displayName,
+    snapshot.username,
+    snapshot.memberId,
+  ]) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+/**
  * User snapshot service — fetches user info from Redis cache.
  * Falls back to a minimal placeholder if not cached.
  * In production, a background worker periodically syncs from user-service.
