@@ -10,6 +10,7 @@ import { prisma } from "./config/prisma.js";
 import { connectUserRedis, disableUserCache } from "./config/redis.js";
 import { startUserCreatedConsumer } from "./consumers/user-created.consumer.js";
 import { startUserDeletedConsumer } from "./consumers/user-deleted.consumer.js";
+import { startUserRestoredConsumer } from "./consumers/user-restored.consumer.js";
 
 async function start() {
   try {
@@ -42,6 +43,7 @@ async function start() {
     try {
       await startUserCreatedConsumer();
       await startUserDeletedConsumer();
+      await startUserRestoredConsumer();
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable after retries — user event consumers will not run until service restarts"

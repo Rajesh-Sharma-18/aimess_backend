@@ -8,8 +8,10 @@ import { withServiceAuth } from "@aimess/grpc-utils";
 import { adminStatsRepository } from "../repositories/admin-stats.repository.js";
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
 import type { AuthUser } from "../generated/prisma/client.js";
+import { authRepository } from "../repositories/auth.repository.js";
 import { accountService } from "../services/account.service.js";
 import { accountBanService } from "../services/account-ban.service.js";
+import { accountRestoreService } from "../services/account-restore.service.js";
 import { prisma } from "../config/prisma.js";
 
 // Map an AuthUser row to the wire AdminUserRecord. Status is normalized for the
@@ -268,6 +270,30 @@ const authImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Internal: backoffice-service asks before creating/renaming an admin account.
+  // Soft-deleted users still count as taken — the row keeps the unique index on
+  // `email`, so handing the address to an admin would break a later restore.
+  isUserEmailTaken: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { email?: string };
+        const email = (req.email ?? "").trim().toLowerCase();
+        if (!email) {
+          callback(null, { taken: false });
+          return;
+        }
+        const user = await authRepository.findByEmail(email);
+        callback(null, { taken: user !== null });
+      } catch (err) {
+        logger.error(`gRPC isUserEmailTaken error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
   // Internal: chat-service fetches account names in bulk (replaces HTTP /api/internal/accounts)
   bulkGetAccounts: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
@@ -369,6 +395,68 @@ const authImpl: grpc.UntypedServiceImplementation = {
         }
         logger.error(`gRPC adminSetAccountStatus error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Super Admin "Re-Activate": PENDING_DELETION → ACTIVE, plus the
+  // `user.restored` fanout that un-deletes the profile in user-service.
+  // Kept out of adminSetAccountStatus because that RPC's ACTIVE branch is
+  // accountBanService.lift, which refuses deleted accounts by design.
+  adminRestoreAccount: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        userId?: string;
+        actorAdminId?: string;
+      };
+      const userId = req.userId ?? "";
+
+      if (!userId) {
+        callback(null, {
+          ok: false,
+          status: "",
+          restoredAt: "",
+          errorCode: "USER_NOT_FOUND",
+        });
+        return;
+      }
+
+      try {
+        const result = await accountRestoreService.restore({
+          userId,
+          actorAdminId: req.actorAdminId ? req.actorAdminId : null,
+        });
+        callback(null, {
+          ok: true,
+          status: result.status,
+          restoredAt: result.restoredAt.toISOString(),
+          errorCode: "",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "";
+        if (message === "USER_NOT_FOUND" || message === "USER_NOT_DELETED") {
+          callback(null, {
+            ok: false,
+            status: "",
+            restoredAt: "",
+            errorCode: message,
+          });
+          return;
+        }
+        // Anything else is the awaited `user.restored` publish failing (broker
+        // down). auth is ACTIVE but the profile is still deleted, so report it
+        // as a distinct code: the caller must NOT mark the user reactivated,
+        // and the admin retries — restore is idempotent.
+        logger.error(`gRPC adminRestoreAccount error: ${String(err)}`);
+        callback(null, {
+          ok: false,
+          status: "",
+          restoredAt: "",
+          errorCode: "RESTORE_NOT_PUBLISHED",
+        });
       }
     })();
   },

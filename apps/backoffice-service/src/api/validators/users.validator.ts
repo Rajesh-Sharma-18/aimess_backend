@@ -422,6 +422,19 @@ export const unbanUserSchema = z
 export type UnbanUserInput = z.infer<typeof unbanUserSchema>;
 
 // ---------------------------------------------------------------------------
+// Reactivate (restore a soft-deleted account).
+// ---------------------------------------------------------------------------
+/**
+ * Body-less by default, like the unban: `note` is an optional free-text
+ * justification recorded on the moderation + audit rows. No scope field —
+ * reactivation is only ever the whole account.
+ */
+export const reactivateUserSchema = z.object({
+  note: z.string().max(2000).optional(),
+});
+export type ReactivateUserInput = z.infer<typeof reactivateUserSchema>;
+
+// ---------------------------------------------------------------------------
 // Bulk.
 // ---------------------------------------------------------------------------
 const userIdsField = z.array(z.string().trim().min(1).max(64)).min(1).max(100);

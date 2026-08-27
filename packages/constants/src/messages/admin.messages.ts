@@ -121,6 +121,17 @@ export const ADMIN_MESSAGES = {
     th: "ผู้ใช้รายนี้ไม่ได้ถูกแบนอยู่",
   },
 
+  USER_NOT_DELETED: {
+    vi: "Tài khoản người dùng này chưa bị xóa",
+    en: "This user account has not been deleted.",
+    th: "บัญชีผู้ใช้นี้ยังไม่ถูกลบ",
+  },
+  USER_REACTIVATE_NOT_APPLIED: {
+    vi: "Không thể kích hoạt lại tài khoản lúc này. Vui lòng thử lại.",
+    en: "The account could not be reactivated right now. Please try again.",
+    th: "ไม่สามารถเปิดใช้งานบัญชีอีกครั้งได้ในขณะนี้ กรุณาลองใหม่",
+  },
+
   // ── Report moderation ───────────────────────────────────────────────────────
   REPORT_NOT_FOUND: {
     vi: "Không tìm thấy báo cáo",
@@ -172,6 +183,11 @@ export const ADMIN_MESSAGES = {
     vi: "Email này đã được sử dụng bởi một quản trị viên khác",
     en: "This email is already used by another admin.",
     th: "อีเมลนี้ถูกใช้โดยผู้ดูแลระบบรายอื่นแล้ว",
+  },
+  ADMIN_EMAIL_TAKEN_BY_USER: {
+    vi: "Email này đã được sử dụng bởi một tài khoản người dùng",
+    en: "This email is already used by an app user account.",
+    th: "อีเมลนี้ถูกใช้โดยบัญชีผู้ใช้แอปแล้ว",
   },
   ADMIN_ROLE_NOT_FOUND: {
     vi: "Không tìm thấy vai trò",
@@ -570,6 +586,11 @@ export const ADMIN_MESSAGES = {
     vi: "Đã gỡ cấm người dùng",
     en: "User unbanned",
     th: "ยกเลิกการแบนผู้ใช้แล้ว",
+  },
+  ADMIN_USER_REACTIVATED: {
+    vi: "Đã kích hoạt lại người dùng",
+    en: "User reactivated",
+    th: "เปิดใช้งานผู้ใช้อีกครั้งแล้ว",
   },
   ADMIN_USERS_BULK_BANNED: {
     vi: "Đã xử lý yêu cầu cấm hàng loạt",

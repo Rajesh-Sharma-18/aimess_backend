@@ -213,6 +213,45 @@ export const adminSetAccountStatusBreaker: Breaker<
     )
 );
 
+export interface AdminRestoreAccountResult {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+interface RawAdminRestoreAccountResponse {
+  ok: boolean;
+  status: string;
+  restoredAt: string;
+  errorCode: string;
+}
+
+// Same rule as adminSetAccountStatusBreaker: no fallback-on-failure. A restore
+// that did not reach auth-service has not happened, so the caller must abort
+// rather than mark the user reactivated in the mirror.
+export const adminRestoreAccountBreaker: Breaker<
+  { userId: string; actorAdminId: string },
+  RawAdminRestoreAccountResponse
+> = makeBreaker(
+  "auth.adminRestoreAccount",
+  (args: { userId: string; actorAdminId: string }) =>
+    call<typeof args, RawAdminRestoreAccountResponse>(
+      "adminRestoreAccount",
+      args
+    )
+);
+
+// No fallback-on-failure either: a uniqueness check that never reached
+// auth-service proves nothing, and the two identity stores share no index that
+// would catch the duplicate afterwards. The caller must fail closed.
+export const isUserEmailTakenBreaker: Breaker<
+  { email: string },
+  { taken: boolean }
+> = makeBreaker("auth.isUserEmailTaken", (args: { email: string }) =>
+  call<typeof args, { taken: boolean }>("isUserEmailTaken", args)
+);
+
 export const authClient = {
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
@@ -284,6 +323,23 @@ export const authClient = {
       ok: r.ok,
       status: r.status,
       revokedSessions: Number(r.revokedSessions),
+      errorCode: r.errorCode,
+    };
+  },
+  /** True when an end-user account already owns this email. Throws when auth-service is unreachable. */
+  async isUserEmailTaken(email: string): Promise<boolean> {
+    const r = await isUserEmailTakenBreaker.fire({ email });
+    return r.taken === true;
+  },
+  async adminRestoreAccount(args: {
+    userId: string;
+    actorAdminId: string;
+  }): Promise<AdminRestoreAccountResult> {
+    const r = await adminRestoreAccountBreaker.fire(args);
+    return {
+      ok: r.ok,
+      status: r.status,
+      restoredAt: r.restoredAt,
       errorCode: r.errorCode,
     };
   },

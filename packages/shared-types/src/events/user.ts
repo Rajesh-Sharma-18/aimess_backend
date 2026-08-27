@@ -2,6 +2,8 @@
 export const UserEvents = {
   USER_CREATED: "user.created",
   USER_DELETED: "user.deleted",
+  /** Admin reactivation of a soft-deleted account — the exact inverse of USER_DELETED. */
+  USER_RESTORED: "user.restored",
   USER_PROFILE_UPDATED: "user.profile_updated",
   /** Emitted when a user changes settings — lets notifications-service bust its
    *  cached notification-settings entry. */
@@ -32,6 +34,21 @@ export type UserCreatedPayload = {
 export type UserDeletedPayload = {
   userId: string;
   deletedAt: string;
+};
+
+/**
+ * Published by auth-service when a Super Admin reactivates a soft-deleted
+ * account. Deletion never removed a row anywhere — it only set `deletedAt` +
+ * `status` on the AuthUser and the UserProfile and let every read path project
+ * an anonymized identity from those flags — so restoring is the exact inverse:
+ * clear the flags, then let the normal `user.profile_updated` fanout push the
+ * real identity back into every consumer that denormalized the placeholder.
+ */
+export type UserRestoredPayload = {
+  userId: string;
+  restoredAt: string;
+  /** backoffice AdminUser.id of the Super Admin who reactivated. */
+  actorAdminId?: string | null;
 };
 
 export type UserProfileUpdatedPayload = {

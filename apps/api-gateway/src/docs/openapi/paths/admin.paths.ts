@@ -1027,6 +1027,41 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
+  "/admin/v1/users/{userId}/reactivate": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminReactivateUser",
+      summary:
+        "Re-Activate a deleted user (restore the account and all its data)",
+      description:
+        "Restores a soft-deleted account under its ORIGINAL user id — no new account is created. NOT an alias of /unban: that path routes to auth-service's ban-lift, which refuses a deleted account by design so an unban can never resurrect one.\n\n" +
+        "Why this restores everything rather than just the profile: `DELETE /api/auth/account` removes no row and overwrites no stored value anywhere on the platform. auth-service marks the AuthUser (`deletedAt` + status PENDING_DELETION + a 30-day `scheduledDeletionAt`, sessions and refresh tokens revoked in place, Google/Apple links kept) and user-service marks the UserProfile (`deletedAt` + status DELETED) while leaving username, names, bio, avatar and every other column intact. No other service consumes `user.deleted` at all — communities and community memberships, groups and group memberships, 1-to-1 rooms, group chats, every sent and received message, attachments, receipts, reactions, pins, notification history, friendships, roles and moderation records are never touched. The 'Deleted Account' name and blank avatar seen platform-wide are a read-time projection of those two flags, or a denormalized copy of that projection. Nothing hard-purges an account: `scheduledDeletionAt` is recorded but no job reads it.\n\n" +
+        "So this endpoint clears both flags and re-broadcasts the real identity on the same `user.profile_updated` fanout the deletion used, which repaints chat-service's cached user snapshot and community-service's member snapshots back to the original values. Ordering is auth-service first (its own transaction, plus an AWAITED `user.restored` publish) and only then the admin mirror, so a failure anywhere leaves the panel still showing DELETED. Re-driving is safe and is the documented recovery: an account that is already ACTIVE is treated as a retry — the event is republished, nothing is rewritten and no ban flag is touched — and the user-service handler exits early on an already-active profile, so repeating the call converges instead of double-applying.\n\n" +
+        "Not restored, deliberately: revoked sessions stay revoked (the user signs in fresh, as after an unban), push device tokens were hard-deleted and are re-registered by each client on its next sign-in, and livestreams force-ended by the deletion stay ended. Writes a ModerationAction + AuditLog (`user.reactivated`). Requires users.moderate.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminReactivateRequest",
+        false
+      ),
+      responses: {
+        "200": okRes(
+          "User reactivated",
+          "#/components/schemas/AdminModerationResult"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+        "404": errRes("User not found"),
+        "409": errRes(
+          "USER_NOT_DELETED — the account is not in a deleted state"
+        ),
+        "503": errRes(
+          "USER_REACTIVATE_NOT_APPLIED — auth-service or the user.restored publish failed; nothing was mirrored, retry"
+        ),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/users/{userId}/details": {
     get: {
       tags: [adminTags.users],

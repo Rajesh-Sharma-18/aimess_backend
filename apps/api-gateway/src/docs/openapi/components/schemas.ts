@@ -1145,6 +1145,14 @@ export const openApiSchemas = {
       note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
+  AdminReactivateRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/users/{userId}/reactivate. Only field accepted; the whole body is optional.",
+    properties: {
+      note: { type: "string", maxLength: 2000, nullable: true },
+    },
+  },
   AdminModerationResult: {
     type: "object",
     description:

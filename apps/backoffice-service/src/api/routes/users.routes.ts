@@ -11,6 +11,7 @@ import {
   listUserCommunities,
   listUserReports,
   listUsers,
+  reactivateUser,
   suspendUser,
   unbanUser,
 } from "../controllers/index.js";
@@ -140,4 +141,17 @@ usersRoutes.post(
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   unbanUser
+);
+// Re-Activate a soft-deleted account. Deliberately NOT folded into the
+// unban/activate alias above: that pair routes to auth-service's ban-lift,
+// which refuses a deleted account by design so an unban can never resurrect an
+// account the user themselves asked to remove. Un-deleting is its own decision
+// with its own audit action and its own cross-service restore fanout. No body
+// validation — the optional `note` is parsed in the controller so a body-less
+// POST keeps working.
+usersRoutes.post(
+  "/users/:userId/reactivate",
+  requirePermission(PERMISSIONS.USERS_MODERATE),
+  validateParams(userIdParamSchema),
+  reactivateUser
 );
