@@ -653,6 +653,8 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
+      /** The invite code that admitted them, when a link was involved. */
+      joinedViaInviteCode?: string | null;
     },
     /** Who caused the membership — stamped on any join request this resolves.
      *  Defaults to the member themself (self-join / invite-link redeem). */
@@ -719,7 +721,15 @@ export const communityRepository = {
   findMembership(communityId: string, userId: string) {
     return prisma.communityMember.findFirst({
       where: { communityId, userId },
-      select: { role: true, status: true, removedAt: true },
+      // `joinedViaInviteCode` rides along for the invitation-card contexts RPC:
+      // it is what tells ONE card that it is the invitation this membership
+      // came through.
+      select: {
+        role: true,
+        status: true,
+        removedAt: true,
+        joinedViaInviteCode: true,
+      },
     });
   },
 
@@ -857,7 +867,11 @@ export const communityRepository = {
     },
     /** Who caused the reactivation — stamped on any join request it resolves.
      *  Defaults to the member themself (self-rejoin / invite-link redeem). */
-    resolvedBy?: string
+    resolvedBy?: string,
+    /** The invite code that admitted them THIS cycle, when a link was involved.
+     *  Absent unsets it: a fresh membership never inherits the previous cycle's
+     *  invitation, exactly like the kick/ban markers cleared below. */
+    joinedViaInviteCode?: string | null
   ) {
     const [row, clearedMutes] = await prisma.$transaction([
       prisma.communityMember.update({
@@ -887,6 +901,9 @@ export const communityRepository = {
           bannedAt: { unset: true },
           bannedBy: { unset: true },
           banReason: { unset: true },
+          ...(joinedViaInviteCode
+            ? { joinedViaInviteCode }
+            : { joinedViaInviteCode: { unset: true } }),
           ...snapshot,
         },
         select: {
@@ -2760,6 +2777,8 @@ export const communityRepository = {
     communityId: string;
     userId: string;
     message: string | null;
+    /** The invite code this request was raised from, if any. */
+    inviteCode?: string | null;
   }) {
     return prisma.communityJoinRequest.create({
       data: {
@@ -2767,6 +2786,7 @@ export const communityRepository = {
         userId: data.userId,
         message: data.message,
         status: CommunityJoinReqStatus.PENDING,
+        inviteCode: data.inviteCode ?? null,
       },
     });
   },
@@ -2871,7 +2891,13 @@ export const communityRepository = {
    * Recycle a non-PENDING request row back to PENDING. Clears decidedBy/decidedAt
    * (re-uses the (communityId, userId) unique row instead of inserting a dup).
    */
-  recyclePendingJoinRequest(requestId: string, message: string | null) {
+  recyclePendingJoinRequest(
+    requestId: string,
+    message: string | null,
+    /** The invite code this new attempt came from — a recycled row starts a
+     *  fresh request, so it must not keep the previous attempt's invitation. */
+    inviteCode?: string | null
+  ) {
     return prisma.communityJoinRequest.update({
       where: { id: requestId },
       data: {
@@ -2879,6 +2905,7 @@ export const communityRepository = {
         decidedBy: null,
         decidedAt: null,
         message,
+        inviteCode: inviteCode ?? null,
       },
     });
   },

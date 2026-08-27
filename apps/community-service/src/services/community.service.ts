@@ -4099,6 +4099,8 @@ export const communityService = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
+      /** The invite code that admitted them, when a link was involved. */
+      joinedViaInviteCode?: string | null;
     };
     memberCount: number;
     actorId: string;
@@ -4242,6 +4244,9 @@ export const communityService = {
         via,
         joinedAt: member.joinedAt.getTime(),
         addedAt,
+        // Which invitation admitted them — lets a session flip only the card
+        // for THIS code instead of every card the community ever sent.
+        joinedViaInviteCode: member.joinedViaInviteCode ?? null,
         lastActivity: joinLastActivity,
       };
       await publishChatUserEvent(
@@ -6897,7 +6902,9 @@ export const communityService = {
   async createJoinRequest(
     communityId: string,
     callerId: string,
-    message: string | null
+    message: string | null,
+    /** The invite code this request was raised from (invite-link redeem). */
+    inviteCode?: string | null
   ): Promise<CommunityJoinRequestData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -6943,6 +6950,7 @@ export const communityService = {
         communityId,
         userId: callerId,
         message,
+        inviteCode,
       });
       isNewOrRecycled = true;
     } else if (existingRequest.status === CommunityJoinReqStatus.PENDING) {
@@ -6950,7 +6958,8 @@ export const communityService = {
     } else {
       row = await communityRepository.recyclePendingJoinRequest(
         existingRequest.id,
-        message
+        message,
+        inviteCode
       );
       isNewOrRecycled = true;
     }
@@ -7253,7 +7262,9 @@ export const communityService = {
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
         },
-        callerId
+        callerId,
+        // The invitation that started this join, carried across the approval.
+        request.inviteCode
       );
     } else {
       try {
@@ -7266,6 +7277,7 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
+            joinedViaInviteCode: request.inviteCode,
           },
           callerId
         );
@@ -9578,7 +9590,8 @@ export const communityService = {
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
-      null
+      null,
+      code
     );
 
     return {
@@ -10145,7 +10158,11 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          }
+          },
+          undefined,
+          // Stamp the invitation that admitted them: the card for THIS code is
+          // the only one that may become "View Community".
+          link.code
         );
       } else {
         member = await communityRepository.createMember({
@@ -10156,6 +10173,7 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
+          joinedViaInviteCode: link.code,
         });
       }
       const count = await communityRepository.countActiveMembers(community.id);
@@ -10198,10 +10216,14 @@ export const communityService = {
       await burnUsageSlot();
     }
 
+    // A PRIVATE link admits nobody by itself — the request it raises carries the
+    // code, so the approval (whenever it lands) still knows WHICH invitation
+    // this membership came from.
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
-      null
+      null,
+      link.code
     );
     const updatedLink = await communityRepository.findInviteLinkById(link.id);
 

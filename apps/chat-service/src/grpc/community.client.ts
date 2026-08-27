@@ -122,6 +122,10 @@ export interface CommunityInviteContext {
   /** True when the viewer holds a PENDING join request. Never true alongside
    *  `isMember` — membership outranks the request it left behind. */
   joinRequestPending?: boolean;
+  /** True when the membership came through THIS query's code (or that code is
+   *  still the community's live link). An invitation card speaks for one code,
+   *  so only the one that admitted them may become "View Community". */
+  membershipViaCode?: boolean;
 }
 
 export interface CommunityReconcileClient {

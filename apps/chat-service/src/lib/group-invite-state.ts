@@ -90,6 +90,38 @@ export function isDeadLinkState(state: GroupInviteState): boolean {
  *  `LEFT` is deliberately absent: a voluntary leaver may rejoin. */
 const BLOCKED_MEMBER_STATUSES = new Set(["KICKED", "BANNED"]);
 
+/**
+ * Does the viewer's CURRENT membership belong to the invitation a card names?
+ *
+ * Two ways it can, and they are both "yes, this card is the one that let them
+ * in — or the one that still would":
+ *
+ *  1. they joined with exactly this token (`GroupMember.joinedViaToken`), which
+ *     stays true after the link is reset — the card they actually used keeps
+ *     saying "View Group" forever;
+ *  2. the token is still the group's LIVE link, which covers every membership
+ *     that did not come from a link at all (an admin add, the group's creator,
+ *     a row written before `joinedViaToken` existed).
+ *
+ * Anything else — a card for a token that has since been revoked, held by
+ * someone who got in through a later one — keeps offering to join. That is the
+ * whole point: resetting a link must not rewrite the invitations already sent.
+ */
+export function groupMembershipAppliesToInvitation(params: {
+  /** The token this card was sent with; null for a legacy tokenless card. */
+  cardToken: string | null;
+  /** `GroupMember.joinedViaToken` — null when the join came from no link. */
+  joinedViaToken?: string | null;
+  /** The link row for `cardToken`, ANY status; null when it is unknown. */
+  link: { status?: string | null; revokedAt?: Date | string | null } | null;
+}): boolean {
+  const { cardToken, joinedViaToken, link } = params;
+  if (!cardToken) return true;
+  if (joinedViaToken && joinedViaToken === cardToken) return true;
+  if (!link) return false;
+  return (link.status ?? "ACTIVE") === "ACTIVE";
+}
+
 export interface GroupInviteStateInput {
   /**
    * The group row of ANY status, or null when there is no row at all. Read with
@@ -109,12 +141,24 @@ export interface GroupInviteStateInput {
     usedCount?: number | null;
   } | null;
   /**
-   * Read the link as if it were still live — used ONLY by the in-chat
-   * invitation card, which must keep showing what it showed when it was sent
-   * even after an admin resets the link. Group existence, capacity, membership
-   * and the rejoin block stay live; only the LINK verdict is suppressed.
+   * Set ONLY by the in-chat invitation card, which is a record of ONE share
+   * rather than a live view of the link it names. Two things follow:
+   *
+   *  - the LINK verdict is suppressed: an admin reset must not rewrite every
+   *    invitation already sitting in every conversation into a dead link;
+   *  - the viewer's own rejoin block is suppressed: a removed user keeps the
+   *    ordinary "Join Group" button, and the refusal is delivered by the join
+   *    itself, in a dialog, instead of being baked into the card.
+   *
+   * `membershipApplies` says whether this viewer's CURRENT membership belongs
+   * to THIS invitation (see `groupMembershipAppliesToInvitation`). When it is
+   * false the card keeps offering to join even though the viewer is a member —
+   * they got in through a different, later invitation, and this card must go on
+   * speaking for the one it was sent with.
+   *
+   * Group existence, capacity and the roster count stay live in both modes.
    */
-  treatLinkAsLive?: boolean;
+  card?: { membershipApplies: boolean };
   /** The viewer's member row of ANY status, or null when they never joined. */
   membership: { status?: string | null } | null;
   /** False for a card/preview with no token at all (legacy rows) — such a card
@@ -131,13 +175,18 @@ export interface GroupInviteStateInput {
 export function resolveGroupInviteState(
   input: GroupInviteStateInput
 ): GroupInviteState {
-  const { room, link, membership, hasToken, activeAdminCount, treatLinkAsLive } =
-    input;
+  const { room, link, membership, hasToken, activeAdminCount, card } = input;
 
   // A member's access never depended on the invite, so nothing below can
   // downgrade them: a member of a full group, or one holding a revoked link,
-  // still opens their group.
-  if (membership?.status === "ACTIVE" && room && room.status !== "DISBANDED") {
+  // still opens their group. The one exception is a historical card whose
+  // invitation is NOT the one this membership came from — see `card`.
+  if (
+    membership?.status === "ACTIVE" &&
+    room &&
+    room.status !== "DISBANDED" &&
+    (!card || card.membershipApplies)
+  ) {
     return "ALREADY_MEMBER";
   }
 
@@ -164,7 +213,7 @@ export function resolveGroupInviteState(
   // verdict was decided when it was sent, and the link it names may since have
   // been reset. Nothing expires on a clock any more, so REVOKED and USED_UP are
   // the only ways a live link can be dead.
-  if (!treatLinkAsLive) {
+  if (!card) {
     if (!link) return "LINK_NOT_FOUND";
     // Absent `status` reads as ACTIVE: the column is non-nullable with an ACTIVE
     // default, so the only rows missing it predate it — and those were live links.
@@ -180,7 +229,11 @@ export function resolveGroupInviteState(
   if (room.memberCount >= effectiveGroupMemberLimit(room.memberLimit)) {
     return "GROUP_FULL";
   }
-  if (membership && BLOCKED_MEMBER_STATUSES.has(membership.status ?? "")) {
+  // The rejoin block is the SERVER's to enforce (addMember refuses it, every
+  // time) but not the card's to advertise: a removed user keeps the ordinary
+  // button and learns why when they use it. Every other surface — the invite
+  // preview, the join endpoint — still answers JOIN_BLOCKED up front.
+  if (!card && membership && BLOCKED_MEMBER_STATUSES.has(membership.status ?? "")) {
     return "JOIN_BLOCKED";
   }
   return "CAN_JOIN";
@@ -281,8 +334,8 @@ export async function loadGroupInviteState<
     token?: string | null;
     roomId?: string | null;
     viewerId?: string | null;
-    /** See {@link GroupInviteStateInput.treatLinkAsLive} — the in-chat card. */
-    treatLinkAsLive?: boolean;
+    /** See {@link GroupInviteStateInput.card} — the in-chat invitation card. */
+    card?: { membershipApplies: boolean };
   }
 ): Promise<LoadedGroupInviteState<TRoom, TLink, TMember>> {
   const token = args.token || null;
@@ -314,7 +367,7 @@ export async function loadGroupInviteState<
     membership: membership as GroupInviteStateInput["membership"],
     hasToken: !!token,
     activeAdminCount,
-    treatLinkAsLive: args.treatLinkAsLive,
+    card: args.card,
   });
 
   return {

@@ -81,6 +81,13 @@ export class GroupMemberService {
       userId: string;
       invitedBy?: string;
       role?: string;
+      /**
+       * The invite-link token this join came through, when it came through one.
+       * Recorded, never checked: it is what lets ONE invitation card claim the
+       * membership it produced, so a later reset cannot make an older card
+       * speak for a link it was never sent with.
+       */
+      joinedViaToken?: string | null;
     },
     opts?: {
       systemEvent?: SystemEvent;
@@ -196,6 +203,7 @@ export class GroupMemberService {
         status: "ACTIVE",
         joinedAt: new Date(),
         invitedBy: params.invitedBy || null,
+        joinedViaToken: params.joinedViaToken || null,
         leftAt: null,
         kickedAt: null,
         kickedBy: null,
@@ -372,6 +380,10 @@ export class GroupMemberService {
         role: member.role,
         isJoined: true,
         addedAt: member.joinedAt,
+        // Which invitation admitted them, so a session watching an invitation
+        // card can tell whether THIS card is the one that just worked (null =
+        // no link was involved, e.g. a direct admin add).
+        joinedViaToken: member.joinedViaToken ?? null,
       });
     })().catch((err: unknown) => {
       logger.warn(

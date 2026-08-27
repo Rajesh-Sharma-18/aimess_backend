@@ -117,6 +117,7 @@ import { resolveSystemActorName } from "../lib/localize-system-preview.js";
 import {
   isDeadLinkState,
   isGroupGoneState,
+  groupMembershipAppliesToInvitation,
   loadGroupInviteState,
 } from "../lib/group-invite-state.js";
 import {
@@ -2509,7 +2510,12 @@ export class PrivateMessageService {
                 ...base,
                 communityName: ctx.found ? ctx.communityName : communityName,
                 communityHandle: ctx.found ? ctx.communityHandle : null,
-                alreadyJoined: ctx.isMember,
+                // Membership flips this card only when the membership belongs to
+                // THIS invitation — the code they were admitted with, or one
+                // that is still the community's live link. A card for a code
+                // that has since been reset keeps offering to join, so one join
+                // cannot rewrite every invitation ever sent for the community.
+                alreadyJoined: ctx.isMember && ctx.membershipViaCode !== false,
                 // Resolved per read alongside membership, so the card's button
                 // is right after a join, a cancel, an approval OR an admin
                 // "Add Member" — including on a cold reload.
@@ -2578,27 +2584,48 @@ export class PrivateMessageService {
         // explicitly: a card whose token was revoked still knows which group it
         // points at, which is what keeps "View Group" working for a member.
         //
-        // `treatLinkAsLive`: a card is a historical record of a share, not a
-        // live view of the link it names. An admin who RESETS the link would
-        // otherwise rewrite every invite already sitting in every conversation
-        // into "invitation link expired". Everything the reader can still act on
-        // — membership, the group's existence, capacity, the rejoin block — is
-        // resolved live as before; only the LINK verdict is frozen. The tap
-        // still tells the truth: the join endpoint validates the token for real
-        // and answers CHAT_INVITE_LINK_REVOKED, which the client renders as the
-        // "this invite link was reset" dialog.
+        // A card is a record of ONE share, not a live view of the link it names.
+        // Read as such (see `GroupInviteStateInput.card`): the reset that killed
+        // this token must not rewrite an invitation already delivered, and the
+        // rejoin block belongs in the dialog the join raises, not on the button.
+        // The group itself, its capacity and its roster count stay live.
+        //
+        // `membershipApplies` is what keeps one join from rewriting every card:
+        // "View Group" is offered only by the invitation this membership
+        // actually came through, or by one that is still the group's live link.
+        const deps = {
+          inviteLinkRepo: this.groupInviteLinkRepo ?? null,
+          roomRepo: this.groupRoomRepo,
+          memberRepo: this.groupMemberRepo,
+        };
+        const [linkRow, memberRow] = await Promise.all([
+          token
+            ? ((await this.groupInviteLinkRepo?.findByToken(token)) ?? null)
+            : null,
+          groupId && viewerId
+            ? await this.groupMemberRepo.findByRoomAndUser(groupId, viewerId)
+            : null,
+        ]);
         const { state, room } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
           { status?: string | null }
-        >(
-          {
-            inviteLinkRepo: this.groupInviteLinkRepo ?? null,
-            roomRepo: this.groupRoomRepo,
-            memberRepo: this.groupMemberRepo,
+        >(deps, {
+          token,
+          roomId: groupId,
+          viewerId,
+          card: {
+            membershipApplies: groupMembershipAppliesToInvitation({
+              cardToken: token,
+              joinedViaToken: (
+                memberRow as { joinedViaToken?: string | null } | null
+              )?.joinedViaToken,
+              link: linkRow as {
+                status?: string | null;
+              } | null,
+            }),
           },
-          { token, roomId: groupId, viewerId, treatLinkAsLive: true }
-        );
+        });
         const alreadyJoined = state === "ALREADY_MEMBER";
         // Legacy LINK-only status, kept for clients that predate `state`. It
         // cannot express the group/capacity/block cases at all — that is exactly

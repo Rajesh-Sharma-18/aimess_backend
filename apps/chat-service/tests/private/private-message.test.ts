@@ -443,11 +443,73 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
         memberCount: 9,
       });
       // The admin reset the link: this token is dead.
-      mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
+      mocks.groupInviteLinkRepo.findByToken.mockResolvedValue({
         token: "tok123",
         roomId: "grp_1",
         status: "REVOKED",
       });
+    };
+
+    /** Two invitations for ONE group: ABC was reset, ABV replaced it. */
+    const seedTwoGroupInvitations = () => {
+      mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+        roomId: ROOM,
+        participants: [TEST_USER_ID, "peer"],
+        deletedFor: {},
+      });
+      const row = (id: string, token: string) => ({
+        id,
+        senderId: "peer",
+        messageType: "GROUP_INVITE",
+        systemEvent: "GROUP_INVITE",
+        systemData: {
+          invitationType: "GROUP",
+          groupId: "grp_1",
+          token,
+          actorId: "peer",
+          actorName: "Peer",
+        },
+        content: {
+          text: "Invitation to join Weekend Squad",
+          urls: [],
+          files: [],
+          invitation: { ...storedGroupCard, inviteToken: token },
+        },
+        createdAt: new Date(1000),
+      });
+      mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+        messages: [row("m-abc", "ABC"), row("m-abv", "ABV")],
+        hasMore: false,
+      });
+      mocks.privateMessageRepo.countTimeline.mockResolvedValue(2);
+      mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+        roomId: "grp_1",
+        name: "Weekend Squad",
+        avatar: "",
+        memberCount: 9,
+      });
+      mocks.groupInviteLinkRepo.findByToken.mockImplementation(
+        async (token: string) => ({
+          token,
+          roomId: "grp_1",
+          // ABC was reset when ABV was minted; ABV is the group's live link.
+          status: token === "ABV" ? "ACTIVE" : "REVOKED",
+        })
+      );
+    };
+
+    const readRows = async () => {
+      const res = await request(app)
+        .get(`/api/chat/private/rooms/${ROOM}/messages`)
+        .set(bearer(makeAccessToken()));
+      expect(res.status).toBe(200);
+      const byId: Record<string, Record<string, unknown>> = {};
+      for (const r of res.body.data.data) {
+        byId[r.id as string] = (
+          r.content as { invitation: Record<string, unknown> }
+        ).invitation;
+      }
+      return byId;
     };
 
     const readFirstRow = async () => {
@@ -474,18 +536,68 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
 
     it("GROUP: membership is still resolved live on top of the frozen link", async () => {
       seedGroupInviteRow();
-      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
-        status: "ACTIVE",
-      });
-      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
-        status: "ACTIVE",
-      });
+      // This IS the invitation they joined with, so the reset that killed the
+      // token afterwards does not take their "View Group" away.
+      const member = { status: "ACTIVE", joinedViaToken: "tok123" };
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(member);
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(member);
 
       const row = await readFirstRow();
       expect(row.content.invitation).toMatchObject({
         state: "ALREADY_MEMBER",
         alreadyJoined: true,
       });
+    });
+
+    // Scenario C/D — the regression this whole rule exists for.
+    it("GROUP: joining through the NEW link leaves the OLD card untouched", async () => {
+      seedTwoGroupInvitations();
+      // They joined with ABV, the link that replaced ABC.
+      const member = { status: "ACTIVE", joinedViaToken: "ABV" };
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(member);
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(member);
+
+      const cards = await readRows();
+      expect(cards["m-abv"]).toMatchObject({
+        state: "ALREADY_MEMBER",
+        alreadyJoined: true,
+      });
+      expect(cards["m-abc"]).toMatchObject({
+        state: "CAN_JOIN",
+        alreadyJoined: false,
+        // …and still not a word about the reset.
+        status: "ACTIVE",
+      });
+    });
+
+    // Every membership no link produced (an admin add, the creator, a row older
+    // than `joinedViaToken`) belongs to whichever link is live — never to one
+    // that has already been reset.
+    it("GROUP: a membership from no link at all belongs to the LIVE invitation", async () => {
+      seedTwoGroupInvitations();
+      const member = { status: "ACTIVE", joinedViaToken: null };
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(member);
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(member);
+
+      const cards = await readRows();
+      expect(cards["m-abv"]).toMatchObject({ state: "ALREADY_MEMBER" });
+      expect(cards["m-abc"]).toMatchObject({ state: "CAN_JOIN" });
+    });
+
+    // Scenario A — the card must NOT turn into "You can't join this group".
+    it("GROUP: a removed member keeps the ordinary button", async () => {
+      seedTwoGroupInvitations();
+      const member = { status: "KICKED", joinedViaToken: "ABC" };
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(member);
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+      const cards = await readRows();
+      for (const id of ["m-abc", "m-abv"]) {
+        expect(cards[id]).toMatchObject({
+          state: "CAN_JOIN",
+          alreadyJoined: false,
+        });
+      }
     });
 
     it("COMMUNITY: a revoked link leaves the card as sent for a non-member", async () => {
@@ -551,6 +663,69 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
         alreadyJoined: false,
         canOpen: true,
       });
+    });
+
+    // Scenario C, community side: the RPC reports the membership AND that it
+    // did not come through this card's code.
+    it("COMMUNITY: a member who joined through a LATER code keeps this card joinable", async () => {
+      mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+        roomId: ROOM,
+        participants: [TEST_USER_ID, "peer"],
+        deletedFor: {},
+      });
+      mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+        messages: [
+          {
+            id: "m-cinvite-old",
+            senderId: "peer",
+            messageType: "COMMUNITY_INVITE",
+            systemEvent: "COMMUNITY_INVITE",
+            systemData: {
+              invitationType: "COMMUNITY",
+              communityId: "community-3",
+              linkCode: "ABC",
+              actorId: "peer",
+              actorName: "Peer",
+            },
+            content: {
+              text: "Invitation to join Dr. Jhatka",
+              urls: [],
+              files: [],
+              invitation: {
+                type: "COMMUNITY_INVITATION",
+                communityId: "community-3",
+                communityName: "Dr. Jhatka",
+                communityAvatarUrl: null,
+                memberCount: 15,
+                inviteCode: "ABC",
+                deepLink: "aimess://join?code=ABC",
+                alreadyJoined: false,
+                status: "ACTIVE",
+                canOpen: true,
+              },
+            },
+            createdAt: new Date(1000),
+          },
+        ],
+        hasMore: false,
+      });
+      mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+      mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
+        {
+          communityId: "community-3",
+          found: true,
+          communityName: "Dr. Jhatka",
+          communityHandle: "dr-jhatka",
+          isMember: true,
+          communityType: "PRIVATE",
+          joinRequestPending: false,
+          linkStatus: "REVOKED",
+          membershipViaCode: false,
+        },
+      ]);
+
+      const row = await readFirstRow();
+      expect(row.content.invitation).toMatchObject({ alreadyJoined: false });
     });
   });
 

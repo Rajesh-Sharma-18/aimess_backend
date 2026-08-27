@@ -413,6 +413,14 @@ export interface CommunityAddedPayload {
   joinedAt: number; // epoch ms
   addedAt: number; // epoch ms — idempotency key
   /**
+   * The invite CODE this membership came through, when a link was involved
+   * (absent/null for an admin add, a plain self-join, or a legacy row). An
+   * invitation card speaks for one code, so a session watching one can tell
+   * whether THIS card is the invitation that just admitted them — without it,
+   * one join flips every card the community ever sent.
+   */
+  joinedViaInviteCode?: string | null;
+  /**
    * The recipient's personal last-activity preview — always their private
    * "You joined the community" system message at join time.
    *

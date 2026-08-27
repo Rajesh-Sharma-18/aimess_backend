@@ -248,6 +248,82 @@ describe("redeemInviteLink — usage accounting (autoApprove=true)", () => {
   });
 });
 
+/**
+ * The invitation a membership came through is recorded on the row it produces,
+ * so ONE invitation card can claim it. Without this, a join through a newly
+ * reset link turns every card the community ever sent into "View Community".
+ */
+describe("redeemInviteLink — records WHICH invitation admitted the caller", () => {
+  it("autoApprove: stamps the code on the new membership", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
+    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+    repo.findMemberByUserId.mockResolvedValue(null);
+    repo.createMember.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "ACTIVE",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+    repo.countActiveMembers.mockResolvedValue(6);
+    repo.setMemberCount.mockResolvedValue(undefined);
+    repo.updateLastActivity.mockResolvedValue(undefined);
+
+    await communityService.redeemInviteLink("abc123", CALLER);
+
+    expect(repo.createMember).toHaveBeenCalledWith(
+      expect.objectContaining({ joinedViaInviteCode: "abc123" })
+    );
+  });
+
+  it("autoApprove: a reactivated member is stamped with the code too", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
+    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+    repo.findMemberByUserId.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "LEFT",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+    repo.reactivateMemberWithSnapshot.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "ACTIVE",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+    repo.countActiveMembers.mockResolvedValue(6);
+    repo.setMemberCount.mockResolvedValue(undefined);
+    repo.updateLastActivity.mockResolvedValue(undefined);
+
+    await communityService.redeemInviteLink("abc123", CALLER);
+
+    // (communityId, userId, snapshot, resolvedBy, joinedViaInviteCode)
+    expect(repo.reactivateMemberWithSnapshot.mock.calls[0][4]).toBe("abc123");
+  });
+
+  // A PRIVATE link admits nobody by itself: the code rides the join REQUEST so
+  // the approval, whenever it lands, still knows which invitation started this.
+  it("request flow: the code is carried on the join request", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(link());
+    repo.findMemberByUserId.mockResolvedValue(null);
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null);
+
+    await communityService.redeemInviteLink("abc123", CALLER);
+
+    expect(repo.createJoinRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ inviteCode: "abc123" })
+    );
+  });
+});
+
 describe("redeemInviteLink — a BANNED caller is rejected outright, no bypass of the ban", () => {
   it("throws COMMUNITY_JOIN_BANNED and never touches usage accounting or membership", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));

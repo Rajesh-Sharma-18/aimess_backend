@@ -277,6 +277,9 @@ export class GroupInviteLinkService {
         roomId: link.roomId,
         userId,
         invitedBy: link.createdBy,
+        // Stamp the invitation that admitted them — the card for THIS token is
+        // the only one that may turn into "View Group".
+        joinedViaToken: link.token,
       },
       {
         systemEvent: SystemEvent.MEMBER_JOINED,

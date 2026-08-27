@@ -858,6 +858,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 linkStatus: "DELETED",
                 communityType: "",
                 joinRequestPending: false,
+                membershipViaCode: false,
               };
             }
 
@@ -872,6 +873,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 linkStatus: "DELETED",
                 communityType: "",
                 joinRequestPending: false,
+                membershipViaCode: false,
               };
             }
 
@@ -926,6 +928,21 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               }
             }
 
+            // Which invitation does this membership belong to? Either the code
+            // they were admitted with (`joinedViaInviteCode`, carried across a
+            // moderator approval) or the community's still-live link — which is
+            // what covers every membership no link produced at all (an admin
+            // add, the owner, a row older than the field). A card for a code
+            // that has since been reset, held by someone who got in through a
+            // later one, answers false and goes on offering to join: resetting a
+            // link must not rewrite the invitations already sent.
+            const membershipViaCode =
+              isMember &&
+              (!code ||
+                (membership as { joinedViaInviteCode?: string | null } | null)
+                  ?.joinedViaInviteCode === code ||
+                linkStatus === "ACTIVE");
+
             return {
               communityId,
               found: true,
@@ -935,6 +952,7 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               linkStatus,
               communityType: community.type,
               joinRequestPending,
+              membershipViaCode,
             };
           })
         );

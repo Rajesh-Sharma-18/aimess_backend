@@ -277,6 +277,14 @@ describe("POST /api/chat/invite-links/join", () => {
     expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
       TOKEN
     );
+    // The invitation that admitted them is recorded on the member row: it is
+    // what lets exactly ONE invitation card become "View Group", instead of
+    // every card the group ever sent flipping on the next read.
+    expect(mocks.groupMemberRepo.upsert).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      expect.objectContaining({ joinedViaToken: TOKEN })
+    );
   });
 
   it("EDGE: 400 when the link reached its usage limit", async () => {
