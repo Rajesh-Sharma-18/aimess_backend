@@ -489,36 +489,38 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   });
 
   // -------------------------------------------------------------------------
-  // MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL (Telegram parity): only the
-  // muted/unmuted member ever sees their own line via history/sync — never
-  // other members, moderators, or admins, and never each other's lines. They
-  // persist exactly like any other PERSONAL line (e.g. COMMUNITY_JOINED) and
-  // remain available to the affected member after reload/reconnect.
+  // MEMBER_MUTED is PERSONAL (Telegram parity): only the muted member ever sees
+  // their own line via history/sync — never other members, moderators, or
+  // admins. It persists like any other PERSONAL line (e.g. COMMUNITY_JOINED) and
+  // remains available to that member after reload/reconnect. MEMBER_UNMUTED is
+  // HIDDEN — any legacy persisted unmute row is stripped on every read path.
   // -------------------------------------------------------------------------
-  it("shows MEMBER_MUTED/MEMBER_UNMUTED only to their own target — never to other members, via the real history/sync read path", async () => {
+  it("shows MEMBER_MUTED only to its own target and strips any legacy MEMBER_UNMUTED row, via the real history/sync read path", async () => {
     const rows = [
-      // This viewer's own mute + unmute lines — visible to them, including
-      // after a hard reload (persisted like any other PERSONAL line).
+      // This viewer's own mute line — visible to them, including after a hard
+      // reload (persisted like any other PERSONAL line).
       {
         id: "muted-mine",
         deletedBy: [],
         systemMessageType: "MEMBER_MUTED",
         visibleToUserId: USER_ID,
       },
+      // A legacy unmute row for this viewer — HIDDEN, stripped on read.
       {
         id: "unmuted-mine",
         deletedBy: [],
         systemMessageType: "MEMBER_UNMUTED",
         visibleToUserId: USER_ID,
       },
-      // Another member's mute/unmute lines — never visible to this viewer,
-      // even though they are an active member of the same community.
+      // Another member's mute line — never visible to this viewer, even though
+      // they are an active member of the same community.
       {
         id: "muted-other",
         deletedBy: [],
         systemMessageType: "MEMBER_MUTED",
         visibleToUserId: OTHER_ID,
       },
+      // A legacy unmute row for the other member — HIDDEN for everyone.
       {
         id: "unmuted-other",
         deletedBy: [],
@@ -540,11 +542,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 30,
       viewerIsActiveMember: true,
     });
-    expect(viewer.messages.map((m) => m.id)).toEqual([
-      "muted-mine",
-      "unmuted-mine",
-      "msg",
-    ]);
+    expect(viewer.messages.map((m) => m.id)).toEqual(["muted-mine", "msg"]);
 
     // The other member reads the SAME room and sees only their own lines —
     // never USER_ID's mute/unmute lines.
@@ -557,11 +555,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 30,
       viewerIsActiveMember: true,
     });
-    expect(otherViewer.messages.map((m) => m.id)).toEqual([
-      "muted-other",
-      "unmuted-other",
-      "msg",
-    ]);
+    expect(otherViewer.messages.map((m) => m.id)).toEqual(["muted-other", "msg"]);
   });
 
   it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {
@@ -686,7 +680,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
   });
 
-  it("findUpdatedAtSince (incremental sync) includes the affected member's own MEMBER_MUTED/MEMBER_UNMUTED rows, excludes another member's", async () => {
+  it("findUpdatedAtSince (incremental sync) includes the affected member's own MEMBER_MUTED row, excludes another member's and strips legacy MEMBER_UNMUTED", async () => {
     const aggregateRaw = jest.fn().mockResolvedValue([]); // findLatestPersonalJoinMessageId
     const findMany = jest.fn().mockResolvedValue([
       {
@@ -719,18 +713,14 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 20,
     });
 
-    expect(messages.map((m) => m.id)).toEqual([
-      "muted-mine",
-      "unmuted-mine",
-      "msg",
-    ]);
+    expect(messages.map((m) => m.id)).toEqual(["muted-mine", "msg"]);
   });
 
-  it("findLatestPersonalByRooms (community-list personal lastActivity overlay) surfaces the affected member's own MEMBER_MUTED/MEMBER_UNMUTED row", async () => {
+  it("findLatestPersonalByRooms (community-list personal lastActivity overlay) surfaces the affected member's own MEMBER_MUTED row but excludes hidden MEMBER_UNMUTED", async () => {
     const aggregateRaw = jest
       .fn()
       .mockResolvedValue([
-        { _id: { $oid: ROOM_ID }, message: "You were unmuted", createdAt: {} },
+        { _id: { $oid: ROOM_ID }, message: "You are muted", createdAt: {} },
       ]);
     const prisma = { generalRoomMessage: { aggregateRaw } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
@@ -741,11 +731,12 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
-    // Scoped to this viewer's own PERSONAL rows, minus the hidden types only —
-    // MEMBER_MUTED/MEMBER_UNMUTED persist like any other PERSONAL line.
+    // Scoped to this viewer's own PERSONAL rows, minus the hidden types —
+    // MEMBER_MUTED persists like any other PERSONAL line; MEMBER_UNMUTED is
+    // hidden and must not win the preview slot.
     expect(match.visibleToUserId).toBe(USER_ID);
     expect(match.systemMessageType.$nin).not.toContain("MEMBER_MUTED");
-    expect(match.systemMessageType.$nin).not.toContain("MEMBER_UNMUTED");
+    expect(match.systemMessageType.$nin).toContain("MEMBER_UNMUTED");
   });
 
   it("findLatestPersonalByRooms excludes a legacy MEMBER_BANNED row — the list preview may not show what the timeline hides", async () => {

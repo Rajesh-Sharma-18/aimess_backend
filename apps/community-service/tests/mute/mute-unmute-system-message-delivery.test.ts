@@ -80,20 +80,13 @@ describe("communityService.muteMember/unmuteMember — PERSONAL system message d
     expect(payload.metadata.targetUserId).toBe(TARGET);
   });
 
-  it("unmuteMember emits a PERSONAL MEMBER_UNMUTED system message targeted at the unmuted member — never a broadcast", async () => {
+  it("unmuteMember posts NO chat system message — MEMBER_UNMUTED is HIDDEN (silent unmute)", async () => {
     await communityService.unmuteMember(CID, CALLER, TARGET);
 
-    expect(sysMsg).toHaveBeenCalledTimes(1);
-    const payload = sysMsg.mock.calls[0][0] as {
-      communityId: string;
-      systemMessageType: string;
-      visibleToUserId?: string;
-      metadata: Record<string, unknown>;
-    };
-    expect(payload.communityId).toBe(CID);
-    expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
-    expect(payload.visibleToUserId).toBe(TARGET);
-    expect(payload.metadata.targetUserId).toBe(TARGET);
+    // Unmute is silent in chat: the composer re-enables via the separate
+    // `community:member:unmuted` socket event and the prior mute line is
+    // retracted (asserted below). No "You were unmuted" bubble is emitted.
+    expect(sysMsg).not.toHaveBeenCalled();
   });
 
   it("unmuteMember also retracts the current mute session's PERSONAL MEMBER_MUTED line — the mute and unmute lines never stack together", async () => {

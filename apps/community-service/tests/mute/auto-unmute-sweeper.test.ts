@@ -8,8 +8,8 @@
  *   - audit MEMBER_UNMUTED with metadata.source = "auto"
  *   - mirror the unmute into chat-service (mute_synced isMuted=false) + emit the
  *     community:member:unmuted socket event
- *   - retract the PERSONAL MEMBER_MUTED chat message (mute_msg_retracted) and
- *     post the PERSONAL MEMBER_UNMUTED line ("You were unmuted")
+ *   - retract the PERSONAL MEMBER_MUTED chat message (mute_msg_retracted). No
+ *     "You were unmuted" line is posted — MEMBER_UNMUTED is HIDDEN (silent unmute)
  *
  * The I/O boundary (repo, redis publishers, chat publishers, push publishers) is
  * mocked by tests/setup/global-mocks.ts; the real service orchestration runs.
@@ -90,22 +90,15 @@ describe("communityService.expireDueMutes — auto-unmute sweep", () => {
       "community:member:unmuted",
       expect.objectContaining({ isMuted: false })
     );
-    // The lapsed session's mute line is retracted and the PERSONAL "You were
-    // unmuted" line posted — a timer lapse leaves the member's history in the
-    // same state a moderator unmute does.
+    // The lapsed session's mute line is retracted — a timer lapse leaves the
+    // member's history in the same state a moderator unmute does. Unmute is
+    // SILENT: MEMBER_UNMUTED is HIDDEN, so NO "You were unmuted" bubble is posted.
     expect(muteRetracted).toHaveBeenCalledTimes(2);
     expect(muteRetracted).toHaveBeenCalledWith({
       communityId: CID,
       userId: U1,
     });
-    expect(systemMessage).toHaveBeenCalledTimes(2);
-    expect(systemMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        systemMessageType: "MEMBER_UNMUTED",
-        visibleToUserId: U1,
-        metadata: expect.objectContaining({ targetUserId: U1 }),
-      })
-    );
+    expect(systemMessage).not.toHaveBeenCalled();
     // Auto-unmute is SILENT — no push to the member.
     expect(pushUnmuted).not.toHaveBeenCalled();
   });

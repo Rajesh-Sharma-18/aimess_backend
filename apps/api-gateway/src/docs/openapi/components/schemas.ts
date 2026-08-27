@@ -10087,12 +10087,11 @@ export const openApiSchemas = {
           "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
           "MEMBER_UNBANNED → '{{targetName}} was unbanned'; " +
           "MEMBER_MUTED (target only) → 'You are muted until {{date}}' or 'You are muted indefinitely' when no expiry; " +
-          "MEMBER_UNMUTED (target only) → 'You were unmuted'. " +
           "PERSONAL types (isPersonal=true, only ever returned to the target user): " +
           "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF / " +
-          "MEMBER_MUTED / MEMBER_UNMUTED. " +
+          "MEMBER_MUTED. " +
           "Hidden in chat timeline (never returned to anyone, including the affected user): MEMBER_LEFT, " +
-          "MEMBER_JOINED, MEMBER_REMOVED, MEMBER_BANNED — the removed/left member learns via the " +
+          "MEMBER_JOINED, MEMBER_REMOVED, MEMBER_BANNED, MEMBER_UNMUTED — the removed/left member learns via the " +
           "`community:membership:removed` socket event, and the banned member via " +
           "`community:membership:restricted` (isBanned: true) plus `isBanned` on the community detail/list, " +
           "which is what drives the sticky banned banner. No ban bubble is written to their history. " +

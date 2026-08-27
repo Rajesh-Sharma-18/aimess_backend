@@ -136,7 +136,16 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"])(
+  it.each([
+    "MEMBER_LEFT",
+    "MEMBER_JOINED",
+    "MEMBER_REMOVED",
+    "MEMBER_BANNED",
+    // Unmute is SILENT in chat: the composer re-enables via the separate
+    // `community:member:unmuted` socket event and the prior mute line is
+    // retracted, so no "You were unmuted" bubble is persisted or broadcast.
+    "MEMBER_UNMUTED",
+  ])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -210,13 +219,11 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
 
   it.each([
     // Non-hidden moderation lines: persisted (MEMBER_UNBANNED community-wide;
-    // MEMBER_MUTED/MEMBER_UNMUTED PERSONAL to the affected member only), but
-    // never eligible to bump the community-list preview. NOT in
-    // HIDDEN_SYSTEM_MESSAGE_TYPES (MEMBER_REMOVED IS in that set — "removal
-    // must be SILENT" — and is covered by the hidden-membership-line case
-    // above instead).
+    // MEMBER_MUTED PERSONAL to the affected member only), but never eligible to
+    // bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES
+    // (MEMBER_REMOVED and MEMBER_UNMUTED ARE in that set — covered by the
+    // hidden-membership-line case above instead).
     "MEMBER_MUTED",
-    "MEMBER_UNMUTED",
     "MEMBER_UNBANNED",
   ])(
     "%s is delivered but does not bump lastActivity (non-hidden moderation churn)",
@@ -241,7 +248,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
     }
   );
 
-  it.each(["MEMBER_MUTED", "MEMBER_UNMUTED"] as const)(
+  it.each(["MEMBER_MUTED"] as const)(
     "%s is PERSONAL — persisted + delivered only to the target's own channel, never the community room, and never bumps lastActivity",
     async (type) => {
       const h = makeService({
@@ -318,7 +325,7 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       expect(parsed.data.isPersonal).toBe(true);
     });
 
-    it("the affected user receives the MEMBER_UNMUTED system message — inserted normally, unchanged payload shape, delivered only to their own channel", async () => {
+    it("MEMBER_UNMUTED is HIDDEN — silent unmute posts no bubble even when addressed PERSONALLY to the target", async () => {
       const h = makeService({
         withMemberRepo: true,
         snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -333,27 +340,14 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
         eventAt: "2026-06-19T12:05:00.000Z",
       });
 
-      expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
-      const createArgs = h.createSystemMessage.mock.calls[0][0] as {
-        visibleToUserId: string | null;
-        systemMessageType: string;
-      };
-      expect(createArgs.visibleToUserId).toBe(TARGET);
-      expect(createArgs.systemMessageType).toBe("MEMBER_UNMUTED");
-
-      expect(h.redis.publish).toHaveBeenCalledTimes(1);
-      const [channel, raw] = h.redis.publish.mock.calls[0] as [string, string];
-      expect(channel).toBe(`user:${TARGET}`);
-      const parsed = JSON.parse(raw) as {
-        event: string;
-        data: { systemMessageType: string; isPersonal: boolean };
-      };
-      expect(parsed.event).toBe("community:message:new");
-      expect(parsed.data.systemMessageType).toBe("MEMBER_UNMUTED");
-      expect(parsed.data.isPersonal).toBe(true);
+      // Dropped at post(): no row, no live broadcast, no bump.
+      expect(h.createSystemMessage).not.toHaveBeenCalled();
+      expect(h.redis.publish).not.toHaveBeenCalled();
+      expect(pubActivity).not.toHaveBeenCalled();
+      expect(pubListBump).not.toHaveBeenCalled();
     });
 
-    it("the affected user receives EVERY mute/unmute line as its own message — repeated mute/unmute actions each insert, never collapse or replace a prior one", async () => {
+    it("only MUTE lines persist across a mute → unmute → mute cycle — each MUTE inserts, the interleaved UNMUTE is silent", async () => {
       const h = makeService({
         withMemberRepo: true,
         snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -384,18 +378,21 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
         eventAt: "2026-06-19T12:10:00.000Z",
       });
 
-      // Three distinct events → three inserted messages — nothing was
-      // updated/replaced in place.
-      expect(h.createSystemMessage).toHaveBeenCalledTimes(3);
-      expect(h.redis.publish).toHaveBeenCalledTimes(3);
+      // Two MUTE events insert; the UNMUTE between them is hidden (no row).
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(2);
+      expect(h.redis.publish).toHaveBeenCalledTimes(2);
       for (const call of h.redis.publish.mock.calls) {
         expect(call[0]).toBe(`user:${TARGET}`);
-        const parsed = JSON.parse(call[1] as string) as { event: string };
+        const parsed = JSON.parse(call[1] as string) as {
+          event: string;
+          data: { systemMessageType: string };
+        };
         expect(parsed.event).toBe("community:message:new");
+        expect(parsed.data.systemMessageType).toBe("MEMBER_MUTED");
       }
     });
 
-    it("other members (including admins/moderators) never receive the mute/unmute system message — it is never published to the community room", async () => {
+    it("other members (including admins/moderators) never receive the MUTE system message — it is never published to the community room", async () => {
       const h = makeService({
         withMemberRepo: true,
         snapshots: [[TARGET, { displayName: "John Doe" }]],
@@ -409,20 +406,12 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
         visibleToUserId: TARGET,
         eventAt: EVENT_AT,
       });
-      await h.service.post({
-        communityId: COMMUNITY_ID,
-        systemMessageType: "MEMBER_UNMUTED",
-        metadata: { targetUserId: TARGET },
-        triggeredByUserId: ACTOR,
-        visibleToUserId: TARGET,
-        eventAt: "2026-06-19T12:05:00.000Z",
-      });
 
       const publishedChannels = h.redis.publish.mock.calls.map(
         (call) => call[0]
       );
       expect(publishedChannels).not.toContain(`community:${COMMUNITY_ID}`);
-      expect(publishedChannels).toEqual([`user:${TARGET}`, `user:${TARGET}`]);
+      expect(publishedChannels).toEqual([`user:${TARGET}`]);
       // No community-list bump either — moderation churn never reaches the room.
       expect(pubActivity).not.toHaveBeenCalled();
       expect(pubListBump).not.toHaveBeenCalled();

@@ -2510,9 +2510,9 @@ export const communityPaths = {
       summary: "Unmute a member",
       description:
         "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`). " +
-        "Retracts (soft-deletes) the target's still-visible 'You are muted until …' PERSONAL line from their own history, and " +
-        "posts a PERSONAL `MEMBER_UNMUTED` system message ('You were unmuted') visible only to that member — silent for " +
-        "everyone else.",
+        "Retracts (soft-deletes) the target's still-visible 'You are muted until …' PERSONAL line from their own history. " +
+        "Unmute is SILENT in chat: no 'You were unmuted' bubble is posted (MEMBER_UNMUTED is a HIDDEN system type). The " +
+        "member's composer re-enables in real time via the `community:member:unmuted` socket event.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

@@ -262,13 +262,16 @@ export function isPersonalJoinSessionType(
  * the type OUT of the set means lines persisted before that policy stay readable
  * in history instead of being retroactively erased. Do not "tidy" it into the set.
  *
- * MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
- * (Telegram parity: only the affected member ever sees "You are muted…" /
- * "You were unmuted" — never broadcast, never visible to other members), and
- * persist exactly like any other PERSONAL line (COMMUNITY_JOINED):
- * delivered live to the affected member's socket AND returned by history/sync/
- * catch-up/list APIs for that same member on reload/reconnect.
- * Membership history also lives in the backoffice/audit log.
+ * MEMBER_MUTED is PERSONAL (Telegram parity: only the affected member ever sees
+ * "You are muted…" — never broadcast, never visible to other members), and
+ * persists exactly like any other PERSONAL line (COMMUNITY_JOINED): delivered
+ * live to the affected member's socket AND returned by history/sync/catch-up/list
+ * APIs for that same member on reload/reconnect.
+ *
+ * MEMBER_UNMUTED is HIDDEN (never shown in chat): unmute posts no bubble — the
+ * composer re-enables via the separate `community:member:unmuted` socket event
+ * and the prior mute line is retracted, so an "You were unmuted" line carried no
+ * state. Membership history lives in the backoffice/audit log.
  *
  * SYSTEM-EVENT POLICY TABLE
  * | Membership event        | Chat system msg | Recipient-scoped msg | Bumps lastActivity |
@@ -279,13 +282,20 @@ export function isPersonalJoinSessionType(
  * | Member unbanned         | No (not emitted)| No (socket only)     | No                 |
  * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
- * | Member muted/unmuted    | No (COMMUNITY)  | Yes (MEMBER_MUTED/UNMUTED PERSONAL) | No |
+ * | Member muted             | No (COMMUNITY)  | Yes (MEMBER_MUTED PERSONAL) | No |
+ * | Member unmuted           | No (HIDDEN)     | No (socket only: :unmuted)  | No |
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
   "MEMBER_JOINED",
   "MEMBER_REMOVED",
   "MEMBER_BANNED",
+  // MEMBER_UNMUTED: unmute is SILENT in chat. The composer re-enables via the
+  // separate `community:member:unmuted` socket event, and the stale "You are
+  // muted until …" line is retracted (publishCommunityMemberMuteRetractedForChat)
+  // — so a "You were unmuted" bubble was a redundant second line with no state
+  // to convey. MEMBER_MUTED stays visible (the member must see they can't post).
+  "MEMBER_UNMUTED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype must never appear in the chat timeline (see above). */
