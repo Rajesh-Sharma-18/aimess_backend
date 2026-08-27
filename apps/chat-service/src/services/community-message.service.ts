@@ -3191,9 +3191,10 @@ export class CommunityMessageService {
     // rejected promise is only half the risk (an absent repo method throws synchronously).
     let unreadAfterRead = 0;
     try {
+      // Recount at the message the pointer actually landed on, NOT at wall-clock `now`. Thresholding on `now` means "everything sent before I clicked is read", so acknowledging a message in the MIDDLE of the backlog reported 0 unread while every message after it was still unread. Harmless while rooms only ever opened at the tail (the two dates coincide there); reachable the moment a client opens on the unread divider.
       const counts = await this.messageRepo.countUnreadBulk({
         userId: params.readerId,
-        thresholds: [{ roomId: params.communityId, afterDate: now }],
+        thresholds: [{ roomId: params.communityId, afterDate: message.createdAt }],
       });
       unreadAfterRead = counts[params.communityId]?.count ?? 0;
     } catch (err: unknown) {

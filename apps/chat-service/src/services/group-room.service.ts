@@ -216,6 +216,8 @@ export type EnrichedGroupRoom = GroupRoomMembership & {
    *    up to the last message's sequenceNumber.
    */
   lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
+  /** Caller's own GroupMember.lastReadMessageId — the unread-divider anchor. Optional so non-list producers of this type keep compiling. */
+  lastReadMessageId?: string | null;
 };
 
 export class GroupRoomService {
@@ -1334,6 +1336,7 @@ export class GroupRoomService {
             : null,
         // A left member accrues no unread — their cursor is frozen at leftAt.
         unreadCount: isJoined ? (membership?.unreadCount ?? 0) : 0,
+        lastReadMessageId: membership?.lastReadMessageId ?? null,
         role: membership?.role ?? "MEMBER",
         isJoined,
         hasLeft,

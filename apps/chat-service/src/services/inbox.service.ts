@@ -48,6 +48,8 @@ export interface InboxItem {
    */
   lastMessageReadStatus: "SENT" | "DELIVERED" | "READ" | null;
   unreadCount: number;
+  /** Caller's OWN read watermark — the anchor an unread-divider/jump opens on. Null = never read. Raw pointer, NOT the receipt cursor (that one freezes when the user disables read receipts). */
+  lastReadMessageId: string | null;
   isMuted: boolean;
   pinnedCount: number;
   // PRIVATE-only
@@ -315,6 +317,10 @@ export class InboxService {
       string,
       number
     >;
+    const readByUser = (room.lastReadMessageIdByUser ?? {}) as Record<
+      string,
+      string | null
+    >;
     const rel = toPeerFriendshipRelationship(room.friendship);
     return {
       type: "PRIVATE",
@@ -332,6 +338,7 @@ export class InboxService {
         ) ?? null,
       lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: unreadByUser[userId] ?? 0,
+      lastReadMessageId: readByUser[userId] ?? null,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: room.peer,
@@ -389,6 +396,7 @@ export class InboxService {
           : (groupPreview ?? null),
       lastMessageReadStatus: room.lastMessageReadStatus ?? null,
       unreadCount: room.unreadCount,
+      lastReadMessageId: room.lastReadMessageId ?? null,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,
       peer: null,

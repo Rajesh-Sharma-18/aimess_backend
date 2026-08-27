@@ -134,6 +134,7 @@ export class GroupMemberRepository {
       kickedAt: Date | null;
       moderationMuted: boolean;
       moderationMutedUntil: Date | null;
+      lastReadMessageId: string | null;
     }>
   > {
     return this.prisma.groupMember.findMany({
@@ -142,6 +143,8 @@ export class GroupMemberRepository {
         roomId: true,
         role: true,
         unreadCount: true,
+        // The caller's own read watermark — the anchor an unread divider opens on.
+        lastReadMessageId: true,
         notificationSettings: true,
         clearedAt: true,
         clearChatAt: true,
