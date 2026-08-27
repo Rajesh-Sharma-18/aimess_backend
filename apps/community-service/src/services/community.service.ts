@@ -9654,18 +9654,10 @@ export const communityService = {
       return toInviteLinkData(link, community);
     }
 
-    // Abuse guards (now that every member can create links):
-    //  1. Per-user create rate limit (429 when exceeded).
-    //  2. Cap on simultaneously-active links one member owns in this community.
+    // Abuse guard: per-user create rate limit (429 when exceeded). The former
+    // cap on simultaneously-active links per member has been removed — a member
+    // may now hold any number of active invite links at once.
     await assertInviteCreateRateLimit(callerId);
-    const activeOwned =
-      await communityRepository.countActiveInviteLinksByCreator(
-        communityId,
-        callerId
-      );
-    if (activeOwned >= env.COMMUNITY_INVITE_MAX_ACTIVE_LINKS_PER_MEMBER) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
-    }
 
     const maxUses = input.maxUses ?? null;
     // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,

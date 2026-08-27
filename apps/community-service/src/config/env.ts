@@ -109,12 +109,6 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(3600),
-  /** Max simultaneously-ACTIVE invite links one member may own per community. */
-  COMMUNITY_INVITE_MAX_ACTIVE_LINKS_PER_MEMBER: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(20),
 
   // --- Auto-unmute sweeper (expires TIMED moderation mutes) ---
   /** Enable the per-minute auto-unmute sweep. Set false on replicas/tests. */

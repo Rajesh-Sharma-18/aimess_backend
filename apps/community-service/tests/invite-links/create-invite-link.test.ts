@@ -148,24 +148,16 @@ describe("createInviteLink — authorization (any active member)", () => {
 });
 
 describe("createInviteLink — abuse guards", () => {
-  it("rejects with COMMUNITY_INVITE_LINK_LIMIT_REACHED at the per-member active-link cap", async () => {
-    // Default cap is 20 active links per member. The cap applies only to the
-    // parameterized temp-link path, so pass a param.
-    repo.countActiveInviteLinksByCreator.mockResolvedValue(20);
-
-    await expect(
-      communityService.createInviteLink(CID, CALLER, { maxUses: 5 })
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
-    expect(repo.createInviteLink).not.toHaveBeenCalled();
-  });
-
-  it("allows creation just under the cap", async () => {
-    repo.countActiveInviteLinksByCreator.mockResolvedValue(19);
+  it("has no active-link cap — creates even with many links already active", async () => {
+    // The per-member active-link cap was removed; a member may hold any number
+    // of active invite links. A large existing count must NOT block creation.
+    repo.countActiveInviteLinksByCreator.mockResolvedValue(1000);
 
     const link = await communityService.createInviteLink(CID, CALLER, {
       maxUses: 5,
     });
     expect(link.linkId).toBe(LINK_ID);
+    expect(repo.createInviteLink).toHaveBeenCalled();
   });
 
   it("records an INVITE_LINK_CREATED audit entry on success", async () => {
