@@ -2474,6 +2474,15 @@ export class GroupMessageService {
    * bare `messageId` returned the reactors of any group message to any
    * authenticated caller.
    */
+  /**
+   * Current room CHANGE cursor (Telegram `pts`). Exposed so a LIVE emit can carry `revision`:
+   * without it a client applying a reaction event cannot advance its per-room cursor, and has to
+   * re-drain `/changes` from its old high-water to re-learn a change it already applied.
+   */
+  async getRoomRevision(roomId: string): Promise<number> {
+    return this.roomRepo.getRoomRevision(roomId);
+  }
+
   async getMessageReactions(params: {
     messageId: string;
     roomId: string;

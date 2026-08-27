@@ -1752,6 +1752,15 @@ export class ChatMessageOrchestrator {
     });
     const resolvedGroups = await toResolvedGroups(after);
 
+    // Carry the room's CHANGE cursor on the live event. A reaction bumps `revision` but never
+    // `sequenceNumber`, so without this a client can neither advance its per-room cursor from a
+    // reaction it just applied nor detect a gap (`revision > local + 1`) when one is dropped —
+    // it would have to re-drain `/changes` from a stale high-water on every reconnect.
+    // Best-effort: a failed read must never cost the user their reaction broadcast.
+    const revision = await service
+      .getRoomRevision(params.roomId)
+      .catch(() => 0);
+
     await this.redis.publish(
       `conv:${params.roomId}`,
       JSON.stringify({
@@ -1760,6 +1769,7 @@ export class ChatMessageOrchestrator {
           messageId: params.messageId,
           conversationId: params.roomId,
           reactions: resolvedGroups,
+          revision,
         },
       })
     );
