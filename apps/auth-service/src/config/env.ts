@@ -118,6 +118,9 @@ const envSchema = z.object({
 
   /** chat-service gRPC address — used to update login-notification status on Terminate/Trust. */
   CHAT_SERVICE_GRPC_URL: z.string().min(1).default("localhost:4004"),
+
+  /** backoffice-service gRPC address — used to reject emails already used by an admin account. */
+  BACKOFFICE_GRPC_URL: z.string().min(1).default("localhost:4010"),
 });
 
 const parsed = envSchema.safeParse(process.env);

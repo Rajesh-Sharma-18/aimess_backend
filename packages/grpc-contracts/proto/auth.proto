@@ -28,6 +28,10 @@ service AuthService {
   // decision, so it gets its own RPC, its own audit event and its own
   // `user.restored` fanout.
   rpc AdminRestoreAccount (AdminRestoreAccountRequest) returns (AdminRestoreAccountResponse);
+  // Mirror of backoffice's IsAdminEmailTaken: an email may belong to exactly
+  // one identity platform-wide, but end users and admins live in different
+  // databases, so neither side can enforce that with an index.
+  rpc IsUserEmailTaken (IsUserEmailTakenRequest) returns (IsUserEmailTakenResponse);
 }
 
 message GetUserCountsRequest {}
@@ -164,3 +168,8 @@ message AccountEntry {
 message BulkGetAccountsResponse {
   repeated AccountEntry accounts = 1;
 }
+
+// Internal: backoffice-service checks an email against AuthUser before creating
+// or renaming an admin account.
+message IsUserEmailTakenRequest { string email = 1; }
+message IsUserEmailTakenResponse { bool taken = 1; }

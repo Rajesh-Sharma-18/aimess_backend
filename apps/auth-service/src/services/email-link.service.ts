@@ -1,10 +1,6 @@
 import type { Request } from "express";
 
-import {
-  BadRequestError,
-  ConflictError,
-  UnauthorizedError,
-} from "@aimess/errors";
+import { BadRequestError, UnauthorizedError } from "@aimess/errors";
 
 import type {
   RequestLinkEmailOtpInput,
@@ -23,6 +19,7 @@ import {
   verifyAndConsumeOtp,
 } from "../lib/otp.js";
 import { assertNotBanned } from "../lib/account-guard.js";
+import { assertEmailAvailable } from "../lib/email-availability.js";
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
@@ -104,24 +101,23 @@ export const emailLinkService = {
     const email = normalizeEmail(input.email);
     const user = await loadActiveUser(userId);
 
-    if (user.email === email) {
-      if (user.emailVerified) {
-        throw new BadRequestError("AUTH_EMAIL_ALREADY_LINKED");
-      }
+    const alreadyOnAccount = user.email === email;
 
-      await sendLinkEmailOtp(req, userId, email);
-
-      return { messageKey: "AUTH_EMAIL_ALREADY_ON_ACCOUNT" };
+    if (alreadyOnAccount && user.emailVerified) {
+      throw new BadRequestError("AUTH_EMAIL_ALREADY_LINKED");
     }
 
-    const taken = await authRepository.findEmailTakenByOtherUser(email, userId);
-    if (taken) {
-      throw new ConflictError("AUTH_EMAIL_EXISTS");
-    }
+    // Runs on the resend path too: the row excludes this user, but an admin
+    // account may have claimed the address since it was first written here.
+    await assertEmailAvailable(email, userId);
 
     await sendLinkEmailOtp(req, userId, email);
 
-    return { messageKey: "AUTH_LINK_EMAIL_OTP_SENT" };
+    return {
+      messageKey: alreadyOnAccount
+        ? "AUTH_EMAIL_ALREADY_ON_ACCOUNT"
+        : "AUTH_LINK_EMAIL_OTP_SENT",
+    };
   },
 
   async verifyAndLink(
@@ -131,10 +127,7 @@ export const emailLinkService = {
     const email = normalizeEmail(input.email);
     await loadActiveUser(userId);
 
-    const taken = await authRepository.findEmailTakenByOtherUser(email, userId);
-    if (taken) {
-      throw new ConflictError("AUTH_EMAIL_EXISTS");
-    }
+    await assertEmailAvailable(email, userId);
 
     await verifyAndConsumeOtp({
       identifier: email,

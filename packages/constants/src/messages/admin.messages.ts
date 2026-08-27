@@ -184,6 +184,11 @@ export const ADMIN_MESSAGES = {
     en: "This email is already used by another admin.",
     th: "อีเมลนี้ถูกใช้โดยผู้ดูแลระบบรายอื่นแล้ว",
   },
+  ADMIN_EMAIL_TAKEN_BY_USER: {
+    vi: "Email này đã được sử dụng bởi một tài khoản người dùng",
+    en: "This email is already used by an app user account.",
+    th: "อีเมลนี้ถูกใช้โดยบัญชีผู้ใช้แอปแล้ว",
+  },
   ADMIN_ROLE_NOT_FOUND: {
     vi: "Không tìm thấy vai trò",
     en: "Role not found.",

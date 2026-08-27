@@ -242,6 +242,16 @@ export const adminRestoreAccountBreaker: Breaker<
     )
 );
 
+// No fallback-on-failure either: a uniqueness check that never reached
+// auth-service proves nothing, and the two identity stores share no index that
+// would catch the duplicate afterwards. The caller must fail closed.
+export const isUserEmailTakenBreaker: Breaker<
+  { email: string },
+  { taken: boolean }
+> = makeBreaker("auth.isUserEmailTaken", (args: { email: string }) =>
+  call<typeof args, { taken: boolean }>("isUserEmailTaken", args)
+);
+
 export const authClient = {
   async getUserCounts(): Promise<UserCounts> {
     const r = await getUserCountsBreaker.fire();
@@ -315,6 +325,11 @@ export const authClient = {
       revokedSessions: Number(r.revokedSessions),
       errorCode: r.errorCode,
     };
+  },
+  /** True when an end-user account already owns this email. Throws when auth-service is unreachable. */
+  async isUserEmailTaken(email: string): Promise<boolean> {
+    const r = await isUserEmailTakenBreaker.fire({ email });
+    return r.taken === true;
   },
   async adminRestoreAccount(args: {
     userId: string;

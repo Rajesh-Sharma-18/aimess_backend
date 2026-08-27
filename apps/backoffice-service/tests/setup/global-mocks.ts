@@ -43,12 +43,15 @@ jest.mock("../../src/grpc/auth.client.js", () => ({
     getActiveUserSeries: jest.fn(),
     adminListUsers: jest.fn(),
     adminGetUser: jest.fn(),
+    // Cross-DB email uniqueness check; defaults to "no end user owns this".
+    isUserEmailTaken: jest.fn(async () => false),
   },
   getUserCountsBreaker: { fire: jest.fn() },
   getActiveUserCountsBreaker: { fire: jest.fn() },
   getActiveUserSeriesBreaker: { fire: jest.fn() },
   adminListUsersBreaker: { fire: jest.fn() },
   adminGetUserBreaker: { fire: jest.fn() },
+  isUserEmailTakenBreaker: { fire: jest.fn(async () => ({ taken: false })) },
 }));
 jest.mock("../../src/grpc/user.client.js", () => ({
   userClient: {

@@ -8,6 +8,7 @@ import { withServiceAuth } from "@aimess/grpc-utils";
 import { adminStatsRepository } from "../repositories/admin-stats.repository.js";
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
 import type { AuthUser } from "../generated/prisma/client.js";
+import { authRepository } from "../repositories/auth.repository.js";
 import { accountService } from "../services/account.service.js";
 import { accountBanService } from "../services/account-ban.service.js";
 import { accountRestoreService } from "../services/account-restore.service.js";
@@ -264,6 +265,30 @@ const authImpl: grpc.UntypedServiceImplementation = {
         });
       } catch (err) {
         logger.error(`gRPC getAccountSummary error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Internal: backoffice-service asks before creating/renaming an admin account.
+  // Soft-deleted users still count as taken — the row keeps the unique index on
+  // `email`, so handing the address to an admin would break a later restore.
+  isUserEmailTaken: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { email?: string };
+        const email = (req.email ?? "").trim().toLowerCase();
+        if (!email) {
+          callback(null, { taken: false });
+          return;
+        }
+        const user = await authRepository.findByEmail(email);
+        callback(null, { taken: user !== null });
+      } catch (err) {
+        logger.error(`gRPC isUserEmailTaken error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

@@ -20,6 +20,7 @@ import {
 } from "../lib/social-account.util.js";
 import { resolveSocialProfileName } from "../lib/social-profile-name.js";
 import { assertNotBanned } from "../lib/account-guard.js";
+import { assertEmailAvailable } from "../lib/email-availability.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
@@ -175,6 +176,13 @@ async function signInWithProvider(
   if (!profile.email) {
     throw new ConflictError("AUTH_SOCIAL_EMAIL_REQUIRED");
   }
+
+  // Sign-UP, not sign-in: no AuthUser owns this address yet, so a brand-new
+  // account is about to claim it. An admin account in backoffice's admin_db may
+  // already hold it — the auto-link branch above never sees that database, and
+  // no index spans the two. Existing users keep signing in through the branches
+  // above; only creating a NEW account on an admin's email is refused.
+  await assertEmailAvailable(profile.email);
 
   const accountBase = buildSocialAccountBase(
     provider === "GOOGLE" ? "google" : "apple",

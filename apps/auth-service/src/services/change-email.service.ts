@@ -1,6 +1,6 @@
 import type { Request } from "express";
 
-import { BadRequestError, ConflictError } from "@aimess/errors";
+import { BadRequestError } from "@aimess/errors";
 import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
@@ -12,6 +12,7 @@ import type {
 } from "../api/validators/change-email.validator.js";
 import { OtpPurpose } from "../generated/prisma/client.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
+import { assertEmailAvailable } from "../lib/email-availability.js";
 import { rethrowAsEmailConflict } from "../lib/email-conflict.js";
 import { emitProfileUpdatedSafe } from "../lib/profile-socket.js";
 import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
@@ -49,13 +50,7 @@ export const changeEmailService = {
       throw new BadRequestError("AUTH_NEW_EMAIL_SAME_AS_OLD");
     }
 
-    const taken = await authRepository.findEmailTakenByOtherUser(
-      newEmail,
-      userId
-    );
-    if (taken) {
-      throw new ConflictError("AUTH_EMAIL_EXISTS");
-    }
+    await assertEmailAvailable(newEmail, userId);
 
     const { code } = await sendEmailOtp(req, {
       userId,
@@ -100,13 +95,7 @@ export const changeEmailService = {
       throw new BadRequestError("AUTH_NEW_EMAIL_SAME_AS_OLD");
     }
 
-    const taken = await authRepository.findEmailTakenByOtherUser(
-      newEmail,
-      userId
-    );
-    if (taken) {
-      throw new ConflictError("AUTH_EMAIL_EXISTS");
-    }
+    await assertEmailAvailable(newEmail, userId);
 
     const otp = await otpRepository.findLatestActive(
       newEmail,

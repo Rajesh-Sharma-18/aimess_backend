@@ -7,6 +7,7 @@ import {
 
 import { AUDIT_ACTIONS, PERMISSIONS, ROLE_KEYS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
+import { assertAdminEmailAvailable } from "../lib/admin-email-availability.js";
 import { hashPassword } from "../lib/password.js";
 import { invalidateAdminPermissions } from "../lib/admin-perms-cache.js";
 import { publishAdminSocketEvent } from "../lib/admin-socket-events.js";
@@ -159,8 +160,7 @@ export const adminAccountService = {
   ): Promise<AdminAccountDetail> {
     assertCanManageRole(actor.role, input.roleKey);
 
-    const existing = await adminUserRepository.findByEmail(input.email);
-    if (existing) throw new ConflictError("ADMIN_EMAIL_TAKEN");
+    await assertAdminEmailAvailable(input.email);
 
     const existingByName = await adminUserRepository.findByName(input.name);
     if (existingByName) throw new ConflictError("ADMIN_USERNAME_TAKEN");
@@ -217,10 +217,7 @@ export const adminAccountService = {
     assertCanManageRole(actor.role, existing.role.key);
 
     if (input.email !== undefined && input.email !== existing.email) {
-      const emailOwner = await adminUserRepository.findByEmail(input.email);
-      if (emailOwner && emailOwner.id !== id) {
-        throw new ConflictError("ADMIN_EMAIL_TAKEN");
-      }
+      await assertAdminEmailAvailable(input.email, id);
     }
     if (input.name !== undefined && input.name !== existing.name) {
       const nameOwner = await adminUserRepository.findByName(input.name);

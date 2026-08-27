@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package backoffice;
+
+service BackofficeService {
+  // auth-service calls this before writing an email onto an AuthUser. Admin
+  // emails live in admin_db, which auth-service cannot see, so without this hop
+  // a user could link/change to an email already used by an admin account.
+  rpc IsAdminEmailTaken (IsAdminEmailTakenRequest) returns (IsAdminEmailTakenResponse);
+}
+
+message IsAdminEmailTakenRequest { string email = 1; }
+message IsAdminEmailTakenResponse { bool taken = 1; }
