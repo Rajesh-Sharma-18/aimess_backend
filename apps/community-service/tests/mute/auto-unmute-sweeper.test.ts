@@ -8,7 +8,8 @@
  *   - audit MEMBER_UNMUTED with metadata.source = "auto"
  *   - mirror the unmute into chat-service (mute_synced isMuted=false) + emit the
  *     community:member:unmuted socket event
- *   - retract the PERSONAL MEMBER_MUTED chat message (mute_msg_retracted)
+ *   - retract the PERSONAL MEMBER_MUTED chat message (mute_msg_retracted) and
+ *     post the PERSONAL MEMBER_UNMUTED line ("You were unmuted")
  *
  * The I/O boundary (repo, redis publishers, chat publishers, push publishers) is
  * mocked by tests/setup/global-mocks.ts; the real service orchestration runs.
@@ -19,6 +20,7 @@ import { communityService } from "../../src/services/community.service.js";
 import {
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityMemberMuteRetractedForChatSafe,
+  publishCommunitySystemMessageForChatSafe,
 } from "../../src/messaging/publish-community-chat.js";
 import { publishCommunityMemberUnmutedSafe } from "../../src/messaging/publish-community.js";
 import { publishCommunityRoomEvent } from "@aimess/redis";
@@ -27,6 +29,7 @@ const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const muteSync = publishCommunityMemberMuteSyncedForChatSafe as jest.Mock;
 const muteRetracted =
   publishCommunityMemberMuteRetractedForChatSafe as jest.Mock;
+const systemMessage = publishCommunitySystemMessageForChatSafe as jest.Mock;
 const roomEvent = publishCommunityRoomEvent as jest.Mock;
 const pushUnmuted = publishCommunityMemberUnmutedSafe as jest.Mock;
 
@@ -87,8 +90,22 @@ describe("communityService.expireDueMutes — auto-unmute sweep", () => {
       "community:member:unmuted",
       expect.objectContaining({ isMuted: false })
     );
-    // No system message generated on unmute.
-    expect(muteRetracted).not.toHaveBeenCalled();
+    // The lapsed session's mute line is retracted and the PERSONAL "You were
+    // unmuted" line posted — a timer lapse leaves the member's history in the
+    // same state a moderator unmute does.
+    expect(muteRetracted).toHaveBeenCalledTimes(2);
+    expect(muteRetracted).toHaveBeenCalledWith({
+      communityId: CID,
+      userId: U1,
+    });
+    expect(systemMessage).toHaveBeenCalledTimes(2);
+    expect(systemMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemMessageType: "MEMBER_UNMUTED",
+        visibleToUserId: U1,
+        metadata: expect.objectContaining({ targetUserId: U1 }),
+      })
+    );
     // Auto-unmute is SILENT — no push to the member.
     expect(pushUnmuted).not.toHaveBeenCalled();
   });
@@ -102,6 +119,7 @@ describe("communityService.expireDueMutes — auto-unmute sweep", () => {
     expect(count).toBe(0);
     expect(repo.createAuditLog).not.toHaveBeenCalled();
     expect(muteRetracted).not.toHaveBeenCalled();
+    expect(systemMessage).not.toHaveBeenCalled();
     expect(roomEvent).not.toHaveBeenCalled();
     expect(muteSync).not.toHaveBeenCalled();
   });
