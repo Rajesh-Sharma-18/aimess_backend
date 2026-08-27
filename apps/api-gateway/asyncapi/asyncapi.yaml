@@ -4153,6 +4153,16 @@ components:
             userId: "user_requester"
             actorId: "user_moderator"
             updatedAt: 1749465900000
+        - name: >-
+            Requester became a member another way (drop from the pending list) —
+            e.g. the admin used Add Member while the request was still open
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: AUTO_RESOLVED
+            userId: "user_requester"
+            actorId: "user_moderator"
+            updatedAt: 1749465900000
     CommunityJoined:
       name: "community:joined"
       title: "community:joined"
@@ -6812,6 +6822,7 @@ components:
             - COMMUNITY_JOINED
             - JOIN_REQUEST_APPROVED
             - JOIN_REQUEST_REJECTED
+            - MEMBER_ADDED
             - ROLE_CHANGED_SELF
             # Legacy alias — old persisted rows only
             - MEMBER_ROLE_CHANGED
@@ -6845,8 +6856,24 @@ components:
               PINNED_MESSAGE (actor)        → "You pinned a message"
               PINNED_MESSAGE (bystander)    → "{{actorName}} pinned a message"
               COMMUNITY_JOINED              → "You joined the community" (PERSONAL)
-              JOIN_REQUEST_APPROVED         → "Your request to join was approved" (PERSONAL)
+              JOIN_REQUEST_APPROVED         → "You joined the community" (PERSONAL, RETIRED —
+                                              never written any more; legacy rows only)
               JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
+              MEMBER_ADDED                  → "{{actorName}} added you to the community" (PERSONAL)
+
+            Exactly ONE of COMMUNITY_JOINED / MEMBER_ADDED is posted per
+            membership activation, chosen by HOW the membership was created —
+            self-join, invite accept, invite-link redeem AND a moderator
+            approving the user's own join request all post COMMUNITY_JOINED
+            ("You joined the community": the line states the membership outcome,
+            not the admin's decision — the approval itself is delivered as the
+            separate community.join_request_approved notification); a moderator
+            adding the user through Add Member posts MEMBER_ADDED. They are
+            mutually exclusive, so a member added by an admin never sees a
+            "you joined" line, and vice versa. Both are also join-SESSION lines:
+            a previous cycle's copy is purged when the user rejoins.
+            JOIN_REQUEST_APPROVED is RETIRED — still accepted on read (legacy
+            rows render as "You joined the community"), never written.
 
             Hidden in chat timeline (never returned in history, to anyone —
             including the affected user): MEMBER_LEFT, MEMBER_JOINED,
@@ -6855,7 +6882,7 @@ components:
             the community detail/list, which drives the sticky banned banner —
             no chat bubble repeats it. MEMBER_UNBANNED is visible to all members.
             PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
-            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_MUTED,
+            MEMBER_ADDED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_MUTED,
             MEMBER_UNMUTED — delivered ONLY to the affected user's `user:<id>`
             channel and never broadcast to / readable by other members. They
             persist like any other PERSONAL line and remain available to the
@@ -6868,8 +6895,8 @@ components:
             True for user-scoped (PERSONAL) SYSTEM messages — visible ONLY to the
             target user, never broadcast to the community room and never returned
             to other members in history. PERSONAL types: COMMUNITY_JOINED,
-            JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF,
-            MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
+            JOIN_REQUEST_APPROVED, MEMBER_ADDED, JOIN_REQUEST_REJECTED,
+            ROLE_CHANGED_SELF, MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
             affected user's `user:<id>` channel only. All other system types are
             COMMUNITY-visible (isPersonal=false / absent). Null/absent for normal
             messages.
@@ -6982,14 +7009,14 @@ components:
         status:
           {
             type: string,
-            enum: [PENDING, APPROVED, REJECTED, CANCELLED],
-            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it; CANCELLED = the requester withdrew.",
+            enum: [PENDING, APPROVED, REJECTED, CANCELLED, AUTO_RESOLVED],
+            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it; CANCELLED = the requester withdrew; AUTO_RESOLVED = the requester became a member some OTHER way while the request was still open (admin Add Member, invite accepted, invite-link redeem, public self-join) and the server closed the request in the same transaction as the membership write. Treat every non-PENDING status the same way in the pending list: DROP the row. There is no accept/decline action for a user who is already a member — the server rejects one as a no-op, and `GET /communities/:id/join-requests` never returns a request from a current member.",
           }
         userId: { type: string, description: "The requester." }
         actorId:
           {
             type: string,
-            description: "The requester themself for PENDING/CANCELLED, the deciding admin/moderator for APPROVED/REJECTED.",
+            description: "The requester themself for PENDING/CANCELLED, the deciding admin/moderator for APPROVED/REJECTED, and whoever performed the membership-creating action for AUTO_RESOLVED.",
           }
         updatedAt: { type: integer, description: "epoch ms." }
       required: [communityId, requestId, status, userId, updatedAt]

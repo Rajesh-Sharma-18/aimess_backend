@@ -34,6 +34,7 @@ import type {
 import { isProfileComplete } from "../lib/profile-completion.util.js";
 import {
   SCHEMA_DEFAULT_SCOPE,
+  canSendFriendRequest,
   scopeAdmits,
   visibleIdentity,
 } from "../lib/privacy-scope.js";
@@ -294,11 +295,18 @@ export const userProfileService = {
     const viewProfileScope =
       profile.privacySettings?.whoCanViewProfile ??
       SCHEMA_DEFAULT_SCOPE.whoCanViewProfile;
-    // Only `whoCanViewProfile` offers FRIENDS_OF_FRIENDS here, and the lookup
-    // is two indexed queries — so resolve the mutual-friend edge only when that
-    // exact scope is set and the cheaper isSelf/isFriend answers do not settle it.
+    const friendRequestScope =
+      profile.privacySettings?.whoCanSendFriendRequests ??
+      SCHEMA_DEFAULT_SCOPE.whoCanSendFriendRequests;
+    // `whoCanViewProfile` and `whoCanSendFriendRequests` both offer
+    // FRIENDS_OF_FRIENDS, and the lookup is two indexed queries — so resolve
+    // the mutual-friend edge once, only when EITHER scope actually depends on
+    // it and the cheaper isSelf/isFriend answers do not settle it.
+    const needsMutualFriend =
+      viewProfileScope === "FRIENDS_OF_FRIENDS" ||
+      friendRequestScope === "FRIENDS_OF_FRIENDS";
     const isFriendOfFriend =
-      viewProfileScope === "FRIENDS_OF_FRIENDS" && !isSelf && !isFriend
+      needsMutualFriend && !isSelf && !isFriend
         ? await friendshipRepository.hasMutualFriend(viewerId, targetUserId)
         : false;
     const relation = { isSelf, isFriend, isFriendOfFriend };
@@ -306,12 +314,11 @@ export const userProfileService = {
     const canViewProfile =
       !isDeletedUser && scopeAdmits(viewProfileScope, relation);
 
-    // Name + avatar are the most identifying parts of the profile, so NO_ONE
-    // has to cover them too — masking only bio/cover/counts left the card fully
-    // recognizable. `username` survives so the row stays addressable. Resolving
-    // a null key yields the same "no avatar" shape as a user who never set one,
-    // so a denied viewer cannot tell the two apart.
-    const identity = visibleIdentity(profile, relation);
+    // Name + avatar are NOT gated by `whoCanViewProfile` — a profile card has
+    // to stay recognizable for the strangers who are allowed to find it. Only a
+    // DELETED account is blanked, and resolving its avatar key as null yields
+    // the same "no avatar" shape as a user who never set one.
+    const identity = visibleIdentity(profile, { anonymize: isDeletedUser });
     const [avatarView, avatar] = await Promise.all([
       avatarService.resolveViewUrlForClient(
         identity.avatarAllowed ? profile.avatarUrl : null
@@ -323,6 +330,10 @@ export const userProfileService = {
         strategy: mediaUrlStrategy,
       }),
     ]);
+
+    // BLOCKED collapses to NONE in this vocabulary — `isBlockedByMe` below and
+    // the explicit block flag passed to `canSendFriendRequest` carry that state.
+    const searchRelationship = toSearchRelationship(view);
 
     const canSeePresence =
       canViewProfile &&
@@ -360,7 +371,18 @@ export const userProfileService = {
       // it is what every existing client relationship parser already speaks.
       relationship: {
         friendshipId: friendshipRow?.id ?? null,
-        ...toSearchRelationship(view),
+        ...searchRelationship,
+        // Same gate `friendshipService.sendRequest` enforces — the profile
+        // screen renders "Add Friend" from this and nothing else. A deleted
+        // account can never receive one, whatever its stored scope says.
+        canSendRequest:
+          !isDeletedUser &&
+          canSendFriendRequest(profile, relation, {
+            status: searchRelationship.status,
+            // A block by the TARGET already 404'd above, so only the viewer's
+            // own block can still be live here.
+            isBlockedEitherWay: Boolean(blockedByViewer),
+          }),
       },
     };
   },

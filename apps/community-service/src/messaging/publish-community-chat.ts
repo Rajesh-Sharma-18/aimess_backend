@@ -214,6 +214,9 @@ export interface CommunityInviteLinkSharedForChat {
   memberCount?: number;
   /** Community handle — lets chat-service route Join Now to /community/@handle. */
   communityHandle?: string;
+  /** PUBLIC | PRIVATE — a PRIVATE community's card offers "Request to Join"
+   *  rather than an outright join, and the live card has no other way to know. */
+  communityType?: string;
   /** Fully-built shareable URL (e.g. https://aimess.me/+CODE or a PUBLIC handle URL). */
   inviteUrl?: string;
   /** App deep link (aimess://join?code=CODE or aimess://resolve?handle=…). */

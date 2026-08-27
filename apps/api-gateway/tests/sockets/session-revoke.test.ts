@@ -16,6 +16,11 @@ import { registerSessionRevokeListener } from "../../src/sockets/session-revoke.
 
 class FakeSocket {
   disconnected = false;
+  emitted: { event: string; data: unknown }[] = [];
+  constructor(public data: Record<string, unknown> = {}) {}
+  emit(event: string, data: unknown) {
+    this.emitted.push({ event, data });
+  }
   disconnect(_close: boolean) {
     this.disconnected = true;
   }
@@ -99,9 +104,50 @@ describe("session-revoke listener", () => {
     void namespaces;
   });
 
-  it("emits auth:session_terminated to the terminated session's room only, in every live namespace", async () => {
-    const { sub, namespaces } = setup({
-      "/chat": {},
+  it("emits auth:session_terminated to the terminated session's sockets only, in every live namespace", async () => {
+    const sockets = {
+      "/chat": new FakeSocket({ locale: "en" }),
+      "/community": new FakeSocket({ locale: "en" }),
+      "/notify": new FakeSocket({ locale: "en" }),
+      "/stream": new FakeSocket({ locale: "en" }),
+    };
+    const { sub } = setup({
+      "/chat": { "session:sess-revoked": [sockets["/chat"]] },
+      "/community": { "session:sess-revoked": [sockets["/community"]] },
+      "/notify": { "session:sess-revoked": [sockets["/notify"]] },
+      "/stream": { "session:sess-revoked": [sockets["/stream"]] },
+    });
+
+    sub.emit(
+      "pmessage",
+      "session-revoke:*",
+      "session-revoke:user-1",
+      JSON.stringify({ sessionId: "sess-revoked" })
+    );
+    await flush();
+
+    for (const socket of Object.values(sockets)) {
+      expect(socket.emitted).toEqual([
+        {
+          event: "auth:session_terminated",
+          data: {
+            sessionId: "sess-revoked",
+            reason: "terminated",
+            message: "Your session has been terminated.",
+          },
+        },
+      ]);
+      expect(socket.disconnected).toBe(true);
+    }
+  });
+
+  it("renders the notice in EACH socket's own language, not one string for the room", async () => {
+    // Same account, same revoked session, two live devices in two languages —
+    // a room broadcast of a pre-translated sentence would hand both the same.
+    const thai = new FakeSocket({ locale: "th" });
+    const english = new FakeSocket({ locale: "en" });
+    const { sub } = setup({
+      "/chat": { "session:sess-revoked": [thai, english] },
       "/community": {},
       "/notify": {},
       "/stream": {},
@@ -115,20 +161,10 @@ describe("session-revoke listener", () => {
     );
     await flush();
 
-    for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
-      const terminated = namespaces[nsName].emitted.find(
-        (e) => e.event === "auth:session_terminated"
-      );
-      expect(terminated).toEqual({
-        room: "session:sess-revoked",
-        event: "auth:session_terminated",
-        data: {
-          sessionId: "sess-revoked",
-          reason: "terminated",
-          message: "Your session has been terminated.",
-        },
-      });
-    }
+    const messageOf = (s: FakeSocket) =>
+      (s.emitted[0]?.data as { message: string }).message;
+    expect(messageOf(english)).toBe("Your session has been terminated.");
+    expect(messageOf(thai)).toBe("เซสชันของคุณถูกยุติแล้ว");
   });
 
   it('reason "logout" still disconnects but sends no auth:session_terminated notice', async () => {
@@ -149,6 +185,7 @@ describe("session-revoke listener", () => {
     await flush();
 
     expect(ownSocket.disconnected).toBe(true);
+    expect(ownSocket.emitted).toEqual([]);
     for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
       expect(
         namespaces[nsName].emitted.find(
@@ -184,6 +221,7 @@ describe("session-revoke listener", () => {
     // The socket must still drop — the account is gone.
     expect(ownSocket.disconnected).toBe(true);
     // ...but nothing at all may be emitted to any of the user's devices.
+    expect(ownSocket.emitted).toEqual([]);
     for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
       expect(namespaces[nsName].emitted).toEqual([]);
     }

@@ -89,6 +89,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     countActiveMembers: jest.fn().mockResolvedValue(1),
     setMemberCount: jest.fn().mockResolvedValue(undefined),
     createMember: jest.fn(),
+    createManyMembers: jest.fn().mockResolvedValue({ count: 0 }),
     reactivateMemberWithSnapshot: jest.fn(),
     updateMember: jest.fn(),
     updateMemberStatus: jest.fn(),
@@ -98,9 +99,18 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findPendingJoinRequest: jest.fn(),
     findJoinRequestByCommunityAndUser: jest.fn(),
     findJoinRequestById: jest.fn(),
+    findJoinRequestsByIds: jest.fn().mockResolvedValue([]),
     recyclePendingJoinRequest: jest.fn(),
     updateJoinRequest: jest.fn(),
+    bulkUpdateJoinRequestStatus: jest.fn().mockResolvedValue({ count: 0 }),
     createJoinRequest: jest.fn(),
+    // Membership paths read the requests they are about to invalidate so they
+    // can tell open admin lists which rows to drop; default to "none pending".
+    findPendingJoinRequestsForUsers: jest.fn().mockResolvedValue([]),
+    resolvePendingJoinRequests: jest.fn().mockResolvedValue({ count: 0 }),
+    listCommunityJoinRequests: jest
+      .fn()
+      .mockResolvedValue({ rows: [], total: 0 }),
     findInvite: jest.fn(),
     findInviteById: jest.fn(),
     findInviteByCommunityAndInvitee: jest.fn(),

@@ -6,3 +6,4 @@ export * from "./user-socket";
 export * from "./presence";
 export * from "./community-socket";
 export type { Redis } from "ioredis";
+export * from "./session-locale";

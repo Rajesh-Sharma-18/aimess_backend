@@ -30,6 +30,11 @@ jest.mock("../../src/config/prisma.js", () => ({
     communityMemberWarning: {
       deleteMany: jest.fn(),
     },
+    // Reactivation also resolves any join request the member still had open, in
+    // the same transaction — see join-request-resolution-atomicity.test.ts.
+    communityJoinRequest: {
+      updateMany: jest.fn(),
+    },
     $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
   },
 }));

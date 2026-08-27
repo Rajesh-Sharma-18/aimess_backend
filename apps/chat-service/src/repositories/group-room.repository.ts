@@ -1,4 +1,5 @@
-﻿import type {
+﻿import { MAX_GROUP_MEMBERS } from "@aimess/constants";
+import type {
   PrismaClient,
   GroupRoom,
   Prisma,
@@ -50,7 +51,7 @@ export class GroupRoomRepository {
         description: (data.description as string) ?? "",
         createdBy: data.createdBy,
         status: (data.status as string) ?? "ACTIVE",
-        memberLimit: (data.memberLimit as number) ?? 50,
+        memberLimit: (data.memberLimit as number) ?? MAX_GROUP_MEMBERS,
         memberCount: (data.memberCount as number) ?? 1,
         settings: (data.settings as object) ?? {
           allowMemberInviteLink: true,
@@ -475,6 +476,25 @@ export class GroupRoomRepository {
         reactionActivityTargetPreview: null,
       },
     });
+  }
+
+  /**
+   * Atomically claim ONE membership slot: bump `memberCount` only while it is
+   * still strictly below `limit`. Mongo applies the filter and the `$inc` inside
+   * a single document update, so N concurrent joiners at the boundary produce
+   * exactly one winner — the previous check-then-increment could oversubscribe
+   * past the cap under any concurrency at all.
+   *
+   * @returns true when the slot was claimed; false when the room is already full
+   *          (or gone). A caller that then fails to write the member row MUST
+   *          give the slot back with `incMemberCount(roomId, -1)`.
+   */
+  async reserveMemberSlot(roomId: string, limit: number): Promise<boolean> {
+    const { count } = await this.prisma.groupRoom.updateMany({
+      where: { roomId, memberCount: { lt: limit } },
+      data: { memberCount: { increment: 1 } },
+    });
+    return count === 1;
   }
 
   async incMemberCount(roomId: string, inc: number): Promise<GroupRoom | null> {

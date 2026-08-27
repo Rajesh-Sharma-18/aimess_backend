@@ -299,6 +299,15 @@ export type CommunityLastActivity =
       userId: null;
       username: null;
       preview: string;
+      /**
+       * The `@aimess/constants` message key `preview` was rendered from, for the
+       * parameter-less lifecycle sentences. Lets a reader (the gateway per
+       * socket, a client per language switch) re-render the row instead of
+       * displaying whichever language the producer happened to bake in. Absent
+       * = nothing to render from; `preview` is then the only answer. Mirrors
+       * `@aimess/shared-types`' CommunityLastActivity.
+       */
+      previewKey?: string;
       dateTime: number;
       /**
        * Offline-first identity of the message behind this activity. ADDITIVE:
@@ -775,8 +784,9 @@ export type PermanentInvitationLinkData = {
   appDeepLink: string;
   /** Epoch ms — when the code was first generated. */
   createdAt: number;
-  /** Epoch ms — when the link stops working (always `createdAt + 1h`). */
-  expiresAt: number;
+  /** Epoch ms — when the link stops working, or null when it never does (the
+   *  default: a link lives until an admin revokes it). */
+  expiresAt: number | null;
 };
 
 /** Liked/favorited community record. */

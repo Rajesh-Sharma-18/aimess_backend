@@ -142,6 +142,16 @@ export const SOCKET_MESSAGES = {
     th: "ต่ออายุโทเค็นเรียบร้อยแล้ว",
   },
 
+  // Pushed to a session that was signed out from somewhere else (another
+  // device, an admin, expiry). Rendered per SOCKET, not per account: the same
+  // user's other devices are not being terminated, and this one may be in a
+  // different language than the device that did the terminating.
+  SOCKET_SESSION_TERMINATED: {
+    vi: "Phiên đăng nhập của bạn đã bị kết thúc.",
+    en: "Your session has been terminated.",
+    th: "เซสชันของคุณถูกยุติแล้ว",
+  },
+
   // ── /chat — calls ───────────────────────────────────────────────────────
   SOCKET_CALL_INITIATED: {
     vi: "Đã bắt đầu cuộc gọi",

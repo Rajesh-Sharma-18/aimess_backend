@@ -1,9 +1,10 @@
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError } from "@aimess/errors";
-import { inviteLinkExpiresAt, isInviteLinkExpired } from "@aimess/constants";
+import { isInviteLinkExpired } from "@aimess/constants";
 
 import {
+  CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
   CommunityModerationStatus,
@@ -856,6 +857,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityHandle: "",
                 isMember: false,
                 linkStatus: "DELETED",
+                communityType: "",
+                joinRequestPending: false,
               };
             }
 
@@ -868,6 +871,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                 communityHandle: "",
                 isMember: false,
                 linkStatus: "DELETED",
+                communityType: "",
+                joinRequestPending: false,
               };
             }
 
@@ -881,6 +886,21 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             ]);
             const isMember =
               membership?.status === CommunityMemberStatus.ACTIVE;
+
+            // Membership outranks the request: an ACTIVE member is never
+            // reported as pending, so a card can never fall back to "Cancel
+            // Request" for someone who is already in the community (admin Add
+            // Member leaves exactly that pair behind until the AUTO_RESOLVED
+            // write lands). Only read the request when it can still matter.
+            const joinRequest =
+              userId && !isMember
+                ? await communityRepository.findJoinRequestByCommunityAndUser(
+                    communityId,
+                    userId
+                  )
+                : null;
+            const joinRequestPending =
+              joinRequest?.status === CommunityJoinReqStatus.PENDING;
 
             // Same three checks as `assertInviteLinkActive`/`toInviteLinkData`'s
             // `isActive` in community.service.ts, expressed as a status string
@@ -903,16 +923,9 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
                   linkStatus = "REVOKED";
                 else linkStatus = "ACTIVE";
               } else if (community.invitationCode === code) {
-                // LEGACY permanent code: nothing mints these any more, and they
-                // are held to the same 1-hour window as every other link,
-                // measured from when the code was allocated.
-                linkStatus = isInviteLinkExpired(
-                  inviteLinkExpiresAt(
-                    community.invitationCodeCreatedAt ?? community.createdAt
-                  )
-                )
-                  ? "EXPIRED"
-                  : "ACTIVE";
+                // LEGACY permanent code: nothing mints these any more, but the
+                // ones already shared never expire and cannot be revoked.
+                linkStatus = "ACTIVE";
               } else {
                 linkStatus = "REVOKED"; // no longer matches anything live
               }
@@ -925,6 +938,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
               communityHandle: community.handle,
               isMember,
               linkStatus,
+              communityType: community.type,
+              joinRequestPending,
             };
           })
         );

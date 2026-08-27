@@ -5,9 +5,13 @@
 // creatorId / adminId / userId here = auth-service AuthUser.id (UUID string,
 // no FK across DBs / services).
 //
-// NOTE: the local Mongo runs as a STANDALONE node (directConnection=true, no
-// replica set), so Prisma interactive `$transaction` fails at runtime. Service
-// code MUST use sequential writes + createMany + compensating cleanup instead.
+// NOTE: the local Mongo runs as a SINGLE-NODE REPLICA SET (rs0) reached with
+// directConnection=true (see docker-compose `mongod --replSet rs0`); production
+// uses a managed RS. Prisma `$transaction` therefore WORKS here — an earlier
+// version of this note claimed otherwise, which is why most write paths are
+// sequential. Prefer a transaction whenever two collections must move together
+// (see `reactivateMemberWithSnapshot` / `createMember` in the repository, which
+// pair a membership write with its join-request resolution).
 // =============================================================================
 
 generator client {
@@ -513,6 +517,13 @@ enum CommunityJoinReqStatus {
   APPROVED
   REJECTED
   CANCELLED
+  // The requester became a member through a path OTHER than this request being
+  // approved (admin Add Member, invite accept, invite-link redeem, public
+  // self-join). Written in the SAME transaction as the membership row, so a
+  // current member can never hold a PENDING request. Distinct from APPROVED
+  // (the admin acted on the request) and CANCELLED (the user withdrew it), so
+  // the audit trail and the system-message copy stay truthful.
+  AUTO_RESOLVED
 }
 
 enum CommunityInviteStatus {

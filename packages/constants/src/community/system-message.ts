@@ -42,8 +42,20 @@ export const CommunitySystemMessageType = {
 
   // --- Personal (visible ONLY to the affected user) ---------------------------
   COMMUNITY_JOINED: "COMMUNITY_JOINED",
+  /** @deprecated RETIRED — an approved join request now posts COMMUNITY_JOINED
+   *  ("You joined the community"): the line must state the membership outcome
+   *  the user experienced, not the admin's decision (the decision reaches them
+   *  as the separate `community.join_request_approved` notification). Kept only
+   *  so rows persisted before the change still resolve; they re-render as the
+   *  COMMUNITY_JOINED sentence. Nothing writes this any more. */
   JOIN_REQUEST_APPROVED: "JOIN_REQUEST_APPROVED",
   JOIN_REQUEST_REJECTED: "JOIN_REQUEST_REJECTED",
+  /** An admin/moderator added this member directly (Add Member), rather than
+   *  the member joining or a join request being approved. PERSONAL: only the
+   *  added member reads "{admin} added you to the community". Distinct from
+   *  COMMUNITY_JOINED ("You joined…") so the line always matches what actually
+   *  happened. */
+  MEMBER_ADDED: "MEMBER_ADDED",
   /** Personal counterpart to ROLE_CHANGED — delivered only to the user whose
    *  role changed so they see "You are now a moderator" while everyone else
    *  sees the community-wide "X is now a moderator" line. */
@@ -101,6 +113,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_JOINED: "PERSONAL",
   JOIN_REQUEST_APPROVED: "PERSONAL",
   JOIN_REQUEST_REJECTED: "PERSONAL",
+  MEMBER_ADDED: "PERSONAL",
   ROLE_CHANGED_SELF: "PERSONAL",
   MEMBER_ROLE_CHANGED: "COMMUNITY",
 };
@@ -141,6 +154,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_JOINED: false,
   JOIN_REQUEST_APPROVED: false,
   JOIN_REQUEST_REJECTED: false,
+  MEMBER_ADDED: false,
   ROLE_CHANGED_SELF: false,
   MEMBER_ROLE_CHANGED: true,
 };
@@ -183,8 +197,10 @@ export function isEligibleForLastActivity(
 
 /**
  * PERSONAL onboarding lines that are bound to the user's CURRENT membership
- * session (Telegram-style): "You joined the community" / "Your request to join
- * was approved". They must NOT accumulate across join→leave→rejoin cycles — when
+ * session (Telegram-style): "You joined the community" / "{admin} added you to
+ * the community" (plus the retired JOIN_REQUEST_APPROVED, still listed so
+ * legacy rows are purged by the same sweep). They must NOT accumulate across
+ * join→leave→rejoin cycles — when
  * a membership goes inactive (left / removed / banned) every prior-session copy
  * for that (community, user) is purged, and a fresh one is created on rejoin. A
  * user must never see more than the current session's line.
@@ -192,6 +208,7 @@ export function isEligibleForLastActivity(
 export const PERSONAL_JOIN_SESSION_TYPES = [
   "COMMUNITY_JOINED",
   "JOIN_REQUEST_APPROVED",
+  "MEMBER_ADDED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** Membership test for a readonly subtype tuple (handles null/undefined). */

@@ -84,9 +84,7 @@ export const userProfileRepository = {
         groupsCount: true,
         status: true,
         deletedAt: true,
-        privacySettings: {
-          select: { whoCanViewProfile: true, whoCanSeeOnlineStatus: true },
-        },
+        privacySettings: PRIVACY_SCOPE_SELECT,
       },
     });
   },

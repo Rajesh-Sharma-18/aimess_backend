@@ -1,4 +1,4 @@
-import { currentLocale } from "@aimess/constants";
+import { currentLocale, MAX_GROUP_MEMBERS } from "@aimess/constants";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
@@ -637,7 +637,7 @@ export class GroupRoomService {
       description: params.description || "",
       avatar: params.avatar || "",
       createdBy: params.createdBy,
-      memberLimit: params.memberLimit || 256,
+      memberLimit: params.memberLimit || MAX_GROUP_MEMBERS,
       memberCount: 1,
     });
 

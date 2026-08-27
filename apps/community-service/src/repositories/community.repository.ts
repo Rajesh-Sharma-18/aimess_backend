@@ -29,6 +29,48 @@ import {
 import { CLOSE_REASON_ADMIN_BANNED } from "../constants/index.js";
 
 /**
+ * THE invariant enforcer: a current member must never hold a PENDING join
+ * request for that community.
+ *
+ * Returns the (unawaited) Prisma operation that flips every PENDING request the
+ * given users hold in this community to AUTO_RESOLVED, so callers can hand it to
+ * the SAME `prisma.$transaction([...])` as the membership write. Membership and
+ * request resolution then commit together — there is no window in which a member
+ * has a live request an admin could still accept or decline.
+ *
+ * Every path that turns a `CommunityMember` row ACTIVE goes through one of the
+ * three writers below (`createMember`, `createManyMembers`,
+ * `reactivateMemberWithSnapshot`), so pairing the resolution with them here —
+ * rather than at each of the ~8 service call sites — leaves no side door for a
+ * future membership path to miss.
+ *
+ * `status: PENDING` in the WHERE makes it idempotent: a request already resolved
+ * by a concurrent path matches zero rows instead of being rewritten, so a race
+ * between Accept and Add Member collapses to exactly one outcome. Callers that
+ * legitimately decide the request themselves (approve → APPROVED, reject →
+ * REJECTED) write their own status AFTER this, which is why approve/reject still
+ * land the more specific value.
+ */
+function resolvePendingJoinRequestsOp(
+  communityId: string,
+  userIds: string[],
+  resolvedBy: string
+) {
+  return prisma.communityJoinRequest.updateMany({
+    where: {
+      communityId,
+      userId: { in: userIds },
+      status: CommunityJoinReqStatus.PENDING,
+    },
+    data: {
+      status: CommunityJoinReqStatus.AUTO_RESOLVED,
+      decidedBy: resolvedBy || null,
+      decidedAt: new Date(),
+    },
+  });
+}
+
+/**
  * A rejoin deletes the previous cycle's `CommunityMemberMute` row, but that row
  * was ALSO mirrored into chat-service's `RoomMember` (the local write-path gate)
  * and rendered as a muted composer on every device the member is connected on.
@@ -602,16 +644,28 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Members
   // ---------------------------------------------------------------------------
-  async createMember(data: {
-    communityId: string;
-    userId: string;
-    role: CommunityMemberRole;
-    status: CommunityMemberStatus;
-    snapshotUsername: string;
-    snapshotDisplayName: string;
-    snapshotAvatarKey: string | null;
-  }) {
-    const row = await prisma.communityMember.create({ data });
+  async createMember(
+    data: {
+      communityId: string;
+      userId: string;
+      role: CommunityMemberRole;
+      status: CommunityMemberStatus;
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+    },
+    /** Who caused the membership — stamped on any join request this resolves.
+     *  Defaults to the member themself (self-join / invite-link redeem). */
+    resolvedBy?: string
+  ) {
+    const [row] = await prisma.$transaction([
+      prisma.communityMember.create({ data }),
+      resolvePendingJoinRequestsOp(
+        data.communityId,
+        [data.userId],
+        resolvedBy ?? data.userId
+      ),
+    ]);
     publishCommunityMemberSyncedForChatSafe({
       communityId: data.communityId,
       userId: data.userId,
@@ -621,7 +675,7 @@ export const communityRepository = {
     return row;
   },
 
-  /** Bulk insert members (single-collection — safe without a replica set). */
+  /** Bulk insert members, resolving their pending join requests in the same tx. */
   async createManyMembers(
     communityId: string,
     members: Array<{
@@ -631,11 +685,16 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }>
+    }>,
+    resolvedBy?: string
   ) {
-    const result = await prisma.communityMember.createMany({
-      data: members.map((m) => ({ communityId, ...m })),
-    });
+    const userIds = members.map((m) => m.userId);
+    const [result] = await prisma.$transaction([
+      prisma.communityMember.createMany({
+        data: members.map((m) => ({ communityId, ...m })),
+      }),
+      resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy ?? ""),
+    ]);
     for (const m of members) {
       publishCommunityMemberSyncedForChatSafe({
         communityId,
@@ -795,7 +854,10 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }
+    },
+    /** Who caused the reactivation — stamped on any join request it resolves.
+     *  Defaults to the member themself (self-rejoin / invite-link redeem). */
+    resolvedBy?: string
   ) {
     const [row, clearedMutes] = await prisma.$transaction([
       prisma.communityMember.update({
@@ -848,6 +910,12 @@ export const communityRepository = {
       prisma.communityMemberWarning.deleteMany({
         where: { communityId, userId },
       }),
+      // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
+      resolvePendingJoinRequestsOp(
+        communityId,
+        [userId],
+        resolvedBy ?? userId
+      ),
     ]);
     // Re-add of a previously-LEFT member: mirror the reactivation into
     // chat-service's RoomMember so they regain send/read in the general room.
@@ -2720,6 +2788,40 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * PENDING join requests held by any of `userIds` in this community. Read
+   * BEFORE a membership write so the caller knows which request ids the write's
+   * transaction is about to auto-resolve, and can broadcast their removal to
+   * every open admin "Accept Requests" list.
+   */
+  findPendingJoinRequestsForUsers(communityId: string, userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.communityJoinRequest.findMany({
+      where: {
+        communityId,
+        userId: { in: userIds },
+        status: CommunityJoinReqStatus.PENDING,
+      },
+      select: { id: true, userId: true },
+    });
+  },
+
+  /**
+   * Standalone (non-transactional) form of {@link resolvePendingJoinRequestsOp},
+   * for repair paths that have no membership write to ride along with — the
+   * admin-list read filter self-heals rows left over from before this rule
+   * existed. Membership-creating paths must NOT use this; they get the atomic
+   * version for free from createMember / createManyMembers / reactivate.
+   */
+  resolvePendingJoinRequests(
+    communityId: string,
+    userIds: string[],
+    resolvedBy: string
+  ) {
+    if (userIds.length === 0) return Promise.resolve({ count: 0 });
+    return resolvePendingJoinRequestsOp(communityId, userIds, resolvedBy);
+  },
+
   /** Single query returning the set of communityIds that the user has a PENDING join request for. */
   async findPendingRequestedCommunityIds(
     userId: string,
@@ -3510,12 +3612,21 @@ export const communityRepository = {
         communityId,
         createdBy,
         autoApprove: false,
-        expiresAt: { gt: new Date() },
-        // Both fields are OPTIONAL, so an untouched row simply omits them — and
-        // on Mongo `field: null` matches only documents where the field EXISTS
-        // and is null. Each needs its own `isSet: false` alternative, ANDed so
-        // the two OR groups don't collapse into one.
+        // All three fields are OPTIONAL, so an untouched row simply omits them —
+        // and on Mongo `field: null` matches only documents where the field
+        // EXISTS and is null. Each needs its own `isSet: false` alternative,
+        // ANDed so the OR groups don't collapse into one. A link with no expiry
+        // (the default now that links live until they are revoked) is reusable:
+        // matching only `expiresAt > now` skipped every one of them and minted a
+        // fresh link on every share.
         AND: [
+          {
+            OR: [
+              { expiresAt: { gt: new Date() } },
+              { expiresAt: null },
+              { expiresAt: { isSet: false } },
+            ],
+          },
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
         ],

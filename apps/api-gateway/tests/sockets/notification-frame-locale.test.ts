@@ -7,7 +7,13 @@
  * (`data.copyRef`), and this rebuilds the sentence per connected socket — the
  * same seam group SYSTEM messages already use.
  */
-import { callCopy, friendCopy, resolutionCopy, t } from "@aimess/constants";
+import {
+  authCopy,
+  callCopy,
+  friendCopy,
+  resolutionCopy,
+  t,
+} from "@aimess/constants";
 
 import { emitPersonalizedSender } from "../../src/sockets/emit-personalized.js";
 import { localizeNotificationFrame } from "../../src/sockets/localize-notification.js";
@@ -162,6 +168,49 @@ describe("/notify frame localization", () => {
       localizeNotificationFrame
     );
     expect(counts.emit.mock.calls[0][1]).toEqual({ count: 3, unreadCount: 3 });
+  });
+
+  it("renders ONE login alert as three languages across three sessions", async () => {
+    // The reported frame, verbatim: the row is stored in the account's
+    // language (`payload`), and every surviving session must still read it in
+    // its OWN. Three sessions, one Redis publish, three languages out.
+    const copy = authCopy.newLogin("Chrome", "India");
+    const frame = {
+      notificationId: "n4",
+      type: "auth.security_new_login",
+      title: copy("en").title,
+      body: copy("en").body,
+      payload: { title: copy("en").title, body: copy("en").body },
+      data: {
+        actionType: "SESSION_CREATED",
+        sessionId: "session-new",
+        copyRef: JSON.stringify(copy.descriptor),
+      },
+    };
+    const sessions = {
+      vi: device("vi", "s1"),
+      th: device("th", "s2"),
+      en: device("en", "s3"),
+    };
+
+    await emitPersonalizedSender(
+      fakeNamespace(Object.values(sessions)),
+      "user:viewer-1",
+      "notification:new",
+      frame,
+      localizeNotificationFrame
+    );
+
+    for (const [locale, socket] of Object.entries(sessions)) {
+      const out = socket.emit.mock.calls[0][1] as {
+        title: string;
+        body: string;
+      };
+      expect(out.title).toBe(copy(locale as "vi").title);
+      expect(out.body).toBe(copy(locale as "vi").body);
+    }
+    // No session may see another's language.
+    expect(new Set(Object.values(sessions).map(bodyOf)).size).toBe(3);
   });
 
   it("still withholds a login alert from the device that caused it", async () => {

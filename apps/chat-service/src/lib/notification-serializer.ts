@@ -438,9 +438,25 @@ export async function serializeNotification(
     return out;
   };
 
-  const effectivePayload = stripInternalDirectives(
-    scrubbed?.payload ?? payloadObj
-  );
+  // The refreshed name has to land on BOTH halves of the object.
+  //
+  // `title`/`body` below and `payload.title`/`payload.body` are two renderings
+  // of one sentence, and every rewrite between the row and the wire has to
+  // touch both or the object contradicts itself — the deleted-actor scrub
+  // already returns a matching pair for exactly that reason, and the stale-name
+  // refresh was the one rewrite that reached the envelope only. A card could
+  // therefore read "Mohit accepted your request" above a payload still saying
+  // "Someone accepted your request".
+  const refreshedPayload = scrubbed?.payload ?? {
+    ...payloadObj,
+    ...(payloadObj.title !== undefined
+      ? { title: refreshName(payloadObj.title) }
+      : {}),
+    ...(payloadObj.body !== undefined
+      ? { body: refreshName(payloadObj.body) }
+      : {}),
+  };
+  const effectivePayload = stripInternalDirectives(refreshedPayload);
 
   const storedBody = scrubbed?.body ?? refreshName(payloadObj.body) ?? "";
   const body =

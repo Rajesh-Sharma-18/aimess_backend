@@ -356,9 +356,11 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     expect(where.roomId).toBe(ROOM_ID);
     // Scoped to the user's OWN personal rows only.
     expect(where.visibleToUserId).toBe(USER_ID);
-    // Only the two join-session onboarding subtypes.
+    // Only the join-session onboarding subtypes — one per way a membership can
+    // begin ("You joined" / "Your request was approved" / "{admin} added you"),
+    // so a rejoin never leaves a line from the previous cycle behind.
     expect(where.systemMessageType).toEqual({
-      in: ["COMMUNITY_JOINED", "JOIN_REQUEST_APPROVED"],
+      in: ["COMMUNITY_JOINED", "JOIN_REQUEST_APPROVED", "MEMBER_ADDED"],
     });
     // Bounded by the leave time so a redelivered stale "left" can't nuke a
     // fresher rejoin line.
@@ -1197,7 +1199,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
         "Bob is now the community admin",
       ],
       ["COMMUNITY_JOINED", {}, "You joined the community"],
-      ["JOIN_REQUEST_APPROVED", {}, "Your request to join was approved"],
+      // Retired subtype — nothing writes it any more, but rows persisted before
+      // the change must re-render as the current join copy, not the old
+      // "Your request to join was approved" sentence.
+      ["JOIN_REQUEST_APPROVED", {}, "You joined the community"],
       ["JOIN_REQUEST_REJECTED", {}, "Your request to join was declined"],
     ];
 

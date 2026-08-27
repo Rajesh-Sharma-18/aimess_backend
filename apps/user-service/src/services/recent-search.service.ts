@@ -16,7 +16,7 @@ export type RecentSearchEntry =
       user: {
         userId: string;
         username: string;
-        /** Null when the target's `whoCanViewProfile` excludes this viewer. */
+        /** Always the real name — identity is not viewer-scoped. */
         firstName: string | null;
         lastName: string | null;
         bio: string | null;
@@ -90,14 +90,9 @@ export const recentSearchService = {
             };
           }
           const isFriend = viewerGraph.friendIds.includes(profile.userId);
-          const identity = visibleIdentity(profile, {
-            isFriend,
-            isFriendOfFriend: viewerGraph.friendOfFriendIds.includes(
-              profile.userId
-            ),
-          });
+          const identity = visibleIdentity(profile);
           const { url, expiresIn, avatar } = await resolveAvatar(
-            identity.avatarAllowed ? profile.avatarUrl : null
+            profile.avatarUrl
           );
           return {
             id: row.id,

@@ -5589,6 +5589,11 @@ export const openApiSchemas = {
         nullable: true,
         description: "Present when relationshipStatus is FRIEND or PENDING_*.",
       },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "userId",
@@ -5600,6 +5605,7 @@ export const openApiSchemas = {
       "avatarUrlExpiresIn",
       "avatar",
       "isOnline",
+      "canSendRequest",
     ],
   },
   UserDiscoverySplitData: {
@@ -6139,7 +6145,20 @@ export const openApiSchemas = {
       },
       preview: {
         type: "string",
-        description: "Short human-readable preview of the activity.",
+        description:
+          "Short human-readable preview of the activity, rendered in the " +
+          "caller's language (`x-lang`) for REST, and in the receiving " +
+          "socket's language for `community:added` / `community:updated`.",
+      },
+      previewKey: {
+        type: "string",
+        description:
+          "Message-catalog key `preview` was rendered from, for the " +
+          "parameter-less lifecycle sentences (join / added / created). " +
+          "OPTIONAL and additive. A client carrying its own catalog SHOULD " +
+          "prefer this over `preview`, so switching language re-renders " +
+          "history with no refetch; fall back to `preview` when it is absent " +
+          "or names a key the client does not have. Never display the key.",
       },
       dateTime: {
         type: "integer",
@@ -6939,7 +6958,16 @@ export const openApiSchemas = {
       userId: { type: "string", format: "uuid" },
       status: {
         type: "string",
-        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "AUTO_RESOLVED"],
+        description:
+          "PENDING — awaiting a moderator decision (the ONLY status the admin " +
+          "list returns). APPROVED — a moderator accepted it. REJECTED — a " +
+          "moderator declined it. CANCELLED — the requester withdrew it. " +
+          "AUTO_RESOLVED — the requester became a member some other way while " +
+          "this request was still open (admin Add Member, invite accepted, " +
+          "invite-link redeem, public self-join); the server closes the request " +
+          "in the same transaction as the membership write, so a current member " +
+          "never holds a PENDING request.",
       },
       message: { type: "string", nullable: true },
       decidedBy: { type: "string", format: "uuid", nullable: true },
@@ -8273,8 +8301,10 @@ export const openApiSchemas = {
         format: "int64",
         nullable: true,
         description:
-          "Invite-link expiry as epoch milliseconds — always 1 hour after the " +
-          "link was created. Past it, preview and redeem both fail with 410 " +
+          "Invite-link expiry as epoch milliseconds, or null — the default — " +
+          "when the link never expires on its own. A link stays usable until " +
+          "an admin revokes it or its maxUses is spent; past an expiry that " +
+          "was explicitly asked for, preview and redeem both fail with 410 " +
           "COMMUNITY_INVITE_LINK_EXPIRED, so the client shows " +
           "\"Invitation link expired\" instead of a join CTA.",
         example: 1785000000000,
@@ -9329,7 +9359,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000, default: 50 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256, default: 256 },
     },
     required: ["name"],
   },
@@ -9339,7 +9369,7 @@ export const openApiSchemas = {
       name: { type: "string", minLength: 1, maxLength: 100 },
       description: { type: "string", maxLength: 1000 },
       avatar: { type: "string" },
-      memberLimit: { type: "integer", minimum: 2, maximum: 5000 },
+      memberLimit: { type: "integer", minimum: 1, maximum: 256 },
     },
   },
 
@@ -9500,7 +9530,38 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "Whether the CALLER is an ACTIVE member right now. Always false for " +
-          "an anonymous preview. Read live per request — never cache it.",
+          "an anonymous preview. Read live per request — never cache it. " +
+          "Derived from `state === \"ALREADY_MEMBER\"`; prefer `state`.",
+      },
+      state: {
+        type: "string",
+        enum: [
+          "ALREADY_MEMBER",
+          "GROUP_NOT_FOUND",
+          "GROUP_DISBANDED",
+          "GROUP_CLOSED",
+          "GROUP_NO_ADMIN",
+          "LINK_NOT_FOUND",
+          "LINK_REVOKED",
+          "LINK_EXPIRED",
+          "LINK_USED_UP",
+          "GROUP_FULL",
+          "JOIN_BLOCKED",
+          "CAN_JOIN",
+        ],
+        description:
+          "The authoritative button state, resolved server-side on every read " +
+          "and identical to the `state` on a GROUP_INVITE message card, so the " +
+          "landing screen and the in-chat card never disagree. Render from it " +
+          "and nothing else. ALREADY_MEMBER = \"View Group\"; CAN_JOIN = " +
+          "\"Join Group\"; GROUP_FULL = the 256-member cap; JOIN_BLOCKED = " +
+          "removed or banned by staff; GROUP_NOT_FOUND / GROUP_DISBANDED / " +
+          "GROUP_CLOSED / GROUP_NO_ADMIN = the group itself is gone or " +
+          "unowned; LINK_NOT_FOUND / LINK_REVOKED / LINK_EXPIRED / " +
+          "LINK_USED_UP = the token is dead, one state per cause. " +
+          "This endpoint answers 200 for EVERY state — group identity is filled " +
+          "in whenever the row still exists — so a client renders the reason in " +
+          "place instead of treating each one as an error.",
       },
       shareName: { type: "string" },
     },
@@ -12191,6 +12252,11 @@ export const openApiSchemas = {
       canAccept: { type: "boolean" },
       canReject: { type: "boolean" },
       canCancel: { type: "boolean" },
+      canSendRequest: {
+        type: "boolean",
+        description:
+          "Effective add-friend eligibility for the caller: the target's `whoCanSendFriendRequests` scope AND the self/block/friend/pending preconditions. The raw privacy scope is never returned. Clients MUST render the add-friend action from this flag alone — `POST /friendships/requests` rejects with FRIEND_REQUEST_NOT_ALLOWED otherwise.",
+      },
     },
     required: [
       "friendshipId",
@@ -12199,6 +12265,7 @@ export const openApiSchemas = {
       "canAccept",
       "canReject",
       "canCancel",
+      "canSendRequest",
     ],
   },
   PublicUserProfileData: {

@@ -1191,8 +1191,8 @@ export class GeneralRoomMessageRepository {
 
   /**
    * Membership-lifecycle cleanup (Telegram-style): hard-delete the user's
-   * PERSONAL join-session onboarding lines ("You joined the community", "Your
-   * request to join was approved") for one community, so they never accumulate
+   * PERSONAL join-session onboarding lines ("You joined the community",
+   * "{admin} added you to the community") for one community, so they never accumulate
    * across join→leave→rejoin cycles. Invoked when a membership goes inactive
    * (left / removed / banned).
    *

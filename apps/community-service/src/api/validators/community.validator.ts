@@ -320,6 +320,9 @@ const joinRequestStatusEnum = z.enum([
   "APPROVED",
   "REJECTED",
   "CANCELLED",
+  // The requester became a member through another path while the request was
+  // still open (Add Member, invite, invite-link redeem, public self-join).
+  "AUTO_RESOLVED",
 ]);
 
 const inviteStatusEnum = z.enum(["PENDING", "ACCEPTED", "DECLINED", "EXPIRED"]);

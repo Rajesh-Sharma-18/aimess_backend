@@ -687,6 +687,14 @@ message CommunityInviteContext {
   bool   is_member         = 5;
   // ACTIVE | EXPIRED | REVOKED | DELETED (DELETED mirrors `found=false`).
   string link_status      = 6;
+  // PUBLIC | PRIVATE — decides whether a non-member's card offers "Join" or
+  // "Request to Join". "" when `found=false`.
+  string community_type   = 7;
+  // True when `user_id` holds a PENDING join request here. Never true together
+  // with `is_member`: an ACTIVE membership outranks any request it left behind
+  // (admin Add Member resolves the request as AUTO_RESOLVED, but the card must
+  // be right even before that write lands).
+  bool   join_request_pending = 8;
 }
 message GetCommunityInviteContextsResponse {
   repeated CommunityInviteContext contexts = 1;
