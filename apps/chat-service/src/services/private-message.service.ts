@@ -2481,6 +2481,10 @@ export class PrivateMessageService {
         const ctx = communityId
           ? contextByCommunityId.get(communityId)
           : undefined;
+        // What the row itself recorded about the link when the card was written.
+        // Rows from before invitations carried structured content have none —
+        // those were live links when they were sent, so they read as ACTIVE.
+        const storedStatus = stored?.status ?? "ACTIVE";
         const base = {
           communityId,
           communityAvatarUrl,
@@ -2509,7 +2513,16 @@ export class PrivateMessageService {
                 joinRequestPending: ctx.found
                   ? Boolean(ctx.joinRequestPending)
                   : false,
-                status: ctx.found ? ctx.linkStatus : "DELETED",
+                // The LINK verdict is the card's OWN, frozen when it was sent —
+                // an admin resetting the community's link must not rewrite every
+                // invitation already sitting in every conversation. Membership
+                // and the pending request above stay live, because those are
+                // what the reader can still act on. A tap still tells the truth:
+                // redeeming a revoked code answers
+                // COMMUNITY_INVITE_LINK_REVOKED_ERROR and the client raises the
+                // "this invite link was reset" dialog. A community that is GONE
+                // is not a link state, so it still overrides.
+                status: ctx.found ? storedStatus : "DELETED",
               })
             : // gRPC unresolved/unavailable — fail open using the message's own
               // stored data rather than telling every past invite it's dead.
@@ -2518,7 +2531,7 @@ export class PrivateMessageService {
                 communityName,
                 communityHandle: storedHandle,
                 alreadyJoined: false,
-                status: "ACTIVE",
+                status: storedStatus,
               })
         );
       }
@@ -2555,6 +2568,16 @@ export class PrivateMessageService {
         // card and the screen it links to can never disagree. `roomId` is passed
         // explicitly: a card whose token was revoked still knows which group it
         // points at, which is what keeps "View Group" working for a member.
+        //
+        // `treatLinkAsLive`: a card is a historical record of a share, not a
+        // live view of the link it names. An admin who RESETS the link would
+        // otherwise rewrite every invite already sitting in every conversation
+        // into "invitation link expired". Everything the reader can still act on
+        // — membership, the group's existence, capacity, the rejoin block — is
+        // resolved live as before; only the LINK verdict is frozen. The tap
+        // still tells the truth: the join endpoint validates the token for real
+        // and answers CHAT_INVITE_LINK_REVOKED, which the client renders as the
+        // "this invite link was reset" dialog.
         const { state, room } = await loadGroupInviteState<
           { roomId: string; name: string; avatar: string; memberCount: number },
           { roomId: string },
@@ -2565,7 +2588,7 @@ export class PrivateMessageService {
             roomRepo: this.groupRoomRepo,
             memberRepo: this.groupMemberRepo,
           },
-          { token, roomId: groupId, viewerId }
+          { token, roomId: groupId, viewerId, treatLinkAsLive: true }
         );
         const alreadyJoined = state === "ALREADY_MEMBER";
         // Legacy LINK-only status, kept for clients that predate `state`. It

@@ -13,10 +13,8 @@ import {
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
 import {
-  clampInviteLinkExpiry,
   currentLocale,
   isHiddenSystemMessage,
-  isInviteLinkExpired,
   localizeMessagePreview,
   personalizeCommunitySystemMessageForViewer,
   STORED_TEXT_LOCALE,
@@ -1467,17 +1465,19 @@ function generateInviteCode(): string {
   return randomBytes(16).toString("base64url");
 }
 
-/** Validates that an invite link is currently usable (not revoked, expired, or exhausted). */
+/**
+ * Validates that an invite link is currently usable: not revoked and not
+ * exhausted. A link never lapses on a clock — `expiresAt` is stamped by nothing
+ * and read by nobody — so a link shared months ago still works until an admin
+ * resets it.
+ */
 function assertInviteLinkActive(link: {
   revokedAt: Date | null;
-  expiresAt: Date | null;
   maxUses: number | null;
   usedCount: number;
 }): void {
   if (link.revokedAt)
     throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
-  if (isInviteLinkExpired(link.expiresAt))
-    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
 }
@@ -1583,11 +1583,8 @@ function toInviteLinkData(
   row: CommunityInviteLink,
   community: { type: CommunityType; handle: string }
 ): CommunityInviteLinkData {
-  const now = Date.now();
   const isActive =
-    !row.revokedAt &&
-    (!row.expiresAt || row.expiresAt.getTime() > now) &&
-    (row.maxUses === null || row.usedCount < row.maxUses);
+    !row.revokedAt && (row.maxUses === null || row.usedCount < row.maxUses);
   const share = resolveCommunityShareLink(community, row.code);
   return {
     linkId: row.id,
@@ -1600,7 +1597,9 @@ function toInviteLinkData(
     maxUses: row.maxUses,
     usedCount: row.usedCount,
     autoApprove: row.autoApprove,
-    expiresAt: row.expiresAt?.toISOString() ?? null,
+    // LEGACY field: nothing stamps an expiry any more. Kept on the response so
+    // older clients that read it still parse the payload.
+    expiresAt: null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isActive,
@@ -1610,13 +1609,12 @@ function toInviteLinkData(
 
 /**
  * Build a `PermanentInvitationLinkData` DTO from the community's CURRENT
- * shareable invite-link row. `expiresAt` is whatever the row carries — null for
- * the links every mint path produces, which stay valid until an admin revokes
- * them, exactly like a group link.
+ * shareable invite-link row. `expiresAt` is always null: a link stays valid
+ * until an admin revokes it, exactly like a group link.
  */
 function toInvitationLinkData(
   community: { id: string; name: string },
-  link: { code: string; createdAt: Date; expiresAt: Date | null }
+  link: { code: string; createdAt: Date }
 ): PermanentInvitationLinkData {
   return {
     communityId: community.id,
@@ -1625,23 +1623,17 @@ function toInvitationLinkData(
     invitationLink: buildInviteUrl(link.code),
     appDeepLink: buildInviteDeepLink(link.code),
     createdAt: link.createdAt.getTime(),
-    expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
+    expiresAt: null,
   };
 }
 
 /**
  * LEGACY permanent invitation codes (the `invitationCode` column) are minted by
  * nothing any more, but codes already shared stay resolvable — and, like every
- * other link, they now expire only when someone revokes them. Nothing revokes a
- * permanent code, so it has no expiry instant at all.
+ * other link, they die only when someone revokes them. Nothing revokes a
+ * permanent code, so there is nothing here to assert.
  */
-function permanentCodeExpiresAt(): null {
-  return null;
-}
-
-function assertPermanentCodeActive(): void {
-  // Nothing to assert: a permanent code has no expiry and no revoke path.
-}
+function assertPermanentCodeActive(): void {}
 
 /**
  * Synthesize a `CommunityInviteLinkData`-shaped object from a community's
@@ -1650,15 +1642,15 @@ function assertPermanentCodeActive(): void {
  * permanent community link without duplicating the rest of the join logic.
  *
  * LEGACY: no path mints a permanent code any more — every invite link now
- * expires 1 hour after creation — but codes already shared still resolve, so
- * this shape is still produced for them.
+ * — but codes already shared still resolve, so this shape is still produced
+ * for them.
  *
  * Key invariants for permanent links:
  *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
  *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
  *  - `maxUses: null` → unlimited
  *  - `expiresAt: null` / `isActive: true` → nothing expires or revokes a
- *    permanent code (see {@link permanentCodeExpiresAt})
+ *    permanent code
  *  - `revokedAt: null` → never revoked
  *  - `autoApprove: false` → request-to-join (PRIVATE default)
  */
@@ -8179,8 +8171,7 @@ export const communityService = {
             memberCount: community.memberCount,
             inviteUrl: shareLinkData.url,
             inviteDeepLink: shareLinkData.appDeepLink,
-            isPermanent:
-              shareLink.expiresAt === null && shareLink.maxUses === null,
+            isPermanent: shareLink.maxUses === null,
             inviterName: inviterDisplayName,
             inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
           });
@@ -9455,10 +9446,9 @@ export const communityService = {
    * Return — or mint — the community's CURRENT shareable invitation link.
    *
    * Behaviour contract:
-   *  - Every invite link expires 1 hour after it was created
-   *    (`INVITE_LINK_TTL_MS`), so "permanent" is now a 1-hour window: repeated
-   *    calls inside it return the identical code, and the first call after it
-   *    mints a fresh one.
+   *  - An invite link does not expire: repeated calls return the identical
+   *    code until someone revokes it, and only then does the next call mint a
+   *    fresh one.
    *  - Updating the community, or closing and reopening it, does not affect the
    *    live link.
    *
@@ -9522,8 +9512,8 @@ export const communityService = {
     request?: CommunityJoinRequestData;
     member?: CommunityMemberData;
   }> {
-    // Legacy codes are held to the same 1-hour window as every other link, so an
-    // expired one cannot be redeemed by calling the API directly.
+    // Nothing to assert: like every other link, a legacy permanent code stays
+    // usable until it is revoked — and nothing revokes one.
     assertPermanentCodeActive();
     communityAccessPolicy.assertWritable(community);
 
@@ -9608,7 +9598,6 @@ export const communityService = {
     callerId: string,
     input: {
       maxUses?: number;
-      expiresInMinutes?: number;
       autoApprove?: boolean;
     }
   ): Promise<CommunityInviteLinkData> {
@@ -9630,24 +9619,20 @@ export const communityService = {
 
     // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
     // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
-    // expiresInMinutes / autoApprove, the caller wants THE community's current
-    // invite link — not a fresh throwaway link per click. For PRIVATE communities
-    // we hand back the caller's live link, reused for as long as it is valid and
-    // re-minted once it expires (1 hour), with NO rate-limit consumption and NO
-    // active-link-cap usage.
+    // autoApprove, the caller wants THE community's current invite link — not a
+    // fresh throwaway link per click. For PRIVATE communities we hand back the
+    // caller's live link, which is reused until someone revokes it, with NO
+    // rate-limit consumption and NO active-link-cap usage.
     //
     // PUBLIC communities fall through to the legacy path: their share URL is
     // handle-based and code-independent (already deterministic), so there is no
     // "code changes every call" problem to fix for them.
     //
-    // A PARAMETERIZED call (any of maxUses / expiresInMinutes / autoApprove
-    // present) is an explicit request for a custom temporary link and keeps the
-    // full legacy multi-link behavior below — preserving Limited-use /
-    // Auto-approve links untouched (their expiry is still capped at 1 hour).
+    // A PARAMETERIZED call (maxUses / autoApprove present) is an explicit
+    // request for a custom link and keeps the full legacy multi-link behavior
+    // below — preserving Limited-use / Auto-approve links untouched.
     const isDefaultCall =
-      input.maxUses == null &&
-      input.expiresInMinutes == null &&
-      input.autoApprove == null;
+      input.maxUses == null && input.autoApprove == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
       const link = await this.resolveOrCreateShareableLink(
         community.id,
@@ -9669,13 +9654,6 @@ export const communityService = {
       throw new ForbiddenError("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
     }
 
-    // Clamped, never null: a link that outlives the 1-hour rule cannot be minted,
-    // and a shorter caller-supplied expiry is still honoured.
-    const expiresAt = clampInviteLinkExpiry(
-      input.expiresInMinutes
-        ? new Date(Date.now() + input.expiresInMinutes * 60_000)
-        : null
-    );
     const maxUses = input.maxUses ?? null;
     // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,
     // flow F5: a private link's primary path is "Request to Join" with moderator
@@ -9707,7 +9685,8 @@ export const communityService = {
           createdBy: callerId,
           maxUses,
           autoApprove,
-          expiresAt,
+          // A link lives until it is revoked or spent — never on a clock.
+          expiresAt: null,
         });
         break;
       } catch (err) {
@@ -9720,11 +9699,7 @@ export const communityService = {
       communityId,
       actorId: callerId,
       action: "INVITE_LINK_CREATED",
-      metadata: {
-        linkId: row.id,
-        maxUses,
-        expiresAt: expiresAt?.toISOString() ?? null,
-      },
+      metadata: { linkId: row.id, maxUses },
     });
 
     return toInviteLinkData(row, community);
@@ -9803,13 +9778,13 @@ export const communityService = {
 
   /**
    * The community's shareable invite link: the caller's newest still-live link
-   * if they have one, otherwise a freshly minted unlimited-use link that expires
-   * 1 hour from now (`INVITE_LINK_TTL_MS`).
+   * if they have one, otherwise a freshly minted unlimited-use link that never
+   * expires.
    *
    * Shared by EVERY path that needs a code to put on an invitation card — the
    * bare `POST /:id/invite-links`, `GET /:id/invitation-link`, invite-link Bulk
    * Send and the direct member-invite fan-out — so they all hand out the same
-   * code inside the same hour, and all roll over to a new one after it.
+   * code, and all roll over together the moment an admin resets it.
    *
    * Reuse deliberately ignores limited-use and auto-approve links: those are
    * explicit throwaways, and handing one back here would let an exhausted or
@@ -9938,10 +9913,8 @@ export const communityService = {
           throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
         }
       }
-      const now = Date.now();
       const isActive =
         !linkRow.revokedAt &&
-        (!linkRow.expiresAt || linkRow.expiresAt.getTime() > now) &&
         (linkRow.maxUses === null || linkRow.usedCount < linkRow.maxUses);
       if (!isActive) {
         throw new ForbiddenError("COMMUNITY_INVITE_LINK_INACTIVE");
@@ -10306,7 +10279,7 @@ export const communityService = {
         invitationCode: code,
         inviteUrl: buildInviteUrl(code),
         appDeepLink: buildInviteDeepLink(code),
-        // Legacy permanent code: the 1-hour window runs from when it was minted.
+        // Legacy permanent code: no expiry, same as every link minted today.
         expiresAt: null,
         creatorId: communityByCode.adminId,
       };
@@ -10365,7 +10338,8 @@ export const communityService = {
       invitationCode: code,
       inviteUrl: buildInviteUrl(code),
       appDeepLink: buildInviteDeepLink(code),
-      expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
+      // LEGACY field: links no longer expire, so this is always null.
+      expiresAt: null,
       creatorId: link.createdBy,
     };
   },

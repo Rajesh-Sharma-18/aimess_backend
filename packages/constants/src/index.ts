@@ -16,5 +16,4 @@ export * from "./chat/group-system-message-text.js";
 export * from "./chat/call-activity-text.js";
 export * from "./chat/socket-events.js";
 export * from "./user/deleted-account.js";
-export * from "./invite-link.js";
 export * from "./chat/group-limits.js";

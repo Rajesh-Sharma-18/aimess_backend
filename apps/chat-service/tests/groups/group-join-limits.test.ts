@@ -105,15 +105,8 @@ describe("resolveGroupInviteState — priority table", () => {
         { status: "REVOKED", expiresAt: null, maxUses: null, usedCount: 0 },
         "LINK_REVOKED",
       ],
-      [
-        {
-          status: "ACTIVE",
-          expiresAt: new Date(Date.now() - 1000),
-          maxUses: null,
-          usedCount: 0,
-        },
-        "LINK_EXPIRED",
-      ],
+      // No LINK_EXPIRED case: a link does not lapse on a clock, so a row still
+      // carrying an expiry stamped by an older build is read as live.
       [
         { status: "ACTIVE", expiresAt: null, maxUses: 5, usedCount: 5 },
         "LINK_USED_UP",
@@ -130,6 +123,76 @@ describe("resolveGroupInviteState — priority table", () => {
         })
       ).toBe(expected);
     }
+  });
+
+  // `treatLinkAsLive` is the in-chat invitation CARD: a record of a share, not a
+  // live view of the link. Only the LINK verdict is suppressed.
+  describe("treatLinkAsLive — the historical invitation card", () => {
+    const dead = {
+      status: "REVOKED",
+      expiresAt: null,
+      maxUses: null,
+      usedCount: 0,
+    };
+
+    it("reads a revoked link as still joinable", () => {
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: dead,
+          treatLinkAsLive: true,
+        })
+      ).toBe("CAN_JOIN");
+    });
+
+    it("still reports capacity, the block and a dead group", () => {
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: dead,
+          room: { status: "ACTIVE", memberCount: 256, memberLimit: 256 },
+          treatLinkAsLive: true,
+        })
+      ).toBe("GROUP_FULL");
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: dead,
+          membership: { status: "BANNED" },
+          treatLinkAsLive: true,
+        })
+      ).toBe("JOIN_BLOCKED");
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: dead,
+          room: { status: "DISBANDED", memberCount: 3 },
+          treatLinkAsLive: true,
+        })
+      ).toBe("GROUP_DISBANDED");
+    });
+
+    it("still reports membership, so a joiner gets View Group", () => {
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: dead,
+          membership: { status: "ACTIVE" },
+          treatLinkAsLive: true,
+        })
+      ).toBe("ALREADY_MEMBER");
+    });
+
+    it("a card with no token has nothing to offer, historical or not", () => {
+      expect(
+        resolveGroupInviteState({
+          ...base,
+          link: null,
+          hasToken: false,
+          treatLinkAsLive: true,
+        })
+      ).toBe("LINK_NOT_FOUND");
+    });
   });
 
   it("the GROUP outranks the link — a dead group is not a link problem", () => {
@@ -444,11 +507,6 @@ describe("C. link revocation", () => {
 
   it("C10: every dead-link cause gets its own state and its own join code", async () => {
     const cases: Array<[Record<string, unknown>, string, string]> = [
-      [
-        { ...liveLink, expiresAt: new Date(Date.now() - 1000) },
-        "LINK_EXPIRED",
-        "CHAT_INVITE_LINK_EXPIRED",
-      ],
       [
         { ...liveLink, maxUses: 3, usedCount: 3 },
         "LINK_USED_UP",

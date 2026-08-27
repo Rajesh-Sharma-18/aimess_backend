@@ -14,7 +14,6 @@ import {
 } from "../lib/access-guard.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import {
-  clampInviteLinkExpiry,
   effectiveGroupMemberLimit,
   inviteContentType,
   MAX_GROUP_MEMBERS,
@@ -90,7 +89,6 @@ export class GroupInviteLinkService {
   async create(params: {
     roomId: string;
     userId: string;
-    expiresAt?: Date | null;
     maxUses?: number | null;
     shareName?: string;
   }): Promise<GroupInviteLink> {
@@ -117,9 +115,9 @@ export class GroupInviteLinkService {
       roomId: params.roomId,
       token,
       createdBy: params.userId,
-      // Clamped, never null: every invite link expires 1 hour after it is
-      // created. A shorter caller-supplied expiry is still honoured.
-      expiresAt: clampInviteLinkExpiry(params.expiresAt),
+      // Always null: an invitation link does not expire on a clock. It stays
+      // usable until an admin revokes it (or spends its `maxUses`).
+      expiresAt: null,
       maxUses: params.maxUses || null,
       shareName: params.shareName || "",
     });
@@ -239,9 +237,9 @@ export class GroupInviteLinkService {
         ? effectiveGroupMemberLimit(room.memberLimit)
         : MAX_GROUP_MEMBERS,
       invitedByName: inviterSnapshot ? resolveDisplayName(inviterSnapshot) : "",
-      expiresAt: link?.expiresAt
-        ? new Date(link.expiresAt).toISOString()
-        : null,
+      // LEGACY field: always null now that links do not expire. Kept on the
+      // response so older clients that read it still parse the payload.
+      expiresAt: null,
       isJoined: state === "ALREADY_MEMBER",
       state,
     };

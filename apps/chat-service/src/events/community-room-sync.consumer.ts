@@ -654,8 +654,10 @@ export class CommunityRoomSyncConsumer {
     //    the invite into existence right now: the recipient is guaranteed
     //    not-yet-a-member (bulk-send filters out ACTIVE members before
     //    publishing) and the code was just minted, so ACTIVE/false is the only
-    //    truthful answer. Historical reads (`enrichMessages`) re-resolve the
-    //    same object, since either fact can go stale later.
+    //    truthful answer. The `status` written here is the card's PERMANENT
+    //    record of the link it was sent with — `enrichMessages` re-resolves
+    //    membership on every historical read, but reads the link verdict back
+    //    off this row so a later reset cannot rewrite an invite already sent.
     const previewText = communityName
       ? `Invitation to join ${communityName}`
       : "Community invitation";

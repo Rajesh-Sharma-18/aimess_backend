@@ -262,7 +262,8 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       hasMore: false,
     });
     mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
-    // The viewer has joined since the invite was sent.
+    // The viewer has joined since the invite was sent, and an admin has RESET
+    // the community's link in the meantime.
     mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
       {
         communityId: "community-3",
@@ -292,9 +293,12 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       memberCount: 15,
       inviteCode: "code3",
       deepLink: "aimess://join?code=code3",
-      // …while live state is re-resolved, never trusted from the stored copy.
+      // …membership is re-resolved live, never trusted from the stored copy…
       alreadyJoined: true,
-      status: "REVOKED",
+      // …but the LINK verdict is the card's own, frozen when it was sent: the
+      // reset that produced the REVOKED answer above must not rewrite an
+      // invitation already delivered.
+      status: "ACTIVE",
       canOpen: true,
     });
     // The fallback line is rendered per viewer, like every other private
@@ -379,6 +383,175 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(
       mocks.communityClient.getCommunityInviteContexts
     ).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An invitation card is a record of a share, not a live view of the link it
+   * names. Resetting a link must only affect links/cards created AFTER it — an
+   * invite already sitting in a conversation keeps the words it was sent with.
+   */
+  describe("a reset link does not rewrite invitations already sent", () => {
+    const storedGroupCard = {
+      type: "GROUP_INVITATION",
+      groupId: "grp_1",
+      groupName: "Weekend Squad",
+      groupAvatarUrl: "",
+      memberCount: 8,
+      inviteToken: "tok123",
+      deepLink: "aimess://join-group?token=tok123",
+      alreadyJoined: false,
+      status: "ACTIVE",
+      canOpen: true,
+    };
+
+    const seedGroupInviteRow = () => {
+      mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+        roomId: ROOM,
+        participants: [TEST_USER_ID, "peer"],
+        deletedFor: {},
+      });
+      mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+        messages: [
+          {
+            id: "m-ginvite-reset",
+            senderId: "peer",
+            messageType: "GROUP_INVITE",
+            systemEvent: "GROUP_INVITE",
+            systemData: {
+              invitationType: "GROUP",
+              groupId: "grp_1",
+              token: "tok123",
+              actorId: "peer",
+              actorName: "Peer",
+            },
+            content: {
+              text: "Invitation to join Weekend Squad",
+              urls: [],
+              files: [],
+              invitation: storedGroupCard,
+            },
+            createdAt: new Date(1000),
+          },
+        ],
+        hasMore: false,
+      });
+      mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+      mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+        roomId: "grp_1",
+        name: "Weekend Squad",
+        avatar: "",
+        memberCount: 9,
+      });
+      // The admin reset the link: this token is dead.
+      mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
+        token: "tok123",
+        roomId: "grp_1",
+        status: "REVOKED",
+      });
+    };
+
+    const readFirstRow = async () => {
+      const res = await request(app)
+        .get(`/api/chat/private/rooms/${ROOM}/messages`)
+        .set(bearer(makeAccessToken()));
+      expect(res.status).toBe(200);
+      return res.body.data.data[0];
+    };
+
+    it("GROUP: a revoked token leaves the card joinable, exactly as sent", async () => {
+      seedGroupInviteRow();
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+
+      const row = await readFirstRow();
+      expect(row.content.invitation).toMatchObject({
+        state: "CAN_JOIN",
+        status: "ACTIVE",
+        alreadyJoined: false,
+        canOpen: true,
+      });
+    });
+
+    it("GROUP: membership is still resolved live on top of the frozen link", async () => {
+      seedGroupInviteRow();
+      mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+        status: "ACTIVE",
+      });
+      mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+        status: "ACTIVE",
+      });
+
+      const row = await readFirstRow();
+      expect(row.content.invitation).toMatchObject({
+        state: "ALREADY_MEMBER",
+        alreadyJoined: true,
+      });
+    });
+
+    it("COMMUNITY: a revoked link leaves the card as sent for a non-member", async () => {
+      mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+        roomId: ROOM,
+        participants: [TEST_USER_ID, "peer"],
+        deletedFor: {},
+      });
+      mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+        messages: [
+          {
+            id: "m-cinvite-reset",
+            senderId: "peer",
+            messageType: "COMMUNITY_INVITE",
+            systemEvent: "COMMUNITY_INVITE",
+            systemData: {
+              invitationType: "COMMUNITY",
+              communityId: "community-3",
+              linkCode: "code3",
+              actorId: "peer",
+              actorName: "Peer",
+            },
+            content: {
+              text: "Invitation to join Dr. Jhatka",
+              urls: [],
+              files: [],
+              invitation: {
+                type: "COMMUNITY_INVITATION",
+                communityId: "community-3",
+                communityHandle: "dr-jhatka",
+                communityName: "Dr. Jhatka",
+                communityAvatarUrl: null,
+                memberCount: 15,
+                inviteCode: "code3",
+                deepLink: "aimess://join?code=code3",
+                alreadyJoined: false,
+                status: "ACTIVE",
+                canOpen: true,
+              },
+            },
+            createdAt: new Date(1000),
+          },
+        ],
+        hasMore: false,
+      });
+      mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+      mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
+        {
+          communityId: "community-3",
+          found: true,
+          communityName: "Dr. Jhatka",
+          communityHandle: "dr-jhatka",
+          isMember: false,
+          communityType: "PRIVATE",
+          joinRequestPending: false,
+          linkStatus: "REVOKED",
+        },
+      ]);
+
+      const row = await readFirstRow();
+      expect(row.content.invitation).toMatchObject({
+        status: "ACTIVE",
+        alreadyJoined: false,
+        canOpen: true,
+      });
+    });
   });
 
   it("POSITIVE: systemAction.status reflects a revoked/deleted community as canOpen:false", async () => {

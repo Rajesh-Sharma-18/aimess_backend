@@ -728,10 +728,11 @@ export type CommunityInviteLinkData = {
   usedCount: number;
   /** When true, redeeming this link directly adds the member instead of creating a join request. */
   autoApprove: boolean;
+  /** LEGACY, always null: a link lives until it is revoked or spent. */
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
-  /** Computed: not revoked, not expired, not exhausted. */
+  /** Computed: not revoked and not exhausted. Links do not expire on a clock. */
   isActive: boolean;
   /** True when this represents the community's permanent invitation code (stored on the Community row, not a CommunityInviteLink row). */
   isPermanent: boolean;
@@ -784,8 +785,7 @@ export type PermanentInvitationLinkData = {
   appDeepLink: string;
   /** Epoch ms — when the code was first generated. */
   createdAt: number;
-  /** Epoch ms — when the link stops working, or null when it never does (the
-   *  default: a link lives until an admin revokes it). */
+  /** LEGACY, always null: a link lives until an admin revokes it. */
   expiresAt: number | null;
 };
 

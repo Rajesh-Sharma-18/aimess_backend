@@ -365,7 +365,9 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
     ).rejects.toThrow("COMMUNITY_INVITE_LINK_NOT_FOUND");
   });
 
-  it("refuses an EXPIRED invite-link row through the API (the frontend cannot be bypassed)", async () => {
+  // A link lives until it is revoked. Rows stamped with an expiry by an older
+  // build must therefore still redeem — the clock is not a reason any more.
+  it("redeems a row carrying a past expiresAt stamped by an older build", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(
       linkRow({
         createdAt: new Date(Date.now() - 2 * HOUR_MS),
@@ -373,9 +375,18 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
       })
     );
 
+    const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
+    expect(res.member ?? res.request).toBeDefined();
+  });
+
+  it("still refuses a REVOKED invite-link row", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(
+      linkRow({ revokedAt: new Date(Date.now() - 60_000) })
+    );
+
     await expect(
       communityService.redeemInviteLink(STORED_CODE, CALLER)
-    ).rejects.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+    ).rejects.toThrow("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
   });
 });
 
@@ -439,25 +450,10 @@ describe("createInviteLink — parameterized call still creates a CUSTOM link", 
     expect(link.isPermanent).toBe(false);
   });
 
-  it("a shorter expiresInMinutes is honoured", async () => {
-    const before = Date.now();
-    await communityService.createInviteLink(CID, CALLER, {
-      expiresInMinutes: 10,
-    });
+  it("writes no expiry at all — a link dies only when it is revoked", async () => {
+    await communityService.createInviteLink(CID, CALLER, { maxUses: 5 });
 
     const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeLessThan(before + 11 * 60_000);
-  });
-
-  it("a LONGER expiresInMinutes is honoured verbatim — no ceiling", async () => {
-    const before = Date.now();
-    await communityService.createInviteLink(CID, CALLER, {
-      expiresInMinutes: 60 * 24 * 7,
-    });
-
-    const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBeGreaterThanOrEqual(
-      before + 7 * 24 * HOUR_MS - 1000
-    );
+    expect(written.expiresAt).toBeNull();
   });
 });

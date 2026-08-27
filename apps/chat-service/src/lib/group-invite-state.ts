@@ -4,10 +4,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "@aimess/errors";
-import {
-  effectiveGroupMemberLimit,
-  isInviteLinkExpired,
-} from "@aimess/constants";
+import { effectiveGroupMemberLimit } from "@aimess/constants";
 
 /**
  * The ONE answer to "what should the invite button say?", derived server-side
@@ -49,7 +46,11 @@ export type GroupInviteState =
    *  tell a deliberate kill from a lapsed clock even though today both render
    *  the same sentence. */
   | "LINK_REVOKED"
-  /** Past its expiry instant. */
+  /**
+   * LEGACY. Invitation links do not expire on their own — nothing produces this
+   * state any more. Kept on the wire so clients (and the error map below) still
+   * understand rows/codes emitted by older builds.
+   */
   | "LINK_EXPIRED"
   /** `maxUses` exhausted. */
   | "LINK_USED_UP"
@@ -104,10 +105,16 @@ export interface GroupInviteStateInput {
   /** The link row for the token, ANY status — null when the token is unknown. */
   link: {
     status?: string | null;
-    expiresAt?: Date | string | null;
     maxUses?: number | null;
     usedCount?: number | null;
   } | null;
+  /**
+   * Read the link as if it were still live — used ONLY by the in-chat
+   * invitation card, which must keep showing what it showed when it was sent
+   * even after an admin resets the link. Group existence, capacity, membership
+   * and the rejoin block stay live; only the LINK verdict is suppressed.
+   */
+  treatLinkAsLive?: boolean;
   /** The viewer's member row of ANY status, or null when they never joined. */
   membership: { status?: string | null } | null;
   /** False for a card/preview with no token at all (legacy rows) — such a card
@@ -124,7 +131,8 @@ export interface GroupInviteStateInput {
 export function resolveGroupInviteState(
   input: GroupInviteStateInput
 ): GroupInviteState {
-  const { room, link, membership, hasToken, activeAdminCount } = input;
+  const { room, link, membership, hasToken, activeAdminCount, treatLinkAsLive } =
+    input;
 
   // A member's access never depended on the invite, so nothing below can
   // downgrade them: a member of a full group, or one holding a revoked link,
@@ -147,16 +155,25 @@ export function resolveGroupInviteState(
     return "GROUP_NO_ADMIN";
   }
 
-  // LINK next, one state per cause.
-  if (!hasToken || !link) return "LINK_NOT_FOUND";
-  // Absent `status` reads as ACTIVE: the column is non-nullable with an ACTIVE
-  // default, so the only rows missing it predate it — and those were live links.
-  const linkStatus = link.status ?? "ACTIVE";
-  if (linkStatus === "REVOKED") return "LINK_REVOKED";
-  if (linkStatus !== "ACTIVE") return "LINK_NOT_FOUND";
-  if (isInviteLinkExpired(link.expiresAt)) return "LINK_EXPIRED";
-  if (link.maxUses && (link.usedCount ?? 0) >= link.maxUses) {
-    return "LINK_USED_UP";
+  // A card that carries no token at all can never offer a join, historical or
+  // not — there is nothing to tap. That is a property of the ROW rather than of
+  // the link's lifecycle, so it is checked in both modes.
+  if (!hasToken) return "LINK_NOT_FOUND";
+
+  // LINK next, one state per cause. A historical card skips the block: its
+  // verdict was decided when it was sent, and the link it names may since have
+  // been reset. Nothing expires on a clock any more, so REVOKED and USED_UP are
+  // the only ways a live link can be dead.
+  if (!treatLinkAsLive) {
+    if (!link) return "LINK_NOT_FOUND";
+    // Absent `status` reads as ACTIVE: the column is non-nullable with an ACTIVE
+    // default, so the only rows missing it predate it — and those were live links.
+    const linkStatus = link.status ?? "ACTIVE";
+    if (linkStatus === "REVOKED") return "LINK_REVOKED";
+    if (linkStatus !== "ACTIVE") return "LINK_NOT_FOUND";
+    if (link.maxUses && (link.usedCount ?? 0) >= link.maxUses) {
+      return "LINK_USED_UP";
+    }
   }
 
   // Finally the caller's own eligibility.
@@ -260,7 +277,13 @@ export async function loadGroupInviteState<
   TMember extends { status?: string | null },
 >(
   deps: GroupInviteStateDeps,
-  args: { token?: string | null; roomId?: string | null; viewerId?: string | null }
+  args: {
+    token?: string | null;
+    roomId?: string | null;
+    viewerId?: string | null;
+    /** See {@link GroupInviteStateInput.treatLinkAsLive} — the in-chat card. */
+    treatLinkAsLive?: boolean;
+  }
 ): Promise<LoadedGroupInviteState<TRoom, TLink, TMember>> {
   const token = args.token || null;
   const link = token
@@ -291,6 +314,7 @@ export async function loadGroupInviteState<
     membership: membership as GroupInviteStateInput["membership"],
     hasToken: !!token,
     activeAdminCount,
+    treatLinkAsLive: args.treatLinkAsLive,
   });
 
   return {

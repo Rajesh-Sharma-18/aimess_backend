@@ -8148,8 +8148,10 @@ export const openApiSchemas = {
         type: "string",
         format: "date-time",
         nullable: true,
-        description: "ISO-8601 expiry timestamp; null = never expires.",
-        example: "2026-07-24T10:00:00.000Z",
+        description:
+          "LEGACY, always null: invitation links do not expire on a clock. " +
+          "A link stays usable until an admin revokes it or its maxUses is spent.",
+        example: null,
       },
       revokedAt: {
         type: "string",
@@ -8207,7 +8209,7 @@ export const openApiSchemas = {
       maxUses: 100,
       usedCount: 7,
       autoApprove: false,
-      expiresAt: "2026-07-24T10:00:00.000Z",
+      expiresAt: null,
       revokedAt: null,
       createdAt: "2026-06-24T10:00:00.000Z",
       isActive: true,
@@ -8301,13 +8303,9 @@ export const openApiSchemas = {
         format: "int64",
         nullable: true,
         description:
-          "Invite-link expiry as epoch milliseconds, or null — the default — " +
-          "when the link never expires on its own. A link stays usable until " +
-          "an admin revokes it or its maxUses is spent; past an expiry that " +
-          "was explicitly asked for, preview and redeem both fail with 410 " +
-          "COMMUNITY_INVITE_LINK_EXPIRED, so the client shows " +
-          "\"Invitation link expired\" instead of a join CTA.",
-        example: 1785000000000,
+          "LEGACY, always null: an invitation link never expires on its own. " +
+          "It stays usable until an admin revokes it or its maxUses is spent.",
+        example: null,
       },
       creatorId: {
         type: "string",
@@ -8349,7 +8347,7 @@ export const openApiSchemas = {
       invitationCode: "Zk9Qw2Lp7",
       inviteUrl: "https://aimess.me/+Zk9Qw2Lp7",
       appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
-      expiresAt: 1785000000000,
+      expiresAt: null,
       creatorId: "22222222-2222-4222-8222-222222222222",
     },
   },
@@ -8404,7 +8402,7 @@ export const openApiSchemas = {
   CreateInviteLinkRequest: {
     type: "object",
     description:
-      "All fields are optional. Omit a field to use its default: unlimited uses, never expires, requires moderator approval (autoApprove: false).",
+      "All fields are optional. Omit a field to use its default: unlimited uses, requires moderator approval (autoApprove: false). Invitation links never expire on their own — they stay usable until an admin revokes one.",
     properties: {
       maxUses: {
         type: "integer",
@@ -8413,14 +8411,6 @@ export const openApiSchemas = {
         description:
           "Maximum number of times this link can be redeemed. Omit for unlimited.",
         example: 50,
-      },
-      expiresInMinutes: {
-        type: "integer",
-        minimum: 1,
-        maximum: 525600,
-        description:
-          "Minutes from now until the link expires. 525600 = 1 year. Omit for no expiry.",
-        example: 10080,
       },
       autoApprove: {
         type: "boolean",
@@ -8432,7 +8422,6 @@ export const openApiSchemas = {
     },
     example: {
       maxUses: 50,
-      expiresInMinutes: 10080,
       autoApprove: false,
     },
   },
@@ -9522,9 +9511,8 @@ export const openApiSchemas = {
         format: "date-time",
         nullable: true,
         description:
-          "When the link stops working — always 1 hour after it was created. " +
-          "Past this instant preview and join both fail with " +
-          "CHAT_INVITE_LINK_EXPIRED (400).",
+          "LEGACY, always null: a group invite link does not expire on a " +
+          "clock. It stays usable until an admin resets (revokes) it.",
       },
       isJoined: {
         type: "boolean",
@@ -9571,14 +9559,6 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       roomId: { type: "string", minLength: 5 },
-      expiresAt: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-        description:
-          "Optional expiry (ISO 8601). Clamped server-side to at most 1 hour " +
-          "from creation; omitted means exactly 1 hour.",
-      },
       maxUses: {
         type: "integer",
         minimum: 1,

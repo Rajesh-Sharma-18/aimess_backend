@@ -214,7 +214,9 @@ describe("GET /api/chat/invite-links/preview/:token (public)", () => {
     expect(res.body.data.state).toBe("LINK_NOT_FOUND");
   });
 
-  it("EDGE: an expired link is reported as LINK_EXPIRED on a 200", async () => {
+  // Nothing expires on a clock any more. A row still carrying an expiry stamped
+  // by an older build is a perfectly good link — only a revoke kills one.
+  it("EDGE: a past expiresAt on the row is ignored — the link is still joinable", async () => {
     mocks.groupInviteLinkRepo.findByToken.mockResolvedValue({
       token: TOKEN,
       roomId: ROOM,
@@ -236,7 +238,8 @@ describe("GET /api/chat/invite-links/preview/:token (public)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(res.body.data.state).toBe("LINK_EXPIRED");
+    expect(res.body.data.state).toBe("CAN_JOIN");
+    expect(res.body.data.expiresAt).toBeNull();
     // Group identity still comes back, so the screen can name the group it is
     // talking about instead of showing a bare error.
     expect(res.body.data.groupName).toBe("Devs");
@@ -556,29 +559,21 @@ describe("invite-link lifetime — a link lives until it is revoked", () => {
     expect(mocks.groupInviteLinkRepo.create.mock.calls[0][0].expiresAt).toBeNull();
   });
 
-  it("a caller-supplied expiry LONGER than an hour is honoured verbatim", async () => {
+  // The field is gone from the contract; an older client still sending it must
+  // not be rejected, and must not get a link that dies on a clock either.
+  it("a caller-supplied expiry is ignored — no link expires on a clock", async () => {
     const asked = new Date(Date.now() + 7 * 24 * HOUR_MS);
-    await request(app)
+    const res = await request(app)
       .post("/api/chat/invite-links")
       .set(bearer(makeAccessToken()))
       .send({ roomId: ROOM, expiresAt: asked.toISOString() });
 
+    expect(res.status).toBe(201);
     const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBe(asked.getTime());
+    expect(written.expiresAt).toBeNull();
   });
 
-  it("a caller-supplied SHORTER expiry is honoured", async () => {
-    const shortExpiry = new Date(Date.now() + 5 * 60_000);
-    await request(app)
-      .post("/api/chat/invite-links")
-      .set(bearer(makeAccessToken()))
-      .send({ roomId: ROOM, expiresAt: shortExpiry.toISOString() });
-
-    const written = mocks.groupInviteLinkRepo.create.mock.calls[0][0];
-    expect(written.expiresAt.getTime()).toBe(shortExpiry.getTime());
-  });
-
-  it("an expired link cannot be joined through the API (400, no membership write)", async () => {
+  it("a link whose row carries a past expiry still joins", async () => {
     mocks.groupInviteLinkRepo.findActiveByToken.mockResolvedValue({
       token: TOKEN,
       roomId: ROOM,
@@ -587,14 +582,29 @@ describe("invite-link lifetime — a link lives until it is revoked", () => {
       maxUses: null,
       usedCount: 0,
     });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      name: "Devs",
+      memberCount: 2,
+      memberLimit: 50,
+    });
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue(null);
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+    mocks.groupMemberRepo.upsert.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      role: "MEMBER",
+    });
 
     const res = await request(app)
       .post("/api/chat/invite-links/join")
       .set(bearer(makeAccessToken()))
       .send({ token: TOKEN });
 
-    expect(res.status).toBe(400);
-    expect(mocks.groupInviteLinkRepo.incrementUsedCount).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mocks.groupInviteLinkRepo.incrementUsedCount).toHaveBeenCalledWith(
+      TOKEN
+    );
   });
 });
 
@@ -630,7 +640,8 @@ describe("GET preview — isJoined drives Join Group vs View Group", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.isJoined).toBe(false);
-    expect(res.body.data.expiresAt).toBe(liveLink.expiresAt.toISOString());
+    // LEGACY field, always null: a link stays usable until it is revoked.
+    expect(res.body.data.expiresAt).toBeNull();
   });
 
   it("isJoined=true for an ACTIVE member of any role", async () => {

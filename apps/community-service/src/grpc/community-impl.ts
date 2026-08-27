@@ -1,7 +1,6 @@
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError } from "@aimess/errors";
-import { isInviteLinkExpired } from "@aimess/constants";
 
 import {
   CommunityJoinReqStatus,
@@ -902,20 +901,16 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
             const joinRequestPending =
               joinRequest?.status === CommunityJoinReqStatus.PENDING;
 
-            // Same three checks as `assertInviteLinkActive`/`toInviteLinkData`'s
+            // Same checks as `assertInviteLinkActive`/`toInviteLinkData`'s
             // `isActive` in community.service.ts, expressed as a status string
             // instead of a throw/boolean — no code with an ephemeral link row
             // uses a permanent code, so the branches are mutually exclusive.
+            // Nothing lapses on a clock, so EXPIRED is never produced here.
             let linkStatus: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
               "ACTIVE";
             if (code) {
               if (link) {
                 if (link.revokedAt) linkStatus = "REVOKED";
-                else if (
-                  link.expiresAt &&
-                  link.expiresAt.getTime() <= Date.now()
-                )
-                  linkStatus = "EXPIRED";
                 else if (
                   link.maxUses !== null &&
                   link.usedCount >= link.maxUses

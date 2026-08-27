@@ -2301,7 +2301,6 @@ export const communityRepository = {
     });
     if (!community) return null;
 
-    const now = new Date();
     const sevenDaysAgo = new Date(Date.now() - 7 * 864e5);
 
     const [
@@ -2341,11 +2340,7 @@ export const communityRepository = {
         where: { communityId, status: CommunityReportStatus.OPEN },
       }),
       prisma.communityInviteLink.count({
-        where: {
-          communityId,
-          revokedAt: null,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-        },
+        where: { communityId, revokedAt: null },
       }),
       prisma.communityMember.findFirst({
         where: { communityId, userId: community.adminId },
@@ -3574,21 +3569,15 @@ export const communityRepository = {
   },
 
   /**
-   * Count a member's currently-ACTIVE invite links in a community: not revoked
-   * and not past their expiry. Exhausted links (usedCount >= maxUses) are NOT
-   * filtered out here — that requires a field-to-field comparison Mongo can't do
-   * in a `count` predicate — so the cap is a slight over-count, which is the safe
-   * direction for an abuse guard.
+   * Count a member's currently-ACTIVE invite links in a community: everything
+   * they own that nobody has revoked. Exhausted links (usedCount >= maxUses) are
+   * NOT filtered out here — that requires a field-to-field comparison Mongo
+   * can't do in a `count` predicate — so the cap is a slight over-count, which
+   * is the safe direction for an abuse guard.
    */
   countActiveInviteLinksByCreator(communityId: string, createdBy: string) {
-    const now = new Date();
     return prisma.communityInviteLink.count({
-      where: {
-        communityId,
-        createdBy,
-        ...NOT_REVOKED,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-      },
+      where: { communityId, createdBy, ...NOT_REVOKED },
     });
   },
 
@@ -3598,13 +3587,16 @@ export const communityRepository = {
 
   /**
    * The caller's newest still-usable "share this community" link: not revoked,
-   * not expired, and unlimited-use / request-to-join (i.e. NOT one of the custom
-   * limited-use or auto-approve links, which are deliberate throwaways and must
-   * never be handed back by the plain Invite button).
+   * unlimited-use and request-to-join (i.e. NOT one of the custom limited-use or
+   * auto-approve links, which are deliberate throwaways and must never be handed
+   * back by the plain Invite button).
+   *
+   * `expiresAt` is deliberately NOT consulted: links do not lapse on a clock, so
+   * a row still carrying an expiry stamped by an older build stays reusable
+   * instead of silently minting a replacement on every share.
    *
    * Returns null when the caller has none — the caller then mints a fresh one,
-   * which is what makes the link roll over automatically once the 1-hour window
-   * closes.
+   * which is what makes the link roll over after a reset.
    */
   findLatestReusableInviteLink(communityId: string, createdBy: string) {
     return prisma.communityInviteLink.findFirst({
@@ -3612,21 +3604,11 @@ export const communityRepository = {
         communityId,
         createdBy,
         autoApprove: false,
-        // All three fields are OPTIONAL, so an untouched row simply omits them —
-        // and on Mongo `field: null` matches only documents where the field
-        // EXISTS and is null. Each needs its own `isSet: false` alternative,
-        // ANDed so the OR groups don't collapse into one. A link with no expiry
-        // (the default now that links live until they are revoked) is reusable:
-        // matching only `expiresAt > now` skipped every one of them and minted a
-        // fresh link on every share.
+        // Both fields are OPTIONAL, so an untouched row simply omits them — and
+        // on Mongo `field: null` matches only documents where the field EXISTS
+        // and is null. Each needs its own `isSet: false` alternative, ANDed so
+        // the OR groups don't collapse into one.
         AND: [
-          {
-            OR: [
-              { expiresAt: { gt: new Date() } },
-              { expiresAt: null },
-              { expiresAt: { isSet: false } },
-            ],
-          },
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
         ],
@@ -3681,6 +3663,9 @@ export const communityRepository = {
     };
     if (params.status === "revoked") {
       where.revokedAt = { not: null };
+      // LEGACY filter: nothing stamps an expiry any more, so this matches only
+      // rows written by an older build. Kept because it is part of the admin
+      // listing's query contract.
     } else if (params.status === "expired") {
       where.AND = [NOT_REVOKED];
       where.expiresAt = { lt: now };
