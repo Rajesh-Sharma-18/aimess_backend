@@ -3,6 +3,7 @@ import { communityClient } from "../grpc/community.client.js";
 import { userClient } from "../grpc/user.client.js";
 import { buildFullName } from "../lib/grpc-view.js";
 import { normalizeReportReason } from "../lib/report-reason.js";
+import { reportsAgainstUser } from "../lib/report-target.js";
 import type {
   OtherReasonNote,
   Paginated,
@@ -13,7 +14,8 @@ import type {
 
 /**
  * Repository backing the admin "Reported Details" panel on the User Management
- * detail screen (admin_db `Report` rows where `type='user'`, `targetId=userId`).
+ * detail screen (admin_db `Report` rows naming this user — `type='user'` rows via
+ * `targetId`, content reports via `reportedUserId`; see `reportsAgainstUser`).
  *
  * Reporter identity/display is enriched from user-service via the existing
  * `userClient.adminGetProfilesByIds` gRPC fan-out (batched, one round-trip per
@@ -35,7 +37,7 @@ export const reportDetailRepository = {
   async categoryCounts(userId: string): Promise<ReportCategoryCount[]> {
     const grouped = await prisma.report.groupBy({
       by: ["reason"],
-      where: { type: "user", targetId: userId },
+      where: reportsAgainstUser(userId),
       _count: { _all: true },
     });
 
@@ -62,7 +64,7 @@ export const reportDetailRepository = {
    */
   async otherReasonNotes(userId: string): Promise<OtherReasonNote[]> {
     const rows = await prisma.report.findMany({
-      where: { type: "user", targetId: userId, reason: "OTHER" },
+      where: { ...reportsAgainstUser(userId), reason: "OTHER" },
       select: { details: true, reporterId: true, createdAt: true },
       orderBy: { createdAt: "desc" },
     });
@@ -95,9 +97,9 @@ export const reportDetailRepository = {
     const skip = (page - 1) * limit;
 
     const [total, rows] = await Promise.all([
-      prisma.report.count({ where: { type: "user", targetId: userId } }),
+      prisma.report.count({ where: reportsAgainstUser(userId) }),
       prisma.report.findMany({
-        where: { type: "user", targetId: userId },
+        where: reportsAgainstUser(userId),
         orderBy: { createdAt: "desc" },
         skip,
         take: limit,
