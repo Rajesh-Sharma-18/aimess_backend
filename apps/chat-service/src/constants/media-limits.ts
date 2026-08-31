@@ -45,25 +45,39 @@ export const MEDIA_MESSAGE_TYPES = ["IMAGE", "VIDEO"] as const;
 
 /**
  * Map an incoming (upper-cased) media-list `type` filter to the community
- * storage value. Returns undefined for unknown/non-media types so callers can
+ * storage values. Returns undefined for unknown/non-media types so callers can
  * decide on an empty result rather than broadening the query.
+ *
+ * BOTH spellings, deliberately. The community send path writes the canonical
+ * UPPER-CASE kind ("IMAGE"/"VIDEO"), and only a handful of pre-expansion rows
+ * are lower-case ("text"/"location"/"contact"). These filters had been
+ * lower-case ONLY, and Mongo string equality is case-sensitive — so the
+ * community media list matched nothing at all, for every room, always. Listing
+ * both is exact-match (index-friendly), unlike a case-insensitive regex.
  */
-const COMMUNITY_MEDIA_TYPE_MAP: Record<string, string> = {
-  IMAGE: "image",
-  VOICE: "voice",
-  AUDIO: "audio",
-  STICKER: "sticker",
-  VIDEO: "video",
-  GIF: "gif",
-  DOCUMENT: "document",
+const COMMUNITY_MEDIA_TYPE_MAP: Record<string, readonly string[]> = {
+  IMAGE: ["IMAGE", "image"],
+  VOICE: ["VOICE", "voice"],
+  AUDIO: ["AUDIO", "audio"],
+  STICKER: ["STICKER", "sticker"],
+  VIDEO: ["VIDEO", "video"],
+  GIF: ["GIF", "gif"],
+  DOCUMENT: ["DOCUMENT", "document"],
 };
 
 /** Community storage values shown in the shared "Media" tab. IMAGE + VIDEO
  *  only — stickers/GIFs/voice/audio/documents belong in other tabs. */
-export const COMMUNITY_MEDIA_MESSAGE_TYPES = ["image", "video"] as const;
+export const COMMUNITY_MEDIA_MESSAGE_TYPES = [
+  "IMAGE",
+  "image",
+  "VIDEO",
+  "video",
+] as const;
 
-/** Resolve a community media storage value for an incoming `type` filter. */
-export function mapCommunityMediaType(type: string): string | undefined {
+/** Resolve the community storage values for an incoming `type` filter. */
+export function mapCommunityMediaType(
+  type: string
+): readonly string[] | undefined {
   return COMMUNITY_MEDIA_TYPE_MAP[type.toUpperCase()];
 }
 
