@@ -202,6 +202,15 @@ export class PrivateMessageService {
     clientMessageId?: string | null;
     /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
     clientTs?: number | null;
+    /**
+     * The id a RETRY would repeat. Only a CLIENT-supplied id can dedupe
+     * anything: when the caller omits one the server mints a fresh UUID per
+     * attempt, so looking it up is a guaranteed miss that still costs a round
+     * trip on every single send. Defaults to `clientMessageId`, so a caller
+     * that does not pass this behaves exactly as before; pass `null` to say
+     * "this id is server-generated, there is nothing to dedupe against".
+     */
+    dedupeKey?: string | null;
   }): Promise<PrivateMessage> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
@@ -246,17 +255,21 @@ export class PrivateMessageService {
 
     // Idempotency: if clientMessageId provided, check for existing message (album
     // batch includes `base:N` sibling rows).
-    if (params.clientMessageId) {
+    const dedupeKey =
+      params.dedupeKey === undefined
+        ? params.clientMessageId
+        : params.dedupeKey;
+    if (dedupeKey) {
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
         params.senderId,
-        params.clientMessageId
+        dedupeKey
       );
       if (existing) {
         const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
           params.roomId,
           params.senderId,
-          params.clientMessageId
+          dedupeKey
         );
         const messages = (batch?.length ?? 0) > 0 ? batch : [existing];
         return markAlbumIdempotentReplay(

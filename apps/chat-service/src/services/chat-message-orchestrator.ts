@@ -316,6 +316,11 @@ export class ChatMessageOrchestrator {
       params.roomId,
       params.conversationType
     );
+    // The caller's id, before the fallback below replaces it. A REST send
+    // typically carries none, and a server-minted UUID can never match an
+    // earlier attempt — so telling the service there is nothing to dedupe
+    // against saves a lookup (two on the group path) on every message.
+    const dedupeKey = params.clientMessageId || null;
     const clientMessageId = params.clientMessageId || randomUUID();
     const clientTs = params.clientTs ?? 0;
 
@@ -346,6 +351,7 @@ export class ChatMessageOrchestrator {
         messageType: params.messageType || "TEXT",
         parentMessageId: params.parentMessageId ?? null,
         clientMessageId,
+        dedupeKey,
         clientTs,
       });
     } else {
@@ -356,6 +362,7 @@ export class ChatMessageOrchestrator {
         messageType: params.messageType || "TEXT",
         parentMessageId: params.parentMessageId ?? null,
         clientMessageId,
+        dedupeKey,
         clientTs,
       });
     }
@@ -562,7 +569,6 @@ export class ChatMessageOrchestrator {
         });
       }
     }
-
     return {
       messageId: msg.id,
       sentAt: serverTs,
