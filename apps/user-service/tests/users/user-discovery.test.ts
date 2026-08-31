@@ -134,8 +134,7 @@ describe("GET /api/v1/users — split mode (no type)", () => {
       expect.any(Array),
       "alice",
       0,
-      5,
-      expect.objectContaining({ friendIds: expect.any(Array) })
+      5
     );
     expect(pRepo.findUsersNotInList).toHaveBeenCalledWith(
       expect.any(Array),
@@ -292,8 +291,7 @@ describe("GET /api/v1/users?type=friends", () => {
       expect.any(Array),
       "alice",
       4,
-      2,
-      expect.objectContaining({ friendIds: expect.any(Array) })
+      2
     );
   });
 
