@@ -34,6 +34,7 @@ import {
 import { env } from "../../config/env.js";
 import { scopeSocketLocale } from "../locale-scope.js";
 import { createSessionTimers } from "../session-timers.js";
+import { presentReaders } from "../present-readers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
 // the 1 MB socket frame, blow up storage, or fan an oversized payload out to a
@@ -115,6 +116,13 @@ const ConvJoinSchema = withCommunityAliases(
       (v) => (typeof v === "string" ? v.toLowerCase() : v),
       z.enum(["private", "group"]).optional()
     ),
+    // "This socket has the room's SCREEN open", not merely "wants its live
+    // traffic". The two are different: the sidebar joins `conv:<id>` for every
+    // visible thread just to receive typing indicators, so Socket.IO room
+    // membership alone can never mean presence. Only the transcript sends
+    // `active: true`, and that is what arms the read-at-delivery mark below.
+    // Optional: a client that never sends it behaves exactly as before.
+    active: z.boolean().optional(),
   })
 );
 const ConvLeaveSchema = withCommunityAliases(
@@ -487,6 +495,75 @@ export function registerChatNamespace(
     }
   };
 
+  /**
+   * READ-AT-DELIVERY. A message that lands while the recipient already has the
+   * room open was never unread — they saw it arrive. Clients do ask for this
+   * themselves (the transcript marks the tail read), but that made the badge
+   * depend on client cooperation: any delivery path a client does not render
+   * live, and any client that does not implement the tail-mark, left a counter
+   * incremented with no reader to clear it. This is the server-side half, and
+   * it is the ONLY place that can see presence — Socket.IO room membership
+   * lives in the gateway, not in chat-service.
+   *
+   * Presence is `socket.data.activeConvId`, NOT membership of `conv:<roomId>`:
+   * the sidebar joins every visible thread's room for typing indicators, so
+   * membership would mark half the inbox read (see the `active` flag on
+   * `conv:join`).
+   *
+   * Per USER, not per socket: read state is per-user, so one present device is
+   * enough and the same user is marked once no matter how many tabs qualify.
+   * `markReadUpTo` is forward-only and idempotent server-side, so racing the
+   * client's own mark writes nothing twice; the reader's own message is
+   * skipped because a sender is not a reader.
+   */
+  const markReadForPresentRecipients = async (
+    channel: string,
+    data: unknown
+  ): Promise<void> => {
+    const roomId = channel.slice("conv:".length);
+    const msg = data as {
+      id?: unknown;
+      senderId?: unknown;
+      conversationType?: unknown;
+    };
+    const messageId = typeof msg?.id === "string" ? msg.id : "";
+    if (!roomId || !messageId) return;
+    const senderId = typeof msg?.senderId === "string" ? msg.senderId : "";
+    const conversationType =
+      String(msg?.conversationType ?? "").toLowerCase() === "group"
+        ? "group"
+        : "private";
+    try {
+      const sockets = await chat.in(channel).fetchSockets();
+      const readers = presentReaders(
+        sockets,
+        "activeConvId",
+        roomId,
+        senderId
+      );
+      await Promise.all(
+        readers.map((readerId) =>
+          messagingClient
+            .markMessagesRead({
+              conversationId: roomId,
+              upToMessageId: messageId,
+              conversationType,
+              readerId,
+            })
+            .catch((err: unknown) =>
+              logger.warn(
+                `/chat read-at-delivery failed room=${roomId} reader=${readerId}: ${String(err)}`
+              )
+            )
+        )
+      );
+    } catch (err) {
+      logger.warn(
+        `/chat read-at-delivery presence lookup failed room=${roomId}: ${String(err)}`
+      );
+    }
+  };
+
   // Dedicated subscriber for conversation, call, and user channels.
   // Backend services publish: { event: "message:new"|"message:edited"|..., data: {...} }
   // to the matching Redis channel. V2 events (pin:updated, read_sync) ride the
@@ -560,6 +637,7 @@ export function registerChatNamespace(
           if (contentType === "SYSTEM") {
             personalizeFn = personalizeGroupSocketMessage;
           }
+          void markReadForPresentRecipients(channel, parsed.data);
         }
 
         // Every event is delivered to the room named by the channel it was
@@ -1186,6 +1264,13 @@ export function registerChatNamespace(
               return;
             }
             void socket.join(`conv:${r.data.conversationId}`);
+            // One open transcript per socket: opening a room replaces whatever
+            // was open before, so a tab that switches conversations without a
+            // `conv:leave` never keeps marking the old room read. On
+            // `socket.data` so any gateway node can read it back through
+            // `fetchSockets()` (same reason `callLegId` lives there).
+            if (r.data.active === true)
+              socket.data.activeConvId = r.data.conversationId;
             ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
           } catch (err) {
             // Still no join — but report it as the retryable failure it is, so a
@@ -1213,6 +1298,10 @@ export function registerChatNamespace(
         // Clients may call leave on reconnect clean-up even if the prior session
         // already left — that is safe.
         void socket.leave(`conv:${r.data.conversationId}`);
+        // The sidebar leaves rooms that scroll out of its thread list, so only
+        // clear presence when the room being left is the one actually open.
+        if (socket.data.activeConvId === r.data.conversationId)
+          socket.data.activeConvId = undefined;
         ackOk(callback, "SOCKET_CONVERSATION_LEFT", locale);
       }
     );

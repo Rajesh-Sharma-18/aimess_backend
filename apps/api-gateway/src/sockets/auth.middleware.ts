@@ -42,6 +42,18 @@ declare module "socket.io" {
      * `call:handled` to every device EXCEPT the one that answered.
      */
     callLegId?: string;
+    /**
+     * The conversation whose TRANSCRIPT this socket currently has open — the
+     * presence signal behind read-at-delivery. Set by `conv:join {active:true}`
+     * and cleared by `conv:leave`. Deliberately NOT the same as membership of
+     * `conv:<roomId>`: the sidebar joins every visible thread's room to receive
+     * typing indicators, so membership means "wants live traffic", not "is
+     * looking at it". Read across gateway nodes via `fetchSockets()`.
+     */
+    activeConvId?: string;
+    /** The /community twin of {@link activeConvId} — the community whose chat
+     *  screen this socket has open. Set by `community:join {active:true}`. */
+    activeCommunityId?: string;
     /** Backoffice admin id — set only on /admin sockets, where `userId` is unused. */
     adminId?: string;
   }

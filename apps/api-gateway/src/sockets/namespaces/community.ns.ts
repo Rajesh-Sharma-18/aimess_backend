@@ -31,6 +31,7 @@ import {
 } from "../emit-personalized.js";
 import { scopeSocketLocale } from "../locale-scope.js";
 import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
+import { presentReaders } from "../present-readers.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -41,6 +42,13 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 const CommunityJoinSchema = z.object({
   communityId: z.string().min(1),
   roomId: z.string().min(1).optional(),
+  // "This socket has the community's CHAT SCREEN open", not merely "wants its
+  // live traffic". The sidebar subscribes to every community the user is in
+  // (see communityRoomSubscriptions on the web client), so membership of
+  // `community:<id>` can never mean presence. Only the open transcript sends
+  // `active: true`, and that is what arms read-at-delivery. Optional: a client
+  // that never sends it behaves exactly as before.
+  active: z.boolean().optional(),
 });
 const CommunityLeaveSchema = z.object({ communityId: z.string().min(1) });
 const CommunityTypingSchema = z.object({
@@ -273,6 +281,56 @@ export function registerCommunityNamespace(
   // assertCommunityRoomWritable in chat-service; this is defense-in-depth only.
   const closedCommunityIds = new Set<string>();
 
+  /**
+   * READ-AT-DELIVERY, community half. Same rule and the same reason as
+   * `markReadForPresentRecipients` in chat.ns: a message that lands while the
+   * member already has the community open was never unread, and only the
+   * gateway can see who is looking. Presence is `socket.data.activeCommunityId`
+   * (set by `community:join {active:true}`), NEVER membership of
+   * `community:<id>` — the sidebar subscribes to every community for live list
+   * bumps and typing.
+   */
+  const markCommunityReadForPresentMembers = async (
+    channel: string,
+    data: unknown
+  ): Promise<void> => {
+    const communityId = channel.slice("community:".length);
+    const msg = data as { id?: unknown; senderId?: unknown; roomId?: unknown };
+    const messageId = typeof msg?.id === "string" ? msg.id : "";
+    if (!communityId || !messageId) return;
+    const senderId = typeof msg?.senderId === "string" ? msg.senderId : "";
+    const roomId = typeof msg?.roomId === "string" ? msg.roomId : communityId;
+    try {
+      const sockets = await community.in(channel).fetchSockets();
+      const readers = presentReaders(
+        sockets,
+        "activeCommunityId",
+        communityId,
+        senderId
+      );
+      await Promise.all(
+        readers.map((readerId) =>
+          communityClient
+            .markCommunityMessageRead({
+              communityId,
+              roomId,
+              readerId,
+              upToMessageId: messageId,
+            })
+            .catch((err: unknown) =>
+              logger.warn(
+                `/community read-at-delivery failed community=${communityId} reader=${readerId}: ${String(err)}`
+              )
+            )
+        )
+      );
+    } catch (err) {
+      logger.warn(
+        `/community read-at-delivery presence lookup failed community=${communityId}: ${String(err)}`
+      );
+    }
+  };
+
   // Dedicated subscriber for community channels.
   // Backend services publish: { event: "community:message:new"|"community:member:joined", data: {...} }
   // to Redis channel community:<communityId>.
@@ -390,6 +448,7 @@ export function registerCommunityNamespace(
         let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "community:message:new") {
           personalizeFn = personalizeCommunitySocketMessage;
+          void markCommunityReadForPresentMembers(channel, parsed.data);
         }
         // The stream's runtime ships as a rendered string; every member of the
         // room reads it, and they do not share a language. Re-derived per
@@ -881,6 +940,9 @@ export function registerCommunityNamespace(
             );
           }
           void socket.join(`community:${communityId}`);
+          // One open transcript per socket — see `activeCommunityId`.
+          if (r.data.active === true)
+            socket.data.activeCommunityId = communityId;
           // Also join the typing room (idempotent — safe even if auto-joined
           // at connect; does NOT get left on community:leave so sidebar typing
           // keeps working after the user closes the chat view).
@@ -899,6 +961,10 @@ export function registerCommunityNamespace(
           return;
         }
         void socket.leave(`community:${r.data.communityId}`);
+        // The sidebar leaves communities that drop out of its list, so only
+        // clear presence when the community being left is the one open.
+        if (socket.data.activeCommunityId === r.data.communityId)
+          socket.data.activeCommunityId = undefined;
         ackOk(callback, "SOCKET_COMMUNITY_LEFT", locale);
       }
     );
