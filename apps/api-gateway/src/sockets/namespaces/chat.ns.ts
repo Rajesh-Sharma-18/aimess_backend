@@ -2,7 +2,13 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
-import { readPresenceSnapshots } from "@aimess/redis";
+import {
+  chatForegroundSessionKey,
+  chatOpenRoomKey,
+  clearChatAttention,
+  markChatAttention,
+  readPresenceSnapshots,
+} from "@aimess/redis";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
@@ -12,9 +18,11 @@ import {
   personalizeGroupSocketMessage,
 } from "../system-message-personalize.js";
 import {
+  emitPersonalizedBatch,
   emitPersonalizedSender,
   type PersonalizeFn,
 } from "../emit-personalized.js";
+import { createMessageBatcher } from "../message-batcher.js";
 import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import type {
   CatchupEventDto,
@@ -391,6 +399,49 @@ export function registerChatNamespace(
   chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
   /**
+   * Burst coalescing for live message delivery. The first message of a quiet
+   * period still leaves immediately; only messages that arrive while an earlier
+   * one for the SAME channel is already on the wire are collected, and they go
+   * out as one `message:new:batch` frame to clients that asked for it.
+   * `personalizeGroupSocketMessage` is a no-op for non-SYSTEM rows, so it can be
+   * applied to every item unconditionally.
+   */
+  const messageBatcher = createMessageBatcher({
+    emitOne: (channel, data) => {
+      if (channel.startsWith("conv:")) {
+        void markReadForPresentRecipients(channel, data);
+      }
+      void emitPersonalizedSender(
+        chat,
+        channel,
+        "message:new",
+        data,
+        personalizeGroupSocketMessage
+      );
+    },
+    emitBatch: (channel, batch) => {
+      // ONE read mark per flush, carrying the newest message — `upTo` semantics
+      // mean the last id covers the whole slice. Marking per message instead
+      // fired N concurrent reads for one burst, which raced each other and left
+      // a handful of messages counted as unread in a room the reader had open.
+      if (channel.startsWith("conv:")) {
+        void markReadForPresentRecipients(channel, batch[batch.length - 1]);
+      }
+      void emitPersonalizedBatch(
+        chat,
+        channel,
+        "message:new",
+        "message:new:batch",
+        channel.startsWith("conv:")
+          ? channel.slice("conv:".length)
+          : String((batch[0] as { roomId?: string } | undefined)?.roomId ?? ""),
+        batch,
+        personalizeGroupSocketMessage
+      );
+    },
+  });
+
+  /**
    * ROOM MODEL — the security invariant this namespace rests on.
    *
    *   user:<id>       ONLY that user's own sockets. Everything a service
@@ -534,13 +585,14 @@ export function registerChatNamespace(
         ? "group"
         : "private";
     try {
-      const sockets = await chat.in(channel).fetchSockets();
-      const readers = presentReaders(
-        sockets,
-        "activeConvId",
-        roomId,
-        senderId
-      );
+      // LOCAL sockets only: every gateway node receives this same Redis event and
+      // runs this same function, so each is responsible for the sockets it
+      // holds. A cluster-wide fetch made each node inspect all nodes' sockets
+      // and pay a cross-node round trip that stalls for the adapter's timeout
+      // when any peer is slow — and a stalled read-at-delivery is exactly what
+      // leaves messages counted as unread in a room the reader had open.
+      const sockets = await chat.local.in(channel).fetchSockets();
+      const readers = presentReaders(sockets, "activeConvId", roomId, senderId);
       await Promise.all(
         readers.map((readerId) =>
           messagingClient
@@ -627,17 +679,12 @@ export function registerChatNamespace(
         if (parsed.event === "conv:auto_delete:updated") {
           personalizeFn = personalizeAutoDeleteLabel;
         }
-        if (parsed.event === "message:new" && pattern === "conv:*") {
-          const contentType = String(
-            (parsed.data as { contentType?: string; messageType?: string })
-              .contentType ??
-              (parsed.data as { messageType?: string }).messageType ??
-              ""
-          ).toUpperCase();
-          if (contentType === "SYSTEM") {
-            personalizeFn = personalizeGroupSocketMessage;
-          }
-          void markReadForPresentRecipients(channel, parsed.data);
+        if (parsed.event === "message:new") {
+          // Both buses (`conv:<roomId>` for the open transcript and
+          // `user:<id>` for the inbox/delivery-receipt copy) coalesce, each
+          // under its own channel key so they can never mix.
+          messageBatcher.push(channel, parsed.data);
+          return;
         }
 
         // Every event is delivered to the room named by the channel it was
@@ -1163,6 +1210,14 @@ export function registerChatNamespace(
       displayName: "",
       avatarUrl: null,
     };
+
+    // Burst-delivery opt-in. A client that does NOT set this keeps receiving one
+    // `message:new` per message exactly as before — which is what every shipped
+    // mobile build does, so coalescing can never strand an old client.
+    socket.data.batchMessages =
+      socket.handshake.auth?.batch === true ||
+      socket.handshake.auth?.batch === "1" ||
+      socket.handshake.query?.batch === "1";
     void resolveSocketUserDetails(userClient, mediaClient, userId).then(
       (ud) => {
         socket.data.userDetails = ud;
@@ -1185,11 +1240,36 @@ export function registerChatNamespace(
     // Any traffic on the connection (including engine.io's own ping/pong, which
     // never stops while the transport is healthy) refreshes the device session,
     // throttled so this costs one gRPC call per socket per refresh window.
+    /**
+     * Publish what only this process knows: which conversation this socket has
+     * open, and whether its app is foregrounded. notifications-service reads
+     * both at push time so a burst typed at someone who is already reading it
+     * produces no tray entries at all.
+     */
+    const refreshAttention = (appState: string): void => {
+      if (!userId) return;
+      const openRoomId = socket.data.activeConvId as string | undefined;
+      if (openRoomId) {
+        void markChatAttention(redisPub, chatOpenRoomKey(userId, openRoomId));
+      }
+      if (!sessionId) return;
+      const key = chatForegroundSessionKey(userId, sessionId);
+      if (appState === "BACKGROUND") {
+        void clearChatAttention(redisPub, key);
+      } else {
+        void markChatAttention(redisPub, key);
+      }
+    };
+
     let lastPresenceRefreshAt = 0;
     const refreshPresence = (appState: string, force = false): void => {
       const now = Date.now();
       if (!force && now - lastPresenceRefreshAt < PRESENCE_REFRESH_MS) return;
       lastPresenceRefreshAt = now;
+      // Re-stamp the "already looking at it" hints push delivery reads. They
+      // carry a short TTL on purpose (see @aimess/redis chat-attention), so a
+      // gateway that dies stops silencing pushes on its own.
+      refreshAttention(appState);
       messagingClient
         .presenceHeartbeat({ userId, deviceId: presenceDeviceId, appState })
         .catch((err: unknown) =>
@@ -1208,6 +1288,10 @@ export function registerChatNamespace(
         (socket.handshake.headers["x-client-type"] as string) ||
         "unknown";
       lastPresenceRefreshAt = Date.now();
+      // Stamp the foreground hint NOW, not on the first refresh tick 45s later:
+      // a burst that lands in the first minute of a session would otherwise push
+      // to the very device the user is typing on.
+      refreshAttention("FOREGROUND");
       messagingClient
         .presenceConnect({
           userId,
@@ -1269,8 +1353,20 @@ export function registerChatNamespace(
             // `conv:leave` never keeps marking the old room read. On
             // `socket.data` so any gateway node can read it back through
             // `fetchSockets()` (same reason `callLegId` lives there).
-            if (r.data.active === true)
+            if (r.data.active === true) {
+              const previous = socket.data.activeConvId as string | undefined;
+              if (previous && previous !== r.data.conversationId) {
+                void clearChatAttention(
+                  redisPub,
+                  chatOpenRoomKey(userId, previous)
+                );
+              }
               socket.data.activeConvId = r.data.conversationId;
+              void markChatAttention(
+                redisPub,
+                chatOpenRoomKey(userId, r.data.conversationId)
+              );
+            }
             ackOk(callback, "SOCKET_CONVERSATION_JOINED", locale);
           } catch (err) {
             // Still no join — but report it as the retryable failure it is, so a
@@ -1300,8 +1396,13 @@ export function registerChatNamespace(
         void socket.leave(`conv:${r.data.conversationId}`);
         // The sidebar leaves rooms that scroll out of its thread list, so only
         // clear presence when the room being left is the one actually open.
-        if (socket.data.activeConvId === r.data.conversationId)
+        if (socket.data.activeConvId === r.data.conversationId) {
           socket.data.activeConvId = undefined;
+          void clearChatAttention(
+            redisPub,
+            chatOpenRoomKey(userId, r.data.conversationId)
+          );
+        }
         ackOk(callback, "SOCKET_CONVERSATION_LEFT", locale);
       }
     );
@@ -2397,6 +2498,23 @@ export function registerChatNamespace(
       recording.flush();
 
       if (userId) {
+        // Stop silencing this user's pushes the moment the socket that was
+        // reading goes away. Another live socket re-stamps the key on its next
+        // presence refresh, so a second tab in the same room is not affected
+        // for longer than one refresh interval.
+        const openRoomId = socket.data.activeConvId as string | undefined;
+        if (openRoomId) {
+          void clearChatAttention(
+            redisPub,
+            chatOpenRoomKey(userId, openRoomId)
+          );
+        }
+        if (sessionId) {
+          void clearChatAttention(
+            redisPub,
+            chatForegroundSessionKey(userId, sessionId)
+          );
+        }
         // Only THIS socket's session ends here. chat-service re-derives the
         // aggregate from whatever sessions remain, so another tab or the phone
         // keeps the user online and no offline event is published.

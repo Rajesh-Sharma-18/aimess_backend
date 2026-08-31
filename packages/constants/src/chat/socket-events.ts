@@ -76,6 +76,15 @@ export const SOCKET_IN = {
 /** Server → client. Past tense: something already happened. */
 export const SOCKET_OUT = {
   MESSAGE_NEW: "message:new",
+  /**
+   * Coalesced burst delivery: `{ roomId, count, messages: [<MESSAGE_NEW payload>…] }`,
+   * in send order. Sent ONLY to a socket that declared `batch` support at
+   * handshake time; every other client keeps receiving one MESSAGE_NEW per
+   * message, unchanged. The first message of a quiet period is always a plain
+   * MESSAGE_NEW — a batch can only ever hold messages that arrived while an
+   * earlier one for the same room was already on the wire.
+   */
+  MESSAGE_NEW_BATCH: "message:new:batch",
   MESSAGE_EDITED: "message:edited",
   MESSAGE_DELETED: "message:deleted",
   MESSAGE_REACTION: "message:reaction",

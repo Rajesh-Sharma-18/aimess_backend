@@ -1,13 +1,9 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
-import { type SupportedLocale } from "@aimess/constants";
-import { type NotificationNavigation } from "@aimess/shared-types";
-
 import { env } from "../config/env.js";
 import { buildDeepLink } from "../lib/deep-link.js";
-import { chatCopy, chatPreviewHiddenBody } from "../lib/notification-copy.js";
 import { generateThreadId } from "../lib/thread-id.js";
-import { pushToUsers } from "../services/push.service.js";
+import { enqueueChatPush } from "../services/chat-push-coalescer.js";
 import {
   filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
@@ -143,17 +139,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   // busiest source of messages still pushing; that category is now retired.
   const category = "chatEnabled" as const;
 
-  // Community/group messages: title = room name (if known), body = "Sender: preview".
-  // Private: title = sender name, body = preview text.
   const isGroup = data.conversationType === "GROUP";
-  const copy = chatCopy.message({
-    isCommunity,
-    communityName: data.communityName,
-    ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
-    senderName: data.senderName,
-    preview: data.preview,
-    messageType: data.messageType,
-  });
 
   // Include messageId in the community deep link so the client can scroll to
   // the specific message after navigating to the community chat room.
@@ -161,27 +147,6 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   const deepLink = isCommunity
     ? buildDeepLink("community", communityTarget, data.messageId)
     : buildDeepLink("conversation", data.conversationId);
-
-  // showPreviewOverride hides sender name and message content when the user
-  // has "show preview" disabled — the title (community/sender name) is safe.
-  const navigation = JSON.stringify({
-    screen: isCommunity
-      ? "COMMUNITY_CHAT"
-      : data.conversationType === "GROUP"
-        ? "GROUP_CHAT"
-        : "PRIVATE_CHAT",
-    ...(data.communityId ? { communityId: data.communityId } : {}),
-    ...(data.communityName ? { communityName: data.communityName } : {}),
-    roomId: data.conversationId,
-    conversationType: data.conversationType,
-    messageId: data.messageId,
-  } satisfies NotificationNavigation);
-
-  const showPreviewOverride = (locale: SupportedLocale): string =>
-    chatPreviewHiddenBody(
-      isCommunity ? data.communityName : isGroup ? data.groupName : undefined,
-      locale
-    );
 
   // Map PRIVATE → PERSONAL for thread-id generation (internal vs wire protocol naming)
   const chatType =
@@ -192,82 +157,43 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     communityId
   );
 
-  await pushToUsers(recipients, (userId) => ({
-    userId,
-    category,
-    // The ACTIVE-roster + per-community `chatEnabled` gates were already
-    // resolved for the whole fan-out above, so push.service must not redo them
-    // per recipient (and must not fall back to `announcementEnabled`).
-    ...(isCommunity ? { communityGatesPreResolved: true as const } : {}),
-    type: "MESSAGE",
-    copy,
-    actorId: data.senderId,
-    deepLink,
-    // NO collapseKey. FCM keeps only the NEWEST message per collapse key while a
-    // device is unreachable (dozing/offline), so `conv:<id>` silently discarded
-    // every earlier message in a conversation — the single biggest source of
-    // "I never got that notification". Telegram/WhatsApp never collapse chat
-    // messages; only the call ring/cancel pair does (where replacing IS correct).
-    // Beyond FCM's ~100 pending-per-device cap the client's catch-up sync covers
-    // the gap, which is the same trade those apps make.
-    apnsThreadId: threadId,
-    chatType: chatType as "PERSONAL" | "GROUP" | "COMMUNITY",
-    showPreviewOverride,
-    // Chat messages must never create a Notification Center entry — see
-    // PushInput.skipInbox. Push (this call) and per-conversation unread
-    // badges (chat-service, unrelated to the Notification collection)
-    // continue to work unchanged.
-    skipInbox: true,
-    // FCM data map — all values MUST be strings.
-    data: {
-      type: "MESSAGE",
-      conversationId: data.conversationId,
-      conversationType: data.conversationType,
-      ...(communityId ? { communityId } : {}),
-      ...(data.communityName ? { communityName: data.communityName } : {}),
-      messageId: data.messageId,
-      clientMessageId: data.clientMessageId ?? "",
-      senderId: data.senderId,
-      senderName: data.senderName ?? "",
-      senderAvatar: data.senderAvatar ?? "",
-      ...(data.groupName ? { groupName: data.groupName } : {}),
-      // The conversation's own image (group avatar / community logo), resolved
-      // from the authoritative room row by chat-service's publisher. Emitted
-      // under BOTH the generic key and the entity-specific one the rest of the
-      // push surface already uses: every community.* event carries
-      // `communityAvatarUrl` and every group lifecycle event is published with
-      // `groupAvatarUrl`, so a client keyed on those names rendered an image
-      // for lifecycle notifications and nothing for the chat message that
-      // matters most. `conversationAvatar` stays the canonical key
-      // (push.service promotes it to the FCM/APNs tray image); the aliases just
-      // stop the group/community identity from being invisible to a reader that
-      // never learned the generic name. Android is the surface this decides:
-      // its MESSAGE pushes are data-only, so the data map is the ONLY place a
-      // picture can arrive — iOS still gets `fcm_options.image`.
-      ...(data.conversationAvatar
-        ? {
-            conversationAvatar: data.conversationAvatar,
-            ...(isGroup ? { groupAvatarUrl: data.conversationAvatar } : {}),
-            ...(isCommunity
-              ? { communityAvatarUrl: data.conversationAvatar }
-              : {}),
-          }
-        : {}),
-      canReply: data.canReply === false ? "false" : "true",
-      ...(typeof data.unreadCount === "number"
-        ? { unreadCount: String(data.unreadCount) }
-        : {}),
-      contentType: data.messageType ?? "",
-      preview: data.preview ?? "",
-      ...(data.previewImageUrl
-        ? { previewImageUrl: data.previewImageUrl }
-        : {}),
-      sentAt: String(data.sentAt ?? ""),
-      idempotencyKey: data.messageId,
-      deepLink,
-      navigation,
-    },
-  }));
+  // Hand the message to the per-(recipient, conversation) coalescer instead of
+  // dispatching one push per message. Everything above — the mute gates, the
+  // ACTIVE-roster filter, the muted-sender check — has already decided WHO is
+  // eligible; the coalescer decides WHEN, HOW MANY, and (from presence, at
+  // flush time) whether the notification is still worth sending at all.
+  for (const userId of recipients) {
+    enqueueChatPush(
+      {
+        userId,
+        conversationId: data.conversationId,
+        conversationType: data.conversationType,
+        ...(communityId ? { communityId } : {}),
+        ...(data.communityName ? { communityName: data.communityName } : {}),
+        ...(isGroup && data.groupName ? { groupName: data.groupName } : {}),
+        ...(data.conversationAvatar
+          ? { conversationAvatar: data.conversationAvatar }
+          : {}),
+        ...(data.canReply !== undefined ? { canReply: data.canReply } : {}),
+        deepLink,
+        threadId,
+        communityGatesPreResolved: isCommunity,
+      },
+      {
+        messageId: data.messageId,
+        clientMessageId: data.clientMessageId ?? "",
+        senderId: data.senderId,
+        senderName: data.senderName ?? "",
+        senderAvatar: data.senderAvatar ?? "",
+        preview: data.preview ?? "",
+        ...(data.previewImageUrl
+          ? { previewImageUrl: data.previewImageUrl }
+          : {}),
+        messageType: data.messageType ?? "",
+        sentAt: data.sentAt,
+      }
+    );
+  }
 }
 
 export async function startChatConsumer(): Promise<void> {

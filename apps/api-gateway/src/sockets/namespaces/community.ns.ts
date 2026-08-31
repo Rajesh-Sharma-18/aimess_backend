@@ -26,9 +26,19 @@ import {
   personalizeStreamDuration,
 } from "../system-message-personalize.js";
 import {
+  emitPersonalizedBatch,
   emitPersonalizedSender,
   type PersonalizeFn,
 } from "../emit-personalized.js";
+import { createMessageBatcher } from "../message-batcher.js";
+import {
+  chatOpenRoomKey,
+  clearChatAttention,
+  markChatAttention,
+} from "@aimess/redis";
+
+/** Re-stamp the open-community hint at most this often (its TTL is 120 s). */
+const ATTENTION_REFRESH_MS = 45_000;
 import { scopeSocketLocale } from "../locale-scope.js";
 import { typingViewerFilter, viewerHidesReadReceipts } from "../chat-flags.js";
 import { presentReaders } from "../present-readers.js";
@@ -271,6 +281,35 @@ export function registerCommunityNamespace(
   const community: Namespace = io.of("/community");
   community.use(createGatewaySocketAuthMiddleware(redisPub));
 
+  /**
+   * Community twin of the /chat burst coalescer — same leading-edge rule, same
+   * opt-in: the first message of a quiet period leaves on its own, later
+   * messages of the same burst arrive as one `community:message:new:batch`
+   * frame for clients that asked for batching.
+   */
+  const messageBatcher = createMessageBatcher({
+    emitOne: (channel, data) =>
+      void emitPersonalizedSender(
+        community,
+        channel,
+        "community:message:new",
+        data,
+        personalizeCommunitySocketMessage
+      ),
+    emitBatch: (channel, batch) =>
+      void emitPersonalizedBatch(
+        community,
+        channel,
+        "community:message:new",
+        "community:message:new:batch",
+        channel.startsWith("community:")
+          ? channel.slice("community:".length)
+          : String((batch[0] as { roomId?: string } | undefined)?.roomId ?? ""),
+        batch,
+        personalizeCommunitySocketMessage
+      ),
+  });
+
   // Process-local, best-effort cache of communities currently CLOSED/SUSPENDED.
   // Populated reactively from the community:closed/community:reopened Redis
   // relay below (so every gateway instance stays in sync in real time) and
@@ -301,7 +340,13 @@ export function registerCommunityNamespace(
     const senderId = typeof msg?.senderId === "string" ? msg.senderId : "";
     const roomId = typeof msg?.roomId === "string" ? msg.roomId : communityId;
     try {
-      const sockets = await community.in(channel).fetchSockets();
+      // LOCAL sockets only: every gateway node receives this same Redis event and
+      // runs this same function, so each is responsible for the sockets it
+      // holds. A cluster-wide fetch made each node inspect all nodes' sockets
+      // and pay a cross-node round trip that stalls for the adapter's timeout
+      // when any peer is slow — and a stalled read-at-delivery is exactly what
+      // leaves messages counted as unread in a room the reader had open.
+      const sockets = await community.local.in(channel).fetchSockets();
       const readers = presentReaders(
         sockets,
         "activeCommunityId",
@@ -447,8 +492,9 @@ export function registerCommunityNamespace(
 
         let personalizeFn: PersonalizeFn | undefined;
         if (parsed.event === "community:message:new") {
-          personalizeFn = personalizeCommunitySocketMessage;
           void markCommunityReadForPresentMembers(channel, parsed.data);
+          messageBatcher.push(channel, parsed.data);
+          return;
         }
         // The stream's runtime ships as a rendered string; every member of the
         // room reads it, and they do not share a language. Re-derived per
@@ -624,6 +670,14 @@ export function registerCommunityNamespace(
       displayName: "",
       avatarUrl: null,
     };
+
+    // Burst-delivery opt-in — see the /chat twin. Unset means one frame per
+    // message, exactly as before.
+    socket.data.batchMessages =
+      socket.handshake.auth?.batch === true ||
+      socket.handshake.auth?.batch === "1" ||
+      socket.handshake.query?.batch === "1";
+
     void resolveSocketUserDetails(userClient, mediaClient, userId).then(
       (ud) => {
         socket.data.userDetails = ud;
@@ -941,8 +995,24 @@ export function registerCommunityNamespace(
           }
           void socket.join(`community:${communityId}`);
           // One open transcript per socket — see `activeCommunityId`.
-          if (r.data.active === true)
+          if (r.data.active === true) {
+            const previous = socket.data.activeCommunityId as
+              | string
+              | undefined;
+            if (previous && previous !== communityId) {
+              void clearChatAttention(
+                redisPub,
+                chatOpenRoomKey(userId, previous)
+              );
+            }
             socket.data.activeCommunityId = communityId;
+            // Push suppression reads the same key family the /chat side writes,
+            // so "already reading it" means one thing across all three surfaces.
+            void markChatAttention(
+              redisPub,
+              chatOpenRoomKey(userId, communityId)
+            );
+          }
           // Also join the typing room (idempotent — safe even if auto-joined
           // at connect; does NOT get left on community:leave so sidebar typing
           // keeps working after the user closes the chat view).
@@ -963,8 +1033,13 @@ export function registerCommunityNamespace(
         void socket.leave(`community:${r.data.communityId}`);
         // The sidebar leaves communities that drop out of its list, so only
         // clear presence when the community being left is the one open.
-        if (socket.data.activeCommunityId === r.data.communityId)
+        if (socket.data.activeCommunityId === r.data.communityId) {
           socket.data.activeCommunityId = undefined;
+          void clearChatAttention(
+            redisPub,
+            chatOpenRoomKey(userId, r.data.communityId)
+          );
+        }
         ackOk(callback, "SOCKET_COMMUNITY_LEFT", locale);
       }
     );
@@ -1673,8 +1748,30 @@ export function registerCommunityNamespace(
     }
     registerAuthRefreshHandler();
 
+    // The open-community hint carries a short TTL (see @aimess/redis
+    // chat-attention), and unlike /chat this namespace has no presence
+    // heartbeat to piggyback on — so re-stamp it from ordinary transport
+    // traffic, which engine.io's own ping/pong keeps flowing for as long as the
+    // socket is healthy. Without this, push suppression silently lapsed after
+    // two minutes of simply reading a busy community.
+    let lastAttentionRefreshAt = Date.now();
+    const onCommunityPacket = (): void => {
+      const openId = socket.data.activeCommunityId as string | undefined;
+      if (!userId || !openId) return;
+      const now = Date.now();
+      if (now - lastAttentionRefreshAt < ATTENTION_REFRESH_MS) return;
+      lastAttentionRefreshAt = now;
+      void markChatAttention(redisPub, chatOpenRoomKey(userId, openId));
+    };
+    socket.conn.on("packet", onCommunityPacket);
+
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/community disconnected userId=${userId} reason=${reason}`);
+      socket.conn.off("packet", onCommunityPacket);
+      const openId = socket.data.activeCommunityId as string | undefined;
+      if (userId && openId) {
+        void clearChatAttention(redisPub, chatOpenRoomKey(userId, openId));
+      }
 
       // Clear session expiry timers.
       clearSessionTimers();

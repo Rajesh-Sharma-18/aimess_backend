@@ -4,6 +4,7 @@ export * from "./session-active";
 export * from "./user-ban";
 export * from "./user-socket";
 export * from "./presence";
+export * from "./chat-attention";
 export * from "./community-socket";
 export type { Redis } from "ioredis";
 export * from "./session-locale";
