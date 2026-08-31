@@ -133,6 +133,9 @@ describe("community:added — the list row follows the recipient's socket", () =
     const phone = { data: { userId: "u1", locale: "vi" }, emit: jest.fn() };
     const laptop = { data: { userId: "u1", locale: "en" }, emit: jest.fn() };
     const namespace = {
+      // `local` is what the emitters use: every gateway node receives the same
+      // Redis event, so each one personalises only the sockets IT holds.
+      local: { in: () => ({ fetchSockets: async () => [phone, laptop] }) },
       in: () => ({ fetchSockets: async () => [phone, laptop] }),
       to: () => ({ emit: jest.fn() }),
     } as never;
