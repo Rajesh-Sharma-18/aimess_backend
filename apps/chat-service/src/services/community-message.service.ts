@@ -3137,12 +3137,16 @@ export class CommunityMessageService {
 
     const now = new Date();
     // Advance read pointer (forward-only — noop if already at/past this message).
-    await this.memberRepo
+    // Stamped with the MESSAGE's createdAt, never wall-clock `now`: `now` reads as
+    // "everything sent before I clicked is read", so acknowledging a message in the
+    // middle of the backlog silently swallowed every message after it. Same rule
+    // `getConversation` above and the group service already apply.
+    const pointer = await this.memberRepo
       .advanceReadPointer(
         params.roomId,
         params.readerId,
         params.upToMessageId,
-        now,
+        message.createdAt,
         // Same gate the broadcast below applies, but persisted: a read taken
         // with receipts off must not resurface when they go back on.
         !readerIsBanned && (await mayBroadcastReadReceipts(params.readerId))
@@ -3151,13 +3155,30 @@ export class CommunityMessageService {
         logger.warn(
           `CommunityMessageService|markMessageRead|advanceReadPointer failed: ${String(err)}`
         );
+        return null;
       });
+
+    // What the pointer ACTUALLY reads after the forward-only write, which is not
+    // what was asked for whenever the receipt was stale — a client that jumped to
+    // an old message (pinned banner, search hit) acknowledges the newest row in
+    // that island, far behind where this reader already is. The DB refuses the
+    // regression; everything published below has to refuse it too, or `read_sync`
+    // recounts the whole backlog as unread and resurrects a badge the reader
+    // already cleared.
+    const effectiveReadAt =
+      pointer?.lastReadAt && pointer.lastReadAt > message.createdAt
+        ? pointer.lastReadAt
+        : message.createdAt;
+    const effectiveMessageId =
+      effectiveReadAt === message.createdAt
+        ? params.upToMessageId
+        : (pointer?.lastReadMessageId ?? params.upToMessageId);
 
     const readAt = now.getTime();
     const readPayload = {
       communityId: params.communityId,
       readerId: params.readerId,
-      upToMessageId: params.upToMessageId,
+      upToMessageId: effectiveMessageId,
       readAt,
     };
 
@@ -3194,7 +3215,7 @@ export class CommunityMessageService {
       // Recount at the message the pointer actually landed on, NOT at wall-clock `now`. Thresholding on `now` means "everything sent before I clicked is read", so acknowledging a message in the MIDDLE of the backlog reported 0 unread while every message after it was still unread. Harmless while rooms only ever opened at the tail (the two dates coincide there); reachable the moment a client opens on the unread divider.
       const counts = await this.messageRepo.countUnreadBulk({
         userId: params.readerId,
-        thresholds: [{ roomId: params.communityId, afterDate: message.createdAt }],
+        thresholds: [{ roomId: params.communityId, afterDate: effectiveReadAt }],
       });
       unreadAfterRead = counts[params.communityId]?.count ?? 0;
     } catch (err: unknown) {
@@ -3211,7 +3232,7 @@ export class CommunityMessageService {
           data: {
             communityId: params.communityId,
             readerId: params.readerId,
-            upToMessageId: params.upToMessageId,
+            upToMessageId: effectiveMessageId,
             unreadCount: unreadAfterRead,
             readAt,
           },
