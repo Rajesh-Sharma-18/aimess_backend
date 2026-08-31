@@ -51,12 +51,18 @@ function makeDeps(over: Record<string, unknown>): GrpcDeps {
   return over as unknown as GrpcDeps;
 }
 
+/**
+ * The handler acks as soon as the write is durable and runs broadcast /
+ * activity / bump / push AFTER the response (so a slow presign can no longer
+ * blow the caller's 2s breaker budget). These tests assert that fan-out, so
+ * resolving on the callback alone races it — drain the queue first.
+ */
 function invoke(handler: Handler, request: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
     handler({ request }, (err, res) =>
       err
         ? reject(err instanceof Error ? err : new Error(String(err)))
-        : resolve(res)
+        : setImmediate(() => setImmediate(() => resolve(res)))
     );
   });
 }

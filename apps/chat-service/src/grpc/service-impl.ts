@@ -289,6 +289,8 @@ export function createMessagingImpl(
       callback: grpc.sendUnaryData<unknown>
     ) => {
       void (async () => {
+        // Whether the response has already gone out — see the ack below.
+        let acked = false;
         try {
           const req = call.request as {
             conversationId: string;
@@ -374,6 +376,21 @@ export function createMessagingImpl(
           // message:new (the winning insert), while every caller still gets the
           // same messageId ack below.
           alreadySent = isIdempotentReplay(msg);
+
+          // ACK HERE — same reasoning as sendCommunityMessage above. The
+          // response is built entirely from `msg`; every block below is
+          // fan-out, and the broadcast one awaits a presign per album row.
+          callback(null, {
+            messageId: msg.id,
+            conversationId: req.conversationId,
+            sentAt:
+              msg.createdAt instanceof Date
+                ? msg.createdAt.getTime()
+                : Date.now(),
+            alreadySent,
+            sequenceNumber: msg.sequenceNumber,
+          });
+          acked = true;
 
           if (!alreadySent) {
             const serverTs =
@@ -554,19 +571,9 @@ export function createMessagingImpl(
             }
           }
 
-          callback(null, {
-            messageId: msg.id,
-            conversationId: req.conversationId,
-            sentAt:
-              msg.createdAt instanceof Date
-                ? msg.createdAt.getTime()
-                : Date.now(),
-            alreadySent,
-            sequenceNumber: msg.sequenceNumber,
-          });
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
-          callback(toGrpcCallbackError(err));
+          if (!acked) callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -2856,6 +2863,8 @@ export function createCommunityImpl(
       callback: grpc.sendUnaryData<unknown>
     ) => {
       void (async () => {
+        // Whether the response has already gone out — see the ack below.
+        let acked = false;
         try {
           const req = call.request as {
             communityId: string;
@@ -2927,6 +2936,25 @@ export function createCommunityImpl(
             saved.createdAt instanceof Date
               ? saved.createdAt.getTime()
               : Date.now();
+
+          // ACK HERE, the moment the write is durable. Everything below this
+          // line is fan-out — broadcast, activity denormalization, bump-to-top,
+          // push — and none of it contributes a single field to the response.
+          // It used to run first, and it awaits a presign round trip per album
+          // row (resolveContentFiles + resolveMediaUrlMap, sequentially), so an
+          // album send spent the whole ack budget signing URLs. The caller's
+          // breaker allows 2s (BREAKER_OPTS in @aimess/grpc-utils) and a loaded
+          // chat-service already answers a plain read in ~1.1s, so the send
+          // routinely timed out as "chat.sendCommunityMessage unavailable" —
+          // while this handler went on to persist AND broadcast the message.
+          // The sender saw a failure for a message everyone else received.
+          callback(null, {
+            messageId: saved.id,
+            roomId: saved.roomId,
+            sentAt,
+            sequenceNumber: saved.sequenceNumber ?? 0,
+          });
+          acked = true;
 
           // Suppress all live effects on a duplicate clientMessageId — the
           // original send already ran broadcast + activity + bump-to-top. Same
@@ -3104,15 +3132,12 @@ export function createCommunityImpl(
             });
           }
 
-          callback(null, {
-            messageId: saved.id,
-            roomId: saved.roomId,
-            sentAt,
-            sequenceNumber: saved.sequenceNumber ?? 0,
-          });
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);
-          callback(toGrpcCallbackError(err));
+          // Past the ack the caller is already gone; a second callback would be
+          // a gRPC protocol error. Fan-out failures are logged, not returned —
+          // the message is persisted either way.
+          if (!acked) callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -3528,6 +3553,11 @@ export function createCommunityImpl(
       callback: grpc.sendUnaryData<unknown>
     ) => {
       void (async () => {
+        // Both branches ack and then keep working (the live-bump recalculation
+        // below). A throw in that tail reached the outer catch and called back a
+        // SECOND time — a gRPC protocol error on a request that had already
+        // succeeded. Same guard the send handlers carry.
+        let acked = false;
         try {
           const req = call.request as {
             messageId: string;
@@ -3616,6 +3646,7 @@ export function createCommunityImpl(
               reactedAt,
             });
             callback(null, ackPayload);
+            acked = true;
 
             // Live bump — restricted to just the actor (+ target, if a
             // different person), same reasoning as the REST handler.
@@ -3689,6 +3720,7 @@ export function createCommunityImpl(
               actorId: req.userId,
             });
             callback(null, ackPayload);
+            acked = true;
 
             // Same reasoning as the REST handler (community-message.controller.ts):
             // this MUST go through `resolveOverrides` with a fresh `Date.now()`
@@ -3743,7 +3775,8 @@ export function createCommunityImpl(
           }
         } catch (err) {
           logger.error(`gRPC reactToCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          if (!acked)
+            callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
     },

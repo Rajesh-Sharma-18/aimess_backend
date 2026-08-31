@@ -644,6 +644,59 @@ export const ADMIN_MESSAGES = {
     en: "Calling state updated",
     th: "อัปเดตสถานะการโทรแล้ว",
   },
+
+  // ── Errors that reached the panel as raw tokens ──────────────────────────
+  // Every key below was already being thrown by backoffice-service but had no
+  // entry here, so `buildApiError`'s `localize()` fell through to
+  // `fallbackMessage` — which for an AppError IS the key. The panel then saw an
+  // UPPER_SNAKE token, discarded it as a code (`isErrorToken` in
+  // utils/errorHandler.ts) and showed its generic fallback instead. The reason
+  // was therefore lost in EVERY language, English included.
+  ADMIN_CANNOT_EDIT_OWN_PERMISSIONS: {
+    vi: "Bạn không thể tự chỉnh sửa quyền của chính mình",
+    en: "You cannot edit your own permissions.",
+    th: "คุณไม่สามารถแก้ไขสิทธิ์ของตนเองได้",
+  },
+  ADMIN_CANNOT_DEMOTE_LAST_SUPER_ADMIN: {
+    vi: "Không thể hạ quyền quản trị viên cấp cao cuối cùng",
+    en: "The last super administrator cannot be demoted.",
+    th: "ไม่สามารถลดสิทธิ์ผู้ดูแลระบบสูงสุดคนสุดท้ายได้",
+  },
+  ANNOUNCEMENT_NOT_FOUND: {
+    vi: "Không tìm thấy thông báo",
+    en: "Announcement not found.",
+    th: "ไม่พบประกาศ",
+  },
+  ANNOUNCEMENT_NOT_SCHEDULED: {
+    vi: "Chỉ có thể sửa hoặc hủy thông báo đang được lên lịch",
+    en: "Only a scheduled announcement can be edited or cancelled.",
+    th: "แก้ไขหรือยกเลิกได้เฉพาะประกาศที่ตั้งเวลาไว้เท่านั้น",
+  },
+  AUDIT_LOG_NOT_FOUND: {
+    vi: "Không tìm thấy nhật ký kiểm toán",
+    en: "Audit log entry not found.",
+    th: "ไม่พบบันทึกการตรวจสอบ",
+  },
+  GROUP_NOT_FOUND: {
+    vi: "Không tìm thấy nhóm",
+    en: "Group not found.",
+    th: "ไม่พบกลุ่ม",
+  },
+  GROUP_MEMBER_NOT_ACTIVE: {
+    vi: "Người dùng này không còn là thành viên đang hoạt động của nhóm",
+    en: "This user is no longer an active member of the group.",
+    th: "ผู้ใช้รายนี้ไม่ได้เป็นสมาชิกที่ใช้งานอยู่ของกลุ่มแล้ว",
+  },
+  USER_BAN_NOT_APPLIED: {
+    vi: "Không thể áp dụng lệnh cấm ngay lúc này. Vui lòng thử lại.",
+    en: "The ban could not be applied right now. Please try again.",
+    th: "ไม่สามารถใช้การแบนได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  },
+  USER_UNBAN_NOT_APPLIED: {
+    vi: "Không thể gỡ lệnh cấm ngay lúc này. Vui lòng thử lại.",
+    en: "The ban could not be lifted right now. Please try again.",
+    th: "ไม่สามารถยกเลิกการแบนได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
+  },
 } as const satisfies MessageCatalog;
 
 export type AdminMessageKey = keyof typeof ADMIN_MESSAGES;

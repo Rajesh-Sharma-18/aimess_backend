@@ -200,36 +200,43 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * Rows from an EXPLICIT id list — today only the viewer's own accepted
+   * friends (friends picker, search "chat" bucket).
+   *
+   * Deliberately NOT gated by `whoCanFindMe`: that scope decides who may
+   * DISCOVER you, not whether a person you already accepted still shows up in
+   * their own friend list. Applying it here hid every friend who had set
+   * `NO_ONE` from the picker while `GET /users/friends` still listed them.
+   * Callers must therefore pass an id list they have already authorized.
+   */
   findUsersInList(
     userIds: string[],
     q: string | undefined,
     skip: number,
-    take: number,
-    viewer: ViewerGraph
+    take: number
   ) {
     return prisma.userProfile.findMany({
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewer),
+        ...buildSearchFilter(q),
       },
       select: DISCOVERY_SELECT,
       skip,
       take,
-      orderBy: { firstName: "asc" },
+      // userId breaks ties: `firstName` alone is not unique, and an unstable
+      // sort under skip/take drops and duplicates rows across pages.
+      orderBy: [{ firstName: "asc" }, { userId: "asc" }],
     });
   },
 
-  countUsersInList(
-    userIds: string[],
-    q: string | undefined,
-    viewer: ViewerGraph
-  ) {
+  countUsersInList(userIds: string[], q: string | undefined) {
     return prisma.userProfile.count({
       where: {
         userId: { in: userIds },
         deletedAt: null,
-        ...buildDiscoveryWhere(q, viewer),
+        ...buildSearchFilter(q),
       },
     });
   },
@@ -250,7 +257,9 @@ export const userProfileRepository = {
       select: DISCOVERY_SELECT,
       skip,
       take,
-      orderBy: { firstName: "asc" },
+      // Tiebreaker: `firstName` is not unique, and an unstable sort under
+      // skip/take drops and duplicates rows across pages.
+      orderBy: [{ firstName: "asc" }, { userId: "asc" }],
     });
   },
 

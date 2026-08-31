@@ -322,7 +322,14 @@ export async function publishConvUpdated(
 
   // Room-scoped and identical for every recipient: the projection mutation is
   // one event, however many personalized previews it fans out as.
-  const projectionRevision = p.projectionRevision ?? p.preview.revision ?? 0;
+  // NEVER fall back to the preview's revision on a delete recalc: the preview is the
+  // SURVIVING older message, whose revision is lower than the one the row already holds
+  // (the deleted message's). The client reads that as an older projection and discards the
+  // bump, which is exactly how a deleted last message stayed in the list. Callers that own
+  // the delete's own (higher) revision pass it explicitly; the rest omit the field and let
+  // `deleteRecalc` carry the ordering.
+  const projectionRevision =
+    p.projectionRevision ?? (p.deleteRecalc ? 0 : (p.preview.revision ?? 0));
 
   try {
     const pipeline = p.redis.pipeline();
