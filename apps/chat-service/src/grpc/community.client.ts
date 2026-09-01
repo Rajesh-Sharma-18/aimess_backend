@@ -6,6 +6,10 @@ import * as protoLoader from "@grpc/proto-loader";
 import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
+import {
+  toUpdateMessageActivityRequest,
+  type UpdateMessageActivityParams,
+} from "./community-activity-request.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -48,39 +52,6 @@ export interface UpdateReactionActivityParams {
   targetPreview?: string | null;
   /** epoch ms; only meaningful when added = true. */
   reactedAt?: number;
-}
-
-export interface UpdateMessageActivityParams {
-  communityId: string;
-  /** epoch ms; ignored in self-hide mode (selfUserId set). */
-  lastMessageAt?: number;
-  lastMessageId?: string;
-  senderUserId?: string;
-  senderUsername?: string;
-  messagePreview?: string;
-  /** default "message" when omitted. */
-  activityType?: string;
-  /**
-   * Delete-for-me personal self-hide overlay: when set, ONLY
-   * lastActivityUserId/lastActivitySelfPreview are written community-service-
-   * side — every canonical field above is ignored. Leave unset (or "") for
-   * the normal canonical bump (message send/edit/delete-for-everyone).
-   */
-  selfUserId?: string;
-  selfPreview?: string;
-  /**
-   * ROLLBACK mode (epoch ms; omit/0 = off). community-service's canonical bump is
-   * forward-only, so it cannot express "the last message was deleted — fall back
-   * to the previous one, which is OLDER". Set this to the REMOVED message's
-   * `createdAt` and pass the previous-visible message's real `createdAt` as
-   * `lastMessageAt`: the write then applies backward, but only while the stored
-   * `lastActivityAt` is not newer than this (a message that landed after the
-   * delete wins and the rollback is skipped).
-   */
-  rollbackNotNewerThan?: number;
-  clientMessageId?: string | null;
-  seq?: number;
-  contentType?: string;
 }
 
 export interface CheckCommunityMembershipParams {
@@ -257,17 +228,10 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
   const updateMessageActivityBreaker = makeBreaker(
     "community.updateMessageActivity",
     (p: UpdateMessageActivityParams) =>
-      call<unknown, { ok: boolean }>("updateMessageActivity", {
-        communityId: p.communityId,
-        lastMessageAt: String(p.lastMessageAt ?? 0),
-        lastMessageId: p.lastMessageId ?? "",
-        senderUserId: p.senderUserId ?? "",
-        senderUsername: p.senderUsername ?? "",
-        messagePreview: p.messagePreview ?? "",
-        activityType: p.activityType ?? "message",
-        selfUserId: p.selfUserId ?? "",
-        selfPreview: p.selfPreview ?? "",
-      }),
+      call<unknown, { ok: boolean }>(
+        "updateMessageActivity",
+        toUpdateMessageActivityRequest(p)
+      ),
     { timeout: 1_500 }
   );
 
