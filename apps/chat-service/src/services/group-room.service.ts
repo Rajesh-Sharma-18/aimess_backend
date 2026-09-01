@@ -37,6 +37,7 @@ import {
   type VisibleLast,
 } from "./last-visible-resolver.js";
 import { groupVisibilitySource } from "./last-visible-adapters.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import {
   assertGroupReadAccess,
   assertGroupRoomWritable,
@@ -1055,6 +1056,11 @@ export class GroupRoomService {
       throw new NotFoundError("CHAT_NOT_A_MEMBER");
     }
     await this.memberRepo.setClearedAt(roomId, userId);
+
+    // Same reason as PrivateRoomService.deleteForMe: `setClearedAt` zeroed the
+    // stored counter, so the nav-badge TOTAL has to be recomputed and pushed or
+    // it keeps counting messages this member can no longer see.
+    notifyUnreadChanged(userId);
 
     // Notify the user's other devices the conversation was cleared from their view.
     this.redis

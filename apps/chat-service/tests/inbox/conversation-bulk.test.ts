@@ -13,10 +13,16 @@
  * still fire, and a mixed PRIVATE + GROUP selection is dispatched by room-id
  * prefix with no `type` from the client.
  */
+jest.mock("../../src/events/unread-summary-bridge.js", () => ({
+  notifyUnreadChanged: jest.fn(),
+  registerUnreadSummaryPusher: jest.fn(),
+}));
+
 import request from "supertest";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
+import { notifyUnreadChanged } from "../../src/events/unread-summary-bridge.js";
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
@@ -382,6 +388,39 @@ describe("POST /conversations/leave/bulk", () => {
     expect(res.body.data.results[0].status).toBe("FAILED");
     expect(res.body.data.results[0].errorCode).toBe("NOT_FOUND");
     expect(mocks.privateRoomRepo.setDeletedFor).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The Chats nav badge is a TOTAL the server owns, and both delete paths zero
+   * the caller's stored counter (`setDeletedFor` / `setClearedAt`). Without this
+   * push the badge keeps counting messages that are now behind the delete cutoff
+   * — on EVERY device — until the client's staleTime lapses and the tab is
+   * refocused. Asserted for both room kinds because they are two separate
+   * services with two separate writes.
+   */
+  it("POSITIVE: deleting recomputes the caller's nav-badge total", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: PRIVATE_ROOM,
+      participants: [TEST_USER_ID, "peer_1"],
+    });
+    mocks.groupMemberRepo.findByRoomAndUser.mockResolvedValue({
+      roomId: GROUP_ROOM,
+      userId: TEST_USER_ID,
+      status: "LEFT",
+      role: "MEMBER",
+    });
+
+    const res = await request(app)
+      .post("/api/chat/conversations/leave/bulk")
+      .set(auth())
+      .send({ roomIds: [PRIVATE_ROOM, GROUP_ROOM], groupAction: "DELETE" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.summary.succeeded).toBe(2);
+    // Once per deleted room, always for the DELETER — never for the peer, whose
+    // own copy of the conversation is untouched.
+    expect(notifyUnreadChanged).toHaveBeenCalledWith(TEST_USER_ID);
+    expect(notifyUnreadChanged).not.toHaveBeenCalledWith("peer_1");
   });
 
   it("NEGATIVE: 400 on an empty roomIds array", async () => {
