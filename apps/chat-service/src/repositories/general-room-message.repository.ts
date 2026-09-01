@@ -1511,18 +1511,18 @@ export class GeneralRoomMessageRepository {
     /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
     readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
-    // Community enum is lowercase (e.g. "image"); GIF/VIDEO/DOCUMENT are carried
-    // as "custom" today. Map the incoming upper-case filter to its community
-    // storage value (IMAGE→image, VIDEO/GIF/DOCUMENT→custom, …). An unknown
-    // mapped value would never match any stored doc, so we don't fall back to the
-    // full set — that's the bug we're fixing (the filter must actually filter).
+    // Every filter here lists BOTH spellings. The community send path stores the
+    // canonical UPPER-CASE kind ("IMAGE"/"VIDEO") — only a handful of
+    // pre-expansion rows are lower-case — and Mongo string equality is
+    // case-sensitive, so the lower-case-only lists this used to carry matched no
+    // document in any room: the endpoint returned an empty page 100% of the time.
     const mediaTypes = [...COMMUNITY_MEDIA_MESSAGE_TYPES];
     // Composite aliases from the shared media-list validator: "media" → the
     // Media tab (IMAGE + VIDEO), "file" → the Files tab (DOCUMENT + AUDIO).
     // Everything else falls through to the single-type mapping.
     const aliasFilter: Record<string, string[]> = {
-      media: ["image", "video"],
-      file: ["document", "audio"],
+      media: ["IMAGE", "image", "VIDEO", "video"],
+      file: ["DOCUMENT", "document", "AUDIO", "audio"],
     };
     const alias = params.type ? aliasFilter[params.type] : undefined;
     const mappedType =
@@ -1537,7 +1537,9 @@ export class GeneralRoomMessageRepository {
           : params.type
             ? // A requested type with no mapping yields no media (empty result)
               // instead of silently returning everything.
-              (mappedType ?? "__none__")
+              mappedType
+              ? { in: [...mappedType] }
+              : "__none__"
             : { in: mediaTypes },
         ...(params.cursor || params.readCutoff
           ? {
@@ -1862,7 +1864,15 @@ export class GeneralRoomMessageRepository {
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },
         },
-        { $sort: { createdAt: -1 } },
+        // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
+        // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
+        // so two concurrent sends can swap between the two orderings. The clients
+        // render the transcript in `sequenceNumber` order (web
+        // `component/chat/messages/messageOrder.ts` — "sequenceNumber is the
+        // authority"), so resolving the room's last message by `createdAt` made the
+        // list preview name a DIFFERENT message than the one at the bottom of the
+        // chat. `createdAt` stays as the tie-break for pre-sequence legacy rows.
+        { $sort: { sequenceNumber: -1, createdAt: -1 } },
         { $limit: 1 },
       ] as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
@@ -1899,7 +1909,8 @@ export class GeneralRoomMessageRepository {
               : {}),
           },
         },
-        { $sort: { createdAt: -1 } },
+        // See findPreviousVisibleMessage — `sequenceNumber` is the authority.
+        { $sort: { sequenceNumber: -1, createdAt: -1 } },
         { $limit: 1 },
       ] as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;

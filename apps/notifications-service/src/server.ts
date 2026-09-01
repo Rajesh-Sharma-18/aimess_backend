@@ -8,6 +8,7 @@ import { startAdminUserConsumer } from "./consumers/admin-user.consumer.js";
 import { startAnnouncementConsumer } from "./consumers/announcement.consumer.js";
 import { startCallConsumer } from "./consumers/call.consumer.js";
 import { startChatConsumer } from "./consumers/chat.consumer.js";
+import { startPendingPushSync } from "./consumers/pending-push-sync.js";
 import { startReadConsumer } from "./consumers/read.consumer.js";
 import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startGroupConsumer } from "./consumers/group.consumer.js";
@@ -57,6 +58,9 @@ async function start() {
 
     await startConsumerSafe("notification consumer", startConsumer);
     await startConsumerSafe("chat push consumer", startChatConsumer);
+    // Redis, not AMQP — so it starts unconditionally alongside the chat
+    // consumer whose pending notifications it keeps current.
+    startPendingPushSync();
     await startConsumerSafe("call push consumer", startCallConsumer);
     await startConsumerSafe("read dismiss consumer", startReadConsumer);
     await startConsumerSafe("community consumer", startCommunityConsumer);

@@ -171,6 +171,28 @@ describe("PRIVATE", () => {
     expect(res.body.data.users).toEqual([]);
   });
 
+  it("signs the reader's stored avatar objectKey instead of shipping the raw key", async () => {
+    givenPrivate({ peerReadSeq: MSG_SEQ });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [
+          PEER,
+          {
+            userId: PEER,
+            displayName: `Name ${PEER}`,
+            avatar: "avatars/peer_user_1.png",
+            memberId: `handle_${PEER}`,
+            isOnline: true,
+          },
+        ],
+      ])
+    );
+    const res = await get("PRIVATE");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.users[0].avatar).toMatch(/^https:\/\/media\.test\//);
+  });
+
   it("403s for anyone but the sender", async () => {
     givenPrivate({ senderId: PEER });
     const res = await get("PRIVATE");

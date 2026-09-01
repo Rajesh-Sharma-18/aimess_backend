@@ -138,6 +138,53 @@ describe("publishConvUpdated", () => {
     assert.equal(otherMsg.event, "conv:updated");
   });
 
+  it("never dates a delete recalc by the surviving message's revision", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    // The preview is the message that SURVIVED the delete, so its revision is lower than
+    // the one the client's row already holds. Sending it as `projectionRevision` made the
+    // client discard the bump as an older projection and keep previewing the deleted message.
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-del",
+      recipientIds: ["a", "b"],
+      senderId: "a",
+      senderName: "Alice",
+      lastMessageId: "msg-prev",
+      lastMessageAt: 1717000000000,
+      deleteRecalc: true,
+      preview: { contentType: "text", text: "older survivor", revision: 7 },
+    });
+
+    const msg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:b")!.payload
+    );
+    assert.equal(msg.data.deleteRecalc, true);
+    assert.equal(msg.data.projectionRevision, undefined);
+  });
+
+  it("carries the delete's OWN revision when the caller supplies one", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "GROUP",
+      roomId: "room-del2",
+      recipientIds: ["a"],
+      senderId: "a",
+      senderName: "Alice",
+      lastMessageId: "msg-prev",
+      lastMessageAt: 1717000000000,
+      deleteRecalc: true,
+      projectionRevision: 42,
+      preview: { contentType: "text", text: "older survivor", revision: 7 },
+    });
+
+    const msg = JSON.parse(publishCalls[0].payload);
+    assert.equal(msg.data.projectionRevision, 42);
+  });
+
   it("carries senderName so the gateway can personalize 'You:' (parity with community:updated)", async () => {
     const { redis, publishCalls } = makeFakeRedis();
 

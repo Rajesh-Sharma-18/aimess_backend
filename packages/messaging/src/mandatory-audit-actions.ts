@@ -114,7 +114,13 @@ export const AUDIT_ACTION_CATEGORY: Readonly<Record<string, AuditCategory>> = {
   [USER_AUDIT_ACTIONS.COMMUNITY_INVITE_LINK_REVOKED]:
     AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   [USER_AUDIT_ACTIONS.GROUP_DISBANDED]: AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
-  [USER_AUDIT_ACTIONS.MESSAGE_DELETED]: AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
+  // MESSAGE_DELETED is deliberately absent. It fails rule 2 above: a single
+  // person clearing a chat writes a row per message, so the Audit Logs page
+  // filled with "Message Deleted" and buried the moderation trail it exists to
+  // show. The rows are STILL written by the ingest consumer (which allowlists
+  // USER_AUDIT_ACTIONS, not this map) and stay queryable with an explicit
+  // `?action=message.deleted` — they just no longer appear on the default page,
+  // under the Content / Community Management category, or in the live feed.
   [USER_AUDIT_ACTIONS.MEDIA_DELETED]: AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   "category.created": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,
   "category.updated": AUDIT_CATEGORIES.CONTENT_MANAGEMENT,

@@ -10,6 +10,7 @@ import {
   GoneError,
   NotFoundError,
 } from "@aimess/errors";
+import { allocateRoomSlot } from "../lib/room-lock.js";
 import { redis } from "../config/redis.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
@@ -352,23 +353,29 @@ export class CommunityMessageService {
     // "inactive" means it was deleted. This check runs before idempotency so a
     // closed-community retry never returns a previously-cached message as if the
     // send succeeded. Single source of truth for community write-ability.
-    const room = await this.roomRepo.findRoomById(params.roomId);
-    assertCommunityRoomWritable(room);
-
-    // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
-    // RoomMember row is mirrored as non-"active" by the community sync consumer,
-    // so this rejects banned users with CHAT_NOT_A_MEMBER. Read/edit/delete/
-    // react/pin paths already guard this way; send is the write chokepoint.
-    const sender = await assertCommunityMember(
-      this.memberRepo,
-      params.roomId,
-      params.sentBy
-    );
+    //
+    // The room read and the membership read hit different documents and neither
+    // feeds the other, so they are issued together. Settled (not `all`) and then
+    // asserted in the original order: `all` would surface whichever rejected
+    // first, and a non-member sending into a closed community must still be told
+    // the community is closed rather than that they are not a member.
+    const [roomRes, senderRes] = await Promise.allSettled([
+      this.roomRepo.findRoomById(params.roomId),
+      // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
+      // RoomMember row is mirrored as non-"active" by the community sync
+      // consumer, so this rejects banned users with CHAT_NOT_A_MEMBER.
+      // Read/edit/delete/react/pin paths already guard this way; send is the
+      // write chokepoint.
+      assertCommunityMember(this.memberRepo, params.roomId, params.sentBy),
+    ]);
+    if (roomRes.status === "rejected") throw roomRes.reason;
+    assertCommunityRoomWritable(roomRes.value);
+    if (senderRes.status === "rejected") throw senderRes.reason;
     // …and not moderation-muted. Reuses the row just loaded (no extra I/O); the
     // mute is mirrored from community-service, so this blocks every send path
     // (gateway socket → gRPC, REST orchestrator, direct gRPC) including media,
     // GIF, sticker, voice and file messages (all funnel through here).
-    assertCommunityMemberNotMuted(sender);
+    assertCommunityMemberNotMuted(senderRes.value);
 
     // Check idempotency (album batches use `base:N` sibling clientMessageIds).
     if (params.clientMessageId) {
@@ -459,8 +466,15 @@ export class CommunityMessageService {
       // then revision) and blow past the write-conflict retry budget → the
       // intermittent SERVICE_ERROR ack. Insert bumps the room CHANGE revision
       // too (zero-loss changes feed).
-      const { sequenceNumber, revision } =
-        await this.roomRepo.allocateSequenceAndRevision(params.roomId);
+      // …and routed through `allocateRoomSlot`, so N concurrent sends into one
+      // room share ONE `$inc` of the whole batch instead of contending for the
+      // document N times. Same batching the private path already uses; see
+      // lib/room-lock.ts.
+      const { sequenceNumber, revision } = await allocateRoomSlot(
+        params.roomId,
+        (id, count) =>
+          this.roomRepo.allocateSequenceAndRevisionBlock(id, count)
+      );
       const entity: Record<string, unknown> = {
         roomId: params.roomId,
         sentBy: params.sentBy,
@@ -928,7 +942,7 @@ export class CommunityMessageService {
    */
   async resolveEffectiveLastLosers(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     recipientIds: string[]
   ): Promise<Map<string, RecipientOverride | null>> {
     const room = await this.roomRepo.findRoomById(roomId);
@@ -936,7 +950,7 @@ export class CommunityMessageService {
       this.visibilitySource(),
       roomId,
       room?.lastMessageId ?? null,
-      deletedMessageCreatedAt,
+      deletedMessageSeq,
       recipientIds
     );
   }
@@ -2960,7 +2974,7 @@ export class CommunityMessageService {
    */
   async recalculateLastMessageAfterDeleteForMe(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     userId: string
   ): Promise<{
     prevMessageId: string | null;
@@ -2989,8 +3003,8 @@ export class CommunityMessageService {
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
     const wasEffectiveLast = deletedWasEffectiveLast(
-      prev?.createdAt ?? null,
-      deletedMessageCreatedAt
+      prev?.sequenceNumber ?? null,
+      deletedMessageSeq
     );
     if (prev) {
       return {
@@ -3137,12 +3151,16 @@ export class CommunityMessageService {
 
     const now = new Date();
     // Advance read pointer (forward-only — noop if already at/past this message).
-    await this.memberRepo
+    // Stamped with the MESSAGE's createdAt, never wall-clock `now`: `now` reads as
+    // "everything sent before I clicked is read", so acknowledging a message in the
+    // middle of the backlog silently swallowed every message after it. Same rule
+    // `getConversation` above and the group service already apply.
+    const pointer = await this.memberRepo
       .advanceReadPointer(
         params.roomId,
         params.readerId,
         params.upToMessageId,
-        now,
+        message.createdAt,
         // Same gate the broadcast below applies, but persisted: a read taken
         // with receipts off must not resurface when they go back on.
         !readerIsBanned && (await mayBroadcastReadReceipts(params.readerId))
@@ -3151,13 +3169,30 @@ export class CommunityMessageService {
         logger.warn(
           `CommunityMessageService|markMessageRead|advanceReadPointer failed: ${String(err)}`
         );
+        return null;
       });
+
+    // What the pointer ACTUALLY reads after the forward-only write, which is not
+    // what was asked for whenever the receipt was stale — a client that jumped to
+    // an old message (pinned banner, search hit) acknowledges the newest row in
+    // that island, far behind where this reader already is. The DB refuses the
+    // regression; everything published below has to refuse it too, or `read_sync`
+    // recounts the whole backlog as unread and resurrects a badge the reader
+    // already cleared.
+    const effectiveReadAt =
+      pointer?.lastReadAt && pointer.lastReadAt > message.createdAt
+        ? pointer.lastReadAt
+        : message.createdAt;
+    const effectiveMessageId =
+      effectiveReadAt === message.createdAt
+        ? params.upToMessageId
+        : (pointer?.lastReadMessageId ?? params.upToMessageId);
 
     const readAt = now.getTime();
     const readPayload = {
       communityId: params.communityId,
       readerId: params.readerId,
-      upToMessageId: params.upToMessageId,
+      upToMessageId: effectiveMessageId,
       readAt,
     };
 
@@ -3194,7 +3229,7 @@ export class CommunityMessageService {
       // Recount at the message the pointer actually landed on, NOT at wall-clock `now`. Thresholding on `now` means "everything sent before I clicked is read", so acknowledging a message in the MIDDLE of the backlog reported 0 unread while every message after it was still unread. Harmless while rooms only ever opened at the tail (the two dates coincide there); reachable the moment a client opens on the unread divider.
       const counts = await this.messageRepo.countUnreadBulk({
         userId: params.readerId,
-        thresholds: [{ roomId: params.communityId, afterDate: message.createdAt }],
+        thresholds: [{ roomId: params.communityId, afterDate: effectiveReadAt }],
       });
       unreadAfterRead = counts[params.communityId]?.count ?? 0;
     } catch (err: unknown) {
@@ -3211,7 +3246,7 @@ export class CommunityMessageService {
           data: {
             communityId: params.communityId,
             readerId: params.readerId,
-            upToMessageId: params.upToMessageId,
+            upToMessageId: effectiveMessageId,
             unreadCount: unreadAfterRead,
             readAt,
           },

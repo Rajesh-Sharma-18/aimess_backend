@@ -20,6 +20,8 @@
  */
 import type { Express } from "express";
 
+import { clearSendGateCaches } from "../../src/lib/send-gate-cache.js";
+
 import { createApp } from "../../src/app.js";
 import { TEST_USER_ID, TEST_PEER_ID } from "./auth.js";
 import type { Controllers } from "../../src/api/routes/index.js";
@@ -181,6 +183,14 @@ export interface BuiltApp {
  * plus the mock objects so a test can program repo return values per scenario.
  */
 export function buildApp(): BuiltApp {
+  // The send path memoizes the DM roster and the "may these two still talk"
+  // verdict in module scope (see lib/send-gate-cache.ts). In production that is
+  // bounded by a 5s TTL and cleared by the friendship consumer; in a test file
+  // it would otherwise leak across specs, so a spec that programs
+  // `checkFriendship -> false` would still be answered by the PASS an earlier
+  // spec cached. Every app the harness builds starts from a clean slate.
+  clearSendGateCaches();
+
   const redis = redisMock();
 
   // -- Mock repositories --
@@ -262,6 +272,24 @@ export function buildApp(): BuiltApp {
     id: "room",
     status: "active",
   });
+  // Community send takes its slot through `allocateRoomSlot` (lib/room-lock.ts)
+  // so concurrent sends into one room share a single `$inc`, which means it
+  // calls the BLOCK method. Delegating to `allocateSequenceAndRevision` keeps
+  // every spec that stubs that (and asserts on the numbers it returns) working
+  // untouched.
+  generalRoomRepo.allocateSequenceAndRevisionBlock.mockImplementation(
+    async (roomId: string, count: number) => {
+      let slot = { sequenceNumber: 0, revision: 0 };
+      for (let i = 0; i < Math.max(1, count); i += 1) {
+        slot = await generalRoomRepo.allocateSequenceAndRevision(roomId);
+      }
+      return {
+        lastSequence: slot.sequenceNumber,
+        lastRevision: slot.revision,
+        room: null,
+      };
+    }
+  );
   // Default: the caller is a participant of whatever private room the spec
   // addresses. `assertPrivateParticipant` now runs on the WRITE paths too
   // (send/forward/mark-read/reactions — AUDIT-103/104/105/113), not just the
@@ -329,6 +357,25 @@ export function buildApp(): BuiltApp {
       sequenceNumber: await groupRoomRepo.allocateSequence(roomId),
       room: { roomId },
     })
+  );
+  // Group send now takes that slot through `allocateRoomSlot` (lib/room-lock.ts)
+  // so concurrent sends into one room share a single `$inc`, which means the
+  // send path calls the BLOCK method rather than `allocateSequenceWithRoom`.
+  // Delegating to `allocateSequenceWithRoom` keeps every spec that stubs either
+  // of those working untouched.
+  groupRoomRepo.allocateSequenceBlock.mockImplementation(
+    async (roomId: string, count: number) => {
+      let last = 0;
+      let room: unknown = { roomId };
+      for (let i = 0; i < Math.max(1, count); i += 1) {
+        const slot = await groupRoomRepo.allocateSequenceWithRoom(roomId);
+        last = slot.sequenceNumber;
+        room = slot.room;
+      }
+      // Group insert does not allocate revisions — see
+      // GroupRoomRepository.allocateSequenceBlock.
+      return { lastSequence: last, room };
+    }
   );
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();

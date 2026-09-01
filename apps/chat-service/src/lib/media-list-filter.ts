@@ -19,10 +19,12 @@ const TAB_TYPES: Record<string, readonly string[]> = {
   file: ["DOCUMENT"],
 };
 
-/** Community storage values are lower-case; "custom" is the pre-expansion catch-all. */
+/** Community storage values, BOTH spellings — the send path writes UPPER-CASE
+ *  and only pre-expansion rows are lower-case, so a lower-case-only list matched
+ *  nothing (see COMMUNITY_MEDIA_TYPE_MAP). "custom" is the legacy catch-all. */
 const COMMUNITY_TAB_TYPES: Record<string, readonly string[]> = {
-  media: ["image", "video", "gif", "custom"],
-  file: ["document"],
+  media: ["IMAGE", "image", "VIDEO", "video", "GIF", "gif", "custom"],
+  file: ["DOCUMENT", "document"],
 };
 
 /** Matches a link-bearing message body (`content.text` / `message`). */
@@ -40,6 +42,9 @@ export function communityMediaTypeFilter(
   const tab = type ? COMMUNITY_TAB_TYPES[type] : undefined;
   if (tab) return { in: [...tab] };
   // An unmappable concrete type must return nothing, not everything.
-  if (type) return mapCommunityMediaType(type) ?? "__none__";
+  if (type) {
+    const mapped = mapCommunityMediaType(type);
+    return mapped ? { in: [...mapped] } : "__none__";
+  }
   return { in: [...COMMUNITY_MEDIA_MESSAGE_TYPES] };
 }

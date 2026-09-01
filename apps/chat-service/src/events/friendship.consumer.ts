@@ -1,5 +1,7 @@
 import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
+
+import { invalidateSendGate } from "../lib/send-gate-cache.js";
 import { FriendshipRepository } from "../repositories/friendship.repository.js";
 import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import { PrivateMessageRepository } from "../repositories/private-message.repository.js";
@@ -96,6 +98,12 @@ export class FriendshipEventConsumer {
 
     try {
       const event: FriendshipEvent = JSON.parse(msg.content.toString());
+
+      // Every friendship event moves the "may these two still talk" verdict in
+      // one direction or the other, so drop the memo the send path keeps of it
+      // rather than waiting out its TTL (see lib/send-gate-cache.ts).
+      invalidateSendGate(event.userA);
+      invalidateSendGate(event.userB);
 
       switch (event.type) {
         case "friendship.created":

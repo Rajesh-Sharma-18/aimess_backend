@@ -133,22 +133,30 @@ export async function resolveVisibleLastBulk(
 
 /**
  * Pure predicate (the SINGLE source of truth for the "was-last" gate): given the
- * viewer's newest-still-visible message's createdAt AFTER a delete (null = none
- * remain) and the deleted message's createdAt, was the deleted message the
- * viewer's effective last visible message? If so, a targeted delete-for-me list
- * bump is warranted; otherwise hiding it changed nothing and the bump is a no-op.
+ * viewer's newest-still-visible message's `sequenceNumber` AFTER a delete (null
+ * = none remain) and the deleted message's `sequenceNumber`, was the deleted
+ * message the viewer's effective last visible message? If so, a targeted
+ * delete-for-me list bump is warranted; otherwise hiding it changed nothing and
+ * the bump is a no-op.
+ *
+ * Compares `sequenceNumber`, NOT `createdAt`, for the same reason
+ * `findPreviousVisible*` now ORDERS by it: the sequence is allocated by an
+ * atomic per-room `$inc` while `createdAt` is stamped a round trip later, so two
+ * concurrent sends can swap between the two orderings. Gating on a different key
+ * than the resolver ranks on would answer "was it last?" about a different
+ * message than the one it just picked.
  *
  * The three delete-for-me recalc methods already hold `prev` (they need it for
- * the preview), so they call this directly instead of re-querying. A
- * same-millisecond tie resolves to `true` (treat as last) — a harmless extra
- * refresh in a rare edge, never a wrong preview.
+ * the preview), so they call this directly instead of re-querying. An equal
+ * sequence resolves to `true` (treat as last); two DIFFERENT messages can never
+ * share one, so `==` only ever means "the same message".
  */
 export function deletedWasEffectiveLast(
-  prevVisibleCreatedAt: Date | null,
-  deletedMessageCreatedAt: Date
+  prevVisibleSeq: number | null,
+  deletedMessageSeq: number
 ): boolean {
-  if (!prevVisibleCreatedAt) return true; // nothing visible remains → it was last
-  return prevVisibleCreatedAt.getTime() <= deletedMessageCreatedAt.getTime();
+  if (prevVisibleSeq === null) return true; // nothing visible remains → it was last
+  return prevVisibleSeq <= deletedMessageSeq;
 }
 
 /** A per-recipient list-preview override for the delete-for-everyone fan-out. */
@@ -223,7 +231,7 @@ export async function resolveEffectiveLastLosers(
   source: VisibilitySource,
   roomId: string,
   sharedLastMessageId: string | null,
-  deletedMessageCreatedAt: Date,
+  deletedMessageSeq: number,
   recipientIds: string[]
 ): Promise<Map<string, RecipientOverride | null>> {
   const losers = new Map<string, RecipientOverride | null>();
@@ -240,7 +248,7 @@ export async function resolveEffectiveLastLosers(
   );
   hiderList.forEach((uid, i) => {
     const v = resolved[i] ?? null;
-    if (!deletedWasEffectiveLast(v?.createdAt ?? null, deletedMessageCreatedAt))
+    if (!deletedWasEffectiveLast(v?.sequenceNumber ?? null, deletedMessageSeq))
       return; // something newer is still visible to them — nothing changed
     losers.set(uid, v ? toRecipientOverride(v) : null);
   });

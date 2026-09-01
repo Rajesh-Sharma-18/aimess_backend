@@ -132,6 +132,9 @@ describe("one bump, one language per recipient", () => {
     const vi = socket("bystander-vi", "vi");
     const th = socket("bystander-th", "th");
     const namespace = {
+      // `local` is what the emitters use: every gateway node receives the same
+      // Redis event, so each one personalises only the sockets IT holds.
+      local: { in: () => ({ fetchSockets: async () => [en, vi, th] }) },
       in: () => ({ fetchSockets: async () => [en, vi, th] }),
       to: () => ({ emit: jest.fn() }),
     } as never;

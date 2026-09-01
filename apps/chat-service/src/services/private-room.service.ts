@@ -40,6 +40,7 @@ import {
 } from "../lib/auto-delete.js";
 import { getAccountChatSettings } from "../lib/account-chat-settings.js";
 import { foldTickStatus } from "../lib/tick-status.js";
+import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import {
   resolvePairState,
   type PrivatePairStateInfo,
@@ -1327,6 +1328,13 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     await this.privateRoomRepo.setDeletedFor(roomId, userId);
+
+    // `setDeletedFor` zeroed this user's stored unread counter, but the Chats
+    // nav badge is a TOTAL the server owns — without this push it keeps
+    // counting messages that are now behind the delete cutoff, on every one of
+    // the user's devices, until the client's 30s staleTime lapses AND the tab
+    // is refocused. Coalesced and best-effort (see events/unread-summary-bridge).
+    notifyUnreadChanged(userId);
 
     // The pin belongs to the room, not either user — clear it so a stale
     // pin doesn't resurface if the room becomes visible again later (e.g.

@@ -63,14 +63,18 @@ type Handler = (
 ) => void;
 
 /** Invoke a unary handler and resolve with its callback response (or reject on
- *  error). Every broadcast `await redis.publish(...)`s before calling back, so by
- *  resolution the published payload is already recorded. */
+ *  error). The send handlers now ack as soon as the write is durable and run
+ *  broadcast / bump / push AFTER the response — a presign round trip per album
+ *  row used to sit on the ack path and blow the caller's 2s breaker budget — so
+ *  resolving on the callback alone would race the publishes these tests read.
+ *  Drain the queue first; every other handler still publishes before calling
+ *  back and is unaffected. */
 function invoke(handler: Handler, request: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
     handler({ request }, (err, res) =>
       err
         ? reject(err instanceof Error ? err : new Error(String(err)))
-        : resolve(res)
+        : setImmediate(() => setImmediate(() => resolve(res)))
     );
   });
 }

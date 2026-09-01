@@ -357,6 +357,10 @@ export class GroupMessageRepository {
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId,
+        // isDeleted: true means "deleted for everyone" — exclude at DB level,
+        // same as the private equivalent. Delete-for-me keeps isDeleted:false
+        // and is filtered in memory below.
+        isDeleted: false,
         createdAt: cutoff ? { lt: ltDate, gt: cutoff } : { lt: ltDate },
       },
       orderBy: { createdAt: "desc" },
@@ -375,18 +379,20 @@ export class GroupMessageRepository {
    * Timestamp-bounded message page for the message-list endpoint.
    * - direction "before": createdAt <= ts, newest-first (desc).
    * - direction "after" : createdAt >= ts, oldest-first (asc).
-   * Matches the legacy `findByRoomIdWithTime` visibility (deleted-for-everyone
-   * messages are kept so the client can render the placeholder); only per-user
-   * "delete for me" (deletedForUserIds Json array) is filtered in memory.
+   * Matches the legacy `findByRoomIdWithTime` visibility: deleted-for-everyone
+   * messages are excluded at the DB level, and per-user "delete for me"
+   * (deletedForUserIds Json array) is filtered in memory.
    * Over-fetches a small buffer, then returns up to `limit + 1` survivors so the
    * caller can compute exact `hasMore`.
    */
   /**
    * Shared `$match` for the group timeline (and its count) — the SINGLE source of
    * truth so `findByRoomIdTimeline` and `countTimeline` filter IDENTICALLY.
-   * Group keeps deleted-for-everyone messages (`isDeleted:true`) so the client can
-   * render the tombstone placeholder, and only removes the viewer's own
-   * delete-for-me. `deletedForUserIds` is a Json array; Mongo's `$ne` on it matches
+   * Excludes deleted-for-everyone (`isDeleted`) — same as private/community history,
+   * `conversationMatch` and `countByRoom`, so a delete stays deleted across a reload
+   * — and the viewer's own delete-for-me. Tombstones still replay on the catch-up
+   * axes (`findAfterSeq` / `findByRoomIdRevisionSince`), which is where a client
+   * learns about a delete it missed. `deletedForUserIds` is a Json array; Mongo's `$ne` on it matches
    * docs where NO element equals the user (i.e. "not deleted for this user").
    * `roomId` is a plain String column here (not an ObjectId).
    */
@@ -400,6 +406,7 @@ export class GroupMessageRepository {
   }): Record<string, unknown> {
     const core = {
       roomId: params.roomId,
+      isDeleted: false,
       deletedForUserIds: { $ne: params.userId },
     };
     const bounds: Record<string, unknown>[] = [];
@@ -652,6 +659,7 @@ export class GroupMessageRepository {
     const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId: params.roomId,
+        isDeleted: false,
         sequenceNumber: bound,
         ...(params.cutoff || params.readCutoffBefore
           ? {
@@ -709,6 +717,7 @@ export class GroupMessageRepository {
       this.prisma.groupMessage.findMany({
         where: {
           roomId: params.roomId,
+          isDeleted: false,
           sequenceNumber: { lt: params.anchorSeq },
           ...cutoffWhere,
         },
@@ -718,6 +727,7 @@ export class GroupMessageRepository {
       this.prisma.groupMessage.findMany({
         where: {
           roomId: params.roomId,
+          isDeleted: false,
           sequenceNumber: { gte: params.anchorSeq },
           ...cutoffWhere,
         },
@@ -1298,7 +1308,15 @@ export class GroupMessageRepository {
   async findPreviousVisible(roomId: string): Promise<GroupMessage | null> {
     return this.prisma.groupMessage.findFirst({
       where: { roomId, isDeleted: false },
-      orderBy: { createdAt: "desc" },
+      // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
+      // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
+      // so two concurrent sends can swap between the two orderings. The clients
+      // render the transcript in `sequenceNumber` order (web
+      // `component/chat/messages/messageOrder.ts` — "sequenceNumber is the
+      // authority"), so resolving the room's last message by `createdAt` made the
+      // list preview name a DIFFERENT message than the one at the bottom of the
+      // chat. `createdAt` stays as the tie-break for pre-sequence legacy rows.
+      orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
     });
   }
 
@@ -1363,7 +1381,8 @@ export class GroupMessageRepository {
               : {}),
           },
         },
-        { $sort: { createdAt: -1 } },
+        // See findPreviousVisible — `sequenceNumber` is the ordering authority.
+        { $sort: { sequenceNumber: -1, createdAt: -1 } },
         { $limit: 1 },
       ] as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;

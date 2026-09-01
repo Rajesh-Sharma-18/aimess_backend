@@ -26,6 +26,7 @@
 import { ForbiddenError } from "@aimess/errors";
 
 import { getAccountChatSettings } from "./account-chat-settings.js";
+import { resolveMediaUrlMap, urlFromMap } from "./media-resolve.js";
 import {
   resolveDisplayName,
   type UserSnapshotService,
@@ -208,13 +209,26 @@ export async function buildReadReceipts(params: {
     params.cacheRepo
   );
 
+  // Snapshots persist the raw storage objectKey; the sheet must ship a signed
+  // download URL like every other read path (enrichMessages, rosters). Without
+  // this the client got a bare key and fell back to initials.
+  const urlMap = await resolveMediaUrlMap(
+    visible.map((c) => {
+      const avatar = snapshots.get(c.userId)?.avatar;
+      return typeof avatar === "string" ? avatar : null;
+    })
+  );
+
   const users: ReadReceiptUser[] = visible.map((c) => {
     const snapshot = snapshots.get(c.userId) ?? null;
     return {
       userId: c.userId,
       fullName: resolveDisplayName(snapshot),
       username: String(snapshot?.memberId ?? snapshot?.username ?? ""),
-      avatar: String(snapshot?.avatar ?? ""),
+      avatar: urlFromMap(
+        urlMap,
+        typeof snapshot?.avatar === "string" ? snapshot.avatar : null
+      ),
       readAt: c.readAt ? c.readAt.getTime() : null,
       isOnline: snapshot?.isOnline === true,
     };

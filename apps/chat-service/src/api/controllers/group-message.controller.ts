@@ -543,9 +543,9 @@ export class GroupMessageController {
               type: "GROUP",
               roomId: rId,
               recipientIds: () => this.messageService.getActiveMemberIds(rId),
-              deletedMessageCreatedAt: result.createdAt,
-              resolveLosers: (rid, at, ids) =>
-                this.messageService.resolveEffectiveLastLosers(rid, at, ids),
+              deletedMessageSeq: result.sequenceNumber ?? 0,
+              resolveLosers: (rid, seq, ids) =>
+                this.messageService.resolveEffectiveLastLosers(rid, seq, ids),
             });
           }
           const preview = buildMessagePreview(
@@ -574,6 +574,10 @@ export class GroupMessageController {
             // Without this the bump is discarded by the client's monotonic list
             // guard — it points BACKWARD at the previous visible message.
             deleteRecalc: true,
+            // The DELETE's own room revision, not the surviving message's — this
+            // projection update is newer than everything before it even though its
+            // `lastMessageAt` is older. Same rule as the socket path's orchestrator.
+            projectionRevision: result.revision ?? 0,
             senderId: recalc.senderId ?? "",
             // The PREVIOUS visible message's sender, which the recalc already
             // resolved — a group row keeps its "<name>: <preview>" prefix after
@@ -596,9 +600,9 @@ export class GroupMessageController {
     // last visible message (else hiding it changes nothing in their list).
     if (result?.roomId && scope === "forMe") {
       const rId = result.roomId;
-      const deletedAt = result.createdAt;
+      const deletedSeq = result.sequenceNumber ?? 0;
       void this.messageService
-        .recalculateLastMessageAfterDeleteForMe(rId, deletedAt, userId)
+        .recalculateLastMessageAfterDeleteForMe(rId, deletedSeq, userId)
         .then((recalc) => {
           if (!recalc || !recalc.wasEffectiveLast) return; // no-op: not the last
           const preview = recalc.hasLastMessage

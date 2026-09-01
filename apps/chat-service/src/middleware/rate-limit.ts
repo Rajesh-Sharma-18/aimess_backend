@@ -179,3 +179,51 @@ export function createRateLimit({
     }
   };
 }
+
+/**
+ * The four buckets every conversation kind needs, built from one place so
+ * private, group and community are throttled by the same rules rather than by
+ * three independently-drifted copies.
+ *
+ * The shape comes from the private router, which had already been split after
+ * a single shared bucket kept exhausting the SEND budget through reads:
+ * opening a handful of conversations and scrolling them spends the same quota
+ * a message does, so the user is told "Too many requests" when they try to
+ * type. Group and community were still on that original single-bucket design —
+ * one 30/min allowance covering sends, `/read`, history, search, media,
+ * reactions, pins, edits, deletes and forwards — which is why they tripped
+ * first and hardest.
+ *
+ * Numbers are per user per minute, sliding window (see {@link createRateLimit}):
+ *
+ *  - `send`      60 — the abuse-relevant number, and the only one a normal
+ *                     typist can approach. Being a sliding window rather than a
+ *                     fixed bucket, a burst of 60 is allowed immediately; it is
+ *                     the sustained rate that is capped.
+ *  - `read`     240 — read-position writes fire on every conversation open,
+ *                     every scroll to bottom and every socket reconnect
+ *                     catch-up, so this has to clear a reconnect burst across
+ *                     many open rooms.
+ *  - `interact` 120 — reactions, pins and edits: interactive, bursty, cheap.
+ *  - `sensitive` 30 — reporting, policy changes, room creation. None of these
+ *                     is a normal repeated action.
+ */
+export function messagingRateLimits(prefix: string): {
+  send: ReturnType<typeof createRateLimit>;
+  read: ReturnType<typeof createRateLimit>;
+  interact: ReturnType<typeof createRateLimit>;
+  sensitive: ReturnType<typeof createRateLimit>;
+} {
+  const bucket = (name: string, maxRequests: number) =>
+    createRateLimit({
+      windowMs: 60_000,
+      maxRequests,
+      keyPrefix: `${prefix}:${name}`,
+    });
+  return {
+    send: bucket("send", 60),
+    read: bucket("read", 240),
+    interact: bucket("interact", 120),
+    sensitive: bucket("sensitive", 30),
+  };
+}

@@ -226,7 +226,9 @@ describe("GroupMessageService.recalculateLastMessageAfterDeleteForMe", () => {
   });
 
   it("DELETE FOR ME on a message that was NOT the viewer's effective last: wasEffectiveLast is false (caller treats as no-op)", async () => {
-    const deletedCreatedAt = new Date("2026-06-01T10:00:00.000Z");
+    // "Newer" is a HIGHER sequenceNumber — the ordering key the resolver picks
+    // the previous-visible message by (see deletedWasEffectiveLast).
+    const deletedSeq = 10;
     const { service } = makeService({
       messageRepo: {
         findPreviousVisibleForUser: jest.fn().mockResolvedValue({
@@ -236,6 +238,7 @@ describe("GroupMessageService.recalculateLastMessageAfterDeleteForMe", () => {
           content: { text: "newer" },
           messageType: "TEXT",
           createdAt: new Date("2026-07-01T10:00:00.000Z"),
+          sequenceNumber: 20,
         }),
       },
       roomRepo: { findByRoomId: jest.fn().mockResolvedValue({ roomId: ROOM }) },
@@ -243,7 +246,7 @@ describe("GroupMessageService.recalculateLastMessageAfterDeleteForMe", () => {
 
     const recalc = await service.recalculateLastMessageAfterDeleteForMe(
       ROOM,
-      deletedCreatedAt,
+      deletedSeq,
       VIEWER
     );
 

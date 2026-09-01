@@ -19,6 +19,9 @@ interface FakeSocket {
 
 function fakeNamespace(sockets: FakeSocket[]) {
   return {
+    // `local` is what the emitters use: every gateway node receives the same
+    // Redis event, so each one personalises only the sockets IT holds.
+    local: { in: () => ({ fetchSockets: async () => sockets }) },
     in: () => ({ fetchSockets: async () => sockets }),
     to: () => ({ emit: jest.fn() }),
   } as never;

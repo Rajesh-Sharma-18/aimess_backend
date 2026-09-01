@@ -805,6 +805,7 @@ export class CommunityMessageController {
         result.roomId,
         messageId,
         result.createdAt,
+        result.sequenceNumber ?? 0,
         result
       );
     }
@@ -819,7 +820,7 @@ export class CommunityMessageController {
         const recalc =
           await this.service.recalculateLastMessageAfterDeleteForMe(
             result.roomId,
-            result.createdAt,
+            result.sequenceNumber ?? 0,
             userId
           );
         // Skip unless the deleted message was the viewer's effective last
@@ -879,6 +880,10 @@ export class CommunityMessageController {
     roomId: string,
     deletedMessageId: string,
     removedAt?: Date | null,
+    /** The removed message's `sequenceNumber` — the ordering key the
+     *  effective-last-loss fan-out decides on (see `deletedWasEffectiveLast`).
+     *  Absent for the pin-retraction callers, same as `removedAt`. */
+    removedSeq?: number | null,
     /** The removed row, when the caller has it — enables the authoritative
      *  per-member unread adjustment. The pin-retraction caller omits it (a
      *  SYSTEM line never counted toward unread anyway). */
@@ -898,16 +903,16 @@ export class CommunityMessageController {
         // hidden everything newer than the removed message was previewing IT.
         // See events/publish-effective-last-loss.ts. (`removedAt` is absent only
         // for the pin-retraction caller, which has no per-member window.)
-        if (removedAt) {
+        if (removedSeq != null) {
           await publishCommunityEffectiveLastLoss({
             redis: this.redis,
             communityId: roomId,
             roomId,
             memberIds: () => this.service.getActiveMemberIds(roomId),
             deletedMessageId,
-            deletedMessageCreatedAt: removedAt,
-            resolveLosers: (rid, at, ids) =>
-              this.service.resolveEffectiveLastLosers(rid, at, ids),
+            deletedMessageSeq: removedSeq,
+            resolveLosers: (rid, seq, ids) =>
+              this.service.resolveEffectiveLastLosers(rid, seq, ids),
           });
         }
         return;

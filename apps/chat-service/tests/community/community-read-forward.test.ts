@@ -113,6 +113,10 @@ function buildService(
     allocateSequenceAndRevision: jest
       .fn()
       .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
+    // Send allocates through `allocateRoomSlot`, which asks for a BLOCK.
+    allocateSequenceAndRevisionBlock: jest
+      .fn()
+      .mockResolvedValue({ lastSequence: 1, lastRevision: 1, room: null }),
     addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
     findManyByIds: jest.fn().mockResolvedValue([]),
     provisionForCommunity: jest.fn().mockResolvedValue(undefined),
@@ -775,6 +779,10 @@ describe("CommunityMessageService.forwardMessage", () => {
         allocateSequenceAndRevision: jest
           .fn()
           .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
+        // Send allocates through `allocateRoomSlot`, which asks for a BLOCK.
+        allocateSequenceAndRevisionBlock: jest
+          .fn()
+          .mockResolvedValue({ lastSequence: 1, lastRevision: 1, room: null }),
         addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
       },
     });
@@ -902,6 +910,10 @@ describe("CommunityMessageService.forwardMessage", () => {
         allocateSequenceAndRevision: jest
           .fn()
           .mockResolvedValue({ sequenceNumber: 1, revision: 1 }),
+        // Send allocates through `allocateRoomSlot`, which asks for a BLOCK.
+        allocateSequenceAndRevisionBlock: jest
+          .fn()
+          .mockResolvedValue({ lastSequence: 1, lastRevision: 1, room: null }),
         addLastestMessageToRoom: jest.fn().mockResolvedValue(undefined),
       },
     });

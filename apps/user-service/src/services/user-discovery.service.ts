@@ -295,18 +295,9 @@ export const userDiscoveryService = {
       })
     );
 
-    // Every row here is already a direct friend, so the one-hop expansion adds
-    // nothing to who is visible — skip the extra query.
-    const viewerGraph = { friendIds, friendOfFriendIds: [] };
     const [profiles, total] = await Promise.all([
-      userProfileRepository.findUsersInList(
-        friendIds,
-        q,
-        skip,
-        limit,
-        viewerGraph
-      ),
-      userProfileRepository.countUsersInList(friendIds, q, viewerGraph),
+      userProfileRepository.findUsersInList(friendIds, q, skip, limit),
+      userProfileRepository.countUsersInList(friendIds, q),
     ]);
 
     const users = await Promise.all(
