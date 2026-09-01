@@ -154,6 +154,15 @@ export class GroupMessageService {
     clientMessageId?: string | null;
     /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
     clientTs?: number | null;
+    /**
+     * The id a RETRY would repeat. Only a CLIENT-supplied id can dedupe
+     * anything: when the caller omits one the server mints a fresh UUID per
+     * attempt, so the lookups below are a guaranteed miss that still cost a
+     * Redis round trip AND a Mongo query on every single send. Defaults to
+     * `clientMessageId`, so a caller that does not pass this behaves exactly as
+     * before; pass `null` to say "this id is server-generated".
+     */
+    dedupeKey?: string | null;
   }): Promise<GroupMessage & { senderRole?: string }> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
@@ -194,8 +203,12 @@ export class GroupMessageService {
       Object.assign(m, { senderRole });
 
     // Check idempotency (album batches use `base:N` sibling clientMessageIds).
-    if (params.clientMessageId) {
-      const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
+    const dedupeKey =
+      params.dedupeKey === undefined
+        ? params.clientMessageId
+        : params.dedupeKey;
+    if (dedupeKey) {
+      const idemKey = `${params.roomId}:${params.senderId}:${dedupeKey}`;
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
@@ -203,7 +216,7 @@ export class GroupMessageService {
           const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
             params.roomId,
             params.senderId,
-            params.clientMessageId
+            dedupeKey
           );
           const messages = (batch?.length ?? 0) > 0 ? batch : [cached];
           return withRole(
@@ -214,7 +227,7 @@ export class GroupMessageService {
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
         params.senderId,
-        params.clientMessageId
+        dedupeKey
       );
       if (existing) {
         this.cacheRepo
@@ -223,7 +236,7 @@ export class GroupMessageService {
         const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
           params.roomId,
           params.senderId,
-          params.clientMessageId
+          dedupeKey
         );
         const messages = (batch?.length ?? 0) > 0 ? batch : [existing];
         return withRole(

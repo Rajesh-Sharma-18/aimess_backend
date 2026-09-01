@@ -546,7 +546,19 @@ export class PrivateRoomRepository {
       string,
       number
     >;
-    unreadCountByUser[userId] = remainingUnread;
+    // A read can only ever LOWER an unread count. The recompute above counts
+    // every countable message newer than the boundary being read to, which is
+    // right when the stored counter is stale but wrong when it is authoritative:
+    // a read for message 5 that lands while 6 and 7 are already written would
+    // otherwise SET the count to 2 for a reader who was present the whole time
+    // and had nothing unread at all. Clamping makes the write monotone, which
+    // is what "mark as read" means; reading to a non-latest message still leaves
+    // the remaining count, because in that case the stored value is at least as
+    // large.
+    unreadCountByUser[userId] = Math.min(
+      unreadCountByUser[userId] ?? remainingUnread,
+      remainingUnread
+    );
 
     const lastReadAtByUser = (existing.lastReadAtByUser ?? {}) as Record<
       string,

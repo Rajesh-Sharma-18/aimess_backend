@@ -404,13 +404,7 @@ export const userSearchService = {
     // ---------------------------------------------------------------------
     const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
       friendIds.length
-        ? userProfileRepository.findUsersInList(
-            friendIds,
-            q,
-            0,
-            CHAT_LIMIT,
-            viewerGraph
-          )
+        ? userProfileRepository.findUsersInList(friendIds, q, 0, CHAT_LIMIT)
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
     ]);

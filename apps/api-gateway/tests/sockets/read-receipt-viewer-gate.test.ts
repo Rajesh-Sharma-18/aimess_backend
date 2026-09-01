@@ -17,6 +17,13 @@ function fakeNamespace(
   const chain = { emit: jest.fn() };
   return {
     ns: {
+      // `local` is what the emitters use: every gateway node receives the same
+      // Redis event, so each one personalises only the sockets IT holds.
+      local: {
+        in: jest.fn().mockReturnValue({
+          fetchSockets: jest.fn().mockResolvedValue(sockets),
+        }),
+      },
       in: jest.fn().mockReturnValue({
         fetchSockets: jest.fn().mockResolvedValue(sockets),
       }),
@@ -59,6 +66,13 @@ describe("message:read viewer gate", () => {
   it("does NOT fall back to a room broadcast when the socket scan fails", async () => {
     const chain = { emit: jest.fn() };
     const ns = {
+      // `local` is what the emitters use: every gateway node receives the same
+      // Redis event, so each one personalises only the sockets IT holds.
+      local: {
+        in: jest.fn().mockReturnValue({
+          fetchSockets: jest.fn().mockRejectedValue(new Error("adapter down")),
+        }),
+      },
       in: jest.fn().mockReturnValue({
         fetchSockets: jest.fn().mockRejectedValue(new Error("adapter down")),
       }),

@@ -235,6 +235,23 @@ export const NOTIFICATION_MESSAGES = {
     en: "{{name}}: {{preview}}",
     th: "{{name}}: {{preview}}",
   },
+  // Coalesced burst: N messages arriving together are one notification whose
+  // body leads with the count and ends with the newest line.
+  NOTIF_CHAT_BURST_COUNT: {
+    vi: "{{count}} tin nhắn mới",
+    en: "{{count}} new messages",
+    th: "{{count}} ข้อความใหม่",
+  },
+  NOTIF_CHAT_BURST_BODY: {
+    vi: "{{count}} tin nhắn mới · {{preview}}",
+    en: "{{count}} new messages · {{preview}}",
+    th: "{{count}} ข้อความใหม่ · {{preview}}",
+  },
+  NOTIF_CHAT_BURST_BODY_NAMED: {
+    vi: "{{count}} tin nhắn mới · {{name}}: {{preview}}",
+    en: "{{count}} new messages · {{name}}: {{preview}}",
+    th: "{{count}} ข้อความใหม่ · {{name}}: {{preview}}",
+  },
 
   // ── Group ───────────────────────────────────────────────────────────────
   NOTIF_GROUP_UNNAMED: {

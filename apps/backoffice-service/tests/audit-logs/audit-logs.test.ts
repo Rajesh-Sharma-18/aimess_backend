@@ -310,7 +310,6 @@ describe("mandatory audit classification", () => {
     for (const action of [
       "user.registered",
       "user.login",
-      "message.deleted",
       "community.member_banned",
       "report.actioned",
       "media.deleted",
@@ -327,6 +326,9 @@ describe("mandatory audit classification", () => {
       "admin.token_refreshed",
       "user.profile_updated",
       "community.member_joined",
+      // One person clearing a chat writes one row per message, which buried the
+      // moderation trail. Still recorded, just not on the default page.
+      "message.deleted",
     ]) {
       expect(isMandatoryAuditAction(action)).toBe(false);
     }

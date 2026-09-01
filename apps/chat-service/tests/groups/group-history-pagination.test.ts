@@ -6,8 +6,8 @@
  * cursor (same-millisecond messages skipped/duplicated). The fix moves the
  * delete-for-me filter into the DB and uses a `(createdAt, _id)` keyset.
  *
- * Group-specific: deleted-for-everyone messages (`isDeleted:true`) are KEPT as
- * placeholders; only the viewer's own `deletedForUserIds` entries are removed.
+ * Deleted-for-everyone messages (`isDeleted:true`) are dropped from history —
+ * same as private/community — as are the viewer's own `deletedForUserIds` entries.
  */
 import { GroupMessageRepository } from "../../src/repositories/group-message.repository.js";
 import {
@@ -34,21 +34,22 @@ function mkDoc(i: number, over: Partial<EmuDoc>, ts: number): EmuDoc {
   };
 }
 
-// Mirror of group timelineMatch: keep isDeleted placeholders, drop delete-for-me.
+// Mirror of group timelineMatch: drop tombstones and delete-for-me.
 function isVisible(doc: EmuDoc): boolean {
   if (doc.roomId !== ROOM) return false;
+  if (doc.isDeleted) return false;
   return !((doc.deletedForUserIds as string[]) ?? []).includes(USER);
 }
 
 describe("group history pagination — full traversal (before_ts)", () => {
-  it("retrieves EVERY visible message exactly once across a 731-message room with same-ms clusters + deleted rows (placeholders kept)", async () => {
+  it("retrieves EVERY visible message exactly once across a 731-message room with same-ms clusters + deleted rows (tombstones dropped)", async () => {
     const base = 1_700_000_000_000;
     const docs: EmuDoc[] = [];
     for (let i = 0; i < 731; i++) {
       const ts = base + Math.floor(i / 4) * 1000; // clusters of 4 share one ms
       let over: Partial<EmuDoc> = {};
       if (i % 13 === 0)
-        over = { isDeleted: true }; // tombstone placeholder — KEPT
+        over = { isDeleted: true }; // deleted for everyone — DROPPED
       else if (i % 31 === 0)
         over = { deletedForUserIds: [USER] }; // delete-for-me — DROPPED
       else if (i % 37 === 0) over = { deletedForUserIds: [OTHER] }; // other's delete — KEPT

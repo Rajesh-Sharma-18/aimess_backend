@@ -7,6 +7,10 @@ import {
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import {
+  cachedRoomParticipants,
+  withPeerGateCache,
+} from "../lib/send-gate-cache.js";
+import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
@@ -127,7 +131,7 @@ import {
   isPersonalizableSystemContentType,
   personalizePrivateSystemMessageForViewer,
 } from "@aimess/constants";
-import { filterBannedUserIds } from "@aimess/redis";
+import { chatOpenRoomKey, filterBannedUserIds } from "@aimess/redis";
 import { allocateRoomSlot } from "../lib/room-lock.js";
 import type { PresenceService } from "./presence.service.js";
 import type { Redis, Cluster } from "ioredis";
@@ -198,6 +202,15 @@ export class PrivateMessageService {
     clientMessageId?: string | null;
     /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
     clientTs?: number | null;
+    /**
+     * The id a RETRY would repeat. Only a CLIENT-supplied id can dedupe
+     * anything: when the caller omits one the server mints a fresh UUID per
+     * attempt, so looking it up is a guaranteed miss that still costs a round
+     * trip on every single send. Defaults to `clientMessageId`, so a caller
+     * that does not pass this behaves exactly as before; pass `null` to say
+     * "this id is server-generated, there is nothing to dedupe against".
+     */
+    dedupeKey?: string | null;
   }): Promise<PrivateMessage> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
@@ -217,28 +230,46 @@ export class PrivateMessageService {
       ],
     });
 
-    const room = await assertPrivateParticipant(
-      this.roomRepo,
-      params.roomId,
+    // A DM roster is fixed at room creation, so re-reading it per message in a
+    // burst is a pure round trip. The membership decision itself still runs on
+    // every send — only the fetch of the (immutable) roster is memoized.
+    const roster = await cachedRoomParticipants(params.roomId, async () => {
+      const room = await assertPrivateParticipant(
+        this.roomRepo,
+        params.roomId,
+        params.senderId
+      );
+      return room.participants ?? [];
+    });
+    if (!roster.includes(params.senderId)) {
+      throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
+    }
+    const receiverId = privateRoomPeerId(
+      { participants: roster },
       params.senderId
     );
-    const receiverId = privateRoomPeerId(room, params.senderId);
 
-    await this.assertPeerInteractionAllowed(params.senderId, receiverId);
+    await withPeerGateCache(params.senderId, receiverId, () =>
+      this.assertPeerInteractionAllowed(params.senderId, receiverId)
+    );
 
     // Idempotency: if clientMessageId provided, check for existing message (album
     // batch includes `base:N` sibling rows).
-    if (params.clientMessageId) {
+    const dedupeKey =
+      params.dedupeKey === undefined
+        ? params.clientMessageId
+        : params.dedupeKey;
+    if (dedupeKey) {
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
         params.senderId,
-        params.clientMessageId
+        dedupeKey
       );
       if (existing) {
         const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
           params.roomId,
           params.senderId,
-          params.clientMessageId
+          dedupeKey
         );
         const messages = (batch?.length ?? 0) > 0 ? batch : [existing];
         return markAlbumIdempotentReplay(
@@ -374,7 +405,7 @@ export class PrivateMessageService {
     }
 
     const message = created[created.length - 1]!;
-    const unreadIncrement = created.filter((m) =>
+    const countable = created.filter((m) =>
       shouldCountInUnread({
         messageType: m.messageType,
         systemEvent: m.systemEvent,
@@ -382,6 +413,35 @@ export class PrivateMessageService {
           .countInUnread,
       })
     ).length;
+
+    // A message that lands while the recipient is LOOKING at the conversation
+    // was never unread, so it must not be counted as unread in the first place.
+    //
+    // That rule already existed, but it was applied AFTER the fact: the gateway
+    // spotted a present viewer on the delivery broadcast and issued a read for
+    // them. Under a burst those reads race the increments that are still being
+    // written behind them, and a handful of messages per burst reliably survived
+    // as phantom unread — measured on a 7-message burst into an open room,
+    // before any batching existed, the badge settled on 2-5 instead of 0.
+    // Deciding it HERE, at the one write that owns the counter, removes the race
+    // entirely; the gateway's read-at-delivery still runs and still advances the
+    // read pointer that drives receipts.
+    //
+    // The signal is the same short-TTL key push suppression reads (see
+    // @aimess/redis chat-attention), stamped by the gateway on `conv:join
+    // {active:true}` and cleared on leave/disconnect. Fails OPEN: an unreadable
+    // or absent key counts the message, which is the old behaviour.
+    let unreadIncrement = countable;
+    if (countable > 0 && receiverId && this.redis) {
+      try {
+        const looking = await this.redis.exists(
+          chatOpenRoomKey(receiverId, params.roomId)
+        );
+        if (looking > 0) unreadIncrement = 0;
+      } catch {
+        /* fail open — count it */
+      }
+    }
 
     // The room row is pre-provisioned (empty, no lastMessageAt) as soon as two
     // users become friends (see PrivateRoomService.getOrCreateRoom), so THIS is

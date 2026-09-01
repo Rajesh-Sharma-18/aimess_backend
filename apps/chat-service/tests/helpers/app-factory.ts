@@ -20,6 +20,8 @@
  */
 import type { Express } from "express";
 
+import { clearSendGateCaches } from "../../src/lib/send-gate-cache.js";
+
 import { createApp } from "../../src/app.js";
 import { TEST_USER_ID, TEST_PEER_ID } from "./auth.js";
 import type { Controllers } from "../../src/api/routes/index.js";
@@ -181,6 +183,14 @@ export interface BuiltApp {
  * plus the mock objects so a test can program repo return values per scenario.
  */
 export function buildApp(): BuiltApp {
+  // The send path memoizes the DM roster and the "may these two still talk"
+  // verdict in module scope (see lib/send-gate-cache.ts). In production that is
+  // bounded by a 5s TTL and cleared by the friendship consumer; in a test file
+  // it would otherwise leak across specs, so a spec that programs
+  // `checkFriendship -> false` would still be answered by the PASS an earlier
+  // spec cached. Every app the harness builds starts from a clean slate.
+  clearSendGateCaches();
+
   const redis = redisMock();
 
   // -- Mock repositories --

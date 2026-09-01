@@ -77,6 +77,34 @@ describe("shouldCountInUnread", () => {
     ).toBe(false);
   });
 
+  // Regression: an invitation card is addressed content one person sent to
+  // another; it only rides a `systemEvent` because that is how the card's link
+  // identity is carried. Excluding it made the delivery path (which $inc'd the
+  // recipient's counter) and the mark-read recompute (which filtered it back
+  // out) disagree, so the badge could only be cleared by entering the room.
+  it("counts invitation cards — they are messages, not audit lines", () => {
+    expect(
+      shouldCountInUnread({
+        messageType: "COMMUNITY_INVITE",
+        systemEvent: "COMMUNITY_INVITE",
+      })
+    ).toBe(true);
+    expect(
+      shouldCountInUnread({
+        messageType: "GROUP_INVITE",
+        systemEvent: "GROUP_INVITE",
+      })
+    ).toBe(true);
+    // …but the community LIFECYCLE line about an invite link is still a system
+    // message and still must not raise a badge.
+    expect(
+      shouldCountInUnread({
+        messageType: "SYSTEM",
+        systemMessageType: "COMMUNITY_INVITE_CREATED",
+      })
+    ).toBe(false);
+  });
+
   it("honors explicit persisted flags as an override", () => {
     expect(shouldCountInUnread({ messageType: "TEXT", explicit: false })).toBe(
       false

@@ -31,9 +31,31 @@ jest.mock("amqplib", () => ({
   connect: jest.fn(async () => connectionMock),
 }));
 
-// Mock push.service — the FCM/APNs delivery boundary.
+// Mock push.service — the FCM/APNs delivery boundary. Delivery now happens one
+// recipient at a time, from the burst coalescer, so `pushToUser` is the seam
+// these specs assert on; `pushToUsers` stays mocked for any other importer.
 jest.mock("../../src/services/push.service.js", () => ({
+  pushToUser: jest.fn(async () => undefined),
   pushToUsers: jest.fn(async () => undefined),
+}));
+
+// The coalescer asks Redis whether the recipient is currently reading the room
+// (a pipeline of EXISTS). Nobody is, in these specs.
+jest.mock("../../src/config/redis.js", () => ({
+  redis: {
+    status: "ready",
+    on: jest.fn(),
+    once: jest.fn(),
+    off: jest.fn(),
+    get: jest.fn(async () => null),
+    set: jest.fn(async () => "OK"),
+    del: jest.fn(async () => 0),
+    pipeline: () => ({
+      exists: jest.fn(),
+      get: jest.fn(),
+      exec: jest.fn(async () => [[null, 0]]),
+    }),
+  },
 }));
 
 // Mock the notification-eligibility gate (the COMMUNITY mute oracle). This is
@@ -55,7 +77,8 @@ jest.mock("../../src/services/notification-eligibility.service.js", () => ({
 }));
 
 import { startChatConsumer } from "../../src/consumers/chat.consumer.js";
-import { pushToUsers } from "../../src/services/push.service.js";
+import { pushToUser } from "../../src/services/push.service.js";
+import { flushAllChatPushes } from "../../src/services/chat-push-coalescer.js";
 import {
   filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
@@ -63,7 +86,29 @@ import {
   isPrivateRoomMutedBy,
 } from "../../src/services/notification-eligibility.service.js";
 
-const pushMany = pushToUsers as jest.Mock;
+const pushOne = pushToUser as jest.Mock;
+
+/**
+ * These specs were written when the consumer dispatched the whole fan-out in one
+ * `pushToUsers(recipientIds, build)` call. It now hands each recipient to the
+ * burst coalescer, which delivers one push per (recipient, conversation) when
+ * its window fires — so the assertions below still describe exactly the right
+ * behaviour, they just have to look at it after the window has been flushed.
+ * `pushMany` presents the flushed pushes in the original shape.
+ */
+const pushMany = jest.fn() as jest.Mock;
+async function flushPushes(): Promise<void> {
+  await flushAllChatPushes();
+  const inputs = pushOne.mock.calls.map(
+    (c) => c[0] as { userId: string } & Record<string, unknown>
+  );
+  pushOne.mockClear();
+  if (inputs.length === 0) return;
+  pushMany(
+    inputs.map((i) => i.userId),
+    (id: string) => inputs.find((i) => i.userId === id)
+  );
+}
 const isMutedMock = isCommunityActorMuted as jest.Mock;
 const filterNotifiableMock = filterToNotifiableCommunityMembers as jest.Mock;
 const isPrivateMutedMock = isPrivateRoomMutedBy as jest.Mock;
@@ -87,7 +132,10 @@ function makeMsg(data: object) {
 }
 
 /** Flush promise micro-tasks so the void async IIFE inside consume resolves. */
-const flush = () => new Promise((r) => setImmediate(r));
+const flush = async (): Promise<void> => {
+  await new Promise((r) => setImmediate(r));
+  await flushPushes();
+};
 
 const BASE = {
   conversationId: "conv1",
@@ -111,6 +159,7 @@ describe("startChatConsumer — conversationType routing (T7)", () => {
 
   beforeEach(() => {
     pushMany.mockClear();
+    pushOne.mockClear();
     channelMock.ack.mockClear();
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
@@ -261,6 +310,7 @@ describe("startChatConsumer — community mute suppression", () => {
 
   beforeEach(() => {
     pushMany.mockClear();
+    pushOne.mockClear();
     channelMock.ack.mockClear();
     channelMock.nack.mockClear();
     isMutedMock.mockReset();
@@ -496,6 +546,7 @@ describe("startChatConsumer — private room mute suppression", () => {
 
   beforeEach(() => {
     pushMany.mockClear();
+    pushOne.mockClear();
     channelMock.ack.mockClear();
     channelMock.nack.mockClear();
     isPrivateMutedMock.mockReset();
@@ -633,6 +684,7 @@ describe("startChatConsumer — push title tracks the event's room name", () => 
 
   beforeEach(() => {
     pushMany.mockClear();
+    pushOne.mockClear();
     isMutedMock.mockReset();
     isMutedMock.mockResolvedValue(false);
     filterNotifiableMock.mockReset();
@@ -786,6 +838,7 @@ describe("startChatConsumer — group room mute suppression", () => {
 
   beforeEach(() => {
     pushMany.mockClear();
+    pushOne.mockClear();
     channelMock.ack.mockClear();
     channelMock.nack.mockClear();
     isGroupMutedMock.mockReset();

@@ -15,6 +15,8 @@ import {
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { isSessionActiveForRequest } from "../lib/session-active-cache.js";
+import { foregroundSessions } from "@aimess/redis";
+import { redis } from "../config/redis.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
 import { sendVoipPush } from "../providers/apns/sendVoipPush.js";
 import { deviceTokenService } from "./device-token.service.js";
@@ -307,6 +309,27 @@ export interface PushInput {
    */
   excludeSessionId?: string;
   /**
+   * Plural twin of {@link excludeSessionId}, for a producer that resolved a SET
+   * of sessions to skip rather than one.
+   *
+   * Chat burst coalescing uses it to honour "the user is reading in the app, on
+   * this device": a session with a live foregrounded socket is already being
+   * told about the message over the socket, so a tray entry on that same device
+   * is pure duplication — while the SAME account signed in on a backgrounded
+   * phone still gets the push, which is the whole point of the split.
+   */
+  excludeSessionIds?: string[];
+  /**
+   * Skip every device whose login session currently has a FOREGROUNDED socket.
+   *
+   * That device is already being handed the message over the socket and is
+   * showing it in the app, so a tray entry on top is the duplicate users
+   * complain about. The same account's backgrounded phone is untouched — this
+   * filters by session, not by user. Best-effort and FAIL-OPEN: an unreadable
+   * hint means the push goes out.
+   */
+  suppressForegroundSessions?: boolean;
+  /**
    * APNs notification category — iOS maps this to registered UNNotificationCategory
    * actions (e.g. "Accept" / "Decline" buttons). Pass "INCOMING_CALL" for call rings.
    * Ignored on Android and data-only pushes.
@@ -410,6 +433,8 @@ export async function pushToUser(input: PushInput): Promise<void> {
     allowVoip = false,
     excludeDeviceId,
     excludeSessionId,
+    excludeSessionIds,
+    suppressForegroundSessions = false,
     apnsCategory,
   } = input;
 
@@ -663,12 +688,32 @@ export async function pushToUser(input: PushInput): Promise<void> {
     (t) =>
       !(excludeDeviceId && t.deviceId === excludeDeviceId) &&
       !(excludeSessionId && t.sessionId === excludeSessionId) &&
+      !(
+        excludeSessionIds?.length &&
+        t.sessionId &&
+        excludeSessionIds.includes(t.sessionId)
+      ) &&
       // Platform-targeted send (announcements): keep only the sessions running
       // on a requested platform. Exact match, so a row with an unrecognized
       // platform string is excluded rather than delivered to by accident.
       (!platforms ||
         platforms.includes(t.platform as "ANDROID" | "IOS" | "WEB"))
   );
+
+  // "The user is reading this in the app on that device." Resolved here rather
+  // than at the producer because only this function knows which SESSIONS the
+  // recipient actually has push tokens for — the gateway publishes a key per
+  // live foreground session and this is the one place the two lists can meet.
+  const foreground = suppressForegroundSessions
+    ? await foregroundSessions(
+        redis,
+        userId,
+        visible.map((t) => t.sessionId ?? "")
+      )
+    : null;
+  const awake = foreground
+    ? visible.filter((t) => !(t.sessionId && foreground.has(t.sessionId)))
+    : visible;
 
   // Last line of defence against the reported symptom: a device whose session
   // was revoked (logout, remote sign-out, password change, ban, deletion) must
@@ -678,7 +723,7 @@ export async function pushToUser(input: PushInput): Promise<void> {
   // with no sessionId can never silence a live device.
   const tokens = (
     await Promise.all(
-      visible.map(async (row) => {
+      awake.map(async (row) => {
         if (!row.sessionId) return row;
         if (await isSessionActiveForRequest(row.sessionId)) return row;
         // The event never arrived; delete the row now so this is a one-time cost.

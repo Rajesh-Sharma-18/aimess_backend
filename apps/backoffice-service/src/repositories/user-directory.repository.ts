@@ -963,27 +963,66 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
   private async userIdsMatchingBucket(
     bucket: NonNullable<ListUsersQuery["reports"]>
   ): Promise<string[]> {
-    const grouped = await prisma.report.groupBy({
-      by: ["targetId"],
-      where: { type: "user" },
-      _count: { _all: true },
-    });
-    return grouped
-      .filter((g) => bucketMatches(bucket, g._count._all))
-      .map((g) => g.targetId);
+    const counts = await this.aggregateReportCounts();
+    return [...counts.entries()]
+      .filter(([, count]) => bucketMatches(bucket, count))
+      .map(([userId]) => userId);
   }
 
-  /** targetId → report count for a fixed set of userIds (type='user'). */
+  /** userId → report count, restricted to a fixed set of userIds. */
   private async reportCountMap(
     userIds: string[]
   ): Promise<Map<string, number>> {
     if (userIds.length === 0) return new Map();
-    const grouped = await prisma.report.groupBy({
-      by: ["targetId"],
-      where: { type: "user", targetId: { in: userIds } },
-      _count: { _all: true },
-    });
-    return new Map(grouped.map((g) => [g.targetId, g._count._all]));
+    return this.aggregateReportCounts(userIds);
+  }
+
+  /**
+   * userId → number of reports filed against them.
+   *
+   * A report names its reported user in `targetId` (`type='user'`) or in
+   * `reportedUserId` (message/stream/comment reports) — the same collapse
+   * `report.repository` does on read. Counting only the first column made a
+   * user reported purely through chat/community messages show 0 reports here
+   * while their rows were listed on the Reports screen. Two `groupBy`s (one
+   * per column) merged in-memory: Prisma cannot group by an `OR` across two
+   * different group keys in one query. The `type: { not: "user" }` guard keeps
+   * the branches disjoint so nothing is double-counted.
+   *
+   * `userIds` scopes both queries to the current page; omit it to aggregate
+   * the whole table (report-bucket filtering).
+   */
+  private async aggregateReportCounts(
+    userIds?: string[]
+  ): Promise<Map<string, number>> {
+    const scopeTarget = userIds ? { targetId: { in: userIds } } : {};
+    const scopeReported = userIds ? { reportedUserId: { in: userIds } } : {};
+
+    const [byTarget, byReported] = await Promise.all([
+      prisma.report.groupBy({
+        by: ["targetId"],
+        where: { type: "user", ...scopeTarget },
+        _count: { _all: true },
+      }),
+      prisma.report.groupBy({
+        by: ["reportedUserId"],
+        where: {
+          type: { not: "user" },
+          reportedUserId: { not: null },
+          ...scopeReported,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const counts = new Map<string, number>();
+    const add = (userId: string, n: number) =>
+      counts.set(userId, (counts.get(userId) ?? 0) + n);
+    for (const g of byTarget) add(g.targetId, g._count._all);
+    for (const g of byReported) {
+      if (g.reportedUserId) add(g.reportedUserId, g._count._all);
+    }
+    return counts;
   }
 
   /** Build the offset-mode PaginationMeta (keyset cursor not used live). */

@@ -84,6 +84,7 @@ stream-app/
 !/tools/**/*.mjs
 !/tooling/*/scripts/**/*.mjs
 !/apps/*/scripts/**/*.mjs
+!/apps/*/tools/**/*.mjs
 !/packages/*/scripts/**/*.mjs
 stream_*.json
 test-ui

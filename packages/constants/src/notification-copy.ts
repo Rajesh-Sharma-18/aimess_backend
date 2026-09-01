@@ -634,6 +634,62 @@ export const chatCopy = register("chat", {
               ),
           };
     },
+  /**
+   * The same message notification, but standing in for a BURST: N messages that
+   * arrived into one conversation inside the coalescing window. One tray entry
+   * carrying the count and the newest line, instead of N entries — which is what
+   * a burst produced before, and the single most common complaint about it.
+   *
+   * `count` is always >= 2; a lone message still uses {@link chatCopy.message},
+   * so nothing changes for the ordinary case.
+   */
+  messageBurst:
+    (params: {
+      isCommunity: boolean;
+      communityName?: string;
+      groupName?: string;
+      senderName?: string;
+      preview?: string;
+      messageType?: string;
+      count: number;
+    }): LocalizedCopy =>
+    (locale) => {
+      const roomName = params.isCommunity
+        ? params.communityName
+        : params.groupName;
+      const preview = localizeMessagePreview(
+        params.preview,
+        params.messageType,
+        locale
+      );
+      // Named room: the title is the room, so the sender has to ride in the
+      // body next to the count — same split the single-message copy uses.
+      if (roomName) {
+        return {
+          title: roomName,
+          body: preview
+            ? t("NOTIF_CHAT_BURST_BODY_NAMED", locale, {
+                count: String(params.count),
+                name: person(params.senderName, locale),
+                preview,
+              })
+            : t("NOTIF_CHAT_BURST_COUNT", locale, {
+                count: String(params.count),
+              }),
+        };
+      }
+      return {
+        title: params.senderName || t("NOTIF_CHAT_NEW_MESSAGE", locale),
+        body: preview
+          ? t("NOTIF_CHAT_BURST_BODY", locale, {
+              count: String(params.count),
+              preview,
+            })
+          : t("NOTIF_CHAT_BURST_COUNT", locale, {
+              count: String(params.count),
+            }),
+      };
+    },
 });
 
 /**
