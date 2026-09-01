@@ -111,6 +111,35 @@ function makeBaseDeps(savedOverride?: Partial<typeof BASE_SAVED>) {
   });
 }
 
+describe("sendCommunityMessage — roster is read once per send", () => {
+  // The bump and the push each need the member list, and each used to be handed
+  // its own lazy fetcher — so one send ran the same O(members) query twice, on
+  // the event loop that the NEXT send is waiting for. Both now share one read
+  // (lib/once.ts). Asserted as a COUNT so it holds regardless of machine speed.
+  it("calls getActiveMemberIds exactly once even though bump and push both need it", async () => {
+    const deps = makeBaseDeps();
+    const roster = (
+      deps as unknown as {
+        communityMessageService: { getActiveMemberIds: jest.Mock };
+      }
+    ).communityMessageService.getActiveMemberIds;
+
+    await invoke(
+      createCommunityImpl(deps).sendCommunityMessage as Handler,
+      BASE_REQ
+    );
+
+    // Both consumers must actually have run, or "once" would be trivially true.
+    expect(pubUpdated).toHaveBeenCalledTimes(1);
+    expect(pubPush).toHaveBeenCalledTimes(1);
+    const bumpMembers = await pubUpdated.mock.calls[0][0].fetchMembers();
+    const pushMembers = await pubPush.mock.calls[0][0].fetchRecipients();
+    expect(bumpMembers).toEqual(["u1", "u2", "u3"]);
+    expect(pushMembers).toEqual(["u1", "u2", "u3"]);
+    expect(roster).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("sendCommunityMessage — community:updated carries senderName (T6)", () => {
   beforeEach(() => {
     pubUpdated.mockClear();

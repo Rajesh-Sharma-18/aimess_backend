@@ -10,6 +10,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+
+import { once } from "../lib/once.js";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError, ForbiddenError } from "@aimess/errors";
@@ -377,6 +379,13 @@ export function createMessagingImpl(
           // same messageId ack below.
           alreadySent = isIdempotentReplay(msg);
 
+          // ONE roster read shared by the `conv:updated` bump and the push
+          // below — they were each issued their own, and both are O(members).
+          // See lib/once.ts.
+          const groupRecipients = once(() =>
+            deps.groupMessageService.getActiveMemberIds(req.conversationId)
+          );
+
           // ACK HERE — same reasoning as sendCommunityMessage above. The
           // response is built entirely from `msg`; every block below is
           // fan-out, and the broadcast one awaits a presign per album row.
@@ -509,10 +518,7 @@ export function createMessagingImpl(
             if (conversationType === "GROUP") {
               publishConvUpdatedSafe({
                 ...bumpBase,
-                fetchRecipients: () =>
-                  deps.groupMessageService.getActiveMemberIds(
-                    req.conversationId
-                  ),
+                fetchRecipients: groupRecipients,
               });
             } else {
               publishConvUpdatedSafe({
@@ -558,10 +564,7 @@ export function createMessagingImpl(
             if (conversationType === "GROUP") {
               publishMessageSentSafe({
                 ...pushBase,
-                fetchRecipients: () =>
-                  deps.groupMessageService.getActiveMemberIds(
-                    req.conversationId
-                  ),
+                fetchRecipients: groupRecipients,
               });
             } else {
               publishMessageSentSafe({
@@ -2937,6 +2940,13 @@ export function createCommunityImpl(
               ? saved.createdAt.getTime()
               : Date.now();
 
+          // ONE roster read shared by the `community:updated` bump and the push
+          // below — they were each issued their own, and community rosters are
+          // the largest in the product. See lib/once.ts.
+          const communityRecipients = once(() =>
+            deps.communityMessageService.getActiveMemberIds(req.roomId)
+          );
+
           // ACK HERE, the moment the write is durable. Everything below this
           // line is fan-out — broadcast, activity denormalization, bump-to-top,
           // push — and none of it contributes a single field to the response.
@@ -3079,8 +3089,7 @@ export function createCommunityImpl(
               communityId: req.communityId,
               // Genuine chat room id — same value as community:message:new emits.
               roomId: saved.roomId,
-              fetchMembers: () =>
-                deps.communityMessageService.getActiveMemberIds(req.roomId),
+              fetchMembers: communityRecipients,
               senderId: req.senderId,
               senderName,
               lastMessageId: saved.id,
@@ -3127,8 +3136,7 @@ export function createCommunityImpl(
                 : {}),
               messageType: normalizeMessageType(saved.messageType),
               sentAt,
-              fetchRecipients: () =>
-                deps.communityMessageService.getActiveMemberIds(req.roomId),
+              fetchRecipients: communityRecipients,
             });
           }
 

@@ -10,6 +10,7 @@ import {
   GoneError,
   NotFoundError,
 } from "@aimess/errors";
+import { allocateRoomSlot } from "../lib/room-lock.js";
 import { redis } from "../config/redis.js";
 import { notifyUnreadChanged } from "../events/unread-summary-bridge.js";
 import { mayBroadcastReadReceipts } from "../lib/account-chat-settings.js";
@@ -352,23 +353,29 @@ export class CommunityMessageService {
     // "inactive" means it was deleted. This check runs before idempotency so a
     // closed-community retry never returns a previously-cached message as if the
     // send succeeded. Single source of truth for community write-ability.
-    const room = await this.roomRepo.findRoomById(params.roomId);
-    assertCommunityRoomWritable(room);
-
-    // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
-    // RoomMember row is mirrored as non-"active" by the community sync consumer,
-    // so this rejects banned users with CHAT_NOT_A_MEMBER. Read/edit/delete/
-    // react/pin paths already guard this way; send is the write chokepoint.
-    const sender = await assertCommunityMember(
-      this.memberRepo,
-      params.roomId,
-      params.sentBy
-    );
+    //
+    // The room read and the membership read hit different documents and neither
+    // feeds the other, so they are issued together. Settled (not `all`) and then
+    // asserted in the original order: `all` would surface whichever rejected
+    // first, and a non-member sending into a closed community must still be told
+    // the community is closed rather than that they are not a member.
+    const [roomRes, senderRes] = await Promise.allSettled([
+      this.roomRepo.findRoomById(params.roomId),
+      // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
+      // RoomMember row is mirrored as non-"active" by the community sync
+      // consumer, so this rejects banned users with CHAT_NOT_A_MEMBER.
+      // Read/edit/delete/react/pin paths already guard this way; send is the
+      // write chokepoint.
+      assertCommunityMember(this.memberRepo, params.roomId, params.sentBy),
+    ]);
+    if (roomRes.status === "rejected") throw roomRes.reason;
+    assertCommunityRoomWritable(roomRes.value);
+    if (senderRes.status === "rejected") throw senderRes.reason;
     // …and not moderation-muted. Reuses the row just loaded (no extra I/O); the
     // mute is mirrored from community-service, so this blocks every send path
     // (gateway socket → gRPC, REST orchestrator, direct gRPC) including media,
     // GIF, sticker, voice and file messages (all funnel through here).
-    assertCommunityMemberNotMuted(sender);
+    assertCommunityMemberNotMuted(senderRes.value);
 
     // Check idempotency (album batches use `base:N` sibling clientMessageIds).
     if (params.clientMessageId) {
@@ -459,8 +466,15 @@ export class CommunityMessageService {
       // then revision) and blow past the write-conflict retry budget → the
       // intermittent SERVICE_ERROR ack. Insert bumps the room CHANGE revision
       // too (zero-loss changes feed).
-      const { sequenceNumber, revision } =
-        await this.roomRepo.allocateSequenceAndRevision(params.roomId);
+      // …and routed through `allocateRoomSlot`, so N concurrent sends into one
+      // room share ONE `$inc` of the whole batch instead of contending for the
+      // document N times. Same batching the private path already uses; see
+      // lib/room-lock.ts.
+      const { sequenceNumber, revision } = await allocateRoomSlot(
+        params.roomId,
+        (id, count) =>
+          this.roomRepo.allocateSequenceAndRevisionBlock(id, count)
+      );
       const entity: Record<string, unknown> = {
         roomId: params.roomId,
         sentBy: params.sentBy,

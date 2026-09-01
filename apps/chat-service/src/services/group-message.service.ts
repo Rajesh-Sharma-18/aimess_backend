@@ -59,6 +59,7 @@ import {
   isGroupMemberMuted,
   canDeleteOthersMessage,
 } from "../lib/access-guard.js";
+import { allocateRoomSlot } from "../lib/room-lock.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import { getGroupVisibilityCutoff } from "../lib/deletion-cutoff.js";
 import {
@@ -186,15 +187,24 @@ export class GroupMessageService {
       ],
     });
 
-    // Verify membership
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      params.roomId,
-      params.senderId
-    );
+    // Membership and room writability are independent reads of different
+    // documents, so they are issued together rather than back to back. Settled
+    // (not `all`) and then asserted in the original order, because `all` would
+    // surface whichever rejected FIRST and a disbanded room would start
+    // reporting CHAT_ROOM_* where a non-member must still be told
+    // CHAT_NOT_A_MEMBER.
+    const [memberRes, writableRes] = await Promise.allSettled([
+      this.memberRepo.findActiveByRoomAndUser(params.roomId, params.senderId),
+      // A frozen room (disbanded / closed by a system ban) keeps history
+      // readable, so the membership check cannot catch it — the room's own
+      // status must.
+      assertGroupWritable(this.roomRepo, params.roomId),
+    ]);
+    if (memberRes.status === "rejected") throw memberRes.reason;
+    const member = memberRes.value;
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
     assertGroupMemberNotMuted(member);
-    // A frozen room (disbanded / closed by a system ban) keeps history readable, so the membership check above cannot catch it — the room's own status must.
-    await assertGroupWritable(this.roomRepo, params.roomId);
+    if (writableRes.status === "rejected") throw writableRes.reason;
 
     // §2.2: stamp the sender's group role on the returned message (transient,
     // not persisted) so the message:new emit can carry senderRole.
@@ -290,29 +300,35 @@ export class GroupMessageService {
     // rather than "who has a client-side ack listener that happened to fire".
     // Only queried when the service is fully wired (presence + redis) — tests
     // that omit those keep the old behaviour and deliveredTo starts empty.
-    let deliveredToOnInsert: string[] = [];
-    if (this.presenceService && this.redis) {
-      try {
-        const others = (
-          await this.memberRepo.findActiveMembers(params.roomId)
-        ).filter((m) => m.userId !== params.senderId);
-        if (others.length > 0) {
-          const presence = await this.presenceService.getPresenceMany(
-            others.map((m) => m.userId)
-          );
-          deliveredToOnInsert = others
-            .filter((m) => presence.get(m.userId) === true)
-            .map((m) => m.userId);
-        }
-      } catch (err) {
-        // Delivery is best-effort — a presence lookup outage must never block
-        // the send itself. The client-triggered `message:delivered` ack path
-        // remains as the fallback delivery signal.
-        logger.warn(
-          `GroupMessageService|resolvePresence|room=${params.roomId}: ${String(err)}`
-        );
-      }
-    }
+    //
+    // Started here but NOT awaited until the slot below is in hand: this is a
+    // roster read plus a presence MGET, both O(members), and neither feeds the
+    // sequence allocation. Run back to back they put the whole roster scan in
+    // front of every insert; overlapped, the send pays for the slower of the
+    // two instead of their sum.
+    const deliveredToPending: Promise<string[]> =
+      this.presenceService && this.redis
+        ? (async () => {
+            const others = (
+              await this.memberRepo.findActiveMembers(params.roomId)
+            ).filter((m) => m.userId !== params.senderId);
+            if (others.length === 0) return [];
+            const presence = await this.presenceService!.getPresenceMany(
+              others.map((m) => m.userId)
+            );
+            return others
+              .filter((m) => presence.get(m.userId) === true)
+              .map((m) => m.userId);
+          })().catch((err: unknown) => {
+            // Delivery is best-effort — a presence lookup outage must never
+            // block the send itself. The client-triggered `message:delivered`
+            // ack path remains as the fallback delivery signal.
+            logger.warn(
+              `GroupMessageService|resolvePresence|room=${params.roomId}: ${String(err)}`
+            );
+            return [];
+          })
+        : Promise.resolve([]);
 
     // One round trip for two answers: the first row's sequence number and the
     // room's auto-delete timer. Which timer THIS send gets is decided once,
@@ -320,9 +336,19 @@ export class GroupMessageService {
     // is in force for the very next message and there is no cached copy to go
     // stale. Resolved before the insert loop so every album row of one send
     // shares the same deadline.
-    const firstSlot = await this.roomRepo.allocateSequenceWithRoom(
-      params.roomId
-    );
+    //
+    // Routed through `allocateRoomSlot` so concurrent sends into ONE room are
+    // satisfied by a single `$inc` of the whole batch instead of one round trip
+    // (plus write-conflict retries) each — the same batching the private path
+    // already uses. See lib/room-lock.ts.
+    const [firstSlot, deliveredToOnInsert] = await Promise.all([
+      allocateRoomSlot(params.roomId, (id, count) =>
+        this.roomRepo.allocateSequenceBlock(id, count)
+      ),
+      // Started well above; joined here so the roster/presence scan overlaps the
+      // allocation instead of preceding it.
+      deliveredToPending,
+    ]);
     const autoDelete = this.autoDeleteStampFromRoom(firstSlot.room);
 
     const created: GroupMessage[] = [];
@@ -351,7 +377,11 @@ export class GroupMessageService {
       entity.sequenceNumber =
         i === 0
           ? firstSlot.sequenceNumber
-          : await this.roomRepo.allocateSequence(params.roomId);
+          : (
+              await allocateRoomSlot(params.roomId, (id, count) =>
+                this.roomRepo.allocateSequenceBlock(id, count)
+              )
+            ).sequenceNumber;
 
       try {
         const row = await this.messageRepo.create(
@@ -395,30 +425,6 @@ export class GroupMessageService {
     }
 
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
-    // Awaited (not fire-and-forget) for the same reason incUnreadForRoom below
-    // is awaited: conv:updated/chat:unread_summary fan out right after this —
-    // firing before the room's lastMessage/lastActivity write actually commits
-    // left the list preview/position stale while the unread badge (which does
-    // commit synchronously) moved on, a real badge/list mismatch under load or
-    // a transient failure.
-    try {
-      await this.roomRepo.updateLastMessage(params.roomId, {
-        _id: message.id,
-        senderId: message.senderId ?? null,
-        senderName: message.senderName,
-        messageType: message.messageType,
-        content: { text: (messageContent.text as string) || "" },
-        createdAt: message.createdAt,
-        clientMessageId: message.clientMessageId,
-        sequenceNumber: message.sequenceNumber,
-        revision: message.revision,
-      });
-    } catch (err: unknown) {
-      logger.warn(
-        `GroupMessageService|updateLastMessage failed: ${String(err)}`
-      );
-    }
-
     const unreadIncrement = created.filter((m) =>
       shouldCountInUnread({
         messageType: m.messageType,
@@ -427,22 +433,46 @@ export class GroupMessageService {
           .countInUnread,
       })
     ).length;
-    if (unreadIncrement > 0) {
-      // Await before the caller fans conv:updated / chat:unread_summary — otherwise
-      // the summary push reads a stale sum and the Chats nav badge desyncs from
-      // the list (classic private/group badge mismatch).
-      try {
-        await this.memberRepo.incUnreadForRoom(
-          params.roomId,
-          params.senderId,
-          unreadIncrement
-        );
-      } catch (err: unknown) {
-        logger.warn(
-          `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
-        );
-      }
-    }
+
+    // BOTH are awaited (not fire-and-forget) because conv:updated /
+    // chat:unread_summary fan out right after this: publishing before the room's
+    // lastMessage write commits leaves the list preview/position stale while the
+    // unread badge moves on — a real badge/list mismatch under load. They touch
+    // different documents and neither reads the other, so they are overlapped
+    // rather than run back to back. Failures stay isolated per write, exactly as
+    // before, so a failed preview update still lets the badge advance.
+    await Promise.all([
+      this.roomRepo
+        .updateLastMessage(params.roomId, {
+          _id: message.id,
+          senderId: message.senderId ?? null,
+          senderName: message.senderName,
+          messageType: message.messageType,
+          content: { text: (messageContent.text as string) || "" },
+          createdAt: message.createdAt,
+          clientMessageId: message.clientMessageId,
+          sequenceNumber: message.sequenceNumber,
+          revision: message.revision,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|updateLastMessage failed: ${String(err)}`
+          );
+        }),
+      unreadIncrement > 0
+        ? this.memberRepo
+            .incUnreadForRoom(
+              params.roomId,
+              params.senderId,
+              unreadIncrement
+            )
+            .catch((err: unknown) => {
+              logger.warn(
+                `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
+              );
+            })
+        : Promise.resolve(),
+    ]);
 
     // Fire one `message:delivered` per online member so the sender's tick can
     // flip SENT→DELIVERED as each recipient is confirmed present. Fire-and-

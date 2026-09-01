@@ -22,6 +22,11 @@
  */
 export interface AllocatedSlot<TRoom> {
   sequenceNumber: number;
+  /**
+   * 0 when the allocator does not hand out revisions. Group insert bumps only
+   * `lastSequence` — its `/changes` cursor is advanced elsewhere — so a group
+   * slot carries no revision and callers must not persist this as one.
+   */
   revision: number;
   room: TRoom;
 }
@@ -34,7 +39,12 @@ type Waiter<TRoom> = {
 type BlockAllocator<TRoom> = (
   roomId: string,
   count: number
-) => Promise<{ lastSequence: number; lastRevision: number; room: TRoom }>;
+) => Promise<{
+  lastSequence: number;
+  /** Omit when the room's revision counter was not incremented by this block. */
+  lastRevision?: number;
+  room: TRoom;
+}>;
 
 const pending = new Map<string, Waiter<unknown>[]>();
 const draining = new Set<string>();
@@ -55,11 +65,16 @@ async function drain<TRoom>(
       try {
         const block = await allocateBlock(roomId, batch.length);
         const firstSeq = block.lastSequence - batch.length + 1;
-        const firstRev = block.lastRevision - batch.length + 1;
+        // No revision block means this room does not allocate revisions on
+        // insert; hand out 0 rather than a plausible-looking wrong number.
+        const firstRev =
+          block.lastRevision === undefined
+            ? undefined
+            : block.lastRevision - batch.length + 1;
         batch.forEach((waiter, i) =>
           waiter.resolve({
             sequenceNumber: firstSeq + i,
-            revision: firstRev + i,
+            revision: firstRev === undefined ? 0 : firstRev + i,
             room: block.room,
           } as AllocatedSlot<unknown>)
         );
