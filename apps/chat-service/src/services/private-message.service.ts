@@ -1373,7 +1373,7 @@ export class PrivateMessageService {
    */
   async resolveEffectiveLastLosers(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     recipientIds: string[]
   ): Promise<Map<string, RecipientOverride | null>> {
     const room = await this.roomRepo.findByRoomId(roomId);
@@ -1381,14 +1381,14 @@ export class PrivateMessageService {
       privateVisibilitySource(this.messageRepo),
       roomId,
       room?.lastMessageId ?? null,
-      deletedMessageCreatedAt,
+      deletedMessageSeq,
       recipientIds
     );
   }
 
   async recalculateLastMessageAfterDeleteForMe(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     userId: string
   ): Promise<{
     prevMessageId: string | null;
@@ -1417,8 +1417,8 @@ export class PrivateMessageService {
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
     const wasEffectiveLast = deletedWasEffectiveLast(
-      prev?.createdAt ?? null,
-      deletedMessageCreatedAt
+      prev?.sequenceNumber ?? null,
+      deletedMessageSeq
     );
     if (prev) {
       return {

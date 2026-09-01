@@ -12,22 +12,29 @@
  * message until the next refetch.
  *
  * The fix is to make the snapshot write CONDITIONAL on being newer than what is
- * already stored, ordering by the pair `(lastMessageAt, seq)`:
+ * already stored, ordered by `seq`:
  *
- *  - `stored.at < new.at`                        → newer, accept
- *  - `stored.at == new.at && stored.seq <= new.seq` → accept
- *  - anything else                                → stale, reject (no-op)
+ *  - `stored.seq <= new.seq`   → newer (or the same row), accept
+ *  - `stored.seq >  new.seq`   → stale, reject (no-op)
+ *  - stored row carries NO seq → legacy, fall back to `lastMessageAt`
  *
- * `seq` is the per-room `sequenceNumber` (`allocateSequence`), already the
- * documented "which of two rows sharing one millisecond is newer?" tie-breaker
- * (see `lib/list-row-identity.ts`); `lastMessageAt` alone has only millisecond
- * resolution and a burst regularly collides inside one.
+ * `seq` is the per-room `sequenceNumber` (`allocateSequence`) and it — not
+ * `createdAt` — is the room's ordering authority: the sequence comes from an
+ * atomic `$inc` while `createdAt` is stamped a round trip later, so two
+ * concurrent sends can genuinely swap between the two orderings (send A takes
+ * seq 5 then writes createdAt .412; send B takes seq 6 then writes .408). The
+ * clients render the transcript in `sequenceNumber` order (web
+ * `component/chat/messages/messageOrder.ts` — "sequenceNumber is the
+ * authority"), so a timestamp-ordered snapshot made the conversation list
+ * preview a DIFFERENT message from the one at the bottom of the open chat.
+ * `findPreviousVisible*` (the delete/clear recalculation) ranks by the same key
+ * for the same reason.
  *
- * The `<=` on the equal-timestamp branch is deliberate: an IN-PLACE refresh of
- * the message the room already points at (a call card transitioning
- * RINGING→ENDED rewrites the same row with its own `createdAt`/`seq`) must
- * still land. Two DIFFERENT messages can never share a `seq` — it is allocated
- * by an atomic `$inc` — so `==` only ever means "same message".
+ * The `<=` is deliberate: an IN-PLACE refresh of the message the room already
+ * points at (a call card transitioning RINGING→ENDED rewrites the same row with
+ * its own `createdAt`/`seq`) must still land. Two DIFFERENT messages can never
+ * share a `seq` — it is allocated by an atomic `$inc` — so `==` only ever means
+ * "same message".
  *
  * This guard is for FORWARD bumps only. The delete/clear recalculation path
  * (`setLastMessage`, `rollbackLastActivity`) is the one legitimate BACKWARD
@@ -35,34 +42,32 @@
  * (compare-and-swap on the snapshot it read) instead.
  */
 
-/** Room rows whose stored snapshot predates this field read back as `null`. */
-type NullableSeqFilter = { lte: number } | null;
+/** The legacy branch: a room row written before `lastMessageSeq` existed reads
+ *  back as `null` on Prisma and is ABSENT in the document, and Mongo needs both
+ *  spellings (see the `isSet` note in private-room.repository). */
+type NoStoredSeq = [
+  { lastMessageSeq: null },
+  { lastMessageSeq: { isSet: false } },
+];
 
 export interface NewerSnapshotWhere {
   OR: (
-    | { lastMessageAt: { lt: Date } }
-    | { lastMessageAt: null }
+    | { lastMessageSeq: { lte: number } }
     | {
         AND: [
-          { lastMessageAt: Date },
-          {
-            OR: [
-              { lastMessageSeq: NullableSeqFilter },
-              { lastMessageSeq: null },
-            ];
-          },
+          { OR: NoStoredSeq },
+          { OR: [{ lastMessageAt: { lte: Date } }, { lastMessageAt: null }] },
         ];
       }
   )[];
 }
 
 /**
- * Prisma `where` fragment accepting only a snapshot strictly newer than the
- * stored one. Spread into an `updateMany` alongside the row selector.
+ * Prisma `where` fragment accepting only a snapshot newer than the stored one.
+ * Spread into an `updateMany` alongside the row selector.
  *
- * `{ lastMessageAt: null }` matches rooms that have never had a message AND
- * (on MongoDB) rooms whose document predates the column — the same reason the
- * `lastMessageSeq` branch carries its own `null` alternative.
+ * `{ lastMessageAt: null }` on the legacy branch matches rooms that have never
+ * had a message AND (on MongoDB) rooms whose document predates the column.
  */
 export function newerSnapshotWhere(
   at: Date,
@@ -70,17 +75,16 @@ export function newerSnapshotWhere(
 ): NewerSnapshotWhere {
   return {
     OR: [
-      { lastMessageAt: { lt: at } },
-      { lastMessageAt: null },
+      { lastMessageSeq: { lte: seq ?? 0 } },
       {
         AND: [
-          { lastMessageAt: at },
           {
             OR: [
-              { lastMessageSeq: { lte: seq ?? 0 } },
               { lastMessageSeq: null },
+              { lastMessageSeq: { isSet: false } },
             ],
           },
+          { OR: [{ lastMessageAt: { lte: at } }, { lastMessageAt: null }] },
         ],
       },
     ],
@@ -90,7 +94,9 @@ export function newerSnapshotWhere(
 /**
  * The same predicate as raw MongoDB query operators, for the one write issued
  * through `$runCommandRaw` (private's single-round-trip findAndModify, which
- * has to `$inc` unread and `$set` the snapshot in one atomic step).
+ * has to `$inc` unread and `$set` the snapshot in one atomic step). Raw Mongo
+ * `{ field: null }` already matches an absent field, so the legacy branch needs
+ * only the one spelling here.
  */
 export function newerSnapshotMongoQuery(
   at: Date,
@@ -99,15 +105,14 @@ export function newerSnapshotMongoQuery(
   const iso = at.toISOString();
   return {
     $or: [
-      { lastMessageAt: { $lt: { $date: iso } } },
-      { lastMessageAt: null },
+      { lastMessageSeq: { $lte: seq ?? 0 } },
       {
         $and: [
-          { lastMessageAt: { $date: iso } },
+          { lastMessageSeq: null },
           {
             $or: [
-              { lastMessageSeq: { $lte: seq ?? 0 } },
-              { lastMessageSeq: null },
+              { lastMessageAt: { $lte: { $date: iso } } },
+              { lastMessageAt: null },
             ],
           },
         ],

@@ -220,7 +220,7 @@ export class GeneralRoomRepository {
     //
     // Conditional `updateMany` for the same reason as the group path: those
     // concurrent sends are not ordered, so the write only lands while this
-    // message is newer than the stored snapshot by (lastMessageAt, seq).
+    // message is newer than the stored snapshot by `seq`.
     // A returned count of 0 means a newer message already won. See
     // lib/last-activity-guard.ts.
     const res = await withWriteConflictRetry(() =>

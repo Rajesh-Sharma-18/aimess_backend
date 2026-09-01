@@ -543,9 +543,9 @@ export class GroupMessageController {
               type: "GROUP",
               roomId: rId,
               recipientIds: () => this.messageService.getActiveMemberIds(rId),
-              deletedMessageCreatedAt: result.createdAt,
-              resolveLosers: (rid, at, ids) =>
-                this.messageService.resolveEffectiveLastLosers(rid, at, ids),
+              deletedMessageSeq: result.sequenceNumber ?? 0,
+              resolveLosers: (rid, seq, ids) =>
+                this.messageService.resolveEffectiveLastLosers(rid, seq, ids),
             });
           }
           const preview = buildMessagePreview(
@@ -600,9 +600,9 @@ export class GroupMessageController {
     // last visible message (else hiding it changes nothing in their list).
     if (result?.roomId && scope === "forMe") {
       const rId = result.roomId;
-      const deletedAt = result.createdAt;
+      const deletedSeq = result.sequenceNumber ?? 0;
       void this.messageService
-        .recalculateLastMessageAfterDeleteForMe(rId, deletedAt, userId)
+        .recalculateLastMessageAfterDeleteForMe(rId, deletedSeq, userId)
         .then((recalc) => {
           if (!recalc || !recalc.wasEffectiveLast) return; // no-op: not the last
           const preview = recalc.hasLastMessage

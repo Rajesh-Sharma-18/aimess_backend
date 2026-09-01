@@ -1121,17 +1121,17 @@ export class ChatMessageOrchestrator {
                         result.receiverId ?? "",
                       ].filter(Boolean) as string[]
                     ),
-              deletedMessageCreatedAt: result.createdAt,
-              resolveLosers: (rid, at, ids) =>
+              deletedMessageSeq: result.sequenceNumber ?? 0,
+              resolveLosers: (rid, seq, ids) =>
                 conversationType === "GROUP"
                   ? this.groupMessageService.resolveEffectiveLastLosers(
                       rid,
-                      at,
+                      seq,
                       ids
                     )
                   : this.privateMessageService.resolveEffectiveLastLosers(
                       rid,
-                      at,
+                      seq,
                       ids
                     ),
               projectionRevision: result.revision ?? 0,
@@ -1238,12 +1238,12 @@ export class ChatMessageOrchestrator {
         conversationType === "GROUP"
           ? this.groupMessageService.recalculateLastMessageAfterDeleteForMe(
               rId,
-              result.createdAt,
+              result.sequenceNumber ?? 0,
               params.userId
             )
           : this.privateMessageService.recalculateLastMessageAfterDeleteForMe(
               rId,
-              result.createdAt,
+              result.sequenceNumber ?? 0,
               params.userId
             );
       void recalcPromise

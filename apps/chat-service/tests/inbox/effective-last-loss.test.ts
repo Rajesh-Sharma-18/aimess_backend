@@ -42,7 +42,20 @@ const HEY_AT = new Date(1_700_000_001_000); // m1, the message deleted for every
 const HELLO_AT = new Date(1_700_000_002_000); // m2, the shared last
 const MORNING_AT = new Date(1_700_000_003_000); // m3
 
-function msg(id: string, createdAt: Date, content = "text"): VisibleLast {
+// The ORDERING key the resolver decides on is `sequenceNumber`, not `createdAt`
+// (see `deletedWasEffectiveLast`): the sequence is allocated by an atomic
+// per-room `$inc` while `createdAt` is stamped a round trip later, so a burst
+// can hand out the two in different orders.
+const OLDER_SEQ = 6; // m0, allocated before the removed message
+const HEY_SEQ = 7; // m1, the message deleted for everyone
+const HELLO_SEQ = 8; // allocated after it -> still visible == nothing changed
+
+function msg(
+  id: string,
+  createdAt: Date,
+  content = "text",
+  seq = HEY_SEQ
+): VisibleLast {
   return {
     messageId: id,
     senderId: "s1",
@@ -51,7 +64,7 @@ function msg(id: string, createdAt: Date, content = "text"): VisibleLast {
     content,
     createdAt,
     clientMessageId: `cmid-${id}`,
-    sequenceNumber: 7,
+    sequenceNumber: seq,
     revision: 2,
   };
 }
@@ -87,7 +100,7 @@ describe("resolveEffectiveLastLosers", () => {
       hiders: { m2: [A] },
       prevByUser: { [A]: null },
     });
-    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_AT, [
+    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_SEQ, [
       A,
       ADMIN,
       B,
@@ -98,7 +111,7 @@ describe("resolveEffectiveLastLosers", () => {
 
   it("costs ONE lookup and returns nothing when nobody hid the shared last", async () => {
     const { src, calls } = source({ hiders: {} });
-    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_AT, [
+    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_SEQ, [
       A,
       ADMIN,
       B,
@@ -110,12 +123,13 @@ describe("resolveEffectiveLastLosers", () => {
 
   it("EXCLUDES a hider whose own newest visible message is NEWER than the removed one", async () => {
     // A hid m3 (the shared last) but still sees m2 — removing m1 changes nothing
-    // for them, so no bump is warranted.
+    // for them, so no bump is warranted. "Newer" is a HIGHER sequence, not a
+    // later timestamp.
     const { src } = source({
       hiders: { m3: [A] },
-      prevByUser: { [A]: msg("m2", HELLO_AT) },
+      prevByUser: { [A]: msg("m2", HELLO_AT, "text", HELLO_SEQ) },
     });
-    const out = await resolveEffectiveLastLosers(src, ROOM, "m3", HEY_AT, [
+    const out = await resolveEffectiveLastLosers(src, ROOM, "m3", HEY_SEQ, [
       A,
       B,
     ]);
@@ -127,36 +141,38 @@ describe("resolveEffectiveLastLosers", () => {
       hiders: { m2: [A] },
       // A hid m2; m1 is being deleted for everyone; an OLDER m0 survives.
       prevByUser: {
-        [A]: msg("m0", new Date(HEY_AT.getTime() - 1000), "older"),
+        [A]: msg("m0", new Date(HEY_AT.getTime() - 1000), "older", OLDER_SEQ),
       },
     });
-    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_AT, [A]);
+    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_SEQ, [A]);
     expect(out.get(A)).toMatchObject({
       lastMessageId: "m0",
       lastMessageAt: HEY_AT.getTime() - 1000,
       content: "older",
       clientMessageId: "cmid-m0",
-      sequenceNumber: 7,
+      sequenceNumber: OLDER_SEQ,
       revision: 2,
     });
   });
 
-  it("treats a same-millisecond tie as 'it was their last'", async () => {
+  // Two DIFFERENT messages can never share a sequence (atomic `$inc`), so an
+  // equal one only ever means the row the caller is asking about.
+  it("treats an equal sequence as 'it was their last'", async () => {
     const { src } = source({
       hiders: { m2: [A] },
       prevByUser: { [A]: msg("m1b", HEY_AT) },
     });
-    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_AT, [A]);
+    const out = await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_SEQ, [A]);
     expect(out.get(A)).toMatchObject({ lastMessageId: "m1b" });
   });
 
   it("does nothing for an already-empty room or an empty member list", async () => {
     const { src, calls } = source({ hiders: { m2: [A] } });
     expect(
-      (await resolveEffectiveLastLosers(src, ROOM, null, HEY_AT, [A])).size
+      (await resolveEffectiveLastLosers(src, ROOM, null, HEY_SEQ, [A])).size
     ).toBe(0);
     expect(
-      (await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_AT, [])).size
+      (await resolveEffectiveLastLosers(src, ROOM, "m2", HEY_SEQ, [])).size
     ).toBe(0);
     expect(calls.hidersAmong).toBe(0);
   });
@@ -195,7 +211,7 @@ describe("publishConvEffectiveLastLoss (private/group wire contract)", () => {
       type: "GROUP",
       roomId: ROOM,
       recipientIds: () => Promise.resolve([A, ADMIN, B]),
-      deletedMessageCreatedAt: HEY_AT,
+      deletedMessageSeq: HEY_SEQ,
       resolveLosers: () => Promise.resolve(new Map([[A, null]])),
       projectionRevision: 42,
     });
@@ -217,7 +233,7 @@ describe("publishConvEffectiveLastLoss (private/group wire contract)", () => {
       type: "PRIVATE",
       roomId: ROOM,
       recipientIds: () => Promise.resolve([A, B]),
-      deletedMessageCreatedAt: HEY_AT,
+      deletedMessageSeq: HEY_SEQ,
       resolveLosers: () => Promise.resolve(new Map()),
     });
     await flush();
@@ -234,7 +250,7 @@ describe("publishCommunityEffectiveLastLoss (wire + PERSISTED overlay)", () => {
       roomId: ROOM,
       memberIds: () => Promise.resolve([A, ADMIN, B]),
       deletedMessageId: "m1",
-      deletedMessageCreatedAt: HEY_AT,
+      deletedMessageSeq: HEY_SEQ,
       resolveLosers: () => Promise.resolve(new Map([[A, null]])),
     });
     await flush();
@@ -265,7 +281,7 @@ describe("publishCommunityEffectiveLastLoss (wire + PERSISTED overlay)", () => {
       roomId: ROOM,
       memberIds: () => Promise.resolve([A, B]),
       deletedMessageId: "m1",
-      deletedMessageCreatedAt: HEY_AT,
+      deletedMessageSeq: HEY_SEQ,
       resolveLosers: () =>
         Promise.resolve(
           new Map([
@@ -304,7 +320,7 @@ describe("publishCommunityEffectiveLastLoss (wire + PERSISTED overlay)", () => {
       roomId: ROOM,
       memberIds: () => Promise.resolve([A, B]),
       deletedMessageId: "m1",
-      deletedMessageCreatedAt: HEY_AT,
+      deletedMessageSeq: HEY_SEQ,
       resolveLosers: () => Promise.resolve(new Map()),
     });
     await flush();

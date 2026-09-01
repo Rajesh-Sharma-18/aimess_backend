@@ -335,7 +335,7 @@ export class GroupRoomRepository {
     //
     // `updateMany` (not `update`) because the write is CONDITIONAL: it lands
     // only while this message is newer than the stored snapshot, ordered by
-    // (lastMessageAt, seq). Five messages sent in a burst are five concurrent
+    // `seq`. Five messages sent in a burst are five concurrent
     // handlers, so nothing made these writes arrive in send order and an older
     // one used to rewind the room's preview. Returns the matched count — 0
     // means a newer message already owns the snapshot, which is a success.

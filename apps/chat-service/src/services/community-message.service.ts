@@ -928,7 +928,7 @@ export class CommunityMessageService {
    */
   async resolveEffectiveLastLosers(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     recipientIds: string[]
   ): Promise<Map<string, RecipientOverride | null>> {
     const room = await this.roomRepo.findRoomById(roomId);
@@ -936,7 +936,7 @@ export class CommunityMessageService {
       this.visibilitySource(),
       roomId,
       room?.lastMessageId ?? null,
-      deletedMessageCreatedAt,
+      deletedMessageSeq,
       recipientIds
     );
   }
@@ -2960,7 +2960,7 @@ export class CommunityMessageService {
    */
   async recalculateLastMessageAfterDeleteForMe(
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     userId: string
   ): Promise<{
     prevMessageId: string | null;
@@ -2989,8 +2989,8 @@ export class CommunityMessageService {
     // The deleted (now-hidden) message was the viewer's last iff nothing still
     // visible is newer than it (single source of truth: deletedWasEffectiveLast).
     const wasEffectiveLast = deletedWasEffectiveLast(
-      prev?.createdAt ?? null,
-      deletedMessageCreatedAt
+      prev?.sequenceNumber ?? null,
+      deletedMessageSeq
     );
     if (prev) {
       return {

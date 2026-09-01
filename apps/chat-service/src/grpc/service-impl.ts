@@ -3956,11 +3956,11 @@ export function createCommunityImpl(
                 memberIds: () =>
                   deps.communityMessageService.getActiveMemberIds(lRoomId),
                 deletedMessageId: req.messageId,
-                deletedMessageCreatedAt: result.createdAt,
-                resolveLosers: (rid, at, ids) =>
+                deletedMessageSeq: result.sequenceNumber ?? 0,
+                resolveLosers: (rid, seq, ids) =>
                   deps.communityMessageService.resolveEffectiveLastLosers(
                     rid,
-                    at,
+                    seq,
                     ids
                   ),
               });
@@ -3976,7 +3976,7 @@ export function createCommunityImpl(
             forMeRecalc =
               await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
                 result.roomId,
-                result.createdAt,
+                result.sequenceNumber ?? 0,
                 req.userId
               );
             if (forMeRecalc !== null && forMeRecalc.wasEffectiveLast) {

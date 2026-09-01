@@ -298,19 +298,22 @@ describe("REST DELETE /messages/:messageId?type=forMe", () => {
       messageType: "text",
       deletedForAll: false,
       createdAt: oldCreatedAt,
+      sequenceNumber: 10,
     });
     mocks.generalRoomMessageRepo.deleteForUser.mockResolvedValue(undefined);
     mocks.generalRoomRepo.findRoomById.mockResolvedValue({
       id: ROOM,
       status: "active",
     });
-    // A NEWER message is still visible to this viewer — the deleted one was
-    // not their effective last, so this must be a no-op.
+    // A NEWER message is still visible to this viewer — a HIGHER
+    // sequenceNumber, the key deletedWasEffectiveLast compares — so the deleted
+    // one was not their effective last and this must be a no-op.
     mocks.generalRoomMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
       id: "newer-1",
       sentBy: "sender-4",
       messageType: "text",
       createdAt: new Date("2026-07-01T10:00:00.000Z"),
+      sequenceNumber: 20,
     });
 
     const res = await request(app)
@@ -781,17 +784,20 @@ describe("REST DELETE forMe — community:updated socket carries recalculated pr
       messageType: "text",
       deletedForAll: false,
       createdAt: oldCreatedAt,
+      sequenceNumber: 10,
     });
     mocks.generalRoomMessageRepo.deleteForUser.mockResolvedValue(undefined);
     mocks.generalRoomRepo.findRoomById.mockResolvedValue({
       id: ROOM,
       status: "active",
     });
+    // Higher sequenceNumber == newer — see deletedWasEffectiveLast.
     mocks.generalRoomMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
       id: "newer-msg",
       sentBy: "u",
       messageType: "text",
       createdAt: new Date("2026-07-01T10:00:00.000Z"),
+      sequenceNumber: 20,
     });
 
     await request(app)
