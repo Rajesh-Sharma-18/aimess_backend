@@ -9,6 +9,7 @@ import { adminStatsRepository } from "../repositories/admin-stats.repository.js"
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
 import type { AuthUser } from "../generated/prisma/client.js";
 import { authRepository } from "../repositories/auth.repository.js";
+import { sessionRepository } from "../repositories/session.repository.js";
 import { accountService } from "../services/account.service.js";
 import { accountBanService } from "../services/account-ban.service.js";
 import { accountRestoreService } from "../services/account-restore.service.js";
@@ -289,6 +290,31 @@ const authImpl: grpc.UntypedServiceImplementation = {
         callback(null, { taken: user !== null });
       } catch (err) {
         logger.error(`gRPC isUserEmailTaken error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Internal: notifications-service asks before pushing to a device token that
+  // was registered by this session. Redis answers first over there; this is the
+  // authoritative fallback for a session whose marker has expired, and it is
+  // what stops a signed-out device from being rung.
+  isSessionActive: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { sessionId?: string };
+        const sessionId = (req.sessionId ?? "").trim();
+        if (!sessionId) {
+          callback(null, { active: false });
+          return;
+        }
+        const row = await sessionRepository.isSessionActive(sessionId);
+        callback(null, { active: row !== null });
+      } catch (err) {
+        logger.error(`gRPC isSessionActive error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

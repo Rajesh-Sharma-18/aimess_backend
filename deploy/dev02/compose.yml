@@ -179,6 +179,7 @@ services:
       USER_SERVICE_GRPC_URL: user-service:4002
       CHAT_SERVICE_GRPC_URL: chat-service:4004
       COMMUNITY_SERVICE_GRPC_URL: community-service:4003
+      AUTH_GRPC_URL: auth-service:4001
 
   # ===========================================================================
   # media-service — MongoDB aimess_media. Presigned uploads + AV scan queue.

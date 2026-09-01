@@ -31,6 +31,9 @@ const envSchema = z.object({
   USER_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4002"),
   CHAT_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4004"),
   COMMUNITY_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4003"),
+  // Authoritative session-liveness oracle for the push gate (see
+  // lib/session-active-cache.ts).
+  AUTH_GRPC_URL: z.string().default("127.0.0.1:4001"),
 
   // Cached notification-settings TTL (seconds).
   NOTIF_SETTINGS_CACHE_TTL_SEC: z.coerce.number().positive().default(300),

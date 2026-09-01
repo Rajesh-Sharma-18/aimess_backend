@@ -26,8 +26,8 @@ app.use(
       env.NODE_ENV === "development"
         ? true
         : env.CORS_ALLOWED_ORIGINS.split(",")
-            .map((o) => o.trim())
-            .filter(Boolean),
+          .map((o) => o.trim())
+          .filter(Boolean),
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
   })
