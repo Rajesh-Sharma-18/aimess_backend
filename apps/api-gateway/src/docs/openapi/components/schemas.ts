@@ -4054,7 +4054,7 @@ export const openApiSchemas = {
         type: "boolean",
         default: false,
         description:
-          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts. Access-token lifetime is unchanged.",
+          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts, and the httpOnly `aimess_rt` cookie is persistent rather than a session cookie. Access-token lifetime is unchanged.",
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
@@ -4102,10 +4102,9 @@ export const openApiSchemas = {
       refreshToken: {
         type: "string",
         description:
-          "Refresh token from login, register, or a previous refresh",
+          "Refresh token from login, register, or a previous refresh. OPTIONAL for browsers: when omitted, the httpOnly `aimess_rt` cookie set at login is used instead. Native clients must keep sending it - they have no cookie jar. The body wins when both are present. 400 if neither is supplied.",
       },
     },
-    required: ["refreshToken"],
   },
   ActiveSession: {
     type: "object",

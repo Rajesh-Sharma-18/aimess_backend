@@ -20,14 +20,18 @@ import {
   loginWithApple,
   loginWithGoogle,
 } from "../controllers/social-auth.controller.js";
-import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
+import { hydrateRefreshTokenFromCookie } from "../../lib/auth-cookie.js";
+import {  authenticateAccessTokenOptional } from "../../middleware/authenticate-access-token.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
   loginSchema,
   registerSchema,
   validateAccountSchema,
 } from "../validators/auth.validator.js";
-import { sensitiveAuthRateLimiter } from "../../middleware/rate-limiters.js";
+import {
+  refreshRateLimiter,
+  sensitiveAuthRateLimiter,
+} from "../../middleware/rate-limiters.js";
 import { requireSignupChallenge } from "../../middleware/require-signup-challenge.js";
 import {
   requestPasswordResetOtpSchema,
@@ -83,9 +87,26 @@ authRoutes.post(
   validateBody(loginSchema),
   login
 );
-authRoutes.post("/refresh", validateBody(refreshTokenSchema), refreshTokens);
-authRoutes.post("/token", validateBody(refreshTokenSchema), issueAccessToken);
-authRoutes.post("/logout", authenticateAccessToken, logout);
+// `hydrateRefreshTokenFromCookie` folds the httpOnly cookie into the body before
+// validation, so a browser posts an empty body and a native client - which
+// still sends `refreshToken` explicitly - is untouched. The body wins on conflict.
+authRoutes.post(
+  "/refresh",
+  refreshRateLimiter,
+  hydrateRefreshTokenFromCookie,
+  validateBody(refreshTokenSchema),
+  refreshTokens
+);
+authRoutes.post(
+  "/token",
+  refreshRateLimiter,
+  hydrateRefreshTokenFromCookie,
+  validateBody(refreshTokenSchema),
+  issueAccessToken
+);
+// Optional auth: an expired access token must not trap a live refresh cookie
+// in the browser, so logout falls back to the cookie to find the session.
+authRoutes.post("/logout", authenticateAccessTokenOptional, logout);
 authRoutes.post(
   "/google",
   sensitiveAuthRateLimiter,
