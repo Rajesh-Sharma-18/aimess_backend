@@ -33,6 +33,8 @@ const GROUPS = {
   grpc: "Internal service-to-service gRPC token",
   media: "SRS hook secret, LiveKit API pair, SRS API password",
   infra: "Database, Redis, RabbitMQ and MinIO passwords",
+  storage:
+    "Per-service MinIO account secrets (each service holds its own, scoped to its own buckets)",
 };
 
 /**
@@ -58,6 +60,16 @@ const SECRETS = [
   { name: "REDIS_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },
   { name: "RABBITMQ_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },
   { name: "MINIO_ROOT_PASSWORD", group: "infra", kind: "bytes", bytes: 24 },
+  // One per service, provisioned by deploy/minio/init-buckets.sh. Six services
+  // used to share the ROOT credentials, which can read and delete every object
+  // in every bucket and drop the buckets themselves — so a leak from any one of
+  // them handed over all user media at once.
+  { name: "MINIO_SECRET_MEDIA", group: "storage", kind: "bytes", bytes: 24 },
+  { name: "MINIO_SECRET_USER", group: "storage", kind: "bytes", bytes: 24 },
+  { name: "MINIO_SECRET_CHAT", group: "storage", kind: "bytes", bytes: 24 },
+  { name: "MINIO_SECRET_COMMUNITY", group: "storage", kind: "bytes", bytes: 24 },
+  { name: "MINIO_SECRET_STREAM", group: "storage", kind: "bytes", bytes: 24 },
+  { name: "MINIO_SECRET_BACKOFFICE", group: "storage", kind: "bytes", bytes: 24 },
 ];
 
 function parseArgs(argv) {

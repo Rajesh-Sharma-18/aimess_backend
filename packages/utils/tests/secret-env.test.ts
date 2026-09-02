@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  assertNoPlaceholderCredentials,
   assertNoPlaceholderSecrets,
   expandFileSecrets,
   isPlaceholderSecret,
@@ -156,6 +157,89 @@ describe("assertNoPlaceholderSecrets", () => {
       assertNoPlaceholderSecrets(
         { GRPC_SERVICE_TOKEN: "dev-grpc-service-token-change-me" },
         { nodeEnv: "development", serviceName: "chat-service" }
+      )
+    ).not.toThrow();
+  });
+});
+
+/**
+ * AIM-25 and friends. `assertNoPlaceholderSecrets` was written, exported and
+ * tested — and called by nothing, so no service actually refused to boot on a
+ * published value. It also required the caller to enumerate what to check,
+ * which is how `MINIO_ACCESS_KEY=minioadmin` stayed in three services'
+ * templates while the JWT secrets were being taken seriously.
+ *
+ * This variant walks the environment and matches on the variable NAME, so a
+ * credential added tomorrow is covered with nothing to remember.
+ */
+describe("assertNoPlaceholderCredentials", () => {
+  const opts = { nodeEnv: "production", serviceName: "media-service" };
+
+  it("refuses to boot on MinIO's published default credentials", () => {
+    expect(() =>
+      assertNoPlaceholderCredentials(
+        { MINIO_ACCESS_KEY: "minioadmin", MINIO_SECRET_KEY: "minioadmin" },
+        opts
+      )
+    ).toThrow(/MINIO_ACCESS_KEY/);
+  });
+
+  it("names every offender at once, not one per restart", () => {
+    expect(() =>
+      assertNoPlaceholderCredentials(
+        {
+          MINIO_SECRET_KEY: "minioadmin",
+          GRPC_SERVICE_TOKEN: "dev-grpc-service-token-change-me",
+          SMTP_PASSWORD: "changeme",
+        },
+        opts
+      )
+    ).toThrow(/MINIO_SECRET_KEY.*GRPC_SERVICE_TOKEN.*SMTP_PASSWORD/s);
+  });
+
+  it.each([
+    "JWT_ACCESS_SECRET",
+    "MONGO_PASSWORD",
+    "GRPC_SERVICE_TOKEN",
+    "FIREBASE_PRIVATE_KEY",
+    "SOME_NEW_APIKEY",
+    "VENDOR_CREDENTIAL",
+  ])("covers %s by name shape", (name) => {
+    expect(() =>
+      assertNoPlaceholderCredentials({ [name]: "changeme" }, opts)
+    ).toThrow(new RegExp(name));
+  });
+
+  it("ignores variables that carry no credential", () => {
+    // A bucket called "secret" would be a silly reason to refuse a deploy, but
+    // a bucket NAME is not credential-shaped, so it is never examined.
+    expect(() =>
+      assertNoPlaceholderCredentials(
+        { MINIO_BUCKET: "changeme", NODE_ENV: "production" },
+        opts
+      )
+    ).not.toThrow();
+  });
+
+  it("accepts real generated values", () => {
+    expect(() =>
+      assertNoPlaceholderCredentials(
+        {
+          MINIO_ACCESS_KEY: "aimess-media",
+          MINIO_SECRET_KEY: "Zk9s3Qk1r7Yb2mVx8Tn4Lp6Wc0Jd5Hg2Aq7Ue1Ri3Bo",
+        },
+        opts
+      )
+    ).not.toThrow();
+  });
+
+  it("stays out of the way outside production", () => {
+    // Local development runs on the compose defaults by design; blocking that
+    // would just teach everyone to unset NODE_ENV.
+    expect(() =>
+      assertNoPlaceholderCredentials(
+        { MINIO_SECRET_KEY: "minioadmin" },
+        { nodeEnv: "development", serviceName: "media-service" }
       )
     ).not.toThrow();
   });

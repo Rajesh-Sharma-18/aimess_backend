@@ -145,3 +145,35 @@ export function assertNoPlaceholderSecrets(
     )}. Generate real per-environment values (openssl rand -base64 32).`
   );
 }
+
+/**
+ * Variable names that carry credentials, matched by shape rather than listed.
+ *
+ * A hand-maintained list per service is a list that goes stale: the guard would
+ * silently stop covering the next secret anybody adds. Matching on the name
+ * means a new `*_SECRET` / `*_PASSWORD` / `*_TOKEN` / `*_KEY` is covered the day
+ * it is introduced, with nothing to remember.
+ */
+const CREDENTIAL_NAME = /(SECRET|PASSWORD|PASSWD|TOKEN|CREDENTIAL|_KEY|APIKEY)/;
+
+/**
+ * Boot guard: refuse to start a production service holding a published
+ * placeholder in ANY credential-shaped variable.
+ *
+ * The narrower `assertNoPlaceholderSecrets` needs the caller to enumerate what
+ * to check. This walks the environment instead, so a service cannot be
+ * protected for the secrets someone remembered and unprotected for the rest —
+ * which is how `MINIO_ACCESS_KEY=minioadmin` survived in three services'
+ * templates while the JWT secrets were being taken seriously.
+ */
+export function assertNoPlaceholderCredentials(
+  source: NodeJS.ProcessEnv,
+  options: { nodeEnv: string; serviceName: string }
+): void {
+  const entries: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (CREDENTIAL_NAME.test(name)) entries[name] = value;
+  }
+
+  assertNoPlaceholderSecrets(entries, options);
+}

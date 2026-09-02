@@ -219,6 +219,12 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SECRET_MEDIA: ${MINIO_SECRET_MEDIA}
+      MINIO_SECRET_USER: ${MINIO_SECRET_USER}
+      MINIO_SECRET_CHAT: ${MINIO_SECRET_CHAT}
+      MINIO_SECRET_COMMUNITY: ${MINIO_SECRET_COMMUNITY}
+      MINIO_SECRET_STREAM: ${MINIO_SECRET_STREAM}
+      MINIO_SECRET_BACKOFFICE: ${MINIO_SECRET_BACKOFFICE}
     entrypoint: ["sh", "/init-buckets.sh"]
     volumes:
       - ../minio/init-buckets.sh:/init-buckets.sh:ro

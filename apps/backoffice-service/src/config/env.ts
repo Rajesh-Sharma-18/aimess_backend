@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-import { expandFileSecrets } from "@aimess/utils";
+import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
 
 dotenv.config();
 
@@ -160,7 +160,8 @@ const envSchema = z.object({
 // file (Docker/Kubernetes secrets) instead of an environment variable that
 // leaks through /proc, crash dumps, `docker inspect` and CI logs — and so
 // rotation is replacing a file rather than editing .env on every host.
-const parsed = envSchema.safeParse(expandFileSecrets(process.env));
+const expanded = expandFileSecrets(process.env);
+const parsed = envSchema.safeParse(expanded);
 
 if (!parsed.success) {
   console.error("Invalid environment variables");
@@ -169,6 +170,22 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+// Refuse to start a production deployment whose credentials are values
+// published in this repository. The schema can see that a string is present and
+// long enough; it cannot see that everyone already knows what it says. Matched
+// by variable NAME shape, so a secret added tomorrow is covered without anyone
+// remembering to extend a list.
+try {
+  assertNoPlaceholderCredentials(expanded, {
+    nodeEnv: env.NODE_ENV,
+    serviceName: "backoffice-service",
+  });
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 
 /** Origins for `cors` — comma-separated list from env. */
 export function getCorsAllowedOrigins(): string[] {

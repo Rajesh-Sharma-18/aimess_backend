@@ -88,3 +88,8 @@ stream-app/
 !/packages/*/scripts/**/*.mjs
 stream_*.json
 test-ui
+
+# Generated secret material (scripts/generate-secrets.mjs). Real values, mode
+# 0600, per environment — never committed. The script's default output
+# directory; a deployment usually points it somewhere outside the repo.
+secrets/
