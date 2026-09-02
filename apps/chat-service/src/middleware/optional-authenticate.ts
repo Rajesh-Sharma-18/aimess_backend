@@ -1,7 +1,7 @@
 import { extractBearerToken, verifyAccessToken } from "@aimess/auth-jwt";
 import type { RequestHandler } from "express";
 
-import { env } from "../config/env.js";
+import { env, accessTokenVerifyConfig } from "../config/env.js";
 
 /**
  * Best-effort authentication for routes that must serve BOTH a signed-in user
@@ -21,7 +21,7 @@ export const optionalAuthenticate: RequestHandler = (req, _res, next) => {
   try {
     req.auth = verifyAccessToken(
       extractBearerToken(req.headers.authorization),
-      env.JWT_ACCESS_SECRET
+      accessTokenVerifyConfig
     );
     next();
   } catch (error) {

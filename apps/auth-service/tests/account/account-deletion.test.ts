@@ -35,7 +35,7 @@ const repo = authRepository as unknown as Record<string, jest.Mock>;
 const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 const publishAllRevoked = publishAllSessionsRevokedSafe as unknown as jest.Mock;
 
-const PASSWORD = "Password123";
+const PASSWORD = "Correct-Horse-Battery-7";
 let passwordHash: string;
 
 beforeAll(async () => {

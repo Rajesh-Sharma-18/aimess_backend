@@ -72,7 +72,11 @@ beforeEach(() => {
       ],
       [
         STRANGER,
-        { username: "stranger", displayName: "Stranger", avatarObjectKey: null },
+        {
+          username: "stranger",
+          displayName: "Stranger",
+          avatarObjectKey: null,
+        },
       ],
     ])
   );
@@ -84,20 +88,18 @@ describe("addMembers friend gate", () => {
     // `addMembers` reads the roster twice: once to partition the requested ids
     // (nothing exists yet), then again over the ids it just created to build
     // the response rows.
-    repo.findMembersByUserIds
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          userId: FRIEND,
-          communityId: CID,
-          role: "MEMBER",
-          status: "ACTIVE",
-          joinedAt: new Date("2026-09-02T00:00:00.000Z"),
-          snapshotUsername: "friend",
-          snapshotDisplayName: "Friend",
-          snapshotAvatarKey: null,
-        },
-      ]);
+    repo.findMembersByUserIds.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        userId: FRIEND,
+        communityId: CID,
+        role: "MEMBER",
+        status: "ACTIVE",
+        joinedAt: new Date("2026-09-02T00:00:00.000Z"),
+        snapshotUsername: "friend",
+        snapshotDisplayName: "Friend",
+        snapshotAvatarKey: null,
+      },
+    ]);
 
     const result = await communityService.addMembers(CID, ADMIN, [
       FRIEND,

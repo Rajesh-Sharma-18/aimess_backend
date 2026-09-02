@@ -40,7 +40,7 @@ const sharedLimit = process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX;
 beforeAll(async () => {
   process.env.CHANGE_PASSWORD_RATE_LIMIT_MAX = String(LIMIT);
   app = (await import("../../src/app.js")).default;
-  passwordHash = await bcrypt.hash("Password123", 4);
+  passwordHash = await bcrypt.hash("Correct-Horse-Battery-7", 4);
 });
 
 afterAll(() => {

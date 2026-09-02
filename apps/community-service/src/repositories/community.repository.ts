@@ -928,11 +928,7 @@ export const communityRepository = {
         where: { communityId, userId },
       }),
       // Same transaction as the membership write — see resolvePendingJoinRequestsOp.
-      resolvePendingJoinRequestsOp(
-        communityId,
-        [userId],
-        resolvedBy ?? userId
-      ),
+      resolvePendingJoinRequestsOp(communityId, [userId], resolvedBy ?? userId),
     ]);
     // Re-add of a previously-LEFT member: mirror the reactivation into
     // chat-service's RoomMember so they regain send/read in the general room.

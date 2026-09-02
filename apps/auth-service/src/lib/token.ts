@@ -8,7 +8,7 @@ import {
 } from "@aimess/messaging";
 import { publishSessionCreatedEvent } from "@aimess/redis";
 
-import { env } from "../config/env.js";
+import { env, accessTokenSigningKey } from "../config/env.js";
 import { redis } from "../config/redis.js";
 import { markSessionActive } from "./session-active-cache.js";
 import type { SessionContext } from "./session-context.js";
@@ -91,7 +91,7 @@ export async function issueAuthTokens(
   const accessToken = signAccessToken({
     userId,
     sessionId: createdSession.id,
-    secret: env.JWT_ACCESS_SECRET,
+    signingKey: accessTokenSigningKey,
     expiresInSeconds: accessTokenExpiresIn,
     role,
   });

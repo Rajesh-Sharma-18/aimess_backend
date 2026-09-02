@@ -15,12 +15,7 @@ export const groupRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
 // Omitted → chat-service's ACTIVE default; "ALL" → no status filter.
 // "CLOSED" is a panel-side superset of DISBANDED + owner-banned CLOSED — the UI
 // renders both as red, so the filter matches both server-side.
-export const groupStatusEnum = z.enum([
-  "ACTIVE",
-  "DISBANDED",
-  "CLOSED",
-  "ALL",
-]);
+export const groupStatusEnum = z.enum(["ACTIVE", "DISBANDED", "CLOSED", "ALL"]);
 // "" / "ACTIVE" = active default, "ALL" = no filter, "BANNED" = exact match
 // (chat-service AdminListGroupMembersRequest.status does the exact match). BANNED
 // backs the admin's "find + unban a group-banned member" flow.

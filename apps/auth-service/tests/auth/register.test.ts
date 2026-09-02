@@ -47,7 +47,7 @@ describe("POST /api/auth/register", () => {
   it("registers a new account → 201 with user + tokens", async () => {
     const res = await request(app)
       .post("/api/auth/register")
-      .send({ account: "johndoe", password: "Password123" });
+      .send({ account: "johndoe", password: "Correct-Horse-Battery-7" });
 
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
@@ -61,7 +61,7 @@ describe("POST /api/auth/register", () => {
 
     const res = await request(app)
       .post("/api/auth/register")
-      .send({ account: "johndoe", password: "Password123" });
+      .send({ account: "johndoe", password: "Correct-Horse-Battery-7" });
 
     expect(res.status).toBe(409);
     expect(res.body.success).toBe(false);
@@ -71,12 +71,15 @@ describe("POST /api/auth/register", () => {
   it.each([
     ["missing password", { account: "johndoe" }],
     ["password too short", { account: "johndoe", password: "short" }],
-    ["account too short", { account: "ab", password: "Password123" }],
+    [
+      "account too short",
+      { account: "ab", password: "Correct-Horse-Battery-7" },
+    ],
     [
       "account with illegal characters",
-      { account: "john doe!", password: "Password123" },
+      { account: "john doe!", password: "Correct-Horse-Battery-7" },
     ],
-    ["missing account", { password: "Password123" }],
+    ["missing account", { password: "Correct-Horse-Battery-7" }],
     ["empty body", {}],
   ])("returns 400 on validation failure: %s", async (_label, body) => {
     const res = await request(app).post("/api/auth/register").send(body);

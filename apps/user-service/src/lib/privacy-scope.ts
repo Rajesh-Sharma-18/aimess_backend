@@ -255,6 +255,8 @@ export function visibleIdentity(
     avatarAllowed: allowed,
     firstName: allowed ? profile.firstName : null,
     lastName: allowed ? profile.lastName : null,
-    fullName: allowed ? `${profile.firstName} ${profile.lastName}`.trim() : null,
+    fullName: allowed
+      ? `${profile.firstName} ${profile.lastName}`.trim()
+      : null,
   };
 }

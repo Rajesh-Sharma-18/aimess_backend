@@ -51,5 +51,9 @@ process.env.LIVEKIT_API_SECRET = "test-livekit-secret-do-not-use-in-prod";
 // nothing — it just makes the dependency explicit. A spec that needs a
 // deterministic threshold sets its own value and re-imports the module.
 process.env.RATE_LIMIT_ENABLED = "true";
+// In-process counters: the harness has no Redis, and these specs drive limiters
+// to their ceiling to assert the 429 contract. The Redis store itself is tested
+// directly in tests/rate-limit/redis-store.test.ts against a fake client.
+process.env.RATE_LIMIT_STORE = "memory";
 
 export {};

@@ -117,7 +117,9 @@ function firstHeader(bag: HeaderBag | undefined, name: string): string | null {
  *    be set by a link the victim clicks is not evidence of anything, and the
  *    header already covers every real client.
  */
-export function resolveAuditSource(headers: HeaderBag | undefined): AuditSource {
+export function resolveAuditSource(
+  headers: HeaderBag | undefined
+): AuditSource {
   const declared = firstHeader(headers, "x-platform");
   if (declared) {
     const mapped = PLATFORM_TO_SOURCE[declared.trim().toLowerCase()];

@@ -52,7 +52,10 @@ import { friendshipRepository } from "../../src/repositories/friendship.reposito
 import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
-const recentRepo = recentUserSearchRepository as unknown as Record<string, jest.Mock>;
+const recentRepo = recentUserSearchRepository as unknown as Record<
+  string,
+  jest.Mock
+>;
 const pRepo = userProfileRepository as unknown as Record<string, jest.Mock>;
 const friendRepo = friendshipRepository as unknown as Record<string, jest.Mock>;
 const grpc = messagingGrpcClient as unknown as Record<string, jest.Mock>;
@@ -78,9 +81,7 @@ function blockedByBlocker(opts: { withRoom: boolean }) {
   friendRepo.findAllBlocks.mockResolvedValue([
     { blockerId: BLOCKER, blockedId: TEST_USER_ID },
   ]);
-  const matches = opts.withRoom
-    ? [{ peerUserId: BLOCKER, roomId: ROOM }]
-    : [];
+  const matches = opts.withRoom ? [{ peerUserId: BLOCKER, roomId: ROOM }] : [];
   grpc.resolvePrivateRooms.mockResolvedValue(matches);
   grpc.listPrivateRoomPeers.mockResolvedValue(matches);
 }

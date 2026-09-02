@@ -9,6 +9,11 @@ jest.mock("../../src/repositories/refresh-token.repository.js", () => ({
   refreshTokenRepository: {
     findByTokenHash: jest.fn(),
     rotate: jest.fn(),
+    // Reuse detection now distinguishes a benign replay (the client had not yet
+    // stored the rotated token) from a stolen one, by asking how long ago the
+    // rotation happened. Default: no successor row, so any reuse is treated as
+    // theft — the strict path these cases assert.
+    findSuccessor: jest.fn(async () => null),
   },
 }));
 jest.mock("../../src/repositories/session.repository.js", () => ({
@@ -178,7 +183,14 @@ describe("POST /api/auth/token", () => {
     repo.rotate.mockResolvedValue(undefined);
   });
 
-  it("issues a fresh access token WITHOUT rotating the refresh token → 200", async () => {
+  /**
+   * AIM-66. This case previously asserted that `/auth/token` must NOT rotate.
+   * That was the defect: a stolen refresh token could be replayed here forever
+   * and never tripped the reuse detection protecting `/auth/refresh` — a thief
+   * simply avoided the endpoint that rotates. It now rotates and RETURNS the
+   * replacement, which the caller must store.
+   */
+  it("issues a fresh access token AND rotates the refresh token → 200", async () => {
     const res = await request(app)
       .post("/api/auth/token")
       .send({ refreshToken: "valid-refresh-token" });
@@ -186,8 +198,11 @@ describe("POST /api/auth/token", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.accessToken).toBeDefined();
     expect(res.body.data.accessTokenExpiresIn).toBeDefined();
-    // /token must NOT rotate the refresh token.
-    expect(repo.rotate).not.toHaveBeenCalled();
+    expect(repo.rotate).toHaveBeenCalledTimes(1);
+    // The replacement has to reach the caller, or the next call presents a
+    // spent token and the tripwire revokes every session it has.
+    expect(res.body.data.refreshToken).toBeDefined();
+    expect(res.body.data.refreshTokenExpiresIn).toBeDefined();
   });
 
   it("returns 401 for an expired refresh token", async () => {

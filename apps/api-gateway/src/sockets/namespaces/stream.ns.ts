@@ -817,10 +817,10 @@ export function registerStreamNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = StreamCommentSchema.safeParse(payload);
         if (!r.success) {
-          const rawMessage = (payload as { message?: unknown } | null)
-            ?.message;
+          const rawMessage = (payload as { message?: unknown } | null)?.message;
           const detailKey =
-            typeof rawMessage === "string" && rawMessage.length > MAX_MESSAGE_LEN
+            typeof rawMessage === "string" &&
+            rawMessage.length > MAX_MESSAGE_LEN
               ? "SOCKET_ERR_STREAM_COMMENT_TOO_LONG"
               : undefined;
           ackError(callback, "INVALID_PAYLOAD", locale, detailKey);

@@ -113,7 +113,9 @@ describe("admin IP allowlist", () => {
   it("admits an address on the list", async () => {
     // Supertest connects over loopback, so allowlisting it exercises the
     // pass-through branch.
-    const app = await buildApp({ ADMIN_IP_WHITELIST: "::ffff:127.0.0.1,127.0.0.1" });
+    const app = await buildApp({
+      ADMIN_IP_WHITELIST: "::ffff:127.0.0.1,127.0.0.1",
+    });
 
     const res = await request(app)
       .post("/v1/auth/login")

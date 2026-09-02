@@ -41,11 +41,8 @@ jest.mock("../../src/config/redis.js", () => ({
 
 // Imported after the mock so the module binds to the fake client.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const {
-  assertLoginNotLocked,
-  clearLoginFailures,
-  recordLoginFailure,
-} = require("../../src/lib/admin-login-lockout.js") as typeof import("../../src/lib/admin-login-lockout.js");
+const { assertLoginNotLocked, clearLoginFailures, recordLoginFailure } =
+  require("../../src/lib/admin-login-lockout.js") as typeof import("../../src/lib/admin-login-lockout.js");
 
 const EMAIL = "admin@example.com";
 const MAX_FAILURES = Number(process.env.ADMIN_MAX_FAILED_LOGINS ?? 5);

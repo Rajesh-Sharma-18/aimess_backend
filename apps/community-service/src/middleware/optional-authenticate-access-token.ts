@@ -1,7 +1,7 @@
 import { extractBearerToken, verifyAccessToken } from "@aimess/auth-jwt";
 import type { RequestHandler } from "express";
 
-import { env } from "../config/env.js";
+import { env, accessTokenVerifyConfig } from "../config/env.js";
 
 /**
  * Tries to authenticate the JWT if an Authorization header is present.
@@ -19,7 +19,7 @@ export const optionalAuthenticateAccessToken: RequestHandler = async (
   }
   try {
     const token = extractBearerToken(req.headers.authorization);
-    const auth = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
+    const auth = verifyAccessToken(token, accessTokenVerifyConfig);
     req.auth = auth;
     next();
   } catch (error) {

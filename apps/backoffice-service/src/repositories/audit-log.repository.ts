@@ -138,9 +138,7 @@ async function buildRowResolver(rows: ResolvableRow[]): Promise<{
           page: 1,
           limit: streamIds.length,
         })
-        .then(
-          (r) => new Map(r.streams.map((s) => [s.id, s]))
-        )
+        .then((r) => new Map(r.streams.map((s) => [s.id, s])))
         .catch((error: unknown) => {
           logger.warn(
             `Audit log target lookup failed (stream-service): ${String(error)}`

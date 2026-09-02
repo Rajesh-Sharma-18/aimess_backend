@@ -37,8 +37,7 @@ function installProcessGuards(): void {
   });
 
   process.on("unhandledRejection", (reason: unknown) => {
-    const error =
-      reason instanceof Error ? reason : new Error(String(reason));
+    const error = reason instanceof Error ? reason : new Error(String(reason));
     logger.error(
       `Unhandled promise rejection: ${error.message}\n${error.stack ?? ""}`
     );

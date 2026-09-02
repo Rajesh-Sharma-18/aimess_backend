@@ -40,15 +40,19 @@ describe("isDownloadableScanStatus", () => {
     );
   });
 
-  it.each(["PENDING", "SCANNING", "REJECTED", "INFECTED", "QUARANTINED", "ERROR"])(
-    "never serves %s, with or without a scanner",
-    (status) => {
-      expect(isDownloadableScanStatus(status)).toBe(false);
-      expect(isDownloadableScanStatus(status, { allowUnscanned: true })).toBe(
-        false
-      );
-    }
-  );
+  it.each([
+    "PENDING",
+    "SCANNING",
+    "REJECTED",
+    "INFECTED",
+    "QUARANTINED",
+    "ERROR",
+  ])("never serves %s, with or without a scanner", (status) => {
+    expect(isDownloadableScanStatus(status)).toBe(false);
+    expect(isDownloadableScanStatus(status, { allowUnscanned: true })).toBe(
+      false
+    );
+  });
 
   it("blocks unknown or future statuses (allow-list, not deny-list)", () => {
     expect(isDownloadableScanStatus("SOMETHING_NEW")).toBe(false);

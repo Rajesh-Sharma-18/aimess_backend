@@ -8176,7 +8176,9 @@ export const communityService = {
         // undefined only when the identity lookup itself found nothing, so the
         // reader-side "Someone" stays reserved for a sender we genuinely cannot name.
         const inviterDisplayName =
-          inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
+          inviterSnapshot?.displayName ||
+          inviterSnapshot?.username ||
+          undefined;
         for (const { inviteeId } of allInvited) {
           publishCommunityInviteLinkSharedForChatSafe({
             communityId,
@@ -9495,7 +9497,10 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
 
-    const link = await this.resolveOrCreateShareableLink(community.id, callerId);
+    const link = await this.resolveOrCreateShareableLink(
+      community.id,
+      callerId
+    );
     return toInvitationLinkData(community, link);
   },
 
@@ -9654,8 +9659,7 @@ export const communityService = {
     // A PARAMETERIZED call (maxUses / autoApprove present) is an explicit
     // request for a custom link and keeps the full legacy multi-link behavior
     // below — preserving Limited-use / Auto-approve links untouched.
-    const isDefaultCall =
-      input.maxUses == null && input.autoApprove == null;
+    const isDefaultCall = input.maxUses == null && input.autoApprove == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
       const link = await this.resolveOrCreateShareableLink(
         community.id,

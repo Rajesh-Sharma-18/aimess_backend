@@ -11,4 +11,5 @@ export * from "./locale-middleware";
 export * from "./mail-recipient";
 export * from "./resolve-locale";
 export * from "./search-tokenize";
+export * from "./secret-env";
 export * from "./validate";

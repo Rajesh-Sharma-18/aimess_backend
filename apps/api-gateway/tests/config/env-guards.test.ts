@@ -32,11 +32,9 @@ async function loadEnv(patch: EnvPatch): Promise<{
   const original = { ...process.env };
   const errors: string[] = [];
 
-  const exitSpy = jest
-    .spyOn(process, "exit")
-    .mockImplementation(((): never => {
-      throw new Error("__EXIT__");
-    }) as never);
+  const exitSpy = jest.spyOn(process, "exit").mockImplementation(((): never => {
+    throw new Error("__EXIT__");
+  }) as never);
   const errorSpy = jest
     .spyOn(console, "error")
     .mockImplementation((...args: unknown[]) => {
@@ -73,6 +71,7 @@ const VALID_PRODUCTION: EnvPatch = {
   CORS_ALLOWED_ORIGINS: "https://app.example.com",
   CORS_ALLOW_ANY_ORIGIN: "false",
   RATE_LIMIT_ENABLED: "true",
+  RATE_LIMIT_STORE: "redis",
   BACKOFFICE_SERVICE_URL: "http://backoffice:3010",
   JWT_ADMIN_SECRET: "test-admin-secret-do-not-use-in-prod",
   ADMIN_IP_WHITELIST: "203.0.113.10",
@@ -102,6 +101,19 @@ describe("gateway env — production boot assertions", () => {
 
     expect(exited).toBe(true);
     expect(errors.join("\n")).toContain("CORS_ALLOWED_ORIGINS");
+  });
+
+  it("refuses an in-process rate-limit store in production (AIM-72)", async () => {
+    // Per-process counters are wiped by every restart and multiply every limit
+    // by the replica count — and the API's nginx config uses `ip_hash`, so a
+    // client can choose which replica's counter it lands on.
+    const { exited, errors } = await loadEnv({
+      ...VALID_PRODUCTION,
+      RATE_LIMIT_STORE: "memory",
+    });
+
+    expect(exited).toBe(true);
+    expect(errors.join("\n")).toContain("RATE_LIMIT_STORE");
   });
 
   it("refuses to start with rate limiting disabled (AIM-76)", async () => {
@@ -203,6 +215,8 @@ describe("isCorsOriginAllowed", () => {
       CORS_ALLOW_ANY_ORIGIN: "true",
     });
 
-    expect(module?.isCorsOriginAllowed("https://whatever.ngrok.app")).toBe(true);
+    expect(module?.isCorsOriginAllowed("https://whatever.ngrok.app")).toBe(
+      true
+    );
   });
 });

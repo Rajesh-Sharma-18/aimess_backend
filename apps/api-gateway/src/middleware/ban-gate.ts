@@ -3,7 +3,7 @@ import { verifyAccessToken, extractBearerToken } from "@aimess/auth-jwt";
 import { getRedis, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 
-import { env } from "../config/env.js";
+import { env, accessTokenVerifyConfig } from "../config/env.js";
 
 /**
  * Scoped ban gate for the consumer `/chat` REST proxy (private + group + community
@@ -28,7 +28,7 @@ export function createChatBanGate(): RequestHandler {
       let userId: string;
       try {
         const token = extractBearerToken(req.headers.authorization);
-        userId = verifyAccessToken(token, env.JWT_ACCESS_SECRET).userId;
+        userId = verifyAccessToken(token, accessTokenVerifyConfig).userId;
       } catch {
         // No/invalid/expired token — not our decision. Downstream 401s.
         next();
@@ -48,13 +48,11 @@ export function createChatBanGate(): RequestHandler {
       }
 
       if (banned) {
-        res
-          .status(403)
-          .json({
-            success: false,
-            code: "ACCOUNT_BANNED",
-            message: "ACCOUNT_BANNED",
-          });
+        res.status(403).json({
+          success: false,
+          code: "ACCOUNT_BANNED",
+          message: "ACCOUNT_BANNED",
+        });
         return;
       }
       next();

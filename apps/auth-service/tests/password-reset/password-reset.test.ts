@@ -293,7 +293,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
   it("resets the password with a valid token → 200", async () => {
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -313,7 +313,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(200);
     // No exceptSessionId — nothing is trusted after a reset.
@@ -329,7 +329,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(publishAllRevoked).not.toHaveBeenCalled();
     expect(publishRevoked).not.toHaveBeenCalled();
@@ -340,7 +340,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
     expect(authRepo.updatePasswordHash).not.toHaveBeenCalled();
@@ -356,7 +356,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -371,7 +371,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -386,7 +386,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -404,7 +404,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("ACCOUNT_BANNED");
@@ -413,11 +413,11 @@ describe("POST /api/auth/forgot-password/reset", () => {
   it.each([
     [
       "reset token too short",
-      { resetToken: "short", password: "NewPassword123" },
+      { resetToken: "short", password: "Fresh-Meadow-Lantern-4" },
     ],
     ["password too short", { resetToken: "a".repeat(64), password: "short" }],
     ["missing password", { resetToken: "a".repeat(64) }],
-    ["missing reset token", { password: "NewPassword123" }],
+    ["missing reset token", { password: "Fresh-Meadow-Lantern-4" }],
   ])("returns 400 on validation failure: %s", async (_label, body) => {
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")

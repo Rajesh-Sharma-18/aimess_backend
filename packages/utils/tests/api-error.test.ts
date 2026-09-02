@@ -86,7 +86,9 @@ describe("AppError hierarchy", () => {
   it("carries an optional retryAfterSec on a throttle", () => {
     expect(new TooManyRequestsError("RATE_LIMITED", 7).retryAfterSec).toBe(7);
     // Absent rather than 0, so "unknown" is distinguishable from "retry now".
-    expect(new TooManyRequestsError("RATE_LIMITED").retryAfterSec).toBeUndefined();
+    expect(
+      new TooManyRequestsError("RATE_LIMITED").retryAfterSec
+    ).toBeUndefined();
   });
 });
 

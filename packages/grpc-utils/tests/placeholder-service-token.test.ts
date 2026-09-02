@@ -14,9 +14,9 @@ import { isPublishedPlaceholderToken } from "@aimess/grpc-utils";
 
 describe("isPublishedPlaceholderToken", () => {
   it("recognises the placeholder that shipped in every .env.example", () => {
-    expect(isPublishedPlaceholderToken("dev-grpc-service-token-change-me")).toBe(
-      true
-    );
+    expect(
+      isPublishedPlaceholderToken("dev-grpc-service-token-change-me")
+    ).toBe(true);
   });
 
   it("recognises it regardless of casing or surrounding whitespace", () => {
@@ -25,16 +25,18 @@ describe("isPublishedPlaceholderToken", () => {
     expect(
       isPublishedPlaceholderToken("  dev-grpc-service-token-change-me  ")
     ).toBe(true);
-    expect(isPublishedPlaceholderToken("DEV-GRPC-SERVICE-TOKEN-CHANGE-ME")).toBe(
-      true
-    );
+    expect(
+      isPublishedPlaceholderToken("DEV-GRPC-SERVICE-TOKEN-CHANGE-ME")
+    ).toBe(true);
     expect(isPublishedPlaceholderToken("ChangeMe")).toBe(true);
   });
 
   it("accepts a real generated token", () => {
     // 32 bytes of base64, the value the templates now tell operators to mint.
     expect(
-      isPublishedPlaceholderToken("Zk9s3Qk1r7Yb2mVx8Tn4Lp6Wc0Jd5Hg2Aq7Ue1Ri3Bo=")
+      isPublishedPlaceholderToken(
+        "Zk9s3Qk1r7Yb2mVx8Tn4Lp6Wc0Jd5Hg2Aq7Ue1Ri3Bo="
+      )
     ).toBe(false);
   });
 

@@ -62,7 +62,9 @@ describe("mute/unmute fan-out reaches a member who is not in the chatroom", () =
   // muteMember derives `mutedUntil` from its OWN clock read (now + N minutes) and
   // that value — not the mocked repo row — is what goes on the wire. Freeze time so
   // the expected expiry is exact instead of racing the elapsed millisecond.
-  beforeEach(() => jest.useFakeTimers().setSystemTime(new Date("2026-01-01T00:00:00Z")));
+  beforeEach(() =>
+    jest.useFakeTimers().setSystemTime(new Date("2026-01-01T00:00:00Z"))
+  );
   afterEach(() => jest.useRealTimers());
 
   it("muteMember publishes community:member:muted to BOTH the community room and the target's user channel", async () => {

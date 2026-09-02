@@ -40,7 +40,9 @@ function parseUrl(value: string): URL | null {
 /** True when the value parses as a URL whose scheme is http or https. */
 export function isHttpUrl(value: string): boolean {
   const url = parseUrl(value);
-  return url !== null && (url.protocol === "http:" || url.protocol === "https:");
+  return (
+    url !== null && (url.protocol === "http:" || url.protocol === "https:")
+  );
 }
 
 /** True when the value is an http(s) URL served by an allowed external host. */

@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
+import { expandFileSecrets } from "@aimess/utils";
+
 dotenv.config();
 
 const envSchema = z.object({
@@ -154,7 +156,11 @@ const envSchema = z.object({
     .default(300),
 });
 
-const parsed = envSchema.safeParse(process.env);
+// `FOO_FILE=/run/secrets/foo` supplies `FOO`, so a secret can be a mounted
+// file (Docker/Kubernetes secrets) instead of an environment variable that
+// leaks through /proc, crash dumps, `docker inspect` and CI logs — and so
+// rotation is replacing a file rather than editing .env on every host.
+const parsed = envSchema.safeParse(expandFileSecrets(process.env));
 
 if (!parsed.success) {
   console.error("Invalid environment variables");

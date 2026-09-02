@@ -31,8 +31,14 @@ import request from "supertest";
 import app from "../../src/app.js";
 
 const THROTTLED: Array<[string, Record<string, unknown>]> = [
-  ["/api/auth/login", { account: "johndoe", password: "Password123" }],
-  ["/api/auth/register", { account: "johndoe", password: "Password123" }],
+  [
+    "/api/auth/login",
+    { account: "johndoe", password: "Correct-Horse-Battery-7" },
+  ],
+  [
+    "/api/auth/register",
+    { account: "johndoe", password: "Correct-Horse-Battery-7" },
+  ],
   ["/api/auth/forgot-password/request", { email: "a@example.com" }],
 ];
 

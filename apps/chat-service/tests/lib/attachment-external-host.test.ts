@@ -44,7 +44,9 @@ describe("external media host allowlist", () => {
     expect(
       isAllowedExternalMediaUrl("https://giphy.com.attacker.example/x.gif")
     ).toBe(false);
-    expect(isAllowedExternalMediaHost("giphy.com.attacker.example")).toBe(false);
+    expect(isAllowedExternalMediaHost("giphy.com.attacker.example")).toBe(
+      false
+    );
     expect(isAllowedExternalMediaHost("evilgiphy.com")).toBe(false);
   });
 
@@ -62,34 +64,38 @@ describe("external media host allowlist", () => {
     expect(isAllowedExternalMediaUrl("")).toBe(false);
   });
 
-  it.each(["javascript:alert(document.cookie)", "data:text/html,<script>", "file:///etc/passwd"])(
-    "isHttpUrl refuses the dangerous scheme %s",
-    (value) => {
-      expect(isHttpUrl(value)).toBe(false);
-    }
-  );
+  it.each([
+    "javascript:alert(document.cookie)",
+    "data:text/html,<script>",
+    "file:///etc/passwd",
+  ])("isHttpUrl refuses the dangerous scheme %s", (value) => {
+    expect(isHttpUrl(value)).toBe(false);
+  });
 });
 
 describe("message edit schemas", () => {
   it.each([
     ["private", editMessageSchema],
     ["group", editGroupMessageSchema],
-  ])("%s: drops a client-supplied files[] instead of storing it", (_l, schema) => {
-    // The write primitive behind AIM-09: `files` was persisted wholesale with
-    // none of the send path's verification, and the read path re-signs whatever
-    // is stored. Both edit paths already refuse anything but a TEXT message, so
-    // a legitimate edit never carried attachments.
-    const parsed = schema.parse({
-      content: {
-        text: "edited",
-        urls: [],
-        files: [{ objectKey: "chat/victim-user/secret.png" }],
-      },
-    });
+  ])(
+    "%s: drops a client-supplied files[] instead of storing it",
+    (_l, schema) => {
+      // The write primitive behind AIM-09: `files` was persisted wholesale with
+      // none of the send path's verification, and the read path re-signs whatever
+      // is stored. Both edit paths already refuse anything but a TEXT message, so
+      // a legitimate edit never carried attachments.
+      const parsed = schema.parse({
+        content: {
+          text: "edited",
+          urls: [],
+          files: [{ objectKey: "chat/victim-user/secret.png" }],
+        },
+      });
 
-    expect(parsed.content).not.toHaveProperty("files");
-    expect(JSON.stringify(parsed)).not.toContain("secret.png");
-  });
+      expect(parsed.content).not.toHaveProperty("files");
+      expect(JSON.stringify(parsed)).not.toContain("secret.png");
+    }
+  );
 
   it.each([
     ["private", editMessageSchema],

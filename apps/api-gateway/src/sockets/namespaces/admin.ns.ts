@@ -417,16 +417,13 @@ export function registerAdminNamespace(
       }
     );
 
-    socket.on(
-      ADMIN_COMMUNITY_UNSUBSCRIBE,
-      (payload: unknown) => {
-        const parsed = CommunitySubscribeSchema.safeParse(payload);
-        if (!parsed.success) return;
-        const communityId = parsed.data.communityId;
-        desiredCommunities.delete(communityId);
-        void socket.leave(`community:${communityId}`);
-      }
-    );
+    socket.on(ADMIN_COMMUNITY_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = CommunitySubscribeSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const communityId = parsed.data.communityId;
+      desiredCommunities.delete(communityId);
+      void socket.leave(`community:${communityId}`);
+    });
 
     // Groups this socket currently WANTS to watch — same race guard as the
     // community set above (async permission check vs. a sync unsubscribe).
@@ -471,16 +468,13 @@ export function registerAdminNamespace(
       }
     );
 
-    socket.on(
-      ADMIN_GROUP_UNSUBSCRIBE,
-      (payload: unknown) => {
-        const parsed = GroupSubscribeSchema.safeParse(payload);
-        if (!parsed.success) return;
-        const groupId = parsed.data.groupId;
-        desiredGroups.delete(groupId);
-        void socket.leave(`conv:${groupId}`);
-      }
-    );
+    socket.on(ADMIN_GROUP_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = GroupSubscribeSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const groupId = parsed.data.groupId;
+      desiredGroups.delete(groupId);
+      void socket.leave(`conv:${groupId}`);
+    });
 
     socket.on(
       ADMIN_STREAM_SUBSCRIBE,
@@ -514,13 +508,10 @@ export function registerAdminNamespace(
     // "Leave Livestream" — drops this admin's monitoring session only. The
     // broadcast itself is untouched: the panel never joined the /stream room
     // that stream-service counts, so there is nothing to tear down upstream.
-    socket.on(
-      ADMIN_STREAM_UNSUBSCRIBE,
-      (payload: unknown) => {
-        const parsed = StreamSubscribeSchema.safeParse(payload);
-        if (parsed.success) void socket.leave(`stream:${parsed.data.streamId}`);
-      }
-    );
+    socket.on(ADMIN_STREAM_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = StreamSubscribeSchema.safeParse(payload);
+      if (parsed.success) void socket.leave(`stream:${parsed.data.streamId}`);
+    });
 
     socket.on("disconnect", (reason: string) => {
       if (expiryTimer !== null) {

@@ -10,7 +10,7 @@ import { getActiveSessionFromCache, isUserBanned } from "@aimess/redis";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { resolveAccountLocale } from "./account-locale.js";
-import { env } from "../config/env.js";
+import { env, accessTokenVerifyConfig } from "../config/env.js";
 import type { SocketUserDetails } from "./user-details.js";
 
 declare module "socket.io" {
@@ -219,7 +219,7 @@ export function createGatewaySocketAuthMiddleware(
 
         socket.data.locale = resolveHandshakeLocale(socket.handshake);
 
-        const verified = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
+        const verified = verifyAccessToken(token, accessTokenVerifyConfig);
 
         // Two independent verdicts, one round trip each: is this SESSION still
         // alive, and is this USER permanently banned. `connectionStateRecovery`

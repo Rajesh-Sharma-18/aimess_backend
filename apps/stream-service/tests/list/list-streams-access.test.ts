@@ -111,7 +111,11 @@ describe("listStreams — user-facing access control", () => {
 
   it("refuses a non-member of a PRIVATE community", async () => {
     const { service } = makeService({
-      membership: { isBanned: false, isMember: false, isPublicCommunity: false },
+      membership: {
+        isBanned: false,
+        isMember: false,
+        isPublicCommunity: false,
+      },
     });
 
     await expect(

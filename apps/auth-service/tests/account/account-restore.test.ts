@@ -42,9 +42,11 @@ import { authAuditService } from "../../src/services/audit.service.js";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const RESTORED_AT = new Date("2026-08-27T09:30:00.000Z");
 
-const findUnique = (prisma as unknown as {
-  authUser: { findUnique: jest.Mock };
-}).authUser.findUnique;
+const findUnique = (
+  prisma as unknown as {
+    authUser: { findUnique: jest.Mock };
+  }
+).authUser.findUnique;
 const repo = authRepository as unknown as { restoreUser: jest.Mock };
 const publish = publishUserRestored as unknown as jest.Mock;
 const audit = (authAuditService as unknown as { record: jest.Mock }).record;

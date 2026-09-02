@@ -482,7 +482,9 @@ export class LivestreamService {
   async handlePublish(streamKey: string, clientId?: string): Promise<boolean> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
-      logger.warn(`on_publish for unknown stream key=${streamKeyRef(streamKey)} — denying`);
+      logger.warn(
+        `on_publish for unknown stream key=${streamKeyRef(streamKey)} — denying`
+      );
       return false;
     }
     // The webhook carries no JWT — it authenticates by streamKey alone, so a

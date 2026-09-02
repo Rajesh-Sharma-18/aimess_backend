@@ -34,9 +34,8 @@ async function contextFor(
 
   try {
     await jest.isolateModulesAsync(async () => {
-      const { bindSocketAuditContext } = await import(
-        "../../src/sockets/audit-context.js"
-      );
+      const { bindSocketAuditContext } =
+        await import("../../src/sockets/audit-context.js");
       const { currentAuditContext } = await import("@aimess/constants");
 
       let middleware: ((packet: unknown[], next: () => void) => void) | null =

@@ -90,7 +90,8 @@ const {
   consumeRateLimit,
   MESSAGING_RATE_LIMITS,
   MESSAGING_RATE_WINDOW_MS,
-} = require("../../src/middleware/rate-limit.js") as typeof import("../../src/middleware/rate-limit.js");
+} =
+  require("../../src/middleware/rate-limit.js") as typeof import("../../src/middleware/rate-limit.js");
 
 const USER = "user-1";
 
@@ -167,7 +168,9 @@ describe("send limiter — one bucket for REST and gRPC", () => {
     execFails = true;
 
     for (let i = 0; i < MESSAGING_RATE_LIMITS.send; i += 1) {
-      await expect(assertSendAllowed("pm", "outage-user")).resolves.toBeUndefined();
+      await expect(
+        assertSendAllowed("pm", "outage-user")
+      ).resolves.toBeUndefined();
     }
 
     await expect(assertSendAllowed("pm", "outage-user")).rejects.toMatchObject({

@@ -199,9 +199,7 @@ const authImpl: grpc.UntypedServiceImplementation = {
 
         callback(null, { userIds, total });
       } catch (err) {
-        logger.error(
-          `gRPC adminListUserIdsByDeviceType error: ${String(err)}`
-        );
+        logger.error(`gRPC adminListUserIdsByDeviceType error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

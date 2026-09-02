@@ -11,7 +11,8 @@ import { logger } from "@aimess/logger";
 import { verifyAccessToken } from "@aimess/auth-jwt";
 import { sendApiError, getRequestId } from "@aimess/utils";
 
-import { env } from "../config/env.js";
+import { env, accessTokenVerifyConfig } from "../config/env.js";
+import { RedisRateLimitStore } from "./redis-rate-limit-store.js";
 
 /**
  * How a limiter buckets callers.
@@ -66,7 +67,7 @@ function credentialKey(req: Request): string | undefined {
   if (token.length === 0) return undefined;
 
   try {
-    const { userId } = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
+    const { userId } = verifyAccessToken(token, accessTokenVerifyConfig);
     return `u:${userId}`;
   } catch {
     // Not a valid user token — bucket it by digest rather than letting it
@@ -146,16 +147,26 @@ type LimiterSpec = {
 };
 
 /**
- * NOTE: every limiter here uses express-rate-limit's default in-memory store —
- * one counter per Node process, not shared across replicas, wiped on restart.
- * That is unchanged by this refactor. Swapping in `rate-limit-redis` requires
- * `passOnStoreError: true` as well, or a Redis blip turns every request into a
- * 500 instead of failing open.
+ * Counters live in Redis, shared by every replica and surviving a restart.
+ *
+ * They used to be per-process and in-memory, so a redeploy handed an attacker a
+ * fresh budget, and a second replica would have multiplied every limit by the
+ * replica count — selectably, since the API's nginx config uses `ip_hash`.
+ * See `redis-rate-limit-store.ts` for the fail-open policy on a Redis outage.
+ *
+ * One store instance per limiter: express-rate-limit calls `init()` on each
+ * with that limiter's own window, and sharing one would give them all whichever
+ * window initialised last.
  */
 function createLimiter({ rule, windowMs, max, scope, skip }: LimiterSpec) {
   return rateLimit({
     windowMs,
     max,
+    // `undefined` leaves express-rate-limit on its own in-process store, which
+    // is what the test harness and a single-process local run want. Production
+    // cannot select it — see the boot assertion in config/env.ts.
+    store:
+      env.RATE_LIMIT_STORE === "redis" ? new RedisRateLimitStore() : undefined,
     standardHeaders: "draft-7",
     legacyHeaders: false,
     skip,
