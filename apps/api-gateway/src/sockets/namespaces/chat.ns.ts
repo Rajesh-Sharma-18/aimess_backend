@@ -387,6 +387,29 @@ export function normalizeCatchupEvent(
   };
 }
 
+/**
+ * Ceiling on how many peers one socket may hold presence state for.
+ *
+ * `presence:subscribe` accepts up to 500 ids per call and can be emitted
+ * without limit, so without a per-socket cap a client could accumulate
+ * unbounded room memberships on the gateway — the process that is the single
+ * public edge. 1000 is far above any real client: the largest surface that
+ * subscribes is the conversation list, which watches the peers of the visible
+ * rows.
+ */
+const MAX_PRESENCE_ROOMS_PER_SOCKET = 1000;
+
+/** Per-socket set of peers this socket has joined presence-intent rooms for. */
+function presenceRoomsFor(socket: {
+  data: Record<string, unknown>;
+}): Set<string> {
+  const existing = socket.data.presenceIntentPeers;
+  if (existing instanceof Set) return existing as Set<string>;
+  const created = new Set<string>();
+  socket.data.presenceIntentPeers = created;
+  return created;
+}
+
 export function registerChatNamespace(
   io: SocketIOServer,
   messagingClient: MessagingClient,
@@ -1673,18 +1696,37 @@ export function registerChatNamespace(
         // silently dropped rather than erroring: a per-peer rejection would
         // itself disclose the setting.
         void (async () => {
-          // Record the INTENT to watch each peer, allowed or not. Nothing is
-          // ever published to `presence-intent:*` — it exists so a later
-          // widening (NO_ONE → EVERYONE, or becoming friends) can find the
-          // sockets that asked and grant them, without the client
-          // re-subscribing.
-          for (const peerId of r.data.peerIds) {
-            void socket.join(`presence-intent:${peerId}`);
-          }
+          // Resolve visibility FIRST, then join.
+          //
+          // The intent rooms used to be joined for every supplied id before any
+          // authorization ran, and `peerIds` is an array of up to 500 arbitrary
+          // strings. Repeated emits with fresh random ids therefore grew the
+          // adapter's in-memory room maps without bound, on the process that is
+          // the single public edge and holds no database — a memory-exhaustion
+          // path against every namespace at once, for the cost of a socket
+          // frame.
           const visible = await userClient.filterVisiblePresence(
             userId,
             r.data.peerIds
           );
+
+          // Record the INTENT to watch each peer the caller may watch. Nothing
+          // is ever published to `presence-intent:*` — it exists so a later
+          // widening (NO_ONE → EVERYONE, or becoming friends) can find the
+          // sockets that asked and grant them, without the client
+          // re-subscribing. A peer the caller cannot see today is not recorded:
+          // that is what made the room set attacker-controlled.
+          const intentRooms = presenceRoomsFor(socket);
+          for (const peerId of visible) {
+            if (intentRooms.size >= MAX_PRESENCE_ROOMS_PER_SOCKET) {
+              logger.warn(
+                `/chat presence:subscribe room cap reached socketId=${socket.id} userId=${userId} cap=${String(MAX_PRESENCE_ROOMS_PER_SOCKET)}`
+              );
+              break;
+            }
+            intentRooms.add(peerId);
+            void socket.join(`presence-intent:${peerId}`);
+          }
           for (const peerId of visible) {
             // NEVER `user:<peerId>` — that room carries the peer's private
             // message/read/typing/inbox stream, not just their online dot.
@@ -1849,28 +1891,50 @@ export function registerChatNamespace(
       }),
     });
 
+    /**
+     * Record the hint for a room this socket is typing in.
+     *
+     * Returns false — and stores nothing — once the socket is tracking more
+     * distinct rooms than any real client could have open. `conversationId` is
+     * any string of length ≥ 1, and the map was written BEFORE any
+     * authorization ran, so emitting `typing:start` with a fresh random id each
+     * time allocated one entry (and, downstream, one live timer) per event on
+     * the gateway process, draining only after the TTL. A sustained loop kept
+     * hundreds of thousands of timers and strings resident on the single public
+     * edge.
+     */
     const rememberTypingHint = (d: {
       conversationId: string;
       conversationType: "private" | "group";
       senderName?: string;
-    }): void => {
+    }): boolean => {
+      if (
+        !typingHints.has(d.conversationId) &&
+        typingHints.size >= MAX_PRESENCE_ROOMS_PER_SOCKET
+      ) {
+        logger.warn(
+          `/chat typing hint cap reached socketId=${socket.id} userId=${userId} cap=${String(MAX_PRESENCE_ROOMS_PER_SOCKET)}`
+        );
+        return false;
+      }
       typingHints.set(d.conversationId, {
         kind: d.conversationType,
         senderName: d.senderName,
       });
+      return true;
     };
 
     socket.on("typing:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      rememberTypingHint(r.data);
+      if (!rememberTypingHint(r.data)) return;
       typing.start(r.data.conversationId);
     });
 
     socket.on("typing:stop", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
-      rememberTypingHint(r.data);
+      if (!rememberTypingHint(r.data)) return;
       typing.stop(r.data.conversationId);
     });
 

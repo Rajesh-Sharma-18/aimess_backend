@@ -4378,7 +4378,17 @@ export const communityService = {
     // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
     // On user-service failure, fetchAcceptedFriendIds returns an empty set so
     // all candidates are skipped — conservative by design (Decision B8).
-    // const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
+    //
+    // This was commented out, which made the gate dead code while every comment
+    // around it still described it as active. Consent then rested on nothing: a
+    // user creates a community (becoming ADMIN, satisfying the MODERATOR guard
+    // above), harvests ids from discovery/search, and POSTs up to 100 arbitrary
+    // ids per call. Victims land as ACTIVE members, receive the added event and
+    // a notification, see the community in their sidebar, and become reachable
+    // by broadcast — which is exactly the contact the DM friend gate exists to
+    // prevent. Every sibling path enforces this: `create` drops non-friends the
+    // same way, and group chat throws CHAT_ADD_MEMBER_NOT_FRIEND.
+    const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
 
     // One read of all existing rows for the requested ids (incl. joinedAt),
     // then partition by status: ACTIVE → skip, BANNED → skip, LEFT →
@@ -4412,10 +4422,10 @@ export const communityService = {
       }
       // Friend check runs before existing-row classification — do NOT
       // re-classify NOT_FRIEND ids as ALREADY_MEMBER / BANNED / reactivate.
-      // if (!friendSet.has(userId)) {
-      //   skipped.push({ userId, reason: "NOT_FRIEND" });
-      //   continue;
-      // }
+      if (!friendSet.has(userId)) {
+        skipped.push({ userId, reason: "NOT_FRIEND" });
+        continue;
+      }
       const member = existingByUserId.get(userId);
       if (!member) {
         toCreate.push(userId);

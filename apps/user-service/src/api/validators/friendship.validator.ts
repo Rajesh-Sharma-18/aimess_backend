@@ -29,7 +29,7 @@ export type RelationshipsBatchInput = z.infer<typeof relationshipsBatchSchema>;
 
 export const listFriendRequestsQuerySchema = z.object({
   direction: z.enum(["incoming", "outgoing", "all"]).default("incoming"),
-  page: z.coerce.number().int().positive().default(1),
+  page: z.coerce.number().int().positive().max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 

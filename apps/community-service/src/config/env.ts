@@ -21,6 +21,16 @@ const envSchema = z.object({
   // Optional so local dev against an unauthenticated Redis keeps working.
   // Required for any shared/remote Redis, which must not be left open.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   REDIS_CACHE_ENABLED: z
     .enum(["true", "false"])
     .default("true")
@@ -32,13 +42,6 @@ const envSchema = z.object({
 
   /** Reserved for future community events (publish/consume). */
   RABBITMQ_URL: z.string().min(1),
-
-  /**
-   * Shared secret for unauthenticated internal (service-to-service) routes such
-   * as the gateway's public-card lookup for the link preview. When unset, the
-   * internal routes are disabled (return 404) — they are never public.
-   */
-  INTERNAL_SHARED_SECRET: z.string().optional(),
 
   /**
    * Dedicated link host for shareable community links (Telegram's `t.me`

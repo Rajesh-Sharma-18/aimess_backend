@@ -31,7 +31,11 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
-  fetchAcceptedFriendIds: jest.fn(async () => []),
+  // Everyone is a friend here: addMembers gates on friendship first (AIM-05),
+  // and this suite is about join-request resolution, not that gate.
+  fetchAcceptedFriendIds: jest.fn(
+    async (_callerId: string, ids: string[]) => new Set(ids)
+  ),
 }));
 
 jest.mock("@aimess/storage", () => ({

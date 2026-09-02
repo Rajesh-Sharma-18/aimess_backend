@@ -8,6 +8,7 @@ import rateLimit, {
 import type { Request, Response } from "express";
 
 import { logger } from "@aimess/logger";
+import { verifyAccessToken } from "@aimess/auth-jwt";
 import { sendApiError, getRequestId } from "@aimess/utils";
 
 import { env } from "../config/env.js";
@@ -33,17 +34,29 @@ import { env } from "../config/env.js";
 export type LimitScope = "ip" | "session";
 
 /**
- * Bucket key for an authenticated caller: a truncated SHA-256 of the bearer
- * token. The raw token is never stored, logged or used as a Redis/Map key —
- * only this digest — so a memory dump or a log line cannot yield a usable
- * credential. Truncation to 32 hex chars (128 bits) is far beyond collision
- * range for the number of concurrent sessions.
+ * Bucket key for an authenticated caller.
  *
- * The token is used rather than the decoded `sub` claim deliberately: decoding
- * an UNVERIFIED JWT here would let a caller forge any subject and mint an
- * unlimited number of fresh buckets. The gateway does not verify JWTs on
- * proxied routes (downstream services do), so the opaque token string is the
- * only value available that an attacker cannot cheaply vary.
+ * Keyed on the VERIFIED `sub` claim where the token verifies, and
+ * on a digest of the raw token otherwise.
+ *
+ * It used to be the token digest unconditionally, on the reasoning that
+ * decoding an unverified JWT would let a caller forge any subject — correct as
+ * far as it goes, but it made the bucket a property of the TOKEN rather than of
+ * the user. One refresh call yields a brand-new access token and therefore a
+ * brand-new quota, so the ceiling was worth ~100 requests per refresh rather
+ * than 100 per window. Refresh itself carries no Authorization header and fell
+ * to the IP bucket, so the whole loop cost one request.
+ *
+ * Verifying the signature here removes the forgery objection entirely: a
+ * subject that survives `verifyAccessToken` was minted by auth-service, and a
+ * caller cannot vary it without a valid token for that user. Verification is a
+ * single HMAC over a short string — cheaper than the SHA-256 it replaces on the
+ * same request path.
+ *
+ * A token that does not verify (expired, malformed, wrong secret) still gets a
+ * bucket, keyed by digest: it must be limited, and it has no trustworthy
+ * identity to key on. Downstream services remain the authority on whether the
+ * request is authorized at all — this only decides which counter it lands in.
  */
 function credentialKey(req: Request): string | undefined {
   const header = req.headers.authorization;
@@ -52,7 +65,14 @@ function credentialKey(req: Request): string | undefined {
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   if (token.length === 0) return undefined;
 
-  return `s:${createHash("sha256").update(token).digest("hex").slice(0, 32)}`;
+  try {
+    const { userId } = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
+    return `u:${userId}`;
+  } catch {
+    // Not a valid user token — bucket it by digest rather than letting it
+    // escape limiting or share the bucket of a real user.
+    return `s:${createHash("sha256").update(token).digest("hex").slice(0, 32)}`;
+  }
 }
 
 function makeKeyGenerator(scope: LimitScope) {
@@ -90,8 +110,9 @@ function makeHandler(rule: string, scope: LimitScope) {
         : undefined;
 
     // Deliberately excluded: the Authorization header, the raw token, the
-    // request body, and any OTP/password field. `scopeKey` is the truncated
-    // digest, which identifies the bucket without being a usable credential.
+    // request body, and any OTP/password field. `scopeKey` is either the user
+    // id — the app's own opaque identifier, not a credential — or a truncated
+    // digest of an unverifiable token. Neither is usable to authenticate.
     logger.warn("rate_limit_exceeded", {
       rule,
       scope,
@@ -140,8 +161,9 @@ function createLimiter({ rule, windowMs, max, scope, skip }: LimiterSpec) {
     skip,
     validate: {
       trustProxy: env.TRUST_PROXY_HOPS > 0,
-      // The custom generator returns a token digest for authenticated callers,
-      // which this validator would otherwise flag as a non-IP key.
+      // The custom generator returns a user id (or a token digest) for
+      // authenticated callers, which this validator would otherwise flag as a
+      // non-IP key.
       keyGeneratorIpFallback: false,
     },
     keyGenerator: makeKeyGenerator(scope),
@@ -160,11 +182,15 @@ function skipRateLimit(req: Request): boolean {
   // instead of being implied by NODE_ENV.
   if (!env.RATE_LIMIT_ENABLED) return true;
   const path = req.path ?? "";
-  return (
-    path.startsWith("/health") ||
-    path.startsWith("/docs") ||
-    path.includes("/app-version/check")
-  );
+  // `/docs` is no longer exempt. It used to be, while the OpenAPI document was
+  // rebuilt from scratch on every request (~400 KB) — an unauthenticated,
+  // unmetered CPU and bandwidth amplifier on the only public edge. The docs are
+  // now non-production only, and metered even there.
+  //
+  // The version check is an EXACT suffix match, not `includes`: as a substring
+  // test, any routed path that merely contained the string escaped the global
+  // limiter, which is a bypass anyone could construct.
+  return path.startsWith("/health") || path.endsWith("/app-version/check");
 }
 
 /**
@@ -268,6 +294,20 @@ export const readRateLimiter = createLimiter({
   rule: "read.generous",
   windowMs: 60 * 1000,
   max: env.READ_RATE_LIMIT_MAX,
+  scope: "session",
+});
+
+/**
+ * Presigned upload-URL minting (`POST /api/v1/media/upload-url` and the
+ * `/users/uploads/url` alias). Session-scoped and write-shaped: each call hands
+ * out an object-store write grant, so it is sized like device-token
+ * registration rather than like a read. It had no dedicated limiter at all,
+ * which combined badly with the presigned PUT not binding a content length.
+ */
+export const mediaRateLimiter = createLimiter({
+  rule: "media.upload-url",
+  windowMs: 60 * 1000,
+  max: 30,
   scope: "session",
 });
 

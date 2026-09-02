@@ -1,9 +1,23 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 import type { LivestreamService } from "../services/livestream.service.js";
+
+/**
+ * A log-safe reference to the stream name.
+ *
+ * The name IS the publish credential (`handlePublish` authenticates on it
+ * alone), so logging it verbatim on every on_publish / on_unpublish / on_play /
+ * on_stop put a broadcast-takeover key into the log pipeline — several lines
+ * per stream, plus one per viewer. The digest is stable, so an operator can
+ * still correlate every line about one stream.
+ */
+function streamRef(name: string | undefined): string {
+  if (!name) return "?";
+  return createHash("sha256").update(name).digest("hex").slice(0, 12);
+}
 
 function logStreamHookBanner(message: string): void {
   logger.info("========== AIMESS_SRS_HOOK_STREAM_SERVICE ==========");
@@ -50,20 +64,15 @@ export function createInternalRoutes(
          *  on_unpublish from the live one's (see handleUnpublish). */
         client_id?: string | number;
       };
-      logStreamHookBanner(
-        `HIT /internal/srs/hooks action=${body.action ?? "?"} app=${
-          body.app ?? "?"
-        } stream=${body.stream ?? "?"} ip=${req.ip ?? "?"} querySecret=${
-          typeof req.query.secret === "string" ? "yes" : "no"
-        } headerSecret=${
-          typeof req.headers["x-srs-secret"] === "string" ? "yes" : "no"
-        } secretCheck=enabled`
-      );
-      logger.info(
-        `SRS hook HIT — action=${body.action ?? "?"} stream=${body.stream ?? "?"} app=${body.app ?? "?"} client=${String(body.client_id ?? "?")} ip=${req.ip ?? "?"}`
-      );
-
-      // Shared-secret guard — always enforced.
+      // Shared-secret guard — always enforced, and BEFORE any logging.
+      //
+      // The two banner/info lines that used to sit here ran first and
+      // unconditionally, which had two consequences: an unauthenticated caller
+      // could write attacker-chosen `action` / `app` / `stream` strings into
+      // the log, and every authenticated hook printed the raw stream name —
+      // which is the sole publish credential, so log access was
+      // broadcast-takeover access. They now run below the guard, with the name
+      // reduced to a digest.
       const provided =
         (typeof req.headers["x-srs-secret"] === "string"
           ? (req.headers["x-srs-secret"] as string)
@@ -80,6 +89,15 @@ export function createInternalRoutes(
 
       const action = body.action ?? "";
       const streamKey = body.stream ?? "";
+
+      logStreamHookBanner(
+        `HIT /internal/srs/hooks action=${action || "?"} app=${
+          body.app ?? "?"
+        } stream=${streamRef(streamKey)} ip=${req.ip ?? "?"}`
+      );
+      logger.info(
+        `SRS hook HIT — action=${action || "?"} stream=${streamRef(streamKey)} app=${body.app ?? "?"} client=${String(body.client_id ?? "?")} ip=${req.ip ?? "?"}`
+      );
       // SRS sends client_id as a string; coerce defensively so a numeric id
       // still compares equal across publish/unpublish.
       const clientId =
@@ -113,7 +131,7 @@ export function createInternalRoutes(
               clientId
             );
             logStreamHookBanner(
-              `RESULT action=on_publish stream=${streamKey} allowed=${String(allow)} responseBody=${
+              `RESULT action=on_publish stream=${streamRef(streamKey)} allowed=${String(allow)} responseBody=${
                 allow ? "0" : "1"
               }`
             );
@@ -123,7 +141,7 @@ export function createInternalRoutes(
           case "on_unpublish": {
             await livestreamService.handleUnpublish(streamKey, clientId);
             logStreamHookBanner(
-              `RESULT action=on_unpublish stream=${streamKey} responseBody=0`
+              `RESULT action=on_unpublish stream=${streamRef(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
@@ -131,7 +149,7 @@ export function createInternalRoutes(
           case "on_play": {
             await livestreamService.incrementViewer(streamKey, 1);
             logStreamHookBanner(
-              `RESULT action=on_play stream=${streamKey} responseBody=0`
+              `RESULT action=on_play stream=${streamRef(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
@@ -139,14 +157,14 @@ export function createInternalRoutes(
           case "on_stop": {
             await livestreamService.incrementViewer(streamKey, -1);
             logStreamHookBanner(
-              `RESULT action=on_stop stream=${streamKey} responseBody=0`
+              `RESULT action=on_stop stream=${streamRef(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
           }
           default:
             logStreamHookBanner(
-              `RESULT action=${action || "unknown"} stream=${streamKey} responseBody=0`
+              `RESULT action=${action || "unknown"} stream=${streamRef(streamKey)} responseBody=0`
             );
             // Unknown / unhandled action — allow by default.
             res.json(0);

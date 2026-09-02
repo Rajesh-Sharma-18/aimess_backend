@@ -1,0 +1,12 @@
+# Operator / VPN egress addresses allowed to reach the MinIO and RabbitMQ
+# consoles (deploy/haproxy/dev01.cfg `acl ops_ip`).
+#
+# Copy to /etc/haproxy/ops-ips.lst on the host and fill it in. An EMPTY list
+# matches nothing, so the deny rules in dev01.cfg reject every console request
+# until real addresses are added — deny-by-default is the intended state.
+#
+# One address or CIDR per line, e.g.:
+#   203.0.113.10
+#   198.51.100.0/24
+#
+# Do NOT commit real addresses to this repository.

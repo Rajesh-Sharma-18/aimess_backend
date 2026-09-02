@@ -37,6 +37,14 @@ process.env.STREAM_SERVICE_URL = "http://localhost:3008";
 process.env.AUTH_GRPC_URL = "localhost:4001";
 process.env.USER_GRPC_URL = "localhost:4002";
 
+// --- LiveKit webhook (required: no schema default) -------------------------
+// The schema used to default these to a key/secret pair published in the repo,
+// which meant a deployment that forgot them still verified forged webhooks. Now
+// that they are required, the harness has to supply them like any other
+// mandatory var.
+process.env.LIVEKIT_API_KEY = "test-livekit-key";
+process.env.LIVEKIT_API_SECRET = "test-livekit-secret-do-not-use-in-prod";
+
 // --- Rate limiting ---------------------------------------------------------
 // Pinned ON so the limiter is actually exercised by the suite. It was already
 // active under NODE_ENV=test (only "development" was skipped), so this changes

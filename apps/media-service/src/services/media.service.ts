@@ -31,6 +31,7 @@ import {
   resolveCategoryFromObjectKey,
   type MediaCategoryKey,
 } from "../config/uploads.js";
+import { isAllowedExternalMediaUrl, isHttpUrl } from "@aimess/utils";
 import { env } from "../config/env.js";
 import { validateUpload } from "../lib/magic-validator.js";
 import {
@@ -525,7 +526,17 @@ export const mediaService = {
     // IS the download URL — so short-circuit before any bucket/category/auth
     // lookup, which would otherwise misinterpret the URL as a storage key and
     // either 404 (no matching object) or throw on an unrecognized category.
-    if (/^https?:\/\//i.test(params.objectKey)) {
+    //
+    // The reflection is bounded by the provider allowlist. The audit's own
+    // reviewer refuted this as an SSRF or a laundering primitive on its own —
+    // the caller gets back a value it already had, nothing is fetched and
+    // nothing is stored — but this endpoint is also the read side of an
+    // attachment somebody ELSE stored, so the two surfaces must agree on which
+    // hosts are legitimate. The send-time guard now enforces the same list.
+    if (isHttpUrl(params.objectKey)) {
+      if (!isAllowedExternalMediaUrl(params.objectKey)) {
+        throw new ForbiddenError("MEDIA_NOT_VERIFIED");
+      }
       return {
         downloadUrl: params.objectKey,
         downloadUrlExpiresIn: null,
@@ -631,7 +642,11 @@ export const mediaService = {
     // any unexpected/future value) is blocked. The allow-list itself lives in
     // @aimess/constants so a new status added there defaults to blocked here
     // without anyone having to remember to update this branch.
-    if (!isDownloadableScanStatus(scanStatus)) {
+    if (
+      !isDownloadableScanStatus(scanStatus, {
+        allowUnscanned: !env.CLAMAV_ENABLED,
+      })
+    ) {
       // Distinct codes per class so the client can render the right thing and
       // decide whether retrying is pointless. All three previously collapsed to
       // one 403, so "malware" and "come back in five seconds" were the same
@@ -719,7 +734,9 @@ export const mediaService = {
           objectKey,
           scanStatus,
           downloadable: scanStatus
-            ? isDownloadableScanStatus(scanStatus)
+            ? isDownloadableScanStatus(scanStatus, {
+                allowUnscanned: !env.CLAMAV_ENABLED,
+              })
             : false,
           ownerId: row?.ownerId ?? null,
           resourceId: row?.resourceId ?? null,

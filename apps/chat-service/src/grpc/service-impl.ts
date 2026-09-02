@@ -18,6 +18,7 @@ import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
+import { assertSendAllowed } from "../middleware/rate-limit.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
   reconcileCommunityLastActivityAfterDelete,
@@ -332,6 +333,13 @@ export function createMessagingImpl(
           const conversationType = resolveConversationType(
             req.conversationId,
             req.conversationType
+          );
+          // Same bucket the REST route consumes (`pm:send` / `gm:send`), so the
+          // socket path is no longer an unmetered door to the identical write.
+          // Charged before any work: the point is to refuse cheaply.
+          await assertSendAllowed(
+            conversationType === "GROUP" ? "gm" : "pm",
+            req.senderId
           );
           const content = parseMessageContent(req);
           // Server-side resolution — req.senderName/Avatar are optional,
@@ -2880,6 +2888,12 @@ export function createCommunityImpl(
             parentMessageId: string;
             attachmentsJson: string;
           };
+
+          // Same `cm:send` bucket the REST community route consumes. This path
+          // matters most: one community message is amplified to every member
+          // over Redis pub/sub plus a push notification each, so an unmetered
+          // socket frame turned into thousands of emits and sends.
+          await assertSendAllowed("cm", req.senderId);
 
           // Parse the rich attachment payload sent by new clients.
           type AttachmentsPayload = {

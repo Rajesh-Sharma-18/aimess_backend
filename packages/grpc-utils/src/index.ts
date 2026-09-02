@@ -95,6 +95,26 @@ function metadataValue(
   return value?.trim() ? value.trim() : null;
 }
 
+/**
+ * Service-token values that have appeared in this repository's committed
+ * templates. A production deployment using one of them is unauthenticated in
+ * practice, because the value is readable by anyone with repo access.
+ *
+ * Keep every historical value here, not just the current one: the point is to
+ * catch an environment that was provisioned from an older template and never
+ * rotated.
+ */
+const PUBLISHED_PLACEHOLDER_SERVICE_TOKENS = new Set([
+  "dev-grpc-service-token-change-me",
+  "changeme",
+  "change-me",
+]);
+
+/** True when the configured service token is one this repo has published. */
+export function isPublishedPlaceholderToken(token: string): boolean {
+  return PUBLISHED_PLACEHOLDER_SERVICE_TOKENS.has(token.trim().toLowerCase());
+}
+
 /** Read `x-audit-source` off an inbound call; SYSTEM when the caller sent none. */
 export function auditSourceFromMetadata(
   metadata: grpc.Metadata | undefined
@@ -115,12 +135,28 @@ export function auditSourceFromMetadata(
  *    be protected.
  *  - unset + any other NODE_ENV → logs a warning and passes calls through, so
  *    local dev doesn't need the var set across all 8 services to run.
+ *  - set to a value published in this repository + `NODE_ENV=production` →
+ *    **throws at startup**, same as unset. The old check only tested for
+ *    emptiness, so a deployment that copied `.env.example` verbatim passed the
+ *    fail-fast while authenticating its entire internal mesh with a token
+ *    anyone can read out of git.
  */
 export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
   serviceName: string,
   impl: T
 ): T {
   const expected = serviceToken();
+
+  if (expected && isPublishedPlaceholderToken(expected)) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `${serviceName}: GRPC_SERVICE_TOKEN is set to a placeholder published in this repository — refusing to start. Generate a real per-environment token.`
+      );
+    }
+    logger.warn(
+      `${serviceName}: GRPC_SERVICE_TOKEN is the published placeholder — internal gRPC auth is effectively public (development only).`
+    );
+  }
 
   if (!expected) {
     if (process.env.NODE_ENV === "production") {

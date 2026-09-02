@@ -7,6 +7,10 @@ import {
   otpRateLimiter,
   inviteLinkPreviewRateLimiter,
   deviceTokenRateLimiter,
+  forgotPasswordRateLimiter,
+  mediaRateLimiter,
+  readRateLimiter,
+  searchRateLimiter,
 } from "../../middleware/rate-limit.js";
 import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
@@ -73,7 +77,6 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   // first on these paths.
   for (const sensitivePath of [
     "/auth/login",
-    "/auth/forgot-password",
     "/auth/google",
     "/auth/apple",
     // Previously unthrottled at the edge: password reset accepts an OTP and
@@ -81,16 +84,65 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     // Both were covered only by the global backstop.
     "/auth/reset-password",
     "/auth/register",
+    // Refresh mints a fresh access token from a bearer-equivalent credential
+    // and carries no Authorization header, so the global limiter fell back to
+    // the IP bucket and allowed ~144k guesses a day per address with no
+    // account lockout on the path. The admin router has always treated its
+    // identical endpoint as sensitive; this mirrors that. `/auth/token` is the
+    // same primitive under auth-service's own path name.
+    "/auth/refresh",
+    "/auth/token",
+    // Unauthenticated availability oracle: 409 for a taken account, 200
+    // otherwise, over the whole 3-32 character handle namespace. Enumerated
+    // handles feed targeted credential stuffing against /auth/login.
+    "/auth/accounts",
   ]) {
     v1Router.use(sensitivePath, sensitiveAuthRateLimiter);
   }
 
-  // OTP verify/resend get their own, looser bucket. Sharing `auth.sensitive`
-  // with login meant a user legitimately re-requesting a code burned the login
+  // OTP endpoints get their own, looser bucket. Sharing `auth.sensitive` with
+  // login meant a user legitimately re-requesting a code burned the login
   // budget for their whole IP.
-  for (const otpPath of ["/auth/verify-otp", "/auth/resend-otp"]) {
+  //
+  // These paths were `/auth/verify-otp` and `/auth/resend-otp`, neither of
+  // which exists in auth-service — so the limiter was mounted on nothing and
+  // every real OTP endpoint ran unthrottled at the edge. The list below is the
+  // actual route set (see auth-service's auth / email-link / change-email
+  // routers). Forgot-password has its own tighter bucket, mounted below.
+  for (const otpPath of [
+    "/auth/link-email/request",
+    "/auth/link-email/verify",
+    "/auth/change-email/request",
+    "/auth/change-email/verify",
+  ]) {
     v1Router.use(otpPath, otpRateLimiter);
   }
+
+  // Read-heavy and search paths. Both limiters were configured with their own
+  // env knobs and then imported by nothing, so every search, listing and sync
+  // endpoint across user, community and chat ran with only the global backstop.
+  for (const searchPath of [
+    "/users/search",
+    "/users/discovery",
+    "/communities/search",
+    "/chat/search",
+  ]) {
+    v1Router.use(searchPath, searchRateLimiter);
+  }
+  for (const readPath of ["/users/friends", "/chat/conversations"]) {
+    v1Router.use(readPath, readRateLimiter);
+  }
+
+  // Presigned upload-URL minting is a write-shaped operation that grants an
+  // object-store write, so it is sized like the device-token limiter rather
+  // than like a read. It previously had none at all.
+  v1Router.use("/media", mediaRateLimiter);
+
+  // Forgot-password has its own, tighter bucket (10 per 15 min) rather than
+  // sharing the 20-per-15-min credential bucket: users legitimately retry
+  // during a reset, but the flow also mails an OTP on every call. The limiter
+  // existed with its own configuration and was imported by nothing.
+  v1Router.use("/auth/forgot-password", forgotPasswordRateLimiter);
 
   // Scoped ban gate: reject a system-banned user's still-valid access token on
   // chat/group REST before it reaches chat-service (spec §28 — an old token must

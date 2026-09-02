@@ -1,28 +1,20 @@
 import type { Request } from "express";
 
-import { env } from "../config/env.js";
-
 /**
  * Derive the client IP + user-agent for audit/session rows.
- * Honors TRUST_PROXY_HOPS: when proxied, prefer the leftmost X-Forwarded-For
- * entry; otherwise fall back to the direct socket address.
+ *
+ * `req.ip` honours `app.set("trust proxy", TRUST_PROXY_HOPS)` (applied in
+ * app.ts) and therefore picks the entry the trusted proxy appended. The
+ * previous implementation hand-parsed `X-Forwarded-For` and took the LEFTMOST
+ * entry, which is the one the caller supplies — so the address stamped on
+ * admin audit rows was attacker-chosen, and forensics after an incident pointed
+ * at whatever the attacker typed.
  */
 export function getRequestContext(req: Request): {
   ip: string;
   userAgent: string | null;
 } {
-  let ip = req.socket.remoteAddress ?? "unknown";
-
-  if (env.TRUST_PROXY_HOPS > 0) {
-    const forwarded = req.headers["x-forwarded-for"];
-    const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const first = raw?.split(",")[0]?.trim();
-    if (first) ip = first;
-    else if (req.ip) ip = req.ip;
-  } else if (req.ip) {
-    ip = req.ip;
-  }
-
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
   const ua = req.headers["user-agent"];
   return { ip, userAgent: typeof ua === "string" ? ua : null };
 }

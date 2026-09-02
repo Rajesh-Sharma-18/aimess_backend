@@ -32,6 +32,7 @@
 
 import { BadRequestError, ServiceUnavailableError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { isAllowedExternalMediaUrl, isHttpUrl } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 import { getMediaVerifyClient } from "../grpc/media.client.js";
@@ -44,17 +45,38 @@ export interface VerifiableAttachment {
   [key: string]: unknown;
 }
 
-const isHttpUrl = (value: string): boolean => /^https?:\/\//i.test(value);
-
-/** Every storage key an attachment references (the object plus its poster frame). */
-function storageKeysOf(file: VerifiableAttachment): string[] {
+/**
+ * Split an attachment's references into object keys we must verify, and
+ * external URLs we must vet.
+ *
+ * The old rule was a blanket skip for anything matching `^https?://` — "an
+ * external provider, not our object" — with no host check at all. That let any
+ * sender point an attachment at `https://attacker.example/beacon.png`: every
+ * recipient's client fetched attacker-controlled content the moment the message
+ * rendered, with no magic-byte validation, no antivirus scan and no size cap,
+ * and the attacker's host learned each recipient's address, user agent and read
+ * timing. The same field reaches push payloads.
+ *
+ * External URLs are now held to the provider allowlist the skip was written for
+ * (Giphy, Tenor). Anything else is refused with the same error an unverified
+ * object key gets, because that is what it is: a media reference this platform
+ * cannot vouch for.
+ */
+function referencesOf(file: VerifiableAttachment): {
+  keys: string[];
+  externalUrls: string[];
+} {
   const keys: string[] = [];
+  const externalUrls: string[] = [];
   for (const candidate of [file.objectKey, file.thumbnailObjectKey, file.url]) {
     if (typeof candidate !== "string" || candidate.length === 0) continue;
-    if (isHttpUrl(candidate)) continue; // external provider — not our object
+    if (isHttpUrl(candidate)) {
+      externalUrls.push(candidate);
+      continue;
+    }
     keys.push(candidate);
   }
-  return keys;
+  return { keys, externalUrls };
 }
 
 export interface AssertAttachmentsVerifiedParams {
@@ -83,7 +105,34 @@ export async function assertAttachmentsVerified(
     ),
   ];
 
-  const keys = Array.from(new Set(candidates.flatMap(storageKeysOf)));
+  const references = candidates.map(referencesOf);
+
+  // Vet the external references first: cheap, local, and a refusal here means
+  // no round trip to media-service at all.
+  const disallowed = references
+    .flatMap((r) => r.externalUrls)
+    .filter((url) => !isAllowedExternalMediaUrl(url));
+  if (disallowed.length > 0) {
+    logger.warn("attachment-guard: external media host not allowed", {
+      resourceId: params.resourceId,
+      senderId: params.senderId,
+      // The host, never the full URL: the path can carry a tracking token.
+      hosts: Array.from(
+        new Set(
+          disallowed.map((url) => {
+            try {
+              return new URL(url).hostname;
+            } catch {
+              return "unparseable";
+            }
+          })
+        )
+      ),
+    });
+    throw new BadRequestError("MEDIA_NOT_VERIFIED");
+  }
+
+  const keys = Array.from(new Set(references.flatMap((r) => r.keys)));
   if (keys.length === 0) return;
 
   let statuses;

@@ -54,6 +54,13 @@ export interface PresenceIndicator {
   flush(): void;
 }
 
+/**
+ * How long one socket reuses a resolved roster. Deliberately shorter than the
+ * 6 s indicator TTL, so a membership change is picked up within one indicator
+ * cycle; the TTL-fired stop bypasses the cache entirely.
+ */
+const ROSTER_CACHE_TTL_MS = 3000;
+
 export function createPresenceIndicator(opts: {
   /** Wire event names, e.g. "typing:start" / "typing:stop". */
   startEvent: string;
@@ -146,10 +153,14 @@ export function createPresenceIndicator(opts: {
  * The roster is re-resolved when the TTL fires: the timer runs outside the
  * request context and membership may have changed since.
  *
- * ponytail: one roster lookup per presence event, uncached — matches the
- * shipped /community behaviour exactly. If per-keystroke roster traffic ever
- * shows up in profiling, add a short TTL cache HERE and both namespaces
- * inherit it.
+ * The roster resolution is cached per socket for {@link ROSTER_CACHE_TTL_MS}, which is the
+ * fix this file's own note anticipated. Without it every `typing:start` frame
+ * cost a chat-service gRPC call plus a database room read plus a cross-node
+ * socket enumeration, and nothing rate-limits typing — so a client emitting
+ * start/stop in a loop turned a cheap local loop into sustained load on the
+ * gateway AND on chat-service. The TTL is well under the indicator's own 6 s
+ * lifetime, so a membership change is still reflected within one indicator
+ * cycle; the roster is re-resolved when the TTL fires, as before.
  */
 export function createDirectRosterBroadcast(params: {
   namespace: Namespace;
@@ -177,10 +188,60 @@ export function createDirectRosterBroadcast(params: {
     filterRecipients,
   } = params;
 
-  return async (roomId: string, event: string): Promise<void> => {
+  /**
+   * Roster cache, scoped to THIS broadcast — i.e. to one socket's indicator.
+   *
+   * Deliberately not process-wide: a shared cache would let one user's
+   * membership read back another user's authorization decision, and the load
+   * being removed is one client typing, which is per-socket by nature.
+   *
+   * In-flight promises are cached too, so a burst of frames for one room does
+   * not all miss at once and issue a lookup each.
+   */
+  const rosterCache = new Map<
+    string,
+    { expiresAt: number; roster: Promise<string[]> }
+  >();
+
+  const resolveRosterCached = (roomId: string): Promise<string[]> => {
+    const now = Date.now();
+    const cached = rosterCache.get(roomId);
+    if (cached && cached.expiresAt > now) return cached.roster;
+
+    const roster = resolveRoster(roomId).catch((err: unknown) => {
+      // Never cache a failure: the next frame must be free to retry, and a
+      // cached empty roster would read as "sender is not a member" and suppress
+      // the indicator for the whole TTL.
+      rosterCache.delete(roomId);
+      throw err;
+    });
+    rosterCache.set(roomId, { expiresAt: now + ROSTER_CACHE_TTL_MS, roster });
+
+    // Bound the map: room ids are attacker-nameable, so an unbounded cache
+    // would relocate the memory-growth problem the per-socket caps close.
+    if (rosterCache.size > 500) {
+      for (const [key, value] of rosterCache) {
+        if (value.expiresAt <= now) rosterCache.delete(key);
+      }
+    }
+
+    return roster;
+  };
+
+  return async (
+    roomId: string,
+    event: string,
+    fromTimer = false
+  ): Promise<void> => {
     if (isSuppressed?.(roomId)) return;
 
-    const memberIds = await resolveRoster(roomId);
+    // The TTL-fired stop always re-resolves. That timer runs outside the
+    // request context, potentially seconds after the last frame, and membership
+    // may have changed since — which is exactly the case the cache must not
+    // answer from memory.
+    const memberIds = fromTimer
+      ? await resolveRoster(roomId)
+      : await resolveRosterCached(roomId);
     if (!memberIds.includes(senderId)) return; // sender not an active member
 
     let recipientIds = memberIds.filter((id) => id !== senderId);

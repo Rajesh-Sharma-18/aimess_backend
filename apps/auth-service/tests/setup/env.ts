@@ -37,3 +37,14 @@ process.env.SENSITIVE_AUTH_RATE_LIMIT_MAX = "10000";
 process.env.OTP_DEV_FIXED_CODE = "123456";
 
 export {};
+
+// OTP issuance throttle.
+//
+// The whole suite runs in one process from one address, so it exceeds the
+// production per-IP ceiling (5 per 15 min) many times over. That used to go
+// unnoticed because the limiter failed fully open whenever Redis was
+// unavailable — which it always is under the harness. Now that a cache failure
+// degrades to a per-process counter instead of forfeiting the cap, the harness
+// has to declare headroom like any other limiter it is not the subject of.
+// The spec that tests the throttle sets its own values.
+process.env.OTP_REQUEST_MAX = "100000";

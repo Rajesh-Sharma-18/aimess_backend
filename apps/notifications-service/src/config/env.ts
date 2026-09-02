@@ -14,6 +14,16 @@ const envSchema = z.object({
   // Optional so local dev against an unauthenticated Redis keeps working.
   // Required for any shared/remote Redis, which must not be left open.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
   RABBITMQ_URL: z.string().min(1),
 
@@ -62,7 +72,10 @@ const envSchema = z.object({
     .transform((v) => v?.replace(/\/+$/, "")),
 
   // JWT access secret — verifies device-registration requests.
-  JWT_ACCESS_SECRET: z.string(),
+  // `.min(32)`: was a bare `z.string()`, so an empty or one-character value
+  // passed boot validation. The secret is shared with every other service, so a
+  // weak value here is a platform-wide token-forgery primitive, not a local one.
+  JWT_ACCESS_SECRET: z.string().min(32),
 
   FIREBASE_PROJECT_ID: z.string(),
   FIREBASE_CLIENT_EMAIL: z.string(),

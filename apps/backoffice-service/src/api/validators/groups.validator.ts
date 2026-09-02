@@ -36,7 +36,7 @@ export const listGroupsQuerySchema = z.object({
   sortBy: groupSortByEnum.default("createdAt"),
   sortOrder: groupSortOrderEnum.default("desc"),
   status: groupStatusEnum.optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListGroupsQueryInput = z.infer<typeof listGroupsQuerySchema>;
@@ -87,7 +87,7 @@ export const listGroupMembersQuerySchema = z.object({
   q: z.string().trim().min(1).optional(),
   role: groupRoleEnum.optional(),
   status: groupMemberStatusEnum.optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListGroupMembersQueryInput = z.infer<

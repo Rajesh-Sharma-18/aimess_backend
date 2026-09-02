@@ -308,6 +308,59 @@ services:
       - aimess-network
 
   # ============================================================================
+  # config-render — substitutes secrets into the committed config templates.
+  #
+  # SRS and LiveKit both read a config FILE, and both need a shared secret
+  # inside it: SRS carries the hook secret in its http_hooks URLs (it cannot set
+  # request headers), and LiveKit needs the webhook api_key. Those files are
+  # tracked in git, so the secrets used to be committed literals — the SRS hook
+  # secret is the only authenticator on a publicly-routable endpoint, and the
+  # LiveKit pair signs every call token.
+  #
+  # The templates now carry __SRS_HOOK_SECRET__ / __LIVEKIT_API_KEY__ and this
+  # one-shot service renders them into a named volume before either server
+  # starts. Nothing writes back to the repo, and no secret is ever committed.
+  # ============================================================================
+  config-render:
+    image: alpine:3.20
+    container_name: aimess-config-render
+    restart: "no"
+
+    environment:
+      SRS_HOOK_SECRET: "${SRS_HOOK_SECRET}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+
+    volumes:
+      - ./docker/srs/aimess.conf:/templates/srs/aimess.conf:ro
+      - ./docker/livekit/config.yaml:/templates/livekit/config.yaml:ro
+      - rendered-config:/rendered
+
+    # Refuses to render a template whose secret is unset, rather than emitting a
+    # config with an empty secret that would accept every unauthenticated hook.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        # `$$` keeps the expansion in the CONTAINER's shell. A single `$` would
+        # be substituted by Compose while parsing this file, baking the secret
+        # into the container's command line and into `docker compose config`.
+        if [ -z "$${SRS_HOOK_SECRET:-}" ]; then
+          echo "config-render: SRS_HOOK_SECRET is unset — refusing to render an SRS config with no hook authentication." >&2
+          exit 1
+        fi
+        if [ -z "$${LIVEKIT_API_KEY:-}" ]; then
+          echo "config-render: LIVEKIT_API_KEY is unset — refusing to render a LiveKit config with no webhook key." >&2
+          exit 1
+        fi
+        sed "s|__SRS_HOOK_SECRET__|$$SRS_HOOK_SECRET|g" /templates/srs/aimess.conf > /rendered/aimess.conf
+        sed "s|__LIVEKIT_API_KEY__|$$LIVEKIT_API_KEY|g" /templates/livekit/config.yaml > /rendered/config.yaml
+        echo "config-render: rendered SRS and LiveKit configs"
+
+    networks:
+      - aimess-network
+
+  # ============================================================================
   # SRS (OSSRS) — local media server for HLS/FLV/WebRTC (WHIP/WHEP) streaming.
   #
   # Ports (host):
@@ -342,9 +395,17 @@ services:
       - "8000:8000/udp"
 
     volumes:
-      - ./docker/srs/aimess.conf:/usr/local/srs/conf/aimess.conf:ro
+      # Rendered by `config-render` — the committed template carries a
+      # __SRS_HOOK_SECRET__ placeholder, never the real hook secret. That
+      # secret is the ONLY authenticator on the publicly-routable
+      # /internal/srs/hooks endpoint, so it must not live in git.
+      - rendered-config:/usr/local/srs/rendered:ro
 
-    command: ["./objs/srs", "-c", "conf/aimess.conf"]
+    depends_on:
+      config-render:
+        condition: service_completed_successfully
+
+    command: ["./objs/srs", "-c", "rendered/aimess.conf"]
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -381,10 +442,15 @@ services:
       - "50000-50100:50000-50100/udp"
 
     volumes:
-      - ./docker/livekit/config.yaml:/etc/livekit/config.yaml:ro
+      # Rendered by `config-render` — the committed template carries a
+      # __LIVEKIT_API_KEY__ placeholder, never a real key.
+      - rendered-config:/etc/livekit:ro
 
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      config-render:
+        condition: service_completed_successfully
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -416,6 +482,11 @@ volumes:
   redis_cluster_1:
   redis_cluster_2:
   redis_cluster_3:
+  # Config files rendered from the committed templates with the real secrets
+  # substituted in at start-up (see the `config-render` service). Deliberately
+  # a volume rather than a bind mount, so a rendered secret never lands in the
+  # working tree where it could be committed.
+  rendered-config:
 
 # ============================================================================
 # Network

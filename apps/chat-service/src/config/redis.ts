@@ -12,6 +12,11 @@ const sharedOptions = {
   // behaves exactly as before. In cluster mode the password is applied via
   // redisOptions below, which covers every node — they must all share it.
   password: env.REDIS_PASSWORD,
+  // Present only when enabled: ioredis speaks TLS iff this key exists, so
+  // omitting it keeps a loopback/private-network Redis byte-identical to
+  // before. Cross-host Redis otherwise carries the AUTH password and — since
+  // pub/sub is the realtime fan-out — every message body in cleartext.
+  ...(env.REDIS_TLS ? { tls: {} } : {}),
 };
 
 // Parse REDIS_CLUSTER_NODES when set (e.g. "127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003")

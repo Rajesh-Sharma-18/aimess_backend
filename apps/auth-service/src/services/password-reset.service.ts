@@ -1,6 +1,6 @@
 import type { Request } from "express";
 
-import { BadRequestError, NotFoundError } from "@aimess/errors";
+import { BadRequestError } from "@aimess/errors";
 import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
@@ -62,7 +62,18 @@ export const passwordResetService = {
     const user = await authRepository.findByEmailForPasswordReset(email);
 
     if (!user || !canResetPassword(user)) {
-      throw new NotFoundError("AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND");
+      // Return neutrally. This used to throw
+      // AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND, so the endpoint answered 404 for an
+      // unknown address and 200 for a registered one — a clean membership
+      // oracle over any email an attacker cares to try, and the input to
+      // targeted credential stuffing against login. The comment further down
+      // this file already claimed the answer was ambiguous; now it is. The
+      // backoffice twin has always done this.
+      //
+      // The rate limiter above still runs first, so this is not a free probe
+      // either way, and no OTP is issued or emailed for an address that cannot
+      // reset.
+      return;
     }
 
     const plainCode = generateOtpCode();

@@ -26,12 +26,26 @@ const envSchema = z.object({
   // Required for any shared/remote Redis, which must not be left open.
   // Applies to cluster mode too — every node must share the password.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   // Comma-separated "host:port" pairs to enable Redis Cluster mode.
   // Example: 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
   // Leave unset to use a single Redis node (REDIS_HOST / REDIS_PORT).
   REDIS_CLUSTER_NODES: z.string().optional(),
 
-  JWT_ACCESS_SECRET: z.string(),
+  // `.min(32)`: previously a bare `z.string()`, so "" or "x" passed boot
+  // validation. A one-character HS256 secret is brute-forceable offline from a
+  // single captured token, and this secret is shared by every service that
+  // verifies user tokens — one weak value forges tokens platform-wide.
+  JWT_ACCESS_SECRET: z.string().min(32),
 
   RABBITMQ_URL: z.string().min(1).optional(),
 
@@ -110,13 +124,15 @@ const envSchema = z.object({
   // wss://livekit.example.com in prod). API key/secret must match the
   // docker-compose LIVEKIT_KEYS pair.
   LIVEKIT_URL: z.string().default("ws://localhost:7880"),
-  // Dev defaults match docker/livekit/config.yaml + docker-compose LIVEKIT_KEYS —
-  // chat-service boots without any manual .env editing. Prod overrides these.
-  LIVEKIT_API_KEY: z.string().min(1).default("devkey"),
-  LIVEKIT_API_SECRET: z
-    .string()
-    .min(1)
-    .default("devsecretchangeme_at_least_32_chars_long"),
+  // Required, with NO default. These used to fall back to a key/secret pair
+  // published in this repository, and chat-service mints EVERY 1-to-1 call join
+  // token with them (roomJoin/canPublish/canSubscribe over a room named after
+  // the callId). A deployment that forgot to set them therefore signed real
+  // call grants with a public secret, letting anyone forge a token and join or
+  // publish into any user's private call. Failing the boot is the only safe
+  // default here — same posture as GRPC_SERVICE_TOKEN.
+  LIVEKIT_API_KEY: z.string().min(1),
+  LIVEKIT_API_SECRET: z.string().min(32),
   LIVEKIT_TOKEN_TTL: z.coerce.number().positive().default(10800),
 
   // Ringing timeout: a Call left in RINGING for longer than this flips to
@@ -243,3 +259,23 @@ export const env = {
   ...data,
   MONGO_DATABASE_URL: resolveMongoUrl(),
 };
+
+/**
+ * Production invariants that no single-field schema rule can express.
+ *
+ * CHAT_MEDIA_VERIFY_ENABLED=false disables all three checks the attachment
+ * guard performs — scan-verified, registry owner == sender, registry resource
+ * == this room — for every send path in the service. With it off, a user can
+ * attach any object key they can name to any room, and because chat-service
+ * presigns object storage directly on read, media-service's own authorization
+ * never runs either. It is a deliberate rollout escape hatch, so it stays, but
+ * only outside production. Mirrors the fail-fast in `withServiceAuth`.
+ */
+if (env.NODE_ENV === "production" && !env.CHAT_MEDIA_VERIFY_ENABLED) {
+  process.stderr.write(
+    "Refusing to start: CHAT_MEDIA_VERIFY_ENABLED=false is not permitted in " +
+      "production — it disables attachment ownership, scope and scan " +
+      "verification on every send path.\n"
+  );
+  process.exit(1);
+}

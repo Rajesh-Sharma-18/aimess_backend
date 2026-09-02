@@ -15,6 +15,16 @@ const envSchema = z.object({
   // Optional so local dev against an unauthenticated Redis keeps working.
   // Required for any shared/remote Redis, which must not be left open.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   REDIS_CACHE_ENABLED: z
     .enum(["true", "false"])
     .default("true")
@@ -35,6 +45,18 @@ const envSchema = z.object({
   /** Comma-separated list of allowed ingest modes minted to a creator (whip|rtmp). */
   STREAM_INGEST_MODES: z.string().default("whip,rtmp"),
   /** Max simultaneous PENDING+LIVE streams a single community may have. */
+  /**
+   * How many PENDING (created, never published) streams one creator may hold.
+   *
+   * The LIVE caps deliberately ignore PENDING, so without this nothing bounded
+   * stream creation at all. Two leaves room for an abandoned setup plus a
+   * retry; the stale-PENDING sweeper reclaims them either way.
+   */
+  STREAM_MAX_PENDING_PER_CREATOR: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2),
   STREAM_MAX_CONCURRENT_PER_COMMUNITY: z.coerce.number().positive().default(5),
   /** When true, go-live requires the creator be an ACTIVE community member. */
   STREAM_REQUIRE_MEMBERSHIP: z

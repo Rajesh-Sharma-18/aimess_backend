@@ -1,6 +1,7 @@
 import { transporter } from "./transporter.js";
 import { env } from "../../config/env.js";
 import { logger } from "@aimess/logger";
+import { maskEmailForLog } from "@aimess/utils";
 
 interface SendMailParams {
   to: string;
@@ -15,6 +16,8 @@ export async function sendMail({ to, subject, html }: SendMailParams) {
     subject,
     html,
   });
-  logger.info(`Mail sent to ${to}: ${info.messageId}`);
+  // Digest + domain, never the address: see `maskEmailForLog`. This is the one
+  // path every OTP mail goes through, so the raw form made the log a user list.
+  logger.info(`Mail sent to ${maskEmailForLog(to)}: ${info.messageId}`);
   return info;
 }

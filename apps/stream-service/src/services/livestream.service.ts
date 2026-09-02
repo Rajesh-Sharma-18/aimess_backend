@@ -1,3 +1,4 @@
+import { streamKeyRef } from "../lib/stream-key-ref.js";
 import { randomBytes } from "node:crypto";
 
 import { logger } from "@aimess/logger";
@@ -371,16 +372,27 @@ export class LivestreamService {
         // Two counts run in parallel — all LIVE-only (PENDING never blocks):
         //   activeAnywhere  — creator is already LIVE in any community
         //   activeByCommunity — community's concurrent-stream cap
-        const [activeAnywhere, activeByCommunity] = await Promise.all([
-          this.streamRepo.countLiveByCreator(params.creatorId),
-          this.streamRepo.countActiveByCommunity(params.communityId),
-        ]);
+        const [activeAnywhere, activeByCommunity, pendingByCreator] =
+          await Promise.all([
+            this.streamRepo.countLiveByCreator(params.creatorId),
+            this.streamRepo.countActiveByCommunity(params.communityId),
+            this.streamRepo.countPendingByCreator(params.creatorId),
+          ]);
         // Global rule: one active stream per user across all communities.
         if (activeAnywhere > 0) {
           throw new ConflictError("STREAM_ALREADY_ACTIVE");
         }
         if (activeByCommunity >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
           throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
+        }
+        // PENDING rows were exempt from every cap, so `POST /streams` in a loop
+        // wrote unbounded rows — each minting a stream key and publishing a
+        // `stream.created` event — until the 10-minute stale-PENDING sweeper
+        // caught up. The cap is deliberately loose: a broadcaster may abandon
+        // one setup and start another, which is two, and anything beyond that
+        // is not a person configuring a stream.
+        if (pendingByCreator >= env.STREAM_MAX_PENDING_PER_CREATOR) {
+          throw new ConflictError("STREAM_ALREADY_ACTIVE");
         }
 
         const streamKey = randomBytes(16).toString("hex");
@@ -470,7 +482,7 @@ export class LivestreamService {
   async handlePublish(streamKey: string, clientId?: string): Promise<boolean> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
-      logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
+      logger.warn(`on_publish for unknown stream key=${streamKeyRef(streamKey)} — denying`);
       return false;
     }
     // The webhook carries no JWT — it authenticates by streamKey alone, so a
@@ -628,7 +640,7 @@ export class LivestreamService {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
       logger.warn(
-        `on_unpublish for unknown stream key=${streamKey} — ignoring`
+        `on_unpublish for unknown stream key=${streamKeyRef(streamKey)} — ignoring`
       );
       return;
     }
@@ -678,7 +690,7 @@ export class LivestreamService {
       });
     } catch (error) {
       logger.warn(
-        `incrementViewer failed for key=${streamKey}: ${String(error)}`
+        `incrementViewer failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
       );
     }
   }
@@ -1082,12 +1094,60 @@ export class LivestreamService {
     await this.streamRepo.deleteById(id);
   }
 
+  /**
+   * List livestreams.
+   *
+   * `requesterId` is set for a user-facing REST call and omitted by the trusted
+   * internal gRPC caller, which needs the unfiltered view.
+   *
+   * The user path used to pass no identity at all: `communityId` was optional,
+   * so omitting it enumerated every community's streams, and each row is mapped
+   * through `toView`, which carries directly playable `hlsUrl` / `flvUrl` /
+   * `sourceUrl`. Neither the per-stream ban check that `getStream` performs nor
+   * the community ban check that `checkAccess` performs ran here, so a user
+   * banned from a stream — or from the community — still got the playback URLs,
+   * and a private community's streams were listable by anyone with an account.
+   */
   async listStreams(params: {
     communityId?: string;
     status?: string;
     limit: number;
     cursor?: string;
+    requesterId?: string;
   }): Promise<ListStreamsResult> {
+    if (params.requesterId) {
+      // A user-facing listing is always scoped to one community. The
+      // cross-community form is what made this an enumeration oracle, and no
+      // client uses it: the UI lists streams within a community.
+      if (!params.communityId) {
+        throw new BadRequestError("STREAM_REQUEST_INVALID");
+      }
+
+      try {
+        const membership = await this.communityClient.checkBan(
+          params.communityId,
+          params.requesterId
+        );
+        if (membership.isBanned) {
+          throw new ForbiddenError("STREAM_BANNED");
+        }
+        if (!membership.isMember && !membership.isPublicCommunity) {
+          throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+        }
+      } catch (err) {
+        // A deliberate verdict propagates; an infrastructure failure does not
+        // black out viewing on its own, matching `checkAccess`'s fail-open
+        // posture for the same RPC. The per-stream ban filter below is local
+        // and always available.
+        if (err instanceof ForbiddenError || err instanceof BadRequestError) {
+          throw err;
+        }
+        logger.warn(
+          `listStreams community membership check failed (fail-open) community=${params.communityId}: ${String(err)}`
+        );
+      }
+    }
+
     const rows = await this.streamRepo.listByCommunity({
       communityId: params.communityId,
       status: params.status,
@@ -1096,9 +1156,24 @@ export class LivestreamService {
     });
     const hasMore = rows.length > params.limit;
     const page = hasMore ? rows.slice(0, params.limit) : rows;
-    const items = page.map(toView);
+
+    // Drop streams this user is individually banned from. Done after paging so
+    // the cursor still advances over the raw page — a filtered row must not
+    // stall pagination.
+    let visible = page;
+    if (params.requesterId) {
+      const banned = await this.banRepo.bannedStreamIds(
+        params.requesterId,
+        page.map((row) => row.id)
+      );
+      if (banned.size > 0) {
+        visible = page.filter((row) => !banned.has(row.id));
+      }
+    }
+
+    const items = visible.map(toView);
     const nextCursor =
-      hasMore && items.length > 0 ? items[items.length - 1]!.id : null;
+      hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
     return { items, nextCursor, hasMore };
   }
 

@@ -7,9 +7,11 @@ dotenv.config();
 const emptyToUndef = (v: unknown) => (v === "" ? undefined : v);
 
 const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "production", "test"])
-    .default("development"),
+  // Required, with no default — matching the other services. A defaulted
+  // "development" meant a dropped variable silently selected development
+  // behaviour (including the permissive CORS default below) in a production
+  // container, with nothing logged.
+  NODE_ENV: z.enum(["development", "production", "test"]),
   MEDIA_SERVICE_PORT: z.coerce.number().positive().default(3009),
   MEDIA_GRPC_PORT: z.coerce.number().positive().default(4009),
 
@@ -17,12 +19,12 @@ const envSchema = z.object({
   // chat-scoped attachment downloads against room/group/community membership.
   CHAT_GRPC_URL: z.string().default("127.0.0.1:4004"),
 
-  JWT_ACCESS_SECRET: z.string().min(1),
+  JWT_ACCESS_SECRET: z.string().min(32),
   // Optional: when set, upload-url/confirm/etc. also accept a backoffice
   // admin access token (same secret backoffice-service signs with) so admin
   // uploads (e.g. USER_AVATAR for an admin's own profile) reuse this flow
   // instead of a duplicate one. Unset in deployments that don't need it.
-  JWT_ADMIN_SECRET: z.preprocess(emptyToUndef, z.string().min(1).optional()),
+  JWT_ADMIN_SECRET: z.preprocess(emptyToUndef, z.string().min(32).optional()),
 
   CORS_ALLOWED_ORIGINS: z.string().default("*"),
 
@@ -76,6 +78,16 @@ const envSchema = z.object({
   // Required for any shared/remote Redis, which must not be left open.
   // Also used for the Bull connection below unless BULL_REDIS_PASSWORD is set.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
   // ClamAV antivirus scanner
   // .default() is placed before .transform() so the default value is a string
@@ -173,3 +185,23 @@ export const env = {
   ...data,
   MONGO_DATABASE_URL: resolveMongoUrl(),
 };
+
+/**
+ * Production invariant: the antivirus scanner must actually be running.
+ *
+ * With CLAMAV_ENABLED=false, `createScanner()` returns the no-op scanner and
+ * `/media/confirm` writes the scan status `SKIPPED` inline. Everything
+ * downstream — the download-URL gate and chat-service's send-time attachment
+ * guard — then treats the object as servable, so an executable or macro-laden
+ * document is fanned out to every recipient with a working download URL and no
+ * inspection at all, while the docs and env comments present the platform as
+ * AV-scanned. The flag stays for local development; production must not boot
+ * without a scanner.
+ */
+if (env.NODE_ENV === "production" && !env.CLAMAV_ENABLED) {
+  logger.error(
+    "Refusing to start: CLAMAV_ENABLED=false is not permitted in production — " +
+      "uploads would be stored and served with no malware inspection."
+  );
+  process.exit(1);
+}

@@ -1,14 +1,25 @@
-import express, { Router, type IRouter, type Request } from "express";
+import { createHash } from "node:crypto";
+
+import express, { Router, type IRouter } from "express";
 import { logger } from "@aimess/logger";
 import { sendApiError } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 
-function srsHookUrl(req: Request): string {
+/**
+ * Upstream URL, with NO query string.
+ *
+ * The query used to be copied verbatim from `req.originalUrl`, and the only key
+ * stream-service reads from it is `secret`. That put the shared secret in the
+ * URL of a public-facing request, where it is recorded by load balancers, CDNs
+ * and any APM that indexes full URLs — and anyone who reads those logs can
+ * forge on_publish / on_unpublish hooks and mark arbitrary streams live or
+ * dead. Everything stream-service needs is in the request BODY; the secret now
+ * travels as a header (see below).
+ */
+function srsHookUrl(): string {
   const base = env.STREAM_SERVICE_URL?.replace(/\/$/, "") ?? "";
-  const queryIndex = req.originalUrl.indexOf("?");
-  const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
-  return `${base}/internal/srs/hooks${query}`;
+  return `${base}/internal/srs/hooks`;
 }
 
 function parseHookBody(bodyText: string): {
@@ -30,6 +41,19 @@ function parseHookBody(bodyText: string): {
   } catch {
     return {};
   }
+}
+
+/**
+ * A log-safe reference to a stream name.
+ *
+ * The SRS stream name is the publish credential: anyone who reads it can point
+ * their own encoder at the ingest endpoint and take over the broadcast. It was
+ * logged verbatim on every hook — several lines per stream, plus one per
+ * viewer — so log access was broadcast-takeover access.
+ */
+function streamRef(name: string | undefined): string {
+  if (!name) return "?";
+  return createHash("sha256").update(name).digest("hex").slice(0, 12);
 }
 
 function logGatewayHookBanner(message: string): void {
@@ -62,6 +86,27 @@ export function createInternalSrsRouter(): IRouter {
           return;
         }
 
+        // SRS cannot set custom headers on its hook requests, so it sends the
+        // secret as `?secret=`. Accept it there, then forward it as a HEADER —
+        // so it never reaches an upstream access log — and drop the query
+        // entirely.
+        const secret =
+          req.get("x-srs-secret") ||
+          (typeof req.query.secret === "string" ? req.query.secret : "");
+
+        // Refuse before logging anything. The banner below used to run first
+        // and unconditionally, so an unauthenticated caller could write
+        // attacker-chosen `action` / `app` / `stream` strings into the log, and
+        // every authenticated hook printed the raw stream name — which is the
+        // publish credential.
+        if (!secret) {
+          sendApiError(req, res, {
+            statusCode: 403,
+            messageKey: "FORBIDDEN",
+          });
+          return;
+        }
+
         const bodyText = Buffer.isBuffer(req.body)
           ? req.body.toString("utf8")
           : String(req.body ?? "");
@@ -69,19 +114,16 @@ export function createInternalSrsRouter(): IRouter {
         logGatewayHookBanner(
           `HIT /internal/srs/hooks action=${hook.action ?? "?"} app=${
             hook.app ?? "?"
-          } stream=${hook.stream ?? "?"} ip=${req.ip ?? "?"} querySecret=${
-            typeof req.query.secret === "string" ? "yes" : "no"
-          } headerSecret=${req.get("x-srs-secret") ? "yes" : "no"}`
+          } stream=${streamRef(hook.stream)} ip=${req.ip ?? "?"}`
         );
 
         const headers: Record<string, string> = {
           "content-type": req.get("content-type") || "application/json",
+          "x-srs-secret": secret,
         };
-        const secret = req.get("x-srs-secret");
-        if (secret) headers["x-srs-secret"] = secret;
 
         try {
-          const upstream = await fetch(srsHookUrl(req), {
+          const upstream = await fetch(srsHookUrl(), {
             method: "POST",
             headers,
             body: bodyText,

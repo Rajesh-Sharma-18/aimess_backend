@@ -16,9 +16,24 @@ const envSchema = z.object({
   // Optional so local dev against an unauthenticated Redis keeps working.
   // Required for any shared/remote Redis, which must not be left open.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
-  JWT_ACCESS_SECRET: z.string(),
-  JWT_REFRESH_SECRET: z.string(),
+  // `.min(32)`: both were bare `z.string()`, so a truncated deploy variable or a
+  // bad shell quote yielded "" or "x" and still booted the ISSUER of every token
+  // on the platform. A single-character HS256 secret is recovered offline in
+  // seconds from one captured token, after which an attacker mints access
+  // tokens for arbitrary user ids that every service accepts.
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
   CORS_ALLOWED_ORIGINS: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string(),
   JWT_REFRESH_EXPIRES_IN: z.string(),

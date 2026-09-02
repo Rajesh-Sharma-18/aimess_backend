@@ -321,6 +321,22 @@ export class LivestreamRepository {
   }
 
   /**
+   * Count of PENDING (created but never published) streams for one creator.
+   *
+   * The concurrency caps are LIVE-only by design — a PENDING row is a
+   * broadcaster still setting up, and blocking on it would break the normal
+   * retry. But nothing counted PENDING rows at all, so `POST /streams` in a
+   * loop wrote unbounded rows, each minting a stream key and publishing a
+   * `stream.created` event, none of which tripped the LIVE guard. This backs a
+   * separate, looser cap that leaves room for one abandoned setup plus a retry.
+   */
+  async countPendingByCreator(creatorId: string): Promise<number> {
+    return this.prisma.livestream.count({
+      where: { creatorId, status: "PENDING" },
+    });
+  }
+
+  /**
    * Every non-terminal (PENDING/LIVE/RECONNECTING) stream owned by one
    * creator — optionally scoped to a single community. Backs the bulk
    * force-end triggered by an account ban/suspend/deletion (unscoped: every

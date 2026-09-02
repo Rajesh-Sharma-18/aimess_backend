@@ -151,6 +151,53 @@ function firstString(value: unknown): string | undefined {
  * connection until its JWT naturally expires. Already-connected sockets are
  * handled separately by the live `session-revoke:*` disconnect listener.
  */
+/**
+ * Maximum concurrent Socket.IO connections one account may hold.
+ *
+ * A real client holds a handful: one per namespace it uses, times the number of
+ * devices and browser tabs the person has open. 40 leaves generous headroom for
+ * a heavy multi-device user while still bounding a loop that opens sockets as
+ * fast as the server accepts them.
+ */
+const MAX_SOCKETS_PER_USER = 40;
+
+/**
+ * Count this user's live sockets across every namespace and admit or reject.
+ *
+ * Counting from the server's own registry (rather than a Redis counter) keeps
+ * it exact for this process and self-healing: a socket that dies for any reason
+ * — crash, network drop, server restart — leaves no stale reservation to leak
+ * the user out of their own quota, which is the failure mode a counter has.
+ *
+ * In a multi-node deployment the cap is therefore per node. That is the honest
+ * limitation: it bounds what one node can be made to hold, which is the
+ * resource being protected, and the per-IP ceiling belongs at the edge proxy.
+ */
+async function admitConnection(
+  socket: Socket,
+  userId: string
+): Promise<boolean> {
+  try {
+    const server = socket.nsp.server;
+    let live = 0;
+    for (const [, namespace] of server._nsps) {
+      // `.local` — only this node's sockets; a cluster-wide fetch would add a
+      // cross-node round trip to every single handshake.
+      for (const [, existing] of namespace.sockets) {
+        if (existing.data?.userId === userId) {
+          live += 1;
+          if (live >= MAX_SOCKETS_PER_USER) return false;
+        }
+      }
+    }
+    return true;
+  } catch (err) {
+    // Never let the accounting itself refuse a legitimate connection.
+    logger.warn(`Gateway socket connection-cap check failed: ${String(err)}`);
+    return true;
+  }
+}
+
 export function createGatewaySocketAuthMiddleware(
   redis: Redis
 ): (socket: Socket, next: (err?: Error) => void) => void {
@@ -211,6 +258,27 @@ export function createGatewaySocketAuthMiddleware(
         // Decode (not verify — already verified above) to extract expiry for session:expired warnings.
         const decoded = jwt.decode(token) as { exp?: number } | null;
         socket.data.tokenExpiresAt = decoded?.exp ? decoded.exp * 1000 : 0;
+
+        // Concurrent-connection ceiling per account.
+        //
+        // The server was constructed with no per-user or per-IP connection
+        // limit, and no namespace middleware counted existing connections, so
+        // one valid access token could open thousands of sockets. Each joins
+        // `user:<id>`, allocates its per-socket maps and timers, and writes a
+        // presence device-session to Redis — a cheap way to exhaust gateway
+        // memory and Redis presence keys from a single account.
+        //
+        // Counted across the whole namespace registry rather than per
+        // namespace: a client legitimately holds one socket on each of /chat,
+        // /community, /notify and /stream, and the point is to bound total
+        // sockets per account, not to ration namespaces.
+        if (!(await admitConnection(socket, verified.userId))) {
+          logger.warn(
+            `Gateway socket rejected: connection cap reached userId=${verified.userId} cap=${String(MAX_SOCKETS_PER_USER)}`
+          );
+          next(new Error("Too many connections"));
+          return;
+        }
 
         next();
       } catch (err) {

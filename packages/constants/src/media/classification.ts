@@ -95,7 +95,9 @@ export type MediaResourceType = (typeof MEDIA_RESOURCE_TYPES)[number];
  *   SKIPPED     — AV disabled (dev / no-op scanner); structurally valid only.
  *   ERROR       — terminal scan failure after retries; NOT downloadable.
  *
- * Downloadable set (allow-list): CLEAN, SKIPPED. See {@link DOWNLOADABLE_SCAN_STATUSES}.
+ * Downloadable set (allow-list): CLEAN always; SKIPPED only where the
+ * deployment openly runs without a scanner. See
+ * {@link DOWNLOADABLE_SCAN_STATUSES} and {@link isDownloadableScanStatus}.
  */
 export const MEDIA_SCAN_STATUSES = [
   "PENDING",
@@ -112,15 +114,41 @@ export type MediaScanStatus = (typeof MEDIA_SCAN_STATUSES)[number];
 /**
  * The ONLY statuses for which a download URL may be issued. Defense-in-depth
  * allow-list — any new/unknown status defaults to blocked.
+ *
+ * `SKIPPED` is deliberately NOT here. It means "structurally valid, but no
+ * antivirus engine ever looked at this object", which is a development
+ * concession, not a verdict. Serving it unconditionally meant that a
+ * deployment running with the scanner switched off fanned unscanned
+ * executables out to every recipient with a working download URL while the
+ * docs still described the platform as AV-scanned. Callers that legitimately
+ * run without a scanner opt in per call — see {@link isDownloadableScanStatus}.
  */
-export const DOWNLOADABLE_SCAN_STATUSES: readonly MediaScanStatus[] = [
-  "CLEAN",
-  "SKIPPED",
-];
+export const DOWNLOADABLE_SCAN_STATUSES: readonly MediaScanStatus[] = ["CLEAN"];
 
-/** True if an object in this scan status may be served. */
-export function isDownloadableScanStatus(status: string): boolean {
-  return (DOWNLOADABLE_SCAN_STATUSES as readonly string[]).includes(status);
+/**
+ * The statuses servable by a deployment that has no antivirus engine at all
+ * (local development, CI). Kept separate so the permissive set is something a
+ * caller must ask for explicitly rather than the default everyone inherits.
+ */
+export const UNSCANNED_DOWNLOADABLE_SCAN_STATUSES: readonly MediaScanStatus[] =
+  [...DOWNLOADABLE_SCAN_STATUSES, "SKIPPED"];
+
+/**
+ * True if an object in this scan status may be served.
+ *
+ * `allowUnscanned` must be passed as `true` ONLY by a deployment that is
+ * knowingly running without a scanner (media-service derives it from
+ * `CLAMAV_ENABLED`, which production now refuses to boot without). Defaulting
+ * it to `false` means any future caller that forgets the flag fails closed.
+ */
+export function isDownloadableScanStatus(
+  status: string,
+  options?: { allowUnscanned?: boolean }
+): boolean {
+  const allowed = options?.allowUnscanned
+    ? UNSCANNED_DOWNLOADABLE_SCAN_STATUSES
+    : DOWNLOADABLE_SCAN_STATUSES;
+  return (allowed as readonly string[]).includes(status);
 }
 
 // ─── Usage / lifecycle status (Phase 12) ───────────────────────────────────

@@ -48,6 +48,13 @@ jest.mock("../../src/config/redis.js", () => ({
       setex: jest.fn(),
     })),
   },
+  // `authenticate-access-token.ts` now passes this to the shared
+  // session-revocation guard, which calls it on every authenticated request.
+  // `false` means "no cache available", which the guard treats as allow — the
+  // behaviour every existing suite was written against. A suite that wants to
+  // exercise revocation re-mocks this module with `true` plus a `redis.get`
+  // returning "0".
+  isCommunityCacheReady: jest.fn(() => false),
 }));
 
 // --- @aimess/redis: socket event publishers --------------------------------
@@ -280,7 +287,7 @@ jest.mock("../../src/lib/user-client.js", () => ({
   // The HITS variant deliberately preserves the gap - an unresolved id is
   // simply absent - so an empty Map IS a valid answer here.
   fetchUserSnapshotHits: jest.fn().mockResolvedValue(new Map()),
-  fetchAcceptedFriendIds: jest.fn().mockResolvedValue([]),
+  fetchAcceptedFriendIds: jest.fn().mockResolvedValue(new Set<string>()),
   fetchExistingUserIds: jest.fn().mockResolvedValue([]),
   // Recipient-eligibility gate for every invite path. Default: everyone is
   // eligible; negative cases override it per test.

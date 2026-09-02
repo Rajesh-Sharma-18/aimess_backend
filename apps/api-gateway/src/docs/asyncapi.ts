@@ -18,8 +18,23 @@ const GATEWAY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../");
 
 const SPEC_PATH = resolve(GATEWAY_ROOT, "asyncapi/asyncapi.yaml");
 
-// Pinned version of the standalone AsyncAPI React component (CDN).
-const REACT_COMPONENT_VERSION = "2";
+/**
+ * EXACT version of the standalone AsyncAPI React component.
+ *
+ * This was `"2"` — a floating major — so whatever unpkg resolved `2.x.x` to at
+ * request time executed on this origin, with no subresource integrity and (at
+ * the time) no CSP. A compromised or hijacked package release, or an unpkg
+ * incident, ran attacker JavaScript on the API origin, in the browser of an
+ * operator who had just opened the docs. Pinning does not remove the
+ * third-party dependency, but it means a new release cannot silently become
+ * what this page loads.
+ *
+ * The page is now also non-production only (see app.ts) and covered by the
+ * gateway's CSP, so this is defence in depth rather than the only control.
+ * Vendoring the bundle into the gateway's own static assets would remove the
+ * off-origin load entirely; recorded as residual rather than done here.
+ */
+const REACT_COMPONENT_VERSION = "2.7.5";
 
 function loadSpec(path: string, label: string): string | null {
   try {

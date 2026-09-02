@@ -958,11 +958,15 @@ export function registerCommunityNamespace(
           // member at all) is rejected as FORBIDDEN. Unban never re-admits: it
           // only lifts the ban to LEFT, so this gate is what actually stops a
           // stale/unbanned client from receiving room broadcasts until they go
-          // through the normal join flow again. Only an explicit verdict
-          // rejects — on a gRPC/breaker failure we fail OPEN (join allowed)
-          // because the act-vector (send/edit/react) is independently
-          // hard-blocked at chat-service, so the only risk of a transient
-          // failure is a brief receive-side leak, not an integrity breach.
+          // through the normal join flow again.
+          //
+          // Fails CLOSED on a membership-check error, matching `conv:join` on
+          // the /chat namespace. It used to fail open, on the reasoning that
+          // writes stay blocked at chat-service — true, but the read leak IS
+          // the content of the room: `community:<id>` is where message fan-out
+          // lands, so during any community-service disruption an authenticated
+          // user who named a PRIVATE community's id received its live traffic
+          // in full. "Only a receive-side leak" is the whole conversation.
           try {
             const m = await communityClient.checkCommunityMembership({
               communityId,
@@ -990,8 +994,10 @@ export function registerCommunityNamespace(
             }
           } catch (err) {
             logger.warn(
-              `/community join membership check failed (fail-open) community=${communityId} user=${userId}: ${String(err)}`
+              `/community join membership check failed (fail-closed) community=${communityId} user=${userId}: ${String(err)}`
             );
+            ackError(callback, "SERVICE_ERROR", locale);
+            return;
           }
           void socket.join(`community:${communityId}`);
           // One open transcript per socket — see `activeCommunityId`.

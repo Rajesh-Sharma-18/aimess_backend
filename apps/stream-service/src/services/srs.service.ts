@@ -1,3 +1,4 @@
+import { streamKeyRef } from "../lib/stream-key-ref.js";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
@@ -118,7 +119,7 @@ export class SrsService {
       return (match?.frames ?? 0) > 0;
     } catch (error) {
       logger.warn(
-        `SRS hasFrames check failed for key=${streamKey}: ${String(error)}`
+        `SRS hasFrames check failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
       );
       return false;
     } finally {
@@ -162,7 +163,7 @@ export class SrsService {
         };
       } catch (error) {
         logger.warn(
-          `SRS getStreamStats failed for ${apiBase} key=${streamKey}: ${String(error)}`
+          `SRS getStreamStats failed for ${apiBase} key=${streamKeyRef(streamKey)}: ${String(error)}`
         );
       } finally {
         clearTimeout(timeout);
@@ -301,7 +302,7 @@ export class SrsService {
       });
       if (!listRes.ok) {
         logger.warn(
-          `SRS kickStream: list clients returned ${String(listRes.status)} for key=${streamKey}`
+          `SRS kickStream: list clients returned ${String(listRes.status)} for key=${streamKeyRef(streamKey)}`
         );
         return;
       }
@@ -322,12 +323,12 @@ export class SrsService {
       });
       if (!delRes.ok) {
         logger.warn(
-          `SRS kickStream: delete returned ${String(delRes.status)} for key=${streamKey}`
+          `SRS kickStream: delete returned ${String(delRes.status)} for key=${streamKeyRef(streamKey)}`
         );
       }
     } catch (error) {
       logger.warn(
-        `SRS kickStream failed for key=${streamKey}: ${String(error)}`
+        `SRS kickStream failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
       );
     } finally {
       clearTimeout(timeout);

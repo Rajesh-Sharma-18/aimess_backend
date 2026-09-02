@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -22,6 +24,22 @@ interface RedisSocketEvent {
  * `publishQrLinkEvent` in `@aimess/redis`) on every scan/approve/reject/expire
  * — this namespace relays that verbatim to room `qr:<linkToken>`.
  */
+/**
+ * A log-safe reference to a QR device-link token.
+ *
+ * The token is a bearer credential: whoever holds it can be handed a full
+ * session by the device-link flow, on a namespace that requires no
+ * authentication to subscribe. Logging it verbatim — on subscribe, on replay
+ * and on failure — meant anyone who could read the gateway logs could join the
+ * pending link channel and claim the session the moment the phone approved it.
+ *
+ * The digest is stable, so an operator can still trace one link attempt across
+ * lines, and it is not redeemable.
+ */
+function qrRef(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
+
 export function registerAuthNamespace(
   io: SocketIOServer,
   redisSub: Redis,
@@ -100,7 +118,7 @@ export function registerAuthNamespace(
 
       void (async () => {
         await retainToken(token);
-        logger.debug(`/auth socket subscribed to qr:${token}`);
+        logger.debug(`/auth socket subscribed to qr:${qrRef(token)}`);
 
         // Catch-up: a scan that completed before this subscribe finished — or
         // while this browser was disconnected — published `auth:qr:success` to
@@ -112,11 +130,13 @@ export function registerAuthNamespace(
         if (pending) {
           socket.emit(pending.event, pending.data);
           logger.debug(
-            `/auth replayed pending ${pending.event} for qr:${token}`
+            `/auth replayed pending ${pending.event} for qr:${qrRef(token)}`
           );
         }
       })().catch((err: unknown) => {
-        logger.warn(`/auth subscribe failed for qr:${token}: ${String(err)}`);
+        logger.warn(
+          `/auth subscribe failed for qr:${qrRef(token)}: ${String(err)}`
+        );
       });
     });
 

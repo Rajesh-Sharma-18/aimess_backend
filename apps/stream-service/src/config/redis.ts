@@ -6,6 +6,7 @@ export const redis: ReturnType<typeof connectRedis> = connectRedis({
   host: env.REDIS_HOST,
   port: env.REDIS_PORT,
   password: env.REDIS_PASSWORD,
+  tls: env.REDIS_TLS,
 });
 
 let cacheReady = false;

@@ -6,6 +6,7 @@ import { logger } from "@aimess/logger";
 import { env } from "../../config/env.js";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
+import { createSessionTimers } from "../session-timers.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import { scopeSocketLocale } from "../locale-scope.js";
@@ -480,6 +481,23 @@ export function registerStreamNamespace(
     logger.debug(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );
+
+    // Token expiry, enforced mid-connection. `socket.data.tokenExpiresAt` was
+    // set at handshake and then read by nobody here, so a socket authenticated
+    // with a short-lived access token kept receiving livestream traffic
+    // indefinitely — long after the token expired — for as long as the TCP
+    // connection survived. Same helper /chat and /community use.
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/stream", env.AUTH_SERVICE_URL);
+
+    if (socket.data.tokenExpiresAt > 0) {
+      scheduleSessionTimers(socket.data.tokenExpiresAt);
+    }
+    registerAuthRefreshHandler();
+    socket.on("disconnect", () => clearSessionTimers());
 
     // Streams this specific socket has contributed +1 to. The decrement paths
     // (leave / disconnect / kick) key off this set, not `socket.rooms`, so we

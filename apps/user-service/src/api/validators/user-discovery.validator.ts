@@ -3,7 +3,7 @@ import { z } from "zod";
 export const searchUsersQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   type: z.enum(["friends", "others"]).optional(),
-  page: z.coerce.number().int().positive().default(1),
+  page: z.coerce.number().int().positive().max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   /**
    * "Add Members" pickers. When set, everyone already in the target group /

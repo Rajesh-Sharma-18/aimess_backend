@@ -2,24 +2,23 @@ import type { RequestHandler } from "express";
 
 import { sendApiError } from "@aimess/utils";
 
-import { env, getAdminIpWhitelist } from "../config/env.js";
+import { getAdminIpWhitelist } from "../config/env.js";
 
 const allowlist = getAdminIpWhitelist();
 
-/** Derive the client IP honoring TRUST_PROXY_HOPS. */
-function clientIp(req: Parameters<RequestHandler>[0]): string {
-  if (env.TRUST_PROXY_HOPS > 0) {
-    const forwarded = req.headers["x-forwarded-for"];
-    const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const first = raw?.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return req.ip ?? req.socket.remoteAddress ?? "";
-}
-
 /**
  * Gateway edge guard for the entire `/admin/*` surface. An empty allowlist
- * means allow all (dev); otherwise non-listed IPs get 403.
+ * means allow all, which is why `config/env.ts` refuses to boot a production
+ * gateway that has an admin surface and an empty list.
+ *
+ * The client address comes from `req.ip`. The previous local `clientIp()`
+ * helper read `X-Forwarded-For` and took the LEFTMOST entry whenever
+ * TRUST_PROXY_HOPS was above zero — but with one trusted proxy the
+ * authoritative entry is the LAST one, the address the proxy appended. An
+ * attacker sending `X-Forwarded-For: <an allowlisted office IP>` produced
+ * `<allowlisted>, <attacker>` after the proxy appended, and the helper returned
+ * the attacker's chosen value, so every request passed this guard. `req.ip`
+ * applies the configured hop count and picks the correct entry.
  */
 export const adminIpAllowlist: RequestHandler = (req, res, next) => {
   if (allowlist.length === 0) {
@@ -27,7 +26,7 @@ export const adminIpAllowlist: RequestHandler = (req, res, next) => {
     return;
   }
 
-  const ip = clientIp(req);
+  const ip = req.ip ?? req.socket.remoteAddress ?? "";
   if (allowlist.includes(ip)) {
     next();
     return;
