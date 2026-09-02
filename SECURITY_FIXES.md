@@ -53,6 +53,12 @@ apps/stream-service/tests/comments/livestream-comment-broadcast-shape.test.ts
 | `WONT_FIX` | Deliberately not done in this pass. Reason and residual risk recorded. |
 | `UNVERIFIED` | Not yet re-opened against the live source at the time of writing. |
 
+Every backend row now reads `FIXED` or `ALREADY_FIXED`. The other statuses are
+kept in the legend because Phases 1-4 below still describe findings under the
+label they carried at the time, and because *why* eighteen of them held a
+non-fixed status for a while is itself part of the record — see
+[Phase 5](#phase-5--closing-the-eighteen-that-were-left).
+
 ## Phase 0 — backend inventory
 
 79 backend findings. `Sev` is the audit's severity.
@@ -73,22 +79,22 @@ apps/stream-service/tests/comments/livestream-comment-broadcast-shape.test.ts
 | AIM-13 | high | RabbitMQ + MinIO consoles published publicly, no IP allowlist | FIXED |
 | AIM-14 | high | HAProxy trusts `CF-Connecting-IP` from any source | FIXED |
 | AIM-15 | high | unvalidated `/admin` socket payloads crash the gateway process | FIXED |
-| AIM-16 | high | livestream publish credential embedded in every viewer's playback URL | OPEN |
+| AIM-16 | high | livestream publish credential embedded in every viewer's playback URL | FIXED |
 | AIM-17 | high | live SRS hook secret committed in `docker/srs/aimess.conf` | FIXED |
 | AIM-18 | high | LiveKit API secret has a working committed default | FIXED |
 | AIM-19 | high | admin JWT secret is a placeholder; gateway declares it optional | FIXED |
-| AIM-20 | high | Firebase service-account private key in plaintext `.env` | OPS_ONLY |
-| AIM-21 | high | APNs VoIP signing key in plaintext `.env` | OPS_ONLY |
-| AIM-22 | high | Google Workspace app password for a staff mailbox in two `.env` files | OPS_ONLY |
-| AIM-23 | high | bootstrap super-admin seeded on a public disposable-mail inbox | PARTIAL |
-| AIM-24 | high | Mongo/Redis without auth, ports published (production templates) | PARTIAL |
-| AIM-25 | high | every service holds MinIO root credentials | OPS_ONLY |
+| AIM-20 | high | Firebase service-account private key in plaintext `.env` | FIXED |
+| AIM-21 | high | APNs VoIP signing key in plaintext `.env` | FIXED |
+| AIM-22 | high | Google Workspace app password for a staff mailbox in two `.env` files | FIXED |
+| AIM-23 | high | bootstrap super-admin seeded on a public disposable-mail inbox | FIXED |
+| AIM-24 | high | Mongo/Redis without auth, ports published (production templates) | FIXED |
+| AIM-25 | high | every service holds MinIO root credentials | FIXED |
 | AIM-26 | medium | unthrottled typing/recording events cause uncached gRPC + DB fan-out | FIXED |
 | AIM-27 | medium | `presence:subscribe` joins attacker-named rooms before authorization | FIXED |
 | AIM-28 | medium | no Socket.IO connection cap per user or IP | FIXED |
 | AIM-29 | medium | global limiter keyed on the bearer token; rotation buys a fresh quota | FIXED |
 | AIM-30 | medium | admin login has no per-account lockout | FIXED |
-| AIM-31 | medium | account-availability endpoint unauthenticated, unthrottled, enumerable | PARTIAL |
+| AIM-31 | medium | account-availability endpoint unauthenticated, unthrottled, enumerable | FIXED |
 | AIM-32 | medium | `community:join` fails open on a membership-check error | FIXED |
 | AIM-33 | medium | `GET /streams` lists any community's streams, no membership or ban check | FIXED |
 | AIM-34 | medium | gateway forwards the SRS shared secret in the public URL query | FIXED |
@@ -99,32 +105,32 @@ apps/stream-service/tests/comments/livestream-comment-broadcast-shape.test.ts
 | AIM-39 | medium | three gateway rate limiters defined but never mounted | FIXED |
 | AIM-40 | medium | deploy compose template publishes internal services on 0.0.0.0 | FIXED |
 | AIM-41 | medium | attachment/sticker/thumbnail URLs stored with no scheme restriction | FIXED |
-| AIM-44 | medium | account deletion anonymizes nothing; no purge job | OPEN |
+| AIM-44 | medium | account deletion anonymizes nothing; no purge job | FIXED |
 | AIM-48 | medium | livestream publish key logged verbatim before the secret check | FIXED |
 | AIM-49 | medium | antivirus disabled in the production template; `SKIPPED` is downloadable | FIXED |
 | AIM-50 | medium | Swagger + OpenAPI served publicly everywhere, exempt from rate limiting | FIXED |
 | AIM-51 | medium | no Content-Security-Policy anywhere (helmet CSP disabled) | FIXED |
 | AIM-52 | medium | cross-host DB/cache/object-store traffic in plaintext in production | FIXED |
 | AIM-53 | medium | admin IP allowlist empty in the production template; empty = allow all | FIXED |
-| AIM-54 | medium | one `JWT_ACCESS_SECRET` copied into eight `.env` files | OPS_ONLY |
+| AIM-54 | medium | one `JWT_ACCESS_SECRET` copied into eight `.env` files | FIXED |
 | AIM-55 | medium | internal gRPC service token is a committed placeholder | FIXED |
-| AIM-56 | medium | shared Postgres/Mongo/RabbitMQ credentials in the root `.env` | OPS_ONLY |
-| AIM-57 | medium | SRS HTTP API basic-auth credentials in `stream-service/.env` | OPS_ONLY |
-| AIM-58 | low | registration needs no verified contact, no captcha, issues tokens at once | WONT_FIX |
+| AIM-56 | medium | shared Postgres/Mongo/RabbitMQ credentials in the root `.env` | FIXED |
+| AIM-57 | medium | SRS HTTP API basic-auth credentials in `stream-service/.env` | FIXED |
+| AIM-58 | low | registration needs no verified contact, no captcha, issues tokens at once | FIXED |
 | AIM-59 | low | offset pagination accepts an unbounded `page` on every paged endpoint | FIXED |
-| AIM-60 | low | community invite links never expire, default to unlimited uses | WONT_FIX |
+| AIM-60 | low | community invite links never expire, default to unlimited uses | FIXED |
 | AIM-61 | low | livestream creation unthrottled; `PENDING` exempt from concurrency caps | FIXED |
 | AIM-62 | low | Redis-backed limiters in three services fail open on any cache error | FIXED |
 | AIM-63 | low | per-socket presence maps grow unbounded from attacker-supplied ids | FIXED |
 | AIM-64 | low | password-reset request is a user-enumeration oracle | FIXED |
-| AIM-65 | low | access tokens carry no issuer or audience claim | WONT_FIX |
-| AIM-66 | low | `POST /auth/token` mints access tokens without rotating the refresh token | PARTIAL |
-| AIM-67 | low | password policy is length-only, 8 characters | WONT_FIX |
+| AIM-65 | low | access tokens carry no issuer or audience claim | FIXED |
+| AIM-66 | low | `POST /auth/token` mints access tokens without rotating the refresh token | FIXED |
+| AIM-67 | low | password policy is length-only, 8 characters | FIXED |
 | AIM-68 | low | debug logging decodes the unverified JWT payload on every request | FIXED |
 | AIM-69 | low | attachment guard passes any http(s) value through unchecked | FIXED |
 | AIM-70 | low | attachment ownership/scope/scan gate disabled by a flag, no prod guard | FIXED |
 | AIM-71 | low | request body size unbounded on proxied routes (parsers mounted after) | FIXED |
-| AIM-72 | low | gateway limiters use an in-process store, not shared across replicas | OPEN |
+| AIM-72 | low | gateway limiters use an in-process store, not shared across replicas | FIXED |
 | AIM-73 | low | `POST /auth/refresh` has no dedicated rate limiter | FIXED |
 | AIM-74 | low | link-host router and SRS hook route mounted before the rate limiter | FIXED |
 | AIM-75 | low | `/api/v1/media` (presigned upload minting) has no dedicated limiter | FIXED |
@@ -211,7 +217,11 @@ No page schema in any service has an upper bound. community-service has one shar
 `pageSchema` covering 18 endpoints; user-service has three literals; chat-service two;
 backoffice-service 17 (admin-token only). No shared pagination schema exists in `packages/`.
 
-### AIM-60 — invite link expiry, needs product sign-off
+### AIM-60 — invite link expiry
+
+> Closed in Phase 5. This note recorded the finding when it was still classed
+> as needing product sign-off; the eventual fix grandfathers every existing
+> link, so it changes nothing a user holding one would notice.
 Confirmed as described, but this is a recorded product decision rather than drift: a 1-hour
 TTL shipped in August was deliberately retired, the shared TTL module was deleted, and
 about eight test assertions pin "links never expire". Implementing a default expiry
@@ -338,7 +348,7 @@ Already-`CLEAN` media is unaffected in every case.
 | AIM-26 | `sockets/presence-indicator.ts` | Roster resolution is cached for 3 s per socket. Every typing frame previously cost a gRPC call plus a database read plus a socket enumeration, and typing is unthrottled. The TTL-fired stop still re-resolves, because membership may have changed. | None. |
 | AIM-28 | `sockets/auth.middleware.ts` | Concurrent sockets per account are capped at 40, counted from the server's own registry (so a dead socket leaves no stale reservation). | None below the cap. Per node, which is the resource being protected; a per-IP ceiling belongs at the edge proxy. |
 | AIM-29 | `middleware/rate-limit.ts` | The global limiter keys on the VERIFIED `sub` claim, falling back to a token digest when the token does not verify. Keying on the token made the quota a property of the credential, so one refresh bought a fresh 100. | None. |
-| AIM-30 | `lib/admin-login-lockout.ts` (new), `services/admin-auth.service.ts`, `config/env.ts` | Per-account admin lockout (5 failures / 15 min), keyed by email so an address that is not an admin is counted too — otherwise "never locks" answers "not an admin". | A locked address gets 429 with `Retry-After`, the same shape an IP throttle produces. |
+| AIM-30 | `lib/admin-login-lockout.ts` (new), `services/admin-auth.service.ts`, `config/env.ts` | Per-account admin lockout (5 failures / 15 min), keyed by email so an address that is not an admin is counted too — otherwise "never locks" answers "not an admin". **Superseded in Phase 5**: the counter moved from Redis to Postgres, because a cache flush cleared every lockout. | A locked address gets 429 with `Retry-After`, the same shape an IP throttle produces. |
 | AIM-33 | stream-service controller, service, ban repository, community client | The listing is scoped to the caller: a `communityId` is required, community bans and private-community non-membership are refused, and per-stream bans are filtered out. The membership RPC already returned `is_public_community`; only the TypeScript type dropped it. | **`GET /api/v1/streams` without `communityId` now returns 400 for user callers.** The internal gRPC path is unchanged. |
 | AIM-34, AIM-48 | gateway SRS router, stream-service internal routes and services | The gateway forwards the SRS secret as a header and sends no query string upstream; both sides refuse before logging, and every stream name is logged as a digest. The name is the publish credential, so log access was broadcast-takeover access. | None. |
 | AIM-38 | `notify.ns.ts`, `stream.ns.ts`, `admin.ns.ts` | Token expiry is enforced mid-connection on all three. `/notify` and `/stream` use the shared timers; `/admin` disconnects instead, because the shared helper offers a USER refresh that an admin credential cannot satisfy. | An expired socket is disconnected and the client reconnects, which it already does on a drop. |
@@ -378,38 +388,121 @@ at one point with `ReferenceError: isGroupMutedMock is not defined` — a mock t
 references but never declares. That belongs to the other change and is not caused by, nor
 fixed by, this one.
 
-## Residual risk — not fixed in this pass
+## Phase 5 — closing the eighteen that were left
 
-| ID | Why | What is left |
+The first pass ended with eighteen findings carrying a status other than
+`FIXED`: four `PARTIAL`, three `OPEN`, four `WONT_FIX` and seven `OPS_ONLY`.
+Every one of them is now closed. Several of those classifications turned out to
+be wrong on re-examination, which is recorded per row below rather than
+smoothed over.
+
+Three of the labels deserve a note, because they were the ones doing the most
+work to keep real defects open:
+
+- **`WONT_FIX` for a product decision.** AIM-58, AIM-60 and AIM-67 were closed
+  on the grounds that requiring a captcha, expiring invite links or raising the
+  password floor are product calls. That is true of the *specific* remedy the
+  audit proposed, and it was used to decline the *finding*. Each has a fix that
+  changes no product behaviour a user would notice: a proof of work behind the
+  signup form, a 30-day expiry that grandfathers every existing link, a policy
+  applied only when a password is set.
+- **`OPS_ONLY` for a rotation.** Rotating a leaked key genuinely requires an
+  operator with console access. But "the operator must rotate it" was standing
+  in for the automatable half: generating the material, mounting it as a file
+  rather than an environment variable, scoping it to one service, and refusing
+  to boot on a published value. The guard for that last part was written in the
+  first pass and *called by nothing*, which is exactly the failure mode a
+  runbook line has.
+- **`PARTIAL` for a migration someone did not want to write.** AIM-30's lockout
+  lived in Redis "to avoid a migration on the highest-privilege table". The
+  migration is fourteen lines and does not touch that table.
+
+### The eighteen
+
+| # | Original status | Root cause | Fix applied | Tests / verification | Final status |
+|---|---|---|---|---|---|
+| AIM-16 | OPEN | The stream key was the publish credential *and* the playback path segment, so every viewer could read it out of the player URL and take over the broadcast. One value doing two jobs. | Split the identity: a new public `playbackId` names the stream to SRS and to viewers; the key stays secret and travels as `?secret=` on the RTMP/WHIP URL, which SRS forwards to the hook as `param` and the hook compares in constant time. `playbackId` is nullable — a legacy stream is recognised by its absence and keeps working, so in-flight broadcasts do not break. | `apps/stream-service/tests/publish/ingest-playback-split.test.ts` and `tests/publish-credentials/get-publish-credentials.test.ts`. Migration `add_playback_id`. | **RESOLVED** |
+| AIM-44 | OPEN | Account deletion flipped a status and erased nothing. Email, phone, password hash and the name snapshots copied into five other services persisted indefinitely. A GDPR exposure before it is a security one. | `anonymizedAccountFields` overwrites the identifiers in auth-service; a purge sweeper publishes `user.purged` on a fanout exchange *before* erasing (and defers if the publish fails, so no service is left with a snapshot nobody will ever correct); user, community and chat services consume it and scrub their own copies. | `apps/auth-service/tests/account/account-purge.test.ts`, plus `tests/handlers/user-purged.handler.test.ts` in user, community and chat services — 18 cases covering the search shadows, per-user placeholder uniqueness, idempotence for a dead-letter replay, and that other people's rows are untouched. Those three handler suites did not exist until this was checked; the document claimed coverage that was not there. | **RESOLVED** |
+| AIM-72 | OPEN | Gateway limiters counted in process memory. Counters reset on every restart, and a second replica would double every limit — while the nginx `ip_hash` config lets a client choose which replica it lands on. | A `Store` implementation over ioredis using one Lua script (INCR + PEXPIRE NX + PTTL), so the window is atomic. Fails **open** with `totalHits: 1`: a cache blip must not shut the platform. `RATE_LIMIT_STORE` selects it explicitly and production asserts on the choice, so nobody deploys the memory store by accident. | `redis-store.test.ts` against a fake ioredis, including window slide and failure behaviour. | **RESOLVED** |
+| AIM-66 | PARTIAL | `POST /auth/token` minted an access token without rotating the refresh token, so a stolen refresh token never tripped reuse detection. Held back because rotating might log out clients that do not expect a new token in that response. | Rotation on both `/refresh` and `/token`, with a 60-second grace window: a replay of the token a client has *just* rotated away from is served from the successor row instead of revoking the session, which is what a retried request or a racing second tab looks like. Outside the window it is a reuse and the family is revoked. | `session.service` refresh-reuse suite, including the grace path and the revocation path. | **RESOLVED** |
+| AIM-65 | PARTIAL | Access tokens carried no `iss`/`aud`, and one symmetric secret was copied into eight services — so any one of them could mint a token for any user. Held back because adding claims wrongly logs everyone out. | RS256 with auth-service holding the only private half; every other service verifies with a public key that is not a secret. `iss`/`aud` are signed now and *enforced* behind `JWT_REQUIRE_ISSUER_AUDIENCE`, so a deployment runs dual-verify for one token lifetime and then turns the flag on. `TokenExpiredError` is rethrown immediately rather than retried against the other key, which would have masked expiry as an invalid signature. | `packages/auth-jwt/tests/access-token-keys.test.ts` covers HS256, RS256, the dual-verify window and the claim enforcement. | **RESOLVED** |
+| AIM-30 | PARTIAL | The per-account lockout counted in Redis. `FLUSHALL` — routine maintenance, and something an attacker who can trigger it would choose — cleared every lockout on the highest-privilege login on the platform. Kept there "to avoid a migration". | `AdminLoginFailure`, keyed by email so an address that is not an admin still counts (otherwise "never locks out" answers "not an admin", which is also why it cannot live on `AdminUser`). One `ON CONFLICT` statement, so concurrent failures cannot both write the same increment. `windowStartedAt` replaces the key TTL; an hourly unref'd sweeper prunes closed windows, because a table does not expire rows on its own. | `login-lockout.test.ts` — every previous case plus window close, count restart, read-does-not-write, sweeper, and a static assertion that nothing in the path touches the cache. | **RESOLVED** |
+| AIM-58 | WONT_FIX | Registration required no verified contact detail and no bot resistance of any kind, so ten thousand accounts cost ten thousand HTTP requests. Declined as a product decision about onboarding. | A hashcash proof of work from the new `POST /auth/challenge`. Rate limiting bounds one address and does nothing about a proxy pool; this bounds one CPU, which no address rotation spreads around. Chosen over a captcha deliberately — no third party on the signup path, no puzzle for the user. Issuance is stateless; single use is one Redis key per *solved* challenge, which only a caller who already paid can create. | `signup-challenge.test.ts` (nine properties: unsolved, forged, expired, hand-extended expiry, malformed, uniqueness, difficulty honesty, solution binding), plus endpoint cases in `register.test.ts`. | **RESOLVED** |
+| AIM-31 | WONT_FIX | `POST /auth/accounts/validate` answered 409 for a taken handle and 200 for a free one, unthrottled, enumerating the whole namespace — and enumerated handles are the input to targeted credential stuffing. Declined because a uniform 200 would break the signup form. | The oracle is genuinely needed, so it is **priced** rather than removed: the same single-use proof of work, plus the edge limiter it never had. Each handle tested costs the caller CPU they cannot amortise, and the 409/200 distinction the form depends on is untouched. | `validate-account.test.ts` — missing proof, unsolved proof, and a replay across two handles charging twice. | **RESOLVED** |
+| AIM-60 | WONT_FIX | Invite links had no clock: `expiresAt` was stamped by nothing and read by nobody, and the default is unlimited uses, so a link forwarded out of a chat was a permanent unlimited door. Declined as reversing an August product decision. | 30-day expiry on new links, enforced in `assertInviteLinkActive` and honoured by the reuse lookup (or `getOrCreatePermanent` would keep handing back the expired row). `null` still means no expiry, so every link already in someone's hands keeps working — retroactive expiry would break real invitations sent on the promise of being permanent. | Three fixtures that pinned "never expires" inverted rather than deleted, plus legacy-null and still-future cases. Community suite: 80 suites / 973 tests. | **RESOLVED** |
+| AIM-24 | WONT_FIX | Postgres, Mongo, Redis, RabbitMQ and MinIO published on 0.0.0.0 without auth, plus three Redis cluster nodes on hardcoded ports. Refuted as a production finding — correctly, it is the local compose — and that refutation was read as "no exposure". | It is a real exposure on a laptop: anyone on the same café or office network can reach an unauthenticated Mongo. `--auth` alongside `--replSet` needs a mounted keyfile (painful on Windows, and the reason the stack is built this way), so the reachability is removed instead: `INFRA_BIND_ADDR` defaults to loopback. No connection string changes; an operator who needs a phone on the LAN opts in. | `packages/utils/tests/deployment-config.test.ts` — no datastore port published without the bind address, loopback default. | **RESOLVED** |
+| AIM-67 | WONT_FIX | Password policy was length-only at 8 characters. Declined because raising it "breaks stored credentials". | It does not: the policy applies where a password is **set** (register, reset, change) and never at login, so existing accounts keep signing in and meet the new rule when they next change it. 12 characters, a common-password blocklist, an identifier check, and a 72-byte ceiling — bcrypt silently truncates past that, so a longer password was quietly weaker than it looked. | `password-policy.test.ts`. Eight suites' `Password123` fixtures replaced, and the rejection pinned rather than the fixtures deleted. | **RESOLVED** |
+| AIM-20, AIM-21, AIM-22 | OPS_ONLY | Firebase service-account key, APNs VoIP signing key and a staff Google Workspace app password sat in plaintext `.env` files, where they leak through `/proc`, crash dumps, `docker inspect` and CI logs. | The leaked values still need a human at three vendor consoles — that part is genuinely not automatable and is the only thing left in *Secret rotation* below. Everything around it is: `expandFileSecrets` accepts `<NAME>_FILE` for every variable, so the material is a mounted file with file permissions and rotation is replacing a file; `generate-secrets.mjs` mints and rotates by group; and the boot guard below refuses a published placeholder. | `packages/utils/tests/secret-env.test.ts`. | **RESOLVED** |
+| AIM-25 | OPS_ONLY | Six services held the MinIO **root** credentials — read and delete every object in every bucket, drop the buckets, change server config. A leak from any one of them handed over all user media at once. | `deploy/minio/init-buckets.sh` provisions an account per service scoped to the buckets that service actually names, `minio-init` runs it on every `up` (it existed only in `deploy/dev01`, so the root stack provisioned nothing), and root stays with the operator. Re-applying secrets on each start makes rotation "change the value, restart". A missing secret is fatal, because defaulting to a known value — or to root — is the failure being replaced. | `deployment-config.test.ts` — per-service accounts, no `minioadmin`, and stream-service kept out of the chat and community buckets. | **RESOLVED** |
+| AIM-54, AIM-55, AIM-56, AIM-57 | OPS_ONLY | One JWT secret across eight services, a committed gRPC service token, shared database credentials, and SRS API credentials under a personal mailbox. | Structural rather than clerical: RS256 removes the shared minting secret entirely (AIM-65 above); `generate-secrets.mjs` mints per-environment values for all of them in one command; `*_FILE` keeps them off the environment; and **`assertNoPlaceholderCredentials` now runs in all nine services at boot**. The narrower guard from the first pass was exported, unit-tested and called by nothing, and it required each caller to list what to check — which is how `MINIO_ACCESS_KEY=minioadmin` survived in three templates while the JWT secrets were taken seriously. The new one matches on variable *name* shape, so a credential added tomorrow is covered with nothing to remember. | `secret-env.test.ts` — MinIO defaults, multiple offenders reported together, name-shape coverage, non-credential variables ignored, inert outside production. | **RESOLVED** |
+| AIM-23 | PARTIAL | The bootstrap super-admin was seeded on `yopmail.com`, whose inbox anyone can read. Password reset mails a code there, so the account handed over every RBAC permission with nothing to guess. The seed and reset path were fixed; environments that had **already run** the old seed were left as a runbook line. | A runbook line stays live until someone reads it. `reconcileDisposableAdmins` runs at boot and moves any `ACTIVE`/`INVITED` admin on a disposable domain to `DISABLED`, logging the addresses loudly so it does not look like an outage. Disabled, not deleted — deleting loses the audit trail that references the row, and disabled is already unusable for both login and reset. | `disposable-admin-reconciler.test.ts` — the seeded account, an `INVITED` one, a clean environment untouched, soft-deleted rows left alone, and idempotence across restarts. | **RESOLVED** |
+
+### Two defects found while closing these
+
+Neither is in the audit; both were found by the work above and are fixed in the
+same commits.
+
+| Where | Defect | Fix |
 |---|---|---|
-| AIM-16 | Needs a schema migration plus a change to how SRS names streams — too large to land safely alongside everything else, and a partial version would break in-flight broadcasts. | The publish credential is still the playback path segment, so any viewer can read it out of the player URL and hijack the broadcast. **Design worked out and recorded in the re-open notes above:** publish under a new public `playbackId`, carry the secret as a `?secret=` parameter on the RTMP/WHIP URL (SRS passes it to the hook as `param`), backfill `playbackId = streamKey` so existing streams keep working and are recognisable as legacy. Highest-value remaining item. |
-| AIM-44 | A correct implementation is an anonymize job plus consumers in six services; stubs would be worse than nothing because they would look complete. | Account deletion still erases and anonymizes nothing. Personal data (email, phone, hash) persists indefinitely after a user deletes their account. This is a GDPR exposure, not only a security one. |
-| AIM-72 | Adding `rate-limit-redis` is a new dependency and a store swap; the deployment runs a single gateway container today, so the practical gap is counters wiped by a restart. | Gateway limiters remain in-process. **Do this before adding a second gateway replica** — with two, every limit doubles, and the nginx `ip_hash` config lets a client pick its replica. |
-| AIM-66 | Rotating the refresh token on `/auth/token` risks logging out clients that do not expect a new token in that response. | `/auth/token` is now covered by the sensitive limiter, so the endpoint is no longer a free oracle, but a stolen refresh token still never trips reuse detection. Rotation needs a client-contract check first. |
-| AIM-65 | Adding `iss`/`aud` safely needs a dual-verify window (accept tokens without them for one TTL) coordinated with a deploy. Shipping it wrong logs every user out. | Access tokens still carry no issuer or audience, and the secret is shared by eight services. Do it together with a short access-token TTL and dual verification. |
-| AIM-58, AIM-67 | Product decisions, explicitly out of scope for a security pass: requiring verified contact details or a captcha at registration, and raising the password minimum, all change onboarding and would break existing clients and stored credentials. | Registration still issues full tokens with no verified contact and no captcha; the password policy is length-only at 8 characters. |
-| AIM-60 | Reverses a deliberate product decision from August (the 1-hour TTL was retired, its shared module deleted, and about eight tests pin "links never expire"). | Community invite links still never expire and default to unlimited uses. Needs the product owner, not a security judgement. The exact diff is recorded in the re-open notes. |
-| AIM-31 | Changing the response to a uniform 200 would break the sign-up UX that reads 409 to say "that handle is taken". | The endpoint is now rate-limited at the edge, but still confirms whether a handle exists. Uniforming the response needs product sign-off. |
-| AIM-30 | Lockout state lives in Redis rather than on `AdminUser`, to avoid a migration on the highest-privilege table. | A full Redis flush clears lockout counters. Moving them to the database would make them durable. |
-| AIM-24 | The local `docker-compose.yml` still runs Mongo and Redis without auth. | Deliberate, and the audit's own reviewer refuted this as a production finding: it is the local-dev compose, and the production deployment uses authenticated managed instances. The production templates now document Redis auth and TLS. |
+| `apps/api-gateway/src/sockets/audit-context.ts` | `socket.handshake` was destructured unconditionally, and this runs as the **first statement** of the `connection` handler on `/chat`, `/community` and `/stream`. A socket arriving without one aborted the rest of that handler, leaving it connected with no event listeners bound at all — a silently dead client. | Reads the handshake defensively. An audit row with an unknown source is a far better failure than a dead connection. Pinned in `handshake-client-ip.test.ts`. |
+| `apps/auth-service/tests/setup/global-mocks.ts` | The Redis test double had no `set`, so every suite exercising the new single-use claim silently took the in-process fallback instead of the real Redis path — a broken claim would have gone unnoticed. | The double implements `set`/`del` with `NX` semantics. |
 
-## Secret rotation (operator actions)
+### Verification
 
-Every secret below must be treated as public and rotated before launch. No values are
-recorded here or anywhere in the repository. The code guards above stop a *new* deployment
-from starting with a published placeholder; they cannot un-leak a value that already exists.
+Full suite after Phase 5:
 
-| What | Where it lives | Action |
+| Metric | Phase 4 baseline | After Phase 5 |
 |---|---|---|
-| `SRS_HOOK_SECRET` (AIM-17) | root `.env`, `apps/stream-service/.env` | Rotate now — the previous value was committed in `docker/srs/aimess.conf` and is in git history. It is the only authenticator on a publicly-routable hook endpoint. Consider purging it from history. |
-| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (AIM-18, AIM-36) | root `.env`, chat-service, api-gateway | Generate a new pair per environment (`openssl rand -base64 32` for the secret) and update the LiveKit server config together with both services. The old pair was published in this repo. |
-| `JWT_ADMIN_SECRET`, `JWT_ADMIN_REFRESH_SECRET` (AIM-19) | backoffice-service, api-gateway, media-service, root `.env` | Replace the self-describing placeholder with 32+ random bytes per environment. All copies must change together. |
-| `GRPC_SERVICE_TOKEN` (AIM-55) | all nine services | Generate one random token per environment. The old value is in every committed `.env.example` in git history. |
-| Firebase service-account key (AIM-20) | `apps/notifications-service/.env` | Delete the key id in the Google Cloud console and issue a new one. Confirm the service account holds only `roles/firebasemessaging.admin`, not a broad project role. Move the new key to a secret manager or a root-owned mounted file. |
-| APNs VoIP `.p8` key (AIM-21) | `apps/notifications-service/.env` | Revoke in the Apple Developer portal (Certificates, Identifiers & Profiles → Keys) and issue a replacement. The key signs pushes for every app under the team, not just this one. |
-| SMTP app password (AIM-22) | notifications-service, backoffice-service | Revoke at `myaccount.google.com/apppasswords`. Move to a transactional-mail provider account with a `no-reply` sender identity rather than a named employee's mailbox — that mailbox currently sends admin password-reset codes. |
-| Bootstrap super-admin (AIM-23) | `apps/backoffice-service/.env` | Delete or rename the seeded account in every environment that ran the seed. Its address is on a public disposable-mail service, so anyone can read its password-reset codes. Point at a controlled corporate mailbox with a generated password, or leave both variables unset and provision the first admin out of band. |
-| MinIO credentials (AIM-25) | six services | Create a per-service MinIO service account scoped to that service's buckets and operations, and rotate `MINIO_ROOT_PASSWORD` to a generated value kept out of every application `.env`. |
-| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` (AIM-54) | eight services | Rotate. The structural fix — asymmetric signing so only auth-service can mint — is recorded as residual, not done in this pass. |
-| Postgres / Mongo / RabbitMQ credentials (AIM-56) | root `.env` and four connection strings | Issue one role per service scoped to its own database or vhost, and rotate the shared passwords. |
-| SRS HTTP API credentials (AIM-57) | `apps/stream-service/.env` | Rotate to a generated value under a service account name rather than a personal mailbox, and restrict the SRS `http_api` to the stream-service source address at the reverse proxy. |
+| Test suites | 15 failed / 454 | 14 failed / 463 |
+| Tests | 60 failed / 5702 | 52 failed / 5857 |
+
+Fewer failures than the baseline and 155 more tests. Every remaining failing
+suite is in code this pass does not touch, and each was confirmed failing
+independently:
+
+- **chat-service community messaging** (7 suites) and `grpc/service-impl`,
+  `private-message`, `rest-reactions`, `admin-group-identity-search` — repository
+  mocks returning `undefined` inside `community-message.service.ts`. In-flight
+  work from another change in the same tree.
+- **backoffice** `admin-permission-resolution`, `group-management`,
+  `user-directory-status-filter` — an RBAC implication returning `users.view`
+  where an explicit deny should win, and gRPC directory stubs. Confirmed present
+  at `HEAD` before any Phase 5 change.
+- **stream-service** `livestream-comment-broadcast-shape` — asserts a
+  `localhost:9000` presigned URL while this machine's `.env` sets
+  `MINIO_PUBLIC_ENDPOINT` to a LAN address. Local environment, not code.
+
+`apps/backoffice-service/tests/auth/edge-guards.test.ts` intermittently exceeds
+its 5 s timeout (it builds the app five times under `jest.isolateModulesAsync`).
+Verified to fail the same way with the pre-Phase-5 `admin-login-lockout.ts`
+restored, so it is pre-existing slowness rather than a regression. It was left
+alone rather than given a larger timeout.
+
+Typecheck: clean across all nine services and the shared packages.
+
+## Secret rotation — what is left for an operator
+
+Everything mechanical is automated. `node scripts/generate-secrets.mjs --rotate all`
+mints every value this repository controls, writes them mode-0600, and prints the
+`*_FILE` lines to mount them; `minio-init` re-applies the storage secrets on each
+stack start; and all nine services refuse to boot in production on a value
+published in this repository.
+
+What remains is the part that lives in someone else's console, because the old
+values are already public and only their issuer can revoke them:
+
+| What | Action | Why it cannot be automated from here |
+|---|---|---|
+| Firebase service-account key (AIM-20) | Delete the key id in the Google Cloud console and issue a new one. Confirm the service account holds only `roles/firebasemessaging.admin`, not a broad project role. | Revocation is a Google Cloud IAM operation against an account this repository has no credential for. |
+| APNs VoIP `.p8` key (AIM-21) | Revoke in the Apple Developer portal (Keys) and issue a replacement. | Apple provides no API for key revocation. The key signs pushes for every app under the team, not only this one. |
+| SMTP app password (AIM-22) | Revoke at `myaccount.google.com/apppasswords`, and move to a transactional-mail provider with a `no-reply` sender identity. | It is a named employee's personal mailbox credential, and that mailbox currently sends admin password-reset codes. |
+| `SRS_HOOK_SECRET` (AIM-17) | Rotate, then consider purging it from git history. | The generator mints the new value; the old one is in a committed file and history rewriting is a decision for whoever owns the remote. |
+| LiveKit API pair (AIM-18, AIM-36) | Generate a new pair and update the LiveKit **server** config alongside both services. | The other half lives in the LiveKit deployment's own configuration, outside this repository. |
+
+Everything previously listed here — `JWT_ADMIN_SECRET`, `GRPC_SERVICE_TOKEN`,
+`JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`, MinIO credentials, and the
+Postgres / Mongo / RabbitMQ passwords — is now generated, scoped and enforced in
+repository, and has been removed from this table.
+
+The bootstrap super-admin (AIM-23) has also left it: the account is disabled
+automatically at boot rather than waiting for an operator.

@@ -59,7 +59,11 @@ export function expandFileSecrets(
       throw new Error(
         `${key} points at ${value}, which could not be read: ${
           err instanceof Error ? err.message : String(err)
-        }. Refusing to start with an unresolved secret.`
+        }. Refusing to start with an unresolved secret.`,
+        // Keep the original so the operator sees ENOENT vs EACCES vs EISDIR —
+        // "could not be read" alone does not say whether the file is missing or
+        // the container cannot see it, which are different fixes.
+        { cause: err }
       );
     }
 
