@@ -3621,6 +3621,17 @@ export const communityRepository = {
         AND: [
           { OR: [{ revokedAt: null }, { revokedAt: { isSet: false } }] },
           { OR: [{ maxUses: null }, { maxUses: { isSet: false } }] },
+          // Links now lapse, so an expired one must not be handed back as the
+          // community's live share link — the Share sheet would show a code
+          // that fails on redeem. A null/absent expiresAt is a pre-expiry row,
+          // which never lapses; anything else must still be in the future.
+          {
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { isSet: false } },
+              { expiresAt: { gt: new Date() } },
+            ],
+          },
         ],
       },
       orderBy: { createdAt: "desc" },
