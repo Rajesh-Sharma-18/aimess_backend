@@ -57,6 +57,11 @@ service MessagingService {
   // this before FCM/APNs fan-out to suppress push for a member who has muted
   // this group.
   rpc CheckGroupMute          (CheckGroupMuteRequest)          returns (CheckGroupMuteResponse);
+  // Batched CheckGroupMute: which of these members have muted this group?
+  // One call for a whole push fan-out, instead of CheckGroupMute once per
+  // recipient — the same treatment community.proto's
+  // GetCommunityNotifiableMemberIds already gives the community fan-out.
+  rpc GetGroupMutedMemberIds  (GetGroupMutedMemberIdsRequest)  returns (GetGroupMutedMemberIdsResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
   // Admin Group Management: list/detail/members (owned by chat-service).
@@ -873,4 +878,18 @@ message CheckGroupMuteRequest {
 message CheckGroupMuteResponse {
   bool  is_muted    = 1;
   int64 muted_until = 2; // epoch ms; 0 = indefinite mute or not muted
+}
+
+// ---- GetGroupMutedMemberIds ----
+message GetGroupMutedMemberIdsRequest {
+  string room_id = 1;
+  // Candidates to test. Only these are considered, so the response can never
+  // be larger than the fan-out that asked for it.
+  repeated string user_ids = 2;
+}
+message GetGroupMutedMemberIdsResponse {
+  // The subset of `user_ids` that have muted this group. Empty means nobody —
+  // which is also the fail-open answer, since a mute-oracle failure must never
+  // suppress a push.
+  repeated string user_ids = 1;
 }

@@ -274,13 +274,28 @@ function publishMessageNewToParticipants(
   context: string,
   excludeUserId: string
 ): void {
-  for (const userId of new Set(recipientIds.filter(Boolean))) {
+  const targets = [...new Set(recipientIds.filter(Boolean))].filter(
     // Skip the sender: their socket is already in `conv:<roomId>` (from
     // sending) and gets the room broadcast above, so a personal-channel copy
     // on top of that double-delivers `message:new` to just them.
-    if (userId === excludeUserId) continue;
-    publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
-  }
+    (userId) => userId !== excludeUserId
+  );
+  if (targets.length === 0) return;
+
+  // ONE pipeline and ONE serialization for the whole fan-out. This used to be
+  // `publishRealtimeSafe` in a loop: N separate Redis round trips AND N
+  // identical `JSON.stringify` passes over the same message payload, which on a
+  // 256-member group is 255 of each per message. The frames are unchanged — the
+  // channel is the only thing that differs per recipient — so clients see
+  // exactly what they saw before.
+  const frame = JSON.stringify({ event: "message:new", data: payload });
+  const pipeline = redis.pipeline();
+  for (const userId of targets) pipeline.publish(`user:${userId}`, frame);
+  pipeline.exec().catch((err: unknown) => {
+    logger.warn(
+      `realtime publish failed event=message:new recipients=${targets.length} ${context}: ${String(err)}`
+    );
+  });
 }
 
 export function createMessagingImpl(
@@ -466,8 +481,13 @@ export function createMessagingImpl(
               // Personal bus too — reaches recipients who don't have this chat open,
               // which is what makes the delivered tick work. See the helper's KDoc.
               if (conversationType === "GROUP") {
-                void deps.groupMessageService
-                  .getActiveMemberIds(req.conversationId)
+                // `groupRecipients`, NOT a fresh `getActiveMemberIds`: this sits
+                // inside the per-album-row loop, so the raw call issued ANOTHER
+                // full O(members) roster read for every row of an album — on top
+                // of the one the bump and the push already share via the memo
+                // declared above. The REST path (chat-message-orchestrator)
+                // always used the memo here; only this branch leaked.
+                void groupRecipients()
                   .then((ids) =>
                     publishMessageNewToParticipants(
                       ids,
@@ -1970,6 +1990,43 @@ export function createMessagingImpl(
           // Fail-open: an oracle failure must never suppress a push.
           logger.warn(`gRPC checkGroupMute error: ${String(err)}`);
           callback(null, { isMuted: false, mutedUntil: 0 });
+        }
+      })();
+    },
+
+    /**
+     * Batched `checkGroupMute` — which of these members muted this group?
+     *
+     * The push fan-out used to call `checkGroupMute` once per recipient, so a
+     * 256-member group message meant 256 gRPC round trips into THIS service,
+     * each with its own `GroupMember` read, while it was also serving sends.
+     * Community already had the batched form (community.proto's
+     * GetCommunityNotifiableMemberIds); this is the group equivalent.
+     *
+     * Fail-open, exactly like the single-row version: an error answers "nobody
+     * is muted" so an oracle failure can never silence a push.
+     */
+    getGroupMutedMemberIds: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId?: string; userIds?: string[] };
+          const roomId = req.roomId ?? "";
+          const userIds = Array.isArray(req.userIds) ? req.userIds : [];
+          if (!roomId || userIds.length === 0) {
+            callback(null, { userIds: [] });
+            return;
+          }
+          const muted = await deps.groupMemberRepo.findMutedUserIds(
+            roomId,
+            userIds
+          );
+          callback(null, { userIds: muted });
+        } catch (err) {
+          logger.warn(`gRPC getGroupMutedMemberIds error: ${String(err)}`);
+          callback(null, { userIds: [] });
         }
       })();
     },

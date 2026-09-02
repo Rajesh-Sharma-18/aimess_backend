@@ -345,6 +345,24 @@ const startServer = async () => {
       }
     }
 
+    // Community's half of the nav-badge unread summary queries room_members BY
+    // USER (`where: { userId, status }`), and RoomMember's only indexes are
+    // `(roomId, userId)` unique and `(roomId, status)` — neither prefixed on
+    // userId, so every one of those reads was a collection scan over every
+    // membership row in the product. That read runs once per online recipient
+    // of every community message, which is exactly the path that has to stay
+    // cheap as membership grows. Declared on the schema too; created here so
+    // existing deployments pick it up without a `prisma db push`.
+    try {
+      await ensureMongoIndex(prisma, "room_members", {
+        key: { userId: 1, status: 1 },
+        name: "room_members_user_status_idx",
+      });
+    } catch (err) {
+      logger.warn("Failed to create room_members_user_status_idx — continuing");
+      logger.warn(err);
+    }
+
     // Old name for the general_room_messages timeline index; renamed to
     // general_room_messages_room_createdAt_idx. dropMongoIndexIfExists
     // swallows IndexNotFound, so on environments that never had it (or
@@ -679,10 +697,33 @@ const startServer = async () => {
     // is a TOTAL, so only the last value in a window was ever going to be
     // rendered anyway. The window is short enough to stay inside the sub-second
     // budget for a single isolated change.
+    //
+    // The coalesce above collapses REPEATS for one user; it does nothing for N
+    // DISTINCT users, which is the message-fan-out case it was written for. So
+    // the pusher also drops recipients who have no live session: the summary is
+    // published to `user:<id>`, a channel only a CONNECTED socket subscribes
+    // to, so for an offline member the three aggregations are computed and the
+    // result then discarded by Redis for want of a subscriber. Skipping them
+    // removes no delivery that was ever going to happen. Presence is resolved
+    // for the whole batch in ONE cache read, and if it is briefly wrong the
+    // member still gets the per-room `conv:updated`/`community:updated` bump
+    // (published unconditionally, in the same pipeline) plus
+    // `GET /chat/unread-summary` on next load, so the total self-heals.
+    // Two windows, because the two callers have different budgets. A user's
+    // OWN action (opening a room, marking read) must feel instant, so it keeps
+    // the original 200 ms. Someone ELSE's message raising your total by one is
+    // not something you are watching for, and a busy room otherwise recomputes
+    // every online member's summary once per 200 ms window for the whole
+    // burst — the longer window collapses a burst of inbound messages into a
+    // single recompute per member without dropping a single push.
     const UNREAD_SUMMARY_COALESCE_MS = 200;
+    const UNREAD_SUMMARY_FANOUT_COALESCE_MS = 1000;
     const unreadSummaryTimers = new Map<string, NodeJS.Timeout>();
-    registerUnreadSummaryPusher((userId) => {
-      if (!userId || unreadSummaryTimers.has(userId)) return;
+    const scheduleUnreadSummary = (
+      userId: string,
+      delayMs: number = UNREAD_SUMMARY_COALESCE_MS
+    ): void => {
+      if (unreadSummaryTimers.has(userId)) return;
       unreadSummaryTimers.set(
         userId,
         setTimeout(() => {
@@ -702,8 +743,40 @@ const startServer = async () => {
                 `chat:unread_summary push failed for ${userId}: ${String(err)}`
               );
             });
-        }, UNREAD_SUMMARY_COALESCE_MS).unref()
+        }, delayMs).unref()
       );
+    };
+    registerUnreadSummaryPusher((userIds) => {
+      // Drop ids already scheduled BEFORE asking presence — a burst into one
+      // room must not re-query presence for members whose timer is pending.
+      const pending = userIds.filter(
+        (id) => id && !unreadSummaryTimers.has(id)
+      );
+      if (pending.length === 0) return;
+      // One id is the mark-read/self case: it is the caller's own action, the
+      // socket that triggered it is by definition connected, and a presence
+      // round trip would only add latency to it.
+      if (pending.length === 1) {
+        scheduleUnreadSummary(pending[0]!);
+        return;
+      }
+      void presenceService
+        .getPresenceMany(pending)
+        .then((online) => {
+          for (const id of pending) {
+            if (online.get(id) === true)
+              scheduleUnreadSummary(id, UNREAD_SUMMARY_FANOUT_COALESCE_MS);
+          }
+        })
+        .catch((err) => {
+          // Fail OPEN: a presence outage must not silently freeze every
+          // member's nav badge. Falls back to the old behaviour.
+          logger.warn(
+            `chat:unread_summary presence filter failed: ${String(err)}`
+          );
+          for (const id of pending)
+            scheduleUnreadSummary(id, UNREAD_SUMMARY_FANOUT_COALESCE_MS);
+        });
     });
 
     // V2 §3.3: per-conversation seq-based incremental sync (REST catch-up)

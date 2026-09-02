@@ -60,6 +60,33 @@ export async function isGroupMemberMuted(
 }
 
 /**
+ * Drop the members of group `roomId` who have muted it — the batched
+ * replacement for calling `isGroupMemberMuted` once per recipient.
+ *
+ * One gRPC call for a whole fan-out instead of N, mirroring what
+ * `filterToNotifiableCommunityMembers` already does for community. Fail-OPEN
+ * (the client's breaker answers "nobody muted"): a mute-oracle outage must
+ * never suppress a push — the opposite of the community roster filter, which
+ * fails closed because pushing a former member is the worse mistake there.
+ */
+export async function filterOutMutedGroupMembers(
+  roomId: string,
+  userIds: string[]
+): Promise<string[]> {
+  const unique = [...new Set(userIds.filter(Boolean))];
+  if (unique.length === 0) return [];
+
+  const { userIds: mutedIds } =
+    await chatMessagingClient.getGroupMutedMemberIds({
+      roomId,
+      userIds: unique,
+    });
+  if (mutedIds.length === 0) return unique;
+  const muted = new Set(mutedIds);
+  return unique.filter((id) => !muted.has(id));
+}
+
+/**
  * True only when `userId` is an ACTIVE member of `communityId`. Fail-closed:
  * transport / breaker failures resolve to false so former members never get
  * community FCM or inbox pushes during an oracle outage.

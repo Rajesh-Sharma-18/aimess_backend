@@ -7,7 +7,7 @@ import { enqueueChatPush } from "../services/chat-push-coalescer.js";
 import {
   filterToNotifiableCommunityMembers,
   isCommunityActorMuted,
-  isGroupMemberMuted,
+  filterOutMutedGroupMembers,
   isPrivateRoomMutedBy,
 } from "../services/notification-eligibility.service.js";
 
@@ -79,10 +79,17 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   // must not receive a push for it. Everything else (persistence, unread
   // counts, socket events, ordering) is unaffected — this consumer only
   // decides push delivery. Fail-open on oracle outage (see chatMessagingClient).
-  if (
-    data.conversationType === "PRIVATE" ||
-    data.conversationType === "GROUP"
-  ) {
+  //
+  // PRIVATE only. It used to run for GROUP as well, but `checkPrivateMute`
+  // answers a group room id by MISSING PrivateRoom and then falling through to
+  // exactly the `GroupMember.notificationSettings` read that the group gate
+  // below performs — same verdict, same expiry semantics, two extra queries per
+  // recipient to reach it. A group message therefore spent 3 database queries
+  // per member (private miss + member row, then the member row again) where 1
+  // decides it, and every one of those is a separate gRPC call into
+  // chat-service — the same process serving sends. Dropping the redundant pass
+  // suppresses exactly the same recipients.
+  if (data.conversationType === "PRIVATE") {
     const muteChecks = await Promise.all(
       recipients.map((id) => isPrivateRoomMutedBy(id, data.conversationId))
     );
@@ -99,11 +106,17 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   // Group-room mute gate: mirror of the private-room gate above, but the mute
   // setting lives on the GroupMember row (per-membership) rather than the room.
   if (data.conversationType === "GROUP") {
-    const muteChecks = await Promise.all(
-      recipients.map((id) => isGroupMemberMuted(id, data.conversationId))
-    );
     const before = recipients.length;
-    recipients = recipients.filter((_, i) => !muteChecks[i]);
+    // ONE call for the whole fan-out. This was `Promise.all` over
+    // `isGroupMemberMuted` — one gRPC round trip per recipient into
+    // chat-service, the same process serving message sends, so a 256-member
+    // group message opened 256 concurrent calls against it. Community was
+    // given the batched treatment after exactly this saturated
+    // community-service and tripped its breaker; group had never had it.
+    recipients = await filterOutMutedGroupMembers(
+      data.conversationId,
+      recipients
+    );
     if (recipients.length < before) {
       logger.info(
         `Suppressing group push for ${before - recipients.length} muted recipient(s): room=${data.conversationId} message=${data.messageId}`

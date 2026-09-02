@@ -477,29 +477,36 @@ export class GroupMessageService {
     // Fire one `message:delivered` per online member so the sender's tick can
     // flip SENT→DELIVERED as each recipient is confirmed present. Fire-and-
     // forget — a Redis blip must never fail the send itself.
+    //
+    // ONE pipeline, not one `publish()` await per member: the frames are
+    // per-recipient (the payload names the recipient, so they cannot be
+    // merged without changing the wire contract) but the ROUND TRIPS need not
+    // be. A 200-member group was issuing 200 separate Redis commands here, and
+    // although each is voided, they still queue on the one connection and land
+    // on the next send's latency. Same frames, same order, one round trip.
     if (this.redis && deliveredToOnInsert.length > 0) {
       const messageIds = created.map((m) => m.id);
       const lastId = message.id;
+      const deliveredPipeline = this.redis.pipeline();
       for (const recipientId of deliveredToOnInsert) {
-        void this.redis
-          .publish(
-            `conv:${params.roomId}`,
-            JSON.stringify({
-              event: "message:delivered",
-              data: {
-                conversationId: params.roomId,
-                recipientId,
-                upToMessageId: lastId,
-                messageIds,
-              },
-            })
-          )
-          .catch((err: unknown) =>
-            logger.warn(
-              `GroupMessageService|publish message:delivered failed room=${params.roomId} recipient=${recipientId}: ${String(err)}`
-            )
-          );
+        deliveredPipeline.publish(
+          `conv:${params.roomId}`,
+          JSON.stringify({
+            event: "message:delivered",
+            data: {
+              conversationId: params.roomId,
+              recipientId,
+              upToMessageId: lastId,
+              messageIds,
+            },
+          })
+        );
       }
+      void deliveredPipeline.exec().catch((err: unknown) =>
+        logger.warn(
+          `GroupMessageService|publish message:delivered failed room=${params.roomId} recipients=${deliveredToOnInsert.length}: ${String(err)}`
+        )
+      );
       // ALSO direct to the SENDER's own `user:<id>` channel — one publish
       // regardless of how many members came online (the sender's list row only
       // needs one tick update). Guarantees delivery even if the sender's

@@ -5,7 +5,7 @@ import type {
   CommunityInvitationSystemAction,
   GroupInvitationSystemAction,
 } from "../lib/chat-message.serializer.js";
-import { notifyUnreadChanged } from "./unread-summary-bridge.js";
+import { notifyUnreadChangedMany } from "./unread-summary-bridge.js";
 
 /**
  * WhatsApp/Telegram-style "bump-to-top" fan-out for the inbox/community list.
@@ -331,6 +331,13 @@ export async function publishConvUpdated(
   const projectionRevision =
     p.projectionRevision ?? (p.deleteRecalc ? 0 : (p.preview.revision ?? 0));
 
+  // Accumulated through the loop and flushed ONCE below. Calling the bridge
+  // per recipient asked for one nav-badge summary per member, and each summary
+  // is three collection-wide unread aggregations — so a single message into an
+  // N-member room issued 3N of them. Batching lets the pusher resolve all N
+  // recipients in one round trip. See events/unread-summary-bridge.ts.
+  const badgeChanged: string[] = [];
+
   try {
     const pipeline = p.redis.pipeline();
     for (const recipientId of recipientIds) {
@@ -393,7 +400,7 @@ export async function publishConvUpdated(
       // total in the DOWNWARD direction (an unread message just vanished), which
       // the `unread` flag can never signal — so it has to push too, or the nav
       // badge keeps counting a message nobody can read any more.
-      if (unread || p.deleteRecalc) notifyUnreadChanged(recipientId);
+      if (unread || p.deleteRecalc) badgeChanged.push(recipientId);
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -443,6 +450,9 @@ export async function publishConvUpdated(
       `Failed to publish conv:updated for ${p.roomId}: ${String(error)}`
     );
   }
+  // Outside the try on purpose: a Redis publish failure must not also cost
+  // every recipient their badge refresh — the two are independent effects.
+  notifyUnreadChangedMany(badgeChanged);
 }
 
 interface PublishCommunityUpdatedParams {
@@ -526,6 +536,11 @@ export async function publishCommunityUpdated(
   const senderId = isSystem ? "" : p.senderId;
   const senderName = isSystem ? "" : p.senderName;
 
+  // Batched for the same reason as publishConvUpdated above: one summary per
+  // member is 3N unread aggregations, and community rosters are the largest in
+  // the product.
+  const badgeChanged: string[] = [];
+
   try {
     const pipeline = p.redis.pipeline();
     for (const memberId of eligibleIds) {
@@ -544,7 +559,7 @@ export async function publishCommunityUpdated(
       const unreadDelta = p.unreadDeltaByMember?.[memberId] ?? 0;
       // The nav-badge total dropped for this member too — the `unread` flag only
       // ever signals upward, so a delete has to push the summary explicitly.
-      if (unreadDelta !== 0) notifyUnreadChanged(memberId);
+      if (unreadDelta !== 0) badgeChanged.push(memberId);
       const deleteFields = {
         ...(p.deleteRecalc ? { deleteRecalc: true } : {}),
         ...(p.activityOnly ? { activityOnly: true } : {}),
@@ -595,7 +610,7 @@ export async function publishCommunityUpdated(
           ? false
           : memberId !== p.senderId;
       // Nav-badge total changed for this member — see unread-summary-bridge.ts.
-      if (unread) notifyUnreadChanged(memberId);
+      if (unread) badgeChanged.push(memberId);
       pipeline.publish(
         `user:${memberId}`,
         JSON.stringify({
@@ -624,6 +639,8 @@ export async function publishCommunityUpdated(
       `Failed to publish community:updated for ${p.communityId}: ${String(error)}`
     );
   }
+  // Outside the try — see publishConvUpdated.
+  notifyUnreadChangedMany(badgeChanged);
 }
 
 /**

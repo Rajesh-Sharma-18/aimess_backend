@@ -15,13 +15,25 @@
  */
 jest.mock("../../src/events/unread-summary-bridge.js", () => ({
   notifyUnreadChanged: jest.fn(),
+  notifyUnreadChangedMany: jest.fn(),
 }));
 
 import {
   publishConvUpdated,
   publishCommunityUpdated,
 } from "../../src/events/publish-conv-updated.js";
-import { notifyUnreadChanged } from "../../src/events/unread-summary-bridge.js";
+import { notifyUnreadChangedMany } from "../../src/events/unread-summary-bridge.js";
+
+/**
+ * The fan-out hands the nav-badge bridge ONE batch per publish rather than one
+ * call per recipient (a 25-member send otherwise asked for 25 summaries, each
+ * three collection-wide aggregations). These assertions still describe WHO gets
+ * a badge refresh — only the delivery shape changed.
+ */
+const badgeRecipients = (): string[] =>
+  (notifyUnreadChangedMany as jest.Mock).mock.calls.flatMap(
+    (args) => args[0] as string[]
+  );
 
 const ROOM = "prv_1";
 const COMMUNITY = "cmy_1";
@@ -133,8 +145,7 @@ describe("conv:updated — delete recalc (private/group)", () => {
       deleteRecalc: true,
     });
 
-    expect(notifyUnreadChanged).toHaveBeenCalledWith(ALICE);
-    expect(notifyUnreadChanged).toHaveBeenCalledWith(BOB);
+    expect(badgeRecipients()).toEqual(expect.arrayContaining([ALICE, BOB]));
   });
 
   it("a NORMAL bump is unchanged — no marker, unread still computed", async () => {
@@ -228,8 +239,8 @@ describe("community:updated — delete recalc", () => {
       unreadDeltaByMember: { [ALICE]: -1 },
     });
 
-    expect(notifyUnreadChanged).toHaveBeenCalledWith(ALICE);
-    expect(notifyUnreadChanged).not.toHaveBeenCalledWith(BOB);
+    expect(badgeRecipients()).toContain(ALICE);
+    expect(badgeRecipients()).not.toContain(BOB);
   });
 
   it("an emptied room bumps with 0 — never a fabricated 'now' that pins it to the top", async () => {
