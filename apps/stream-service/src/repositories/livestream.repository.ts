@@ -28,6 +28,8 @@ export class LivestreamRepository {
     sourceType: string;
     sourceUrl?: string | null;
     streamKey: string;
+    /** Public name the stream is published/played under. */
+    playbackId?: string;
     status?: string;
     hlsUrl?: string | null;
     flvUrl?: string | null;
@@ -43,6 +45,7 @@ export class LivestreamRepository {
         sourceType: data.sourceType,
         sourceUrl: data.sourceUrl ?? null,
         streamKey: data.streamKey,
+        playbackId: data.playbackId ?? null,
         status: data.status ?? "PENDING",
         hlsUrl: data.hlsUrl ?? null,
         flvUrl: data.flvUrl ?? null,
@@ -56,6 +59,20 @@ export class LivestreamRepository {
     return this.prisma.livestream.findUnique({ where: { id } });
   }
 
+  /**
+   * Resolve a stream by the name SRS knows it as.
+   *
+   * SRS reports the PUBLISHED name, which is `playbackId` for streams created
+   * after the ingest/playback split and `streamKey` for older ones (they were
+   * published under their own secret). Matching either keeps a stream that was
+   * live across the deploy resolvable, so its hooks keep working until it ends.
+   */
+  async findBySrsName(srsName: string): Promise<Livestream | null> {
+    return this.prisma.livestream.findFirst({
+      where: { OR: [{ playbackId: srsName }, { streamKey: srsName }] },
+    });
+  }
+
   async findByStreamKey(streamKey: string): Promise<Livestream | null> {
     return this.prisma.livestream.findUnique({ where: { streamKey } });
   }
@@ -65,6 +82,15 @@ export class LivestreamRepository {
    * which resolves a whole page of currently-publishing SRS stream keys in one
    * indexed query instead of one round trip per publisher.
    */
+  async findBySrsNames(srsNames: string[]): Promise<Livestream[]> {
+    if (!srsNames.length) return [];
+    return this.prisma.livestream.findMany({
+      where: {
+        OR: [{ playbackId: { in: srsNames } }, { streamKey: { in: srsNames } }],
+      },
+    });
+  }
+
   async findByStreamKeys(streamKeys: string[]): Promise<Livestream[]> {
     if (!streamKeys.length) return [];
     return this.prisma.livestream.findMany({

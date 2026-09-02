@@ -1,4 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+
+import { extractPublishSecret } from "../lib/stream-identity.js";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { logger } from "@aimess/logger";
 
@@ -63,6 +65,15 @@ export function createInternalRoutes(
         /** SRS connection id — distinguishes a superseded publisher's late
          *  on_unpublish from the live one's (see handleUnpublish). */
         client_id?: string | number;
+        /**
+         * The publish URL's query string, forwarded verbatim by SRS.
+         *
+         * This is where the publish secret arrives: streams are published under
+         * a PUBLIC name, and `?secret=<streamKey>` proves the right to publish
+         * it. Without this the hook would be authenticating on the name alone,
+         * which every viewer can read out of their own playback URL.
+         */
+        param?: string;
       };
       // Shared-secret guard — always enforced, and BEFORE any logging.
       //
@@ -128,7 +139,8 @@ export function createInternalRoutes(
           case "on_publish": {
             const allow = await livestreamService.handlePublish(
               streamKey,
-              clientId
+              clientId,
+              { secret: extractPublishSecret(body.param) }
             );
             logStreamHookBanner(
               `RESULT action=on_publish stream=${streamRef(streamKey)} allowed=${String(allow)} responseBody=${

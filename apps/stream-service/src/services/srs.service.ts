@@ -75,22 +75,43 @@ export class SrsService {
         : {};
   }
 
-  buildIngestEndpoints(streamKey: string): IngestEndpoints {
+  /**
+   * Where the OWNER publishes.
+   *
+   * The stream is published under its PUBLIC `srsName` (the playbackId), and
+   * the secret rides along as `?secret=`. SRS forwards that query string to the
+   * `on_publish` hook as `param`, which is where it is checked — so the name in
+   * the URL is safe to expose while the right to publish is not.
+   *
+   * These URLs are owner-only: they appear in the create response and in
+   * `GET /streams/:id/publish-credentials`, never in a viewer payload.
+   */
+  buildIngestEndpoints(
+    srsName: string,
+    publishSecret: string
+  ): IngestEndpoints {
     const endpoints: IngestEndpoints = {};
+    const secret = encodeURIComponent(publishSecret);
     if (this.ingestModes.has("whip")) {
-      endpoints.whipUrl = `${env.SRS_WHIP_BASE}/rtc/v1/whip/?app=live&stream=${streamKey}`;
+      endpoints.whipUrl = `${env.SRS_WHIP_BASE}/rtc/v1/whip/?app=live&stream=${srsName}&secret=${secret}`;
     }
     if (this.ingestModes.has("rtmp")) {
-      endpoints.rtmpUrl = `rtmp://${env.SRS_RTMP_HOST}/live/${streamKey}`;
+      endpoints.rtmpUrl = `rtmp://${env.SRS_RTMP_HOST}/live/${srsName}?secret=${secret}`;
     }
     return endpoints;
   }
 
-  buildPlaybackUrls(streamKey: string): PlaybackUrls {
+  /**
+   * Where VIEWERS play from.
+   *
+   * Takes the public `srsName` only. It used to take the streamKey, which put
+   * the publish credential in the path of every viewer's player URL.
+   */
+  buildPlaybackUrls(srsName: string): PlaybackUrls {
     return {
-      flvUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.flv`,
-      hlsUrl: `${env.SRS_HLS_BASE}/live/${streamKey}${env.SRS_HLS_ABR_MASTER ? "_master" : ""}.m3u8`,
-      dashUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.mpd`,
+      flvUrl: `${env.SRS_HLS_BASE}/live/${srsName}.flv`,
+      hlsUrl: `${env.SRS_HLS_BASE}/live/${srsName}${env.SRS_HLS_ABR_MASTER ? "_master" : ""}.m3u8`,
+      dashUrl: `${env.SRS_HLS_BASE}/live/${srsName}.mpd`,
     };
   }
 
@@ -102,7 +123,7 @@ export class SrsService {
    * so callers naturally keep polling instead of misreading a transient error
    * as "not live".
    */
-  async hasFrames(streamKey: string): Promise<boolean> {
+  async hasFrames(srsName: string): Promise<boolean> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     try {
@@ -115,11 +136,11 @@ export class SrsService {
       const body = (await listRes.json()) as {
         streams?: Array<{ name?: string; frames?: number }>;
       };
-      const match = (body.streams ?? []).find((s) => s.name === streamKey);
+      const match = (body.streams ?? []).find((s) => s.name === srsName);
       return (match?.frames ?? 0) > 0;
     } catch (error) {
       logger.warn(
-        `SRS hasFrames check failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
+        `SRS hasFrames check failed for key=${streamKeyRef(srsName)}: ${String(error)}`
       );
       return false;
     } finally {
@@ -128,7 +149,7 @@ export class SrsService {
   }
 
   /**
-   * Live video quality for `streamKey` as SRS currently sees it — resolution
+   * Live video quality for `srsName` as SRS currently sees it — resolution
    * and 30s-average ingest bitrate. Scans every API base (OBS/RTMP streams may
    * land on the separate ingest instance, see {@link apiBases}) and returns
    * the first match. Returns `null` on any failure or if the stream isn't
@@ -287,7 +308,7 @@ export class SrsService {
    * a forwarded copy) and silently no-ops instead of kicking the real
    * publisher — see the hosted 3-instance topology this was built for.
    */
-  async kickStream(streamKey: string, sourceType: string): Promise<void> {
+  async kickStream(srsName: string, sourceType: string): Promise<void> {
     const apiBase =
       sourceType === "OBS_RTMP"
         ? (env.SRS_INGEST_API_URL ?? env.SRS_API_URL)
@@ -302,7 +323,7 @@ export class SrsService {
       });
       if (!listRes.ok) {
         logger.warn(
-          `SRS kickStream: list clients returned ${String(listRes.status)} for key=${streamKeyRef(streamKey)}`
+          `SRS kickStream: list clients returned ${String(listRes.status)} for key=${streamKeyRef(srsName)}`
         );
         return;
       }
@@ -310,7 +331,7 @@ export class SrsService {
         clients?: Array<{ id?: string; name?: string; publish?: boolean }>;
       };
       const match = (body.clients ?? []).find(
-        (c) => c.name === streamKey && c.publish === true
+        (c) => c.name === srsName && c.publish === true
       );
       if (!match?.id) {
         // No live publisher under that key — nothing to kick.
@@ -323,12 +344,12 @@ export class SrsService {
       });
       if (!delRes.ok) {
         logger.warn(
-          `SRS kickStream: delete returned ${String(delRes.status)} for key=${streamKeyRef(streamKey)}`
+          `SRS kickStream: delete returned ${String(delRes.status)} for key=${streamKeyRef(srsName)}`
         );
       }
     } catch (error) {
       logger.warn(
-        `SRS kickStream failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
+        `SRS kickStream failed for key=${streamKeyRef(srsName)}: ${String(error)}`
       );
     } finally {
       clearTimeout(timeout);
@@ -342,7 +363,7 @@ export class SrsService {
  * URL is null, or it doesn't match the master pattern — we never fabricate
  * variant URLs that SRS isn't actually producing (they would 404 in the player).
  *
- * Kept as a pure function of the STORED `hlsUrl` (not `streamKey` + env) so
+ * Kept as a pure function of the STORED `hlsUrl` (not `srsName` + env) so
  * that if `SRS_HLS_BASE` changes after a stream is created, the variants stay
  * consistent with the master URL persisted on the stream row.
  *
