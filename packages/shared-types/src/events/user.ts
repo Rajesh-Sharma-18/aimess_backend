@@ -4,6 +4,13 @@ export const UserEvents = {
   USER_DELETED: "user.deleted",
   /** Admin reactivation of a soft-deleted account — the exact inverse of USER_DELETED. */
   USER_RESTORED: "user.restored",
+  /**
+   * The grace period has elapsed and the account's personal data has been
+   * ERASED in auth-service. Distinct from USER_DELETED, which is reversible and
+   * changes no stored value: this one is terminal, and every service holding a
+   * copy of that user's personal data must erase its own.
+   */
+  USER_PURGED: "user.purged",
   USER_PROFILE_UPDATED: "user.profile_updated",
   /** Emitted when a user changes settings — lets notifications-service bust its
    *  cached notification-settings entry. */
@@ -34,6 +41,23 @@ export type UserCreatedPayload = {
 export type UserDeletedPayload = {
   userId: string;
   deletedAt: string;
+};
+
+/**
+ * Published when an account's personal data has actually been erased.
+ *
+ * Deliberately carries NO personal data — not the old email, not the old
+ * username. A purge event that echoed what it just erased would put that data
+ * back into every consumer's log and dead-letter queue, which is where it is
+ * hardest to find and remove later.
+ *
+ * Consumers replace their own copies of that user's identifying data
+ * (denormalised name and avatar snapshots, profile fields, device tokens) and
+ * keep the id, which the rest of the platform still references.
+ */
+export type UserPurgedPayload = {
+  userId: string;
+  purgedAt: string;
 };
 
 /**

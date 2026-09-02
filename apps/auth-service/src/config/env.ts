@@ -120,6 +120,17 @@ const envSchema = z.object({
   CHANGE_PASSWORD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
 
   /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
+  /**
+   * Account-purge sweeper. `DELETE /api/auth/account` records a 30-day
+   * `scheduledDeletionAt` that nothing used to read, so no account was ever
+   * actually erased — see jobs/account-purge-sweeper.ts.
+   */
+  ACCOUNT_PURGE_SWEEP_INTERVAL_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  ACCOUNT_PURGE_BATCH_SIZE: z.coerce.number().int().positive().default(100),
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 
   /** QR device-link session lifetime (seconds) — spec: 60s. */

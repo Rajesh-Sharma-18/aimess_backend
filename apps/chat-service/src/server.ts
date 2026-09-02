@@ -1,6 +1,9 @@
 import { createServer, type Server } from "node:http";
 
 import { logger } from "@aimess/logger";
+import { startUserPurgedConsumer } from "@aimess/messaging";
+
+import { handleUserPurged } from "./handlers/user-purged.handler.js";
 import { ensureBuckets } from "@aimess/storage";
 
 import { env } from "./config/env.js";
@@ -392,6 +395,30 @@ const startServer = async () => {
       await initializeEventConsumers();
     } catch (err) {
       logger.warn("Event consumers failed to initialize (non-critical)");
+      logger.warn(err);
+    }
+
+    try {
+      // Erasure obligation: every message carries a `senderName`/`senderAvatar`
+      // snapshot taken at send time, which is what the transcript renders.
+      // Without this, a deleted account's real name and photo stayed visible in
+      // every conversation it had ever taken part in.
+      if (!env.RABBITMQ_URL) {
+        // No broker configured: the erasure obligation cannot be met from here,
+        // and pretending otherwise would hide it. Loud, not silent.
+        logger.warn(
+          "RABBITMQ_URL is unset — chat-service will NOT erase message sender snapshots on user.purged"
+        );
+        throw new Error("RABBITMQ_URL required for the user.purged consumer");
+      }
+      await startUserPurgedConsumer({
+        rabbitUrl: env.RABBITMQ_URL,
+        serviceName: "chat-service",
+        onPurge: handleUserPurged,
+        logger,
+      });
+    } catch (err) {
+      logger.warn("user.purged consumer failed to start");
       logger.warn(err);
     }
 

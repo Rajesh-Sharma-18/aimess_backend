@@ -1,4 +1,7 @@
 import { logger } from "@aimess/logger";
+import { startUserPurgedConsumer } from "@aimess/messaging";
+
+import { handleUserPurged } from "./handlers/user-purged.handler.js";
 
 import { ensureBuckets } from "@aimess/storage";
 
@@ -44,6 +47,16 @@ async function start() {
       await startUserCreatedConsumer();
       await startUserDeletedConsumer();
       await startUserRestoredConsumer();
+      // Erasure obligation: a purged account's personal data must be removed
+      // from THIS service's copies too. Bound to the durable `user.purged`
+      // fanout, so an event that fires while this service is down is processed
+      // when it comes back rather than lost.
+      await startUserPurgedConsumer({
+        rabbitUrl: env.RABBITMQ_URL,
+        serviceName: "user-service",
+        onPurge: handleUserPurged,
+        logger,
+      });
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable after retries — user event consumers will not run until service restarts"
