@@ -96,6 +96,11 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
     // otherwise, over the whole 3-32 character handle namespace. Enumerated
     // handles feed targeted credential stuffing against /auth/login.
     "/auth/accounts",
+    // Issues the proof of work that /auth/register and /auth/accounts/validate
+    // require. Unauthenticated by necessity — it is the first call a new user
+    // makes — so it is throttled like the endpoints it guards, or it becomes a
+    // free way to farm challenges ahead of a flood.
+    "/auth/challenge",
   ]) {
     v1Router.use(sensitivePath, sensitiveAuthRateLimiter);
   }

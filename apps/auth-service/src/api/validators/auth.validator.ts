@@ -13,8 +13,22 @@ export const accountSchema = z
     "Account name can only contain letters, numbers, hyphens, and underscores"
   );
 
+/**
+ * Proof-of-work credential.
+ *
+ * Required on the two endpoints that were free to call at scale: account
+ * creation and handle availability. `challenge` is the server-issued token from
+ * `POST /auth/challenge`; `solution` is the nonce the client found. See
+ * `lib/signup-challenge.ts` for why this rather than a captcha.
+ */
+export const challengeSchema = z.object({
+  challenge: z.string().min(1).max(512),
+  solution: z.string().min(1).max(128),
+});
+
 export const validateAccountSchema = z.object({
   account: accountSchema,
+  proof: challengeSchema,
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
@@ -51,6 +65,7 @@ export const registerSchema = z
     account: accountSchema,
     password: passwordSchema,
     fcmTokens: fcmTokensSchema.optional().default([]),
+    proof: challengeSchema,
   })
   // Re-checked at the object level because the account name is only known
   // here: a password that merely restates the public account name is guessable

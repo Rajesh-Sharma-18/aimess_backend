@@ -11,6 +11,25 @@ import type {
 } from "../validators/auth.validator.js";
 import { accountAvailabilityService } from "../../services/account-availability.service.js";
 import { authService } from "../../services/auth.service.js";
+import { issueSignupChallenge } from "../../lib/signup-challenge.js";
+
+/**
+ * Hands out the proof-of-work challenge that `POST /auth/register` and
+ * `POST /auth/accounts/validate` now require.
+ *
+ * Unauthenticated by necessity — it is the first call a new user makes. Safe to
+ * be: the challenge grants nothing on its own, issuing one is stateless, and it
+ * is rate limited like the endpoints it guards.
+ */
+export const getSignupChallenge = asyncHandler(
+  async (req: Request, res: Response) => {
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(issueSignupChallenge(), t("AUTH_CHALLENGE_ISSUED", req.locale))
+      );
+  }
+);
 
 export const validateAccount = asyncHandler(
   async (req: Request, res: Response) => {

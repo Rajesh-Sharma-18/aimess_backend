@@ -110,7 +110,13 @@ describe("checkPasswordPolicy", () => {
 describe("registerSchema", () => {
   it("accepts a compliant password", () => {
     expect(
-      registerSchema.safeParse({ account: "johndoe", password: STRONG }).success
+      registerSchema.safeParse({
+        account: "johndoe",
+        password: STRONG,
+        // `proof` is required on the schema now (AIM-58); its VALUE is checked
+        // by middleware, not Zod, so any well-shaped pair parses.
+        proof: { challenge: "c", solution: "s" },
+      }).success
     ).toBe(true);
   });
 

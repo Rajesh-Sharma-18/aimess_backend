@@ -14,9 +14,30 @@ import { env } from "../config/env.js";
  * cannot change device mid-connection) and re-entered per inbound packet;
  * `@aimess/grpc-utils` puts it on the wire as `x-audit-source` metadata.
  */
-export function bindSocketAuditContext(socket: Socket): void {
-  const { headers, address } = socket.handshake;
+/** The handshake fields this module reads, with a safe shape when there is none. */
+function readHandshake(socket: Socket): {
+  headers: Record<string, string | string[] | undefined>;
+  address: string;
+  userAgent: string | null;
+} {
+  const handshake = socket.handshake as Socket["handshake"] | undefined;
+  const headers = handshake?.headers ?? {};
   const userAgent = headers["user-agent"];
+
+  return {
+    headers,
+    address: handshake?.address ?? "",
+    userAgent: typeof userAgent === "string" ? userAgent : null,
+  };
+}
+
+export function bindSocketAuditContext(socket: Socket): void {
+  // Tolerate a socket that arrives with no handshake. This runs as the FIRST
+  // statement of the `connection` handler on /chat, /community and /stream, so
+  // a throw here aborts the rest of that handler and the socket ends up
+  // connected with no event listeners bound at all — a silently dead client,
+  // which is a far worse outcome than an audit row with an unknown source.
+  const { headers, userAgent } = readHandshake(socket);
 
   const context = {
     // `query` is deliberately not passed: `?platform=` on a handshake URL is
@@ -24,7 +45,7 @@ export function bindSocketAuditContext(socket: Socket): void {
     // every real client. See `resolveAuditSource`.
     source: resolveAuditSource(headers),
     ip: resolveHandshakeIp(socket),
-    userAgent: typeof userAgent === "string" ? userAgent : null,
+    userAgent,
   };
 
   socket.use((_packet, next) => runWithAuditContext(context, next));
@@ -45,7 +66,7 @@ export function bindSocketAuditContext(socket: Socket): void {
  * entirely and the socket address is used.
  */
 function resolveHandshakeIp(socket: Socket): string | null {
-  const { headers, address } = socket.handshake;
+  const { headers, address } = readHandshake(socket);
   const hops = env.TRUST_PROXY_HOPS;
   if (hops <= 0) return address || null;
 

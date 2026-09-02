@@ -63,6 +63,42 @@ const tooManyRequests = {
 };
 
 export const authPaths = {
+  "/auth/challenge": {
+    post: {
+      tags: ["Auth"],
+      summary: "Get a signup proof-of-work challenge",
+      operationId: "getSignupChallenge",
+      description:
+        "Issues the proof of work that `POST /auth/register` and `POST /auth/accounts/validate` require. No authentication." +
+        "\n\nBoth of those endpoints used to be free to call, which made bulk account creation and full enumeration of the handle namespace cost nothing but HTTP requests. Per-IP throttling bounds one address and does nothing about a proxy pool, so each attempt now costs the caller CPU instead." +
+        "\n\n**Client flow:** call this, then find a `solution` string such that `sha256(challenge + \".\" + solution)` starts with at least `difficultyBits` leading zero bits — a short loop over an integer counter, roughly a few hundred milliseconds at the default difficulty. Send `{ challenge, solution }` as the `proof` field." +
+        "\n\nA challenge expires after 10 minutes and is accepted exactly once, so fetch a fresh one per attempt.",
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Challenge issued",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/SignupChallengeResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "429": tooManyRequests,
+      },
+    },
+  },
   "/auth/accounts/validate": {
     post: {
       tags: ["Auth"],
@@ -81,7 +117,10 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ValidateAccountRequest" },
-            example: { account: "johndoe" },
+            example: {
+              account: "johndoe",
+              proof: { challenge: "<from POST /auth/challenge>", solution: "1048576" },
+            },
           },
         },
       },

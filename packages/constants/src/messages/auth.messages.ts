@@ -153,6 +153,29 @@ export const AUTH_MESSAGES = {
     en: "New password must be different from your current password.",
     th: "รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านปัจจุบันของคุณ",
   },
+  // Signup proof-of-work. Registration and the handle-availability check were
+  // both free to call, so creating accounts and enumerating handles cost only
+  // HTTP requests. Solving a challenge costs the caller CPU, once per attempt.
+  AUTH_CHALLENGE_ISSUED: {
+    vi: "Đã tạo mã xác minh",
+    en: "Verification challenge issued.",
+    th: "ออกคำท้าการยืนยันแล้ว",
+  },
+  AUTH_CHALLENGE_REQUIRED: {
+    vi: "Vui lòng thử lại từ ứng dụng",
+    en: "Please retry from the app.",
+    th: "กรุณาลองใหม่จากแอป",
+  },
+  AUTH_CHALLENGE_INVALID: {
+    vi: "Xác minh không hợp lệ. Vui lòng thử lại",
+    en: "Verification failed. Please try again.",
+    th: "การยืนยันไม่ถูกต้อง กรุณาลองใหม่",
+  },
+  AUTH_CHALLENGE_ALREADY_USED: {
+    vi: "Xác minh đã được sử dụng. Vui lòng thử lại",
+    en: "That verification was already used. Please try again.",
+    th: "การยืนยันนี้ถูกใช้ไปแล้ว กรุณาลองใหม่",
+  },
   // Creation-policy failures. Applied when a password is SET (register, reset,
   // change) and never at login, so accounts created under the older rule keep
   // signing in and are asked for something stronger only when they next change

@@ -74,6 +74,18 @@ const envSchema = z.object({
    */
   JWT_ACCESS_PRIVATE_KEY: z.string().optional(),
   JWT_REFRESH_SECRET: z.string().min(32),
+  /**
+   * Leading zero bits required in a signup proof-of-work solution.
+   *
+   * The cost knob for account creation and handle-availability probing. 20 bits
+   * is roughly a million hashes: a fraction of a second on a phone, and a
+   * million times that for someone enumerating a million handles. Raise it if
+   * the platform is under a signup flood — the cost is paid entirely by the
+   * caller, so raising it hurts an attacker far more than a real user.
+   *
+   * Lowered in the test harness so suites do not spend their runtime hashing.
+   */
+  SIGNUP_CHALLENGE_DIFFICULTY_BITS: z.coerce.number().int().min(1).max(32).default(20),
   CORS_ALLOWED_ORIGINS: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string(),
   JWT_REFRESH_EXPIRES_IN: z.string(),

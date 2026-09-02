@@ -139,4 +139,25 @@ describe("socket handshake client IP", () => {
     expect(viaHeader.source).not.toBe("ADMIN_PANEL");
     expect(viaQuery.source).not.toBe("ADMIN_PANEL");
   });
+
+  it("survives a socket that arrives with no handshake at all", async () => {
+    // This runs as the FIRST statement of the `connection` handler on /chat,
+    // /community and /stream. A throw there aborts the rest of that handler, so
+    // the socket stays connected with none of its event listeners bound — a
+    // silently dead client. An audit row with an unknown source is the far
+    // better failure.
+    const { bindSocketAuditContext } = await import(
+      "../../src/sockets/audit-context.js"
+    );
+
+    const socket = {
+      use: jest.fn(),
+    } as unknown as Socket;
+
+    expect(() => {
+      bindSocketAuditContext(socket);
+    }).not.toThrow();
+    // Still binds, so later packets carry a context rather than none.
+    expect((socket.use as unknown as jest.Mock)).toHaveBeenCalledTimes(1);
+  });
 });
