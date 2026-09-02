@@ -8,6 +8,7 @@ import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectBackofficeRedis, redis } from "./config/redis.js";
 import { startAnnouncementScheduler } from "./lib/announcement-scheduler.js";
+import { startLoginFailureSweeper } from "./lib/login-failure-sweeper.js";
 import { startBackofficeGrpcServer } from "./grpc/server.js";
 import { startAdminActivityIngestConsumer } from "./messaging/consume-admin-activity-ingest.js";
 import { startAdminReportIngestConsumer } from "./messaging/consume-admin-report-ingest.js";
@@ -133,6 +134,8 @@ const startServer = async (): Promise<void> => {
 
     try {
       startAnnouncementScheduler();
+      // Admin login-failure rows are durable now, so nothing expires them.
+      startLoginFailureSweeper();
       logger.info("Announcement scheduler started");
     } catch (error) {
       logger.warn("Failed to start announcement scheduler");

@@ -95,6 +95,32 @@ model AdminOtpCode {
   @@index([expiresAt])
 }
 
+/// Failed admin sign-in attempts, per email address.
+///
+/// Durable on purpose. The counter used to live only in Redis, so a cache flush
+/// — a routine operational act, and one an attacker who can cause it would
+/// choose deliberately — reset every lockout on the highest-privilege login on
+/// the platform. Admin logins are rare enough that a row per attempted address
+/// costs nothing.
+///
+/// Keyed by EMAIL, not by admin id, so attempts against an address that does
+/// not resolve to an admin are counted too. Keying on the resolved account
+/// would leave a free oracle: unknown addresses would never lock, so "did not
+/// lock out" would answer "is this an admin?".
+model AdminLoginFailure {
+  /// Normalized (trimmed, lowercased) email. Not a foreign key — an attempted
+  /// address need not belong to an admin.
+  email         String   @id
+  failures      Int      @default(0)
+  /// When the current window opened. The window is closed by
+  /// ADMIN_LOCKOUT_MINUTES from this instant, mirroring the Redis TTL it
+  /// replaces, so an old burst does not lock an admin out forever.
+  windowStartedAt DateTime @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([updatedAt])
+}
+
 model AdminPasswordResetToken {
   id         String    @id @default(uuid()) @db.Uuid
   adminId    String    @db.Uuid
