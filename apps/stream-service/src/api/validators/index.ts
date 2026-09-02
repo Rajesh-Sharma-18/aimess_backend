@@ -30,9 +30,15 @@ export const createStreamSchema = z.object({
     .optional(),
 });
 
-/** GET /streams query — filterable, cursor-paginated list. */
+/**
+ * GET /streams query — filterable, cursor-paginated list.
+ *
+ * `communityId` is REQUIRED: rows carry playable hlsUrl/flvUrl, so an
+ * unscoped list would enumerate every community's live media. See
+ * LivestreamService.listStreams.
+ */
 export const listStreamsQuerySchema = z.object({
-  communityId: z.string().min(1).optional(),
+  communityId: z.string().min(1),
   status: z.enum(["PENDING", "LIVE", "RECONNECTING", "ENDED"]).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   cursor: z.string().min(1).optional(),

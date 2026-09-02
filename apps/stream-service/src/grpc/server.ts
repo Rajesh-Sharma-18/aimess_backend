@@ -535,7 +535,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           // is meant to prevent. listStreams() with no status returns
           // PENDING+LIVE+RECONNECTING; filter out PENDING (never actually
           // live) to match this RPC's original LIVE-only contract.
-          const result = await deps.livestreamService.listStreams({
+          const result = await deps.livestreamService.listStreamsInternal({
             communityId,
             limit: 20,
           });

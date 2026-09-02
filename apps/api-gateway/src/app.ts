@@ -67,15 +67,22 @@ export function createApp(
   // the action came from without threading a parameter through each call site.
   app.use(auditContextMiddleware);
 
+  // Rate limiting comes FIRST. Express runs middleware in mount order, so
+  // anything mounted above this line is answered without ever being counted —
+  // and the two routes below are the gateway's only unauthenticated public
+  // surfaces: the link host fans out to community-service/chat-service to build
+  // an OG card for an attacker-supplied handle, and /internal/srs/hooks accepts
+  // a 1 MB body and forwards it upstream. Both were unmetered amplifiers while
+  // they sat above the limiter.
+  app.use(rateLimiter);
+
   // Dedicated community link host (aimess.me): .well-known proofs + "Open in
   // app" preview. Host-gated — non-link hosts pass straight through to the API.
-  // Mounted before the rate limiter / API so link traffic isn't proxied.
+  // Mounted before the API so link traffic isn't proxied.
   app.use(createLinkHostRouter());
 
   // SRS server callbacks. No user JWT; stream-service validates SRS_HOOK_SECRET.
   app.use("/internal", createInternalSrsRouter());
-
-  app.use(rateLimiter);
 
   setupSwagger(app);
   setupAsyncApiDocs(app);

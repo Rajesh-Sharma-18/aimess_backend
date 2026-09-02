@@ -573,7 +573,6 @@ export function createMessagingImpl(
               });
             }
           }
-
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
           if (!acked) callback(toGrpcCallbackError(err));
@@ -1625,6 +1624,10 @@ export function createMessagingImpl(
               url: result.livekit.url,
               token: result.livekit.token,
             },
+            // Epoch ms, same as the `call:answered` broadcast carries. The
+            // answering leg needs it here because its media frequently comes up
+            // before that broadcast loops back to it.
+            answeredAt: result.answeredAt?.getTime() ?? 0,
           });
         } catch (err) {
           logger.error(`gRPC answerCall error: ${String(err)}`);
@@ -3139,7 +3142,6 @@ export function createCommunityImpl(
               fetchRecipients: communityRecipients,
             });
           }
-
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);
           // Past the ack the caller is already gone; a second callback would be

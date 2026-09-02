@@ -29,6 +29,17 @@ interface CheckBanResult {
   isBanned: boolean;
 }
 
+/**
+ * The full `checkCommunityMembership` answer. `checkBan` reads the same RPC but
+ * only surfaces `isBanned`; the stream LIST gate needs membership and community
+ * visibility as well, so it uses this instead of firing a second call.
+ */
+interface CommunityAccessResult {
+  isMember: boolean;
+  isBanned: boolean;
+  isPublicCommunity: boolean;
+}
+
 /** Mirrors community.proto's ModerationActionResponse (mute/unmute share it). */
 interface ModerationActionResult {
   ok: boolean;
@@ -83,13 +94,25 @@ const checkMuteBreaker: Breaker<
 
 const checkBanBreaker: Breaker<
   { communityId: string; userId: string },
-  { isMember: boolean; isBanned: boolean; status: string; role: string }
+  {
+    isMember: boolean;
+    isBanned: boolean;
+    status: string;
+    role: string;
+    isPublicCommunity: boolean;
+  }
 > = makeBreaker(
   "community.checkCommunityMembership",
   (args: { communityId: string; userId: string }) =>
     call<
       { communityId: string; userId: string },
-      { isMember: boolean; isBanned: boolean; status: string; role: string }
+      {
+        isMember: boolean;
+        isBanned: boolean;
+        status: string;
+        role: string;
+        isPublicCommunity: boolean;
+      }
     >("checkCommunityMembership", args)
 );
 
@@ -235,6 +258,27 @@ export const communityGrpcClient = {
   async checkBan(communityId: string, userId: string): Promise<CheckBanResult> {
     const result = await checkBanBreaker.fire({ communityId, userId });
     return { isBanned: Boolean(result?.isBanned) };
+  },
+
+  /**
+   * Membership + ban + visibility in one call, for the stream LIST gate.
+   *
+   * Unlike every other community read here this one is used FAIL-CLOSED by its
+   * caller: `GET /streams` hands back directly-playable hlsUrl/flvUrl values,
+   * so on an outage the right answer is "no list", not "everyone's list". The
+   * single-stream watch path (`checkAccess`) keeps its fail-open posture — an
+   * outage still must not black out a stream someone is already watching.
+   */
+  async checkCommunityAccess(
+    communityId: string,
+    userId: string
+  ): Promise<CommunityAccessResult> {
+    const result = await checkBanBreaker.fire({ communityId, userId });
+    return {
+      isMember: Boolean(result?.isMember),
+      isBanned: Boolean(result?.isBanned),
+      isPublicCommunity: Boolean(result?.isPublicCommunity),
+    };
   },
 
   /**

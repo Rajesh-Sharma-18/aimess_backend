@@ -958,11 +958,17 @@ export function registerCommunityNamespace(
           // member at all) is rejected as FORBIDDEN. Unban never re-admits: it
           // only lifts the ban to LEFT, so this gate is what actually stops a
           // stale/unbanned client from receiving room broadcasts until they go
-          // through the normal join flow again. Only an explicit verdict
-          // rejects — on a gRPC/breaker failure we fail OPEN (join allowed)
-          // because the act-vector (send/edit/react) is independently
-          // hard-blocked at chat-service, so the only risk of a transient
-          // failure is a brief receive-side leak, not an integrity breach.
+          // through the normal join flow again.
+          //
+          // Fails CLOSED, matching /chat's `conv:join`. This previously failed
+          // OPEN on the reasoning that the act-vector (send/edit/react) stays
+          // hard-blocked at chat-service so only a "brief receive-side leak"
+          // was at risk — but `community:<id>` is where the community's message
+          // fan-out lands, so the receive side IS the content. Any thrown error
+          // (community-service down, gRPC deadline, breaker open, an id that
+          // makes the RPC error rather than answer) admitted an authenticated
+          // non-member to a PRIVATE community's live traffic for the duration
+          // of the outage.
           try {
             const m = await communityClient.checkCommunityMembership({
               communityId,
@@ -990,8 +996,10 @@ export function registerCommunityNamespace(
             }
           } catch (err) {
             logger.warn(
-              `/community join membership check failed (fail-open) community=${communityId} user=${userId}: ${String(err)}`
+              `/community join membership check failed (fail-closed) community=${communityId} user=${userId}: ${String(err)}`
             );
+            ackError(callback, "SERVICE_ERROR", locale);
+            return;
           }
           void socket.join(`community:${communityId}`);
           // One open transcript per socket — see `activeCommunityId`.

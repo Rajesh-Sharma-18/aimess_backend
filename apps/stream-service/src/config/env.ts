@@ -62,6 +62,10 @@ const envSchema = z.object({
    * creator's one-active-stream-per-community slot. Default: 10 minutes.
    */
   STREAM_PENDING_TIMEOUT_MS: z.coerce.number().positive().default(600_000),
+  /** Sliding window (seconds) for the per-creator stream-create rate limit. */
+  STREAM_CREATE_RATE_WINDOW_SEC: z.coerce.number().positive().default(60),
+  /** Max POST /streams per creator per STREAM_CREATE_RATE_WINDOW_SEC. */
+  STREAM_CREATE_RATE_MAX: z.coerce.number().positive().default(5),
 
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */

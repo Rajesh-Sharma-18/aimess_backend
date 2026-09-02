@@ -1,26 +1,14 @@
-import { timingSafeEqual } from "node:crypto";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
+import { safeEqual, digestKey } from "../lib/secret-compare.js";
 import type { LivestreamService } from "../services/livestream.service.js";
 
 function logStreamHookBanner(message: string): void {
   logger.info("========== AIMESS_SRS_HOOK_STREAM_SERVICE ==========");
   logger.info(message);
   logger.info("========== AIMESS_SRS_HOOK_STREAM_SERVICE_END ======");
-}
-
-/** Constant-time compare of two possibly-different-length strings. */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) {
-    // Still run a comparison so the branch takes comparable time either way.
-    timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return timingSafeEqual(bufA, bufB);
 }
 
 /**
@@ -33,7 +21,10 @@ function safeEqual(a: string, b: string): boolean {
  * requires `SRS_HOOK_SECRET` — SRS's `http_hooks` config can't set custom
  * headers, so the secret must be embedded in the hook URL's `?secret=` query
  * string (see `docker/srs/aimess.conf`); the `x-srs-secret` header is also
- * accepted for any non-SRS caller that can set headers.
+ * accepted, and the api-gateway proxy moves it there so the value stops
+ * appearing in upstream access logs. Nothing request-controlled is logged
+ * before the shared-secret check, so an unauthenticated caller cannot write to
+ * the production log.
  */
 export function createInternalRoutes(
   livestreamService: LivestreamService
@@ -50,20 +41,12 @@ export function createInternalRoutes(
          *  on_unpublish from the live one's (see handleUnpublish). */
         client_id?: string | number;
       };
-      logStreamHookBanner(
-        `HIT /internal/srs/hooks action=${body.action ?? "?"} app=${
-          body.app ?? "?"
-        } stream=${body.stream ?? "?"} ip=${req.ip ?? "?"} querySecret=${
-          typeof req.query.secret === "string" ? "yes" : "no"
-        } headerSecret=${
-          typeof req.headers["x-srs-secret"] === "string" ? "yes" : "no"
-        } secretCheck=enabled`
-      );
-      logger.info(
-        `SRS hook HIT — action=${body.action ?? "?"} stream=${body.stream ?? "?"} app=${body.app ?? "?"} client=${String(body.client_id ?? "?")} ip=${req.ip ?? "?"}`
-      );
 
-      // Shared-secret guard — always enforced.
+      // Shared-secret guard — always enforced, and BEFORE anything is logged.
+      // Nothing above this line may write request-controlled data: an
+      // unauthenticated caller would otherwise be able to inject arbitrary text
+      // into the production log at unlimited rate, on a route that is reachable
+      // from the public edge.
       const provided =
         (typeof req.headers["x-srs-secret"] === "string"
           ? (req.headers["x-srs-secret"] as string)
@@ -77,6 +60,23 @@ export function createInternalRoutes(
         res.status(403).json(1);
         return;
       }
+
+      // Stream keys are logged as a short digest, never verbatim. These hooks
+      // fire several times per broadcast plus once per viewer (on_play), so the
+      // raw value would end up scattered across the logs of every environment
+      // that ships them.
+      logStreamHookBanner(
+        `HIT /internal/srs/hooks action=${body.action ?? "?"} app=${
+          body.app ?? "?"
+        } stream=${digestKey(body.stream)} ip=${req.ip ?? "?"} querySecret=${
+          typeof req.query.secret === "string" ? "yes" : "no"
+        } headerSecret=${
+          typeof req.headers["x-srs-secret"] === "string" ? "yes" : "no"
+        } secretCheck=enabled`
+      );
+      logger.info(
+        `SRS hook HIT — action=${body.action ?? "?"} stream=${digestKey(body.stream)} app=${body.app ?? "?"} client=${String(body.client_id ?? "?")} ip=${req.ip ?? "?"}`
+      );
 
       const action = body.action ?? "";
       const streamKey = body.stream ?? "";
@@ -113,7 +113,7 @@ export function createInternalRoutes(
               clientId
             );
             logStreamHookBanner(
-              `RESULT action=on_publish stream=${streamKey} allowed=${String(allow)} responseBody=${
+              `RESULT action=on_publish stream=${digestKey(streamKey)} allowed=${String(allow)} responseBody=${
                 allow ? "0" : "1"
               }`
             );
@@ -123,7 +123,7 @@ export function createInternalRoutes(
           case "on_unpublish": {
             await livestreamService.handleUnpublish(streamKey, clientId);
             logStreamHookBanner(
-              `RESULT action=on_unpublish stream=${streamKey} responseBody=0`
+              `RESULT action=on_unpublish stream=${digestKey(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
@@ -131,7 +131,7 @@ export function createInternalRoutes(
           case "on_play": {
             await livestreamService.incrementViewer(streamKey, 1);
             logStreamHookBanner(
-              `RESULT action=on_play stream=${streamKey} responseBody=0`
+              `RESULT action=on_play stream=${digestKey(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
@@ -139,14 +139,14 @@ export function createInternalRoutes(
           case "on_stop": {
             await livestreamService.incrementViewer(streamKey, -1);
             logStreamHookBanner(
-              `RESULT action=on_stop stream=${streamKey} responseBody=0`
+              `RESULT action=on_stop stream=${digestKey(streamKey)} responseBody=0`
             );
             res.json(0);
             return;
           }
           default:
             logStreamHookBanner(
-              `RESULT action=${action || "unknown"} stream=${streamKey} responseBody=0`
+              `RESULT action=${action || "unknown"} stream=${digestKey(streamKey)} responseBody=0`
             );
             // Unknown / unhandled action — allow by default.
             res.json(0);

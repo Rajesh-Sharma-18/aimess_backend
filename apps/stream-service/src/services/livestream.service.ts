@@ -28,6 +28,7 @@ import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
 import { assertNotSystemBanned, isSystemBanned } from "../lib/system-ban.js";
+import { digestKey } from "../lib/secret-compare.js";
 
 /** A single watching user, enriched for the owner-only viewers list. */
 export interface StreamViewerView {
@@ -364,6 +365,13 @@ export class LivestreamService {
       throw new BadRequestError("STREAM_SOURCE_URL_REQUIRED");
     }
 
+    // Rate gate BEFORE the lock: creating a stream writes a row and fans a
+    // `stream.created` event out to the whole community, so an unthrottled
+    // POST /streams is a community-wide notification amplifier. The LIVE
+    // concurrency caps below do not bound it because a new row is PENDING and
+    // PENDING never occupies a slot.
+    await this.assertCreateRateAllowed(params.creatorId);
+
     const { created, streamKey } = await this.withCreatorStreamLock(
       params.communityId,
       params.creatorId,
@@ -453,6 +461,39 @@ export class LivestreamService {
   }
 
   /**
+   * Per-creator sliding-window cap on stream creation (Redis INCR + EXPIRE).
+   *
+   * Fails CLOSED on a Redis error: this guards a community-wide notification
+   * fan-out, so an outage must not silently remove it. Creating a stream is a
+   * deliberate, low-frequency action, so a brief false rejection during a Redis
+   * blip is cheaper than an unthrottled amplifier — and it adds no new failure
+   * mode, because `assertNotSystemBanned` above already fails closed on the
+   * same client for the same reason (see lib/system-ban.ts). Watch and comment
+   * paths keep their fail-open posture.
+   */
+  private async assertCreateRateAllowed(creatorId: string): Promise<void> {
+    const key = `rl:stream-create:${creatorId}`;
+    let count: number;
+    try {
+      count = await this.redis.incr(key);
+      if (count === 1) {
+        await this.redis.expire(key, env.STREAM_CREATE_RATE_WINDOW_SEC);
+      }
+    } catch (error) {
+      logger.error(
+        `stream create rate limiter unavailable (failing closed) creator=${creatorId}: ${String(error)}`
+      );
+      throw new ConflictError("STREAM_CREATE_RATE_LIMITED");
+    }
+    if (count > env.STREAM_CREATE_RATE_MAX) {
+      logger.warn(
+        `stream create rate limit hit creator=${creatorId} count=${count}`
+      );
+      throw new ConflictError("STREAM_CREATE_RATE_LIMITED");
+    }
+  }
+
+  /**
    * SRS on_publish hook: the publisher came online. Flip to LIVE, stamp livedAt
    * and playback URLs, broadcast status + emit `stream.started`. Returns whether
    * to allow the publish (false = unknown stream key → SRS rejects).
@@ -470,7 +511,9 @@ export class LivestreamService {
   async handlePublish(streamKey: string, clientId?: string): Promise<boolean> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
-      logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
+      logger.warn(
+        `on_publish for unknown stream key=${digestKey(streamKey)} — denying`
+      );
       return false;
     }
     // The webhook carries no JWT — it authenticates by streamKey alone, so a
@@ -628,7 +671,7 @@ export class LivestreamService {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
     if (!stream) {
       logger.warn(
-        `on_unpublish for unknown stream key=${streamKey} — ignoring`
+        `on_unpublish for unknown stream key=${digestKey(streamKey)} — ignoring`
       );
       return;
     }
@@ -678,7 +721,7 @@ export class LivestreamService {
       });
     } catch (error) {
       logger.warn(
-        `incrementViewer failed for key=${streamKey}: ${String(error)}`
+        `incrementViewer failed for key=${digestKey(streamKey)}: ${String(error)}`
       );
     }
   }
@@ -1082,11 +1125,83 @@ export class LivestreamService {
     await this.streamRepo.deleteById(id);
   }
 
+  /**
+   * Cursor-paginated stream list, scoped to ONE community the caller may see.
+   *
+   * Every row here carries directly-playable `hlsUrl`/`flvUrl` (and their
+   * rendition ladders) through {@link toView}, so this endpoint hands out media
+   * access, not just metadata. It therefore enforces the same gates the
+   * single-stream read path does:
+   *
+   *  - `communityId` is REQUIRED. Without it the query degenerates to "every
+   *    PENDING/LIVE stream on the platform", which enumerates private
+   *    communities and their playback URLs to any authenticated user.
+   *  - a community-banned caller gets nothing, matching `getStream`'s ban check
+   *    and `checkAccess`'s community-ban gate. Otherwise a user who is 403'd on
+   *    `GET /streams/:id` could still read the same hlsUrl out of the list.
+   *  - a PRIVATE community requires membership. Non-member viewing is a
+   *    deliberate product choice for PUBLIC communities only (see
+   *    `checkAccess`'s "Viewing is always allowed" note), and that decision was
+   *    never meant to cover discovery of private communities' broadcasts.
+   *
+   * Fail-CLOSED on a community-service error — see `checkCommunityAccess`.
+   */
   async listStreams(params: {
     communityId?: string;
     status?: string;
     limit: number;
     cursor?: string;
+    requesterId: string;
+  }): Promise<ListStreamsResult> {
+    if (!params.communityId) {
+      throw new BadRequestError("STREAM_COMMUNITY_ID_REQUIRED");
+    }
+
+    let access;
+    try {
+      access = await this.communityClient.checkCommunityAccess(
+        params.communityId,
+        params.requesterId
+      );
+    } catch (error) {
+      logger.warn(
+        `listStreams access check failed (fail-closed) community=${params.communityId} user=${params.requesterId}: ${String(error)}`
+      );
+      throw new ForbiddenError("STREAM_ACCESS_CHECK_UNAVAILABLE");
+    }
+    if (access.isBanned) {
+      throw new ForbiddenError("STREAM_BANNED");
+    }
+    if (!access.isMember && !access.isPublicCommunity) {
+      throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+    }
+
+    return this.listStreamsInternal({
+      communityId: params.communityId,
+      status: params.status,
+      limit: params.limit,
+      cursor: params.cursor,
+      excludeBannedFor: params.requesterId,
+    });
+  }
+
+  /**
+   * UNGATED listing, for trusted in-process and gRPC callers only.
+   *
+   * Never expose this on a user-facing route: it performs no membership, ban or
+   * privacy check, and every row carries playable media URLs. The callers are
+   * the `ListCommunityStreams` RPC (which feeds the community's isLive flag,
+   * already authorized on the community-service side) and the community-wide
+   * mute/ban relays, which must see every live stream in order to kick the
+   * target out of it. The REST path goes through {@link listStreams}.
+   */
+  async listStreamsInternal(params: {
+    communityId?: string;
+    status?: string;
+    limit: number;
+    cursor?: string;
+    /** When set, drop rows this user is per-stream banned from. */
+    excludeBannedFor?: string;
   }): Promise<ListStreamsResult> {
     const rows = await this.streamRepo.listByCommunity({
       communityId: params.communityId,
@@ -1096,9 +1211,23 @@ export class LivestreamService {
     });
     const hasMore = rows.length > params.limit;
     const page = hasMore ? rows.slice(0, params.limit) : rows;
-    const items = page.map(toView);
+
+    // Per-stream bans, applied as one indexed query over the page. Same gate
+    // `getStream` enforces per row — without it a user banned from a specific
+    // stream still reads its playback URL out of the list.
+    const bannedIds = params.excludeBannedFor
+      ? await this.banRepo.bannedStreamIdsFor(
+          page.map((s) => s.id),
+          params.excludeBannedFor
+        )
+      : new Set<string>();
+    const items = page.filter((s) => !bannedIds.has(s.id)).map(toView);
+
+    // Cursor advances on the LAST ROW READ, not the last row returned —
+    // otherwise a page whose tail is entirely banned rows would rewind the
+    // cursor and loop forever.
     const nextCursor =
-      hasMore && items.length > 0 ? items[items.length - 1]!.id : null;
+      hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
     return { items, nextCursor, hasMore };
   }
 
@@ -1374,7 +1503,7 @@ export class LivestreamService {
         // SRS should already have dropped it — log rather than kick, so a
         // create/publish race can't have its publisher killed mid-handshake.
         logger.warn(
-          `reconcileWithSrs: SRS publisher for unknown streamKey=${publisher.streamKey} on ${publisher.apiBase}`
+          `reconcileWithSrs: SRS publisher for unknown streamKey=${digestKey(publisher.streamKey)} on ${publisher.apiBase}`
         );
         continue;
       }
@@ -1396,7 +1525,7 @@ export class LivestreamService {
         try {
           const allowed = await this.handlePublish(publisher.streamKey);
           logger.info(
-            `reconcileWithSrs: recovered missing on_publish stream=${stream.id} status=${stream.status} key=${publisher.streamKey} allowed=${String(allowed)}`
+            `reconcileWithSrs: recovered missing on_publish stream=${stream.id} status=${stream.status} key=${digestKey(publisher.streamKey)} allowed=${String(allowed)}`
           );
         } catch (err) {
           logger.warn(
@@ -1413,7 +1542,7 @@ export class LivestreamService {
         publisher.clientId
       );
       logger.info(
-        `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} key=${publisher.streamKey} success=${String(kicked)}`
+        `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} key=${digestKey(publisher.streamKey)} success=${String(kicked)}`
       );
     }
   }
@@ -2310,7 +2439,7 @@ export class LivestreamService {
 
     let liveStreams: StreamView[];
     try {
-      ({ items: liveStreams } = await this.listStreams({
+      ({ items: liveStreams } = await this.listStreamsInternal({
         communityId,
         status: "LIVE",
         limit: 50,
@@ -2432,7 +2561,7 @@ export class LivestreamService {
 
     let liveStreams: StreamView[];
     try {
-      ({ items: liveStreams } = await this.listStreams({
+      ({ items: liveStreams } = await this.listStreamsInternal({
         communityId,
         status: "LIVE",
         limit: 50,

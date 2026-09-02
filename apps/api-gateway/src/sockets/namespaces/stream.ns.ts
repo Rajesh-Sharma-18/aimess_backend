@@ -9,6 +9,7 @@ import { bindSocketAuditContext } from "../audit-context.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import { scopeSocketLocale } from "../locale-scope.js";
+import { createSessionTimers } from "../session-timers.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
 // §3: bound free-text fields so a naive or abusive client cannot exceed the
@@ -481,6 +482,23 @@ export function registerStreamNamespace(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );
 
+    // session:expired warning + auth:refresh, exactly as /chat and /community
+    // wire it. The handshake middleware only checks the JWT once, at connect,
+    // so without these timers `socket.data.tokenExpiresAt` was recorded and
+    // never acted on: a /stream socket kept receiving a stream's comments,
+    // reactions, viewer counts and status events for as long as the TCP
+    // connection survived — days after its token expired.
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/stream", env.AUTH_SERVICE_URL);
+
+    if (socket.data.tokenExpiresAt > 0) {
+      scheduleSessionTimers(socket.data.tokenExpiresAt);
+    }
+    registerAuthRefreshHandler();
+
     // Streams this specific socket has contributed +1 to. The decrement paths
     // (leave / disconnect / kick) key off this set, not `socket.rooms`, so we
     // never double-decrement a user who joined the same room from two tabs.
@@ -568,7 +586,32 @@ export function registerStreamNamespace(
     ).streamCommentPermissions = streamCommentPermissions;
 
     // Sliding-window rate limit on comments (INCR + EXPIRE on first hit).
-    // Fails OPEN: a Redis outage must not silence livestream chat.
+    //
+    // Fails OPEN, then degrades to an in-process counter. The fail-open is
+    // deliberate — a Redis outage must not silence livestream chat — but on its
+    // own it was invisible and total: the same outage removes this limiter,
+    // chat-service's message limiters, community invite caps and OTP throttling
+    // at once, with nothing but a swallowed exception to say so. The local
+    // fallback keeps a (per-process, per-socket) ceiling during the outage, and
+    // the error is logged under a greppable key so the gap is alertable rather
+    // than silent.
+    const localCommentWindow = new Map<
+      string,
+      { count: number; resetAt: number }
+    >();
+    const isCommentRateLimitedLocally = (streamId: string): boolean => {
+      const now = Date.now();
+      const entry = localCommentWindow.get(streamId);
+      if (!entry || now >= entry.resetAt) {
+        localCommentWindow.set(streamId, {
+          count: 1,
+          resetAt: now + COMMENT_RATE_WINDOW_SEC * 1000,
+        });
+        return false;
+      }
+      entry.count += 1;
+      return entry.count > COMMENT_RATE_MAX;
+    };
     const isCommentRateLimited = async (streamId: string): Promise<boolean> => {
       const key = `rl:stream-comment:${userId}:${streamId}`;
       try {
@@ -577,8 +620,15 @@ export function registerStreamNamespace(
           await redisPub.expire(key, COMMENT_RATE_WINDOW_SEC);
         }
         return count > COMMENT_RATE_MAX;
-      } catch {
-        return false; // fail open
+      } catch (err) {
+        logger.warn("rate_limit_fail_open", {
+          rule: "stream.comment",
+          userId,
+          streamId,
+          error: String(err),
+          service: "api-gateway",
+        });
+        return isCommentRateLimitedLocally(streamId);
       }
     };
 
@@ -799,10 +849,10 @@ export function registerStreamNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = StreamCommentSchema.safeParse(payload);
         if (!r.success) {
-          const rawMessage = (payload as { message?: unknown } | null)
-            ?.message;
+          const rawMessage = (payload as { message?: unknown } | null)?.message;
           const detailKey =
-            typeof rawMessage === "string" && rawMessage.length > MAX_MESSAGE_LEN
+            typeof rawMessage === "string" &&
+            rawMessage.length > MAX_MESSAGE_LEN
               ? "SOCKET_ERR_STREAM_COMMENT_TOO_LONG"
               : undefined;
           ackError(callback, "INVALID_PAYLOAD", locale, detailKey);
@@ -1045,6 +1095,7 @@ export function registerStreamNamespace(
       // removes its entry, and it reads live state from Redis at fire time, so
       // it stays correct after this socket is gone.
       streamCommentPermissions.clear();
+      clearSessionTimers();
 
       for (const streamId of streamIds) {
         void (async () => {

@@ -9504,7 +9504,7 @@ export const openApiSchemas = {
     description:
       "Preview of a group invite link. Optional auth: send the caller's bearer " +
       "token to get `isJoined`, which decides whether the client shows " +
-      "\"View Group\" (already a member) or \"Join Group\".",
+      '"View Group" (already a member) or "Join Group".',
     properties: {
       token: { type: "string" },
       groupId: { type: "string" },
@@ -9527,7 +9527,7 @@ export const openApiSchemas = {
         description:
           "Whether the CALLER is an ACTIVE member right now. Always false for " +
           "an anonymous preview. Read live per request — never cache it. " +
-          "Derived from `state === \"ALREADY_MEMBER\"`; prefer `state`.",
+          'Derived from `state === "ALREADY_MEMBER"`; prefer `state`.',
       },
       state: {
         type: "string",
@@ -9549,8 +9549,8 @@ export const openApiSchemas = {
           "The authoritative button state, resolved server-side on every read " +
           "and identical to the `state` on a GROUP_INVITE message card, so the " +
           "landing screen and the in-chat card never disagree. Render from it " +
-          "and nothing else. ALREADY_MEMBER = \"View Group\"; CAN_JOIN = " +
-          "\"Join Group\"; GROUP_FULL = the 256-member cap; JOIN_BLOCKED = " +
+          'and nothing else. ALREADY_MEMBER = "View Group"; CAN_JOIN = ' +
+          '"Join Group"; GROUP_FULL = the 256-member cap; JOIN_BLOCKED = ' +
           "removed or banned by staff; GROUP_NOT_FOUND / GROUP_DISBANDED / " +
           "GROUP_CLOSED / GROUP_NO_ADMIN = the group itself is gone or " +
           "unowned; LINK_NOT_FOUND / LINK_REVOKED / LINK_EXPIRED / " +
@@ -11481,6 +11481,11 @@ export const openApiSchemas = {
           token: {
             type: "string",
             description: "LiveKit access token for this participant.",
+          },
+          answeredAt: {
+            type: "integer",
+            description:
+              "Authoritative answer instant, epoch MILLISECONDS (0 when unknown). Render the in-call timer as `now - answeredAt` so every leg counts the same call; timing from local media arrival is what makes two devices disagree.",
           },
         },
       },

@@ -2198,6 +2198,11 @@ export function registerChatNamespace(
               status: result.status,
               livekitUrl: result.livekit?.url,
               token: result.livekit?.token,
+              // The in-call timer origin, epoch ms — the same instant
+              // `call:answered` carries. Sent here too because this device's
+              // media usually comes up before that broadcast loops back, and
+              // without it the answering leg times the call from its own clock.
+              answeredAt: result.answeredAt,
             });
           })
           .catch((err: unknown) => {

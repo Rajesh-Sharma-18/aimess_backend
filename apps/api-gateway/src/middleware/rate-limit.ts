@@ -163,7 +163,14 @@ function skipRateLimit(req: Request): boolean {
   return (
     path.startsWith("/health") ||
     path.startsWith("/docs") ||
-    path.includes("/app-version/check")
+    path.includes("/app-version/check") ||
+    // SRS callbacks are metered by `srsHookRateLimiter` instead, not exempted.
+    // They cannot share the global bucket: every hook for every stream arrives
+    // from the one SRS server address with no Authorization header, so they
+    // collapse into a single IP bucket, and `on_play` fires once per VIEWER —
+    // a busy stream would exhaust the 100/window global cap in seconds and get
+    // its on_publish denied.
+    path.startsWith("/internal/srs")
   );
 }
 
@@ -220,6 +227,29 @@ export const adminLoginRateLimiter = createLimiter({
   rule: "admin.login",
   windowMs: env.ADMIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   max: env.ADMIN_LOGIN_RATE_LIMIT_MAX,
+  scope: "ip",
+});
+
+/**
+ * SRS media-server callbacks (POST /internal/srs/hooks).
+ *
+ * This route is unauthenticated at the edge by necessity — SRS cannot attach a
+ * JWT — and it accepts a 1 MB body which the gateway relays upstream, so
+ * unmetered it is an amplifier pointed at stream-service. It cannot use the
+ * global limiter (see `skipRateLimit`), so it gets its own bucket sized for
+ * real hook volume: every hook for every stream comes from the one SRS address,
+ * and `on_play`/`on_stop` fire once per viewer per stream. The cap is
+ * deliberately generous — the goal is a ceiling on a flood, not a quota a busy
+ * broadcast could hit.
+ *
+ * Note the ceiling is per gateway process (in-memory store, like every limiter
+ * here), and stream-service still rejects every hook that fails
+ * SRS_HOOK_SECRET.
+ */
+export const srsHookRateLimiter = createLimiter({
+  rule: "srs.hooks",
+  windowMs: 60 * 1000,
+  max: 3000,
   scope: "ip",
 });
 

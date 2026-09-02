@@ -642,6 +642,12 @@ message AnswerCallResponse {
   string             call_id = 1;
   string             status  = 2;
   LiveKitCredentials livekit = 3;
+  // The ONE authoritative answer instant, epoch ms (0 when unknown). Every leg
+  // renders the in-call timer as `now - answered_at`, so all of them count the
+  // same call. Returned on the ack because the answering leg's media often comes
+  // up before the `call:answered` broadcast reaches it back — without this it
+  // would have to fall back to its own clock and stay offset for the whole call.
+  int64              answered_at = 4;
 }
 message DeclineCallRequest {
   string call_id   = 1;
