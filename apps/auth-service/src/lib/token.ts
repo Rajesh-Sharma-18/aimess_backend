@@ -96,7 +96,7 @@ export async function issueAuthTokens(
     role,
   });
 
-  await markSessionActive(createdSession.id);
+  await markSessionActive(createdSession.id, refreshTokenExpiresIn);
 
   // Single funnel: every new device/session — normal login AND QR device-link
   // approval both call issueAuthTokens — lands here, so "Linked Device Created"

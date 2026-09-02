@@ -8,6 +8,7 @@ import type {
   ScanDeviceLinkInput,
   DeviceLinkResultInput,
 } from "../validators/device-link.validator.js";
+import { setRefreshCookie } from "../../lib/auth-cookie.js";
 import { deviceLinkService } from "../../services/device-link.service.js";
 
 export const initiateDeviceLink = asyncHandler(
@@ -32,6 +33,14 @@ export const getDeviceLinkResult = asyncHandler(
   async (req: Request, res: Response) => {
     const body = req.body as DeviceLinkResultInput;
     const result = await deviceLinkService.result(body);
+
+    // The waiting BROWSER is the caller here, so hand it the same httpOnly
+    // cookie a password login gets. Session cookie: a QR login has no
+    // remember-me choice. The token stays in the body too - the poller needs
+    // the access token from the same envelope.
+    if (result.session?.refreshToken) {
+      setRefreshCookie(res, result.session.refreshToken);
+    }
 
     return res
       .status(HTTP_STATUS.OK)

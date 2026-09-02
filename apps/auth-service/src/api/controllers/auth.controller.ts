@@ -9,6 +9,7 @@ import type {
   RegisterInput,
   ValidateAccountInput,
 } from "../validators/auth.validator.js";
+import { setLoginRefreshCookie } from "../../lib/auth-cookie.js";
 import { accountAvailabilityService } from "../../services/account-availability.service.js";
 import { authService } from "../../services/auth.service.js";
 
@@ -31,6 +32,8 @@ export const validateAccount = asyncHandler(
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as RegisterInput;
   const result = await authService.register(req, body);
+  // Session cookie: registration has no remember-me choice to honour yet.
+  setLoginRefreshCookie(res, result.tokens);
   return res
     .status(HTTP_STATUS.CREATED)
     .json(new ApiResponse(result, t("AUTH_REGISTRATION_SUCCESS", req.locale)));
@@ -40,6 +43,10 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as LoginInput;
   console.log("[login] user-agent:", req.headers["user-agent"] ?? "(none)");
   const result = await authService.login(req, body);
+  // AIM-02: the browsers copy of the refresh token now rides in an httpOnly
+  // cookie. "Remember me" is what makes it outlive the browser process; the
+  // JSON body still carries the token for native clients.
+  setLoginRefreshCookie(res, result.tokens, body.rememberMe);
   return res
     .status(HTTP_STATUS.OK)
     .json(new ApiResponse(result, t("AUTH_LOGIN_SUCCESS", req.locale)));

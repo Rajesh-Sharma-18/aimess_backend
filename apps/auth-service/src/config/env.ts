@@ -121,6 +121,23 @@ const envSchema = z.object({
 
   /** backoffice-service gRPC address — used to reject emails already used by an admin account. */
   BACKOFFICE_GRPC_URL: z.string().min(1).default("localhost:4010"),
+  // Refresh-token cookie (AIM-02). The browser gets the refresh token as an
+  // httpOnly cookie IN ADDITION to the JSON body; native clients ignore it.
+  // Unset means "secure in production, plain in dev" - never derive it from
+  // req.secure: TLS terminates at the edge and auth-service sits two hops back,
+  // so req.secure is false in production and would ship a non-Secure cookie.
+  AUTH_COOKIE_SECURE: z.enum(["true", "false"]).optional(),
+  // ai5dev.tech and api.ai5dev.tech share a registrable domain, so "lax" is
+  // carried on the cross-origin XHR. Only genuinely cross-site origins (dev
+  // tunnels, ngrok) need "none", which browsers reject without Secure.
+  AUTH_COOKIE_SAMESITE: z.enum(["lax", "strict", "none"]).default("lax"),
+  // Public path the browser sees. The gateway rewrites /api/v1/auth/* to
+  // /api/auth/*, so a cookie scoped to the downstream path would never be sent.
+  AUTH_COOKIE_PATH: z.string().min(1).default("/api/v1/auth"),
+  // POST /refresh and /token carry no Authorization header once the cookie is
+  // the credential, so the gateway backstop keys them by IP. Own limiter.
+  REFRESH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
+  REFRESH_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().positive().default(5),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -132,3 +149,23 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+// Resolved once at boot so every call site agrees on the cookie flags.
+export const authCookie = {
+  name: "aimess_rt",
+  path: env.AUTH_COOKIE_PATH,
+  sameSite: env.AUTH_COOKIE_SAMESITE,
+  secure:
+    env.AUTH_COOKIE_SECURE === undefined
+      ? env.NODE_ENV === "production"
+      : env.AUTH_COOKIE_SECURE === "true",
+} as const;
+
+// SameSite=None without Secure is dropped by every current browser, so the
+// refresh cookie would silently never come back. Fail at boot instead.
+if (authCookie.sameSite === "none" && !authCookie.secure) {
+  console.error(
+    "Invalid Environment Variables: AUTH_COOKIE_SAMESITE=none requires AUTH_COOKIE_SECURE=true"
+  );
+  process.exit(1);
+}

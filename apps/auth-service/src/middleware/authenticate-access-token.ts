@@ -18,3 +18,22 @@ export const authenticateAccessToken: RequestHandler =
     // sessions at all.
     assertUserBanned: createBannedUserGuard(() => redis),
   });
+
+// Same guard, but a request with NO Authorization header is allowed through
+// unauthenticated (req.auth stays undefined). Only /logout uses it: once the
+// refresh token lives in an httpOnly cookie the browser cannot clear it itself,
+// so a user whose access token already expired must still be able to sign out.
+// A malformed or revoked token is still rejected - this skips the check, it
+// never weakens it.
+export const authenticateAccessTokenOptional: RequestHandler = (
+  req,
+  res,
+  next
+) => {
+  if (!req.headers.authorization) {
+    next();
+    return;
+  }
+
+  authenticateAccessToken(req, res, next);
+};

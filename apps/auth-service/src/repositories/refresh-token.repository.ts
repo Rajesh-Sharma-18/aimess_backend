@@ -11,6 +11,8 @@ export const refreshTokenRepository = {
         expiresAt: true,
         revokedAt: true,
         rotatedToId: true,
+        // Rotation reuses the original lifetime, so it has to know it.
+        createdAt: true,
         session: {
           select: {
             id: true,

@@ -48,9 +48,12 @@ describe("sensitive auth routes are throttled", () => {
   });
 
   it("control: an unthrottled route emits no RateLimit headers", async () => {
+    // NOT /auth/refresh any more - it carries its own limiter since the
+    // refresh token became a cookie and stopped sending an Authorization
+    // header for the gateway backstop to key on.
     const res = await request(app)
-      .post("/api/auth/refresh")
-      .send({ refreshToken: "nope" });
+      .post("/api/auth/accounts/validate")
+      .send({ account: "johndoe" });
 
     expect(res.headers).not.toHaveProperty("ratelimit-policy");
   });

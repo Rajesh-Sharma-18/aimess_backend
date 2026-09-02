@@ -278,9 +278,12 @@ describe("POST /api/auth/logout", () => {
     expect(publishRevoked).not.toHaveBeenCalled();
   });
 
-  it("returns 401 without a token and never touches revoke or the realtime signal", async () => {
+  // AIM-02: no longer 401 - see tests/auth/logout.test.ts. With neither a
+  // bearer nor a refresh cookie there is no session to identify, so nothing is
+  // revoked and no realtime signal fires.
+  it("without a token or cookie it is a 200 no-op, touching neither revoke nor the realtime signal", async () => {
     const res = await request(app).post("/api/auth/logout");
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
     expect(repo.revokeForUser).not.toHaveBeenCalled();
     expect(publishRevoked).not.toHaveBeenCalled();
   });

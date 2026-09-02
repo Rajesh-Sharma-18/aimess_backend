@@ -63,6 +63,23 @@ function auditTokenReuseRevoke(userId: string, revokedSessions: number): void {
   });
 }
 
+// The refresh token carries its own lifetime: whatever window it was minted
+// with is the window its successor gets. That keeps remember-me (30d) and
+// normal (7d) sessions apart without a schema column, and clamps to the
+// configured default if a row somehow predates this.
+function rotatedTokenLifetimeSeconds(
+  createdAt: Date | null | undefined,
+  expiresAt: Date
+): number {
+  // createdAt is only absent for rows minted before it was selected here.
+  const original = createdAt
+    ? Math.floor((expiresAt.getTime() - createdAt.getTime()) / 1000)
+    : 0;
+  return original > 0
+    ? original
+    : parseExpiresInSeconds(env.JWT_REFRESH_EXPIRES_IN);
+}
+
 function toAuthTokensResponse(tokens: AuthTokens): AuthTokensResponse {
   return {
     accessToken: tokens.accessToken,
@@ -128,8 +145,13 @@ export const sessionService = {
     const accessTokenExpiresIn = parseExpiresInSeconds(
       env.JWT_ACCESS_EXPIRES_IN
     );
-    const refreshTokenExpiresIn = parseExpiresInSeconds(
-      env.JWT_REFRESH_EXPIRES_IN
+    // Reuse the lifetime this session was issued with instead of the default.
+    // Hardcoding JWT_REFRESH_EXPIRES_IN collapsed a 30-day "remember me"
+    // session to 7 days on its very first rotation, so the user was signed out
+    // a week into a month-long session.
+    const refreshTokenExpiresIn = rotatedTokenLifetimeSeconds(
+      stored.createdAt,
+      stored.expiresAt
     );
 
     const newRefreshToken = createRefreshTokenValue();
@@ -153,7 +175,7 @@ export const sessionService = {
       role: stored.user.role === "ADMIN" ? "ADMIN" : "USER",
     });
 
-    await markSessionActive(stored.sessionId);
+    await markSessionActive(stored.sessionId, refreshTokenExpiresIn);
 
     return toAuthTokensResponse({
       accessToken,
@@ -225,9 +247,27 @@ export const sessionService = {
       role: stored.user.role === "ADMIN" ? "ADMIN" : "USER",
     });
 
-    await markSessionActive(stored.sessionId);
+    // Non-rotating, so the marker keeps the sessions own remaining lifetime.
+    await markSessionActive(
+      stored.sessionId,
+      rotatedTokenLifetimeSeconds(stored.createdAt, stored.expiresAt)
+    );
 
     return { accessToken, accessTokenExpiresIn };
+  },
+
+  // Sign-out for a caller whose ACCESS token has already expired. The refresh
+  // cookie is httpOnly, so the browser cannot drop it itself - without this the
+  // "Sign out" button would leave a live 30-day session in the cookie jar.
+  // Unknown or already-dead tokens resolve silently: logout is idempotent.
+  async logoutByRefreshToken(refreshToken: string): Promise<void> {
+    const stored = await refreshTokenRepository.findByTokenHash(
+      hashToken(refreshToken)
+    );
+
+    if (!stored || stored.session.revokedAt) return;
+
+    await this.logout(stored.userId, stored.sessionId);
   },
 
   async logout(userId: string, sessionId: string): Promise<void> {
