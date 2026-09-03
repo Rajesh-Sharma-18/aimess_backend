@@ -58,6 +58,14 @@ export function isClientAuditSource(
 
 // Accepted `x-platform` values. Desktop builds are still the web client, so they
 // fold into WEB rather than inventing a source the admin panel can't filter on.
+//
+// ADMIN_PANEL is deliberately NOT reachable from here. `x-platform` is a public,
+// client-supplied header, and this table used to map `admin` / `admin_panel` /
+// `admin-panel` straight onto it — so any ordinary user could make their own
+// actions appear in the platform's audit trail as if they had come from the
+// admin panel. The only legitimate producer of ADMIN_PANEL is
+// backoffice-service, which pins it via `createAuditContextMiddleware`'s
+// `forcedSource` argument and never sniffs the request at all.
 const PLATFORM_TO_SOURCE: Record<string, AuditSource> = {
   android: AUDIT_SOURCES.ANDROID,
   ios: AUDIT_SOURCES.IOS,
@@ -66,9 +74,6 @@ const PLATFORM_TO_SOURCE: Record<string, AuditSource> = {
   windows: AUDIT_SOURCES.WEB,
   macos: AUDIT_SOURCES.WEB,
   linux: AUDIT_SOURCES.WEB,
-  admin: AUDIT_SOURCES.ADMIN_PANEL,
-  admin_panel: AUDIT_SOURCES.ADMIN_PANEL,
-  "admin-panel": AUDIT_SOURCES.ADMIN_PANEL,
 };
 
 // Last-resort user-agent sniff, used only when the client sent no `x-platform`.
@@ -99,19 +104,23 @@ function firstHeader(bag: HeaderBag | undefined, name: string): string | null {
 
 /**
  * Derive the source at a request boundary. `x-platform` (already sent by web,
- * Android and iOS for session/device metadata) is authoritative; an unknown or
- * missing value falls back to a user-agent sniff, and finally to WEB — the
- * request DID come from some client, so SYSTEM would be a lie.
+ * Android and iOS for session/device metadata) is a hint; an unknown or missing
+ * value falls back to a user-agent sniff, and finally to WEB — the request DID
+ * come from some client, so SYSTEM would be a lie.
  *
- * Never trusts a client-supplied actor: only the transport it arrived on.
+ * Never trusts a client-supplied actor: only the transport it arrived on. Two
+ * things it deliberately will not do:
+ *
+ *  - It cannot produce ADMIN_PANEL. That value means "this action came from the
+ *    backoffice", which only backoffice-service can assert, via `forcedSource`.
+ *  - It no longer accepts `?platform=` from the query string. A source that can
+ *    be set by a link the victim clicks is not evidence of anything, and the
+ *    header already covers every real client.
  */
 export function resolveAuditSource(
-  headers: HeaderBag | undefined,
-  query?: Record<string, unknown>
+  headers: HeaderBag | undefined
 ): AuditSource {
-  const declared =
-    firstHeader(headers, "x-platform") ??
-    (typeof query?.platform === "string" ? query.platform : null);
+  const declared = firstHeader(headers, "x-platform");
   if (declared) {
     const mapped = PLATFORM_TO_SOURCE[declared.trim().toLowerCase()];
     if (mapped) return mapped;
@@ -147,18 +156,6 @@ export function currentAuditSource(): AuditSource {
   return auditStore.getStore()?.source ?? AUDIT_SOURCES.SYSTEM;
 }
 
-// Leftmost X-Forwarded-For hop is the original client; X-Real-IP is the
-// single-value nginx form. Both are only meaningful behind a trusted proxy —
-// which every service is, since the gateway is the only edge.
-function resolveClientIp(headers: HeaderBag | undefined): string | null {
-  const forwarded = firstHeader(headers, "x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return firstHeader(headers, "x-real-ip");
-}
-
 type MinimalRequest = { headers?: HeaderBag; ip?: string; query?: unknown };
 
 /**
@@ -178,13 +175,13 @@ export function createAuditContextMiddleware(
     const headers = req.headers;
     runWithAuditContext(
       {
-        source:
-          forcedSource ??
-          resolveAuditSource(
-            headers,
-            req.query as Record<string, unknown> | undefined
-          ),
-        ip: resolveClientIp(headers) ?? req.ip ?? null,
+        source: forcedSource ?? resolveAuditSource(headers),
+        // `req.ip`, not a hand-parsed X-Forwarded-For. This used to take the
+        // leftmost forwarded entry — the one the caller controls — so the IP
+        // stamped on every audit row across every service was attacker-chosen.
+        // Express resolves `req.ip` against the configured trust-proxy hop
+        // count, which each service now applies unconditionally.
+        ip: req.ip ?? null,
         userAgent: firstHeader(headers, "user-agent"),
       },
       next

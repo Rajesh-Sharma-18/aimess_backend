@@ -353,7 +353,16 @@ describe("POST /api/auth/apple", () => {
     expect(verifyApple).toHaveBeenCalledWith("valid-apple-token");
   });
 
-  it("creates a new account from a client-supplied email when the token omits it", async () => {
+  /**
+   * AIM-07. This case previously asserted a 200 and a created account — i.e.
+   * that a client-supplied email was enough to mint an AuthUser holding it.
+   * That is account pre-hijacking: claim victim@example.com here, and when the
+   * victim later signs in with Google the by-email auto-link merges their
+   * identity into the attacker's account. The address is now taken only from
+   * the signed identity token, and Apple sends it on the first authorization,
+   * so a genuine first-time sign-up is unaffected.
+   */
+  it("refuses to create an account from a client-supplied email when the token omits it", async () => {
     verifyApple.mockResolvedValue({
       sub: "apple-sub-123",
       email: null,
@@ -365,11 +374,33 @@ describe("POST /api/auth/apple", () => {
       .post("/api/auth/apple")
       .send({ identityToken: "valid-apple-token", email: "john@example.com" });
 
-    expect(res.status).toBe(200);
-    expect(res.body.data.isNewUser).toBe(true);
-    // Client-supplied email is NOT trusted as verified → must not auto-link.
-    // (findByEmail still runs, as the availability gate before account creation.)
+    expect(res.status).toBe(409);
+    expect(res.body.error?.code ?? res.body.messageKey).toBe(
+      "AUTH_SOCIAL_EMAIL_REQUIRED"
+    );
+    // No account, and no identity linked to anyone else's address.
+    expect(repo.createUserWithLinkedAccount).not.toHaveBeenCalled();
     expect(linkRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("still signs in an existing Apple user when the token omits the email", async () => {
+    // Apple only sends the address on the first authorization, so every later
+    // sign-in arrives without one. Those must keep working: the linked account
+    // is found by provider subject, and no email is needed.
+    linkRepo.findByProvider.mockResolvedValue({ user: activeUser() });
+    verifyApple.mockResolvedValue({
+      sub: "apple-sub-123",
+      email: null,
+      emailVerified: false,
+      displayName: null,
+    });
+
+    const res = await request(app)
+      .post("/api/auth/apple")
+      .send({ identityToken: "valid-apple-token" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isNewUser).toBe(false);
   });
 
   // Test 3 — Apple's name arrives ONLY in the first authorization response.

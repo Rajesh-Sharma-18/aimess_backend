@@ -42,7 +42,12 @@ export interface UploadUrlResult {
   uploadExpiresIn: number;
   /** Effective byte cap actually enforced (per-MIME if set, else category). */
   maxBytes: number;
-  headers: { "Content-Type": string };
+  /**
+   * Headers the PUT must carry. Both are part of the signature, so an upload
+   * that omits or alters either is rejected by object storage rather than
+   * silently accepted at a different size.
+   */
+  headers: { "Content-Type": string; "Content-Length": string };
   /** Sanitized original filename echoed back ("" when none/blank). */
   fileName?: string;
 }
@@ -99,6 +104,10 @@ export async function createUploadUrl(
     objectKey,
     contentType,
     expiresIn,
+    // Bind the declared size into the signature. `assertFileSize` above only
+    // validated the NUMBER the client sent; without signing it, the URL still
+    // accepted a body of any length.
+    contentLength,
   });
 
   return {
@@ -106,7 +115,14 @@ export async function createUploadUrl(
     objectKey,
     uploadExpiresIn: expiresIn,
     maxBytes: effectiveMax,
-    headers: { "Content-Type": contentType },
+    // `Content-Length` is signed, so the PUT must carry exactly this value.
+    // Returned explicitly rather than left implicit: a client that streams the
+    // body without setting it will now be refused by object storage, and the
+    // number it must send should not be something it has to infer.
+    headers: {
+      "Content-Type": contentType,
+      "Content-Length": String(contentLength),
+    },
     fileName,
   };
 }

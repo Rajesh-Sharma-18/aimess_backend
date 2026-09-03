@@ -53,6 +53,12 @@ model AuthUser {
   deletionRequestedAt  DateTime?            @db.Timestamptz(3)
   scheduledDeletionAt  DateTime?            @db.Timestamptz(3)
   deletedAt            DateTime?            @db.Timestamptz(3)
+  // Set when the grace period has elapsed and the personal data on this row has
+  // actually been erased (see jobs/account-purge-sweeper.ts). Until this is
+  // stamped, a "deleted" account still holds its email, phone, password hash
+  // and provider identities in full — which is what made deletion a flag
+  // rather than a deletion.
+  purgedAt             DateTime?            @db.Timestamptz(3)
   // Security state
   failedLoginAttempts  Int                  @default(0)
   lockedUntil          DateTime?            @db.Timestamptz(3)

@@ -23,7 +23,7 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
-  fetchAcceptedFriendIds: jest.fn(async () => []),
+  fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
 }));
 
 jest.mock("@aimess/storage", () => ({

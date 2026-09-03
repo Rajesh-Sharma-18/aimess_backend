@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 
 import {
+  getSignupChallenge,
   login,
   register,
   validateAccount,
@@ -19,14 +20,19 @@ import {
   loginWithApple,
   loginWithGoogle,
 } from "../controllers/social-auth.controller.js";
-import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
+import { hydrateRefreshTokenFromCookie } from "../../lib/auth-cookie.js";
+import {  authenticateAccessTokenOptional } from "../../middleware/authenticate-access-token.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
   loginSchema,
   registerSchema,
   validateAccountSchema,
 } from "../validators/auth.validator.js";
-import { sensitiveAuthRateLimiter } from "../../middleware/rate-limiters.js";
+import {
+  refreshRateLimiter,
+  sensitiveAuthRateLimiter,
+} from "../../middleware/rate-limiters.js";
+import { requireSignupChallenge } from "../../middleware/require-signup-challenge.js";
 import {
   requestPasswordResetOtpSchema,
   resetPasswordSchema,
@@ -40,9 +46,21 @@ import { refreshTokenSchema } from "../validators/session.validator.js";
 
 export const authRoutes: IRouter = Router();
 
+// Issues the proof of work that /register and /accounts/validate require. It
+// must come before them in a client's flow, and it is throttled like them so
+// the issuer itself cannot be used as a free amplifier.
+authRoutes.post("/challenge", sensitiveAuthRateLimiter, getSignupChallenge);
+// Answered 409 for a taken handle and 200 for a free one, with no throttle and
+// no cost, which enumerates the entire handle namespace — and enumerated
+// handles are the input to targeted credential stuffing against /login. The
+// oracle is genuinely needed (a signup form has to say "taken" while you type),
+// so it is priced rather than removed: per-IP throttle plus a single-use proof
+// of work, so each handle tested costs the caller CPU they cannot amortise.
 authRoutes.post(
   "/accounts/validate",
+  sensitiveAuthRateLimiter,
   validateBody(validateAccountSchema),
+  requireSignupChallenge,
   validateAccount
 );
 // `sensitiveAuthRateLimiter` was declared with its own env knobs and then
@@ -50,10 +68,14 @@ authRoutes.post(
 // unthrottled. It is per-IP, which is the only key available before a caller is
 // authenticated; the per-account lockout (AUTH_MAX_FAILED_LOGINS) remains the
 // defence against a distributed attempt.
+// Registration needed no verified contact detail and no bot resistance of any
+// kind, so ten thousand accounts cost ten thousand HTTP requests. The proof of
+// work makes each one cost CPU on the creator's own hardware.
 authRoutes.post(
   "/register",
   sensitiveAuthRateLimiter,
   validateBody(registerSchema),
+  requireSignupChallenge,
   register
 );
 // The validator was commented out, so a missing `account` threw inside the
@@ -65,9 +87,26 @@ authRoutes.post(
   validateBody(loginSchema),
   login
 );
-authRoutes.post("/refresh", validateBody(refreshTokenSchema), refreshTokens);
-authRoutes.post("/token", validateBody(refreshTokenSchema), issueAccessToken);
-authRoutes.post("/logout", authenticateAccessToken, logout);
+// `hydrateRefreshTokenFromCookie` folds the httpOnly cookie into the body before
+// validation, so a browser posts an empty body and a native client - which
+// still sends `refreshToken` explicitly - is untouched. The body wins on conflict.
+authRoutes.post(
+  "/refresh",
+  refreshRateLimiter,
+  hydrateRefreshTokenFromCookie,
+  validateBody(refreshTokenSchema),
+  refreshTokens
+);
+authRoutes.post(
+  "/token",
+  refreshRateLimiter,
+  hydrateRefreshTokenFromCookie,
+  validateBody(refreshTokenSchema),
+  issueAccessToken
+);
+// Optional auth: an expired access token must not trap a live refresh cookie
+// in the browser, so logout falls back to the cookie to find the session.
+authRoutes.post("/logout", authenticateAccessTokenOptional, logout);
 authRoutes.post(
   "/google",
   sensitiveAuthRateLimiter,

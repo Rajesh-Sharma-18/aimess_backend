@@ -28,7 +28,14 @@ const appleFullNameSchema = z.union([
 
 export const appleLoginSchema = z.object({
   identityToken: z.string().trim().min(1, "Apple identity token is required"),
-  /** Apple only sends email on first authorization — pass it from the client when needed. */
+  /**
+   * Accepted for backward compatibility with existing clients that still send
+   * it, and then IGNORED. The account email comes only from the signed Apple
+   * identity token — a client-supplied address here was an account
+   * pre-hijacking primitive (see the note in `social-auth.service.ts`). Kept in
+   * the schema rather than rejected so shipped apps do not start failing
+   * validation on a field the server simply no longer reads.
+   */
   email: z.string().trim().toLowerCase().email("Email is invalid").optional(),
   fullName: appleFullNameSchema.nullish(),
   fcmTokens: fcmTokensSchema.optional().default([]),

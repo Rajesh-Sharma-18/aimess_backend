@@ -1,3 +1,4 @@
+import { extractPublishSecret } from "../lib/stream-identity.js";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { logger } from "@aimess/logger";
 
@@ -40,13 +41,25 @@ export function createInternalRoutes(
         /** SRS connection id — distinguishes a superseded publisher's late
          *  on_unpublish from the live one's (see handleUnpublish). */
         client_id?: string | number;
+        /**
+         * The publish URL's query string, forwarded verbatim by SRS.
+         *
+         * This is where the publish secret arrives: streams are published under
+         * a PUBLIC name, and `?secret=<streamKey>` proves the right to publish
+         * it. Without this the hook would be authenticating on the name alone,
+         * which every viewer can read out of their own playback URL.
+         */
+        param?: string;
       };
-
-      // Shared-secret guard — always enforced, and BEFORE anything is logged.
-      // Nothing above this line may write request-controlled data: an
-      // unauthenticated caller would otherwise be able to inject arbitrary text
-      // into the production log at unlimited rate, on a route that is reachable
-      // from the public edge.
+      // Shared-secret guard — always enforced, and BEFORE any logging.
+      //
+      // The two banner/info lines that used to sit here ran first and
+      // unconditionally, which had two consequences: an unauthenticated caller
+      // could write attacker-chosen `action` / `app` / `stream` strings into
+      // the log, and every authenticated hook printed the raw stream name —
+      // which is the sole publish credential, so log access was
+      // broadcast-takeover access. They now run below the guard, with the name
+      // reduced to a digest.
       const provided =
         (typeof req.headers["x-srs-secret"] === "string"
           ? (req.headers["x-srs-secret"] as string)
@@ -110,7 +123,8 @@ export function createInternalRoutes(
           case "on_publish": {
             const allow = await livestreamService.handlePublish(
               streamKey,
-              clientId
+              clientId,
+              { secret: extractPublishSecret(body.param) }
             );
             logStreamHookBanner(
               `RESULT action=on_publish stream=${digestKey(streamKey)} allowed=${String(allow)} responseBody=${

@@ -14,9 +14,19 @@ function refreshTtlSeconds(): number {
   return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 604800;
 }
 
-export async function markSessionActive(sessionId: string): Promise<void> {
+// ttlSeconds carries the sessions own refresh lifetime. Without it a 30-day
+// remember-me session lost its Redis marker on day 7 and fell back to a DB
+// lookup on every authenticated request.
+export async function markSessionActive(
+  sessionId: string,
+  ttlSeconds?: number
+): Promise<void> {
   try {
-    await registerActiveSession(redis, sessionId, refreshTtlSeconds());
+    await registerActiveSession(
+      redis,
+      sessionId,
+      ttlSeconds && ttlSeconds > 0 ? Math.floor(ttlSeconds) : refreshTtlSeconds()
+    );
   } catch {
     // Redis optional for login; DB revoke still blocks refresh
   }

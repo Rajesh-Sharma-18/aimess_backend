@@ -6,10 +6,10 @@ import { logger } from "@aimess/logger";
 import { env } from "../../config/env.js";
 import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { bindSocketAuditContext } from "../audit-context.js";
+import { createSessionTimers } from "../session-timers.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import { scopeSocketLocale } from "../locale-scope.js";
-import { createSessionTimers } from "../session-timers.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
 // §3: bound free-text fields so a naive or abusive client cannot exceed the
@@ -482,12 +482,11 @@ export function registerStreamNamespace(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );
 
-    // session:expired warning + auth:refresh, exactly as /chat and /community
-    // wire it. The handshake middleware only checks the JWT once, at connect,
-    // so without these timers `socket.data.tokenExpiresAt` was recorded and
-    // never acted on: a /stream socket kept receiving a stream's comments,
-    // reactions, viewer counts and status events for as long as the TCP
-    // connection survived — days after its token expired.
+    // Token expiry, enforced mid-connection. `socket.data.tokenExpiresAt` was
+    // set at handshake and then read by nobody here, so a socket authenticated
+    // with a short-lived access token kept receiving livestream traffic
+    // indefinitely — long after the token expired — for as long as the TCP
+    // connection survived. Same helper /chat and /community use.
     const {
       clearSessionTimers,
       scheduleSessionTimers,
@@ -498,6 +497,7 @@ export function registerStreamNamespace(
       scheduleSessionTimers(socket.data.tokenExpiresAt);
     }
     registerAuthRefreshHandler();
+    socket.on("disconnect", () => clearSessionTimers());
 
     // Streams this specific socket has contributed +1 to. The decrement paths
     // (leave / disconnect / kick) key off this set, not `socket.rooms`, so we
@@ -852,7 +852,7 @@ export function registerStreamNamespace(
           const rawMessage = (payload as { message?: unknown } | null)?.message;
           const detailKey =
             typeof rawMessage === "string" &&
-            rawMessage.length > MAX_MESSAGE_LEN
+              rawMessage.length > MAX_MESSAGE_LEN
               ? "SOCKET_ERR_STREAM_COMMENT_TOO_LONG"
               : undefined;
           ackError(callback, "INVALID_PAYLOAD", locale, detailKey);

@@ -42,7 +42,13 @@ turn:
 # defaults to API_GATEWAY_PORT — update the URL if you change it.
 # LIVEKIT_WEBHOOK_URL env override lets non-default gateways receive events.
 webhook:
-  api_key: devkey
+  # Must match LIVEKIT_API_KEY in the environment (docker-compose passes the
+  # pair as LIVEKIT_KEYS). This used to be the literal `devkey`, which paired
+  # with a secret published in this repo — anyone could then sign a webhook the
+  # gateway accepted, and forge `room_finished` / `participant_left` events to
+  # terminate other users' calls. Substituted at container start from
+  # LIVEKIT_API_KEY; never commit a real key here.
+  api_key: __LIVEKIT_API_KEY__
   urls:
     # api-gateway listens on API_GATEWAY_PORT=3000. host.docker.internal
     # resolves to the Docker host (Windows/mac out-of-the-box).

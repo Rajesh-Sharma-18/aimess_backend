@@ -1,4 +1,13 @@
+import { streamKeyRef } from "../lib/stream-key-ref.js";
 import { randomBytes } from "node:crypto";
+
+import {
+  generatePlaybackId,
+  generateStreamKey,
+  isLegacyStream,
+  publishSecretMatches,
+  resolveSrsName,
+} from "../lib/stream-identity.js";
 
 import { logger } from "@aimess/logger";
 import {
@@ -28,7 +37,6 @@ import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
 import { assertNotSystemBanned, isSystemBanned } from "../lib/system-ban.js";
-import { digestKey } from "../lib/secret-compare.js";
 
 /** A single watching user, enriched for the owner-only viewers list. */
 export interface StreamViewerView {
@@ -379,10 +387,12 @@ export class LivestreamService {
         // Two counts run in parallel — all LIVE-only (PENDING never blocks):
         //   activeAnywhere  — creator is already LIVE in any community
         //   activeByCommunity — community's concurrent-stream cap
-        const [activeAnywhere, activeByCommunity] = await Promise.all([
-          this.streamRepo.countLiveByCreator(params.creatorId),
-          this.streamRepo.countActiveByCommunity(params.communityId),
-        ]);
+        const [activeAnywhere, activeByCommunity, pendingByCreator] =
+          await Promise.all([
+            this.streamRepo.countLiveByCreator(params.creatorId),
+            this.streamRepo.countActiveByCommunity(params.communityId),
+            this.streamRepo.countPendingByCreator(params.creatorId),
+          ]);
         // Global rule: one active stream per user across all communities.
         if (activeAnywhere > 0) {
           throw new ConflictError("STREAM_ALREADY_ACTIVE");
@@ -390,15 +400,31 @@ export class LivestreamService {
         if (activeByCommunity >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
           throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
         }
+        // PENDING rows were exempt from every cap, so `POST /streams` in a loop
+        // wrote unbounded rows — each minting a stream key and publishing a
+        // `stream.created` event — until the 10-minute stale-PENDING sweeper
+        // caught up. The cap is deliberately loose: a broadcaster may abandon
+        // one setup and start another, which is two, and anything beyond that
+        // is not a person configuring a stream.
+        if (pendingByCreator >= env.STREAM_MAX_PENDING_PER_CREATOR) {
+          throw new ConflictError("STREAM_ALREADY_ACTIVE");
+        }
 
-        const streamKey = randomBytes(16).toString("hex");
+        // Two DIFFERENT values. `streamKey` authorises publishing and is only
+        // ever returned to the owner; `playbackId` is the public name the
+        // stream is published and played under. They used to be one value, so
+        // the publish credential was the path segment of every viewer's player
+        // URL — see lib/stream-identity.ts.
+        const streamKey = generateStreamKey();
+        const playbackId = generatePlaybackId();
 
         // YouTube streams embed a remote source — no SRS ingest/playback.
         const playback = isYoutube
           ? null
-          : this.srsService.buildPlaybackUrls(streamKey);
+          : this.srsService.buildPlaybackUrls(playbackId);
 
         const created = await this.streamRepo.create({
+          playbackId,
           communityId: params.communityId,
           creatorId: params.creatorId,
           title: params.title,
@@ -456,7 +482,12 @@ export class LivestreamService {
     return {
       ...toView(created),
       streamKey,
-      ingest: isYoutube ? {} : this.srsService.buildIngestEndpoints(streamKey),
+      ingest: isYoutube
+        ? {}
+        : this.srsService.buildIngestEndpoints(
+            resolveSrsName(created),
+            streamKey
+          ),
     };
   }
 
@@ -508,13 +539,43 @@ export class LivestreamService {
    * recorded on the row so a late on_unpublish from a SUPERSEDED connection can
    * be told apart from the real one — see {@link handleUnpublish}.
    */
-  async handlePublish(streamKey: string, clientId?: string): Promise<boolean> {
-    const stream = await this.streamRepo.findByStreamKey(streamKey);
+  async handlePublish(
+    srsName: string,
+    clientId?: string,
+    /**
+     * The publish secret SRS forwarded from the publish URL's query string, or
+     * `"trusted"` for the internal reconciler, which is reacting to a publish
+     * SRS has already accepted rather than authorising a new one.
+     */
+    publishAuth: { secret: string } | "trusted" = { secret: "" }
+  ): Promise<boolean> {
+    const stream = await this.streamRepo.findBySrsName(srsName);
     if (!stream) {
       logger.warn(
-        `on_publish for unknown stream key=${digestKey(streamKey)} — denying`
+        `on_publish for unknown stream name=${streamKeyRef(srsName)} — denying`
       );
       return false;
+    }
+
+    // The publish credential.
+    //
+    // This hook carries no JWT and is the ONLY gate on who may publish. It used
+    // to authenticate on the stream name alone — and that name was also the
+    // path segment of every viewer's playback URL, so any viewer could read it
+    // out of the player and take over the broadcast. New streams publish under
+    // a public name and prove the right to do so with `?secret=`.
+    //
+    // Rows created before the split have no separate name: they are published
+    // under their own secret, so demanding one would break a broadcast that is
+    // currently on air, and the secret is already public for them regardless.
+    // They are grandfathered until they end.
+    if (publishAuth !== "trusted" && !isLegacyStream(stream)) {
+      if (!publishSecretMatches(publishAuth.secret, stream.streamKey)) {
+        logger.warn(
+          `on_publish denied for stream id=${stream.id}: missing or wrong publish secret`
+        );
+        return false;
+      }
     }
     // The webhook carries no JWT — it authenticates by streamKey alone, so a
     // banned host still holding a key would otherwise re-publish from OBS.
@@ -566,7 +627,7 @@ export class LivestreamService {
       return false;
     }
 
-    const playback = this.srsService.buildPlaybackUrls(streamKey);
+    const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
       disconnectedAt: null,
@@ -668,10 +729,10 @@ export class LivestreamService {
    * pre-existing behaviour.
    */
   async handleUnpublish(streamKey: string, clientId?: string): Promise<void> {
-    const stream = await this.streamRepo.findByStreamKey(streamKey);
+    const stream = await this.streamRepo.findBySrsName(streamKey);
     if (!stream) {
       logger.warn(
-        `on_unpublish for unknown stream key=${digestKey(streamKey)} — ignoring`
+        `on_unpublish for unknown stream key=${streamKeyRef(streamKey)} — ignoring`
       );
       return;
     }
@@ -712,7 +773,7 @@ export class LivestreamService {
    */
   async incrementViewer(streamKey: string, delta: number): Promise<void> {
     try {
-      const stream = await this.streamRepo.findByStreamKey(streamKey);
+      const stream = await this.streamRepo.findBySrsName(streamKey);
       if (!stream) return;
       const next = Math.max(0, stream.viewerCount + delta);
       await this.streamRepo.updateById(stream.id, {
@@ -721,7 +782,7 @@ export class LivestreamService {
       });
     } catch (error) {
       logger.warn(
-        `incrementViewer failed for key=${digestKey(streamKey)}: ${String(error)}`
+        `incrementViewer failed for key=${streamKeyRef(streamKey)}: ${String(error)}`
       );
     }
   }
@@ -750,7 +811,7 @@ export class LivestreamService {
       endedAt: new Date(),
     });
 
-    await this.srsService.kickStream(stream.streamKey, stream.sourceType);
+    await this.srsService.kickStream(resolveSrsName(stream), stream.sourceType);
 
     const liveStreamCount = await this.streamRepo.countLiveByCommunity(
       updated.communityId
@@ -828,7 +889,10 @@ export class LivestreamService {
 
     return {
       streamKey: stream.streamKey,
-      ingest: this.srsService.buildIngestEndpoints(stream.streamKey),
+      ingest: this.srsService.buildIngestEndpoints(
+        resolveSrsName(stream),
+        stream.streamKey
+      ),
     };
   }
 
@@ -884,7 +948,7 @@ export class LivestreamService {
       throw new ConflictError("STREAM_ALREADY_ACTIVE");
     }
 
-    const playback = this.srsService.buildPlaybackUrls(stream.streamKey);
+    const playback = this.srsService.buildPlaybackUrls(resolveSrsName(stream));
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
       disconnectedAt: null,
@@ -1128,6 +1192,11 @@ export class LivestreamService {
   /**
    * Cursor-paginated stream list, scoped to ONE community the caller may see.
    *
+   * `requesterId` is REQUIRED here: this is the user-facing path. The trusted
+   * internal caller uses {@link listStreamsInternal} instead, so a controller
+   * that forgets to pass the caller's identity fails loudly rather than
+   * silently reopening the enumeration hole below.
+   *
    * Every row here carries directly-playable `hlsUrl`/`flvUrl` (and their
    * rendition ladders) through {@link toView}, so this endpoint hands out media
    * access, not just metadata. It therefore enforces the same gates the
@@ -1143,8 +1212,13 @@ export class LivestreamService {
    *    deliberate product choice for PUBLIC communities only (see
    *    `checkAccess`'s "Viewing is always allowed" note), and that decision was
    *    never meant to cover discovery of private communities' broadcasts.
+   *  - per-stream bans are filtered out of the page (see below).
    *
-   * Fail-CLOSED on a community-service error — see `checkCommunityAccess`.
+   * Fail-CLOSED on a community-service error — unlike `checkAccess`, which
+   * stays fail-open so an outage cannot black out a stream someone is already
+   * watching. Here the failure mode of fail-open is handing every caller a
+   * private community's playback URLs, so the right answer on an outage is "no
+   * list". See `checkCommunityAccess`.
    */
   async listStreams(params: {
     communityId?: string;
@@ -1153,6 +1227,9 @@ export class LivestreamService {
     cursor?: string;
     requesterId: string;
   }): Promise<ListStreamsResult> {
+    // A user-facing listing is always scoped to one community. The
+    // cross-community form is what made this an enumeration oracle, and no
+    // client uses it: the UI lists streams within a community.
     if (!params.communityId) {
       throw new BadRequestError("STREAM_COMMUNITY_ID_REQUIRED");
     }
@@ -1212,16 +1289,21 @@ export class LivestreamService {
     const hasMore = rows.length > params.limit;
     const page = hasMore ? rows.slice(0, params.limit) : rows;
 
-    // Per-stream bans, applied as one indexed query over the page. Same gate
-    // `getStream` enforces per row — without it a user banned from a specific
-    // stream still reads its playback URL out of the list.
-    const bannedIds = params.excludeBannedFor
-      ? await this.banRepo.bannedStreamIdsFor(
-          page.map((s) => s.id),
-          params.excludeBannedFor
-        )
-      : new Set<string>();
-    const items = page.filter((s) => !bannedIds.has(s.id)).map(toView);
+    // Per-stream bans, applied as one indexed query over the page — the same
+    // gate `getStream` enforces per row. Without it a user banned from a
+    // specific stream still reads its playback URL out of the list. Done AFTER
+    // paging so a filtered row cannot stall pagination.
+    let visible = page;
+    if (params.excludeBannedFor) {
+      const banned = await this.banRepo.bannedStreamIds(
+        params.excludeBannedFor,
+        page.map((row) => row.id)
+      );
+      if (banned.size > 0) {
+        visible = page.filter((row) => !banned.has(row.id));
+      }
+    }
+    const items = visible.map(toView);
 
     // Cursor advances on the LAST ROW READ, not the last row returned —
     // otherwise a page whose tail is entirely banned rows would rewind the
@@ -1405,7 +1487,9 @@ export class LivestreamService {
     const streams = await this.streamRepo.findLiveBySourceType("OBS_RTMP");
     for (const stream of streams) {
       try {
-        const stats = await this.srsService.getStreamStats(stream.streamKey);
+        const stats = await this.srsService.getStreamStats(
+          resolveSrsName(stream)
+        );
         if (!stats) continue;
         await this.reportQuality(stream.id, {
           resolution: `${stats.width}x${stats.height}`,
@@ -1485,7 +1569,7 @@ export class LivestreamService {
 
     let streams: Livestream[];
     try {
-      streams = await this.streamRepo.findByStreamKeys(
+      streams = await this.streamRepo.findBySrsNames(
         publishers.map((p) => p.streamKey)
       );
     } catch (err) {
@@ -1503,7 +1587,7 @@ export class LivestreamService {
         // SRS should already have dropped it — log rather than kick, so a
         // create/publish race can't have its publisher killed mid-handshake.
         logger.warn(
-          `reconcileWithSrs: SRS publisher for unknown streamKey=${digestKey(publisher.streamKey)} on ${publisher.apiBase}`
+          `reconcileWithSrs: SRS publisher for unknown name=${streamKeyRef(publisher.streamKey)} on ${publisher.apiBase}`
         );
         continue;
       }
@@ -1523,9 +1607,16 @@ export class LivestreamService {
       // stream and resumes a RECONNECTING one without re-broadcasting.
       if (stream.status === "PENDING" || stream.status === "RECONNECTING") {
         try {
-          const allowed = await this.handlePublish(publisher.streamKey);
+          // "trusted": SRS is REPORTING a publish it already accepted, so there
+          // is no publish URL to read a secret from. Authorisation happened at
+          // the on_publish hook; this only recovers a dropped delivery.
+          const allowed = await this.handlePublish(
+            publisher.streamKey,
+            undefined,
+            "trusted"
+          );
           logger.info(
-            `reconcileWithSrs: recovered missing on_publish stream=${stream.id} status=${stream.status} key=${digestKey(publisher.streamKey)} allowed=${String(allowed)}`
+            `reconcileWithSrs: recovered missing on_publish stream=${stream.id} status=${stream.status} name=${streamKeyRef(publisher.streamKey)} allowed=${String(allowed)}`
           );
         } catch (err) {
           logger.warn(
@@ -1542,7 +1633,7 @@ export class LivestreamService {
         publisher.clientId
       );
       logger.info(
-        `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} key=${digestKey(publisher.streamKey)} success=${String(kicked)}`
+        `reconcileWithSrs: re-kicked orphaned publisher stream=${stream.id} status=${stream.status} name=${streamKeyRef(publisher.streamKey)} success=${String(kicked)}`
       );
     }
   }
@@ -1661,7 +1752,10 @@ export class LivestreamService {
         });
         // Best-effort — a PENDING stream never published, but a client may have
         // gotten as far as opening the ingest connection.
-        await this.srsService.kickStream(stream.streamKey, stream.sourceType);
+        await this.srsService.kickStream(
+          resolveSrsName(stream),
+          stream.sourceType
+        );
         const liveStreamCount = await this.streamRepo.countLiveByCommunity(
           updated.communityId
         );
@@ -2792,7 +2886,7 @@ export class LivestreamService {
       for (let attempt = 0; attempt < PLAYABLE_POLL_MAX_ATTEMPTS; attempt++) {
         let ready = false;
         try {
-          ready = await this.srsService.hasFrames(stream.streamKey);
+          ready = await this.srsService.hasFrames(resolveSrsName(stream));
         } catch (error) {
           logger.warn(
             `notifyWhenPlayable: hasFrames check failed for stream=${stream.id}: ${String(error)}`

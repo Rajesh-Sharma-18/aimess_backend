@@ -1,0 +1,16 @@
+# Cloudflare edge ranges. HAProxy only rewrites X-Forwarded-For from
+# CF-Connecting-IP for sources in this list (`acl from_cf` in dev01.cfg /
+# dev02.cfg) — without it, any direct-to-origin caller could name its own
+# client IP and defeat every IP-keyed rate limit and allow-list.
+#
+# Generate the real file on the host from the same source the nginx path
+# already uses (deploy/scripts/refresh-cloudflare-ips.sh), writing one CIDR per
+# line to /etc/haproxy/cloudflare-ips.lst, then reload HAProxy:
+#
+#   curl -s https://www.cloudflare.com/ips-v4 >  /etc/haproxy/cloudflare-ips.lst
+#   curl -s https://www.cloudflare.com/ips-v6 >> /etc/haproxy/cloudflare-ips.lst
+#   systemctl reload haproxy
+#
+# HAProxy refuses to start when the file is missing. That is the correct
+# direction to fail: no file means no trusted-proxy list, and silently trusting
+# everyone is what this closes.

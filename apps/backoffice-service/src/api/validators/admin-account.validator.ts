@@ -174,7 +174,7 @@ export const listAdminAccountsQuerySchema = z
     sortOrder: z.enum(["asc", "desc"]).default("desc"),
     fromDate: z.coerce.number().int().nonnegative().optional(),
     toDate: z.coerce.number().int().nonnegative().optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .refine((v) => !v.fromDate || !v.toDate || v.fromDate <= v.toDate, {

@@ -36,7 +36,7 @@ jest.mock("../../src/lib/user-client.js", () => ({
         ])
       )
   ),
-  fetchAcceptedFriendIds: jest.fn(async () => []),
+  fetchAcceptedFriendIds: jest.fn(async () => new Set<string>()),
 }));
 
 // Mock @aimess/storage so buildCommunityImageMedia / buildAvatarMedia

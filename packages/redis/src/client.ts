@@ -7,6 +7,7 @@ export const connectRedis = ({
   port,
   username,
   password,
+  tls,
 }: {
   host: string;
   port: number;
@@ -18,6 +19,19 @@ export const connectRedis = ({
    * without this the client fails every command with NOAUTH.
    */
   password?: string;
+  /**
+   * Wrap the connection in TLS.
+   *
+   * The client had no TLS option at all, so every deployment that reached Redis
+   * across hosts did so in cleartext — including one that dialled a Redis on a
+   * different network block entirely. That exposes the AUTH password and, since
+   * Redis pub/sub is this platform's realtime fan-out, the body of every chat
+   * and community message to anyone able to observe the path.
+   *
+   * Off by default so a local, loopback, or private-network Redis is unchanged.
+   * Services pass `REDIS_TLS=true` where the connection leaves the host.
+   */
+  tls?: boolean;
 }): Redis => {
   if (!redis) {
     redis = new Redis({
@@ -27,6 +41,10 @@ export const connectRedis = ({
       // keeps the no-auth dev path byte-identical to before.
       username,
       password,
+      // `{}` selects Node's default TLS settings (verified certificate chain,
+      // SNI from `host`). ioredis only speaks TLS when this key is present, so
+      // omitting it entirely is what keeps the plaintext path unchanged.
+      ...(tls ? { tls: {} } : {}),
       lazyConnect: true,
       // Fail fast when Redis is unreachable/misconfigured so callers' try/catch
       // can fall back instead of the request hanging forever. (A hung command

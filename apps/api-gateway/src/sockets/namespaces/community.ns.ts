@@ -536,7 +536,7 @@ export function registerCommunityNamespace(
         const skipViewer =
           parsed.event === "community:message:read"
             ? (viewerUserId: string) =>
-                viewerHidesReadReceipts(userClient, viewerUserId)
+              viewerHidesReadReceipts(userClient, viewerUserId)
             : undefined;
 
         if (parsed.event !== "community:member:removed") {
@@ -717,9 +717,9 @@ export function registerCommunityNamespace(
 
         logger.info(
           `/community auto-join on connect socketId=${socket.id} userId=${userId} joinedRoomCount=${joinedCount}` +
-            (failedCommunityIds.length > 0
-              ? ` failedRoomIds=${JSON.stringify(failedCommunityIds)}`
-              : "")
+          (failedCommunityIds.length > 0
+            ? ` failedRoomIds=${JSON.stringify(failedCommunityIds)}`
+            : "")
         );
         if (failedCommunityIds.length > 0) {
           for (let i = 0; i < communityIds.length; i++) {
@@ -960,15 +960,13 @@ export function registerCommunityNamespace(
           // stale/unbanned client from receiving room broadcasts until they go
           // through the normal join flow again.
           //
-          // Fails CLOSED, matching /chat's `conv:join`. This previously failed
-          // OPEN on the reasoning that the act-vector (send/edit/react) stays
-          // hard-blocked at chat-service so only a "brief receive-side leak"
-          // was at risk — but `community:<id>` is where the community's message
-          // fan-out lands, so the receive side IS the content. Any thrown error
-          // (community-service down, gRPC deadline, breaker open, an id that
-          // makes the RPC error rather than answer) admitted an authenticated
-          // non-member to a PRIVATE community's live traffic for the duration
-          // of the outage.
+          // Fails CLOSED on a membership-check error, matching `conv:join` on
+          // the /chat namespace. It used to fail open, on the reasoning that
+          // writes stay blocked at chat-service — true, but the read leak IS
+          // the content of the room: `community:<id>` is where message fan-out
+          // lands, so during any community-service disruption an authenticated
+          // user who named a PRIVATE community's id received its live traffic
+          // in full. "Only a receive-side leak" is the whole conversation.
           try {
             const m = await communityClient.checkCommunityMembership({
               communityId,
@@ -1434,11 +1432,11 @@ export function registerCommunityNamespace(
           .then((result) =>
             result.ok
               ? ackOk(
-                  callback,
-                  "SOCKET_COMMUNITY_MEMBER_KICKED",
-                  locale,
-                  result
-                )
+                callback,
+                "SOCKET_COMMUNITY_MEMBER_KICKED",
+                locale,
+                result
+              )
               : ackError(callback, "FORBIDDEN", locale)
           )
           .catch((err: unknown) => {
@@ -1462,11 +1460,11 @@ export function registerCommunityNamespace(
           .then((result) =>
             result.ok
               ? ackOk(
-                  callback,
-                  "SOCKET_COMMUNITY_MEMBER_BANNED",
-                  locale,
-                  result
-                )
+                callback,
+                "SOCKET_COMMUNITY_MEMBER_BANNED",
+                locale,
+                result
+              )
               : ackError(callback, "FORBIDDEN", locale)
           )
           .catch((err: unknown) => {
@@ -1490,11 +1488,11 @@ export function registerCommunityNamespace(
           .then((result) =>
             result.ok
               ? ackOk(
-                  callback,
-                  "SOCKET_COMMUNITY_MEMBER_UNBANNED",
-                  locale,
-                  result
-                )
+                callback,
+                "SOCKET_COMMUNITY_MEMBER_UNBANNED",
+                locale,
+                result
+              )
               : ackError(callback, "FORBIDDEN", locale)
           )
           .catch((err: unknown) => {
@@ -1518,11 +1516,11 @@ export function registerCommunityNamespace(
           .then((result) =>
             result.ok
               ? ackOk(
-                  callback,
-                  "SOCKET_COMMUNITY_ADMIN_TRANSFERRED",
-                  locale,
-                  result
-                )
+                callback,
+                "SOCKET_COMMUNITY_ADMIN_TRANSFERRED",
+                locale,
+                result
+              )
               : ackError(callback, "FORBIDDEN", locale)
           )
           .catch((err: unknown) => {
@@ -1571,11 +1569,11 @@ export function registerCommunityNamespace(
           .then((result) =>
             result.ok
               ? ackOk(
-                  callback,
-                  "SOCKET_COMMUNITY_REPORT_CREATED",
-                  locale,
-                  result
-                )
+                callback,
+                "SOCKET_COMMUNITY_REPORT_CREATED",
+                locale,
+                result
+              )
               : ackError(callback, "SERVICE_ERROR", locale)
           )
           .catch((err: unknown) => {

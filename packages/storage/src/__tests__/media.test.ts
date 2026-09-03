@@ -233,7 +233,9 @@ describe("buildUploadMediaObject", () => {
       objectKey: "avatars/uid/x.png",
       uploadExpiresIn: 900,
       maxBytes: 5_000_000,
-      headers: { "Content-Type": "image/png" },
+      // Content-Length is now signed into the presigned PUT, so it is part of
+      // the headers the client must send (AIM-12).
+      headers: { "Content-Type": "image/png", "Content-Length": "1024" },
     };
 
     const result = buildUploadMediaObject({
@@ -244,7 +246,10 @@ describe("buildUploadMediaObject", () => {
 
     assert.equal(result.uploadUrl, "https://signed.example/put?sig=xyz");
     assert.equal(result.uploadUrlExpiresIn, 900);
-    assert.deepEqual(result.uploadHeaders, { "Content-Type": "image/png" });
+    assert.deepEqual(result.uploadHeaders, {
+      "Content-Type": "image/png",
+      "Content-Length": "1024",
+    });
     assert.equal(result.objectKey, "avatars/uid/x.png");
     assert.equal(result.fileId, "x");
     assert.equal(result.mediaId, null);
@@ -261,7 +266,9 @@ describe("buildUploadMediaObject", () => {
       objectKey: "avatars/uid/x.png",
       uploadExpiresIn: 900,
       maxBytes: 5_000_000,
-      headers: { "Content-Type": "image/png" },
+      // Content-Length is now signed into the presigned PUT, so it is part of
+      // the headers the client must send (AIM-12).
+      headers: { "Content-Type": "image/png", "Content-Length": "1024" },
     };
 
     const result = buildUploadMediaObject({

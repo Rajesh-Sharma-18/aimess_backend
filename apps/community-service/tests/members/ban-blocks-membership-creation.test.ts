@@ -19,7 +19,10 @@
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
-import { fetchUserSnapshots } from "../../src/lib/user-client.js";
+import {
+  fetchAcceptedFriendIds,
+  fetchUserSnapshots,
+} from "../../src/lib/user-client.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const snapshots = fetchUserSnapshots as unknown as jest.Mock;
@@ -274,6 +277,12 @@ describe("approveJoinRequest — rejects when the requester was banned after req
 describe("addMembers — skips a BANNED target instead of re-adding them", () => {
   beforeEach(() => {
     repo.findMembersByUserIds.mockResolvedValue([bannedTarget]);
+    // addMembers gates on friendship first (AIM-05), so this case has to make
+    // the target a friend or it would be skipped as NOT_FRIEND and never reach
+    // the BANNED classification this suite is about.
+    (fetchAcceptedFriendIds as unknown as jest.Mock).mockResolvedValue(
+      new Set([TARGET])
+    );
   });
 
   it("reports the banned userId as skipped with reason BANNED, no member row created", async () => {

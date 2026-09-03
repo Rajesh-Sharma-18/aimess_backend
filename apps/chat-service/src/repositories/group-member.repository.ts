@@ -35,6 +35,43 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * Which of `userIds` have muted this group, in ONE query.
+   *
+   * Batched counterpart of the `checkGroupMute` gRPC method. The push fan-out
+   * called that once per recipient, so a 256-member group message meant 256
+   * gRPC round trips back into this service, each with its own `GroupMember`
+   * read, while it was also serving sends.
+   *
+   * Mute semantics are identical to the single-row check, deliberately: muted
+   * with no `muteUntil` is indefinite, a `muteUntil` in the future is still
+   * muted, and one in the past has expired. Diverging here would silence
+   * pushes the per-row check would have delivered.
+   */
+  async findMutedUserIds(roomId: string, userIds: string[]): Promise<string[]> {
+    if (userIds.length === 0) return [];
+
+    const rows = await this.prisma.groupMember.findMany({
+      where: { roomId, userId: { in: userIds } },
+      select: { userId: true, notificationSettings: true },
+    });
+
+    const now = Date.now();
+    return rows
+      .filter((row) => {
+        const settings = (row.notificationSettings ?? {}) as {
+          mute?: boolean;
+          muteUntil?: string | null;
+        };
+        if (settings.mute !== true) return false;
+        const muteUntilMs = settings.muteUntil
+          ? new Date(settings.muteUntil).getTime()
+          : null;
+        return muteUntilMs == null || muteUntilMs > now;
+      })
+      .map((row) => row.userId);
+  }
+
   async findByRoomAndUser(
     roomId: string,
     userId: string

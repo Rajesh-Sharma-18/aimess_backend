@@ -11,13 +11,21 @@ import request from "supertest";
 import { app } from "../src/app.js";
 
 describe("backoffice-service smoke", () => {
-  it("GET /health → 200 liveness envelope", async () => {
+  it("GET /health → 200 liveness envelope, and nothing else (AIM-86)", async () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.service).toBe("backoffice-service");
-    expect(res.body.environment).toBe("test");
+
+    // This route is mounted above the admin guards and the admin vhost proxies
+    // every path here, so it answers unauthenticated callers from anywhere. It
+    // used to name the service and disclose NODE_ENV, which told an attacker
+    // that the admin service lives at that hostname and which environment it
+    // is — reconnaissance for free. The liveness answer is now the verdict
+    // alone.
+    expect(res.body.service).toBeUndefined();
+    expect(res.body.title).toBeUndefined();
+    expect(res.body.environment).toBeUndefined();
   });
 
   it("GET /v1/health → 200 (gateway-proxied liveness path)", async () => {

@@ -615,9 +615,7 @@ export const userProfileService = {
    * Idempotent: a redelivered event finds the profile already ACTIVE and exits
    * without republishing.
    */
-  async restoreFromUserRestoredEvent(
-    data: UserRestoredPayload
-  ): Promise<void> {
+  async restoreFromUserRestoredEvent(data: UserRestoredPayload): Promise<void> {
     const profile = await userProfileRepository.findByUserId(data.userId);
 
     if (!profile) {

@@ -21,7 +21,22 @@ declare global {
 }
 
 export type AuthenticateAccessTokenOptions = {
-  accessTokenSecret: string;
+  /**
+   * Shared HS256 secret.
+   *
+   * Optional now that verification can also be done with a public key. A
+   * service configured with `accessTokenPublicKey` and no secret cannot mint
+   * tokens at all, which is the point: a leak from it discloses nothing that
+   * forges a session.
+   */
+  accessTokenSecret?: string;
+  /** RS256 public key. Not a secret; safe to ship to every service. */
+  accessTokenPublicKey?: string;
+  /**
+   * Reject a token that carries no `iss`/`aud`. Leave false until every token
+   * minted before the claims existed has expired. See `AccessTokenVerifyConfig`.
+   */
+  requireIssuerAudience?: boolean;
   /**
    * When set, also accepts a backoffice admin access token signed with this
    * secret (`type: "admin_access"`). Tried only as a fallback, after the
@@ -59,12 +74,24 @@ export function createAuthenticateAccessToken(
       ? { accessTokenSecret: accessTokenSecretOrOptions }
       : accessTokenSecretOrOptions;
 
+  if (!options.accessTokenSecret && !options.accessTokenPublicKey) {
+    throw new Error(
+      "createAuthenticateAccessToken requires accessTokenSecret or accessTokenPublicKey"
+    );
+  }
+
+  const verifyConfig = {
+    secret: options.accessTokenSecret,
+    publicKey: options.accessTokenPublicKey,
+    requireIssuerAudience: options.requireIssuerAudience,
+  };
+
   return async (req, _res, next) => {
     try {
       const token = extractBearerToken(req.headers.authorization);
 
       try {
-        const auth = verifyAccessToken(token, options.accessTokenSecret);
+        const auth = verifyAccessToken(token, verifyConfig);
 
         if (options.assertSessionActive) {
           const active = await options.assertSessionActive(auth.sessionId);

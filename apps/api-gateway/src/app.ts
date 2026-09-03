@@ -8,6 +8,7 @@ import { NotFoundError } from "@aimess/errors";
 import { env, isCorsOriginAllowed } from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
 import { setupSwagger } from "./docs/swagger.js";
+import { createBodySizeLimit } from "./middleware/body-size-limit.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { rateLimiter } from "./middleware/rate-limit.js";
@@ -44,15 +45,42 @@ export function createApp(
 
   app.disable("x-powered-by");
 
-  if (env.TRUST_PROXY_HOPS > 0) {
-    app.set("trust proxy", env.TRUST_PROXY_HOPS);
-  }
+  // Unconditional: Express accepts 0 as "trust no proxy", which is exactly the
+  // direct-client case the old `> 0` guard was trying to express. Leaving the
+  // setting unapplied did not mean "no proxies" — it meant `req.ip` silently
+  // ignored hop counting everywhere, which is why several call sites went off
+  // and hand-parsed `X-Forwarded-For` themselves and took the LEFTMOST entry,
+  // the one the client controls. `req.ip` is now the single source of client
+  // identity for rate limiting, the admin allowlist and audit rows.
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
+  // CSP was disabled globally so that Swagger UI — a development tool — could
+  // render its inline scripts, which left the whole API origin with no CSP at
+  // all. The exemption now covers only the docs mount; everything else gets
+  // helmet's default policy. This origin serves JSON, so a restrictive policy
+  // costs nothing here and is a real second line of defence for the docs and
+  // any HTML the edge ever grows.
+  app.use(
+    "/docs",
+    helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false })
+  );
   app.use(
     helmet({
-      // Swagger UI needs inline scripts/styles
-      contentSecurityPolicy: false,
       crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          // An API origin should never be framed, never load third-party
+          // script, and never be a form target.
+          "default-src": ["'none'"],
+          "frame-ancestors": ["'none'"],
+          "form-action": ["'none'"],
+          "base-uri": ["'none'"],
+          "img-src": ["'self'", "data:"],
+          "connect-src": ["'self'"],
+          upgradeInsecureRequests: [],
+        },
+      },
     })
   );
   app.use(cors(corsOptions));
@@ -67,13 +95,13 @@ export function createApp(
   // the action came from without threading a parameter through each call site.
   app.use(auditContextMiddleware);
 
-  // Rate limiting comes FIRST. Express runs middleware in mount order, so
-  // anything mounted above this line is answered without ever being counted —
-  // and the two routes below are the gateway's only unauthenticated public
-  // surfaces: the link host fans out to community-service/chat-service to build
-  // an OG card for an attacker-supplied handle, and /internal/srs/hooks accepts
-  // a 1 MB body and forwards it upstream. Both were unmetered amplifiers while
-  // they sat above the limiter.
+  // Rate limiter FIRST. It used to sit below the two mounts beneath it, so
+  // neither was ever counted: the link host's catch-all fans out to
+  // community-service and chat-service to build a preview card for an
+  // attacker-supplied handle or invite token — an unauthenticated, unmetered
+  // amplifier and a handle-enumeration oracle — and /internal/srs/hooks accepts
+  // an unauthenticated 1 MB body and forwards it upstream on every call,
+  // rejected or not.
   app.use(rateLimiter);
 
   // Dedicated community link host (aimess.me): .well-known proofs + "Open in
@@ -84,14 +112,30 @@ export function createApp(
   // SRS server callbacks. No user JWT; stream-service validates SRS_HOOK_SECRET.
   app.use("/internal", createInternalSrsRouter());
 
-  setupSwagger(app);
-  setupAsyncApiDocs(app);
+  // API documentation. Publishing the complete private API surface — every
+  // path, parameter and schema, including the admin paths — to anyone who asks
+  // is a reconnaissance gift, and the document is rebuilt per request, which
+  // made an unauthenticated CPU and bandwidth amplifier out of the only public
+  // edge. Non-production only.
+  if (env.NODE_ENV !== "production") {
+    setupSwagger(app);
+    setupAsyncApiDocs(app);
+  }
 
   app.use("/health", healthRouter);
 
   // LiveKit signed webhooks. Mounted BEFORE express.json — the raw request body
   // is required for signature verification (see routes/livekit-webhook.routes.ts).
   app.use("/livekit", createLiveKitWebhookRouter(messagingClient));
+
+  // Body-size ceiling for the proxied routes. The `express.json` parsers below
+  // never see these requests (the proxy answers first), so without this nothing
+  // bounded a proxied body at the edge — see middleware/body-size-limit.ts.
+  app.use("/admin", createBodySizeLimit(1024 * 1024));
+  // Chat carries message payloads with attachment descriptors, so it gets the
+  // same 2 MB headroom chat-service itself allows; everything else stays at 1 MB.
+  app.use("/api/v1/chat", createBodySizeLimit(2 * 1024 * 1024));
+  app.use("/api", createBodySizeLimit(1024 * 1024));
 
   // Admin surface â€” proxied to backoffice-service. Mounted BEFORE express.json
   // (proxy must forward the raw body) and before the generic /api mount.

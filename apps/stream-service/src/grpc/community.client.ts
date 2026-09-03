@@ -27,6 +27,10 @@ interface CheckMuteResult {
 
 interface CheckBanResult {
   isBanned: boolean;
+  /** True when the user is an ACTIVE member of the community. */
+  isMember: boolean;
+  /** True when the community is PUBLIC (non-members may read it). */
+  isPublicCommunity: boolean;
 }
 
 /**
@@ -111,6 +115,9 @@ const checkBanBreaker: Breaker<
         isBanned: boolean;
         status: string;
         role: string;
+        // Already on the wire (community.proto `is_public_community`); only
+        // this TypeScript type dropped it, so callers could not tell a private
+        // community from a public one.
         isPublicCommunity: boolean;
       }
     >("checkCommunityMembership", args)
@@ -257,7 +264,14 @@ export const communityGrpcClient = {
    */
   async checkBan(communityId: string, userId: string): Promise<CheckBanResult> {
     const result = await checkBanBreaker.fire({ communityId, userId });
-    return { isBanned: Boolean(result?.isBanned) };
+    return {
+      isBanned: Boolean(result?.isBanned),
+      // Surfaced so callers can distinguish "not a member of a PRIVATE
+      // community" from "not a member of a public one" — the listing gate needs
+      // both, and this RPC already returns them.
+      isMember: Boolean(result?.isMember),
+      isPublicCommunity: Boolean(result?.isPublicCommunity),
+    };
   },
 
   /**

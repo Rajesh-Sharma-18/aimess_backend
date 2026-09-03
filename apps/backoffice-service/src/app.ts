@@ -7,6 +7,12 @@ import { localeMiddleware } from "@aimess/utils";
 import { serviceRoutes } from "./api/routes/index.js";
 import { env } from "./config/env.js";
 import { bootstrapHealthChecks } from "./lib/health.bootstrap.js";
+import {
+  ADMIN_CREDENTIAL_PATHS,
+  adminCredentialRateLimiter,
+  adminIpAllowlist,
+  adminSurfaceRateLimiter,
+} from "./middleware/edge-guards.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { notFound } from "./middleware/not-found.js";
 import { healthRouter } from "./routes/health.routes.js";
@@ -20,9 +26,10 @@ export function createApp(): Express {
 
   app.disable("x-powered-by");
 
-  if (env.TRUST_PROXY_HOPS > 0) {
-    app.set("trust proxy", env.TRUST_PROXY_HOPS);
-  }
+  // Unconditional — 0 means "trust no proxy". See the note in api-gateway's
+  // app.ts: leaving this unset is what pushed call sites into hand-parsing the
+  // leftmost X-Forwarded-For entry, which the client controls.
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
   app.use(helmet());
 
@@ -57,6 +64,18 @@ export function createApp(): Express {
   // `/admin/v1/health` lands here).
   app.use("/health", healthRouter);
   app.use("/v1/health", healthRouter);
+
+  // Edge guards, applied HERE and not only at the gateway. This service is also
+  // published on its own vhost that routes straight to it, so anything enforced
+  // only in the gateway's `/admin` router was simply absent on that path — see
+  // middleware/edge-guards.ts. Ordering mirrors the gateway: whole-surface
+  // limiter, then the source allowlist, then the tighter credential limiter on
+  // the unauthenticated login and password-reset endpoints.
+  app.use("/v1", adminSurfaceRateLimiter);
+  app.use("/v1", adminIpAllowlist);
+  for (const credentialPath of ADMIN_CREDENTIAL_PATHS) {
+    app.use(`/v1${credentialPath}`, adminCredentialRateLimiter);
+  }
 
   // Gateway strips `/admin` and proxies to `:3010/v1/*`, so mount at `/v1`.
   app.use("/v1", serviceRoutes);

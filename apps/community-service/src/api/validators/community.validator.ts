@@ -43,7 +43,7 @@ const memberIdsSchema = z
   .transform((ids) => [...new Set(ids)]);
 
 /** Shared offset/page pagination query fields. */
-const pageSchema = z.coerce.number().int().positive().default(1);
+const pageSchema = z.coerce.number().int().positive().max(1000).default(1);
 const limitSchema = z.coerce.number().int().positive().max(50).default(20);
 
 export const createCommunitySchema = z.object({

@@ -21,23 +21,25 @@ export type SessionContext = {
   countryCode: string | null;
 };
 
-// Priority: X-Forwarded-For (first hop = original client) -> X-Real-IP
-// (single-value reverse-proxy header, e.g. nginx) -> Express's own req.ip
-// (trust-proxy-aware) -> "unknown". No socket-handshake tier here — session
-// creation is always over HTTP (login/register/QR), never a raw socket
-// connection, so that tier from the IP-resolution spec doesn't apply.
+/**
+ * The client's address, as Express resolves it under `trust proxy`.
+ *
+ * This used to read `X-Forwarded-For` directly and take the LEFTMOST entry,
+ * falling back to `X-Real-IP`, and consulted TRUST_PROXY_HOPS not at all. Both
+ * headers are attacker-supplied: with one trusted proxy the authoritative entry
+ * is the LAST one (the address the proxy itself appended), and the leftmost is
+ * whatever the caller typed. That value was the key for this service's
+ * login/register/reset and QR limiters and for the OTP issuance throttle, so a
+ * fresh random header per request bought an unlimited fresh bucket and defeated
+ * all of them; it was also persisted as `Session.ipAddress` and written into
+ * audit rows, letting an attacker forge the address shown in "Linked Devices"
+ * and in the admin audit log.
+ *
+ * `req.ip` honours the configured hop count (`app.set("trust proxy", …)` in
+ * app.ts), so it picks the correct entry instead of the first one, and returns
+ * the socket address when no proxy is trusted.
+ */
 export function resolveClientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
-  }
-
-  const realIp = req.headers["x-real-ip"];
-  if (typeof realIp === "string" && realIp.trim()) {
-    return realIp.trim();
-  }
-
   return req.ip ?? "unknown";
 }
 

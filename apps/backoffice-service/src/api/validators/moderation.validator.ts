@@ -100,7 +100,7 @@ export const listReportsQuerySchema = z.object({
     .string()
     .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
     .default("createdAt:desc"),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().trim().min(1).optional(),
   dateFrom: z.iso.date().optional(),
@@ -132,7 +132,7 @@ export const listReportUsersQuerySchema = z
     role: z.string().trim().min(1).optional(),
     sortBy: reportUsersSortByEnum.optional(),
     sortOrder: z.enum(["asc", "desc"]).optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .transform(({ sortOrder, ...rest }) => ({
@@ -189,7 +189,7 @@ export type BulkDismissInput = z.infer<typeof bulkDismissSchema>;
 // Sub-resource list queries (evidence / history / related).
 // ---------------------------------------------------------------------------
 const subPageSchema = {
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 };
 

@@ -147,7 +147,9 @@ export const deleteAdminAccount: RequestHandler = (req, res, next) => {
       );
       res
         .status(HTTP_STATUS.OK)
-        .json(new ApiResponse(result, t("ADMIN_ACCOUNT_DELETE_SUCCESS", req.locale)));
+        .json(
+          new ApiResponse(result, t("ADMIN_ACCOUNT_DELETE_SUCCESS", req.locale))
+        );
     } catch (error) {
       next(error);
     }

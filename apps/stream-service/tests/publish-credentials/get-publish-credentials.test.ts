@@ -80,7 +80,14 @@ describe("LivestreamService.getPublishCredentials", () => {
     const result = await service.getPublishCredentials("stream-1", "creator-1");
 
     expect(result.streamKey).toBe("key-1");
-    expect(srsService.buildIngestEndpoints).toHaveBeenCalledWith("key-1");
+    // Two arguments now: the PUBLIC name the stream is published under, and
+    // the secret that authorises publishing it. This fixture predates the
+    // split (no playbackId), so it is still published under its own key — the
+    // legacy shape that must keep working.
+    expect(srsService.buildIngestEndpoints).toHaveBeenCalledWith(
+      "key-1",
+      "key-1"
+    );
     expect(result.ingest.whipUrl).toContain("key-1");
   });
 

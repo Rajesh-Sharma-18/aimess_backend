@@ -31,7 +31,12 @@ export type AuthAuditEvent =
   // is the canonical admin-facing record, but its actorId is an FK to AdminUser
   // so it cannot express what happened to the end-user account itself.
   | "ACCOUNT_BANNED"
-  | "ACCOUNT_UNBANNED";
+  | "ACCOUNT_UNBANNED"
+  // The 30-day grace period elapsed and the account's personal data was
+  // ERASED. Distinct from ACCOUNT_DELETED, which is reversible and overwrites
+  // nothing; this one is terminal and is the record that the erasure actually
+  // happened — the only proof left, since the data it refers to is gone.
+  | "ACCOUNT_PURGED";
 
 export interface RecordAuditEventInput {
   event: AuthAuditEvent;

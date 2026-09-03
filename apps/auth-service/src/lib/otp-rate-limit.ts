@@ -1,4 +1,5 @@
 import { TooManyRequestsError } from "@aimess/errors";
+import { consumeFallbackWindow } from "@aimess/utils";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -32,7 +33,24 @@ export async function assertOtpRequestAllowed(
   try {
     counts = await Promise.all(keys.map((key) => hitCounter(key)));
   } catch {
-    // Redis optional: do not block OTP issuance on a cache outage.
+    // Degrade to a per-process counter with the same ceiling rather than
+    // allowing issuance outright. OTP issuance mails a live account-recovery
+    // code, so an unbounded path here is a mail-flood and a code-guessing
+    // surface — and a Redis outage used to remove the cap silently.
+    const fallback = keys.map((key) =>
+      consumeFallbackWindow({
+        key,
+        windowMs: env.OTP_REQUEST_WINDOW_SEC * 1000,
+        limit: env.OTP_REQUEST_MAX,
+      })
+    );
+    const blocked = fallback.find((result) => !result.allowed);
+    if (blocked) {
+      throw new TooManyRequestsError(
+        "AUTH_OTP_REQUEST_THROTTLED",
+        blocked.retryAfterSec
+      );
+    }
     return;
   }
 

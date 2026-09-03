@@ -3968,6 +3968,40 @@ export const openApiSchemas = {
       "FCM device push tokens. Optional — omit or send an empty array when the device has no push token.",
     example: ["fcm-token-abc123"],
   },
+  /**
+   * Proof of work required by `POST /auth/register` and
+   * `POST /auth/accounts/validate`. Obtain a challenge from
+   * `POST /auth/challenge`, then find a `solution` string such that
+   * `sha256(challenge + "." + solution)` begins with at least `difficultyBits`
+   * zero bits. Each solved challenge is accepted exactly once.
+   */
+  SignupProof: {
+    type: "object",
+    properties: {
+      challenge: {
+        type: "string",
+        description: "Opaque token returned by POST /auth/challenge.",
+      },
+      solution: {
+        type: "string",
+        description: "Nonce whose hash meets the stated difficulty.",
+      },
+    },
+    required: ["challenge", "solution"],
+  },
+  SignupChallengeResponseData: {
+    type: "object",
+    properties: {
+      challenge: { type: "string" },
+      difficultyBits: {
+        type: "integer",
+        description: "Leading zero bits the solution hash must have.",
+        example: 20,
+      },
+      expiresAt: { type: "string", format: "date-time" },
+    },
+    required: ["challenge", "difficultyBits", "expiresAt"],
+  },
   RegisterRequest: {
     type: "object",
     properties: {
@@ -3978,10 +4012,11 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
-      password: { type: "string", minLength: 8, maxLength: 128 },
+      password: { type: "string", minLength: 12, maxLength: 72 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
+      proof: { $ref: "#/components/schemas/SignupProof" },
     },
-    required: ["account", "password"],
+    required: ["account", "password", "proof"],
   },
   ValidateAccountRequest: {
     type: "object",
@@ -3993,8 +4028,9 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
+      proof: { $ref: "#/components/schemas/SignupProof" },
     },
-    required: ["account"],
+    required: ["account", "proof"],
   },
   ValidateAccountResponseData: {
     type: "object",
@@ -4018,7 +4054,7 @@ export const openApiSchemas = {
         type: "boolean",
         default: false,
         description:
-          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts. Access-token lifetime is unchanged.",
+          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts, and the httpOnly `aimess_rt` cookie is persistent rather than a session cookie. Access-token lifetime is unchanged.",
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
@@ -4066,10 +4102,9 @@ export const openApiSchemas = {
       refreshToken: {
         type: "string",
         description:
-          "Refresh token from login, register, or a previous refresh",
+          "Refresh token from login, register, or a previous refresh. OPTIONAL for browsers: when omitted, the httpOnly `aimess_rt` cookie set at login is used instead. Native clients must keep sending it - they have no cookie jar. The body wins when both are present. 400 if neither is supplied.",
       },
     },
-    required: ["refreshToken"],
   },
   ActiveSession: {
     type: "object",

@@ -7,6 +7,8 @@ import { ackOk, ackError } from "../ack.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
 import { localizeNotificationFrame } from "../localize-notification.js";
 import { scopeSocketLocale } from "../locale-scope.js";
+import { createSessionTimers } from "../session-timers.js";
+import { env } from "../../config/env.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
 
 const NotificationsFetchSchema = z.object({
@@ -83,6 +85,26 @@ export function registerNotifyNamespace(
     void socket.join(`user:${userId}`);
     void socket.join(`session:${sessionId}`);
     logger.debug(`/notify connected userId=${userId}`);
+
+    // Token expiry, enforced mid-connection. `socket.data.tokenExpiresAt` was
+    // set at handshake and then acted on by nobody here, so a socket
+    // authenticated with a short-lived access token kept streaming this user's
+    // notifications indefinitely — days after the token expired — for as long
+    // as the TCP connection survived. Only an explicit session revocation or a
+    // reconnect closed it. Same helper /chat and /community have always used:
+    // warn at exp minus five minutes, disconnect sixty seconds later unless
+    // `auth:refresh` renews it.
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/notify", env.AUTH_SERVICE_URL);
+
+    if (socket.data.tokenExpiresAt > 0) {
+      scheduleSessionTimers(socket.data.tokenExpiresAt);
+    }
+    registerAuthRefreshHandler();
+    socket.on("disconnect", () => clearSessionTimers());
 
     // Subscribe this user's notification channel (ref-counted for multi-socket)
     const count = (userSubCount.get(userId) ?? 0) + 1;

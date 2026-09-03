@@ -37,9 +37,16 @@ process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
 process.env.ADMIN_IP_WHITELIST = "";
 process.env.TRUST_PROXY_HOPS = "0";
 
+// The admin edge limiters now run inside this service too (they used to exist
+// only at the gateway, which the dedicated admin vhost bypasses entirely). The
+// whole suite shares one process and one IP, so it would otherwise exhaust the
+// production ceilings partway through and fail unrelated specs with 429s.
+// Raised here, and pinned to a deterministic low value by the spec that
+// actually tests the limiter (tests/auth/edge-guards.test.ts), which re-imports
+// the app with its own values.
 process.env.ADMIN_RATE_LIMIT_WINDOW_MINUTES = "15";
-process.env.ADMIN_RATE_LIMIT_MAX = "100";
-process.env.ADMIN_LOGIN_RATE_LIMIT_MAX = "10";
+process.env.ADMIN_RATE_LIMIT_MAX = "100000";
+process.env.ADMIN_LOGIN_RATE_LIMIT_MAX = "100000";
 
 // SMTP — defaults are MailHog-style; mailer seam is mocked anyway.
 process.env.SMTP_HOST = "localhost";

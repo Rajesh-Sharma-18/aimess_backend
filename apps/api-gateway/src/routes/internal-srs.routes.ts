@@ -15,7 +15,11 @@ import { srsHookRateLimiter } from "../middleware/rate-limit.js";
  * down by every hop that logs a URL (reverse proxy, CDN, APM). Re-attaching it
  * as `x-srs-secret` for the upstream leg keeps it out of stream-service's own
  * access logs and any hop between the two, and stops it being copied further.
- * Every other query parameter is preserved verbatim.
+ * Anyone who reads those logs can otherwise forge on_publish / on_unpublish
+ * hooks and mark arbitrary streams live or dead.
+ *
+ * Every OTHER query parameter is preserved verbatim, because stream-service
+ * reads them.
  */
 export function srsHookUrl(req: Request): string {
   const base = env.STREAM_SERVICE_URL?.replace(/\/$/, "") ?? "";
@@ -27,17 +31,13 @@ export function srsHookUrl(req: Request): string {
   return `${base}/internal/srs/hooks${query ? `?${query}` : ""}`;
 }
 
-/** Inbound shared secret, from either accepted location. */
-function inboundSrsSecret(req: Request): string | undefined {
-  const header = req.get("x-srs-secret");
-  if (header) return header;
-  return typeof req.query.secret === "string" ? req.query.secret : undefined;
-}
-
 /**
- * Short, non-reversible tag for a stream key. The key is the SRS stream name
- * and these hooks fire once per viewer (`on_play`), so logging it verbatim
- * would scatter it through the gateway's logs.
+ * Short, non-reversible tag for a stream key.
+ *
+ * The SRS stream name is the publish credential: anyone who reads it can point
+ * their own encoder at the ingest endpoint and take over the broadcast. It was
+ * logged verbatim on every hook — several lines per stream, plus one per
+ * viewer (`on_play`) — so log access was broadcast-takeover access.
  */
 function digestKey(value: string | undefined): string {
   if (!value) return "none";
@@ -98,6 +98,27 @@ export function createInternalSrsRouter(): IRouter {
           return;
         }
 
+        // SRS cannot set custom headers on its hook requests, so it sends the
+        // secret as `?secret=`. Accept it there, then forward it as a HEADER —
+        // so it never reaches an upstream access log — and strip it from the
+        // forwarded query (see `srsHookUrl`).
+        const secret =
+          req.get("x-srs-secret") ||
+          (typeof req.query.secret === "string" ? req.query.secret : "");
+
+        // Refuse before logging anything. The banner below used to run first
+        // and unconditionally, so an unauthenticated caller could write
+        // attacker-chosen `action` / `app` / `stream` strings into the log, and
+        // every authenticated hook printed the raw stream name — which is the
+        // publish credential.
+        if (!secret) {
+          sendApiError(req, res, {
+            statusCode: 403,
+            messageKey: "FORBIDDEN",
+          });
+          return;
+        }
+
         const bodyText = Buffer.isBuffer(req.body)
           ? req.body.toString("utf8")
           : String(req.body ?? "");
@@ -112,12 +133,8 @@ export function createInternalSrsRouter(): IRouter {
 
         const headers: Record<string, string> = {
           "content-type": req.get("content-type") || "application/json",
+          "x-srs-secret": secret,
         };
-        // Forwarded as a header, never in the upstream URL — srsHookUrl strips
-        // it from the query. stream-service accepts both locations, so this is
-        // transparent to it.
-        const secret = inboundSrsSecret(req);
-        if (secret) headers["x-srs-secret"] = secret;
 
         try {
           const upstream = await fetch(srsHookUrl(req), {

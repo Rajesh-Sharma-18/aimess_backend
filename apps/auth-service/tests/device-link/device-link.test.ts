@@ -42,6 +42,7 @@ jest.mock("../../src/middleware/rate-limiters.js", () => ({
     next(),
   changePasswordRateLimiter: (_req: unknown, _res: unknown, next: () => void) =>
     next(),
+  refreshRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
 import request from "supertest";

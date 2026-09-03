@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CONTENT_TYPES } from "@aimess/constants";
+import { httpUrlSchema } from "./private-message.validator.js";
 
 import {
   locationSchema,
@@ -107,11 +108,33 @@ export const markGroupReadBodySchema = z.object({
   upToMessageId: z.string().min(1).max(150),
 });
 
+/**
+ * A text edit carries TEXT ONLY.
+ *
+ * `files` used to be accepted here and written to the message row wholesale,
+ * with none of the verification the SEND path performs: no scan-status check,
+ * no "the registry says this object belongs to the sender", no "…and to this
+ * room". On every read the stored entries are re-signed unconditionally, so any
+ * participant of any room could edit one of their own text messages, put
+ * someone else's object key in `files[0].objectKey`, and read back a freshly
+ * presigned URL for it — bypassing media-service's ownership and membership
+ * policy entirely, re-granting access to attachments after leaving or being
+ * banned from the room they came from, and re-hosting objects whose scan
+ * verdict the send gate would have refused.
+ *
+ * Both edit paths already refuse anything but a TEXT message, so a legitimate
+ * edit never carried attachments; the field existed only as the write
+ * primitive. Dropping it is the fix — a stricter attachment check here would
+ * still leave a way to attach on a path that has no reason to.
+ *
+ * `.strip()` (zod's default for unknown keys) means an older client that still
+ * sends `files` is not rejected: the field is discarded and the edit succeeds
+ * as a text edit.
+ */
 export const editGroupMessageSchema = z.object({
   content: z.object({
     text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
-    urls: z.array(z.string()).default([]),
-    files: z.array(z.unknown()).default([]),
+    urls: z.array(httpUrlSchema).default([]),
   }),
 });
 

@@ -153,6 +153,53 @@ export const AUTH_MESSAGES = {
     en: "New password must be different from your current password.",
     th: "รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านปัจจุบันของคุณ",
   },
+  // Signup proof-of-work. Registration and the handle-availability check were
+  // both free to call, so creating accounts and enumerating handles cost only
+  // HTTP requests. Solving a challenge costs the caller CPU, once per attempt.
+  AUTH_CHALLENGE_ISSUED: {
+    vi: "Đã tạo mã xác minh",
+    en: "Verification challenge issued.",
+    th: "ออกคำท้าการยืนยันแล้ว",
+  },
+  AUTH_CHALLENGE_REQUIRED: {
+    vi: "Vui lòng thử lại từ ứng dụng",
+    en: "Please retry from the app.",
+    th: "กรุณาลองใหม่จากแอป",
+  },
+  AUTH_CHALLENGE_INVALID: {
+    vi: "Xác minh không hợp lệ. Vui lòng thử lại",
+    en: "Verification failed. Please try again.",
+    th: "การยืนยันไม่ถูกต้อง กรุณาลองใหม่",
+  },
+  AUTH_CHALLENGE_ALREADY_USED: {
+    vi: "Xác minh đã được sử dụng. Vui lòng thử lại",
+    en: "That verification was already used. Please try again.",
+    th: "การยืนยันนี้ถูกใช้ไปแล้ว กรุณาลองใหม่",
+  },
+  // Creation-policy failures. Applied when a password is SET (register, reset,
+  // change) and never at login, so accounts created under the older rule keep
+  // signing in and are asked for something stronger only when they next change
+  // it. Each is a distinct key so the client can say what to fix.
+  AUTH_PASSWORD_TOO_SHORT: {
+    vi: "Mật khẩu phải có ít nhất 12 ký tự",
+    en: "Password must be at least 12 characters.",
+    th: "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร",
+  },
+  AUTH_PASSWORD_TOO_LONG: {
+    vi: "Mật khẩu quá dài (tối đa 72 ký tự)",
+    en: "Password is too long (maximum 72 characters).",
+    th: "รหัสผ่านยาวเกินไป (สูงสุด 72 ตัวอักษร)",
+  },
+  AUTH_PASSWORD_TOO_COMMON: {
+    vi: "Mật khẩu này quá phổ biến. Vui lòng chọn mật khẩu khác",
+    en: "This password is too common. Please choose a different one.",
+    th: "รหัสผ่านนี้ใช้กันทั่วไปเกินไป กรุณาเลือกรหัสผ่านอื่น",
+  },
+  AUTH_PASSWORD_CONTAINS_IDENTIFIER: {
+    vi: "Mật khẩu không được chứa tên tài khoản hoặc email của bạn",
+    en: "Password must not contain your account name or email.",
+    th: "รหัสผ่านต้องไม่มีชื่อบัญชีหรืออีเมลของคุณ",
+  },
   AUTH_OTP_INVALID: {
     vi: "Mã xác minh không hợp lệ hoặc đã hết hạn",
     en: "Invalid or expired verification code.",

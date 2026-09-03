@@ -32,7 +32,7 @@ const ATTEMPTS = 12;
 let passwordHash: string;
 
 beforeAll(async () => {
-  passwordHash = await bcrypt.hash("Password123", 4);
+  passwordHash = await bcrypt.hash("Correct-Horse-Battery-7", 4);
 });
 
 describe("DELETE /api/auth/account is not throttled", () => {
@@ -91,7 +91,7 @@ describe("DELETE /api/auth/account is not throttled", () => {
     const res = await request(app)
       .delete("/api/auth/account")
       .set(bearer(token))
-      .send({ password: "Password123" });
+      .send({ password: "Correct-Horse-Battery-7" });
 
     expect(res.status).toBe(200);
     expect(repo.softDeleteUser).toHaveBeenCalledTimes(1);

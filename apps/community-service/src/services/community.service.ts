@@ -1466,20 +1466,50 @@ function generateInviteCode(): string {
 }
 
 /**
- * Validates that an invite link is currently usable: not revoked and not
- * exhausted. A link never lapses on a clock — `expiresAt` is stamped by nothing
- * and read by nobody — so a link shared months ago still works until an admin
- * resets it.
+ * How long a newly-minted invite link stays usable.
+ *
+ * Links used to have no clock at all: one shared months ago still admitted
+ * anyone who had it, and the default was unlimited uses, so a link forwarded
+ * out of a group chat or pasted into a public thread was a permanent, unlimited
+ * door into a private community. Nothing revoked it but an admin who happened
+ * to remember it existed.
+ *
+ * 30 days is long enough that a link shared for a real purpose is still working
+ * when people get round to using it, and short enough that a leaked one stops
+ * mattering on its own.
+ */
+const INVITE_LINK_TTL_DAYS = 30;
+
+/** The expiry stamped on a link created now. */
+export function inviteLinkExpiryFromNow(): Date {
+  return new Date(Date.now() + INVITE_LINK_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Validates that an invite link is currently usable: not revoked, not
+ * exhausted, and not expired.
+ *
+ * `expiresAt` used to be stamped by nothing and read by nobody. It is now
+ * stamped on every new link and enforced here.
+ *
+ * A NULL `expiresAt` still means "no expiry", which is what every link created
+ * before this change has. Those keep working: retroactively expiring links that
+ * were shared on the promise of being permanent would break invitations
+ * already in people's hands, and the card they were sent with froze the verdict
+ * it was sent with. They age out as communities reset them.
  */
 function assertInviteLinkActive(link: {
   revokedAt: Date | null;
   maxUses: number | null;
   usedCount: number;
+  expiresAt?: Date | null;
 }): void {
   if (link.revokedAt)
     throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
   if (link.maxUses !== null && link.usedCount >= link.maxUses)
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
+  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
 }
 
 /**
@@ -4378,7 +4408,17 @@ export const communityService = {
     // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
     // On user-service failure, fetchAcceptedFriendIds returns an empty set so
     // all candidates are skipped — conservative by design (Decision B8).
-    // const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
+    //
+    // This was commented out, which made the gate dead code while every comment
+    // around it still described it as active. Consent then rested on nothing: a
+    // user creates a community (becoming ADMIN, satisfying the MODERATOR guard
+    // above), harvests ids from discovery/search, and POSTs up to 100 arbitrary
+    // ids per call. Victims land as ACTIVE members, receive the added event and
+    // a notification, see the community in their sidebar, and become reachable
+    // by broadcast — which is exactly the contact the DM friend gate exists to
+    // prevent. Every sibling path enforces this: `create` drops non-friends the
+    // same way, and group chat throws CHAT_ADD_MEMBER_NOT_FRIEND.
+    const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
 
     // One read of all existing rows for the requested ids (incl. joinedAt),
     // then partition by status: ACTIVE → skip, BANNED → skip, LEFT →
@@ -4412,10 +4452,10 @@ export const communityService = {
       }
       // Friend check runs before existing-row classification — do NOT
       // re-classify NOT_FRIEND ids as ALREADY_MEMBER / BANNED / reactivate.
-      // if (!friendSet.has(userId)) {
-      //   skipped.push({ userId, reason: "NOT_FRIEND" });
-      //   continue;
-      // }
+      if (!friendSet.has(userId)) {
+        skipped.push({ userId, reason: "NOT_FRIEND" });
+        continue;
+      }
       const member = existingByUserId.get(userId);
       if (!member) {
         toCreate.push(userId);
@@ -8166,7 +8206,9 @@ export const communityService = {
         // undefined only when the identity lookup itself found nothing, so the
         // reader-side "Someone" stays reserved for a sender we genuinely cannot name.
         const inviterDisplayName =
-          inviterSnapshot?.displayName || inviterSnapshot?.username || undefined;
+          inviterSnapshot?.displayName ||
+          inviterSnapshot?.username ||
+          undefined;
         for (const { inviteeId } of allInvited) {
           publishCommunityInviteLinkSharedForChatSafe({
             communityId,
@@ -9485,7 +9527,10 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
 
-    const link = await this.resolveOrCreateShareableLink(community.id, callerId);
+    const link = await this.resolveOrCreateShareableLink(
+      community.id,
+      callerId
+    );
     return toInvitationLinkData(community, link);
   },
 
@@ -9644,8 +9689,7 @@ export const communityService = {
     // A PARAMETERIZED call (maxUses / autoApprove present) is an explicit
     // request for a custom link and keeps the full legacy multi-link behavior
     // below — preserving Limited-use / Auto-approve links untouched.
-    const isDefaultCall =
-      input.maxUses == null && input.autoApprove == null;
+    const isDefaultCall = input.maxUses == null && input.autoApprove == null;
     if (isDefaultCall && community.type === CommunityType.PRIVATE) {
       const link = await this.resolveOrCreateShareableLink(
         community.id,
@@ -9690,8 +9734,10 @@ export const communityService = {
           createdBy: callerId,
           maxUses,
           autoApprove,
-          // A link lives until it is revoked or spent — never on a clock.
-          expiresAt: null,
+          // Links now lapse. One shared months ago used to still admit anyone
+          // who had it, with unlimited uses by default — a leaked link was a
+          // permanent door into a private community.
+          expiresAt: inviteLinkExpiryFromNow(),
         });
         break;
       } catch (err) {
@@ -9814,7 +9860,10 @@ export const communityService = {
           createdBy: callerId,
           maxUses: null,
           autoApprove: false,
-          expiresAt: null,
+          // The community's reusable share link expires too, and
+          // `findLatestReusableInviteLink` skips an expired one so the next
+          // share mints a fresh code rather than handing back a dead link.
+          expiresAt: inviteLinkExpiryFromNow(),
         });
         break;
       } catch (err) {

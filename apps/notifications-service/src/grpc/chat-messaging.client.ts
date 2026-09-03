@@ -47,9 +47,28 @@ const GROUP_MUTE_FAIL_OPEN: CheckGroupMuteResult = {
   mutedUntil: 0,
 };
 
+export interface GetGroupMutedMemberIdsParams {
+  roomId: string;
+  userIds: string[];
+}
+
+export interface GetGroupMutedMemberIdsResult {
+  userIds: string[];
+}
+
+/**
+ * Fail-open value: nobody is muted, so a mute-oracle failure never suppresses
+ * a push — same contract as the single-recipient checks above.
+ */
+const GROUP_MUTED_IDS_FAIL_OPEN: GetGroupMutedMemberIdsResult = { userIds: [] };
+
 export interface ChatMessagingClient {
   checkPrivateMute(p: CheckPrivateMuteParams): Promise<CheckPrivateMuteResult>;
   checkGroupMute(p: CheckGroupMuteParams): Promise<CheckGroupMuteResult>;
+  /** Batched `checkGroupMute` for a whole push fan-out — ONE round trip. */
+  getGroupMutedMemberIds(
+    p: GetGroupMutedMemberIdsParams
+  ): Promise<GetGroupMutedMemberIdsResult>;
 }
 
 export function createChatMessagingClient(): ChatMessagingClient {
@@ -90,9 +109,21 @@ export function createChatMessagingClient(): ChatMessagingClient {
   );
   groupMuteBreaker.fallback(() => GROUP_MUTE_FAIL_OPEN);
 
+  const groupMutedIdsBreaker = makeBreaker(
+    "chat.getGroupMutedMemberIds",
+    (p: GetGroupMutedMemberIdsParams) =>
+      makeGrpcCall<unknown, GetGroupMutedMemberIdsResult>(
+        client,
+        "getGroupMutedMemberIds",
+        { roomId: p.roomId, userIds: p.userIds }
+      )
+  );
+  groupMutedIdsBreaker.fallback(() => GROUP_MUTED_IDS_FAIL_OPEN);
+
   return {
     checkPrivateMute: (p) => muteBreaker.fire(p),
     checkGroupMute: (p) => groupMuteBreaker.fire(p),
+    getGroupMutedMemberIds: (p) => groupMutedIdsBreaker.fire(p),
   };
 }
 

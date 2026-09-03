@@ -20,12 +20,7 @@ const socket = (userId: string, active?: string) => ({
 describe("presentReaders", () => {
   it("selects the viewer whose transcript is open on this room", () => {
     expect(
-      presentReaders(
-        [socket("bob", "prv_1")],
-        "activeConvId",
-        "prv_1",
-        "alice"
-      )
+      presentReaders([socket("bob", "prv_1")], "activeConvId", "prv_1", "alice")
     ).toEqual(["bob"]);
   });
 
@@ -37,12 +32,7 @@ describe("presentReaders", () => {
 
   it("does NOT select a socket whose open transcript is a DIFFERENT room", () => {
     expect(
-      presentReaders(
-        [socket("bob", "prv_2")],
-        "activeConvId",
-        "prv_1",
-        "alice"
-      )
+      presentReaders([socket("bob", "prv_2")], "activeConvId", "prv_1", "alice")
     ).toEqual([]);
   });
 

@@ -1189,8 +1189,8 @@ export const communityPaths = {
         "membership write, and broadcasts `community:join_request:updated` so " +
         "open admin lists drop the row live — a current member can never be left " +
         "with an acceptable request. Each added user gets the `MEMBER_ADDED` " +
-        "system line (\"{admin} added you to the community\"), never the " +
-        "\"request approved\" one.",
+        'system line ("{admin} added you to the community"), never the ' +
+        '"request approved" one.',
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -5070,8 +5070,7 @@ export const communityPaths = {
     post: {
       tags: ["Communities"],
       operationId: "createCommunityInviteLink",
-      summary:
-        "Get the community's live link (default) or create a custom one",
+      summary: "Get the community's live link (default) or create a custom one",
       description:
         "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
         "Required state: the caller must have an ACTIVE membership in this community. " +
@@ -5505,7 +5504,7 @@ export const communityPaths = {
                                     "Community-scoped outcome: " +
                                     "USER_BANNED = banned from this community. " +
                                     "An ACTIVE member is NOT refused — the invite is delivered again " +
-                                    "and the card renders as \"Open\". " +
+                                    'and the card renders as "Open". ' +
                                     "The code is also the i18n message key of `message`.",
                                 },
                                 message: {

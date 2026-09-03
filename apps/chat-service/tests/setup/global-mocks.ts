@@ -43,9 +43,28 @@ jest.mock("../../src/config/redis.js", () => {
     pexpire: jest.fn().mockReturnThis(),
     exec: jest.fn(async () => null),
   };
+  // Realtime fan-outs that address N recipients (the personal `user:<id>` bus,
+  // group delivered receipts, the conv/community bump) issue ONE pipeline
+  // instead of N `publish` round trips. Recording each queued publish into the
+  // same `publish` jest.fn keeps every existing `publishMock.mock.calls`
+  // assertion working — the tests assert WHICH frames go out, and that is
+  // unchanged; only the number of round trips carrying them is.
+  const publish = jest.fn(async () => 0);
+  const makePipeline = () => {
+    const p: Record<string, unknown> = {
+      publish: jest.fn((channel: string, message: string) => {
+        void publish(channel, message);
+        return p;
+      }),
+      exec: jest.fn(async () => []),
+    };
+    return p;
+  };
+
   const redis = {
     status: "ready",
     multi: jest.fn(() => noopMulti),
+    pipeline: jest.fn(() => makePipeline()),
     get: jest.fn(async () => null),
     del: jest.fn(async () => 0),
     zrange: jest.fn(async () => []),
@@ -53,7 +72,7 @@ jest.mock("../../src/config/redis.js", () => {
     // push message:new / message:edited / reaction / community:* broadcasts. A
     // jest.fn lets a test read back the published JSON (cleared between tests via
     // the preset's clearMocks).
-    publish: jest.fn(async () => 0),
+    publish,
     on: jest.fn(),
     quit: jest.fn(async () => undefined),
   };

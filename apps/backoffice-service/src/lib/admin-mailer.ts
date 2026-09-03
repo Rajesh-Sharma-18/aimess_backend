@@ -1,12 +1,23 @@
 import { logger } from "@aimess/logger";
+import { maskEmailForLog } from "@aimess/utils";
 import nodemailer from "nodemailer";
 
 import { env } from "../config/env.js";
+
+// See the note in notifications-service's transporter: without `requireTLS`,
+// a relay that does not advertise STARTTLS (or an on-path attacker stripping it
+// from EHLO) gets the admin password-reset OTP in cleartext. Loopback relays
+// (MailHog in local development) speak no TLS and are exempted.
+const isLoopbackRelay = ["localhost", "127.0.0.1", "::1"].includes(
+  env.SMTP_HOST.trim().toLowerCase()
+);
 
 export const transporter = nodemailer.createTransport({
   host: env.SMTP_HOST,
   port: env.SMTP_PORT,
   secure: env.SMTP_PORT === 465,
+  requireTLS: env.SMTP_PORT !== 465 && !isLoopbackRelay,
+  tls: { minVersion: "TLSv1.2" },
   // Omit auth for local/no-auth relays (e.g. MailHog) so the connection works
   // without credentials; supply auth only when a SMTP user is configured.
   ...(env.SMTP_USER
@@ -70,7 +81,9 @@ export async function sendAdminPasswordResetOtpEmail(
     subject: "Your AIMess admin password reset code",
     html: otpHtml(code, ttlSeconds),
   });
-  logger.info(`Admin password-reset OTP emailed to ${to}: ${info.messageId}`);
+  logger.info(
+    `Admin password-reset OTP emailed to ${maskEmailForLog(to)}: ${info.messageId}`
+  );
 }
 
 /** Fire-and-forget: never fail the request if SMTP is down. */

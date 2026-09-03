@@ -29,6 +29,13 @@ process.env.REDIS_PORT = "6379";
 // -- JWT (shared @aimess/auth-jwt verifies against this) --
 process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
 
+// -- LiveKit (required: no schema default) --
+// Call join tokens are minted with this pair. The schema used to default it to
+// a value published in the repo; now that it is required, the harness supplies
+// it like any other mandatory var.
+process.env.LIVEKIT_API_KEY = "test-livekit-key";
+process.env.LIVEKIT_API_SECRET = "test-livekit-secret-do-not-use-in-prod";
+
 // -- RabbitMQ (optional in schema, set for completeness) --
 process.env.RABBITMQ_URL = "amqp://localhost:5672";
 

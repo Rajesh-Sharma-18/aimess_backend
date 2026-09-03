@@ -165,24 +165,48 @@ describe("buildSessionContext full device detection per platform", () => {
   });
 });
 
-describe("buildSessionContext ipAddress resolution priority", () => {
-  it("prefers X-Forwarded-For over everything else", () => {
+/**
+ * AIM-08. These cases previously asserted the opposite: that the leftmost
+ * `X-Forwarded-For` entry won over everything, and that `X-Real-IP` was the
+ * next fallback. Both headers are supplied by the caller, and this value is the
+ * key for this service's login/register/reset and QR limiters and for the OTP
+ * issuance throttle — so a fresh random header per request bought an unlimited
+ * fresh bucket. The same value is persisted as `Session.ipAddress` and written
+ * into audit rows, so it also forged the address shown in "Linked Devices".
+ *
+ * The resolution is now `req.ip`, which Express derives from the configured
+ * trust-proxy hop count (`app.set("trust proxy", TRUST_PROXY_HOPS)`), so the
+ * hop selection happens in one place instead of being re-implemented per file.
+ */
+describe("buildSessionContext ipAddress resolution", () => {
+  it("ignores a client-supplied X-Forwarded-For", () => {
     const ctx = buildSessionContext(
       fakeReq({
         "x-forwarded-for": "198.51.100.1, 10.0.0.1",
         "x-real-ip": "198.51.100.2",
       })
     );
-    expect(ctx.ipAddress).toBe("198.51.100.1");
+
+    expect(ctx.ipAddress).toBe("127.0.0.1");
+    expect(ctx.ipAddress).not.toBe("198.51.100.1");
   });
 
-  it("falls back to X-Real-IP when X-Forwarded-For is absent", () => {
+  it("ignores a client-supplied X-Real-IP", () => {
     const ctx = buildSessionContext(fakeReq({ "x-real-ip": "198.51.100.2" }));
-    expect(ctx.ipAddress).toBe("198.51.100.2");
+
+    expect(ctx.ipAddress).toBe("127.0.0.1");
   });
 
-  it("falls back to req.ip when neither proxy header is present", () => {
+  it("uses req.ip, which honours the configured proxy hop count", () => {
     const ctx = buildSessionContext(fakeReq({}));
     expect(ctx.ipAddress).toBe("127.0.0.1");
+  });
+
+  it("reports 'unknown' rather than crashing when Express resolves no address", () => {
+    const ctx = buildSessionContext({
+      headers: {},
+    } as unknown as Parameters<typeof buildSessionContext>[0]);
+
+    expect(ctx.ipAddress).toBe("unknown");
   });
 });

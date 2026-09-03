@@ -11,6 +11,8 @@ export const refreshTokenRepository = {
         expiresAt: true,
         revokedAt: true,
         rotatedToId: true,
+        // Rotation reuses the original lifetime, so it has to know it.
+        createdAt: true,
         session: {
           select: {
             id: true,
@@ -25,6 +27,28 @@ export const refreshTokenRepository = {
             role: true,
           },
         },
+      },
+    });
+  },
+
+  /**
+   * The token a rotated token was replaced by.
+   *
+   * Needed to tell a benign replay from a stolen token. `createdAt` is the
+   * moment of rotation — the successor is created in the same transaction that
+   * revokes its parent — so no extra column is required to know how long ago it
+   * happened.
+   */
+  findSuccessor(id: string) {
+    return prisma.refreshToken.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        tokenHash: true,
+        expiresAt: true,
+        revokedAt: true,
+        rotatedToId: true,
+        createdAt: true,
       },
     });
   },
