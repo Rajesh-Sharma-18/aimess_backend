@@ -117,10 +117,7 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ValidateAccountRequest" },
-            example: {
-              account: "johndoe",
-              proof: { challenge: "<from POST /auth/challenge>", solution: "1048576" },
-            },
+            example: { account: "johndoe" },
           },
         },
       },

@@ -4028,9 +4028,8 @@ export const openApiSchemas = {
         pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
-      proof: { $ref: "#/components/schemas/SignupProof" },
     },
-    required: ["account", "proof"],
+    required: ["account"],
   },
   ValidateAccountResponseData: {
     type: "object",

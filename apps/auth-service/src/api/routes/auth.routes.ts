@@ -50,17 +50,22 @@ export const authRoutes: IRouter = Router();
 // must come before them in a client's flow, and it is throttled like them so
 // the issuer itself cannot be used as a free amplifier.
 authRoutes.post("/challenge", sensitiveAuthRateLimiter, getSignupChallenge);
-// Answered 409 for a taken handle and 200 for a free one, with no throttle and
-// no cost, which enumerates the entire handle namespace — and enumerated
-// handles are the input to targeted credential stuffing against /login. The
-// oracle is genuinely needed (a signup form has to say "taken" while you type),
-// so it is priced rather than removed: per-IP throttle plus a single-use proof
-// of work, so each handle tested costs the caller CPU they cannot amortise.
+// This is an enumeration oracle by design: it answers 409 for a taken handle
+// and 200 for a free one, and enumerated handles are the input to targeted
+// credential stuffing against /login (AIM-31).
+//
+// It was priced with a single-use proof of work as well as the per-IP throttle.
+// That is deliberately GONE: a signup form has to answer "is this name free?"
+// while the user is still typing, and making every keystroke fetch and solve a
+// challenge — then fail with a validation error when it had not — cost more in
+// usability than the control bought. What remains is `sensitiveAuthRateLimiter`
+// alone, which bounds one address and does nothing about a proxy pool or a
+// botnet, where the per-source rate stays low. Raise the limiter, or put the
+// proof of work back, if enumeration shows up in the logs.
 authRoutes.post(
   "/accounts/validate",
   sensitiveAuthRateLimiter,
   validateBody(validateAccountSchema),
-  requireSignupChallenge,
   validateAccount
 );
 // `sensitiveAuthRateLimiter` was declared with its own env knobs and then

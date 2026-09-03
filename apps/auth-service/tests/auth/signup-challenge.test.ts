@@ -8,13 +8,16 @@ import {
 import { solveChallenge } from "../helpers/solve-signup-challenge.js";
 
 /**
- * AIM-58 / AIM-31.
+ * AIM-58.
  *
- * `POST /auth/register` and `POST /auth/accounts/validate` were both free to
- * call: creating an account cost one HTTP request, and probing whether a handle
- * was taken cost one HTTP request and answered 409 vs 200. Per-IP rate limiting
- * bounds one address and does nothing about a proxy pool, so the gate had to
- * cost the CALLER something no address rotation can spread around.
+ * `POST /auth/register` was free to call: creating an account cost one HTTP
+ * request. Per-IP rate limiting bounds one address and does nothing about a
+ * proxy pool, so the gate had to cost the CALLER something no address rotation
+ * can spread around.
+ *
+ * `POST /auth/accounts/validate` (AIM-31) carried the same gate and no longer
+ * does — a signup form cannot fetch and solve a challenge per keystroke. That
+ * route is back to per-IP throttling alone; see `api/routes/auth.routes.ts`.
  *
  * These tests pin the properties that make the proof of work worth having. If
  * any one of them regresses the control is decorative.

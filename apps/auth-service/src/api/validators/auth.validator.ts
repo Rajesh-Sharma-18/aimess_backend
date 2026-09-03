@@ -20,6 +20,19 @@ export const accountSchema = z
  * creation and handle availability. `challenge` is the server-issued token from
  * `POST /auth/challenge`; `solution` is the nonce the client found. See
  * `lib/signup-challenge.ts` for why this rather than a captcha.
+ *
+ * Carried by REGISTRATION only. The handle-availability check used to require
+ * one too, which made a signup form's "is this name free?" keystroke depend on
+ * fetching and solving a challenge first — and answer an unsolved one with a
+ * validation error instead of the yes/no it exists to give. Availability is now
+ * throttled per-IP and nothing else; see the route for what that gives up.
+ *
+ * Marked OPTIONAL so that `requireSignupChallenge` — not `validateBody` —
+ * answers a request that omits it. A required field here made the gate report
+ * `VALIDATION_FAILED` with Zod's raw "expected object, received undefined",
+ * which tells a client nothing about the step it skipped; the middleware
+ * answers `AUTH_CHALLENGE_REQUIRED`, which a client can act on. Optional
+ * narrows nothing: the route that carries this also mounts that middleware.
  */
 export const challengeSchema = z.object({
   challenge: z.string().min(1).max(512),
@@ -28,7 +41,6 @@ export const challengeSchema = z.object({
 
 export const validateAccountSchema = z.object({
   account: accountSchema,
-  proof: challengeSchema,
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
@@ -65,7 +77,7 @@ export const registerSchema = z
     account: accountSchema,
     password: passwordSchema,
     fcmTokens: fcmTokensSchema.optional().default([]),
-    proof: challengeSchema,
+    proof: challengeSchema.optional(),
   })
   // Re-checked at the object level because the account name is only known
   // here: a password that merely restates the public account name is guessable

@@ -13,8 +13,12 @@ import { verifySignupChallenge } from "../lib/signup-challenge.js";
  * a proxy pool or botnet cannot spread around: each attempt costs the caller a
  * fresh proof of work that nobody can solve in advance or reuse.
  *
- * Runs AFTER `validateBody`, so `proof` is known to be present and
- * well-shaped by the time this sees it.
+ * Runs AFTER `validateBody`, which has already checked the SHAPE of `proof` if
+ * one was sent. Presence is this middleware's own call, deliberately: the
+ * schemas mark `proof` optional so that omitting it is answered here as
+ * `AUTH_CHALLENGE_REQUIRED` — a code a client can act on by fetching a
+ * challenge — rather than as a generic `VALIDATION_FAILED` carrying Zod's raw
+ * "expected object, received undefined".
  */
 export async function requireSignupChallenge(
   req: Request,
