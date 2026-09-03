@@ -248,6 +248,19 @@ export const BREAKER_OPTS = {
  * `DEADLINE_EXCEEDED`/`UNKNOWN`/`CANCELLED`/etc. are deliberately excluded —
  * those DO indicate the callee is unhealthy and must still count toward the
  * breaker and trigger the fallback below.
+ *
+ * `RESOURCE_EXHAUSTED` belongs here for the same reason the rest do: it is
+ * what a HEALTHY callee returns when it refuses a request on purpose. Every
+ * messaging send is charged against a per-user rate limit whose refusal maps
+ * to exactly this status (`assertSendAllowed` -> `TooManyRequestsError` ->
+ * RESOURCE_EXHAUSTED), so while it was excluded a throttled burst counted as
+ * N infrastructure failures: past the 50% threshold the circuit OPENED and
+ * every send through that caller failed for the next 10s, including sends
+ * from users who had spent nothing. Worse, the fallback rewrote the status,
+ * so the client was told "chat.sendCommunityMessage unavailable" for a plain
+ * rate limit and had no `RATE_LIMITED` code and no retry-after to back off
+ * on. Measured on a 100-message burst into a community: 28 RESOURCE_EXHAUSTED
+ * rejections, all surfaced to the client as `unavailable`.
  */
 const BUSINESS_GRPC_STATUS_CODES = new Set<number>([
   grpc.status.INVALID_ARGUMENT,
@@ -257,6 +270,7 @@ const BUSINESS_GRPC_STATUS_CODES = new Set<number>([
   grpc.status.FAILED_PRECONDITION,
   grpc.status.OUT_OF_RANGE,
   grpc.status.UNAUTHENTICATED,
+  grpc.status.RESOURCE_EXHAUSTED,
 ]);
 
 /**

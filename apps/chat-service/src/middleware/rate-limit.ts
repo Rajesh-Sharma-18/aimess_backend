@@ -291,10 +291,26 @@ export function createRateLimit({
  *
  * Numbers are per user per minute, sliding window (see {@link createRateLimit}):
  *
- *  - `send`      60 — the abuse-relevant number, and the only one a normal
+ *  - `send`     300 — the abuse-relevant number, and the only one a normal
  *                     typist can approach. Being a sliding window rather than a
- *                     fixed bucket, a burst of 60 is allowed immediately; it is
- *                     the sustained rate that is capped.
+ *                     fixed bucket, a burst of 300 is allowed immediately; it is
+ *                     the sustained rate (5/s averaged over the minute) that is
+ *                     capped.
+ *
+ *                     It was 60, which is one message per second sustained and
+ *                     therefore no burst headroom at all: a normal burst — a
+ *                     thought sent as six quick lines, a paste split into rows,
+ *                     a forward of a selection — spends a minute's allowance in
+ *                     seconds and the next message is refused. Measured driving
+ *                     the real composer at 100 messages / 10ms into a group and
+ *                     a community: 28 sends refused, and because each refusal
+ *                     also counted against the caller's circuit breaker (see
+ *                     BUSINESS_GRPC_STATUS_CODES in @aimess/grpc-utils) the
+ *                     refusals cascaded into 10-second windows where every send
+ *                     failed. 300 clears a WhatsApp-shaped burst of ~10-20/s
+ *                     lasting a few seconds while still refusing a sustained
+ *                     flood — an unattended loop is capped at 5/s, and the 429
+ *                     (with `Retry-After`) it gets is unchanged.
  *  - `read`     240 — read-position writes fire on every conversation open,
  *                     every scroll to bottom and every socket reconnect
  *                     catch-up, so this has to clear a reconnect burst across
@@ -338,7 +354,7 @@ export const MESSAGING_RATE_WINDOW_MS = 60_000;
  * each number is what it is.
  */
 export const MESSAGING_RATE_LIMITS = {
-  send: 60,
+  send: 300,
   read: 240,
   interact: 120,
   sensitive: 30,

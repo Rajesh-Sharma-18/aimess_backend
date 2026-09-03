@@ -8,7 +8,7 @@
     "dev": "tsc -w",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx tests/service-auth.test.ts"
+    "test": "tsx tests/service-auth.test.ts && tsx tests/breaker-business-errors.test.ts"
   },
   "dependencies": {
     "@aimess/constants": "workspace:*",
