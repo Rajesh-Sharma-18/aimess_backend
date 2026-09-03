@@ -4,7 +4,7 @@
   "main": "dist/server.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --include ./src --include ../../packages/constants/dist --clear-screen=false src/server.ts",
+    "dev": "tsx watch --include ./src --exclude ./src/generated --include ../../packages/constants/dist --clear-screen=false src/server.ts",
     "start": "node dist/server.js",
     "db:backfill:audit-activity": "tsx scripts/backfill-audit-activity.ts",
     "build": "prisma generate && tsc",

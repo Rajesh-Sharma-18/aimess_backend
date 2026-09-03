@@ -4,7 +4,7 @@
   "description": "Stateless presigned URL service for media uploads and downloads.",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts",
+    "dev": "tsx watch --include ./src --exclude ./src/generated --clear-screen=false src/server.ts",
     "start": "node dist/server.js",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
