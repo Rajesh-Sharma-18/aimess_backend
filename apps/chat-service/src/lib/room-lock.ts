@@ -1,3 +1,5 @@
+import { awaitSendTurn, releaseSendTurn } from "./send-order.js";
+
 /**
  * Per-room sequence/revision allocation: serialized AND batched.
  *
@@ -92,14 +94,25 @@ async function drain<TRoom>(
   }
 }
 
-export function allocateRoomSlot<TRoom>(
+export async function allocateRoomSlot<TRoom>(
   roomId: string,
   allocateBlock: BlockAllocator<TRoom>
 ): Promise<AllocatedSlot<TRoom>> {
-  return new Promise<AllocatedSlot<TRoom>>((resolve, reject) => {
-    const queue = pending.get(roomId) ?? [];
-    queue.push({ resolve, reject } as Waiter<unknown>);
-    pending.set(roomId, queue);
-    void drain(roomId, allocateBlock);
-  }) as Promise<AllocatedSlot<TRoom>>;
+  // The batching below is FIFO by the order callers REACH it, which is not the
+  // order their messages arrived when several sends from one person are in
+  // flight at once — see lib/send-order.ts. Joining the queue is therefore
+  // gated on that arrival order, and the turn is handed on the moment this
+  // send's number is in hand, so the next one is held only for the allocation
+  // itself and not for the whole send.
+  await awaitSendTurn();
+  try {
+    return await new Promise<AllocatedSlot<TRoom>>((resolve, reject) => {
+      const queue = pending.get(roomId) ?? [];
+      queue.push({ resolve, reject } as Waiter<unknown>);
+      pending.set(roomId, queue);
+      void drain(roomId, allocateBlock);
+    });
+  } finally {
+    releaseSendTurn();
+  }
 }

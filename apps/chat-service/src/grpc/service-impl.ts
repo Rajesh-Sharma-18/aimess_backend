@@ -19,6 +19,7 @@ import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { assertSendAllowed } from "../middleware/rate-limit.js";
+import { withSendOrder } from "../lib/send-order.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
   reconcileCommunityLastActivityAfterDelete,
@@ -349,50 +350,62 @@ export function createMessagingImpl(
             req.conversationId,
             req.conversationType
           );
-          // Same bucket the REST route consumes (`pm:send` / `gm:send`), so the
-          // socket path is no longer an unmetered door to the identical write.
-          // Charged before any work: the point is to refuse cheaply.
-          await assertSendAllowed(
-            conversationType === "GROUP" ? "gm" : "pm",
-            req.senderId
-          );
           const content = parseMessageContent(req);
-          // Server-side resolution — req.senderName/Avatar are optional,
-          // client-supplied fields that arrive empty over the socket path.
-          const {
-            senderName: resolvedSenderName,
-            senderAvatar: resolvedSenderAvatar,
-          } = await resolveSenderIdentity(
-            deps.userSnapshotService,
-            deps.cacheRepo,
+          // Takes this send's place in the (room, sender) order — synchronously,
+          // before the first `await`, or the arrival order is already lost. Only
+          // the sequence allocation waits on it; the reads below still overlap
+          // with the other sends in flight. Without it two sends from one person
+          // can reach the allocator out of order and swap places in everyone's
+          // transcript. See lib/send-order.ts.
+          let resolvedSenderName = "";
+          let resolvedSenderAvatar = "";
+          msg = await withSendOrder(
+            req.conversationId,
             req.senderId,
-            req.senderName || undefined,
-            req.senderAvatar || undefined
+            async () => {
+              // Same bucket the REST route consumes (`pm:send` / `gm:send`), so
+              // the socket path is no longer an unmetered door to the identical
+              // write. Charged before any work: the point is to refuse cheaply.
+              await assertSendAllowed(
+                conversationType === "GROUP" ? "gm" : "pm",
+                req.senderId
+              );
+              // Server-side resolution — req.senderName/Avatar are optional,
+              // client-supplied fields that arrive empty over the socket path.
+              const identity = await resolveSenderIdentity(
+                deps.userSnapshotService,
+                deps.cacheRepo,
+                req.senderId,
+                req.senderName || undefined,
+                req.senderAvatar || undefined
+              );
+              resolvedSenderName = identity.senderName;
+              resolvedSenderAvatar = identity.senderAvatar;
+              if (conversationType === "GROUP") {
+                return deps.groupMessageService.sendMessage({
+                  roomId: req.conversationId,
+                  senderId: req.senderId,
+                  senderName: resolvedSenderName,
+                  senderAvatar: resolvedSenderAvatar,
+                  content,
+                  messageType: req.contentType || "TEXT",
+                  parentMessageId: req.repliedToId || null,
+                  clientMessageId: req.clientMessageId || randomUUID(),
+                  clientTs,
+                });
+              }
+              return deps.privateMessageService.sendMessage({
+                roomId: req.conversationId,
+                senderId: req.senderId,
+                receiverId: req.receiverId,
+                content,
+                messageType: req.contentType || "TEXT",
+                parentMessageId: req.repliedToId || null,
+                clientMessageId: req.clientMessageId || randomUUID(),
+                clientTs,
+              });
+            }
           );
-          if (conversationType === "GROUP") {
-            msg = await deps.groupMessageService.sendMessage({
-              roomId: req.conversationId,
-              senderId: req.senderId,
-              senderName: resolvedSenderName,
-              senderAvatar: resolvedSenderAvatar,
-              content,
-              messageType: req.contentType || "TEXT",
-              parentMessageId: req.repliedToId || null,
-              clientMessageId: req.clientMessageId || randomUUID(),
-              clientTs,
-            });
-          } else {
-            msg = await deps.privateMessageService.sendMessage({
-              roomId: req.conversationId,
-              senderId: req.senderId,
-              receiverId: req.receiverId,
-              content,
-              messageType: req.contentType || "TEXT",
-              parentMessageId: req.repliedToId || null,
-              clientMessageId: req.clientMessageId || randomUUID(),
-              clientTs,
-            });
-          }
 
           // An idempotent replay (a concurrent same-clientMessageId duplicate
           // that collapsed to the existing row, or a later retry) must NOT re-run
@@ -2949,12 +2962,6 @@ export function createCommunityImpl(
             attachmentsJson: string;
           };
 
-          // Same `cm:send` bucket the REST community route consumes. This path
-          // matters most: one community message is amplified to every member
-          // over Redis pub/sub plus a push notification each, so an unmetered
-          // socket frame turned into thousands of emits and sends.
-          await assertSendAllowed("cm", req.senderId);
-
           // Parse the rich attachment payload sent by new clients.
           type AttachmentsPayload = {
             files?: Array<Record<string, unknown>>;
@@ -2987,27 +2994,48 @@ export function createCommunityImpl(
             attachments = [{ objectKey: req.mediaKey }];
           }
 
-          const [{ senderName, senderAvatar }, room] = await Promise.all([
-            resolveSenderIdentity(
-              deps.userSnapshotService,
-              deps.cacheRepo,
-              req.senderId
-            ),
-            deps.generalRoomRepo?.findRoomById(req.roomId),
-          ]);
-          const communityName = room?.name ?? "";
+          // Arrival-ordered for this (room, sender) exactly as the private/group
+          // send above — two messages from one person must not swap sequence
+          // numbers because their identity/room reads finished out of order.
+          // See lib/send-order.ts.
+          let senderName = "";
+          let senderAvatar = "";
+          let communityName = "";
+          const saved = await withSendOrder(
+            req.roomId,
+            req.senderId,
+            async () => {
+              // Same `cm:send` bucket the REST community route consumes. This
+              // path matters most: one community message is amplified to every
+              // member over Redis pub/sub plus a push notification each, so an
+              // unmetered socket frame turned into thousands of emits and sends.
+              await assertSendAllowed("cm", req.senderId);
 
-          const saved = await deps.communityMessageService.sendMessage({
-            roomId: req.roomId,
-            sentBy: req.senderId,
-            senderName,
-            senderAvatar,
-            message: req.message || "",
-            messageType: (req.contentType || "TEXT").toUpperCase(),
-            parentMessageId: req.parentMessageId || null,
-            clientMessageId: req.clientMessageId || randomUUID(),
-            attachments,
-          });
+              const [identity, room] = await Promise.all([
+                resolveSenderIdentity(
+                  deps.userSnapshotService,
+                  deps.cacheRepo,
+                  req.senderId
+                ),
+                deps.generalRoomRepo?.findRoomById(req.roomId),
+              ]);
+              senderName = identity.senderName;
+              senderAvatar = identity.senderAvatar;
+              communityName = room?.name ?? "";
+
+              return deps.communityMessageService.sendMessage({
+                roomId: req.roomId,
+                sentBy: req.senderId,
+                senderName,
+                senderAvatar,
+                message: req.message || "",
+                messageType: (req.contentType || "TEXT").toUpperCase(),
+                parentMessageId: req.parentMessageId || null,
+                clientMessageId: req.clientMessageId || randomUUID(),
+                attachments,
+              });
+            }
+          );
 
           const sentAt =
             saved.createdAt instanceof Date
