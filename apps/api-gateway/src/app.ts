@@ -29,7 +29,10 @@ const corsOptions = {
     if (isCorsOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      // Name the origin: without it the log says only that SOMETHING was
+      // refused, and the one fact needed to fix the allowlist is the one fact
+      // missing.
+      callback(new Error(`Not allowed by CORS: ${origin ?? "<none>"}`));
     }
   },
   credentials: true,
