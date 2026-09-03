@@ -53,7 +53,13 @@ model Livestream {
   // the broadcast. Optional in the schema so rows created before the split
   // (where the SRS name IS the streamKey) keep resolving; `resolveSrsName`
   // treats a missing value as "legacy, named by its streamKey".
-  playbackId    String?   @unique
+  // NOT `@unique`: a plain unique index on a nullable MongoDB field collides on
+  // the implicit null shared by every legacy row that has no playbackId, so
+  // `db push` cannot even build it. Uniqueness for non-null values is enforced
+  // by a SPARSE unique index created at startup (see server.ts) — the same
+  // approach community-service uses for Community.invitationCode, because
+  // Prisma cannot express sparse indexes for MongoDB.
+  playbackId    String?
   status        String    @default("PENDING")
   hlsUrl        String?
   flvUrl        String?

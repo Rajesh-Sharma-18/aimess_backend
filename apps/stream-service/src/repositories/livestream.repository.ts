@@ -45,7 +45,12 @@ export class LivestreamRepository {
         sourceType: data.sourceType,
         sourceUrl: data.sourceUrl ?? null,
         streamKey: data.streamKey,
-        playbackId: data.playbackId ?? null,
+        // OMITTED, not null, when absent. The uniqueness of playbackId is a
+        // SPARSE index (see server.ts), and sparse skips only rows where the
+        // field is MISSING — a stored null is present as far as the index is
+        // concerned, so writing null here would make the second such row a
+        // duplicate-key failure.
+        ...(data.playbackId ? { playbackId: data.playbackId } : {}),
         status: data.status ?? "PENDING",
         hlsUrl: data.hlsUrl ?? null,
         flvUrl: data.flvUrl ?? null,
