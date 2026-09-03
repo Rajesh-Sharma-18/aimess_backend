@@ -776,8 +776,12 @@ export class CommunityMessageController {
     // first (or raced this) would re-point lastActivity at a line that is about
     // to be tombstoned, and the community list would preview a deleted message
     // forever. `unpinAfterDelete` never throws, so this cannot fail the delete.
+    // `hiddenSystemLineSeq` is the pin line the hook hid for THIS user (0 when
+    // none): usually newer than the message they deleted, so it — not the
+    // message's own sequence — decides whether their list row must move.
+    let hiddenPinLineSeq = 0;
     if (result.roomId) {
-      await unpinAfterDelete({
+      ({ hiddenSystemLineSeq: hiddenPinLineSeq } = await unpinAfterDelete({
         redis: this.redis,
         pinService: this.pinService,
         kind: "COMMUNITY",
@@ -786,7 +790,7 @@ export class CommunityMessageController {
         messageId,
         userId,
         scope: type === "forEveryone" ? "forEveryone" : "forMe",
-      });
+      }));
     }
 
     // lastActivity recalculation MUST complete (including the synchronous
@@ -820,7 +824,7 @@ export class CommunityMessageController {
         const recalc =
           await this.service.recalculateLastMessageAfterDeleteForMe(
             result.roomId,
-            result.sequenceNumber ?? 0,
+            Math.max(result.sequenceNumber ?? 0, hiddenPinLineSeq),
             userId
           );
         // Skip unless the deleted message was the viewer's effective last
@@ -1064,10 +1068,13 @@ export class CommunityMessageController {
   pinMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const { messageId, communityId } = req.body as {
-      messageId: string;
+    const { messageId: bodyMessageId, communityId } = req.body as {
+      messageId?: string;
       communityId: string;
     };
+    // `/rooms/:roomId/messages/:messageId/pin` puts the target in the path,
+    // `/rooms/:roomId/pins` in the body — one controller serves both.
+    const messageId = (req.params.messageId as string) || (bodyMessageId ?? "");
     const result = await this.pinService.pin({
       roomId,
       messageId,

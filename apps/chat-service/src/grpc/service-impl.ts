@@ -4006,17 +4006,25 @@ export function createCommunityImpl(
           // one. A recalc that raced it would re-point lastActivity at a line
           // about to be tombstoned, and the community list would preview a
           // deleted message forever. `unpinAfterDelete` never throws.
+          // `hiddenSystemLineSeq` is the pin line the hook hid for THIS user
+          // (0 when none): usually newer than the message they deleted, so it
+          // — not the message's own sequence — decides whether their list row
+          // must move.
+          let hiddenPinLineSeq = 0;
           if (result?.roomId) {
-            await unpinAfterDelete({
-              redis,
-              pinService: deps.communityPinService,
-              kind: "COMMUNITY",
-              roomId: result.roomId,
-              communityId: req.communityId,
-              messageId: req.messageId,
-              userId: req.userId,
-              scope: req.deleteType === "forEveryone" ? "forEveryone" : "forMe",
-            });
+            ({ hiddenSystemLineSeq: hiddenPinLineSeq } = await unpinAfterDelete(
+              {
+                redis,
+                pinService: deps.communityPinService,
+                kind: "COMMUNITY",
+                roomId: result.roomId,
+                communityId: req.communityId,
+                messageId: req.messageId,
+                userId: req.userId,
+                scope:
+                  req.deleteType === "forEveryone" ? "forEveryone" : "forMe",
+              }
+            ));
           }
 
           // lastActivity recalculation MUST complete (including the
@@ -4085,7 +4093,7 @@ export function createCommunityImpl(
             forMeRecalc =
               await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
                 result.roomId,
-                result.sequenceNumber ?? 0,
+                Math.max(result.sequenceNumber ?? 0, hiddenPinLineSeq),
                 req.userId
               );
             if (forMeRecalc !== null && forMeRecalc.wasEffectiveLast) {
