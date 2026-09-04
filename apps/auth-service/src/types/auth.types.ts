@@ -27,4 +27,12 @@ export type LoginResult = {
 export type AccessTokenResponse = {
   accessToken: string;
   accessTokenExpiresIn: number;
+  /**
+   * The rotated refresh token. Additive: this endpoint used to mint an access
+   * token and leave the refresh token untouched, so a stolen one could be
+   * replayed forever without tripping reuse detection. The caller MUST store
+   * this and use it next time — the token it sent is now spent.
+   */
+  refreshToken: string;
+  refreshTokenExpiresIn: number;
 };

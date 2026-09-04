@@ -766,7 +766,12 @@ describe("DELETE /api/v1/users/friends/block/:userId", () => {
     fRepo.findBlock.mockImplementation(
       async (blockerId: string, blockedId: string) =>
         blockerId === ME && blockedId === OTHER
-          ? { id: "block-1", blockerId: ME, blockedId: OTHER, createdAt: new Date() }
+          ? {
+              id: "block-1",
+              blockerId: ME,
+              blockedId: OTHER,
+              createdAt: new Date(),
+            }
           : null
     );
     fRepo.findByPair.mockResolvedValue(null);

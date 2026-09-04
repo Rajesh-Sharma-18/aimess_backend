@@ -41,7 +41,25 @@ model Livestream {
   thumbnail     String?
   sourceType    String // PHONE_CAMERA | URL
   sourceUrl     String? // set for URL mode only
+  // The SECRET that authorises publishing. Never leaves the owner's own
+  // responses (create + publish-credentials); it is carried on the RTMP/WHIP
+  // publish URL as `?secret=` and checked in the on_publish hook.
   streamKey     String    @unique
+  // The PUBLIC name the stream is published and played under.
+  //
+  // These used to be the same value, so the publish credential was the path
+  // segment of every viewer's HLS/FLV/DASH URL — any viewer could read it out
+  // of the player and point their own encoder at the ingest endpoint to hijack
+  // the broadcast. Optional in the schema so rows created before the split
+  // (where the SRS name IS the streamKey) keep resolving; `resolveSrsName`
+  // treats a missing value as "legacy, named by its streamKey".
+  // NOT `@unique`: a plain unique index on a nullable MongoDB field collides on
+  // the implicit null shared by every legacy row that has no playbackId, so
+  // `db push` cannot even build it. Uniqueness for non-null values is enforced
+  // by a SPARSE unique index created at startup (see server.ts) — the same
+  // approach community-service uses for Community.invitationCode, because
+  // Prisma cannot express sparse indexes for MongoDB.
+  playbackId    String?
   status        String    @default("PENDING")
   hlsUrl        String?
   flvUrl        String?

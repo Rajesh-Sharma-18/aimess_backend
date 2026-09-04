@@ -63,6 +63,42 @@ const tooManyRequests = {
 };
 
 export const authPaths = {
+  "/auth/challenge": {
+    post: {
+      tags: ["Auth"],
+      summary: "Get a signup proof-of-work challenge",
+      operationId: "getSignupChallenge",
+      description:
+        "Issues the proof of work that `POST /auth/register` and `POST /auth/accounts/validate` require. No authentication." +
+        "\n\nBoth of those endpoints used to be free to call, which made bulk account creation and full enumeration of the handle namespace cost nothing but HTTP requests. Per-IP throttling bounds one address and does nothing about a proxy pool, so each attempt now costs the caller CPU instead." +
+        "\n\n**Client flow:** call this, then find a `solution` string such that `sha256(challenge + \".\" + solution)` starts with at least `difficultyBits` leading zero bits — a short loop over an integer counter, roughly a few hundred milliseconds at the default difficulty. Send `{ challenge, solution }` as the `proof` field." +
+        "\n\nA challenge expires after 10 minutes and is accepted exactly once, so fetch a fresh one per attempt.",
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Challenge issued",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/SignupChallengeResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "429": tooManyRequests,
+      },
+    },
+  },
   "/auth/accounts/validate": {
     post: {
       tags: ["Auth"],
@@ -507,7 +543,8 @@ export const authPaths = {
         "- 401 CREDENTIALS_INVALID — wrong password.\n" +
         "- 401 ACCOUNT_BANNED — the account has been platform-banned.\n" +
         "- 401 ACCOUNT_SUSPENDED — temporary suspension.\n" +
-        "- 401 ACCOUNT_DELETED — soft-deleted (30-day grace period active).",
+        "- 401 ACCOUNT_DELETED — soft-deleted (30-day grace period active)." +
+        "\n\n**Refresh cookie:** the response also sets `aimess_rt`, an httpOnly, Secure, SameSite cookie scoped to `/api/v1/auth` carrying the same refresh token. Browsers should ignore `tokens.refreshToken` and let the cookie travel on its own (send the refresh request with credentials). With `rememberMe: true` the cookie is persistent (30 days); otherwise it is a session cookie that dies with the browser. Native clients have no cookie jar and keep using the body field.",
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
         { $ref: "#/components/parameters/PlatformHeader" },
@@ -631,10 +668,11 @@ export const authPaths = {
       operationId: "refreshAccessToken",
       description:
         "Exchange a valid refresh token for a new access/refresh token pair. The old refresh token is invalidated (rotation). If a revoked refresh token is reused, all sessions for that user are revoked.\n\n" +
-        "**Security note:** Reuse of a revoked refresh token triggers a full session revocation (security event). The client must detect this and re-authenticate.",
+        "**Security note:** Reuse of a revoked refresh token triggers a full session revocation (security event). The client must detect this and re-authenticate." +
+        "\n\n**Cookie callers:** send an empty body with credentials and the httpOnly `aimess_rt` cookie is used. The rotated token is written back as a new `aimess_rt`; on 401 the cookie is cleared, since an httpOnly cookie cannot be dropped by the browser itself.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
-        required: true,
+        required: false,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/RefreshTokenRequest" },

@@ -207,7 +207,7 @@ export const listUsersQuerySchema = z
     // `order` is a direction-only alias that overrides the sort direction
     // (e.g. `?sort=username:asc&order=desc` → username:desc).
     order: z.enum(["asc", "desc"]).optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     cursor: z.string().trim().min(1).optional(),
   })
@@ -267,7 +267,7 @@ export type UserIdParam = z.infer<typeof userIdParamSchema>;
 // Reported-details list query (GET /users/:userId/reports).
 // ---------------------------------------------------------------------------
 export const userReportsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
@@ -520,7 +520,7 @@ export const listUserCommunitiesQuerySchema = z
     search: z.string().trim().min(1).optional(),
     sortBy: userCommunitiesSortByFilter,
     sortOrder: userCommunitiesSortOrderFilter,
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .transform(({ q, sortBy, sortOrder, ...rest }) => {
@@ -608,7 +608,7 @@ export const listOtherMembersQuerySchema = z
     role: otherMemberRoleEnum.optional(),
     sortBy: otherMembersSortByFilter,
     sortOrder: otherMembersSortOrderFilter,
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .transform(({ q, role, sortBy, sortOrder, ...rest }) => {

@@ -23,6 +23,23 @@ export const sensitiveAuthRateLimiter = rateLimit({
   handler: rateLimitHandler(),
 });
 
+/**
+ * Refresh / access-token issue. Both were unthrottled at BOTH layers: the
+ * gateway list omits them and its global backstop keys on the bearer token,
+ * which a cookie-authenticated refresh does not send - so every anonymous
+ * caller behind one NAT shared a single bucket. Per-IP, deliberately generous:
+ * a legitimate browser refreshes on boot and once per access-token expiry.
+ */
+export const refreshRateLimiter = rateLimit({
+  windowMs: env.REFRESH_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.REFRESH_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
+  keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
+  handler: rateLimitHandler(),
+});
+
 /** QR login generation: configurable requests/minute/IP (unauthenticated endpoint). */
 export const qrGenerationRateLimiter = rateLimit({
   windowMs: 60 * 1000,

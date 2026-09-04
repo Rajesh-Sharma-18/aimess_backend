@@ -125,7 +125,7 @@ export const listCommunitiesQuerySchema = z
       .string()
       .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
       .default("createdAt:desc"),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     createdFrom: z.iso.date().optional(),
     createdTo: z.iso.date().optional(),
@@ -200,7 +200,7 @@ export const listCommunityMembersQuerySchema = z
     search: z.string().trim().min(1).optional(),
     role: communityMemberRoleEnum.optional(),
     sort: z.string().trim().optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .transform(({ q, sort, ...rest }) => {
@@ -220,7 +220,7 @@ export type ListCommunityMembersQueryInput = z.infer<
 // Muted-Members list query (platform-admin view of a community's mutes).
 // ---------------------------------------------------------------------------
 export const listMutedMembersQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListMutedMembersQueryInput = z.infer<

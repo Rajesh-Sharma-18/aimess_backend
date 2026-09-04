@@ -11,6 +11,10 @@ import {
   startQrLinkExpirySweeper,
   stopQrLinkExpirySweeper,
 } from "./jobs/qr-link-expiry-sweeper.js";
+import {
+  startAccountPurgeSweeper,
+  stopAccountPurgeSweeper,
+} from "./jobs/account-purge-sweeper.js";
 import { logger } from "@aimess/logger";
 import type * as grpc from "@grpc/grpc-js";
 
@@ -83,6 +87,9 @@ const startServer = async () => {
     grpcServer = startGrpcServer(env.AUTH_GRPC_PORT);
 
     startQrLinkExpirySweeper();
+    // Erases the personal data of accounts whose 30-day grace period has
+    // elapsed. Without it, `scheduledDeletionAt` is recorded and never read.
+    startAccountPurgeSweeper();
   } catch (error) {
     logger.error("Auth service startup failed");
     logger.error(error);
@@ -94,6 +101,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`Auth service shutting down (${signal})…`);
 
   stopQrLinkExpirySweeper();
+  stopAccountPurgeSweeper();
 
   await new Promise<void>((resolve) => {
     if (!httpServer) {

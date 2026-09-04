@@ -92,7 +92,12 @@ export function createSessionTimers(
               return;
             }
             const body = (await res.json()) as {
-              data?: { accessToken?: string; accessTokenExpiresIn?: number };
+              data?: {
+                accessToken?: string;
+                accessTokenExpiresIn?: number;
+                refreshToken?: string;
+                refreshTokenExpiresIn?: number;
+              };
             };
             const token = body.data?.accessToken;
             if (!token) {
@@ -107,6 +112,13 @@ export function createSessionTimers(
             ackOk(callback, "SOCKET_AUTH_REFRESHED", locale, {
               accessToken: token,
               expiresIn,
+              // `/auth/token` now ROTATES the refresh token, so the one the
+              // client sent is spent. Relaying the replacement is not optional:
+              // without it the client would keep presenting a rotated token,
+              // and the reuse tripwire would eventually revoke every session it
+              // has. The client must store this in place of the token it sent.
+              refreshToken: body.data?.refreshToken,
+              refreshTokenExpiresIn: body.data?.refreshTokenExpiresIn,
             });
           })
           .catch((err: unknown) => {

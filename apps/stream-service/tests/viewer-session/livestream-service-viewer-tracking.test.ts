@@ -22,7 +22,7 @@ function flushMicrotasks(): Promise<void> {
 function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
   const streamRepo = {
     findById: jest.fn(),
-    findByStreamKey: jest.fn(),
+    findBySrsName: jest.fn(),
     updateById: jest.fn(),
     findStaleLiveStreams: jest.fn().mockResolvedValue([]),
     findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
@@ -199,7 +199,7 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "ENDED",
@@ -281,7 +281,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
     const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "LIVE",
@@ -331,7 +331,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
     });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "LIVE",
@@ -374,7 +374,7 @@ describe("LivestreamService — host viewer session on go-live", () => {
     const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "LIVE",
@@ -396,7 +396,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     const { service, streamRepo, viewerSessionRepo, eventPublisher } = makeDeps(
       {
         streamRepo: {
-          findByStreamKey: jest.fn().mockResolvedValue(stream),
+          findBySrsName: jest.fn().mockResolvedValue(stream),
           updateById: jest.fn().mockResolvedValue({
             ...stream,
             status: "RECONNECTING",
@@ -430,7 +430,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       publisherClientId: "client-b",
     });
     const { service, streamRepo, eventPublisher } = makeDeps({
-      streamRepo: { findByStreamKey: jest.fn().mockResolvedValue(stream) },
+      streamRepo: { findBySrsName: jest.fn().mockResolvedValue(stream) },
     });
 
     await service.handleUnpublish("key-1", "client-a");
@@ -447,7 +447,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     });
     const { service, streamRepo } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "RECONNECTING",
@@ -472,7 +472,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     });
     const { service, streamRepo } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue(stream),
       },
     });
@@ -494,7 +494,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     const { service, streamRepo, eventPublisher } = makeDeps({
       streamRepo: {
         findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         updateById: jest.fn().mockResolvedValue({
           ...stream,
           status: "LIVE",
@@ -559,7 +559,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
       disconnectedAt: new Date(Date.now() - 5_000),
     });
     const { service, streamRepo } = makeDeps({
-      streamRepo: { findByStreamKey: jest.fn().mockResolvedValue(stream) },
+      streamRepo: { findBySrsName: jest.fn().mockResolvedValue(stream) },
     });
 
     await service.handleUnpublish("key-1");
@@ -577,7 +577,7 @@ describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () =>
     });
     const { service, streamRepo, eventPublisher } = makeDeps({
       streamRepo: {
-        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        findBySrsName: jest.fn().mockResolvedValue(stream),
         countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
         updateById: jest.fn().mockResolvedValue({
           ...stream,

@@ -102,13 +102,35 @@ export class GroupRoomRepository {
   async allocateSequenceWithRoom(
     roomId: string
   ): Promise<{ sequenceNumber: number; room: GroupRoom }> {
+    const block = await this.allocateSequenceBlock(roomId, 1);
+    return { sequenceNumber: block.lastSequence, room: block.room };
+  }
+
+  /**
+   * Reserve `count` consecutive sequence numbers in ONE `$inc` — the group
+   * twin of `PrivateRoomRepository.allocateSequenceBlock`; see that method for
+   * why a burst must not pay one round trip per message.
+   *
+   * Only `lastSequence` moves. Group insert has never advanced `lastRevision`
+   * (the `/changes` cursor is bumped by the edit/delete/reaction paths), and
+   * starting to do so here would silently reinterpret every client's stored
+   * revision cursor — so no revision block is returned.
+   */
+  async allocateSequenceBlock(
+    roomId: string,
+    count: number
+  ): Promise<{ lastSequence: number; room: GroupRoom }> {
+    const n = Math.max(1, count);
+    // Bursty concurrent sends all `$inc` the same GroupRoom document; retry the
+    // transient Mongo write-conflict (Prisma P2034) so fast/parallel sends don't
+    // fail with a user-visible SERVICE_ERROR. See withWriteConflictRetry.
     const room = await withWriteConflictRetry(() =>
       this.prisma.groupRoom.update({
         where: { roomId },
-        data: { lastSequence: { increment: 1 } },
+        data: { lastSequence: { increment: n } },
       })
     );
-    return { sequenceNumber: room.lastSequence, room };
+    return { lastSequence: room.lastSequence, room };
   }
 
   /**
@@ -335,7 +357,7 @@ export class GroupRoomRepository {
     //
     // `updateMany` (not `update`) because the write is CONDITIONAL: it lands
     // only while this message is newer than the stored snapshot, ordered by
-    // (lastMessageAt, seq). Five messages sent in a burst are five concurrent
+    // `seq`. Five messages sent in a burst are five concurrent
     // handlers, so nothing made these writes arrive in send order and an older
     // one used to rewind the room's preview. Returns the matched count — 0
     // means a newer message already owns the snapshot, which is a success.

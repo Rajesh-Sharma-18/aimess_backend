@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { logger } from "@aimess/logger";
+import { once } from "../lib/once.js";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import {
   STORED_TEXT_LOCALE,
@@ -391,6 +392,12 @@ export class ChatMessageOrchestrator {
     // effects must be suppressed (re-running them duplicates the bubble + bump).
     const alreadySent = isIdempotentReplay(msg);
 
+    // ONE roster read shared by all three group fan-outs below (personal
+    // `message:new`, the `conv:updated` bump and the push). See `once`.
+    const groupRecipients = once(() =>
+      this.groupMessageService.getActiveMemberIds(params.roomId)
+    );
+
     // Resolve-on-read: raw avatar/attachment object-keys → presigned URLs for the
     // returned/broadcast wire object only (the stored snapshot keeps raw keys).
     // Built UNCONDITIONALLY — the controller returns this canonical wire event
@@ -487,8 +494,7 @@ export class ChatMessageOrchestrator {
           }
         };
         if (conversationType === "GROUP") {
-          void this.groupMessageService
-            .getActiveMemberIds(params.roomId)
+          void groupRecipients()
             .then(fanOut)
             .catch((err: unknown) => {
               logger.warn(
@@ -521,8 +527,7 @@ export class ChatMessageOrchestrator {
       if (conversationType === "GROUP") {
         publishConvUpdatedSafe({
           ...bumpBase,
-          fetchRecipients: () =>
-            this.groupMessageService.getActiveMemberIds(params.roomId),
+          fetchRecipients: groupRecipients,
           resolveUnreadCounts: () =>
             this.groupMessageService.getUnreadCountsByUser(params.roomId),
         });
@@ -559,8 +564,7 @@ export class ChatMessageOrchestrator {
         // `publishMessageSentSafe` — the one place every producer goes through.
         publishMessageSentSafe({
           ...pushBase,
-          fetchRecipients: () =>
-            this.groupMessageService.getActiveMemberIds(params.roomId),
+          fetchRecipients: groupRecipients,
         });
       } else {
         publishMessageSentSafe({
@@ -615,6 +619,13 @@ export class ChatMessageOrchestrator {
     // effects (broadcast, activity denormalization, bump) on a replay — the
     // row's FIRST send already ran them. Same marker the private/group path uses.
     const alreadySent = isIdempotentReplay(saved);
+
+    // ONE roster read shared by the `community:updated` bump and the push
+    // below — they were each issued their own, and community rosters are the
+    // largest ones in the product. See `once`.
+    const communityRecipients = once(() =>
+      this.communityMessageService.getActiveMemberIds(params.roomId)
+    );
 
     // Resolve-on-read for the live push: sender avatar + attachment keys → full
     // presigned URLs (the stored snapshot keeps the raw keys).
@@ -770,8 +781,7 @@ export class ChatMessageOrchestrator {
         redis: this.redis,
         communityId: params.communityId,
         roomId: saved.roomId,
-        fetchMembers: () =>
-          this.communityMessageService.getActiveMemberIds(params.roomId),
+        fetchMembers: communityRecipients,
         senderId: params.senderId,
         senderName,
         lastMessageId: saved.id,
@@ -815,8 +825,7 @@ export class ChatMessageOrchestrator {
         preview: buildPushPreview(saved.messageType, saved.message ?? ""),
         messageType: normalizeMessageType(saved.messageType),
         sentAt,
-        fetchRecipients: () =>
-          this.communityMessageService.getActiveMemberIds(params.roomId),
+        fetchRecipients: communityRecipients,
       });
     }
 
@@ -1121,17 +1130,17 @@ export class ChatMessageOrchestrator {
                         result.receiverId ?? "",
                       ].filter(Boolean) as string[]
                     ),
-              deletedMessageCreatedAt: result.createdAt,
-              resolveLosers: (rid, at, ids) =>
+              deletedMessageSeq: result.sequenceNumber ?? 0,
+              resolveLosers: (rid, seq, ids) =>
                 conversationType === "GROUP"
                   ? this.groupMessageService.resolveEffectiveLastLosers(
                       rid,
-                      at,
+                      seq,
                       ids
                     )
                   : this.privateMessageService.resolveEffectiveLastLosers(
                       rid,
-                      at,
+                      seq,
                       ids
                     ),
               projectionRevision: result.revision ?? 0,
@@ -1238,12 +1247,12 @@ export class ChatMessageOrchestrator {
         conversationType === "GROUP"
           ? this.groupMessageService.recalculateLastMessageAfterDeleteForMe(
               rId,
-              result.createdAt,
+              result.sequenceNumber ?? 0,
               params.userId
             )
           : this.privateMessageService.recalculateLastMessageAfterDeleteForMe(
               rId,
-              result.createdAt,
+              result.sequenceNumber ?? 0,
               params.userId
             );
       void recalcPromise

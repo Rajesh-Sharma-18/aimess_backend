@@ -26,7 +26,7 @@ import { issueAuthTokens } from "../../src/lib/token.js";
 const repo = authRepository as unknown as Record<string, jest.Mock>;
 const issue = issueAuthTokens as unknown as jest.Mock;
 
-const PASSWORD = "Password123";
+const PASSWORD = "Correct-Horse-Battery-7";
 let passwordHash: string;
 
 const TOKENS = {

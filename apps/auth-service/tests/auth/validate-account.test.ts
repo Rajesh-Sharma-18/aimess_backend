@@ -93,4 +93,42 @@ describe("POST /api/auth/accounts/validate", () => {
     expect(res.body.success).toBe(false);
     expect(repo.findByAccount).not.toHaveBeenCalled();
   });
+
+  /**
+   * AIM-31. This endpoint is an availability oracle by design — a signup form
+   * has to say "taken" while you type — and answering 409 vs 200 enumerates the
+   * whole handle namespace, which is the input to targeted credential stuffing
+   * against /login.
+   *
+   * It was priced with a single-use proof of work; that was removed because it
+   * made every keystroke of a signup form fetch and solve a challenge first.
+   * `sensitiveAuthRateLimiter` is now the only thing standing between a caller
+   * and the namespace, so these pin that a probe needs NOTHING else — if a
+   * challenge or any other credential creeps back onto this route, the signup
+   * form breaks again and this is where it shows up.
+   */
+  describe("enumeration cost", () => {
+    it("answers a bare probe carrying no proof of work", async () => {
+      const res = await request(app)
+        .post("/api/auth/accounts/validate")
+        .send({ account: "johndoe" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.available).toBe(true);
+    });
+
+    it("answers repeated probes for different handles", async () => {
+      const first = await request(app)
+        .post("/api/auth/accounts/validate")
+        .send({ account: "johndoe" });
+      expect(first.status).toBe(200);
+
+      const second = await request(app)
+        .post("/api/auth/accounts/validate")
+        .send({ account: "janedoe" });
+      expect(second.status).toBe(200);
+
+      expect(repo.findByAccount).toHaveBeenCalledTimes(2);
+    });
+  });
 });

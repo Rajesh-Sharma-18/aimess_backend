@@ -10,7 +10,10 @@ import {
   connectCommunityRedis,
   disableCommunityCache,
 } from "./config/redis.js";
+import { startUserPurgedConsumer } from "@aimess/messaging";
+
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
+import { handleUserPurged } from "./handlers/user-purged.handler.js";
 import { startCommunityActivityConsumer } from "./consumers/community-activity.consumer.js";
 import { startStreamLifecycleConsumer } from "./consumers/stream-lifecycle.consumer.js";
 import { startStreamLiveConsumer } from "./consumers/stream-live.consumer.js";
@@ -150,6 +153,16 @@ async function start() {
 
     try {
       await startUserProfileUpdatedConsumer();
+      // Erasure obligation: a purged account's personal data must be removed
+      // from THIS service's copies too. Bound to the durable `user.purged`
+      // fanout, so an event that fires while this service is down is processed
+      // when it comes back rather than lost.
+      await startUserPurgedConsumer({
+        rabbitUrl: env.RABBITMQ_URL,
+        serviceName: "community-service",
+        onPurge: handleUserPurged,
+        logger,
+      });
       logger.info("RabbitMQ consumer ready (user.profile_updated.queue)");
     } catch (error) {
       logger.warn(

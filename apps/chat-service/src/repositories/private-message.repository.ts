@@ -1340,7 +1340,15 @@ export class PrivateMessageRepository {
   async findPreviousVisible(roomId: string): Promise<PrivateMessage | null> {
     return this.prisma.privateMessage.findFirst({
       where: { roomId, isDeleted: false },
-      orderBy: { createdAt: "desc" },
+      // Ordered by `sequenceNumber`, NOT `createdAt`: the sequence is allocated by
+      // an atomic per-room `$inc` while `createdAt` is stamped a round trip later,
+      // so two concurrent sends can swap between the two orderings. The clients
+      // render the transcript in `sequenceNumber` order (web
+      // `component/chat/messages/messageOrder.ts` — "sequenceNumber is the
+      // authority"), so resolving the room's last message by `createdAt` made the
+      // list preview name a DIFFERENT message than the one at the bottom of the
+      // chat. `createdAt` stays as the tie-break for pre-sequence legacy rows.
+      orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
     });
   }
 
@@ -1368,7 +1376,8 @@ export class PrivateMessageRepository {
               : {}),
           },
         },
-        { $sort: { createdAt: -1 } },
+        // See findPreviousVisible — `sequenceNumber` is the ordering authority.
+        { $sort: { sequenceNumber: -1, createdAt: -1 } },
         { $limit: 1 },
       ] as unknown as Prisma.InputJsonValue[],
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;

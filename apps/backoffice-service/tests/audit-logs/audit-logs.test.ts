@@ -26,7 +26,12 @@ jest.mock("../../src/services/index.js", () => {
 
 import request from "supertest";
 
-import { resolveAuditSource } from "@aimess/constants";
+import {
+  AUDIT_SOURCES,
+  createAuditContextMiddleware,
+  currentAuditSource,
+  resolveAuditSource,
+} from "@aimess/constants";
 import {
   AUDIT_ACTION_CATEGORY,
   AUDIT_CATEGORY_VALUES,
@@ -273,10 +278,41 @@ describe("resolveAuditSource (request-boundary derivation)", () => {
     ["ios", "IOS"],
     ["web", "WEB"],
     ["macos", "WEB"],
-    ["admin_panel", "ADMIN_PANEL"],
     ["ANDROID", "ANDROID"],
   ])("maps x-platform:%s to %s", (platform, expected) => {
     expect(resolveAuditSource({ "x-platform": platform })).toBe(expected);
+  });
+
+  // AIM-37. This case previously asserted the opposite — that `x-platform:
+  // admin_panel` yields ADMIN_PANEL — which made a public, client-supplied
+  // header sufficient to forge the origin of an audit row. Any user could make
+  // their own actions look like they came from the admin panel, or frame a
+  // different client. ADMIN_PANEL is now producible only by
+  // backoffice-service's pinned `forcedSource`, which never reads the request.
+  it.each(["admin", "admin_panel", "admin-panel", "ADMIN_PANEL"])(
+    "refuses to derive ADMIN_PANEL from a client-supplied x-platform:%s",
+    (platform) => {
+      expect(resolveAuditSource({ "x-platform": platform })).not.toBe(
+        "ADMIN_PANEL"
+      );
+    }
+  );
+
+  it("still pins ADMIN_PANEL when the service forces it", () => {
+    // backoffice-service has exactly one client, so it declares the source
+    // rather than sniffing it. That path is unaffected by the change above.
+    const middleware = createAuditContextMiddleware(AUDIT_SOURCES.ADMIN_PANEL);
+    let observed: string | undefined;
+
+    middleware(
+      { headers: { "x-platform": "android" }, ip: "203.0.113.7" },
+      {},
+      () => {
+        observed = currentAuditSource();
+      }
+    );
+
+    expect(observed).toBe("ADMIN_PANEL");
   });
 
   it("falls back to the user agent when no platform header is sent", () => {

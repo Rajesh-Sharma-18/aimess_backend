@@ -32,7 +32,9 @@ jest.mock("../../src/config/prisma.js", () => ({
       createMany: (...a: unknown[]) => memberCreateMany(...a),
       update: (...a: unknown[]) => memberUpdate(...a),
     },
-    communityMemberMute: { deleteMany: (...a: unknown[]) => muteDeleteMany(...a) },
+    communityMemberMute: {
+      deleteMany: (...a: unknown[]) => muteDeleteMany(...a),
+    },
     communityMemberWarning: {
       deleteMany: (...a: unknown[]) => warningDeleteMany(...a),
     },
@@ -180,7 +182,12 @@ describe("createMember", () => {
 
 describe("reactivateMemberWithSnapshot", () => {
   it("D3: rejoin reactivation carries the request resolution in the same transaction", async () => {
-    tx.mockResolvedValue([memberFixture, { count: 0 }, { count: 0 }, { count: 1 }]);
+    tx.mockResolvedValue([
+      memberFixture,
+      { count: 0 },
+      { count: 0 },
+      { count: 1 },
+    ]);
 
     await communityRepository.reactivateMemberWithSnapshot(
       CID,

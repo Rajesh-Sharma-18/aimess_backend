@@ -1,3 +1,5 @@
+import { awaitSendTurn, releaseSendTurn } from "./send-order.js";
+
 /**
  * Per-room sequence/revision allocation: serialized AND batched.
  *
@@ -22,6 +24,11 @@
  */
 export interface AllocatedSlot<TRoom> {
   sequenceNumber: number;
+  /**
+   * 0 when the allocator does not hand out revisions. Group insert bumps only
+   * `lastSequence` — its `/changes` cursor is advanced elsewhere — so a group
+   * slot carries no revision and callers must not persist this as one.
+   */
   revision: number;
   room: TRoom;
 }
@@ -34,7 +41,12 @@ type Waiter<TRoom> = {
 type BlockAllocator<TRoom> = (
   roomId: string,
   count: number
-) => Promise<{ lastSequence: number; lastRevision: number; room: TRoom }>;
+) => Promise<{
+  lastSequence: number;
+  /** Omit when the room's revision counter was not incremented by this block. */
+  lastRevision?: number;
+  room: TRoom;
+}>;
 
 const pending = new Map<string, Waiter<unknown>[]>();
 const draining = new Set<string>();
@@ -55,11 +67,16 @@ async function drain<TRoom>(
       try {
         const block = await allocateBlock(roomId, batch.length);
         const firstSeq = block.lastSequence - batch.length + 1;
-        const firstRev = block.lastRevision - batch.length + 1;
+        // No revision block means this room does not allocate revisions on
+        // insert; hand out 0 rather than a plausible-looking wrong number.
+        const firstRev =
+          block.lastRevision === undefined
+            ? undefined
+            : block.lastRevision - batch.length + 1;
         batch.forEach((waiter, i) =>
           waiter.resolve({
             sequenceNumber: firstSeq + i,
-            revision: firstRev + i,
+            revision: firstRev === undefined ? 0 : firstRev + i,
             room: block.room,
           } as AllocatedSlot<unknown>)
         );
@@ -77,14 +94,25 @@ async function drain<TRoom>(
   }
 }
 
-export function allocateRoomSlot<TRoom>(
+export async function allocateRoomSlot<TRoom>(
   roomId: string,
   allocateBlock: BlockAllocator<TRoom>
 ): Promise<AllocatedSlot<TRoom>> {
-  return new Promise<AllocatedSlot<TRoom>>((resolve, reject) => {
-    const queue = pending.get(roomId) ?? [];
-    queue.push({ resolve, reject } as Waiter<unknown>);
-    pending.set(roomId, queue);
-    void drain(roomId, allocateBlock);
-  }) as Promise<AllocatedSlot<TRoom>>;
+  // The batching below is FIFO by the order callers REACH it, which is not the
+  // order their messages arrived when several sends from one person are in
+  // flight at once — see lib/send-order.ts. Joining the queue is therefore
+  // gated on that arrival order, and the turn is handed on the moment this
+  // send's number is in hand, so the next one is held only for the allocation
+  // itself and not for the whole send.
+  await awaitSendTurn();
+  try {
+    return await new Promise<AllocatedSlot<TRoom>>((resolve, reject) => {
+      const queue = pending.get(roomId) ?? [];
+      queue.push({ resolve, reject } as Waiter<unknown>);
+      pending.set(roomId, queue);
+      void drain(roomId, allocateBlock);
+    });
+  } finally {
+    releaseSendTurn();
+  }
 }

@@ -78,17 +78,19 @@ export async function publishConvEffectiveLastLoss(p: {
   /** Every member/participant — the candidate set the losers are found among.
    *  A thunk so the fetch itself is inside this module's failure guard. */
   recipientIds: () => Promise<string[]>;
-  deletedMessageCreatedAt: Date;
+  /** The removed message's `sequenceNumber` — the ordering key the losers are
+   *  decided on (see `deletedWasEffectiveLast`). */
+  deletedMessageSeq: number;
   resolveLosers: (
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     recipientIds: string[]
   ) => Promise<Losers>;
   /** The DELETE's own room revision — see the deleteRecalc branches. */
   projectionRevision?: number;
 }): Promise<void> {
   const losers = await resolveSafely(p.roomId, async () =>
-    p.resolveLosers(p.roomId, p.deletedMessageCreatedAt, await p.recipientIds())
+    p.resolveLosers(p.roomId, p.deletedMessageSeq, await p.recipientIds())
   );
   if (!losers.size) return;
   const overrides = renderConvOverrides(losers);
@@ -118,15 +120,16 @@ export async function publishCommunityEffectiveLastLoss(p: {
   /** Every member — see the conv helper's `recipientIds`. */
   memberIds: () => Promise<string[]>;
   deletedMessageId: string;
-  deletedMessageCreatedAt: Date;
+  /** See the conv helper's `deletedMessageSeq`. */
+  deletedMessageSeq: number;
   resolveLosers: (
     roomId: string,
-    deletedMessageCreatedAt: Date,
+    deletedMessageSeq: number,
     recipientIds: string[]
   ) => Promise<Losers>;
 }): Promise<void> {
   const losers = await resolveSafely(p.roomId, async () =>
-    p.resolveLosers(p.roomId, p.deletedMessageCreatedAt, await p.memberIds())
+    p.resolveLosers(p.roomId, p.deletedMessageSeq, await p.memberIds())
   );
   if (!losers.size) return;
 

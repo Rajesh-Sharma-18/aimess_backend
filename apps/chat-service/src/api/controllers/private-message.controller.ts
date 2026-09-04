@@ -416,9 +416,9 @@ export class PrivateMessageController {
                     (result as { receiverId?: string }).receiverId ?? "",
                   ].filter(Boolean) as string[]
                 ),
-              deletedMessageCreatedAt: result.createdAt,
-              resolveLosers: (rid, at, ids) =>
-                this.messageService.resolveEffectiveLastLosers(rid, at, ids),
+              deletedMessageSeq: result.sequenceNumber ?? 0,
+              resolveLosers: (rid, seq, ids) =>
+                this.messageService.resolveEffectiveLastLosers(rid, seq, ids),
             });
           }
           const preview = buildMessagePreview(
@@ -490,7 +490,7 @@ export class PrivateMessageController {
       void this.messageService
         .recalculateLastMessageAfterDeleteForMe(
           result.roomId,
-          result.createdAt,
+          result.sequenceNumber ?? 0,
           userId
         )
         .then((recalc) => {

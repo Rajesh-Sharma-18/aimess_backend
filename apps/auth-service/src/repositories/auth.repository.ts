@@ -1,3 +1,7 @@
+import {
+  anonymizedAccountFields,
+  anonymizedLinkedAccountFields,
+} from "../lib/account-anonymize.js";
 import { prisma } from "../config/prisma.js";
 import {
   AccountStatus,
@@ -276,6 +280,68 @@ export const authRepository = {
    * purge job is ever added, it becomes the one place that deletes rows; do not
    * reintroduce deletes here.
    */
+  /**
+   * Accounts whose grace period has elapsed and whose data has not yet been
+   * erased. Ordered oldest-first so a backlog drains in the order it accrued.
+   */
+  findAccountsDueForPurge(now: Date, limit: number) {
+    return prisma.authUser.findMany({
+      where: {
+        deletedAt: { not: null },
+        scheduledDeletionAt: { lte: now },
+        purgedAt: null,
+      },
+      select: { id: true, scheduledDeletionAt: true },
+      orderBy: { scheduledDeletionAt: "asc" },
+      take: limit,
+    });
+  },
+
+  /**
+   * Erase one account's personal data, in one transaction.
+   *
+   * The row survives — messages, memberships and audit records reference its id
+   * — but every value that identifies a person is replaced. See
+   * `lib/account-anonymize.ts` for what is replaced and why.
+   *
+   * Claim-then-write: the update is conditional on `purgedAt` still being null,
+   * so two replicas running the sweeper at once cannot both purge the same
+   * account and publish the event twice. The loser's update matches no row.
+   */
+  async purgeAccount(userId: string): Promise<boolean> {
+    const claimed = await prisma.authUser.updateMany({
+      where: { id: userId, purgedAt: null, deletedAt: { not: null } },
+      data: { purgedAt: new Date() },
+    });
+    if (claimed.count === 0) return false;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.authUser.update({
+        where: { id: userId },
+        data: anonymizedAccountFields(userId),
+      });
+
+      const links = await tx.linkedAccount.findMany({
+        where: { userId },
+        select: { id: true },
+      });
+      for (const link of links) {
+        await tx.linkedAccount.update({
+          where: { id: link.id },
+          data: anonymizedLinkedAccountFields(userId, link.id),
+        });
+      }
+
+      // One-time codes and reset tokens are credentials tied to an address that
+      // no longer exists here. They are rows, not references — nothing points at
+      // them — so they are deleted outright rather than blanked.
+      await tx.otpCode.deleteMany({ where: { userId } });
+      await tx.passwordResetToken.deleteMany({ where: { userId } });
+    });
+
+    return true;
+  },
+
   softDeleteUser(userId: string) {
     return prisma.$transaction(async (tx) => {
       const now = new Date();

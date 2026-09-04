@@ -32,6 +32,12 @@ service AuthService {
   // one identity platform-wide, but end users and admins live in different
   // databases, so neither side can enforce that with an index.
   rpc IsUserEmailTaken (IsUserEmailTakenRequest) returns (IsUserEmailTakenResponse);
+  // Internal: notifications-service asks whether a session is still live before
+  // pushing to a device token registered by it. The Redis active-session marker
+  // is the fast path; it expires with the refresh token, so once it is gone the
+  // Session row is the only thing that still knows. Without this the send path
+  // failed open on a cache miss and kept ringing signed-out devices.
+  rpc IsSessionActive (IsSessionActiveRequest) returns (IsSessionActiveResponse);
 }
 
 message GetUserCountsRequest {}
@@ -173,3 +179,7 @@ message BulkGetAccountsResponse {
 // or renaming an admin account.
 message IsUserEmailTakenRequest { string email = 1; }
 message IsUserEmailTakenResponse { bool taken = 1; }
+
+// Internal: is this session still usable (exists and not revoked)?
+message IsSessionActiveRequest { string session_id = 1; }
+message IsSessionActiveResponse { bool active = 1; }

@@ -28,7 +28,10 @@ import {
   publishCommunitySystemMessageForChatSafe,
   publishCommunitySystemMessageForChatAwaited,
 } from "../../src/messaging/publish-community-chat.js";
-import { fetchUserSnapshots } from "../../src/lib/user-client.js";
+import {
+  fetchAcceptedFriendIds,
+  fetchUserSnapshots,
+} from "../../src/lib/user-client.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
@@ -449,6 +452,11 @@ describe("Full ban/unban cycle never restores a previous MODERATOR/ADMIN role (r
 
   it("admin re-add (addMembers) reactivates as MEMBER, never the pre-ban MODERATOR rank", async () => {
     repo.findMembersByUserIds.mockResolvedValue([leftAfterBanUnbanCycle]);
+    // addMembers gates on friendship first (AIM-05); this case is about the
+    // rank a reactivated member comes back with, so make the target a friend.
+    (fetchAcceptedFriendIds as unknown as jest.Mock).mockResolvedValue(
+      new Set([TARGET])
+    );
     (fetchUserSnapshots as jest.Mock).mockResolvedValue(
       new Map([
         [

@@ -129,18 +129,27 @@ describe("POST /api/auth/forgot-password/request", () => {
     expect(res.body.data.email).toBe("john@example.com");
   });
 
-  it("returns 404 when the email is not associated with a resettable account", async () => {
+  /**
+   * AIM-07 / AIM-64. These two previously asserted a 404, which made the
+   * endpoint a membership oracle: 404 for an unknown address, 200 for a
+   * registered one, so any email could be tested for an account by status code
+   * alone — the input to targeted credential stuffing. The answer is now
+   * identical either way, matching the backoffice equivalent. No OTP is issued
+   * for an address that cannot reset, which is what the `otpRepo` assertions
+   * pin.
+   */
+  it("answers 200 for an unknown email, issuing no OTP", async () => {
     authRepo.findByEmailForPasswordReset.mockResolvedValue(null);
 
     const res = await request(app)
       .post("/api/auth/forgot-password/request")
       .send({ email: "ghost@example.com" });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(otpRepo.create).not.toHaveBeenCalled();
   });
 
-  it("returns 404 for a deleted account (cannot reset)", async () => {
+  it("answers 200 for a deleted account (cannot reset), issuing no OTP", async () => {
     authRepo.findByEmailForPasswordReset.mockResolvedValue(
       resettableUser({ deletedAt: new Date() })
     );
@@ -149,7 +158,35 @@ describe("POST /api/auth/forgot-password/request", () => {
       .post("/api/auth/forgot-password/request")
       .send({ email: "john@example.com" });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(otpRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("is indistinguishable from a real request: same status and body", async () => {
+    // The whole point of the change — a caller must not be able to tell the two
+    // apart. The SAME address is used for both calls, so nothing
+    // address-dependent can explain a difference; only the lookup result
+    // varies.
+    //
+    // A fresh address, because the OTP issuance throttle is keyed by identifier
+    // and the cases above have already spent quota on `john@example.com` —
+    // reusing it here would throttle the second call and compare a 429 against
+    // a 200.
+    const probe = "indistinguishability-probe@example.com";
+
+    authRepo.findByEmailForPasswordReset.mockResolvedValue(resettableUser());
+    const real = await request(app)
+      .post("/api/auth/forgot-password/request")
+      .send({ email: probe });
+
+    authRepo.findByEmailForPasswordReset.mockResolvedValue(null);
+    const ghost = await request(app)
+      .post("/api/auth/forgot-password/request")
+      .send({ email: probe });
+
+    expect(real.status).toBe(200);
+    expect(ghost.status).toBe(real.status);
+    expect(ghost.body).toEqual(real.body);
   });
 
   it.each([
@@ -256,7 +293,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
   it("resets the password with a valid token → 200", async () => {
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -276,7 +313,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(200);
     // No exceptSessionId — nothing is trusted after a reset.
@@ -292,7 +329,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(publishAllRevoked).not.toHaveBeenCalled();
     expect(publishRevoked).not.toHaveBeenCalled();
@@ -303,7 +340,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
     expect(authRepo.updatePasswordHash).not.toHaveBeenCalled();
@@ -319,7 +356,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -334,7 +371,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -349,7 +386,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(400);
   });
@@ -367,7 +404,7 @@ describe("POST /api/auth/forgot-password/reset", () => {
 
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")
-      .send({ resetToken: "a".repeat(64), password: "NewPassword123" });
+      .send({ resetToken: "a".repeat(64), password: "Fresh-Meadow-Lantern-4" });
 
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("ACCOUNT_BANNED");
@@ -376,11 +413,11 @@ describe("POST /api/auth/forgot-password/reset", () => {
   it.each([
     [
       "reset token too short",
-      { resetToken: "short", password: "NewPassword123" },
+      { resetToken: "short", password: "Fresh-Meadow-Lantern-4" },
     ],
     ["password too short", { resetToken: "a".repeat(64), password: "short" }],
     ["missing password", { resetToken: "a".repeat(64) }],
-    ["missing reset token", { password: "NewPassword123" }],
+    ["missing reset token", { password: "Fresh-Meadow-Lantern-4" }],
   ])("returns 400 on validation failure: %s", async (_label, body) => {
     const res = await request(app)
       .post("/api/auth/forgot-password/reset")

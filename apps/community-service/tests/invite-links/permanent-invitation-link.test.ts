@@ -135,7 +135,14 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("getOrCreatePermanentInvitationLink — minting", () => {
-  it("mints a link with no expiry when none is live", async () => {
+  /**
+   * AIM-60. This case previously asserted that the link was minted with NO
+   * expiry. That made a leaked link a permanent door: one forwarded out of a
+   * chat or pasted into a public thread admitted anyone who had it, with
+   * unlimited uses by default, until an admin happened to remember it existed.
+   * New links now lapse after 30 days.
+   */
+  it("mints a link that expires, roughly 30 days out", async () => {
     repo.findById.mockResolvedValue(community());
 
     const res = await communityService.getOrCreatePermanentInvitationLink(
@@ -144,8 +151,12 @@ describe("getOrCreatePermanentInvitationLink — minting", () => {
     );
 
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
-    expect(repo.createInviteLink.mock.calls[0][0].expiresAt).toBeNull();
-    expect(res.expiresAt).toBeNull();
+    const written = repo.createInviteLink.mock.calls[0][0].expiresAt as Date;
+    expect(written).toBeInstanceOf(Date);
+
+    const daysOut = (written.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+    expect(daysOut).toBeGreaterThan(29);
+    expect(daysOut).toBeLessThan(31);
   });
 
   it("mints a code with sufficient entropy (>= 20 url-safe chars)", async () => {
@@ -365,14 +376,42 @@ describe("redeemInviteLink — legacy permanent-code fallback", () => {
     ).rejects.toThrow("COMMUNITY_INVITE_LINK_NOT_FOUND");
   });
 
-  // A link lives until it is revoked. Rows stamped with an expiry by an older
-  // build must therefore still redeem — the clock is not a reason any more.
-  it("redeems a row carrying a past expiresAt stamped by an older build", async () => {
+  /**
+   * AIM-60. This previously asserted that a past `expiresAt` was IGNORED — the
+   * column was stamped by nothing and read by nobody, so a link was usable
+   * forever. It is enforced again.
+   */
+  it("refuses a row whose expiry has passed", async () => {
     repo.findInviteLinkByCode.mockResolvedValue(
       linkRow({
         createdAt: new Date(Date.now() - 2 * HOUR_MS),
         expiresAt: new Date(Date.now() - HOUR_MS),
       })
+    );
+
+    await expect(
+      communityService.redeemInviteLink(STORED_CODE, CALLER)
+    ).rejects.toThrow("COMMUNITY_INVITE_LINK_EXPIRED");
+  });
+
+  it("still redeems a link created before expiry existed (null = no expiry)", async () => {
+    // Every link minted before this change has no `expiresAt`. Retroactively
+    // expiring them would break invitations already in people's hands, sent on
+    // the promise of being permanent.
+    repo.findInviteLinkByCode.mockResolvedValue(
+      linkRow({
+        createdAt: new Date(Date.now() - 90 * 24 * HOUR_MS),
+        expiresAt: null,
+      })
+    );
+
+    const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
+    expect(res.member ?? res.request).toBeDefined();
+  });
+
+  it("redeems a link whose expiry is still in the future", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(
+      linkRow({ expiresAt: new Date(Date.now() + 7 * 24 * HOUR_MS) })
     );
 
     const res = await communityService.redeemInviteLink(STORED_CODE, CALLER);
@@ -450,10 +489,13 @@ describe("createInviteLink — parameterized call still creates a CUSTOM link", 
     expect(link.isPermanent).toBe(false);
   });
 
-  it("writes no expiry at all — a link dies only when it is revoked", async () => {
+  it("stamps an expiry on a parameterized link too", async () => {
+    // AIM-60: previously asserted `expiresAt` was null here, i.e. that a custom
+    // link also lived until someone revoked it.
     await communityService.createInviteLink(CID, CALLER, { maxUses: 5 });
 
     const written = repo.createInviteLink.mock.calls[0][0];
-    expect(written.expiresAt).toBeNull();
+    expect(written.expiresAt).toBeInstanceOf(Date);
+    expect((written.expiresAt as Date).getTime()).toBeGreaterThan(Date.now());
   });
 });

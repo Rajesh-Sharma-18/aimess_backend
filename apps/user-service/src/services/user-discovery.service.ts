@@ -228,9 +228,9 @@ export const userDiscoveryService = {
           };
         }
         const pending = pendingRelMap.get(p.userId);
-        const relationshipStatus = (pending
-          ? "PENDING"
-          : "NONE") as RelationshipStatus;
+        const relationshipStatus = (
+          pending ? "PENDING" : "NONE"
+        ) as RelationshipStatus;
         return {
           ...base,
           isFriend: false,

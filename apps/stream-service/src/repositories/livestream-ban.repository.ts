@@ -47,6 +47,25 @@ export class LivestreamBanRepository {
     return row !== null;
   }
 
+  /**
+   * Which of `livestreamIds` this user is barred from, in ONE query.
+   *
+   * Batch counterpart of {@link isBanned} for the stream list, which would
+   * otherwise need one query per row to apply the same gate `getStream`
+   * applies — an N+1 on a read endpoint.
+   */
+  async bannedStreamIds(
+    bannedUserId: string,
+    livestreamIds: string[]
+  ): Promise<Set<string>> {
+    if (livestreamIds.length === 0) return new Set();
+    const rows = await this.prisma.livestreamBan.findMany({
+      where: { bannedUserId, livestreamId: { in: livestreamIds } },
+      select: { livestreamId: true },
+    });
+    return new Set(rows.map((row) => row.livestreamId));
+  }
+
   async listByStream(livestreamId: string): Promise<LivestreamBan[]> {
     return this.prisma.livestreamBan.findMany({
       where: { livestreamId },

@@ -1,47 +1,62 @@
 /**
- * `isSessionActiveForRequest` — the Redis-backed session-revocation check
- * wired into notifications-service's `/v1/devices` auth middleware so a
- * session terminated via DELETE /auth/sessions/{sessionId} is rejected on its
- * next request here too, not just at auth-service.
+ * Push gate: a device token whose session is no longer live must not be pushed.
+ *
+ * The regression this covers is a signed-out phone that kept ringing. The Redis
+ * marker expires with the refresh token (7 days) while the token row survives up
+ * to the sweeper TTL (60 days), so a cache MISS was the common case for exactly
+ * the devices that must not be rung — and the old gate read a miss as "active".
  */
-jest.mock("../../src/config/redis.js", () => ({
-  redis: { get: jest.fn(), status: "ready" },
+const redisMock = {
+  status: "ready",
+  get: jest.fn(async () => null as string | null),
+};
+jest.mock("../../src/config/redis.js", () => ({ redis: redisMock }));
+
+const isSessionActive = jest.fn(async () => false);
+jest.mock("../../src/grpc/auth-session.client.js", () => ({
+  createAuthSessionClient: () => ({ isSessionActive }),
 }));
 
-import { redis } from "../../src/config/redis.js";
 import { isSessionActiveForRequest } from "../../src/lib/session-active-cache.js";
 
-const mockGet = redis.get as jest.Mock;
-
-describe("isSessionActiveForRequest (notifications-service)", () => {
+describe("isSessionActiveForRequest", () => {
   beforeEach(() => {
-    mockGet.mockReset();
-    redis.status = "ready";
+    redisMock.status = "ready";
+    redisMock.get.mockResolvedValue(null);
+    isSessionActive.mockResolvedValue(false);
   });
 
-  it("fails open (active) when Redis is not connected", async () => {
-    redis.status = "connecting";
+  it("trusts the cached active marker without calling auth-service", async () => {
+    redisMock.get.mockResolvedValue("1");
     await expect(isSessionActiveForRequest("s1")).resolves.toBe(true);
-    expect(mockGet).not.toHaveBeenCalled();
+    expect(isSessionActive).not.toHaveBeenCalled();
   });
 
-  it("returns false for a revoked session (cache value '0')", async () => {
-    mockGet.mockResolvedValue("0");
+  it("trusts the cached revoked marker without calling auth-service", async () => {
+    redisMock.get.mockResolvedValue("0");
     await expect(isSessionActiveForRequest("s1")).resolves.toBe(false);
+    expect(isSessionActive).not.toHaveBeenCalled();
   });
 
-  it("returns true for an active session (cache value '1')", async () => {
-    mockGet.mockResolvedValue("1");
+  it("asks auth-service on a cache miss and refuses a dead session", async () => {
+    await expect(isSessionActiveForRequest("s1")).resolves.toBe(false);
+    expect(isSessionActive).toHaveBeenCalledWith("s1");
+  });
+
+  it("allows a session auth-service still holds", async () => {
+    isSessionActive.mockResolvedValue(true);
     await expect(isSessionActiveForRequest("s1")).resolves.toBe(true);
   });
 
-  it("fails open (active) on a cache miss (legacy session, key never written)", async () => {
-    mockGet.mockResolvedValue(null);
+  it("fails open when the oracle itself is unreachable", async () => {
+    isSessionActive.mockRejectedValue(new Error("UNAVAILABLE"));
     await expect(isSessionActiveForRequest("s1")).resolves.toBe(true);
   });
 
-  it("fails open (active) when Redis errors", async () => {
-    mockGet.mockRejectedValue(new Error("connection reset"));
+  it("falls back to auth-service when Redis is down", async () => {
+    redisMock.status = "connecting";
+    isSessionActive.mockResolvedValue(true);
     await expect(isSessionActiveForRequest("s1")).resolves.toBe(true);
+    expect(redisMock.get).not.toHaveBeenCalled();
   });
 });

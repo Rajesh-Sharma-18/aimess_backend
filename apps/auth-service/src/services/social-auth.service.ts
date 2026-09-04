@@ -278,11 +278,25 @@ export const socialAuthService = {
   ): Promise<SocialLoginResult> {
     const tokenProfile = await verifyAppleIdToken(input.identityToken);
 
-    // Only the email from the verified Apple token may be trusted as verified.
-    // A client-supplied `input.email` is never treated as verified (prevents
-    // account-takeover by claiming someone else's email).
-    const email =
-      tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;
+    // ONLY the email Apple asserted in the signed identity token is used, and
+    // `input.email` is ignored outright.
+    //
+    // It used to fall back to the request body when the token carried no email
+    // — which is every Apple sign-in after the first. The value was marked
+    // unverified, so it could not auto-link to an existing account, but it
+    // still flowed into the sign-UP branch and was written to `AuthUser.email`.
+    // That is account pre-hijacking: an attacker signs in with their own Apple
+    // id while claiming victim@example.com, and a real account is created
+    // holding the victim's address. When the victim later signs in with Google,
+    // the by-email auto-link finds the squatted account and merges the victim's
+    // identity into it — both parties then sign into one account, and the
+    // attacker reads the victim's messages, communities and profile.
+    //
+    // With the fallback gone, an Apple sign-in that carries no email and has no
+    // existing linked account is refused with AUTH_SOCIAL_EMAIL_REQUIRED rather
+    // than inventing an identity. A genuine first-time sign-up is unaffected:
+    // Apple always includes the email in that first identity token.
+    const email = tokenProfile.email ?? null;
     const emailVerified = tokenProfile.email
       ? tokenProfile.emailVerified
       : false;

@@ -652,6 +652,14 @@ model RoomMember {
 
   @@unique([roomId, userId])
   @@index([roomId, status])
+  // Community's half of the nav-badge unread summary reads this collection BY
+  // USER (`where: { userId, status }` — see room-member.repository.ts
+  // findActiveRoomsForUser / listRoomIdsForUser). Neither index above is
+  // prefixed on userId, so both queries were collection scans over every
+  // membership row in the product. GroupMember and PrivateRoom already carry
+  // the equivalent; community was the only one of the three summary halves
+  // whose lookup was unindexed.
+  @@index([userId, status])
   @@map("room_members")
 }
 

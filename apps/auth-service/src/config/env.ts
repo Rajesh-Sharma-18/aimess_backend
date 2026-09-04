@@ -1,5 +1,8 @@
+import type { AccessTokenSigningKey } from "@aimess/auth-jwt";
 import dotenv from "dotenv";
 import { z } from "zod";
+
+import { assertNoPlaceholderCredentials, expandFileSecrets } from "@aimess/utils";
 
 dotenv.config();
 
@@ -16,9 +19,73 @@ const envSchema = z.object({
   // Optional so local dev against an unauthenticated Redis keeps working.
   // Required for any shared/remote Redis, which must not be left open.
   REDIS_PASSWORD: z.string().optional(),
+  /**
+   * Wrap the Redis connection in TLS. Off by default so a loopback or
+   * private-network Redis is unchanged; set true wherever the connection leaves
+   * the host, because the AUTH password and — since Redis pub/sub is the
+   * realtime fan-out — every message body otherwise travel in cleartext.
+   */
+  REDIS_TLS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
-  JWT_ACCESS_SECRET: z.string(),
-  JWT_REFRESH_SECRET: z.string(),
+  // `.min(32)`: both were bare `z.string()`, so a truncated deploy variable or a
+  // bad shell quote yielded "" or "x" and still booted the ISSUER of every token
+  // on the platform. A single-character HS256 secret is recovered offline in
+  // seconds from one captured token, after which an attacker mints access
+  // tokens for arbitrary user ids that every service accepts.
+  JWT_ACCESS_SECRET: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    // Optional so a deployment that has moved to the keypair can REMOVE
+    // it entirely — which is the whole point of the migration. The boot
+    // assertion below requires one of the two.
+    z.string().min(32).optional()
+  ),
+  /**
+   * RS256 public key that verifies access tokens (PEM).
+   *
+   * The platform-wide fix for one symmetric secret being copied into eight
+   * services: with a keypair, auth-service alone holds the private half and is
+   * the only process able to MINT a token, while every other service holds only
+   * this public half, which is not a secret. A leak from any service other than
+   * auth-service then discloses nothing that can forge a session.
+   *
+   * Optional during the migration — set it alongside JWT_ACCESS_SECRET and both
+   * are accepted, so tokens signed before the switch keep verifying until they
+   * expire. Supply it as JWT_ACCESS_PUBLIC_KEY_FILE to mount it as a file.
+   */
+  JWT_ACCESS_PUBLIC_KEY: z.string().optional(),
+  /**
+   * Reject access tokens that carry no `iss`/`aud`. Leave false until every
+   * token minted before those claims existed has expired (one access-token
+   * lifetime after deploying), then turn it on.
+   */
+  JWT_REQUIRE_ISSUER_AUDIENCE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  /**
+   * RS256 private key used to SIGN access tokens (PEM). auth-service only.
+   *
+   * When set, tokens are signed with it instead of the shared secret, so no
+   * other service can mint one. Supply as JWT_ACCESS_PRIVATE_KEY_FILE to mount
+   * it as a file rather than an environment variable.
+   */
+  JWT_ACCESS_PRIVATE_KEY: z.string().optional(),
+  JWT_REFRESH_SECRET: z.string().min(32),
+  /**
+   * Leading zero bits required in a signup proof-of-work solution.
+   *
+   * The cost knob for account creation and handle-availability probing. 20 bits
+   * is roughly a million hashes: a fraction of a second on a phone, and a
+   * million times that for someone enumerating a million handles. Raise it if
+   * the platform is under a signup flood — the cost is paid entirely by the
+   * caller, so raising it hurts an attacker far more than a real user.
+   *
+   * Lowered in the test harness so suites do not spend their runtime hashing.
+   */
+  SIGNUP_CHALLENGE_DIFFICULTY_BITS: z.coerce.number().int().min(1).max(32).default(20),
   CORS_ALLOWED_ORIGINS: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string(),
   JWT_REFRESH_EXPIRES_IN: z.string(),
@@ -65,6 +132,17 @@ const envSchema = z.object({
   CHANGE_PASSWORD_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
 
   /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
+  /**
+   * Account-purge sweeper. `DELETE /api/auth/account` records a 30-day
+   * `scheduledDeletionAt` that nothing used to read, so no account was ever
+   * actually erased — see jobs/account-purge-sweeper.ts.
+   */
+  ACCOUNT_PURGE_SWEEP_INTERVAL_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  ACCOUNT_PURGE_BATCH_SIZE: z.coerce.number().int().positive().default(100),
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 
   /** QR device-link session lifetime (seconds) — spec: 60s. */
@@ -121,9 +199,31 @@ const envSchema = z.object({
 
   /** backoffice-service gRPC address — used to reject emails already used by an admin account. */
   BACKOFFICE_GRPC_URL: z.string().min(1).default("localhost:4010"),
+  // Refresh-token cookie (AIM-02). The browser gets the refresh token as an
+  // httpOnly cookie IN ADDITION to the JSON body; native clients ignore it.
+  // Unset means "secure in production, plain in dev" - never derive it from
+  // req.secure: TLS terminates at the edge and auth-service sits two hops back,
+  // so req.secure is false in production and would ship a non-Secure cookie.
+  AUTH_COOKIE_SECURE: z.enum(["true", "false"]).optional(),
+  // ai5dev.tech and api.ai5dev.tech share a registrable domain, so "lax" is
+  // carried on the cross-origin XHR. Only genuinely cross-site origins (dev
+  // tunnels, ngrok) need "none", which browsers reject without Secure.
+  AUTH_COOKIE_SAMESITE: z.enum(["lax", "strict", "none"]).default("lax"),
+  // Public path the browser sees. The gateway rewrites /api/v1/auth/* to
+  // /api/auth/*, so a cookie scoped to the downstream path would never be sent.
+  AUTH_COOKIE_PATH: z.string().min(1).default("/api/v1/auth"),
+  // POST /refresh and /token carry no Authorization header once the cookie is
+  // the credential, so the gateway backstop keys them by IP. Own limiter.
+  REFRESH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
+  REFRESH_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().positive().default(5),
 });
 
-const parsed = envSchema.safeParse(process.env);
+// `FOO_FILE=/run/secrets/foo` supplies `FOO`, so a secret can be a mounted
+// file (Docker/Kubernetes secrets) instead of an environment variable that
+// leaks through /proc, crash dumps, `docker inspect` and CI logs — and so
+// rotation is replacing a file rather than editing .env on every host.
+const expanded = expandFileSecrets(process.env);
+const parsed = envSchema.safeParse(expanded);
 
 if (!parsed.success) {
   console.error("Invalid Environment Variables");
@@ -132,3 +232,92 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+// Refuse to start a production deployment whose credentials are values
+// published in this repository. The schema can see that a string is present and
+// long enough; it cannot see that everyone already knows what it says. Matched
+// by variable NAME shape, so a secret added tomorrow is covered without anyone
+// remembering to extend a list.
+try {
+  assertNoPlaceholderCredentials(expanded, {
+    nodeEnv: env.NODE_ENV,
+    serviceName: "auth-service",
+  });
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+
+/**
+ * How this service verifies access tokens.
+ *
+ * One object rather than a bare secret, because verification now has three
+ * inputs: the legacy shared secret, the RS256 public key that replaces it, and
+ * whether `iss`/`aud` are mandatory yet. Every call site takes this, so they
+ * cannot drift apart — and so moving to a keypair is a configuration change
+ * rather than a code change in each service.
+ */
+/**
+ * The key auth-service signs access tokens with.
+ *
+ * Prefers the RS256 private key. That is the whole point of the migration: with
+ * a keypair, this process is the ONLY one that can mint a token, and every
+ * other service holds a public key that forges nothing. While the private key
+ * is unset, signing falls back to the shared secret and behaviour is unchanged.
+ *
+ * Resolved once, at import, so a misconfiguration surfaces at boot rather than
+ * on a user's first login.
+ */
+export const accessTokenSigningKey: AccessTokenSigningKey =
+  env.JWT_ACCESS_PRIVATE_KEY
+    ? { alg: "RS256", privateKey: env.JWT_ACCESS_PRIVATE_KEY }
+    : (() => {
+        if (!env.JWT_ACCESS_SECRET) {
+          console.error(
+            "Refusing to start: auth-service must be able to SIGN access tokens — set JWT_ACCESS_PRIVATE_KEY (preferred) or JWT_ACCESS_SECRET."
+          );
+          process.exit(1);
+        }
+        return { alg: "HS256", secret: env.JWT_ACCESS_SECRET };
+      })();
+
+export const accessTokenVerifyConfig = {
+  secret: env.JWT_ACCESS_SECRET,
+  publicKey: env.JWT_ACCESS_PUBLIC_KEY,
+  requireIssuerAudience: env.JWT_REQUIRE_ISSUER_AUDIENCE,
+};
+
+/**
+ * Refuse to start with no way to verify a token at all.
+ *
+ * The schema cannot express "one of these two", and a service that boots
+ * without either would reject every request — or, worse, a future refactor
+ * could make it accept them unverified.
+ */
+if (!env.JWT_ACCESS_SECRET && !env.JWT_ACCESS_PUBLIC_KEY) {
+  console.error(
+    "Refusing to start: set JWT_ACCESS_PUBLIC_KEY (preferred) or JWT_ACCESS_SECRET — without one, no access token can be verified."
+  );
+  process.exit(1);
+}
+
+// Resolved once at boot so every call site agrees on the cookie flags.
+export const authCookie = {
+  name: "aimess_rt",
+  path: env.AUTH_COOKIE_PATH,
+  sameSite: env.AUTH_COOKIE_SAMESITE,
+  secure:
+    env.AUTH_COOKIE_SECURE === undefined
+      ? env.NODE_ENV === "production"
+      : env.AUTH_COOKIE_SECURE === "true",
+} as const;
+
+// SameSite=None without Secure is dropped by every current browser, so the
+// refresh cookie would silently never come back. Fail at boot instead.
+if (authCookie.sameSite === "none" && !authCookie.secure) {
+  console.error(
+    "Invalid Environment Variables: AUTH_COOKIE_SAMESITE=none requires AUTH_COOKIE_SECURE=true"
+  );
+  process.exit(1);
+}

@@ -16,7 +16,22 @@ jest.mock("../../src/config/prisma.js", () => ({
 
 // --- Redis: never open a real connection ----------------------------------
 jest.mock("../../src/config/redis.js", () => ({
-  redis: { status: "ready", publish: jest.fn(async () => 0) },
+  // `set` backs the single-use claim on signup proofs. Without it every suite
+  // silently exercised the in-process fallback instead of the real Redis path,
+  // which would hide a broken claim.
+  redis: (() => {
+    const store = new Map<string, string>();
+    return {
+      status: "ready",
+      publish: jest.fn(async () => 0),
+      set: jest.fn(async (key: string, value: string, ...args: unknown[]) => {
+        if (args.includes("NX") && store.has(key)) return null;
+        store.set(key, value);
+        return "OK";
+      }),
+      del: jest.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
+    };
+  })(),
   connectAuthRedis: jest.fn(async () => undefined),
 }));
 

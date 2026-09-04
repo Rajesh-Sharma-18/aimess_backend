@@ -80,17 +80,43 @@ export class GeneralRoomRepository {
   async allocateSequenceAndRevision(
     roomId: string
   ): Promise<{ sequenceNumber: number; revision: number }> {
+    const block = await this.allocateSequenceAndRevisionBlock(roomId, 1);
+    return {
+      sequenceNumber: block.lastSequence,
+      revision: block.lastRevision,
+    };
+  }
+
+  /**
+   * {@link allocateSequenceAndRevision} for `count` messages at once — the
+   * community twin of `PrivateRoomRepository.allocateSequenceBlock`.
+   *
+   * Collapsing the contention window to one update per send was the first half
+   * of this problem; the second half is that one update per MESSAGE still caps a
+   * single room at ~1/RTT sends per second no matter how concurrent the callers
+   * are. Reserving a block lets a burst pay for one round trip instead of
+   * `count` of them. The returned values are the counters AFTER the increment,
+   * so the reserved range is `lastSequence - count + 1 .. lastSequence`.
+   */
+  async allocateSequenceAndRevisionBlock(
+    roomId: string,
+    count: number
+  ): Promise<{ lastSequence: number; lastRevision: number; room: null }> {
+    const n = Math.max(1, count);
     const r = await withWriteConflictRetry(() =>
       this.prisma.generalRoom.update({
         where: { id: roomId },
         data: {
-          lastSequence: { increment: 1 },
-          lastRevision: { increment: 1 },
+          lastSequence: { increment: n },
+          lastRevision: { increment: n },
         },
         select: { lastSequence: true, lastRevision: true },
       })
     );
-    return { sequenceNumber: r.lastSequence, revision: r.lastRevision };
+    // The community send path reads no other field off the room here (the
+    // writability check runs earlier, against its own read), so the row itself
+    // is deliberately not carried back.
+    return { lastSequence: r.lastSequence, lastRevision: r.lastRevision, room: null };
   }
 
   /** Bulk fetch rooms by id (community-chat summaries enrichment). */
@@ -220,7 +246,7 @@ export class GeneralRoomRepository {
     //
     // Conditional `updateMany` for the same reason as the group path: those
     // concurrent sends are not ordered, so the write only lands while this
-    // message is newer than the stored snapshot by (lastMessageAt, seq).
+    // message is newer than the stored snapshot by `seq`.
     // A returned count of 0 means a newer message already won. See
     // lib/last-activity-guard.ts.
     const res = await withWriteConflictRetry(() =>

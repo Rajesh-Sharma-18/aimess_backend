@@ -102,7 +102,7 @@ export const listLivestreamsQuerySchema = z
     sortBy: sortFieldEnum.optional(),
     order: z.enum(["asc", "desc"]).optional(),
     sortOrder: z.enum(["asc", "desc"]).optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(1000).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     cursor: z.string().trim().min(1).optional(),
     // Epoch-ms integers (inclusive). ponytail: coerce keeps numeric strings working.
@@ -165,7 +165,7 @@ export const listLivestreamReportsQuerySchema = z.object({
       "Sort must be in the format createdAt:asc or createdAt:desc"
     )
     .default("createdAt:desc"),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().trim().min(1).optional(),
 });
@@ -177,7 +177,7 @@ export type ListLivestreamReportsQueryInput = z.infer<
 // Per-stream users (actual viewers) list query.
 // ---------------------------------------------------------------------------
 export const listLivestreamUsersQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   sortField: z.enum(["joinedAt", "watchDurationSeconds"]).optional(),
   sortDir: z.enum(["asc", "desc"]).optional(),

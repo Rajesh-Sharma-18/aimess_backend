@@ -15,7 +15,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
 
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT}:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -46,7 +46,7 @@ services:
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
 
     ports:
-      - "${MONGODB_PORT}:27017"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${MONGODB_PORT}:27017"
 
     volumes:
       - mongodb_data:/data/db
@@ -76,7 +76,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${REDIS_PORT}:6379"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${REDIS_PORT}:6379"
 
     volumes:
       - redis_data:/data
@@ -103,8 +103,8 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
 
     ports:
-      - "${RABBITMQ_PORT}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${RABBITMQ_PORT}:5672"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT}:15672"
 
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -134,12 +134,52 @@ services:
       MINIO_SERVER_URL: ${MINIO_SERVER_URL:-}
 
     ports:
-      - "${MINIO_API_PORT}:9000"
-      - "${MINIO_CONSOLE_PORT}:9001"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${MINIO_API_PORT}:9000"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${MINIO_CONSOLE_PORT}:9001"
 
     volumes:
       - minio_data:/data
 
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - aimess-network
+
+  # ============================================================================
+  # MinIO provisioning — buckets, and one SCOPED account per service (AIM-25).
+  #
+  # Six services used to hold the MinIO ROOT credentials, which can read and
+  # delete every object in every bucket and drop the buckets themselves. Each
+  # service now gets an account limited to the buckets it actually names, so a
+  # leak from one is bounded by what that service could already do.
+  #
+  # Runs on every `up` and is idempotent: it re-applies the secrets from the
+  # environment, so rotating a value here and restarting is the whole rotation
+  # procedure.
+  # ============================================================================
+  minio-init:
+    image: minio/mc
+    container_name: aimess-minio-init
+    restart: on-failure
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SECRET_MEDIA: ${MINIO_SECRET_MEDIA}
+      MINIO_SECRET_USER: ${MINIO_SECRET_USER}
+      MINIO_SECRET_CHAT: ${MINIO_SECRET_CHAT}
+      MINIO_SECRET_COMMUNITY: ${MINIO_SECRET_COMMUNITY}
+      MINIO_SECRET_STREAM: ${MINIO_SECRET_STREAM}
+      MINIO_SECRET_BACKOFFICE: ${MINIO_SECRET_BACKOFFICE}
+    entrypoint: ["sh", "/init-buckets.sh"]
+    volumes:
+      - ./deploy/minio/init-buckets.sh:/init-buckets.sh:ro
     networks:
       - aimess-network
 
@@ -187,7 +227,7 @@ services:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
 
     ports:
-      - "${PGADMIN_PORT}:80"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${PGADMIN_PORT}:80"
 
     depends_on:
       - postgres
@@ -210,7 +250,7 @@ services:
       REDIS_HOSTS: local:redis:6379
 
     ports:
-      - "${REDIS_COMMANDER_PORT}:8081"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:${REDIS_COMMANDER_PORT}:8081"
 
     depends_on:
       - redis
@@ -236,8 +276,8 @@ services:
     command: >
       redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7001 --cluster-announce-bus-port 17001 --appendonly yes --bind 0.0.0.0
     ports:
-      - "7001:6379"
-      - "17001:17001"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:7001:6379"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:17001:17001"
     volumes:
       - redis_cluster_1:/data
     networks:
@@ -250,8 +290,8 @@ services:
     command: >
       redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7002 --cluster-announce-bus-port 17002 --appendonly yes --bind 0.0.0.0
     ports:
-      - "7002:6379"
-      - "17002:17002"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:7002:6379"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:17002:17002"
     volumes:
       - redis_cluster_2:/data
     networks:
@@ -264,8 +304,8 @@ services:
     command: >
       redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7003 --cluster-announce-bus-port 17003 --appendonly yes --bind 0.0.0.0
     ports:
-      - "7003:6379"
-      - "17003:17003"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:7003:6379"
+      - "${INFRA_BIND_ADDR:-127.0.0.1}:17003:17003"
     volumes:
       - redis_cluster_3:/data
     networks:
@@ -308,6 +348,59 @@ services:
       - aimess-network
 
   # ============================================================================
+  # config-render — substitutes secrets into the committed config templates.
+  #
+  # SRS and LiveKit both read a config FILE, and both need a shared secret
+  # inside it: SRS carries the hook secret in its http_hooks URLs (it cannot set
+  # request headers), and LiveKit needs the webhook api_key. Those files are
+  # tracked in git, so the secrets used to be committed literals — the SRS hook
+  # secret is the only authenticator on a publicly-routable endpoint, and the
+  # LiveKit pair signs every call token.
+  #
+  # The templates now carry __SRS_HOOK_SECRET__ / __LIVEKIT_API_KEY__ and this
+  # one-shot service renders them into a named volume before either server
+  # starts. Nothing writes back to the repo, and no secret is ever committed.
+  # ============================================================================
+  config-render:
+    image: alpine:3.20
+    container_name: aimess-config-render
+    restart: "no"
+
+    environment:
+      SRS_HOOK_SECRET: "${SRS_HOOK_SECRET}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+
+    volumes:
+      - ./docker/srs/aimess.conf:/templates/srs/aimess.conf:ro
+      - ./docker/livekit/config.yaml:/templates/livekit/config.yaml:ro
+      - rendered-config:/rendered
+
+    # Refuses to render a template whose secret is unset, rather than emitting a
+    # config with an empty secret that would accept every unauthenticated hook.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        # `$$` keeps the expansion in the CONTAINER's shell. A single `$` would
+        # be substituted by Compose while parsing this file, baking the secret
+        # into the container's command line and into `docker compose config`.
+        if [ -z "$${SRS_HOOK_SECRET:-}" ]; then
+          echo "config-render: SRS_HOOK_SECRET is unset — refusing to render an SRS config with no hook authentication." >&2
+          exit 1
+        fi
+        if [ -z "$${LIVEKIT_API_KEY:-}" ]; then
+          echo "config-render: LIVEKIT_API_KEY is unset — refusing to render a LiveKit config with no webhook key." >&2
+          exit 1
+        fi
+        sed "s|__SRS_HOOK_SECRET__|$$SRS_HOOK_SECRET|g" /templates/srs/aimess.conf > /rendered/aimess.conf
+        sed "s|__LIVEKIT_API_KEY__|$$LIVEKIT_API_KEY|g" /templates/livekit/config.yaml > /rendered/config.yaml
+        echo "config-render: rendered SRS and LiveKit configs"
+
+    networks:
+      - aimess-network
+
+  # ============================================================================
   # SRS (OSSRS) — local media server for HLS/FLV/WebRTC (WHIP/WHEP) streaming.
   #
   # Ports (host):
@@ -342,9 +435,17 @@ services:
       - "8000:8000/udp"
 
     volumes:
-      - ./docker/srs/aimess.conf:/usr/local/srs/conf/aimess.conf:ro
+      # Rendered by `config-render` — the committed template carries a
+      # __SRS_HOOK_SECRET__ placeholder, never the real hook secret. That
+      # secret is the ONLY authenticator on the publicly-routable
+      # /internal/srs/hooks endpoint, so it must not live in git.
+      - rendered-config:/usr/local/srs/rendered:ro
 
-    command: ["./objs/srs", "-c", "conf/aimess.conf"]
+    depends_on:
+      config-render:
+        condition: service_completed_successfully
+
+    command: ["./objs/srs", "-c", "rendered/aimess.conf"]
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -381,10 +482,15 @@ services:
       - "50000-50100:50000-50100/udp"
 
     volumes:
-      - ./docker/livekit/config.yaml:/etc/livekit/config.yaml:ro
+      # Rendered by `config-render` — the committed template carries a
+      # __LIVEKIT_API_KEY__ placeholder, never a real key.
+      - rendered-config:/etc/livekit:ro
 
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      config-render:
+        condition: service_completed_successfully
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -416,6 +522,11 @@ volumes:
   redis_cluster_1:
   redis_cluster_2:
   redis_cluster_3:
+  # Config files rendered from the committed templates with the real secrets
+  # substituted in at start-up (see the `config-render` service). Deliberately
+  # a volume rather than a bind mount, so a rendered secret never lands in the
+  # working tree where it could be committed.
+  rendered-config:
 
 # ============================================================================
 # Network

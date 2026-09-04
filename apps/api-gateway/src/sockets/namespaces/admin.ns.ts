@@ -1,7 +1,47 @@
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
+import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { createGatewayAdminSocketAuthMiddleware } from "../auth.middleware.js";
+
+/**
+ * Payload schemas for the /admin subscribe events.
+ *
+ * Every other namespace validates with `safeParse`; these six handlers used
+ * `payload?.x?.trim()` instead, which guards null and undefined but not a wrong
+ * TYPE. Emitting `{groupId: 5}` made `(5).trim` undefined and threw a
+ * TypeError synchronously inside the Socket.IO listener — Socket.IO does not
+ * wrap listeners in try/catch, so it reached the process. The throw also
+ * happened BEFORE the permission check, so any admin token could trigger it
+ * regardless of granted permissions.
+ *
+ * The id shapes are not cosmetic. `admin:group:subscribe` joins
+ * `conv:<groupId>`, and private DMs publish on that SAME Redis channel family —
+ * so an id that is not a group id turns a `groups.moderate` grant into a live
+ * feed of an arbitrary private conversation, message bodies and attachment URLs
+ * included. Room ids are server-minted with a kind prefix
+ * (`generateRoomId("grp"|"prv")` in chat-service) and the codebase already
+ * treats that prefix as authoritative for authorization decisions, so requiring
+ * `grp_` here is the same class of check, applied at the door.
+ */
+const GroupSubscribeSchema = z.object({
+  groupId: z
+    .string()
+    .trim()
+    .regex(
+      /^grp_[A-Za-z0-9_-]{8,64}$/,
+      "groupId must be a group room id (grp_…)"
+    ),
+});
+
+/** Community and stream ids are Mongo ObjectIds — 24 lowercase hex chars. */
+const objectId = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-f]{24}$/i, "must be a 24-character object id");
+
+const CommunitySubscribeSchema = z.object({ communityId: objectId });
+const StreamSubscribeSchema = z.object({ streamId: objectId });
 
 interface RedisSocketEvent {
   event: string;
@@ -296,6 +336,41 @@ export function registerAdminNamespace(
     void socket.join("admin:broadcast");
     logger.debug(`/admin connected adminId=${String(adminId)}`);
 
+    // Token expiry, enforced mid-connection.
+    //
+    // `socket.data.tokenExpiresAt` was set at handshake and acted on by nobody,
+    // so a de-provisioned admin's open browser tab kept streaming mirrored
+    // community, group and livestream traffic for as long as the TCP connection
+    // survived — days after the admin token expired. Only an explicit session
+    // revocation closed it.
+    //
+    // Deliberately NOT the shared `createSessionTimers` helper the user
+    // namespaces use: that offers an `auth:refresh` event which exchanges a
+    // USER refresh token at auth-service. Admin sessions are a different
+    // credential with a different secret and their own rotation endpoint, so
+    // wiring it here would either do nothing or accept the wrong token type.
+    // An expired admin socket is disconnected; the panel reconnects with a
+    // freshly refreshed admin token, which is what it already does on a drop.
+    const expiresAt = Number(socket.data.tokenExpiresAt ?? 0);
+    let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+    if (expiresAt > 0) {
+      expiryTimer = setTimeout(
+        () => {
+          expiryTimer = null;
+          logger.debug(
+            `/admin token expired, disconnecting adminId=${String(adminId)}`
+          );
+          socket.emit("session:expired", {
+            reason: "TOKEN_EXPIRED",
+            expiresAt,
+            reconnect: true,
+          });
+          socket.disconnect(true);
+        },
+        Math.max(0, expiresAt - Date.now())
+      );
+    }
+
     // Communities this socket currently WANTS to watch. The permission check is
     // async, so without this an unsubscribe issued during the check would run
     // first (leave is synchronous) and the join would land after it, leaving the
@@ -305,15 +380,13 @@ export function registerAdminNamespace(
 
     socket.on(
       ADMIN_COMMUNITY_SUBSCRIBE,
-      (
-        payload: { communityId?: string } | undefined,
-        callback?: (res: unknown) => void
-      ) => {
-        const communityId = payload?.communityId?.trim();
-        if (!communityId) {
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const parsed = CommunitySubscribeSchema.safeParse(payload);
+        if (!parsed.success) {
           callback?.({ success: false, error: "INVALID_PAYLOAD" });
           return;
         }
+        const communityId = parsed.data.communityId;
         desiredCommunities.add(communityId);
         void (async () => {
           if (
@@ -344,15 +417,13 @@ export function registerAdminNamespace(
       }
     );
 
-    socket.on(
-      ADMIN_COMMUNITY_UNSUBSCRIBE,
-      (payload: { communityId?: string } | undefined) => {
-        const communityId = payload?.communityId?.trim();
-        if (!communityId) return;
-        desiredCommunities.delete(communityId);
-        void socket.leave(`community:${communityId}`);
-      }
-    );
+    socket.on(ADMIN_COMMUNITY_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = CommunitySubscribeSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const communityId = parsed.data.communityId;
+      desiredCommunities.delete(communityId);
+      void socket.leave(`community:${communityId}`);
+    });
 
     // Groups this socket currently WANTS to watch — same race guard as the
     // community set above (async permission check vs. a sync unsubscribe).
@@ -360,15 +431,15 @@ export function registerAdminNamespace(
 
     socket.on(
       ADMIN_GROUP_SUBSCRIBE,
-      (
-        payload: { groupId?: string } | undefined,
-        callback?: (res: unknown) => void
-      ) => {
-        const groupId = payload?.groupId?.trim();
-        if (!groupId) {
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const parsed = GroupSubscribeSchema.safeParse(payload);
+        if (!parsed.success) {
+          // Includes an id that is not a group room id — see the schema note:
+          // a `prv_` id here would mirror a private conversation to the panel.
           callback?.({ success: false, error: "INVALID_PAYLOAD" });
           return;
         }
+        const groupId = parsed.data.groupId;
         desiredGroups.add(groupId);
         void (async () => {
           if (
@@ -397,27 +468,23 @@ export function registerAdminNamespace(
       }
     );
 
-    socket.on(
-      ADMIN_GROUP_UNSUBSCRIBE,
-      (payload: { groupId?: string } | undefined) => {
-        const groupId = payload?.groupId?.trim();
-        if (!groupId) return;
-        desiredGroups.delete(groupId);
-        void socket.leave(`conv:${groupId}`);
-      }
-    );
+    socket.on(ADMIN_GROUP_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = GroupSubscribeSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const groupId = parsed.data.groupId;
+      desiredGroups.delete(groupId);
+      void socket.leave(`conv:${groupId}`);
+    });
 
     socket.on(
       ADMIN_STREAM_SUBSCRIBE,
-      (
-        payload: { streamId?: string } | undefined,
-        callback?: (res: unknown) => void
-      ) => {
-        const streamId = payload?.streamId?.trim();
-        if (!streamId) {
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const parsed = StreamSubscribeSchema.safeParse(payload);
+        if (!parsed.success) {
           callback?.({ success: false, error: "INVALID_PAYLOAD" });
           return;
         }
+        const streamId = parsed.data.streamId;
         void (async () => {
           if (
             !(await adminHasPermission(
@@ -441,15 +508,16 @@ export function registerAdminNamespace(
     // "Leave Livestream" — drops this admin's monitoring session only. The
     // broadcast itself is untouched: the panel never joined the /stream room
     // that stream-service counts, so there is nothing to tear down upstream.
-    socket.on(
-      ADMIN_STREAM_UNSUBSCRIBE,
-      (payload: { streamId?: string } | undefined) => {
-        const streamId = payload?.streamId?.trim();
-        if (streamId) void socket.leave(`stream:${streamId}`);
-      }
-    );
+    socket.on(ADMIN_STREAM_UNSUBSCRIBE, (payload: unknown) => {
+      const parsed = StreamSubscribeSchema.safeParse(payload);
+      if (parsed.success) void socket.leave(`stream:${parsed.data.streamId}`);
+    });
 
     socket.on("disconnect", (reason: string) => {
+      if (expiryTimer !== null) {
+        clearTimeout(expiryTimer);
+        expiryTimer = null;
+      }
       logger.debug(
         `/admin disconnected adminId=${String(adminId)} reason=${reason}`
       );

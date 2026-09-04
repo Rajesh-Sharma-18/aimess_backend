@@ -59,7 +59,6 @@ services:
       MEDIA_SERVICE_URL: http://media-service:3009
       BACKOFFICE_SERVICE_URL: http://backoffice-service:3010
       STREAM_SERVICE_URL: ${STREAM_SERVICE_URL}
-      COMMUNITY_INTERNAL_URL: http://community-service:3003
       # gRPC dial targets.
       AUTH_GRPC_URL: auth-service:4001
       USER_GRPC_URL: user-service:4002
@@ -90,7 +89,7 @@ services:
     environment:
       AUTH_SERVICE_PORT: "3001"
       AUTH_GRPC_PORT: "4001"
-      AUTH_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_auth
+      AUTH_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_auth?sslmode=require
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3006
       BACKOFFICE_GRPC_URL: backoffice-service:4010
       TRUST_PROXY_HOPS: "1"
@@ -106,7 +105,7 @@ services:
     environment:
       USER_SERVICE_PORT: "3002"
       USER_GRPC_PORT: "4002"
-      USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users
+      USER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/aimess_users?sslmode=require
       AUTH_GRPC_URL: auth-service:4001
       CHAT_GRPC_URL: chat-service:4004
       MEDIA_GRPC_URL: media-service:4009
@@ -125,7 +124,7 @@ services:
     environment:
       COMMUNITY_SERVICE_PORT: "3003"
       COMMUNITY_GRPC_PORT: "4003"
-      COMMUNITY_DATABASE_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@${DEV01_IP}:27017/community_db?authSource=admin&directConnection=true
+      COMMUNITY_DATABASE_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@${DEV01_IP}:27017/community_db?authSource=admin&tls=true&directConnection=true
       USER_GRPC_URL: user-service:4002
       CHAT_GRPC_URL: chat-service:4004
       STREAM_GRPC_URL: ${STREAM_GRPC_URL}
@@ -179,6 +178,7 @@ services:
       USER_SERVICE_GRPC_URL: user-service:4002
       CHAT_SERVICE_GRPC_URL: chat-service:4004
       COMMUNITY_SERVICE_GRPC_URL: community-service:4003
+      AUTH_GRPC_URL: auth-service:4001
 
   # ===========================================================================
   # media-service — MongoDB aimess_media. Presigned uploads + AV scan queue.
@@ -243,7 +243,7 @@ services:
     environment:
       BACKOFFICE_SERVICE_PORT: "3010"
       BACKOFFICE_GRPC_PORT: "4010"
-      ADMIN_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/admin_db
+      ADMIN_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DEV01_IP}:5432/admin_db?sslmode=require
       AUTH_GRPC_URL: auth-service:4001
       USER_GRPC_URL: user-service:4002
       COMMUNITY_GRPC_URL: community-service:4003

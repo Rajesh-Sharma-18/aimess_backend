@@ -4,6 +4,7 @@ import { AppError, ForbiddenError } from "@aimess/errors";
 import { isDownloadableScanStatus } from "@aimess/constants";
 import { logger } from "@aimess/logger";
 
+import { env } from "../../config/env.js";
 import { mediaService } from "../../services/media.service.js";
 import type { MediaCategoryKey } from "../../config/uploads.js";
 
@@ -139,7 +140,14 @@ export const mediaImpl: grpc.UntypedServiceImplementation = {
         });
         callback(null, {
           scanStatus: result.scanStatus,
-          downloadable: isDownloadableScanStatus(result.scanStatus),
+          // `allowUnscanned` mirrors the REST download gate: an object whose
+          // only verdict is SKIPPED was never inspected, so it is servable only
+          // where the deployment openly runs without a scanner. chat-service's
+          // send-time attachment guard consumes this boolean, so both surfaces
+          // agree by construction.
+          downloadable: isDownloadableScanStatus(result.scanStatus, {
+            allowUnscanned: !env.CLAMAV_ENABLED,
+          }),
           fileSize: String(result.fileSize ?? 0),
         });
       } catch (err) {

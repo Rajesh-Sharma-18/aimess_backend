@@ -28,6 +28,8 @@ export class LivestreamRepository {
     sourceType: string;
     sourceUrl?: string | null;
     streamKey: string;
+    /** Public name the stream is published/played under. */
+    playbackId?: string;
     status?: string;
     hlsUrl?: string | null;
     flvUrl?: string | null;
@@ -43,6 +45,12 @@ export class LivestreamRepository {
         sourceType: data.sourceType,
         sourceUrl: data.sourceUrl ?? null,
         streamKey: data.streamKey,
+        // OMITTED, not null, when absent. The uniqueness of playbackId is a
+        // SPARSE index (see server.ts), and sparse skips only rows where the
+        // field is MISSING — a stored null is present as far as the index is
+        // concerned, so writing null here would make the second such row a
+        // duplicate-key failure.
+        ...(data.playbackId ? { playbackId: data.playbackId } : {}),
         status: data.status ?? "PENDING",
         hlsUrl: data.hlsUrl ?? null,
         flvUrl: data.flvUrl ?? null,
@@ -56,6 +64,20 @@ export class LivestreamRepository {
     return this.prisma.livestream.findUnique({ where: { id } });
   }
 
+  /**
+   * Resolve a stream by the name SRS knows it as.
+   *
+   * SRS reports the PUBLISHED name, which is `playbackId` for streams created
+   * after the ingest/playback split and `streamKey` for older ones (they were
+   * published under their own secret). Matching either keeps a stream that was
+   * live across the deploy resolvable, so its hooks keep working until it ends.
+   */
+  async findBySrsName(srsName: string): Promise<Livestream | null> {
+    return this.prisma.livestream.findFirst({
+      where: { OR: [{ playbackId: srsName }, { streamKey: srsName }] },
+    });
+  }
+
   async findByStreamKey(streamKey: string): Promise<Livestream | null> {
     return this.prisma.livestream.findUnique({ where: { streamKey } });
   }
@@ -65,6 +87,15 @@ export class LivestreamRepository {
    * which resolves a whole page of currently-publishing SRS stream keys in one
    * indexed query instead of one round trip per publisher.
    */
+  async findBySrsNames(srsNames: string[]): Promise<Livestream[]> {
+    if (!srsNames.length) return [];
+    return this.prisma.livestream.findMany({
+      where: {
+        OR: [{ playbackId: { in: srsNames } }, { streamKey: { in: srsNames } }],
+      },
+    });
+  }
+
   async findByStreamKeys(streamKeys: string[]): Promise<Livestream[]> {
     if (!streamKeys.length) return [];
     return this.prisma.livestream.findMany({
@@ -317,6 +348,22 @@ export class LivestreamRepository {
   async countLiveByCreator(creatorId: string): Promise<number> {
     return this.prisma.livestream.count({
       where: { creatorId, status: { in: [...LIVE_STATUSES] } },
+    });
+  }
+
+  /**
+   * Count of PENDING (created but never published) streams for one creator.
+   *
+   * The concurrency caps are LIVE-only by design — a PENDING row is a
+   * broadcaster still setting up, and blocking on it would break the normal
+   * retry. But nothing counted PENDING rows at all, so `POST /streams` in a
+   * loop wrote unbounded rows, each minting a stream key and publishing a
+   * `stream.created` event, none of which tripped the LIVE guard. This backs a
+   * separate, looser cap that leaves room for one abandoned setup plus a retry.
+   */
+  async countPendingByCreator(creatorId: string): Promise<number> {
+    return this.prisma.livestream.count({
+      where: { creatorId, status: "PENDING" },
     });
   }
 

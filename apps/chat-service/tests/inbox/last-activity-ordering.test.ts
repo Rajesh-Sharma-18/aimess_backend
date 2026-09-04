@@ -8,12 +8,15 @@
  * itself was wrong.
  *
  * Every FORWARD bump is now conditional on being newer than what is stored,
- * ordered by the pair `(lastMessageAt, seq)` — `lastMessageAt` alone has only
- * millisecond resolution and a burst regularly collides inside one. These tests
- * pin that contract on all three chat-service surfaces plus the shared
- * predicate, and pin the two things the guard must NOT break: an in-place
- * refresh of the message already stored, and the unread counter (a losing race
- * still delivered a real, unread message).
+ * ordered by `seq` — the per-room atomic `$inc`, which is the ordering the
+ * clients render the transcript in. `createdAt` is stamped a round trip after
+ * the sequence is taken, so a burst genuinely hands out the two in different
+ * orders and a timestamp-ordered snapshot previewed a different message from
+ * the one at the bottom of the open chat. These tests pin that contract on all
+ * three chat-service surfaces plus the shared predicate, and pin the two things
+ * the guard must NOT break: an in-place refresh of the message already stored,
+ * and the unread counter (a losing race still delivered a real, unread
+ * message).
  */
 import {
   newerSnapshotWhere,
@@ -27,8 +30,8 @@ const AT = new Date("2026-08-13T10:00:00.000Z");
 
 /**
  * Evaluate the Prisma `where` fragment against a stored row, the way MongoDB
- * would: a range filter never matches an absent field, and `{ field: null }`
- * matches both an explicit null and an absent field.
+ * would: a range filter never matches an absent field, and `{ field: null }` /
+ * `{ isSet: false }` are what a row without a stored sequence matches.
  */
 function matches(
   where: ReturnType<typeof newerSnapshotWhere>,
@@ -38,41 +41,57 @@ function matches(
   const storedSeq = row.lastMessageSeq ?? null;
   return where.OR.some((clause) => {
     if ("AND" in clause) {
-      const [atClause, seqClause] = clause.AND;
-      if (storedAt === null) return false;
-      if (storedAt.getTime() !== atClause.lastMessageAt.getTime()) return false;
-      return seqClause.OR.some((s) => {
-        if (s.lastMessageSeq === null) return storedSeq === null;
-        return storedSeq !== null && storedSeq <= s.lastMessageSeq.lte;
-      });
+      // Legacy branch: only a row with NO stored sequence falls through to the
+      // timestamp comparison.
+      if (storedSeq !== null) return false;
+      const [, atClause] = clause.AND;
+      return atClause.OR.some((c) =>
+        c.lastMessageAt === null
+          ? storedAt === null
+          : storedAt !== null &&
+            storedAt.getTime() <= c.lastMessageAt.lte.getTime()
+      );
     }
-    if (clause.lastMessageAt === null) return storedAt === null;
-    return (
-      storedAt !== null &&
-      storedAt.getTime() < clause.lastMessageAt.lt.getTime()
-    );
+    return storedSeq !== null && storedSeq <= clause.lastMessageSeq.lte;
   });
 }
 
-describe("newerSnapshotWhere — the (lastMessageAt, seq) ordering predicate", () => {
-  it("accepts a strictly newer timestamp", () => {
+describe("newerSnapshotWhere — the sequence ordering predicate", () => {
+  it("accepts a strictly newer sequence", () => {
     const where = newerSnapshotWhere(new Date(AT.getTime() + 1), 9);
     expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 4 })).toBe(true);
   });
 
-  it("rejects an older timestamp — the out-of-order send that caused the bug", () => {
+  it("rejects an older sequence — the out-of-order send that caused the bug", () => {
     const where = newerSnapshotWhere(new Date(AT.getTime() - 1), 4);
     expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 5 })).toBe(
       false
     );
   });
 
-  it("breaks a same-millisecond tie by seq: higher seq wins", () => {
+  it("REGRESSION: a LATER timestamp with a LOWER sequence loses", () => {
+    // The burst inversion itself: send A takes seq 6 and stamps createdAt .408,
+    // send B takes seq 5 and stamps .412. B is later on the clock but earlier in
+    // the room's real order, and the clients render seq order — so letting B
+    // win made the list preview a message that is NOT the bottom of the chat.
+    const where = newerSnapshotWhere(new Date(AT.getTime() + 4), 5);
+    expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 6 })).toBe(
+      false
+    );
+  });
+
+  it("accepts an EARLIER timestamp when the sequence is higher", () => {
+    // The mirror of the case above — seq is the authority in both directions.
+    const where = newerSnapshotWhere(new Date(AT.getTime() - 4), 6);
+    expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 5 })).toBe(true);
+  });
+
+  it("higher seq wins inside one millisecond", () => {
     const where = newerSnapshotWhere(AT, 5);
     expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 4 })).toBe(true);
   });
 
-  it("breaks a same-millisecond tie by seq: lower seq is rejected", () => {
+  it("lower seq is rejected inside one millisecond", () => {
     const where = newerSnapshotWhere(AT, 4);
     expect(matches(where, { lastMessageAt: AT, lastMessageSeq: 5 })).toBe(
       false
@@ -93,25 +112,31 @@ describe("newerSnapshotWhere — the (lastMessageAt, seq) ordering predicate", (
     );
   });
 
-  it("still breaks a tie for a legacy row whose lastMessageSeq was never written", () => {
+  it("falls back to the timestamp for a legacy row whose lastMessageSeq was never written", () => {
     // A MongoDB range filter never matches a missing field, so without the
-    // explicit null branch a pre-backfill room could never tie-break at all.
+    // explicit null/isSet branch a pre-backfill room could never be bumped at
+    // all once the predicate leads with the sequence.
     const where = newerSnapshotWhere(AT, 3);
     expect(matches(where, { lastMessageAt: AT })).toBe(true);
+    expect(matches(where, { lastMessageAt: new Date(AT.getTime() + 1) })).toBe(
+      false
+    );
   });
 });
 
 describe("newerSnapshotMongoQuery — same predicate as raw Mongo operators", () => {
-  it("emits extended-JSON dates and both null fallbacks", () => {
+  it("leads with the sequence and keeps the legacy timestamp fallback", () => {
     expect(newerSnapshotMongoQuery(AT, 5)).toEqual({
       $or: [
-        { lastMessageAt: { $lt: { $date: AT.toISOString() } } },
-        { lastMessageAt: null },
+        { lastMessageSeq: { $lte: 5 } },
         {
           $and: [
-            { lastMessageAt: { $date: AT.toISOString() } },
+            { lastMessageSeq: null },
             {
-              $or: [{ lastMessageSeq: { $lte: 5 } }, { lastMessageSeq: null }],
+              $or: [
+                { lastMessageAt: { $lte: { $date: AT.toISOString() } } },
+                { lastMessageAt: null },
+              ],
             },
           ],
         },
@@ -121,9 +146,9 @@ describe("newerSnapshotMongoQuery — same predicate as raw Mongo operators", ()
 
   it("defaults a missing seq to 0 rather than dropping the branch", () => {
     const q = newerSnapshotMongoQuery(AT, null) as {
-      $or: { $and?: { $or?: { lastMessageSeq?: { $lte?: number } }[] }[] }[];
+      $or: { lastMessageSeq?: { $lte?: number } }[];
     };
-    expect(q.$or[2]?.$and?.[1]?.$or?.[0]?.lastMessageSeq?.$lte).toBe(0);
+    expect(q.$or[0]?.lastMessageSeq?.$lte).toBe(0);
   });
 });
 

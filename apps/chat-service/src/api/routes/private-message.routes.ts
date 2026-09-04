@@ -4,7 +4,7 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
-import { createRateLimit } from "../../middleware/rate-limit.js";
+import { messagingRateLimits } from "../../middleware/rate-limit.js";
 import {
   deleteMessageQuerySchema,
   forwardMessageSchema,
@@ -38,42 +38,16 @@ import type { PresenceController } from "../controllers/presence.controller.js";
  *
  * Split by operation class. Send capacity is unchanged at 60/min (that is the
  * abuse-relevant number); the rest get budgets that match how often a normal
- * client legitimately calls them.
+ * client legitimately calls them. The bucket sizes now live in
+ * `messagingRateLimits` so group and community are throttled by the same rules
+ * rather than by three copies that drift apart — they had both been left on a
+ * single 30/min bucket covering reads as well as sends.
  */
-const sendLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 60,
-  keyPrefix: "pm:send",
-});
-
-/**
- * Read-position writes. Called on every conversation open, every scroll to
- * bottom and every socket reconnect catch-up, so the ceiling has to clear a
- * reconnect burst across many open rooms without tripping.
- */
-const readLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 240,
-  keyPrefix: "pm:read",
-});
-
-/** Reactions, pins and edits — interactive, bursty, individually cheap. */
-const interactLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 120,
-  keyPrefix: "pm:interact",
-});
-
-/**
- * Low-frequency, abuse-sensitive operations: reporting, changing the
- * auto-delete policy, and get-or-create-room (which mints rows). Tighter than
- * the old shared 60/min, because none of these is a normal repeated action.
- */
-const sensitiveLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 30,
-  keyPrefix: "pm:sensitive",
-});
+const limits = messagingRateLimits("pm");
+const sendLimit = limits.send;
+const readLimit = limits.read;
+const interactLimit = limits.interact;
+const sensitiveLimit = limits.sensitive;
 
 export function createPrivateMessageRoutes(
   roomCtrl: PrivateRoomController,

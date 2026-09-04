@@ -10,9 +10,7 @@
 export const MAX_GROUP_MEMBERS = 256;
 
 /** The limit actually enforced for a room — its own limit, clamped to the cap. */
-export function effectiveGroupMemberLimit(
-  memberLimit?: number | null
-): number {
+export function effectiveGroupMemberLimit(memberLimit?: number | null): number {
   if (!memberLimit || memberLimit <= 0) return MAX_GROUP_MEMBERS;
   return Math.min(memberLimit, MAX_GROUP_MEMBERS);
 }

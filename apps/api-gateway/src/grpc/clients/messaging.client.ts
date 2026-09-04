@@ -286,6 +286,12 @@ export interface CallStatusResult {
   callId: string;
   status: string;
   livekit?: LiveKitCredentials;
+  /**
+   * Epoch ms of the authoritative answer instant. `answerCall` ONLY — the other
+   * RPCs sharing this shape (`declineCall`) have no such field on the wire, so
+   * it is undefined there and must not be coerced.
+   */
+  answeredAt?: number;
 }
 export interface AnswerCallParams {
   callId: string;
@@ -711,7 +717,12 @@ export function createMessagingClient(): MessagingClient {
         calleeId: p.calleeId,
         legId: p.legId ?? "",
         sessionId: p.sessionId ?? "",
-      }),
+        // int64 answered_at arrives as a string (proto-loader longs:String);
+        // coerce to a number so the socket ack carries the same epoch-ms shape
+        // as the `call:answered` broadcast. Only answerCall has the field —
+        // declineCall shares CallStatusResult but not this member, so coercing
+        // there would yield NaN.
+      }).then((r) => ({ ...r, answeredAt: Number(r.answeredAt) })),
     CALL_BREAKER_OPTS
   );
 

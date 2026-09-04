@@ -10,12 +10,16 @@
  */
 
 import { randomUUID } from "node:crypto";
+
+import { once } from "../lib/once.js";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText, copyTickets } from "@aimess/constants";
 import { redis } from "../config/redis.js";
+import { assertSendAllowed } from "../middleware/rate-limit.js";
+import { withSendOrder } from "../lib/send-order.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
   reconcileCommunityLastActivityAfterDelete,
@@ -271,13 +275,28 @@ function publishMessageNewToParticipants(
   context: string,
   excludeUserId: string
 ): void {
-  for (const userId of new Set(recipientIds.filter(Boolean))) {
+  const targets = [...new Set(recipientIds.filter(Boolean))].filter(
     // Skip the sender: their socket is already in `conv:<roomId>` (from
     // sending) and gets the room broadcast above, so a personal-channel copy
     // on top of that double-delivers `message:new` to just them.
-    if (userId === excludeUserId) continue;
-    publishRealtimeSafe(`user:${userId}`, "message:new", payload, context);
-  }
+    (userId) => userId !== excludeUserId
+  );
+  if (targets.length === 0) return;
+
+  // ONE pipeline and ONE serialization for the whole fan-out. This used to be
+  // `publishRealtimeSafe` in a loop: N separate Redis round trips AND N
+  // identical `JSON.stringify` passes over the same message payload, which on a
+  // 256-member group is 255 of each per message. The frames are unchanged — the
+  // channel is the only thing that differs per recipient — so clients see
+  // exactly what they saw before.
+  const frame = JSON.stringify({ event: "message:new", data: payload });
+  const pipeline = redis.pipeline();
+  for (const userId of targets) pipeline.publish(`user:${userId}`, frame);
+  pipeline.exec().catch((err: unknown) => {
+    logger.warn(
+      `realtime publish failed event=message:new recipients=${targets.length} ${context}: ${String(err)}`
+    );
+  });
 }
 
 export function createMessagingImpl(
@@ -332,42 +351,61 @@ export function createMessagingImpl(
             req.conversationType
           );
           const content = parseMessageContent(req);
-          // Server-side resolution — req.senderName/Avatar are optional,
-          // client-supplied fields that arrive empty over the socket path.
-          const {
-            senderName: resolvedSenderName,
-            senderAvatar: resolvedSenderAvatar,
-          } = await resolveSenderIdentity(
-            deps.userSnapshotService,
-            deps.cacheRepo,
+          // Takes this send's place in the (room, sender) order — synchronously,
+          // before the first `await`, or the arrival order is already lost. Only
+          // the sequence allocation waits on it; the reads below still overlap
+          // with the other sends in flight. Without it two sends from one person
+          // can reach the allocator out of order and swap places in everyone's
+          // transcript. See lib/send-order.ts.
+          let resolvedSenderName = "";
+          let resolvedSenderAvatar = "";
+          msg = await withSendOrder(
+            req.conversationId,
             req.senderId,
-            req.senderName || undefined,
-            req.senderAvatar || undefined
+            async () => {
+              // Same bucket the REST route consumes (`pm:send` / `gm:send`), so
+              // the socket path is no longer an unmetered door to the identical
+              // write. Charged before any work: the point is to refuse cheaply.
+              await assertSendAllowed(
+                conversationType === "GROUP" ? "gm" : "pm",
+                req.senderId
+              );
+              // Server-side resolution — req.senderName/Avatar are optional,
+              // client-supplied fields that arrive empty over the socket path.
+              const identity = await resolveSenderIdentity(
+                deps.userSnapshotService,
+                deps.cacheRepo,
+                req.senderId,
+                req.senderName || undefined,
+                req.senderAvatar || undefined
+              );
+              resolvedSenderName = identity.senderName;
+              resolvedSenderAvatar = identity.senderAvatar;
+              if (conversationType === "GROUP") {
+                return deps.groupMessageService.sendMessage({
+                  roomId: req.conversationId,
+                  senderId: req.senderId,
+                  senderName: resolvedSenderName,
+                  senderAvatar: resolvedSenderAvatar,
+                  content,
+                  messageType: req.contentType || "TEXT",
+                  parentMessageId: req.repliedToId || null,
+                  clientMessageId: req.clientMessageId || randomUUID(),
+                  clientTs,
+                });
+              }
+              return deps.privateMessageService.sendMessage({
+                roomId: req.conversationId,
+                senderId: req.senderId,
+                receiverId: req.receiverId,
+                content,
+                messageType: req.contentType || "TEXT",
+                parentMessageId: req.repliedToId || null,
+                clientMessageId: req.clientMessageId || randomUUID(),
+                clientTs,
+              });
+            }
           );
-          if (conversationType === "GROUP") {
-            msg = await deps.groupMessageService.sendMessage({
-              roomId: req.conversationId,
-              senderId: req.senderId,
-              senderName: resolvedSenderName,
-              senderAvatar: resolvedSenderAvatar,
-              content,
-              messageType: req.contentType || "TEXT",
-              parentMessageId: req.repliedToId || null,
-              clientMessageId: req.clientMessageId || randomUUID(),
-              clientTs,
-            });
-          } else {
-            msg = await deps.privateMessageService.sendMessage({
-              roomId: req.conversationId,
-              senderId: req.senderId,
-              receiverId: req.receiverId,
-              content,
-              messageType: req.contentType || "TEXT",
-              parentMessageId: req.repliedToId || null,
-              clientMessageId: req.clientMessageId || randomUUID(),
-              clientTs,
-            });
-          }
 
           // An idempotent replay (a concurrent same-clientMessageId duplicate
           // that collapsed to the existing row, or a later retry) must NOT re-run
@@ -376,6 +414,13 @@ export function createMessagingImpl(
           // message:new (the winning insert), while every caller still gets the
           // same messageId ack below.
           alreadySent = isIdempotentReplay(msg);
+
+          // ONE roster read shared by the `conv:updated` bump and the push
+          // below — they were each issued their own, and both are O(members).
+          // See lib/once.ts.
+          const groupRecipients = once(() =>
+            deps.groupMessageService.getActiveMemberIds(req.conversationId)
+          );
 
           // ACK HERE — same reasoning as sendCommunityMessage above. The
           // response is built entirely from `msg`; every block below is
@@ -449,8 +494,13 @@ export function createMessagingImpl(
               // Personal bus too — reaches recipients who don't have this chat open,
               // which is what makes the delivered tick work. See the helper's KDoc.
               if (conversationType === "GROUP") {
-                void deps.groupMessageService
-                  .getActiveMemberIds(req.conversationId)
+                // `groupRecipients`, NOT a fresh `getActiveMemberIds`: this sits
+                // inside the per-album-row loop, so the raw call issued ANOTHER
+                // full O(members) roster read for every row of an album — on top
+                // of the one the bump and the push already share via the memo
+                // declared above. The REST path (chat-message-orchestrator)
+                // always used the memo here; only this branch leaked.
+                void groupRecipients()
                   .then((ids) =>
                     publishMessageNewToParticipants(
                       ids,
@@ -509,10 +559,7 @@ export function createMessagingImpl(
             if (conversationType === "GROUP") {
               publishConvUpdatedSafe({
                 ...bumpBase,
-                fetchRecipients: () =>
-                  deps.groupMessageService.getActiveMemberIds(
-                    req.conversationId
-                  ),
+                fetchRecipients: groupRecipients,
               });
             } else {
               publishConvUpdatedSafe({
@@ -558,10 +605,7 @@ export function createMessagingImpl(
             if (conversationType === "GROUP") {
               publishMessageSentSafe({
                 ...pushBase,
-                fetchRecipients: () =>
-                  deps.groupMessageService.getActiveMemberIds(
-                    req.conversationId
-                  ),
+                fetchRecipients: groupRecipients,
               });
             } else {
               publishMessageSentSafe({
@@ -570,7 +614,6 @@ export function createMessagingImpl(
               });
             }
           }
-
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
           if (!acked) callback(toGrpcCallbackError(err));
@@ -1622,6 +1665,10 @@ export function createMessagingImpl(
               url: result.livekit.url,
               token: result.livekit.token,
             },
+            // Epoch ms, same as the `call:answered` broadcast carries. The
+            // answering leg needs it here because its media frequently comes up
+            // before that broadcast loops back to it.
+            answeredAt: result.answeredAt?.getTime() ?? 0,
           });
         } catch (err) {
           logger.error(`gRPC answerCall error: ${String(err)}`);
@@ -1959,6 +2006,43 @@ export function createMessagingImpl(
           // Fail-open: an oracle failure must never suppress a push.
           logger.warn(`gRPC checkGroupMute error: ${String(err)}`);
           callback(null, { isMuted: false, mutedUntil: 0 });
+        }
+      })();
+    },
+
+    /**
+     * Batched `checkGroupMute` — which of these members muted this group?
+     *
+     * The push fan-out used to call `checkGroupMute` once per recipient, so a
+     * 256-member group message meant 256 gRPC round trips into THIS service,
+     * each with its own `GroupMember` read, while it was also serving sends.
+     * Community already had the batched form (community.proto's
+     * GetCommunityNotifiableMemberIds); this is the group equivalent.
+     *
+     * Fail-open, exactly like the single-row version: an error answers "nobody
+     * is muted" so an oracle failure can never silence a push.
+     */
+    getGroupMutedMemberIds: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId?: string; userIds?: string[] };
+          const roomId = req.roomId ?? "";
+          const userIds = Array.isArray(req.userIds) ? req.userIds : [];
+          if (!roomId || userIds.length === 0) {
+            callback(null, { userIds: [] });
+            return;
+          }
+          const muted = await deps.groupMemberRepo.findMutedUserIds(
+            roomId,
+            userIds
+          );
+          callback(null, { userIds: muted });
+        } catch (err) {
+          logger.warn(`gRPC getGroupMutedMemberIds error: ${String(err)}`);
+          callback(null, { userIds: [] });
         }
       })();
     },
@@ -2910,32 +2994,60 @@ export function createCommunityImpl(
             attachments = [{ objectKey: req.mediaKey }];
           }
 
-          const [{ senderName, senderAvatar }, room] = await Promise.all([
-            resolveSenderIdentity(
-              deps.userSnapshotService,
-              deps.cacheRepo,
-              req.senderId
-            ),
-            deps.generalRoomRepo?.findRoomById(req.roomId),
-          ]);
-          const communityName = room?.name ?? "";
+          // Arrival-ordered for this (room, sender) exactly as the private/group
+          // send above — two messages from one person must not swap sequence
+          // numbers because their identity/room reads finished out of order.
+          // See lib/send-order.ts.
+          let senderName = "";
+          let senderAvatar = "";
+          let communityName = "";
+          const saved = await withSendOrder(
+            req.roomId,
+            req.senderId,
+            async () => {
+              // Same `cm:send` bucket the REST community route consumes. This
+              // path matters most: one community message is amplified to every
+              // member over Redis pub/sub plus a push notification each, so an
+              // unmetered socket frame turned into thousands of emits and sends.
+              await assertSendAllowed("cm", req.senderId);
 
-          const saved = await deps.communityMessageService.sendMessage({
-            roomId: req.roomId,
-            sentBy: req.senderId,
-            senderName,
-            senderAvatar,
-            message: req.message || "",
-            messageType: (req.contentType || "TEXT").toUpperCase(),
-            parentMessageId: req.parentMessageId || null,
-            clientMessageId: req.clientMessageId || randomUUID(),
-            attachments,
-          });
+              const [identity, room] = await Promise.all([
+                resolveSenderIdentity(
+                  deps.userSnapshotService,
+                  deps.cacheRepo,
+                  req.senderId
+                ),
+                deps.generalRoomRepo?.findRoomById(req.roomId),
+              ]);
+              senderName = identity.senderName;
+              senderAvatar = identity.senderAvatar;
+              communityName = room?.name ?? "";
+
+              return deps.communityMessageService.sendMessage({
+                roomId: req.roomId,
+                sentBy: req.senderId,
+                senderName,
+                senderAvatar,
+                message: req.message || "",
+                messageType: (req.contentType || "TEXT").toUpperCase(),
+                parentMessageId: req.parentMessageId || null,
+                clientMessageId: req.clientMessageId || randomUUID(),
+                attachments,
+              });
+            }
+          );
 
           const sentAt =
             saved.createdAt instanceof Date
               ? saved.createdAt.getTime()
               : Date.now();
+
+          // ONE roster read shared by the `community:updated` bump and the push
+          // below — they were each issued their own, and community rosters are
+          // the largest in the product. See lib/once.ts.
+          const communityRecipients = once(() =>
+            deps.communityMessageService.getActiveMemberIds(req.roomId)
+          );
 
           // ACK HERE, the moment the write is durable. Everything below this
           // line is fan-out — broadcast, activity denormalization, bump-to-top,
@@ -3079,8 +3191,7 @@ export function createCommunityImpl(
               communityId: req.communityId,
               // Genuine chat room id — same value as community:message:new emits.
               roomId: saved.roomId,
-              fetchMembers: () =>
-                deps.communityMessageService.getActiveMemberIds(req.roomId),
+              fetchMembers: communityRecipients,
               senderId: req.senderId,
               senderName,
               lastMessageId: saved.id,
@@ -3127,11 +3238,9 @@ export function createCommunityImpl(
                 : {}),
               messageType: normalizeMessageType(saved.messageType),
               sentAt,
-              fetchRecipients: () =>
-                deps.communityMessageService.getActiveMemberIds(req.roomId),
+              fetchRecipients: communityRecipients,
             });
           }
-
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);
           // Past the ack the caller is already gone; a second callback would be
@@ -3956,11 +4065,11 @@ export function createCommunityImpl(
                 memberIds: () =>
                   deps.communityMessageService.getActiveMemberIds(lRoomId),
                 deletedMessageId: req.messageId,
-                deletedMessageCreatedAt: result.createdAt,
-                resolveLosers: (rid, at, ids) =>
+                deletedMessageSeq: result.sequenceNumber ?? 0,
+                resolveLosers: (rid, seq, ids) =>
                   deps.communityMessageService.resolveEffectiveLastLosers(
                     rid,
-                    at,
+                    seq,
                     ids
                   ),
               });
@@ -3976,7 +4085,7 @@ export function createCommunityImpl(
             forMeRecalc =
               await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
                 result.roomId,
-                result.createdAt,
+                result.sequenceNumber ?? 0,
                 req.userId
               );
             if (forMeRecalc !== null && forMeRecalc.wasEffectiveLast) {

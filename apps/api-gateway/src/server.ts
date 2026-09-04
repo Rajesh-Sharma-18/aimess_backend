@@ -8,7 +8,45 @@ import { setupSockets } from "./sockets/index.js";
 import { createMessagingClient } from "./grpc/clients/messaging.client.js";
 import { createMediaClient } from "./grpc/clients/media.client.js";
 
+/**
+ * Last-resort process guards.
+ *
+ * Socket.IO does not wrap event listeners in try/catch, so a throw inside any
+ * handler reaches the process. With no `uncaughtException` listener, Node's
+ * default is to terminate — and this process is the only public edge, so one
+ * malformed socket frame took down all REST proxying and all six namespaces for
+ * every user at once. (The specific throw that motivated this is fixed at
+ * source: the /admin handlers now validate their payloads. This is the backstop
+ * for the next one.)
+ *
+ * Deliberately NOT a blanket swallow. An uncaught exception means the process
+ * is in an unknown state, so it is logged and the process still exits — but on
+ * OUR terms: the exit is deferred long enough for the log to flush, and the
+ * supervisor restarts a clean process. What changes is that the failure is
+ * recorded with its stack instead of vanishing, and an unhandled promise
+ * rejection (far more often a lost `.catch()` on one request than real
+ * corruption) is logged without taking the edge down.
+ */
+function installProcessGuards(): void {
+  process.on("uncaughtException", (error: Error) => {
+    logger.error(
+      `Uncaught exception — exiting: ${error.message}\n${error.stack ?? ""}`
+    );
+    // Give the transport a tick to write the line before the process goes.
+    setTimeout(() => process.exit(1), 100).unref();
+  });
+
+  process.on("unhandledRejection", (reason: unknown) => {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    logger.error(
+      `Unhandled promise rejection: ${error.message}\n${error.stack ?? ""}`
+    );
+  });
+}
+
 async function start() {
+  installProcessGuards();
+
   try {
     const messagingClient = createMessagingClient();
     const mediaClient = createMediaClient();

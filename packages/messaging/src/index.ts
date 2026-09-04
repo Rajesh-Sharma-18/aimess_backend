@@ -19,3 +19,4 @@ export {
   isMandatoryAuditAction,
   type AuditCategory,
 } from "./mandatory-audit-actions.js";
+export * from "./user-purged-consumer";

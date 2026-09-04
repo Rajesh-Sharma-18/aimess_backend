@@ -9,11 +9,29 @@ export type CreatePresignedUploadUrlParams = {
   objectKey: string;
   contentType: string;
   expiresIn: number;
+  /**
+   * Exact byte count the client declared. Signed into the URL, so the upload
+   * must carry a matching `Content-Length`.
+   */
+  contentLength?: number;
 };
 
 /**
- * Presigned PUT URL. Signs ONLY Content-Type (no Content-Length) so existing
- * clients that PUT with just the Content-Type header keep working.
+ * Presigned PUT URL.
+ *
+ * `ContentLength` is part of the signature. Without it, the declared size was
+ * validated server-side and then never enforced anywhere: the returned URL let
+ * the holder PUT an arbitrary number of gigabytes, and nothing server-side
+ * could refuse the write. The real size was first observed at `/media/confirm`
+ * — after the bytes were already stored and paid for — and a client that simply
+ * never called confirm left them there until the orphan sweep. Combined with
+ * the per-user media limiter, that was a bucket-filling and egress-exhaustion
+ * primitive from one account.
+ *
+ * Signing it means the client must send that exact `Content-Length`. Browsers
+ * and the mobile SDKs always set it on a PUT with a known body, so this is not
+ * a new client requirement — it makes the number the client already sends
+ * binding instead of advisory.
  */
 export async function createPresignedUploadUrl(
   params: CreatePresignedUploadUrlParams
@@ -22,10 +40,20 @@ export async function createPresignedUploadUrl(
     Bucket: params.bucket,
     Key: params.objectKey,
     ContentType: params.contentType,
+    ...(params.contentLength !== undefined
+      ? { ContentLength: params.contentLength }
+      : {}),
   });
 
   return getSignedUrl(params.client, command, {
     expiresIn: params.expiresIn,
+    // Both headers must be SIGNED, not merely sent: an unsigned header is one
+    // the client can change after the fact.
+    signableHeaders: new Set(
+      params.contentLength !== undefined
+        ? ["content-type", "content-length"]
+        : ["content-type"]
+    ),
   });
 }
 

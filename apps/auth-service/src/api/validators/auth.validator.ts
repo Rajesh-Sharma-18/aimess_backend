@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { checkPasswordPolicy } from "../../lib/password-policy.js";
+
 export const accountSchema = z
   .string()
   .trim()
@@ -11,16 +13,55 @@ export const accountSchema = z
     "Account name can only contain letters, numbers, hyphens, and underscores"
   );
 
+/**
+ * Proof-of-work credential.
+ *
+ * Required on the two endpoints that were free to call at scale: account
+ * creation and handle availability. `challenge` is the server-issued token from
+ * `POST /auth/challenge`; `solution` is the nonce the client found. See
+ * `lib/signup-challenge.ts` for why this rather than a captcha.
+ *
+ * Carried by REGISTRATION only. The handle-availability check used to require
+ * one too, which made a signup form's "is this name free?" keystroke depend on
+ * fetching and solving a challenge first — and answer an unsolved one with a
+ * validation error instead of the yes/no it exists to give. Availability is now
+ * throttled per-IP and nothing else; see the route for what that gives up.
+ *
+ * Marked OPTIONAL so that `requireSignupChallenge` — not `validateBody` —
+ * answers a request that omits it. A required field here made the gate report
+ * `VALIDATION_FAILED` with Zod's raw "expected object, received undefined",
+ * which tells a client nothing about the step it skipped; the middleware
+ * answers `AUTH_CHALLENGE_REQUIRED`, which a client can act on. Optional
+ * narrows nothing: the route that carries this also mounts that middleware.
+ */
+export const challengeSchema = z.object({
+  challenge: z.string().min(1).max(512),
+  solution: z.string().min(1).max(128),
+});
+
 export const validateAccountSchema = z.object({
   account: accountSchema,
 });
 
 export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
 
-export const passwordSchema = z
-  .string()
-  .min(8, "Password must be at least 8 characters")
-  .max(128, "Password must be at most 128 characters");
+/**
+ * The CREATION policy for a password: register, reset and change all use it.
+ *
+ * Login deliberately does NOT (see `loginPasswordSchema` below), so every
+ * account created under the older 8-character rule keeps signing in and is only
+ * asked for something stronger when it next sets a password.
+ *
+ * The rules live in `lib/password-policy.ts`; this schema is the boundary that
+ * applies them and maps each failure to its own message key, so the client can
+ * say what to fix rather than repeating a generic "invalid password".
+ */
+export const passwordSchema = z.string().superRefine((value, ctx) => {
+  const failure = checkPasswordPolicy(value);
+  if (failure) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: failure });
+  }
+});
 
 /**
  * FCM device push tokens — optional, captured on register/login when available.
@@ -31,11 +72,26 @@ export const fcmTokensSchema = z
   .array(z.string().trim().min(1, "FCM token is required"))
   .optional();
 
-export const registerSchema = z.object({
-  account: accountSchema,
-  password: passwordSchema,
-  fcmTokens: fcmTokensSchema.optional().default([]),
-});
+export const registerSchema = z
+  .object({
+    account: accountSchema,
+    password: passwordSchema,
+    fcmTokens: fcmTokensSchema.optional().default([]),
+    proof: challengeSchema.optional(),
+  })
+  // Re-checked at the object level because the account name is only known
+  // here: a password that merely restates the public account name is guessable
+  // by anyone who can see the profile.
+  .superRefine((value, ctx) => {
+    const failure = checkPasswordPolicy(value.password, value.account);
+    if (failure) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["password"],
+        message: failure,
+      });
+    }
+  });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 
@@ -61,7 +117,10 @@ export const loginIdentifierSchema = z
  * instead of a login. This only has to keep non-strings and absurd lengths away
  * from the repository and bcrypt; whether the value is correct is bcrypt's job.
  */
-const loginPasswordSchema = z.string().min(1).max(128);
+export const existingPasswordSchema = z.string().min(1).max(128);
+
+/** Alias kept for the login schema below, which reads better with this name. */
+const loginPasswordSchema = existingPasswordSchema;
 
 export const loginSchema = z.object({
   account: loginIdentifierSchema,

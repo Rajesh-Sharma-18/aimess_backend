@@ -19,6 +19,15 @@ import { errorHandler } from "./middleware/error-handler.js";
 const app: Express = express();
 
 app.disable("x-powered-by");
+
+// TRUST_PROXY_HOPS was declared in this service's config but never applied, so
+// `req.ip` returned the socket address and every IP-sensitive path here — the
+// login/register/reset limiters, the OTP issuance throttle, the IP recorded on
+// sessions and audit rows — read `X-Forwarded-For` by hand instead, taking the
+// leftmost (client-supplied) entry. Applying it makes `req.ip` authoritative;
+// 0 correctly means "trust no proxy".
+app.set("trust proxy", env.TRUST_PROXY_HOPS);
+
 app.use(helmet());
 app.use(
   cors({
@@ -26,8 +35,8 @@ app.use(
       env.NODE_ENV === "development"
         ? true
         : env.CORS_ALLOWED_ORIGINS.split(",")
-            .map((o) => o.trim())
-            .filter(Boolean),
+          .map((o) => o.trim())
+          .filter(Boolean),
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
   })

@@ -60,7 +60,7 @@ export const listCategoriesQuerySchema = z.object({
     .string()
     .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
     .default("order:asc"),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListCategoriesQueryInput = z.infer<

@@ -1,7 +1,10 @@
 import { BadRequestError } from "@aimess/errors";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
+import { logger } from "@aimess/logger";
+
 import { env } from "../config/env.js";
+import { isDisposableEmail } from "../lib/disposable-email.js";
 import { AdminOtpPurpose } from "../generated/prisma/client.js";
 import {
   generateOtpCode,
@@ -56,6 +59,21 @@ export const adminPasswordResetService = {
     const email = normalizeEmail(input.email);
 
     await assertOtpRequestAllowed(email, ctx.ip);
+
+    // A public disposable inbox can be read by anyone, so mailing a reset code
+    // to one hands over the account. Refused here as well as at seed time,
+    // because an admin's email can be changed after creation.
+    //
+    // Returns neutrally like every other rejection on this path — telling the
+    // caller "that domain is blocked" would confirm the address is otherwise
+    // valid, which is the enumeration signal this endpoint exists without.
+    if (isDisposableEmail(email)) {
+      logger.warn("admin password reset refused: disposable email domain", {
+        service: "backoffice-service",
+        domain: email.slice(email.lastIndexOf("@") + 1),
+      });
+      return;
+    }
 
     const admin = await adminUserRepository.findByEmail(email);
     if (!admin || admin.status !== "ACTIVE") {

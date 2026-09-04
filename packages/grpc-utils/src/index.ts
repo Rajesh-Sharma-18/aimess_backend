@@ -95,6 +95,26 @@ function metadataValue(
   return value?.trim() ? value.trim() : null;
 }
 
+/**
+ * Service-token values that have appeared in this repository's committed
+ * templates. A production deployment using one of them is unauthenticated in
+ * practice, because the value is readable by anyone with repo access.
+ *
+ * Keep every historical value here, not just the current one: the point is to
+ * catch an environment that was provisioned from an older template and never
+ * rotated.
+ */
+const PUBLISHED_PLACEHOLDER_SERVICE_TOKENS = new Set([
+  "dev-grpc-service-token-change-me",
+  "changeme",
+  "change-me",
+]);
+
+/** True when the configured service token is one this repo has published. */
+export function isPublishedPlaceholderToken(token: string): boolean {
+  return PUBLISHED_PLACEHOLDER_SERVICE_TOKENS.has(token.trim().toLowerCase());
+}
+
 /** Read `x-audit-source` off an inbound call; SYSTEM when the caller sent none. */
 export function auditSourceFromMetadata(
   metadata: grpc.Metadata | undefined
@@ -115,12 +135,28 @@ export function auditSourceFromMetadata(
  *    be protected.
  *  - unset + any other NODE_ENV → logs a warning and passes calls through, so
  *    local dev doesn't need the var set across all 8 services to run.
+ *  - set to a value published in this repository + `NODE_ENV=production` →
+ *    **throws at startup**, same as unset. The old check only tested for
+ *    emptiness, so a deployment that copied `.env.example` verbatim passed the
+ *    fail-fast while authenticating its entire internal mesh with a token
+ *    anyone can read out of git.
  */
 export function withServiceAuth<T extends grpc.UntypedServiceImplementation>(
   serviceName: string,
   impl: T
 ): T {
   const expected = serviceToken();
+
+  if (expected && isPublishedPlaceholderToken(expected)) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `${serviceName}: GRPC_SERVICE_TOKEN is set to a placeholder published in this repository — refusing to start. Generate a real per-environment token.`
+      );
+    }
+    logger.warn(
+      `${serviceName}: GRPC_SERVICE_TOKEN is the published placeholder — internal gRPC auth is effectively public (development only).`
+    );
+  }
 
   if (!expected) {
     if (process.env.NODE_ENV === "production") {
@@ -212,6 +248,19 @@ export const BREAKER_OPTS = {
  * `DEADLINE_EXCEEDED`/`UNKNOWN`/`CANCELLED`/etc. are deliberately excluded —
  * those DO indicate the callee is unhealthy and must still count toward the
  * breaker and trigger the fallback below.
+ *
+ * `RESOURCE_EXHAUSTED` belongs here for the same reason the rest do: it is
+ * what a HEALTHY callee returns when it refuses a request on purpose. Every
+ * messaging send is charged against a per-user rate limit whose refusal maps
+ * to exactly this status (`assertSendAllowed` -> `TooManyRequestsError` ->
+ * RESOURCE_EXHAUSTED), so while it was excluded a throttled burst counted as
+ * N infrastructure failures: past the 50% threshold the circuit OPENED and
+ * every send through that caller failed for the next 10s, including sends
+ * from users who had spent nothing. Worse, the fallback rewrote the status,
+ * so the client was told "chat.sendCommunityMessage unavailable" for a plain
+ * rate limit and had no `RATE_LIMITED` code and no retry-after to back off
+ * on. Measured on a 100-message burst into a community: 28 RESOURCE_EXHAUSTED
+ * rejections, all surfaced to the client as `unavailable`.
  */
 const BUSINESS_GRPC_STATUS_CODES = new Set<number>([
   grpc.status.INVALID_ARGUMENT,
@@ -221,6 +270,7 @@ const BUSINESS_GRPC_STATUS_CODES = new Set<number>([
   grpc.status.FAILED_PRECONDITION,
   grpc.status.OUT_OF_RANGE,
   grpc.status.UNAUTHENTICATED,
+  grpc.status.RESOURCE_EXHAUSTED,
 ]);
 
 /**

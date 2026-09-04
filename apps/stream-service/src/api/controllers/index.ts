@@ -23,7 +23,7 @@ export class StreamController {
   constructor(
     private readonly livestreamService: LivestreamService,
     private readonly commentService: LivestreamCommentService
-  ) {}
+  ) { }
 
   createStream = asyncHandler(async (req: Request, res: Response) => {
     const parsed = createStreamSchema.safeParse(req.body);
@@ -48,7 +48,13 @@ export class StreamController {
     const parsed = listStreamsQuerySchema.safeParse(req.query);
     if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
-    const result = await this.livestreamService.listStreams(parsed.data);
+    // Pass the caller's identity: the service filters banned streams and
+    // refuses a private community the caller is not in. Without it the listing
+    // returned playable URLs for every community's streams.
+    const result = await this.livestreamService.listStreams({
+      ...parsed.data,
+      requesterId: req.auth.userId,
+    });
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("STREAM_LIST_FETCHED", req.locale)));

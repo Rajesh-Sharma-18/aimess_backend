@@ -4,7 +4,7 @@
   "description": "Livestreams (lifecycle, SRS integration, comments) — MongoDB / Prisma.",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts",
+    "dev": "tsx watch --include ./src --exclude ./src/generated --clear-screen=false src/server.ts",
     "start": "node dist/server.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",

@@ -67,6 +67,10 @@ export class CallController {
         status: call.status,
         livekitUrl: call.livekit.url,
         token: call.livekit.token,
+        // In-call timer origin, epoch ms. Carried here as well as on the socket
+        // ack — this is the lock-screen path, which has no socket at all, so it
+        // is exactly where the client would otherwise fall back to its own clock.
+        answeredAt: call.answeredAt?.getTime() ?? 0,
       })
     );
   });

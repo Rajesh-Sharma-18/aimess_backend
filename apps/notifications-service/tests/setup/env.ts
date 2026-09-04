@@ -24,6 +24,7 @@ process.env.MONGO_DATABASE_URL =
 
 // Outbound gRPC targets (have defaults, set explicitly for clarity).
 process.env.USER_SERVICE_GRPC_URL = "127.0.0.1:4002";
+process.env.AUTH_GRPC_URL = "127.0.0.1:4001";
 process.env.CHAT_SERVICE_GRPC_URL = "127.0.0.1:4004";
 
 process.env.NOTIF_SETTINGS_CACHE_TTL_SEC = "300";

@@ -15,12 +15,7 @@ export const groupRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
 // Omitted → chat-service's ACTIVE default; "ALL" → no status filter.
 // "CLOSED" is a panel-side superset of DISBANDED + owner-banned CLOSED — the UI
 // renders both as red, so the filter matches both server-side.
-export const groupStatusEnum = z.enum([
-  "ACTIVE",
-  "DISBANDED",
-  "CLOSED",
-  "ALL",
-]);
+export const groupStatusEnum = z.enum(["ACTIVE", "DISBANDED", "CLOSED", "ALL"]);
 // "" / "ACTIVE" = active default, "ALL" = no filter, "BANNED" = exact match
 // (chat-service AdminListGroupMembersRequest.status does the exact match). BANNED
 // backs the admin's "find + unban a group-banned member" flow.
@@ -36,7 +31,7 @@ export const listGroupsQuerySchema = z.object({
   sortBy: groupSortByEnum.default("createdAt"),
   sortOrder: groupSortOrderEnum.default("desc"),
   status: groupStatusEnum.optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListGroupsQueryInput = z.infer<typeof listGroupsQuerySchema>;
@@ -87,7 +82,7 @@ export const listGroupMembersQuerySchema = z.object({
   q: z.string().trim().min(1).optional(),
   role: groupRoleEnum.optional(),
   status: groupMemberStatusEnum.optional(),
-  page: z.coerce.number().int().min(1).default(1),
+  page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListGroupMembersQueryInput = z.infer<

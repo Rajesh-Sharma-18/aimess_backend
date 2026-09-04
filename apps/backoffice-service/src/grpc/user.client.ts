@@ -64,11 +64,13 @@ const notFoundIsBenign = {
 export const adminGetProfilesByIdsBreaker: Breaker<
   { userIds: string[] },
   RawAdminProfilesResponse
-> = makeBreaker("user.adminGetProfilesByIds", (args: { userIds: string[] }) =>
-  call<{ userIds: string[] }, RawAdminProfilesResponse>(
-    "adminGetProfilesByIds",
-    args
-  ),
+> = makeBreaker(
+  "user.adminGetProfilesByIds",
+  (args: { userIds: string[] }) =>
+    call<{ userIds: string[] }, RawAdminProfilesResponse>(
+      "adminGetProfilesByIds",
+      args
+    ),
   { timeout: 8000 }
 );
 

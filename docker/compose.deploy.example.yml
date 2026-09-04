@@ -10,6 +10,15 @@
 #    or add a dedicated migration job to `.gitlab-ci.yml`. Production images omit the Prisma CLI.
 #
 # Rename or copy this file to `docker-compose.yml` on the VPS if you prefer the default compose filename.
+#
+# PORT BINDINGS: only the gateway is published, and only on loopback for a
+# reverse proxy to reach. auth-service and user-service used to be published on
+# 0.0.0.0, so any host that followed these instructions exposed them directly to
+# the internet — which routes around every gateway-only control: the
+# sensitive-auth and OTP limiters, the global backstop, the CORS policy and the
+# body-size cap. `POST http://host:3001/api/auth/login` was then unthrottled
+# credential stuffing. deploy/dev02/compose.yml already warns against exactly
+# this; the example contradicted it.
 
 name: aimess-apps
 
@@ -19,18 +28,23 @@ services:
     restart: unless-stopped
     env_file: .env.production
     ports:
-      - "3000:3000"
+      # Loopback only — the reverse proxy (HAProxy/nginx) terminates TLS and
+      # forwards here. Publishing on 0.0.0.0 would bypass the proxy, and with it
+      # the real-client-IP header handling every per-IP limit depends on.
+      - "127.0.0.1:3000:3000"
 
   auth-service:
     image: registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT/aimess-auth-service:latest
     restart: unless-stopped
     env_file: .env.production
-    ports:
-      - "3001:3001"
+    # No published ports. This service is reached only through the gateway, over
+    # the compose bridge network. A direct public route would skip every
+    # gateway-only control (see the note in the header).
 
   user-service:
     image: registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT/aimess-user-service:latest
     restart: unless-stopped
     env_file: .env.production
-    ports:
-      - "3002:3002"
+    # No published ports. This service is reached only through the gateway, over
+    # the compose bridge network. A direct public route would skip every
+    # gateway-only control (see the note in the header).

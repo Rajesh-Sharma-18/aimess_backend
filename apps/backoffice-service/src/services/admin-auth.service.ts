@@ -9,6 +9,11 @@ import {
 
 import { isSupportedLocale, type SupportedLocale } from "@aimess/constants";
 
+import {
+  assertLoginNotLocked,
+  clearLoginFailures,
+  recordLoginFailure,
+} from "../lib/admin-login-lockout.js";
 import { env } from "../config/env.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
@@ -169,17 +174,27 @@ export const adminAuthService = {
     password: string,
     ctx: AdminRequestContext
   ): Promise<AdminAuthResult> {
+    // Per-account lockout, BEFORE the account lookup — so an address that does
+    // not resolve to an admin is counted too, and "did not lock out" cannot be
+    // read as "this is not an admin". User login has had an equivalent for a
+    // long time; this path had none, so a distributed run against a known admin
+    // address was unthrottled per account (the gateway limiter is per IP, which
+    // a proxy pool sidesteps by construction).
+    await assertLoginNotLocked(email);
+
     const admin = await adminUserRepository.findByEmail(email);
     if (!admin) {
       // Deliberately the same message/status as "wrong password" (below) —
       // do not throw a distinct not-found error here, or the endpoint becomes
       // an account-enumeration oracle for attackers probing admin emails.
+      await recordLoginFailure(email);
       throw new UnauthorizedError("ADMIN_INVALID_CREDENTIALS");
     }
     assertAdminAccountAccessible(admin);
 
     const ok = await verifyPassword(password, admin.passwordHash);
     if (!ok) {
+      await recordLoginFailure(email);
       // Guarded: an unguarded throwing insert here would turn the 401 into a
       // 500 and re-create the account-enumeration oracle avoided above.
       try {
@@ -196,6 +211,10 @@ export const adminAuthService = {
       }
       throw new UnauthorizedError("ADMIN_INVALID_CREDENTIALS");
     }
+
+    // Correct credentials — reset the counter so an earlier fat-finger streak
+    // does not carry over.
+    await clearLoginFailures(email);
 
     const result = await issueAdminSession(admin, ctx);
     await adminUserRepository.updateLastLogin(admin.id);

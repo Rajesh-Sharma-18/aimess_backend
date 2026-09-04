@@ -44,6 +44,32 @@ async function start() {
   try {
     await connectDatabase();
 
+    // Sparse unique index on Livestream.playbackId — enforces uniqueness for
+    // real playback ids while letting every legacy row (created before the
+    // streamKey/playbackId split, so carrying none) coexist. Prisma cannot
+    // express sparse indexes for MongoDB, and a plain `@unique` cannot be built
+    // at all once more than one row lacks the field. Idempotent: createIndexes
+    // is a no-op when the index already exists with the same options.
+    try {
+      await prisma.$runCommandRaw({
+        createIndexes: "livestreams",
+        indexes: [
+          {
+            key: { playbackId: 1 },
+            name: "livestreams_playbackId_unique_sparse",
+            unique: true,
+            sparse: true,
+          },
+        ],
+      });
+      logger.info("Index ready: livestreams.playbackId (sparse unique)");
+    } catch (indexErr) {
+      logger.warn(
+        "Could not create playbackId sparse index — playback ids may lack uniqueness enforcement"
+      );
+      logger.warn(indexErr);
+    }
+
     if (env.REDIS_CACHE_ENABLED) {
       try {
         await connectStreamRedis();

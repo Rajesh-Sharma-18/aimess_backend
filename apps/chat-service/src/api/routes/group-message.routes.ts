@@ -4,7 +4,7 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateParams } from "../middleware/validate-params.js";
-import { createRateLimit } from "../../middleware/rate-limit.js";
+import { messagingRateLimits } from "../../middleware/rate-limit.js";
 import {
   deleteGroupMessageSchema,
   forwardGroupMessageSchema,
@@ -25,11 +25,17 @@ import {
 import { deleteMessageQuerySchema } from "../validators/private-message.validator.js";
 import type { GroupMessageController } from "../controllers/group-message.controller.js";
 
-const sendLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 30,
-  keyPrefix: "gm:send",
-});
+/**
+ * One 30/min bucket named `gm:send` used to cover all twelve throttled routes
+ * on this router — sends, read-position writes, reactions, pins, edits, deletes,
+ * reports and forwards. Scrolling a few group chats exhausted the SEND budget
+ * through `POST /read` alone, which is the "Too many requests" a user actually
+ * hits when they then try to type.
+ *
+ * Split by operation class, matching the private router. See
+ * `messagingRateLimits` for the numbers and why each is what it is.
+ */
+const limits = messagingRateLimits("gm");
 
 export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   const router = Router();
@@ -44,7 +50,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages",
     authenticate,
-    sendLimit,
+    limits.send,
     validateBody(sendGroupMessageBodySchema),
     ctrl.sendMessage
   );
@@ -52,7 +58,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/read",
     authenticate,
-    sendLimit,
+    limits.read,
     validateBody(markGroupReadBodySchema),
     ctrl.markRead
   );
@@ -88,7 +94,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/messages/delete",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateBody(deleteGroupMessageSchema),
     ctrl.deleteMessage
   );
@@ -101,7 +107,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.delete(
     "/messages/:messageId",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateQuery(deleteMessageQuerySchema),
     ctrl.deleteMessageByPath
   );
@@ -110,7 +116,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.patch(
     "/messages/:messageId",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateBody(editGroupMessageSchema),
     ctrl.editMessage
   );
@@ -120,7 +126,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/messages/:messageId/react",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateBody(reactionBodySchema),
     ctrl.setReaction
   );
@@ -130,13 +136,13 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    sendLimit,
+    limits.interact,
     ctrl.pin
   );
   router.delete(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    sendLimit,
+    limits.interact,
     ctrl.unpin
   );
 
@@ -144,7 +150,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages/:messageId/report",
     authenticate,
-    sendLimit,
+    limits.sensitive,
     validateBody(reportGroupMessageSchema),
     ctrl.reportMessage
   );
@@ -153,7 +159,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",
     authenticate,
-    sendLimit,
+    limits.send,
     validateBody(forwardGroupMessageSchema),
     ctrl.forwardMessage
   );
@@ -176,7 +182,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.post(
     "/rooms/:roomId/messages/:messageId/reactions",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateBody(reactionBodySchema),
     ctrl.addReaction
   );
@@ -185,7 +191,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.delete(
     "/rooms/:roomId/messages/:messageId/reactions/:emoji",
     authenticate,
-    sendLimit,
+    limits.interact,
     validateParams(reactionParamSchema),
     ctrl.removeReaction
   );

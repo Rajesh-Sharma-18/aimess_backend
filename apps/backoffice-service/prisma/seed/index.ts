@@ -1,3 +1,4 @@
+import { isDisposableEmail } from "../../src/lib/disposable-email.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -71,6 +72,19 @@ async function bootstrapSuperAdmin(): Promise<void> {
     console.log(
       "BOOTSTRAP_SUPER_ADMIN_EMAIL/PASSWORD not set — skipping super-admin creation."
     );
+    return;
+  }
+
+  // Refuse to anchor the highest-privilege account on the platform to a public
+  // disposable inbox. The shipped value was `admin@yopmail.com`, whose inbox
+  // anyone can open by typing the address — so the reset flow handed over
+  // super-admin without anyone needing to guess the password.
+  if (isDisposableEmail(email)) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `BOOTSTRAP_SUPER_ADMIN_EMAIL is a public disposable-mail address — refusing to seed a super-admin whose password-reset codes anyone can read. Use a controlled corporate mailbox, or leave it unset and provision the first admin out of band.`
+    );
+    process.exitCode = 1;
     return;
   }
 

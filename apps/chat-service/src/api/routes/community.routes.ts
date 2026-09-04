@@ -3,7 +3,7 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
-import { createRateLimit } from "../../middleware/rate-limit.js";
+import { messagingRateLimits } from "../../middleware/rate-limit.js";
 import {
   communityTimelineQuerySchema,
   communitySyncQuerySchema,
@@ -27,11 +27,17 @@ import {
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 
-const messageLimit = createRateLimit({
-  windowMs: 60_000,
-  maxRequests: 30,
-  keyPrefix: "cm:send",
-});
+/**
+ * One 30/min bucket named `cm:send` used to cover every throttled route on this
+ * router — sends, read-position writes, reactions, pins, edits, deletes and
+ * forwards. Communities are the busiest rooms in the product, so this was the
+ * first limit users hit: opening and scrolling a few of them spent the whole
+ * send allowance before a message was typed.
+ *
+ * Split by operation class, matching the private router. See
+ * `messagingRateLimits` for the numbers and why each is what it is.
+ */
+const limits = messagingRateLimits("cm");
 
 export function createCommunityRoutes(
   roomCtrl: CommunityController,
@@ -82,14 +88,14 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateBody(pinCommunityMessageSchema),
     messageCtrl.pinMessage
   );
   router.delete(
     "/rooms/:roomId/messages/:messageId/pin",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateBody(unpinCommunityMessageSchema),
     messageCtrl.unpinMessage
   );
@@ -104,7 +110,7 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/messages",
     authenticate,
-    messageLimit,
+    limits.send,
     validateBody(sendCommunityMessageBodySchema),
     messageCtrl.sendMessage
   );
@@ -112,7 +118,7 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/read",
     authenticate,
-    messageLimit,
+    limits.read,
     validateBody(markCommunityReadBodySchema),
     messageCtrl.markRead
   );
@@ -137,7 +143,7 @@ export function createCommunityRoutes(
   router.delete(
     "/messages/:messageId",
     authenticate,
-    messageLimit,
+    limits.interact,
     messageCtrl.deleteMessage
   );
 
@@ -145,7 +151,7 @@ export function createCommunityRoutes(
   router.patch(
     "/messages/:messageId",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateBody(editCommunityMessageSchema),
     messageCtrl.editMessage
   );
@@ -153,7 +159,7 @@ export function createCommunityRoutes(
   router.post(
     "/messages/:messageId/react",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateBody(reactCommunityMessageBodySchema),
     messageCtrl.reactToMessage
   );
@@ -163,7 +169,7 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",
     authenticate,
-    messageLimit,
+    limits.send,
     validateBody(forwardCommunityMessageBodySchema),
     messageCtrl.forwardMessage
   );
@@ -172,7 +178,7 @@ export function createCommunityRoutes(
   router.post(
     "/rooms/:roomId/pins",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateBody(pinCommunityMessageSchema),
     messageCtrl.pinMessage
   );
@@ -181,7 +187,7 @@ export function createCommunityRoutes(
   router.delete(
     "/rooms/:roomId/pins/:messageId",
     authenticate,
-    messageLimit,
+    limits.interact,
     validateQuery(unpinCommunityMessageQuerySchema),
     messageCtrl.unpinMessage
   );

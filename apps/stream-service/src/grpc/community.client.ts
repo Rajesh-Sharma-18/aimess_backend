@@ -27,6 +27,21 @@ interface CheckMuteResult {
 
 interface CheckBanResult {
   isBanned: boolean;
+  /** True when the user is an ACTIVE member of the community. */
+  isMember: boolean;
+  /** True when the community is PUBLIC (non-members may read it). */
+  isPublicCommunity: boolean;
+}
+
+/**
+ * The full `checkCommunityMembership` answer. `checkBan` reads the same RPC but
+ * only surfaces `isBanned`; the stream LIST gate needs membership and community
+ * visibility as well, so it uses this instead of firing a second call.
+ */
+interface CommunityAccessResult {
+  isMember: boolean;
+  isBanned: boolean;
+  isPublicCommunity: boolean;
 }
 
 /** Mirrors community.proto's ModerationActionResponse (mute/unmute share it). */
@@ -83,13 +98,28 @@ const checkMuteBreaker: Breaker<
 
 const checkBanBreaker: Breaker<
   { communityId: string; userId: string },
-  { isMember: boolean; isBanned: boolean; status: string; role: string }
+  {
+    isMember: boolean;
+    isBanned: boolean;
+    status: string;
+    role: string;
+    isPublicCommunity: boolean;
+  }
 > = makeBreaker(
   "community.checkCommunityMembership",
   (args: { communityId: string; userId: string }) =>
     call<
       { communityId: string; userId: string },
-      { isMember: boolean; isBanned: boolean; status: string; role: string }
+      {
+        isMember: boolean;
+        isBanned: boolean;
+        status: string;
+        role: string;
+        // Already on the wire (community.proto `is_public_community`); only
+        // this TypeScript type dropped it, so callers could not tell a private
+        // community from a public one.
+        isPublicCommunity: boolean;
+      }
     >("checkCommunityMembership", args)
 );
 
@@ -234,7 +264,35 @@ export const communityGrpcClient = {
    */
   async checkBan(communityId: string, userId: string): Promise<CheckBanResult> {
     const result = await checkBanBreaker.fire({ communityId, userId });
-    return { isBanned: Boolean(result?.isBanned) };
+    return {
+      isBanned: Boolean(result?.isBanned),
+      // Surfaced so callers can distinguish "not a member of a PRIVATE
+      // community" from "not a member of a public one" — the listing gate needs
+      // both, and this RPC already returns them.
+      isMember: Boolean(result?.isMember),
+      isPublicCommunity: Boolean(result?.isPublicCommunity),
+    };
+  },
+
+  /**
+   * Membership + ban + visibility in one call, for the stream LIST gate.
+   *
+   * Unlike every other community read here this one is used FAIL-CLOSED by its
+   * caller: `GET /streams` hands back directly-playable hlsUrl/flvUrl values,
+   * so on an outage the right answer is "no list", not "everyone's list". The
+   * single-stream watch path (`checkAccess`) keeps its fail-open posture — an
+   * outage still must not black out a stream someone is already watching.
+   */
+  async checkCommunityAccess(
+    communityId: string,
+    userId: string
+  ): Promise<CommunityAccessResult> {
+    const result = await checkBanBreaker.fire({ communityId, userId });
+    return {
+      isMember: Boolean(result?.isMember),
+      isBanned: Boolean(result?.isBanned),
+      isPublicCommunity: Boolean(result?.isPublicCommunity),
+    };
   },
 
   /**
