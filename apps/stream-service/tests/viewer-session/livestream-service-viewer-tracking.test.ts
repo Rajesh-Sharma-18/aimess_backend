@@ -291,16 +291,30 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
     );
   });
 
-  it("sweepStaleStreams does NOT end a stale stream when SRS is unreachable", async () => {
+  it("sweepStaleStreams does NOT end a stale SRS-ingested stream when SRS is unreachable", async () => {
     // The interlock. `lastHeartbeatAt` is refreshed from the SRS publisher
     // scan, so an unreachable SRS produces the same evidence as a room full of
     // dead broadcasts — no recent stamps. Acting on it would turn one SRS
     // outage into every live stream on the platform being killed a timeout
     // later, which is strictly worse than the leak it is meant to fix.
-    const stream = makeStream();
+    //
+    // The stand-down is now expressed as a source-type narrowing rather than a
+    // blanket skip: it withholds judgement on the streams SRS ingests, and only
+    // those. A URL/YOUTUBE embed has no publisher for SRS to have an opinion
+    // about, and blanket-skipping meant one flaky instance kept those alive
+    // forever after their host's session was gone — see
+    // tests/publish/stale-live-sweep.test.ts.
+    const stream = makeStream(); // PHONE_CAMERA — ingested by SRS
     const { service, streamRepo, viewerSessionRepo } = makeDeps({
       streamRepo: {
-        findStaleLiveStreams: jest.fn().mockResolvedValue([stream]),
+        // Honour the filter the way the real query does, so this asserts the
+        // camera stream survives rather than that the sweep never ran.
+        findStaleLiveStreams: jest.fn(
+          async (_cutoff: Date, sourceTypes?: readonly string[]) =>
+            sourceTypes && !sourceTypes.includes(stream.sourceType)
+              ? []
+              : [stream]
+        ),
       },
       srsService: {
         listPublishers: jest.fn().mockResolvedValue(null), // instance unreachable
@@ -310,7 +324,10 @@ describe("LivestreamService â€” viewer sessions close out on every ENDED tr
     await service.sweepStaleStreams();
     await flushMicrotasks();
 
-    expect(streamRepo.findStaleLiveStreams).not.toHaveBeenCalled();
+    expect(streamRepo.findStaleLiveStreams).toHaveBeenCalledWith(
+      expect.any(Date),
+      ["URL", "YOUTUBE"]
+    );
     expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
   });
 });

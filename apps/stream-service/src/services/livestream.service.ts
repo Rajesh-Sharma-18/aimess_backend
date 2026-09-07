@@ -21,6 +21,7 @@ import {
 } from "@aimess/errors";
 import { formatStreamDuration } from "@aimess/constants";
 
+import { NON_SRS_SOURCE_TYPES } from "../constants/index.js";
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
 import type {
@@ -1753,18 +1754,30 @@ export class LivestreamService {
     // outage into every live stream on the platform being killed a timeout
     // later. A cold start reads 0 and so also skips, which is the safe
     // direction — nothing is ended until we have seen SRS answer once.
+    //
+    // The skip is SRS-shaped, so it must not cover sources SRS never sees.
+    // A URL/YOUTUBE broadcast is a remote embed with no publisher at all, and
+    // its `lastHeartbeatAt` comes from one place only: the owner's
+    // authenticated POST /heartbeat. SRS being unreachable says nothing about
+    // it, but blanket-skipping meant one flaky instance stopped EVERY stream
+    // on the platform from ever auto-ending — which is what let an embed
+    // broadcast outlive its host's session indefinitely, viewers still
+    // watching, after the host was logged out and could not stop it.
     const scanAge = Date.now() - this.lastPublisherScanAt;
-    if (scanAge > env.STREAM_HEARTBEAT_TIMEOUT_MS) {
+    const srsScanStale = scanAge > env.STREAM_HEARTBEAT_TIMEOUT_MS;
+    if (srsScanStale) {
       logger.warn(
-        `sweepStaleLiveStreams: skipped — no complete SRS publisher scan in ${String(Math.round(scanAge / 1000))}s; cannot tell a dead publisher from an unreachable SRS`
+        `sweepStaleLiveStreams: no complete SRS publisher scan in ${String(Math.round(scanAge / 1000))}s; limiting this sweep to ${NON_SRS_SOURCE_TYPES.join("/")} streams, whose liveness does not depend on SRS`
       );
-      return;
     }
 
     const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
     let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
     try {
-      stale = await this.streamRepo.findStaleLiveStreams(cutoff);
+      stale = await this.streamRepo.findStaleLiveStreams(
+        cutoff,
+        srsScanStale ? NON_SRS_SOURCE_TYPES : undefined
+      );
     } catch (err) {
       logger.warn(`sweepStaleStreams: DB query failed — ${String(err)}`);
       return;
