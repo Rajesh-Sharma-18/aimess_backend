@@ -1,4 +1,5 @@
 ﻿import type { PrismaClient, RoomMember } from "../generated/prisma/index.js";
+import { SEARCH_SCOPE_ROOM_LIMIT } from "./message-search.js";
 
 export class RoomMemberRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -163,6 +164,29 @@ export class RoomMemberRepository {
     });
   }
 
+  /** userIds of every non-left member of a room — the mirror the reconciler diffs against community-service. */
+  async findLiveMemberUserIds(roomId: string): Promise<string[]> {
+    const rows = await this.prisma.roomMember.findMany({
+      where: { roomId, status: { in: ["active", "banned"] } },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  }
+
+  /** Mark specific members of a room as left (their community membership is gone). */
+  async markLeftForUsers(roomId: string, userIds: string[]): Promise<number> {
+    if (!userIds.length) return 0;
+    const result = await this.prisma.roomMember.updateMany({
+      where: {
+        roomId,
+        userId: { in: userIds },
+        status: { in: ["active", "banned"] },
+      },
+      data: { status: "left", leftAt: new Date() },
+    });
+    return result.count;
+  }
+
   async isBanned(roomId: string, userId: string): Promise<boolean> {
     const member = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: "banned" },
@@ -281,6 +305,27 @@ export class RoomMemberRepository {
         status: { in: ["active", "banned"] },
         roomId: { in: roomIds },
       },
+    });
+  }
+
+  /**
+   * Every community room the caller holds a VISIBLE membership in, with the
+   * fields a message-body search needs: `status` (a banned member reads only up
+   * to their ban) and `bannedAt` (that cutoff). Same ACTIVE + BANNED rule
+   * {@link findVisibleRoomIdsByUser} uses, but carrying the row rather than just
+   * the id — `assertCommunityReadAccess(..., { allowBannedReadCutoff: true })`
+   * is what the per-room search applies, and this is its bulk equivalent.
+   */
+  async findSearchScope(
+    userId: string
+  ): Promise<Array<{ roomId: string; status: string; bannedAt: Date | null }>> {
+    return this.prisma.roomMember.findMany({
+      where: { userId, status: { in: ["active", "banned"] } },
+      select: { roomId: true, status: true, bannedAt: true },
+      // Capped and recency-ordered. [userId, status] could not serve this sort, so
+      // it was widened to [userId, status, updatedAt desc] (schema + server.ts).
+      orderBy: { updatedAt: "desc" },
+      take: SEARCH_SCOPE_ROOM_LIMIT,
     });
   }
 

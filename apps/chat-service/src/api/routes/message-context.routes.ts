@@ -2,8 +2,12 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
-import { messageContextQuerySchema } from "../validators/query.validator.js";
+import {
+  globalMessageSearchQuerySchema,
+  messageContextQuerySchema,
+} from "../validators/query.validator.js";
 import type { MessageContextController } from "../controllers/message-context.controller.js";
+import type { MessageSearchController } from "../controllers/message-search.controller.js";
 
 /**
  * Single cross-conversation-type message navigation API. Mounted at
@@ -12,12 +16,25 @@ import type { MessageContextController } from "../controllers/message-context.co
  *   GET /api/chat/messages/:messageId/context?conversationType=PRIVATE|GROUP|COMMUNITY&roomId=<roomId>
  *
  * One endpoint for every navigate-to-a-message case (reply, pinned message,
- * search result, shared-message deep link, notification deep link).
+ * search result, shared-message deep link, notification deep link) — plus the
+ * whole-account message-body search that produces those search results.
  */
 export function createMessageContextRoutes(
-  ctrl: MessageContextController
+  ctrl: MessageContextController,
+  searchCtrl: MessageSearchController
 ): Router {
   const router = Router();
+
+  // GET /api/chat/messages/search?q=&limit=&cursor=
+  // Registered before the `/:messageId/...` routes so the literal path wins.
+  // The strict-cursor variant, mounted HERE only: the three per-room searches
+  // predate this endpoint and still accept the looser cursor they shipped with.
+  router.get(
+    "/search",
+    authenticate,
+    validateQuery(globalMessageSearchQuerySchema),
+    searchCtrl.search
+  );
 
   router.get(
     "/:messageId/context",

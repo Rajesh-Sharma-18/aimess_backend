@@ -31,6 +31,7 @@ import type { CommunityMessageController } from "../controllers/community-messag
 import type { CallController } from "../controllers/call.controller.js";
 import type { PresenceController } from "../controllers/presence.controller.js";
 import type { MessageContextController } from "../controllers/message-context.controller.js";
+import type { MessageSearchController } from "../controllers/message-search.controller.js";
 
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
@@ -49,6 +50,7 @@ export interface Controllers {
   callCtrl: CallController;
   presenceCtrl: PresenceController;
   messageContextCtrl: MessageContextController;
+  messageSearchCtrl: MessageSearchController;
 }
 
 export function createRoutes(controllers: Controllers): Router {
@@ -108,7 +110,10 @@ export function createRoutes(controllers: Controllers): Router {
   router.use(`${basePath}/calls`, createCallRoutes(controllers.callCtrl));
   router.use(
     `${basePath}/messages`,
-    createMessageContextRoutes(controllers.messageContextCtrl)
+    createMessageContextRoutes(
+      controllers.messageContextCtrl,
+      controllers.messageSearchCtrl
+    )
   );
 
   return router;

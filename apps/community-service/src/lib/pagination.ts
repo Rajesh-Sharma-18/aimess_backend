@@ -18,6 +18,25 @@ export interface PaginatedResponse<T> {
   data: T[];
 }
 
+// Same envelope for keyset/cursor pages, where no count query is run: `nextCursor`/`hasMore` are the real continuation signals and `totalData`/`totalPage`/`currentPage` describe THIS page only — never page on them here.
+export function buildCursorPaginatedResponse<T>(
+  data: T[],
+  limit: number,
+  nextCursor: string | null
+): PaginatedResponse<T> {
+  return {
+    pagination: {
+      totalData: data.length,
+      totalPage: 1,
+      currentPage: 1,
+      limit,
+      nextCursor,
+      hasMore: nextCursor !== null,
+    },
+    data,
+  };
+}
+
 /** Build the standard paginated envelope from a page of rows + the total count. */
 export function buildPaginatedResponse<T>(
   data: T[],

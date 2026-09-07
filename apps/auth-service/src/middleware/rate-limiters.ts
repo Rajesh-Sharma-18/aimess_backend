@@ -76,6 +76,39 @@ export const changePasswordRateLimiter = rateLimit({
   handler: rateLimitHandler(),
 });
 
+/**
+ * QR result polling: the waiting browser pulling its own QR's outcome.
+ *
+ * Its own bucket, sized for what polling actually costs. This endpoint was
+ * mounted on `qrGenerationRateLimiter` — 5/minute, written and named for
+ * GENERATING a QR — while the browser polls it every 2 seconds. A single
+ * 60-second QR needs 30 requests, so the limiter fired about ten seconds in and
+ * the QR spent the rest of its life answering 429.
+ *
+ * Same reasoning the OTP endpoints already have at the gateway: a high-frequency
+ * flow must not be metered out of a low-frequency flow's allowance.
+ *
+ * Generous on purpose, and safe to be: the handler reads one Redis key, the
+ * endpoint is unauthenticated only because the 256-bit linkToken IS the
+ * credential, and that is not guessable at any request rate. Volume is the only
+ * thing this needs to bound.
+ *
+ * NOTE: `qrGenerationRateLimiter` above is now mounted on nothing — it only
+ * ever guarded this endpoint, despite its name. `/devices/link/initiate` is
+ * unthrottled at both layers. Left defined rather than deleted because that is
+ * the limiter initiate would want if it is ever given one; giving it one now
+ * would be a behaviour change nobody asked for.
+ */
+export const qrResultPollRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: env.QR_RESULT_POLL_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: { trustProxy: env.TRUST_PROXY_HOPS > 0 },
+  keyGenerator: (req: Request) => ipKeyGenerator(resolveClientIp(req)),
+  handler: rateLimitHandler(),
+});
+
 /** QR login scan: configurable requests/minute/user (authenticated endpoint). */
 export const qrScanRateLimiter = rateLimit({
   windowMs: 60 * 1000,

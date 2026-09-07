@@ -59,6 +59,8 @@ const auth = () => bearer(makeAccessToken());
 const PEER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const GROUP_ID = "room_group123";
+// The people cursor's separator — a NUL, written out so no editor eats it.
+const NUL = String.fromCharCode(0);
 
 function profile(userId: string, overrides = {}) {
   return {
@@ -229,7 +231,12 @@ describe("GET /api/v1/users/search", () => {
       .set(auth());
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ chat: [], other: [] });
+    expect(res.body.data).toEqual({
+      chat: [],
+      other: [],
+      hasMore: false,
+      nextCursor: null,
+    });
   });
 
   it("returns a Recent USER entry with roomId resolved dynamically", async () => {
@@ -608,7 +615,9 @@ describe("GET /api/v1/users/search", () => {
       "jane",
       expect.any(Number),
       expect.any(Number),
-      expect.objectContaining({ friendIds: expect.any(Array) })
+      expect.objectContaining({ friendIds: expect.any(Array) }),
+      undefined, // no cursor on the first page
+      expect.any(Array) // private-room peers, exempt from `whoCanFindMe`
     );
     expect(grpc.listOtherGroups).toHaveBeenCalledWith(
       TEST_USER_ID,
@@ -621,6 +630,89 @@ describe("GET /api/v1/users/search", () => {
   it("returns 401 without token", async () => {
     const res = await request(app).get("/api/v1/users/search");
     expect(res.status).toBe(401);
+  });
+
+  // -------------------------------------------------------------------------
+  // Keyset pagination over the `other` people bucket.
+  // -------------------------------------------------------------------------
+
+  it("accepts limit up to 50 and rejects 51", async () => {
+    const ok = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", limit: 50 })
+      .set(auth());
+    expect(ok.status).toBe(200);
+
+    const bad = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", limit: 51 })
+      .set(auth());
+    expect(bad.status).toBe(400);
+  });
+
+  it("probes one row past the page: trims it, sets hasMore and a nextCursor", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([
+      profile(PEER_ID, { firstName: "Aaa" }),
+      profile(OTHER_ID, { firstName: "Bbb" }),
+      profile("cccccccc-cccc-4ccc-8ccc-cccccccccccc", { firstName: "Ccc" }),
+    ]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", limit: 2 })
+      .set(auth());
+
+    // take is limit + 1 — the extra row answers hasMore without a count query.
+    expect(pRepo.findUsersNotInList.mock.calls[0][3]).toBe(3);
+    expect(res.body.data.other).toHaveLength(2);
+    expect(res.body.data.hasMore).toBe(true);
+    expect(
+      Buffer.from(res.body.data.nextCursor, "base64url").toString("utf8")
+    ).toBe(`Bbb${NUL}${OTHER_ID}`);
+  });
+
+  it("has no nextCursor when the page is not full", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", limit: 2 })
+      .set(auth());
+
+    expect(res.body.data.hasMore).toBe(false);
+    expect(res.body.data.nextCursor).toBeNull();
+  });
+
+  it("a cursor page omits the bounded heads and forwards the decoded keyset", async () => {
+    const cursor = Buffer.from(`Bbb${NUL}${OTHER_ID}`, "utf8").toString(
+      "base64url"
+    );
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", cursor })
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).not.toHaveProperty("chat");
+    expect(pRepo.findUsersInList).not.toHaveBeenCalled();
+    expect(grpc.listActiveGroups).not.toHaveBeenCalled();
+    expect(grpc.listOtherGroups).not.toHaveBeenCalled();
+    expect(pRepo.findUsersNotInList.mock.calls[0][5]).toEqual({
+      firstName: "Bbb",
+      userId: OTHER_ID,
+    });
+  });
+
+  it("treats an undecodable cursor as the first page rather than 400ing", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane", cursor: "not-a-real-cursor" })
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.chat).toEqual([]);
+    expect(pRepo.findUsersNotInList.mock.calls[0][5]).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------

@@ -368,6 +368,36 @@ export class CommunityPinService {
     return { roomId: activePin.roomId, pinnedCount: updated?.pinnedCount ?? 0 };
   }
 
+  /**
+   * Delete-for-me: hide this pin's "<actor> pinned a message" system line for
+   * ONE user. The per-user twin of `retractSystemMessage` (which removes the
+   * line for everybody on unpin / delete-for-everyone) — the pin row itself is
+   * untouched, so every other member keeps both the pin and the line.
+   * Returns the hidden line's identity so the caller can emit its tombstone,
+   * or null when there is nothing to hide (no active pin, no line, already
+   * hidden, already retracted for everyone).
+   */
+  async hidePinSystemMessageForUser(
+    messageId: string,
+    userId: string
+  ): Promise<{
+    messageId: string;
+    roomId: string;
+    sequenceNumber: number;
+  } | null> {
+    const pin = await this.pinRepo.findActivePinByMessageId(messageId);
+    if (!pin?.pinSystemMessageId) return null;
+    const line = await this.messageRepo.findById(pin.pinSystemMessageId);
+    if (!line || line.deletedForAll || isHiddenForUser(line, userId))
+      return null;
+    await this.messageRepo.deleteForUser(line.id, userId);
+    return {
+      messageId: line.id,
+      roomId: line.roomId,
+      sequenceNumber: line.sequenceNumber,
+    };
+  }
+
   /** roomId of this message's ACTIVE pin, or null — the delete-for-me hook's
    *  cheap "is this the pinned one?" probe. */
   async findActivePinRoomId(messageId: string): Promise<string | null> {

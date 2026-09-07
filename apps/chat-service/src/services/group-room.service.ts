@@ -53,6 +53,10 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { resolveDisplayName } from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
+import {
+  EMPTY_UNREAD_STATS,
+  type UnreadStats,
+} from "../lib/unread-count.js";
 
 export type GroupRoomMembership = GroupRoom & {
   /** True when the logged-in caller is an active member of this group. */
@@ -1178,14 +1182,15 @@ export class GroupRoomService {
   }
 
   /**
-   * Total unread group messages across every group the user's an active
-   * member of — for the Chats nav badge. Same membership lookup + visibility
-   * filter as countUserGroups, summing each membership's already-maintained
-   * `unreadCount` instead of counting rooms.
+   * Unread stats across every group the user's an active member of — the
+   * message total plus how many groups carry at least one unread (the nav
+   * badge counts groups, not messages). Same membership lookup + visibility
+   * filter as countUserGroups, over each membership's already-maintained
+   * `unreadCount`.
    */
-  async sumUnreadForUser(userId: string): Promise<number> {
+  async countUnreadForUser(userId: string): Promise<UnreadStats> {
     const memberships = await this.memberRepo.getActiveMemberships(userId);
-    if (!memberships.length) return 0;
+    if (!memberships.length) return { ...EMPTY_UNREAD_STATS };
     const clearedByRoom = new Map(
       memberships.map((m) => [m.roomId, m.clearedAt])
     );
@@ -1197,7 +1202,17 @@ export class GroupRoomService {
     ]);
     return rows
       .filter((r) => isVisibleAfterClear(r, clearedByRoom.get(r.roomId)))
-      .reduce((sum, r) => sum + (unreadByRoom.get(r.roomId) ?? 0), 0);
+      .reduce<UnreadStats>(
+        (acc, r) => {
+          const unread = unreadByRoom.get(r.roomId) ?? 0;
+          if (unread <= 0) return acc;
+          return {
+            messages: acc.messages + unread,
+            conversations: acc.conversations + 1,
+          };
+        },
+        { ...EMPTY_UNREAD_STATS }
+      );
   }
 
   async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {

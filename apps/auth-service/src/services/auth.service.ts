@@ -41,7 +41,7 @@ export const authService = {
       lastPasswordChangeAt: new Date(),
     });
 
-    const session = buildSessionContext(req);
+    const session = buildSessionContext(req, input.device);
     const { tokens } = await issueAuthTokens(
       user.id,
       user.role === "ADMIN" ? "ADMIN" : "USER",
@@ -151,7 +151,7 @@ export const authService = {
 
     // The "New login detected" alert now fires from issueAuthTokens (the shared
     // new-session funnel) once the session row + id + device metadata exist.
-    const session = buildSessionContext(req);
+    const session = buildSessionContext(req, input.device);
     const { tokens } = await issueAuthTokens(
       user.id,
       user.role === "ADMIN" ? "ADMIN" : "USER",

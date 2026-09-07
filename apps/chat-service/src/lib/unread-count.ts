@@ -64,3 +64,15 @@ export const UNREAD_COUNTABLE_RAW_MATCH = {
   ],
 } as const;
 
+
+/**
+ * Per-surface unread aggregate: the message total AND how many conversations
+ * carry at least one unread. The nav badges render `conversations` (a room
+ * with 500 unread contributes 1); `messages` stays for per-row/legacy totals.
+ */
+export interface UnreadStats {
+  messages: number;
+  conversations: number;
+}
+
+export const EMPTY_UNREAD_STATS: UnreadStats = { messages: 0, conversations: 0 };

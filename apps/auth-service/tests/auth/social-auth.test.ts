@@ -147,8 +147,28 @@ describe("POST /api/auth/google", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.isNewUser).toBe(true);
-    expect(res.body.data.isProfileCompleted).toBe(false);
+    // Google supplied both names, so the profile user-service is about to seed
+    // is already complete — no avatar is involved in that answer.
+    expect(res.body.data.isProfileCompleted).toBe(true);
     expect(repo.createUserWithLinkedAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a new account incomplete when the token carried no name", async () => {
+    verifyGoogle.mockResolvedValue({
+      sub: "google-sub-123",
+      email: "john@example.com",
+      emailVerified: true,
+      displayName: null,
+      firstName: null,
+      lastName: null,
+      pictureUrl: null,
+    });
+
+    const res = await request(app)
+      .post("/api/auth/google")
+      .send({ idToken: "valid-google-token" });
+
+    expect(res.body.data.isProfileCompleted).toBe(false);
   });
 
   // Test 1 — new Google user gets the verified given/family names.
@@ -416,6 +436,30 @@ describe("POST /api/auth/apple", () => {
       firstName: "Rajesh",
       lastName: "Sharma",
     });
+  });
+
+  // Apple must answer profile completion by the same shared rule as Google: the
+  // generated account/username plus the two names, never the missing avatar.
+  it("reports a new Apple account with a full name as profile-complete", async () => {
+    const res = await request(app)
+      .post("/api/auth/apple")
+      .send({
+        identityToken: "valid-apple-token",
+        fullName: { givenName: "Rajesh", familyName: "Sharma" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isNewUser).toBe(true);
+    expect(res.body.data.isProfileCompleted).toBe(true);
+  });
+
+  it("leaves a new Apple account incomplete when no name was sent", async () => {
+    const res = await request(app)
+      .post("/api/auth/apple")
+      .send({ identityToken: "valid-apple-token" });
+
+    expect(res.body.data.isNewUser).toBe(true);
+    expect(res.body.data.isProfileCompleted).toBe(false);
   });
 
   it("accepts the legacy joined fullName string and splits it", async () => {

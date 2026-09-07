@@ -46,7 +46,7 @@ import {
  * is targeted at them. The hard-delete-on-leave cleanup is the primary removal;
  * this is the read-time safety net for the window before (or if) it lands.
  */
-function isVisibleToUser(
+export function isVisibleToUser(
   msg: {
     visibleToUserId?: string | null;
     systemMessageType?: string | null;

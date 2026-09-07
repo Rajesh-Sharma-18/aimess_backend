@@ -60,6 +60,7 @@ import {
   assertInviteBulkSendRateLimit,
 } from "../lib/invite-rate-limit.js";
 import {
+  buildCursorPaginatedResponse,
   buildPaginatedResponse,
   type PaginatedResponse,
 } from "../lib/pagination.js";
@@ -3056,6 +3057,7 @@ export const communityService = {
       filter: "all" | "live" | "upcoming";
       page: number;
       limit: number;
+      cursor?: string;
       includeJoined?: boolean;
       includeChatActivity?: boolean;
     }
@@ -3105,10 +3107,16 @@ export const communityService = {
       includeMemberCommunityIds,
       excludeCommunityIds,
       page: params.page,
-      limit: params.limit,
+      // Over-fetch one row in cursor mode so hasMore is exact without a count.
+      limit: params.cursor ? params.limit + 1 : params.limit,
+      cursor: params.cursor,
     });
 
-    const communityIds = rows.map((row) => row.id);
+    // Trim BEFORE enrichment so the probe row never costs a presigned avatar.
+    const hasMore = params.cursor != null && rows.length > params.limit;
+    const pageRows = hasMore ? rows.slice(0, params.limit) : rows;
+
+    const communityIds = pageRows.map((row) => row.id);
 
     // Batch-load mute rows, pending join requests, live counts, and whether
     // the caller is already streaming elsewhere — all in parallel.
@@ -3133,7 +3141,7 @@ export const communityService = {
     const bannedSet = new Set(bannedIds);
 
     const communities: CommunityDiscoverItem[] = await Promise.all(
-      rows.map((row) =>
+      pageRows.map((row) =>
         toDiscoverItem(
           row,
           muteByCommunityId.get(row.id) ?? null,
@@ -3161,6 +3169,17 @@ export const communityService = {
         item.unreadMessageCount = chat.unreadMessageCount;
         item.firstUnreadMessageId = chat.firstUnreadMessageId;
       }
+    }
+
+    // Keyset page: the cursor is the last row's community id (`id desc`), and
+    // `total` is -1 here — the count query is deliberately not run.
+    if (params.cursor) {
+      const lastRow = pageRows[pageRows.length - 1];
+      return buildCursorPaginatedResponse(
+        communities,
+        params.limit,
+        hasMore && lastRow ? lastRow.id : null
+      );
     }
 
     return buildPaginatedResponse(

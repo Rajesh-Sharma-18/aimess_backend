@@ -18,9 +18,8 @@ import type { Prisma } from "../generated/prisma/client.js";
  * are not all `EVERYONE`. Presence defaults to `FRIENDS`, so a blanket "unset
  * means public" fallback would expose online status to strangers for any
  * profile whose settings row is missing. (`whoCanCallMe` is not listed here —
- * it lives in `findCallPrivacy`, which deliberately falls back to `FRIENDS`
- * even though the COLUMN default is now `EVERYONE`: a missing row is an
- * anomaly, and an anomaly must not open ringing to strangers.)
+ * it lives in `findCallPrivacy`, which falls back to `FRIENDS` — now also the
+ * column default, since `EVERYONE` was retired as a call scope.)
  *
  * Profile creation writes all five settings rows in one transaction, so an
  * absent row is defensive-only today — but the default has to be safe anyway.

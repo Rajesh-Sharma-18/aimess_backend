@@ -5,6 +5,7 @@ import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
+import { isProfileComplete } from "@aimess/utils";
 
 import {
   AccountStatus,
@@ -22,6 +23,7 @@ import { resolveSocialProfileName } from "../lib/social-profile-name.js";
 import { assertNotBanned } from "../lib/account-guard.js";
 import { assertEmailAvailable } from "../lib/email-availability.js";
 import { buildSessionContext } from "../lib/session-context.js";
+import type { DeviceInfoInput } from "../api/validators/device-info.validator.js";
 import { issueAuthTokens } from "../lib/token.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
 import { authRepository } from "../repositories/auth.repository.js";
@@ -70,10 +72,11 @@ function assertUserCanLogin(user: AuthUserRow): void {
 
 async function issueTokensForUser(
   req: Request,
-  user: AuthUserRow
+  user: AuthUserRow,
+  device: DeviceInfoInput | null | undefined
 ): Promise<SocialLoginResult["tokens"]> {
   await authRepository.recordSuccessfulLogin(user.id);
-  const session = buildSessionContext(req);
+  const session = buildSessionContext(req, device);
   const { tokens } = await issueAuthTokens(
     user.id,
     user.role === "ADMIN" ? "ADMIN" : "USER",
@@ -85,10 +88,11 @@ async function issueTokensForUser(
 async function loginExistingLinkedUser(
   req: Request,
   provider: SocialAuthProvider,
-  user: AuthUserRow
+  user: AuthUserRow,
+  device: DeviceInfoInput | null | undefined
 ): Promise<SocialLoginResult> {
   assertUserCanLogin(user);
-  const tokens = await issueTokensForUser(req, user);
+  const tokens = await issueTokensForUser(req, user, device);
   const isProfileCompleted = await authRepository.getProfileCompleted(user.id);
 
   return {
@@ -117,7 +121,8 @@ async function signInWithProvider(
     /** Verified provider family name; null when the provider sent none. */
     lastName: string | null;
   },
-  fcmTokens: string[] = []
+  fcmTokens: string[] = [],
+  device?: DeviceInfoInput | null
 ): Promise<SocialLoginResult> {
   const authProvider =
     provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE;
@@ -129,7 +134,7 @@ async function signInWithProvider(
 
   if (existingLink?.user) {
     await authRepository.mergeFcmTokens(existingLink.user.id, fcmTokens);
-    return loginExistingLinkedUser(req, provider, existingLink.user);
+    return loginExistingLinkedUser(req, provider, existingLink.user, device);
   }
 
   // Auto-link to an existing account by email ONLY when the email was verified
@@ -157,7 +162,7 @@ async function signInWithProvider(
       }
 
       await authRepository.mergeFcmTokens(existingUser.id, fcmTokens);
-      const tokens = await issueTokensForUser(req, existingUser);
+      const tokens = await issueTokensForUser(req, existingUser, device);
 
       return {
         isNewUser: false,
@@ -214,7 +219,7 @@ async function signInWithProvider(
     lastName: profile.lastName ?? undefined,
   });
 
-  const session = buildSessionContext(req);
+  const session = buildSessionContext(req, device);
 
   // Same audit row password registration emits — without this the audit log shows a
   // login for a user it never saw being created.
@@ -239,8 +244,18 @@ async function signInWithProvider(
       email: user.email,
       provider,
     },
-    // Brand-new account — profile is never complete at creation.
-    isProfileCompleted: false,
+    // Same shared rule every other flow answers with (@aimess/utils), applied
+    // to the exact values user-service is about to seed the profile with: the
+    // username it generates from `account` is always present, so the answer
+    // turns on whether the provider supplied both names. A Google/Apple sign-up
+    // that carried a full name is complete on its first response instead of
+    // being sent to the profile-details screen it has nothing left to fill in.
+    // The avatar is not part of the rule and no provider branch exists here.
+    isProfileCompleted: isProfileComplete({
+      username: account,
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+    }),
     tokens,
   };
 }
@@ -268,7 +283,8 @@ export const socialAuthService = {
         firstName: profile.firstName,
         lastName: profile.lastName,
       },
-      input.fcmTokens
+      input.fcmTokens,
+      input.device
     );
   },
 
@@ -326,7 +342,8 @@ export const socialAuthService = {
         firstName,
         lastName,
       },
-      input.fcmTokens
+      input.fcmTokens,
+      input.device
     );
   },
 };

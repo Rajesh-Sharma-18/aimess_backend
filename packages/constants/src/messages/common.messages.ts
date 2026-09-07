@@ -41,6 +41,27 @@ export const COMMON_MESSAGES = {
     th: "ตรวจสอบเวอร์ชันแอปแล้ว",
   },
 
+  // --- Unified search (api-gateway GET /api/v1/search) -----------------------
+  // The gateway threw SEARCH_UNAVAILABLE as a literal key with no catalog entry,
+  // so `t()` echoed the identifier and users were shown it verbatim.
+  SEARCH_FETCHED: {
+    vi: "Đã tải kết quả tìm kiếm",
+    en: "Search results fetched",
+    th: "ดึงผลการค้นหาแล้ว",
+  },
+  // HTTP 400 — the pagination cursor could not be read; restart the search.
+  INVALID_CURSOR: {
+    vi: "Con trỏ phân trang không hợp lệ. Vui lòng tìm kiếm lại.",
+    en: "The pagination cursor is not valid. Please start the search again.",
+    th: "เคอร์เซอร์การแบ่งหน้าไม่ถูกต้อง กรุณาเริ่มค้นหาใหม่",
+  },
+  // HTTP 503 — every search backend failed for this request.
+  SEARCH_UNAVAILABLE: {
+    vi: "Không thể tìm kiếm lúc này. Vui lòng thử lại sau giây lát.",
+    en: "Search is unavailable right now. Please try again shortly.",
+    th: "ไม่สามารถค้นหาได้ในขณะนี้ กรุณาลองใหม่ในอีกสักครู่",
+  },
+
   // --- Generic transport failures -------------------------------------------
   // Every service's error handler resolves these. They existed only as inline
   // English strings before, which is why a Vietnamese or Thai user got an

@@ -123,14 +123,14 @@ describe("PrivateMessageRepository.searchByText", () => {
       query: "hello",
       limit: 20,
       userId: USER,
-      cursor: "1700000000000_abc",
+      cursor: "1700000000000_507f1f77bcf86cd799439011",
     });
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
     expect(JSON.stringify(pipeline)).not.toContain("$skip");
     const keyset = pipeline[1].$match.$or;
     expect(keyset).toHaveLength(2);
-    expect(keyset[1]._id).toEqual({ $lt: { $oid: "abc" } });
+    expect(keyset[1]._id).toEqual({ $lt: { $oid: "507f1f77bcf86cd799439011" } });
   });
 
   it("hands back a compound nextCursor and hasMore only when the page overflows", async () => {
@@ -226,7 +226,7 @@ describe("GroupMessageRepository.searchByText", () => {
       query: "hello",
       limit: 20,
       userId: USER,
-      cursor: "1700000000000_abc",
+      cursor: "1700000000000_507f1f77bcf86cd799439011",
     });
 
     const pipeline = aggregateRaw.mock.calls[0][0].pipeline;

@@ -21,14 +21,25 @@
 /**
  * Minimum length for a new password.
  *
- * 12 rather than 8: an 8-character password drawn from the way people actually
- * choose them is within reach of an offline attack against a stolen hash, and
- * bcrypt's work factor buys far less than length does.
+ * 8 by product decision (2026-09-07), reverted from 12. What this gives up: an
+ * 8-character password drawn from the way people actually choose them is within
+ * reach of an offline attack against a stolen hash, and bcrypt's work factor
+ * buys far less than length does. The blocklist below is now carrying more of
+ * the weight than it was designed to.
  */
-export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MIN_LENGTH = 8;
 
 /**
- * Maximum length.
+ * Maximum length, in characters.
+ *
+ * 50 by the same product decision. It sits below PASSWORD_MAX_BYTES, so for
+ * ASCII this is the rule that fires; the byte cap below still matters because
+ * 50 multi-byte characters can exceed 72 bytes.
+ */
+export const PASSWORD_MAX_LENGTH = 50;
+
+/**
+ * Maximum length, in bytes.
  *
  * 72 bytes, not an arbitrary 128: bcrypt silently TRUNCATES at 72, so anything
  * beyond that is not part of the password no matter what the form said. A user
@@ -217,15 +228,38 @@ export type PasswordPolicyFailure =
  */
 export function checkPasswordPolicy(
   password: string,
+  // Unused only because the identifier rule below is commented out. The
+  // parameter and its name stay so every caller keeps compiling and so
+  // re-enabling the rule is a one-line revert rather than a signature change.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   identifier?: string | null
 ): PasswordPolicyFailure | null {
   if (password.length < PASSWORD_MIN_LENGTH) return "AUTH_PASSWORD_TOO_SHORT";
-  if (Buffer.byteLength(password, "utf8") > PASSWORD_MAX_BYTES) {
+  if (
+    password.length > PASSWORD_MAX_LENGTH ||
+    Buffer.byteLength(password, "utf8") > PASSWORD_MAX_BYTES
+  ) {
     return "AUTH_PASSWORD_TOO_LONG";
   }
   if (isCommonPassword(password)) return "AUTH_PASSWORD_TOO_COMMON";
-  if (containsIdentifier(password, identifier)) {
-    return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
-  }
+  // DISABLED BY PRODUCT DECISION (2026-09-07): a password may now restate the
+  // account name or email local part, so `Saul_Goodman` / `Saul_Goodman@1234`
+  // is accepted.
+  //
+  // What this gives up: the account name is PUBLIC — it is how other users find
+  // you — so a password derived from it is guessable by anyone who can see the
+  // profile, and it is the first thing a targeted guessing run tries. Length,
+  // the common-password blocklist and the bcrypt work factor are now the only
+  // things standing behind such an account.
+  //
+  // Commented rather than deleted so re-enabling is a one-line revert.
+  // `containsIdentifier` below is deliberately kept (still exported and still
+  // covered by tests) so the rule does not have to be rewritten from scratch,
+  // and `AUTH_PASSWORD_CONTAINS_IDENTIFIER` stays in the failure union and the
+  // message catalogue for the same reason.
+  //
+  // if (containsIdentifier(password, identifier)) {
+  //   return "AUTH_PASSWORD_CONTAINS_IDENTIFIER";
+  // }
   return null;
 }
