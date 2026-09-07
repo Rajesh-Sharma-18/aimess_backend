@@ -5,6 +5,7 @@ import {
   publishAdminActivitySafe,
   USER_AUDIT_ACTIONS,
 } from "@aimess/messaging";
+import { isProfileComplete } from "@aimess/utils";
 
 import {
   AccountStatus,
@@ -239,8 +240,18 @@ async function signInWithProvider(
       email: user.email,
       provider,
     },
-    // Brand-new account — profile is never complete at creation.
-    isProfileCompleted: false,
+    // Same shared rule every other flow answers with (@aimess/utils), applied
+    // to the exact values user-service is about to seed the profile with: the
+    // username it generates from `account` is always present, so the answer
+    // turns on whether the provider supplied both names. A Google/Apple sign-up
+    // that carried a full name is complete on its first response instead of
+    // being sent to the profile-details screen it has nothing left to fill in.
+    // The avatar is not part of the rule and no provider branch exists here.
+    isProfileCompleted: isProfileComplete({
+      username: account,
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+    }),
     tokens,
   };
 }

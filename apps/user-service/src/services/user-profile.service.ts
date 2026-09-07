@@ -32,7 +32,7 @@ import type {
   AuthAccountSummary,
   SignInProvider,
 } from "../types/auth-account.types.js";
-import { isProfileComplete } from "../lib/profile-completion.util.js";
+import { isProfileComplete } from "@aimess/utils";
 import {
   SCHEMA_DEFAULT_SCOPE,
   canSendFriendRequest,
@@ -463,6 +463,27 @@ export const userProfileService = {
         });
 
         await userCache.onUsernameClaimed(username);
+
+        // auth-service only ever MIRRORS `isProfileCompleted`, and this event is
+        // the only thing that writes the mirror. Without publishing here a
+        // social sign-up whose provider supplied both names — its profile is
+        // complete the instant this row exists — stayed `false` on every later
+        // login until the user happened to edit their profile. Same rule, same
+        // publisher, every provider: nothing here looks at the avatar.
+        publishProfileUpdatedSafe({
+          userId: data.userId,
+          username,
+          displayName: buildDisplayName(firstName, lastName),
+          // A profile has no avatar at creation, and the avatar is not part of
+          // the completion rule anyway.
+          avatarObjectKey: null,
+          isProfileCompleted: isProfileComplete({
+            username,
+            firstName,
+            lastName,
+          }),
+          updatedAt: new Date().toISOString(),
+        });
 
         logger.info(`User profile created for userId=${data.userId}`);
         return;

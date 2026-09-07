@@ -15,6 +15,9 @@ jest.mock("../../src/services/username.service.js", () => ({
     generateFromAccount: jest.fn(async () => ({ username: "rajesh_1" })),
   },
 }));
+jest.mock("../../src/messaging/publish-profile-updated.js", () => ({
+  publishProfileUpdatedSafe: jest.fn(),
+}));
 jest.mock("../../src/lib/user-cache.js", () => ({
   userCache: {
     onUsernameClaimed: jest.fn(async () => undefined),
@@ -30,8 +33,10 @@ import type { UserCreatedPayload } from "@aimess/shared-types";
 
 import { userProfileService } from "../../src/services/user-profile.service.js";
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
+import { publishProfileUpdatedSafe } from "../../src/messaging/publish-profile-updated.js";
 
 const repo = userProfileRepository as unknown as Record<string, jest.Mock>;
+const publishProfileUpdated = publishProfileUpdatedSafe as unknown as jest.Mock;
 
 const BASE: UserCreatedPayload = {
   userId: "11111111-1111-1111-1111-111111111111",
@@ -131,6 +136,34 @@ describe("createFromUserCreatedEvent — name seeding", () => {
 
     expect(repo.createFromRegistration).toHaveBeenCalledWith(
       expect.objectContaining({ firstName: "Rajesh", lastName: "Sharma" })
+    );
+  });
+
+  // The mirror auth-service answers `isProfileCompleted` from is written only by
+  // this event, so a social sign-up that arrived with both names has to publish
+  // `true` here — the avatar it does not have never enters the answer.
+  it("publishes the completion mirror as true for a named social sign-up", async () => {
+    await userProfileService.createFromUserCreatedEvent({
+      ...BASE,
+      firstName: "Rajesh",
+      lastName: "Sharma",
+    });
+
+    expect(publishProfileUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: BASE.userId,
+        username: "rajesh_1",
+        avatarObjectKey: null,
+        isProfileCompleted: true,
+      })
+    );
+  });
+
+  it("publishes the completion mirror as false when no name was supplied", async () => {
+    await userProfileService.createFromUserCreatedEvent(BASE);
+
+    expect(publishProfileUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ isProfileCompleted: false })
     );
   });
 
