@@ -192,6 +192,57 @@ wait_healthy() {
 }
 
 # --------------------------------------------------------------------------
+# frontend env sanity
+# --------------------------------------------------------------------------
+# NEXT_PUBLIC_* is inlined into the JavaScript bundle at build time, so a wrong
+# value here is not a runtime misconfiguration you can correct afterwards — it
+# is compiled into the artifact and only another full rebuild removes it. These
+# checks exist because the repo's .env.example ships the required keys BLANK and
+# commented, and copying that template over a live .env.production produces a
+# site that builds cleanly and is completely non-functional.
+check_frontend_env() {
+  local f="$BUILD_CTX/.env.production" bad=0 k v line
+
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    k="${line%%=*}"; v="${line#*=}"
+    case "$v" in
+      *" "*) echo "    !! $k contains a space"; bad=1 ;;
+      *REPLACE_ME*|*REPLACE-ME*) echo "    !! $k still holds a placeholder"; bad=1 ;;
+    esac
+    # Two values pasted together, e.g. "...googleusercontent.comcom.example.app"
+    case "$v" in
+      *.comcom.*|*.comhttps://*) echo "    !! $k looks like two values concatenated"; bad=1 ;;
+    esac
+  done < "$f"
+
+  # Present AND non-empty. A key that is absent, blank, or commented out sends
+  # axios to its localhost default and the deployed site talks to nothing.
+  for k in NEXT_PUBLIC_API_URL NEXT_PUBLIC_SOCKET_URL; do
+    grep -qE "^${k}=.+" "$f" || { echo "    !! $k is missing, blank or commented out"; bad=1; }
+  done
+
+  # Anything but "true" makes the client log full request and response bodies
+  # to the browser console.
+  grep -qE '^NEXT_PUBLIC_IS_PRODUCTION=true$' "$f" || {
+    echo "    !! NEXT_PUBLIC_IS_PRODUCTION must be exactly 'true' on a live build"; bad=1; }
+
+  if [ "$SVC" = website ]; then
+    # app.config.ts derives the v2 base by replacing this exact suffix. A bare
+    # host makes the regex miss, and every v2 call silently goes to v1.
+    grep -qE '^NEXT_PUBLIC_API_URL=https?://[^ ]+/api/v1/?$' "$f" || {
+      echo "    !! NEXT_PUBLIC_API_URL must END IN /api/v1 for the website"; bad=1; }
+  else
+    # getAdminApiBaseUrl() appends /admin/v1 itself; a path here double-prefixes.
+    grep -qE '^NEXT_PUBLIC_API_URL=https?://[^/]+/?$' "$f" || {
+      echo "    !! NEXT_PUBLIC_API_URL must be the BARE HOST for the admin panel"; bad=1; }
+  fi
+
+  [ "$bad" -eq 0 ] && echo "    env looks sane"
+  return "$bad"
+}
+
+# --------------------------------------------------------------------------
 # one full deploy cycle
 # --------------------------------------------------------------------------
 deploy_one() {
@@ -222,6 +273,8 @@ deploy_one() {
   if [ "$KIND" = frontend ]; then
     [ -f "$BUILD_CTX/.env.production" ] || die \
       "$BUILD_CTX/.env.production is missing — NEXT_PUBLIC_* are baked into the bundle at build time, so building without it silently ships localhost defaults"
+    check_frontend_env || die \
+      "refusing to build — fix the env problems above first. Nothing has changed yet."
   else
     [ -f "$DOCKERFILE" ] || die "missing $DOCKERFILE"
   fi
