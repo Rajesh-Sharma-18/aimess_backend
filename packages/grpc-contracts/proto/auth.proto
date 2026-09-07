@@ -11,6 +11,14 @@ service AuthService {
   // one of the given device types. Sessions — not device tokens, not a stored
   // profile preference — are what "this user is on iOS right now" means.
   rpc AdminListUserIdsByDeviceType (AdminListUserIdsByDeviceTypeRequest) returns (AdminListUserIdsByDeviceTypeResponse);
+  // Admin Panel user detail: every DEVICE linked to one user — the physical
+  // installs behind their logins, not the logins themselves. Distinct from
+  // AdminListUserIdsByDeviceType above, which answers "who is on iOS" across
+  // the whole platform.
+  //
+  // Deliberately carries no token, secret or credential of any kind: it feeds a
+  // read-only diagnostics panel.
+  rpc AdminListUserDevices (AdminListUserDevicesRequest) returns (AdminListUserDevicesResponse);
   rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
   rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
   // The ONLY mutation on this service. backoffice-service calls it
@@ -110,6 +118,61 @@ message AdminListUserIdsByDeviceTypeRequest {
 message AdminListUserIdsByDeviceTypeResponse {
   repeated string user_ids = 1;     // distinct, ordered by id so paging is stable
   int64  total = 2;                 // distinct users matching, for pagination
+}
+
+message AdminListUserDevicesRequest {
+  string user_id = 1;
+  int32  limit   = 2; // page size (clamped 1..100, default 20)
+  int32  offset  = 3; // offset pagination, newest activity first
+}
+
+// Every field is a proto3 scalar, so "absent" arrives as "" / 0 / false rather
+// than null. The nullable_* mask below says which numeric/boolean fields were
+// actually stored, because 0 and false are legitimate values for several of
+// them (an emulator flag of false, a screen density of 0 on a headless client)
+// and the admin UI must render "—" for unknown instead of an invented zero.
+message AdminUserDeviceRecord {
+  string device_id         = 1;
+  string platform          = 2;  // ANDROID | IOS | WEB | DESKTOP
+  string device_type       = 3;  // PHONE | TABLET | DESKTOP, or ""
+  string device_name       = 4;
+  string manufacturer      = 5;
+  string brand             = 6;
+  string model             = 7;
+  string os_version        = 8;
+  int32  sdk_int           = 9;
+  string app_version       = 10;
+  int32  app_build         = 11;
+  string build_type        = 12;
+  string installer_package = 13;
+  string locale            = 14;
+  string language          = 15;
+  string country           = 16;
+  string timezone          = 17;
+  int32  utc_offset_minutes = 18;
+  int32  screen_width_px   = 19;
+  int32  screen_height_px  = 20;
+  int32  screen_density_dpi = 21;
+  string network_type      = 22;
+  string carrier           = 23;
+  bool   is_emulator       = 24;
+  bool   is_rooted         = 25;
+  string ip_address        = 26; // server-derived, never client-supplied
+  string country_code      = 27; // GeoIP / edge header
+  string created_at        = 28; // ISO
+  string updated_at        = 29; // ISO
+  string last_seen_at      = 30; // ISO
+  string last_login_at     = 31; // ISO
+  // Live sessions currently keyed on this device_id. 0 means signed out here.
+  int32  active_session_count = 32;
+  // Names of the fields above that were actually stored (e.g. "sdkInt",
+  // "isRooted"). Anything not listed is unknown, not zero/false.
+  repeated string present_fields = 33;
+}
+
+message AdminListUserDevicesResponse {
+  repeated AdminUserDeviceRecord devices = 1;
+  int64 total = 2;
 }
 
 // Permanent ban / reinstatement. There is deliberately no duration field:

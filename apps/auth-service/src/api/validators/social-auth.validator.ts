@@ -1,10 +1,12 @@
 import { z } from "zod";
 
 import { fcmTokensSchema } from "./auth.validator.js";
+import { deviceInfoField } from "./device-info.validator.js";
 
 export const googleLoginSchema = z.object({
   idToken: z.string().trim().min(1, "Google ID token is required"),
   fcmTokens: fcmTokensSchema.optional().default([]),
+  device: deviceInfoField,
 });
 
 export type GoogleLoginInput = z.infer<typeof googleLoginSchema>;
@@ -39,6 +41,7 @@ export const appleLoginSchema = z.object({
   email: z.string().trim().toLowerCase().email("Email is invalid").optional(),
   fullName: appleFullNameSchema.nullish(),
   fcmTokens: fcmTokensSchema.optional().default([]),
+  device: deviceInfoField,
 });
 
 export type AppleLoginInput = z.infer<typeof appleLoginSchema>;

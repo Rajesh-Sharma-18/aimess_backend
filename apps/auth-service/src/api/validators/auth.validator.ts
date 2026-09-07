@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { checkPasswordPolicy } from "../../lib/password-policy.js";
+import { deviceInfoField } from "./device-info.validator.js";
 
 export const accountSchema = z
   .string()
@@ -78,6 +79,10 @@ export const registerSchema = z
     password: passwordSchema,
     fcmTokens: fcmTokensSchema.optional().default([]),
     proof: challengeSchema.optional(),
+    // Optional by contract — see device-info.validator.ts. A client that sends
+    // nothing (or an explicit null) registers no device row and keeps the
+    // server-derived session metadata it has always had.
+    device: deviceInfoField,
   })
   // Re-checked at the object level because the account name is only known
   // here: a password that merely restates the public account name is guessable
@@ -127,6 +132,7 @@ export const loginSchema = z.object({
   password: loginPasswordSchema,
   fcmTokens: fcmTokensSchema.optional().default([]),
   rememberMe: z.boolean().optional().default(false),
+  device: deviceInfoField,
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

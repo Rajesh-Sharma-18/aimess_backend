@@ -10,6 +10,7 @@ import { publishSessionCreatedEvent } from "@aimess/redis";
 
 import { env, accessTokenSigningKey } from "../config/env.js";
 import { redis } from "../config/redis.js";
+import { recordLoginDeviceSafe } from "./record-login-device.js";
 import { markSessionActive } from "./session-active-cache.js";
 import type { SessionContext } from "./session-context.js";
 import { toActiveSessionItem } from "./session-serializer.js";
@@ -97,6 +98,13 @@ export async function issueAuthTokens(
   });
 
   await markSessionActive(createdSession.id, refreshTokenExpiresIn);
+
+  // Same single funnel owns the device record: every path that mints a new
+  // session (password login, register, Google/Apple, QR device-link) lands
+  // here, so the upsert happens once instead of at four call sites. No-ops when
+  // the client sent no `device` payload, and never throws — see
+  // recordLoginDeviceSafe.
+  await recordLoginDeviceSafe(userId, session);
 
   // Single funnel: every new device/session — normal login AND QR device-link
   // approval both call issueAuthTokens — lands here, so "Linked Device Created"
